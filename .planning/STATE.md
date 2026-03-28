@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-03-28T23:41:28.334Z"
+progress:
+  total_phases: 3
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 0
+---
+
 # State: anneal
 
 ## Project Reference
@@ -5,7 +18,7 @@
 See: .planning/PROJECT.md (updated 2026-03-28)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 1 — Graph Foundation
+**Current focus:** Phase 01 — graph-foundation
 
 ## Current Phase
 
