@@ -23,20 +23,11 @@ pub enum HandleKind {
     /// A markdown file, identified by its path relative to root.
     File(Utf8PathBuf),
     /// A heading range within a parent file.
-    Section {
-        parent: NodeId,
-        heading: String,
-    },
+    Section { parent: NodeId, heading: String },
     /// A cross-reference label (e.g., OQ-64, A-10).
-    Label {
-        prefix: String,
-        number: u32,
-    },
+    Label { prefix: String, number: u32 },
     /// A version of a versioned artifact (e.g., v17 of formal-model).
-    Version {
-        artifact: NodeId,
-        version: u32,
-    },
+    Version { artifact: NodeId, version: u32 },
 }
 
 /// A handle is a triple (identity, kind, state) per KB-D1.
