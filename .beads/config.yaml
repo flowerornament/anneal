@@ -52,3 +52,5 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+federation.remote: "file:///Users/morgan/.local/share/beads-remotes/anneal"
