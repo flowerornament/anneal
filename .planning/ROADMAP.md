@@ -23,7 +23,7 @@
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Types & Config: Handle, AnnealConfig, DiGraph foundational types
+- [x] 01-01-PLAN.md -- Types & Config: Handle, AnnealConfig, DiGraph foundational types
 - [ ] 01-02-PLAN.md -- Parse & Lattice: Frontmatter split, RegexSet scanner, edge kind inference, convergence lattice
 - [ ] 01-03-PLAN.md -- Resolution & Wiring: Namespace inference, handle resolution, main.rs pipeline
 

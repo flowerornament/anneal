@@ -11,14 +11,14 @@
 - [ ] **GRAPH-02**: Parse YAML frontmatter between `---` fences, extract `status:` and metadata
 - [ ] **GRAPH-03**: Parse markdown headings (`#{1,6}`) to create Section handles within files
 - [ ] **GRAPH-04**: Scan content with RegexSet for labels, section refs, file paths, version refs
-- [ ] **GRAPH-05**: Build directed graph with typed edges (Cites, DependsOn, Supersedes, Verifies, Discharges)
-- [ ] **GRAPH-06**: Graph is computed from files on every invocation, never stored
+- [x] **GRAPH-05**: Build directed graph with typed edges (Cites, DependsOn, Supersedes, Verifies, Discharges)
+- [x] **GRAPH-06**: Graph is computed from files on every invocation, never stored
 
 ### Handle Resolution
 
-- [ ] **HANDLE-01**: Resolve File handles by filesystem path
-- [ ] **HANDLE-02**: Resolve Section handles to heading ranges within parent files
-- [ ] **HANDLE-03**: Resolve Label handles by scanning confirmed namespaces across all files
+- [x] **HANDLE-01**: Resolve File handles by filesystem path
+- [x] **HANDLE-02**: Resolve Section handles to heading ranges within parent files
+- [x] **HANDLE-03**: Resolve Label handles by scanning confirmed namespaces across all files
 - [ ] **HANDLE-04**: Resolve Version handles by matching versioned artifact naming conventions
 - [ ] **HANDLE-05**: Infer handle namespaces by sequential cardinality (N >= 3 members, M >= 2 files)
 - [ ] **HANDLE-06**: Only labels in confirmed namespaces generate broken-reference errors
@@ -68,8 +68,8 @@
 
 ### Configuration
 
-- [ ] **CONFIG-01**: Parse anneal.toml with all-optional fields via `#[serde(default, deny_unknown_fields)]`
-- [ ] **CONFIG-02**: Zero-config is valid — tool works with no anneal.toml (existence lattice only)
+- [x] **CONFIG-01**: Parse anneal.toml with all-optional fields via `#[serde(default, deny_unknown_fields)]`
+- [x] **CONFIG-02**: Zero-config is valid — tool works with no anneal.toml (existence lattice only)
 - [ ] **CONFIG-03**: Config supports: root, convergence (active/terminal/ordering), handles (confirmed/rejected), linear namespaces, freshness thresholds, concern groups
 - [ ] **CONFIG-04**: `anneal init` generates anneal.toml from inferred structure
 
@@ -122,11 +122,11 @@
 | GRAPH-02 | Phase 1 | Pending |
 | GRAPH-03 | Phase 1 | Pending |
 | GRAPH-04 | Phase 1 | Pending |
-| GRAPH-05 | Phase 1 | Pending |
-| GRAPH-06 | Phase 1 | Pending |
-| HANDLE-01 | Phase 1 | Pending |
-| HANDLE-02 | Phase 1 | Pending |
-| HANDLE-03 | Phase 1 | Pending |
+| GRAPH-05 | Phase 1 | Complete |
+| GRAPH-06 | Phase 1 | Complete |
+| HANDLE-01 | Phase 1 | Complete |
+| HANDLE-02 | Phase 1 | Complete |
+| HANDLE-03 | Phase 1 | Complete |
 | HANDLE-04 | Phase 1 | Pending |
 | HANDLE-05 | Phase 1 | Pending |
 | HANDLE-06 | Phase 1 | Pending |
@@ -158,8 +158,8 @@
 | CLI-08 | Phase 3 | Pending |
 | CLI-09 | Phase 2 | Pending |
 | CLI-10 | Phase 2 | Pending |
-| CONFIG-01 | Phase 1 | Pending |
-| CONFIG-02 | Phase 1 | Pending |
+| CONFIG-01 | Phase 1 | Complete |
+| CONFIG-02 | Phase 1 | Complete |
 | CONFIG-03 | Phase 2 | Pending |
 | CONFIG-04 | Phase 2 | Pending |
 | SUGGEST-01 | Phase 3 | Pending |
