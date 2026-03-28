@@ -7,10 +7,10 @@
 
 ### Graph Construction
 
-- [ ] **GRAPH-01**: Scan directory tree for .md files and create File handles
-- [ ] **GRAPH-02**: Parse YAML frontmatter between `---` fences, extract `status:` and metadata
-- [ ] **GRAPH-03**: Parse markdown headings (`#{1,6}`) to create Section handles within files
-- [ ] **GRAPH-04**: Scan content with RegexSet for labels, section refs, file paths, version refs
+- [x] **GRAPH-01**: Scan directory tree for .md files and create File handles
+- [x] **GRAPH-02**: Parse YAML frontmatter between `---` fences, extract `status:` and metadata
+- [x] **GRAPH-03**: Parse markdown headings (`#{1,6}`) to create Section handles within files
+- [x] **GRAPH-04**: Scan content with RegexSet for labels, section refs, file paths, version refs
 - [x] **GRAPH-05**: Build directed graph with typed edges (Cites, DependsOn, Supersedes, Verifies, Discharges)
 - [x] **GRAPH-06**: Graph is computed from files on every invocation, never stored
 
@@ -25,10 +25,10 @@
 
 ### Convergence Lattice
 
-- [ ] **LATTICE-01**: Support two-element existence lattice {exists, missing} as zero-config baseline
-- [ ] **LATTICE-02**: Infer confidence lattice from observed frontmatter status values
-- [ ] **LATTICE-03**: Partition status values into active and terminal sets (by directory convention + config)
-- [ ] **LATTICE-04**: Compute freshness from file mtime or `updated:` frontmatter field
+- [x] **LATTICE-01**: Support two-element existence lattice {exists, missing} as zero-config baseline
+- [x] **LATTICE-02**: Infer confidence lattice from observed frontmatter status values
+- [x] **LATTICE-03**: Partition status values into active and terminal sets (by directory convention + config)
+- [x] **LATTICE-04**: Compute freshness from file mtime or `updated:` frontmatter field
 
 ### Local Checks
 
@@ -118,10 +118,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| GRAPH-01 | Phase 1 | Pending |
-| GRAPH-02 | Phase 1 | Pending |
-| GRAPH-03 | Phase 1 | Pending |
-| GRAPH-04 | Phase 1 | Pending |
+| GRAPH-01 | Phase 1 | Complete |
+| GRAPH-02 | Phase 1 | Complete |
+| GRAPH-03 | Phase 1 | Complete |
+| GRAPH-04 | Phase 1 | Complete |
 | GRAPH-05 | Phase 1 | Complete |
 | GRAPH-06 | Phase 1 | Complete |
 | HANDLE-01 | Phase 1 | Complete |
@@ -130,10 +130,10 @@
 | HANDLE-04 | Phase 1 | Pending |
 | HANDLE-05 | Phase 1 | Pending |
 | HANDLE-06 | Phase 1 | Pending |
-| LATTICE-01 | Phase 1 | Pending |
-| LATTICE-02 | Phase 1 | Pending |
-| LATTICE-03 | Phase 1 | Pending |
-| LATTICE-04 | Phase 1 | Pending |
+| LATTICE-01 | Phase 1 | Complete |
+| LATTICE-02 | Phase 1 | Complete |
+| LATTICE-03 | Phase 1 | Complete |
+| LATTICE-04 | Phase 1 | Complete |
 | CHECK-01 | Phase 2 | Pending |
 | CHECK-02 | Phase 2 | Pending |
 | CHECK-03 | Phase 2 | Pending |
