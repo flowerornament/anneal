@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "anneal",
+  "project_id": "ab447418-aa0b-47fa-89bd-b800b618eeef"
+}
