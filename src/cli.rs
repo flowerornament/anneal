@@ -831,7 +831,8 @@ pub(crate) fn cmd_status(
     let mut level_counts: HashMap<String, usize> = HashMap::new();
 
     // Obligation tracking for linear namespaces
-    let linear_namespaces: HashSet<&str> = config.handles.linear.iter().map(String::as_str).collect();
+    let linear_namespaces: HashSet<&str> =
+        config.handles.linear.iter().map(String::as_str).collect();
     let mut obl_discharged = 0usize;
     let mut obl_mooted = 0usize;
     let mut obl_total = 0usize;
@@ -849,9 +850,7 @@ pub(crate) fn cmd_status(
                 active_handles += 1;
             }
             // Pipeline level tracking
-            if !lattice.ordering.is_empty()
-                && lattice::state_level(status, lattice).is_some()
-            {
+            if !lattice.ordering.is_empty() && lattice::state_level(status, lattice).is_some() {
                 *level_counts.entry(status.clone()).or_insert(0) += 1;
             }
         } else {
@@ -2203,9 +2202,18 @@ mod tests {
     fn status_print_human_pipeline_histogram() {
         let mut output = make_status_output_basic();
         output.pipeline = Some(vec![
-            PipelineLevel { level: "raw".to_string(), count: 12 },
-            PipelineLevel { level: "digested".to_string(), count: 8 },
-            PipelineLevel { level: "formal".to_string(), count: 6 },
+            PipelineLevel {
+                level: "raw".to_string(),
+                count: 12,
+            },
+            PipelineLevel {
+                level: "digested".to_string(),
+                count: 8,
+            },
+            PipelineLevel {
+                level: "formal".to_string(),
+                count: 6,
+            },
         ]);
         let mut buf = Vec::new();
         output.print_human(&mut buf).expect("print_human");
