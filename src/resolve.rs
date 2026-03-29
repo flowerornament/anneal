@@ -332,6 +332,28 @@ fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
 // Build node index from graph
 // ---------------------------------------------------------------------------
 
+/// Attempt root-relative resolution for a bare filename.
+///
+/// If `resolve_file_path` returns `None` (not found relative to referring file),
+/// try a direct root-relative join.
+fn resolve_bare_filename(
+    reference: &str,
+    referring_file: &Utf8Path,
+    root: &Utf8Path,
+) -> Option<Utf8PathBuf> {
+    // First try relative to referring file's directory
+    if let Some(found) = resolve_file_path(reference, referring_file, root) {
+        return Some(found);
+    }
+    // Fallback: try at root level
+    let root_path = root.join(reference);
+    if root_path.exists() {
+        root_path.strip_prefix(root).ok().map(Utf8Path::to_path_buf)
+    } else {
+        None
+    }
+}
+
 /// Build a mapping from handle identity strings to `NodeId`s.
 ///
 /// Identity mappings:
