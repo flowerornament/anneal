@@ -101,22 +101,16 @@ impl DiGraph {
         self.fwd.iter().map(Vec::len).sum()
     }
 
-    // Phase 2: CHECK rules, impact analysis
-    #[allow(dead_code)]
     pub(crate) fn outgoing(&self, id: NodeId) -> &[Edge] {
         &self.fwd[id.index()]
     }
 
-    // Phase 2: impact analysis (reverse traversal)
-    #[allow(dead_code)]
     pub(crate) fn incoming(&self, id: NodeId) -> &[Edge] {
         &self.rev[id.index()]
     }
 
     /// Outgoing edges filtered by kind. Typed traversal as first-class API
     /// (per spec section 15.3).
-    // Phase 2: CHECK-03 confidence gap
-    #[allow(dead_code)]
     pub(crate) fn edges_by_kind(&self, id: NodeId, kind: EdgeKind) -> impl Iterator<Item = &Edge> {
         self.fwd[id.index()].iter().filter(move |e| e.kind == kind)
     }

@@ -164,8 +164,6 @@ pub(crate) fn compute_freshness(
 /// Look up the ordering level of a status in the lattice pipeline (KB-D9).
 ///
 /// Returns the index in `lattice.ordering`, or `None` if absent.
-// Phase 2: CHECK-03 confidence gap
-#[allow(dead_code)]
 pub(crate) fn state_level(status: &str, lattice: &Lattice) -> Option<usize> {
     if lattice.ordering.is_empty() {
         return None;
@@ -177,8 +175,6 @@ pub(crate) fn state_level(status: &str, lattice: &Lattice) -> Option<usize> {
 ///
 /// Phase 2 uses this for CHECK-05: warn about missing frontmatter only
 /// when >50% of siblings have it.
-// Phase 2: CHECK-05 convention adoption
-#[allow(dead_code)]
 pub(crate) fn frontmatter_adoption_rate(total_files: usize, files_with_frontmatter: usize) -> f64 {
     if total_files == 0 {
         return 0.0;

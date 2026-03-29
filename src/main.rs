@@ -5,6 +5,7 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use serde::Serialize;
 
+mod checks;
 mod config;
 mod graph;
 mod handle;
