@@ -21,5 +21,8 @@
           };
         };
       });
+
+      # Source tree path for skill syncing (nix-config agent-sync.nix).
+      skillsDir = "${self}/skills";
     };
 }
