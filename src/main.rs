@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use anyhow::Context;
 use camino::Utf8PathBuf;
-use clap::Parser;
-use serde::Serialize;
+use clap::{Parser, Subcommand};
 
 mod checks;
+mod cli;
 mod config;
 mod graph;
 mod handle;
@@ -14,9 +14,7 @@ mod lattice;
 mod parse;
 mod resolve;
 
-use crate::graph::DiGraph;
-use crate::lattice::{Lattice, LatticeKind};
-use crate::resolve::ResolveStats;
+use crate::handle::{HandleKind, NodeId};
 
 /// Convergence assistant for knowledge corpora.
 #[derive(Parser)]
@@ -29,77 +27,95 @@ struct Cli {
     /// Output as JSON.
     #[arg(long, global = true)]
     json: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-#[derive(Serialize)]
-struct GraphSummary<'a> {
-    root: &'a str,
-    files: usize,
-    handles: usize,
-    edges: usize,
-    namespaces: Vec<String>,
-    versions: usize,
-    labels_resolved: usize,
-    labels_skipped: usize,
-    pending_edges_resolved: usize,
-    pending_edges_unresolved: usize,
-    lattice_kind: LatticeKind,
-    observed_statuses: usize,
-    active_statuses: usize,
-    terminal_statuses: usize,
+#[derive(Subcommand)]
+enum Command {
+    /// Run local consistency checks
+    Check {
+        /// Show only errors (for pre-commit hooks)
+        #[arg(long)]
+        errors_only: bool,
+    },
+    /// Resolve a handle and show its content
+    Get {
+        /// Handle identity to look up
+        handle: String,
+    },
+    /// Search handles by text
+    Find {
+        /// Text to search for in handle identities
+        query: String,
+        /// Include terminal (settled) handles in results
+        #[arg(long)]
+        all: bool,
+        /// Filter to handles in this namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Filter to handles with this status
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Generate anneal.toml from inferred structure
+    Init {
+        /// Show what would be written without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show what's affected if a handle changes
+    Impact {
+        /// Handle identity to analyze
+        handle: String,
+    },
 }
 
-fn sorted_namespace_names(ns: &HashSet<String>) -> Vec<&str> {
-    let mut list: Vec<&str> = ns.iter().map(String::as_str).collect();
-    list.sort_unstable();
-    list
-}
-
-fn print_summary(
-    root: &str,
-    file_count: usize,
-    graph: &DiGraph,
-    stats: &ResolveStats,
-    lattice: &Lattice,
-) {
-    let ns_display = sorted_namespace_names(&stats.namespaces).join(", ");
-
-    println!("anneal: knowledge graph built");
-    println!("  root: {root}");
-    println!("  files: {file_count}");
-    println!("  handles: {}", graph.node_count());
-    println!("  edges: {}", graph.edge_count());
-    println!("  namespaces: {} ({ns_display})", stats.namespaces.len());
-    println!(
-        "  labels resolved: {}, skipped: {}",
-        stats.labels_resolved, stats.labels_skipped
-    );
-    println!("  versions resolved: {}", stats.versions_resolved);
-    println!(
-        "  pending edges resolved: {}, unresolved: {}",
-        stats.pending_edges_resolved, stats.pending_edges_unresolved
-    );
-    println!("  lattice: {:?}", lattice.kind);
-
-    if lattice.kind == LatticeKind::Confidence {
-        println!(
-            "  statuses: {} observed ({} active, {} terminal)",
-            lattice.observed_statuses.len(),
-            lattice.active.len(),
-            lattice.terminal.len()
-        );
+/// Build a lookup index from handle identity strings to `NodeId`s.
+fn build_node_index(graph: &graph::DiGraph) -> HashMap<String, NodeId> {
+    let mut index = HashMap::with_capacity(graph.node_count());
+    for (node_id, h) in graph.nodes() {
+        index.insert(h.id.clone(), node_id);
     }
+    index
+}
+
+/// Collect unresolved pending edges after resolution.
+///
+/// An edge is unresolved if its target identity does not appear in the
+/// node index. Section refs (target starting with "section:") are counted
+/// separately for the I001 summary diagnostic.
+fn collect_unresolved<'a>(
+    pending: &'a [parse::PendingEdge],
+    node_index: &HashMap<String, NodeId>,
+) -> (Vec<&'a parse::PendingEdge>, usize) {
+    let mut unresolved = Vec::new();
+    let mut section_ref_count: usize = 0;
+
+    for edge in pending {
+        if node_index.contains_key(&edge.target_identity) {
+            continue;
+        }
+        if edge.target_identity.starts_with("section:") {
+            section_ref_count += 1;
+        } else {
+            unresolved.push(edge);
+        }
+    }
+
+    (unresolved, section_ref_count)
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli_args = Cli::parse();
 
     let cwd = Utf8PathBuf::try_from(
         std::env::current_dir().context("failed to determine current directory")?,
     )
     .context("current directory is not valid UTF-8")?;
 
-    let root = if let Some(ref r) = cli.root {
+    let root = if let Some(ref r) = cli_args.root {
         Utf8PathBuf::from(r)
     } else {
         parse::infer_root(&cwd)
@@ -111,7 +127,7 @@ fn main() -> anyhow::Result<()> {
     let file_count = result
         .graph
         .nodes()
-        .filter(|(_, h)| matches!(h.kind, handle::HandleKind::File(_)))
+        .filter(|(_, h)| matches!(h.kind, HandleKind::File(_)))
         .count();
 
     let stats = resolve::resolve_all(
@@ -128,35 +144,106 @@ fn main() -> anyhow::Result<()> {
         &result.terminal_by_directory,
     );
     let graph = &result.graph;
-
     let root_str = root.to_string();
 
-    if cli.json {
-        let output = GraphSummary {
-            root: &root_str,
-            files: file_count,
-            handles: graph.node_count(),
-            edges: graph.edge_count(),
-            namespaces: sorted_namespace_names(&stats.namespaces)
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            versions: stats.versions_resolved,
-            labels_resolved: stats.labels_resolved,
-            labels_skipped: stats.labels_skipped,
-            pending_edges_resolved: stats.pending_edges_resolved,
-            pending_edges_unresolved: stats.pending_edges_unresolved,
-            lattice_kind: lattice.kind,
-            observed_statuses: lattice.observed_statuses.len(),
-            active_statuses: lattice.active.len(),
-            terminal_statuses: lattice.terminal.len(),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).context("failed to serialize JSON output")?
-        );
-    } else {
-        print_summary(&root_str, file_count, graph, &stats, &lattice);
+    // Build node index for get/find/impact commands
+    let node_index = build_node_index(graph);
+
+    match cli_args.command {
+        None => {
+            // Bare `anneal` (no subcommand): show graph summary
+            let summary = cli::build_summary(&root_str, file_count, graph, &stats, &lattice);
+            if cli_args.json {
+                cli::print_json(&summary)?;
+            } else {
+                summary
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write summary")?;
+            }
+        }
+
+        Some(Command::Check { errors_only }) => {
+            let (unresolved_refs, section_ref_count) =
+                collect_unresolved(&result.pending_edges, &node_index);
+            // Convert &[&PendingEdge] to owned slice for run_checks
+            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
+                .iter()
+                .map(|e| parse::PendingEdge {
+                    source: e.source,
+                    target_identity: e.target_identity.clone(),
+                    kind: e.kind,
+                    inverse: e.inverse,
+                })
+                .collect();
+            let output = cli::cmd_check(
+                graph,
+                &lattice,
+                &config,
+                &unresolved_owned,
+                section_ref_count,
+                errors_only,
+            );
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write check output")?;
+            }
+            if output.errors > 0 {
+                std::process::exit(1);
+            }
+        }
+
+        Some(Command::Get { ref handle }) => {
+            if let Some(output) = cli::cmd_get(graph, &node_index, handle) {
+                if cli_args.json {
+                    cli::print_json(&output)?;
+                } else {
+                    output
+                        .print_human(&mut std::io::stdout().lock())
+                        .context("failed to write get output")?;
+                }
+            } else {
+                eprintln!("handle not found: {handle}");
+                std::process::exit(1);
+            }
+        }
+
+        Some(Command::Find {
+            ref query,
+            all,
+            ref namespace,
+            ref status,
+        }) => {
+            let output = cli::cmd_find(
+                graph,
+                &lattice,
+                query,
+                namespace.as_deref(),
+                status.as_deref(),
+                all,
+            );
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write find output")?;
+            }
+        }
+
+        Some(Command::Init { .. }) => {
+            // Placeholder: will be implemented in Task 2
+            eprintln!("init command not yet implemented");
+            std::process::exit(1);
+        }
+
+        Some(Command::Impact { .. }) => {
+            // Placeholder: will be implemented in Task 2
+            eprintln!("impact command not yet implemented");
+            std::process::exit(1);
+        }
     }
 
     Ok(())
@@ -165,6 +252,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
 
     #[test]
     fn test_murail_corpus() {

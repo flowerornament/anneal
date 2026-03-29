@@ -35,7 +35,6 @@ impl Diagnostic {
     /// error[E001]: broken reference: OQ-99 not found
     ///   -> formal-model/v17.md
     /// ```
-    #[allow(dead_code)] // Phase 2 Plan 03: CLI will call this
     pub(crate) fn print_human(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         let prefix = match self.severity {
             Severity::Error => "error",
@@ -331,7 +330,6 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
 /// Run all five check rules and return sorted diagnostics.
 ///
 /// Diagnostics are sorted by severity: errors first, then warnings, then info.
-#[allow(dead_code)] // Phase 2 Plan 03: CLI will call this
 pub(crate) fn run_checks(
     graph: &DiGraph,
     lattice: &Lattice,
