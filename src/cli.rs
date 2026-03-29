@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 use camino::Utf8Path;
@@ -119,6 +119,9 @@ pub(crate) struct GetOutput {
     pub(crate) incoming_edges: Vec<EdgeSummary>,
 }
 
+/// Maximum number of edges to display in human-readable output per direction.
+const EDGE_DISPLAY_LIMIT: usize = 20;
+
 impl GetOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         writeln!(w, "{} ({})", self.id, self.kind)?;
@@ -130,14 +133,30 @@ impl GetOutput {
         }
         if !self.outgoing_edges.is_empty() {
             writeln!(w, "  Outgoing:")?;
-            for edge in &self.outgoing_edges {
+            let total = self.outgoing_edges.len();
+            for edge in self.outgoing_edges.iter().take(EDGE_DISPLAY_LIMIT) {
                 writeln!(w, "    {} -> {}", edge.kind, edge.target)?;
+            }
+            if total > EDGE_DISPLAY_LIMIT {
+                writeln!(
+                    w,
+                    "    ... and {} more outgoing edges ({total} unique)",
+                    total - EDGE_DISPLAY_LIMIT
+                )?;
             }
         }
         if !self.incoming_edges.is_empty() {
             writeln!(w, "  Incoming:")?;
-            for edge in &self.incoming_edges {
+            let total = self.incoming_edges.len();
+            for edge in self.incoming_edges.iter().take(EDGE_DISPLAY_LIMIT) {
                 writeln!(w, "    {} <- {}", edge.kind, edge.target)?;
+            }
+            if total > EDGE_DISPLAY_LIMIT {
+                writeln!(
+                    w,
+                    "    ... and {} more incoming edges ({total} unique)",
+                    total - EDGE_DISPLAY_LIMIT
+                )?;
             }
         }
         Ok(())
@@ -174,23 +193,42 @@ pub(crate) fn cmd_get(
 
     let file = h.file_path.as_ref().map(ToString::to_string);
 
+    // Deduplicate edges by (kind, target) using BTreeSet for deterministic order
+    let mut seen_outgoing = BTreeSet::new();
     let outgoing_edges: Vec<EdgeSummary> = graph
         .outgoing(node_id)
         .iter()
-        .map(|e| EdgeSummary {
-            kind: format!("{:?}", e.kind),
-            target: graph.node(e.target).id.clone(),
-            direction: "outgoing".to_string(),
+        .filter_map(|e| {
+            let kind_str = format!("{:?}", e.kind);
+            let target_str = graph.node(e.target).id.clone();
+            if seen_outgoing.insert((kind_str.clone(), target_str.clone())) {
+                Some(EdgeSummary {
+                    kind: kind_str,
+                    target: target_str,
+                    direction: "outgoing".to_string(),
+                })
+            } else {
+                None
+            }
         })
         .collect();
 
+    let mut seen_incoming = BTreeSet::new();
     let incoming_edges: Vec<EdgeSummary> = graph
         .incoming(node_id)
         .iter()
-        .map(|e| EdgeSummary {
-            kind: format!("{:?}", e.kind),
-            target: graph.node(e.source).id.clone(),
-            direction: "incoming".to_string(),
+        .filter_map(|e| {
+            let kind_str = format!("{:?}", e.kind);
+            let target_str = graph.node(e.source).id.clone();
+            if seen_incoming.insert((kind_str.clone(), target_str.clone())) {
+                Some(EdgeSummary {
+                    kind: kind_str,
+                    target: target_str,
+                    direction: "incoming".to_string(),
+                })
+            } else {
+                None
+            }
         })
         .collect();
 
