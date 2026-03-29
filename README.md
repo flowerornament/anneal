@@ -12,19 +12,18 @@ A knowledge corpus grows across many sessions. No single agent sees the full his
 
 ```
 $ anneal status
- corpus  262 files, 9882 handles, 6992 edges
-         9785 active, 97 frozen
-    pipeline  10 raw -> 3 draft -> 6 exploratory -> 4 research -> 8 active
-              -> 7 reference -> 10 stable -> 9 decision -> 11 authoritative
+ corpus  84 files, 1205 handles, 892 edges
+         1140 active, 65 frozen
+    pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
 
- health  1009 errors, 147 warnings
+ health  23 errors, 11 warnings
 
- convergence  holding (resolution +0, creation +0, obligations 0)
+ convergence  advancing (resolution +4, creation +2, obligations 0)
 
- suggestions  38
-      25  S001 orphaned handles
-       8  S003 pipeline stalls
-       5  S005 concern group candidates
+ suggestions  7
+       4  S001 orphaned handles
+       2  S003 pipeline stalls
+       1  S005 concern group candidates
 ```
 
 ## Install
@@ -36,12 +35,6 @@ cargo install --path .
 ```
 
 ### Nix
-
-```bash
-nix run github:flowerornament/anneal -- status
-```
-
-Or add to your flake inputs:
 
 ```nix
 anneal = {
@@ -60,16 +53,16 @@ anneal status
 anneal check
 
 # Look up a specific handle
-anneal get OQ-64
+anneal get REQ-12
 
 # Search handles
-anneal find FM
+anneal find ADR
 
 # What depends on this file?
-anneal impact formal-model/v17.md
+anneal impact spec/api-v3.md
 
 # Visualize a handle's neighborhood
-anneal map --around=OQ-64 --depth=2
+anneal map --around=REQ-12 --depth=2
 
 # What changed since last session?
 anneal diff
@@ -84,10 +77,10 @@ anneal init
 
 | Kind | Example | Description |
 |------|---------|-------------|
-| file | `formal-model/v17.md` | A markdown document |
-| section | `v17.md#definitions` | A heading within a file |
-| label | `OQ-64` | A cross-reference tag (namespace + number) |
-| version | `v17` | A versioned artifact |
+| file | `spec/api-v3.md` | A markdown document |
+| section | `api-v3.md#authentication` | A heading within a file |
+| label | `REQ-12` | A cross-reference tag (namespace + number) |
+| version | `v3` | A versioned artifact |
 
 **Edges** are typed relationships between handles:
 
@@ -95,7 +88,7 @@ anneal init
 |------|---------|
 | Cites | References without dependency |
 | DependsOn | Structural dependency |
-| Supersedes | Version chain (v17 supersedes v16) |
+| Supersedes | Version chain (v3 supersedes v2) |
 | Verifies | Formal verification link |
 | Discharges | Obligation fulfillment |
 
@@ -111,12 +104,12 @@ Single-screen dashboard for arriving agents. Shows corpus size, active/frozen pa
 
 ```
 $ anneal status -v
- corpus  262 files, 9882 handles, 6992 edges
-         9785 active, 97 frozen
-    pipeline  10 raw -> 3 draft -> ...
-              raw (10):
-                formal-model/prior/RESTRUCTURE-PROPOSAL.md
-                research-log/2026-03-15-research-spikes-execution.md
+ corpus  84 files, 1205 handles, 892 edges
+         1140 active, 65 frozen
+    pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
+              raw (8):
+                notes/2025-01-15-auth-redesign.md
+                notes/2025-01-20-rate-limiting.md
                 ...
 ```
 
@@ -128,10 +121,12 @@ Five check rules and five suggestion rules with compiler-style diagnostics:
 
 ```
 $ anneal check --active-only
-error[E001]: broken reference: summary.md not found
-  -> archive/research/README.md
+error[E001]: broken reference: auth-flow.md not found
+  -> spec/api-v3.md
+error[E001]: broken reference: REQ-99 not found
+  -> decisions/ADR-005.md
 
-799 errors (799 in active files), 147 warnings, 1 info, 38 suggestions
+23 errors (23 in active files), 11 warnings, 1 info, 7 suggestions
 ```
 
 | Flag | Effect |
@@ -147,15 +142,13 @@ error[E001]: broken reference: summary.md not found
 Resolve a handle and show its edges:
 
 ```
-$ anneal get FM-17
-FM-17 (label)
-  File: synthesis/2026-03-15-architectural-reconciliation.md
+$ anneal get REQ-12
+REQ-12 (label)
+  File: requirements/REQUIREMENTS.md
   Incoming:
-    Cites <- DESIGN-GOALS.md
-    Cites <- formal-model/prior/notes-toward-v12.md
-    Cites <- formal-model/history/murail-formal-model-v11.md
-    Cites <- LABELS.md
-    Cites <- OPEN-QUESTIONS.md
+    Cites <- spec/api-v3.md
+    Cites <- decisions/ADR-003.md
+    Cites <- notes/2025-01-15-auth-redesign.md
 ```
 
 ### `anneal impact`
@@ -163,13 +156,12 @@ FM-17 (label)
 Reverse dependency traversal — what's affected if a handle changes:
 
 ```
-$ anneal impact formal-model/murail-formal-model-v17.md
+$ anneal impact spec/api-v3.md
 Directly affected (depend on this):
-  formal-model/history/murail-formal-model-v16.md
+  spec/api-v2.md
 Indirectly affected (depend on the above):
-  formal-model/history/murail-formal-model-v15.md
-  formal-model/history/murail-formal-model-v14.md
-  ...
+  spec/api-v1.md
+  archive/api-draft.md
 ```
 
 Traverses DependsOn, Supersedes, and Verifies edges in reverse. Does not traverse Cites (citations are not dependencies).
@@ -179,9 +171,9 @@ Traverses DependsOn, Supersedes, and Verifies edges in reverse. Does not travers
 Render the knowledge graph. Text for terminals, DOT for graphviz:
 
 ```bash
-anneal map --around=FM-17 --depth=1                  # Text neighborhood
-anneal map --format=dot | dot -Tpng -o graph.png     # Graphviz PNG
-anneal map --concern=formal-model                    # Concern group subgraph
+anneal map --around=REQ-12 --depth=1          # Text neighborhood
+anneal map --format=dot | dot -Tpng -o g.png  # Graphviz PNG
+anneal map --concern=api                      # Concern group subgraph
 ```
 
 ### `anneal diff`
@@ -204,7 +196,7 @@ Three reference modes: last snapshot (default), `--days=N` (time-based), or a gi
 Search handle identities:
 
 ```bash
-anneal find FM                     # All active FM-* labels
+anneal find ADR                    # All active ADR-* labels
 anneal find "" --status=draft      # All handles with status "draft"
 anneal find "" --kind=file --all   # All files including terminal
 ```
@@ -226,14 +218,14 @@ Infers active/terminal partition, label namespaces, and frontmatter field mappin
 
 ```toml
 [convergence]
-active = ["draft", "active", "stable"]
-terminal = ["archived", "superseded", "decision"]
-ordering = ["raw", "draft", "active", "stable", "decision"]
+active = ["draft", "review", "approved"]
+terminal = ["published", "archived", "superseded"]
+ordering = ["raw", "draft", "review", "approved", "published"]
 
 [handles]
-confirmed = ["OQ", "FM", "SR", "DG"]
+confirmed = ["REQ", "ADR", "RFC"]
 rejected = ["SHA", "GPT"]
-linear = ["OQ"]  # obligations: must be discharged exactly once
+linear = ["REQ"]  # obligations: must be discharged exactly once
 
 [freshness]
 warn = 30   # days before staleness warning
@@ -248,7 +240,7 @@ edge_kind = "Supersedes"
 direction = "forward"
 
 [concerns]
-formal = ["FM", "A", "D"]
+api = ["REQ", "ADR"]
 ```
 
 ## Diagnostic reference
@@ -282,15 +274,15 @@ All commands support `--json` for machine consumption:
 ```bash
 anneal --json status | jq '.convergence'
 anneal --json check --active-only | jq '.errors'
-anneal --json get FM-17 | jq '.edges'
+anneal --json get REQ-12 | jq '.edges'
 ```
 
 ## Design
 
 On every invocation, `anneal` walks a directory of markdown files and builds a typed knowledge graph in memory:
 
-1. **Parse** — split YAML frontmatter from body text, scan body with a RegexSet for file references, section headings, label patterns (`OQ-64`), and version patterns (`v17`)
-2. **Resolve** — infer label namespaces from sequential cardinality (OQ-1 through OQ-69 is a namespace; SHA-256 is not), resolve cross-references to graph nodes
+1. **Parse** — split YAML frontmatter from body text, scan body with a RegexSet for file references, section headings, label patterns (`REQ-12`), and version patterns (`v3`)
+2. **Resolve** — infer label namespaces from sequential cardinality (REQ-1 through REQ-50 is a namespace; SHA-256 is not), resolve cross-references to graph nodes
 3. **Lattice** — partition observed `status:` values into active and terminal sets, optionally infer from directory conventions (files only in `archive/` → terminal)
 4. **Check** — run five consistency rules and five suggestion rules against the graph
 5. **Snapshot** — capture counts to `.anneal/history.jsonl` for convergence tracking over time
