@@ -1,119 +1,125 @@
 # Roadmap: anneal
 
-**Created:** 2026-03-28
-**Phases:** 3 (coarse granularity)
-**Requirements:** 48 v1 requirements mapped
+## Milestones
 
-## Phase Overview
+- [x] **v1.0 MVP** - Phases 1-3 (shipped 2026-03-29)
+- [ ] **v1.1 Parser Hardening & UX Polish** - Phases 4-7 (in progress)
 
-| # | Phase | Goal | Requirements | Success Criteria |
-|---|-------|------|--------------|------------------|
-| 1 | Graph Foundation | 3/3 | Complete   | 2026-03-29 |
-| 2 | Checks & CLI | 3/3 | Complete | 2026-03-29 |
-| 3 | Convergence & Polish | 5/5 | Complete   | 2026-03-29 |
+## Phases
+
+<details>
+<summary>v1.0 MVP (Phases 1-3) - SHIPPED 2026-03-29</summary>
+
+- [x] **Phase 1: Graph Foundation** - Parse markdown files, build knowledge graph with handles and edges, resolve across namespaces
+- [x] **Phase 2: Checks & CLI** - Five local consistency rules, impact analysis, core CLI commands
+- [x] **Phase 3: Convergence & Polish** - Convergence tracking via JSONL snapshots, suggestions, remaining commands
+
+### Phase 1: Graph Foundation
+**Goal**: Parse a directory of markdown files, build the knowledge graph with handles and edges, resolve handles across namespaces.
+**Requirements**: GRAPH-01..06, HANDLE-01..06, LATTICE-01..04, CONFIG-01..02
+**Plans**: 3/3 plans complete
+
+Plans:
+- [x] 01-01-PLAN.md -- Types & Config
+- [x] 01-02-PLAN.md -- Parse & Lattice
+- [x] 01-03-PLAN.md -- Resolution & Wiring
+
+### Phase 2: Checks & CLI
+**Goal**: Implement the five local consistency rules, impact analysis, and the core CLI commands that agents need.
+**Requirements**: CHECK-01..06, IMPACT-01..03, CLI-01..03, CLI-06..07, CLI-09..10, CONFIG-03..04
+**Plans**: 3/3 plans complete
+
+Plans:
+- [x] 02-01-PLAN.md -- Foundation repairs + config extensibility
+- [x] 02-02-PLAN.md -- Check rules + impact analysis
+- [x] 02-03-PLAN.md -- CLI subcommands
+
+### Phase 3: Convergence & Polish
+**Goal**: Add convergence tracking, suggestions, and remaining commands.
+**Requirements**: CONVERGE-01..05, CLI-04..05, CLI-08, SUGGEST-01..05
+**Plans**: 5/5 plans complete
+
+Plans:
+- [x] 03-01-PLAN.md -- Snapshot infrastructure
+- [x] 03-02-PLAN.md -- Suggestion engine
+- [x] 03-03-PLAN.md -- Map command
+- [x] 03-04-PLAN.md -- Status command
+- [x] 03-05-PLAN.md -- Diff command
+
+</details>
+
+### v1.1 Parser Hardening & UX Polish (In Progress)
+
+**Milestone Goal:** Make `anneal check` output trustworthy and actionable by introducing typed extraction/resolution/diagnostic pipeline, replacing the regex body scanner with pulldown-cmark, and enriching orientation commands.
+
+- [ ] **Phase 4: Types & Plausibility** - Typed extraction pipeline with plausibility filtering and external URL classification
+- [ ] **Phase 5: pulldown-cmark Migration** - Replace regex body scanner with pulldown-cmark event walker, line number tracking
+- [ ] **Phase 6: Resolution Cascade** - Deterministic resolution strategies, enriched diagnostics with evidence, active-only config
+- [ ] **Phase 7: UX Enrichment** - Content snippets, smarter init, file-scoped checks, obligations command, config suppression, self-check
 
 ## Phase Details
 
-### Phase 1: Graph Foundation
+### Phase 4: Types & Plausibility
+**Goal**: Extraction pipeline produces typed, plausibility-filtered output — frontmatter references are classified not silently skipped, and the extraction boundary is clean enough to swap internals behind it
+**Depends on**: Phase 3 (v1.0 complete)
+**Requirements**: EXTRACT-01, EXTRACT-02, EXTRACT-05, EXTRACT-06, RESOLVE-01
+**Success Criteria** (what must be TRUE):
+  1. `anneal check --json` output includes `DiscoveredRef` with `RefHint` classification for every reference (frontmatter and body)
+  2. URLs in frontmatter edges appear as `RefHint::External` in extraction output instead of being silently dropped
+  3. Absolute paths, freeform prose, and wildcard patterns in frontmatter are rejected with a plausibility diagnostic instead of creating false positive broken-reference errors
+  4. All existing tests pass — `just check` green with no behavior change in final diagnostic output
+**Plans**: TBD
 
-**Goal:** Parse a directory of markdown files, build the knowledge graph with handles and edges, resolve handles across namespaces.
+### Phase 5: pulldown-cmark Migration
+**Goal**: Body scanning uses pulldown-cmark's structural AST instead of line-by-line regex, giving accurate line numbers and structural code block skipping
+**Depends on**: Phase 4 (typed extraction boundary must exist)
+**Requirements**: EXTRACT-03, EXTRACT-04, EXTRACT-07, EXTRACT-08, EXTRACT-09, EXTRACT-10, EXTRACT-11, QUALITY-01
+**Success Criteria** (what must be TRUE):
+  1. `anneal check` on Murail (262 files) and Herald (89 files) produces equal or fewer false positives compared to the regex scanner (parallel-run comparison documented)
+  2. Every diagnostic in `anneal check --json` output carries a non-null line number
+  3. References inside fenced code blocks and inline code spans are not extracted (structural skip, not regex toggle)
+  4. Wiki-links (`[[target]]`) and standard markdown links are extracted as typed references from pulldown-cmark events
+  5. HTML block content is scanned for references (pragmatic: anneal's job is finding all references)
+**Plans**: TBD
 
-**Requirements:** GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06, HANDLE-01, HANDLE-02, HANDLE-03, HANDLE-04, HANDLE-05, HANDLE-06, LATTICE-01, LATTICE-02, LATTICE-03, LATTICE-04, CONFIG-01, CONFIG-02
+### Phase 6: Resolution Cascade
+**Goal**: Unresolved references get deterministic "did you mean?" candidates, and all diagnostics carry structured evidence with mandatory source locations
+**Depends on**: Phase 5 (extraction must produce DiscoveredRef with RefHint and line numbers)
+**Requirements**: RESOLVE-02, RESOLVE-03, RESOLVE-04, RESOLVE-05, RESOLVE-06, DIAG-01, DIAG-02, DIAG-03, DIAG-04, DIAG-05, UX-01
+**Success Criteria** (what must be TRUE):
+  1. `anneal check` on a corpus with path mismatches shows "similar handle exists: subdir/foo.md" instead of bare E001
+  2. Resolution cascade resolves root-prefix paths (`.design/foo.md` -> `foo.md`), version stems (`formal-model-v11.md` -> suggest v17), and zero-padded labels (`OQ-01` -> `OQ-1`)
+  3. Every diagnostic in `--json` output carries a `SourceSpan` (file + line), never null
+  4. JSON output changes are additive-only — existing fields preserve type and presence, new fields are nullable
+  5. `--active-only` is configurable via `[check] default_filter = "active-only"` in anneal.toml (no default behavior change)
+**Plans**: TBD
 
-**Plans:** 3/3 plans complete
+### Phase 7: UX Enrichment
+**Goal**: Orientation commands are richer and more actionable — content snippets, obligations tracking, file-scoped checks, smarter init, and false positive suppression
+**Depends on**: Phase 6 (diagnostics and resolution must be enriched first)
+**Requirements**: UX-02, UX-03, UX-04, UX-05, UX-06, CONFIG-01, CONFIG-02, QUALITY-02, QUALITY-03
+**Success Criteria** (what must be TRUE):
+  1. `anneal get OQ-64` shows a content snippet (first paragraph for files, heading context for labels) in addition to metadata
+  2. `anneal obligations` shows linear namespace status: outstanding, discharged, and mooted counts
+  3. `anneal check --file=path.md` scopes diagnostics to a single file
+  4. `anneal --root .design/ check` on anneal's own spec directory passes cleanly (self-check)
+  5. S003 pipeline stall suggestion uses temporal signal from snapshot history rather than static edge counting
+**Plans**: TBD
 
-Plans:
-- [x] 01-01-PLAN.md -- Types & Config: Handle, AnnealConfig, DiGraph foundational types
-- [x] 01-02-PLAN.md -- Parse & Lattice: Frontmatter split, RegexSet scanner, edge kind inference, convergence lattice
-- [x] 01-03-PLAN.md -- Resolution & Wiring: Namespace inference, handle resolution, main.rs pipeline
+## Progress
 
-**Success Criteria:**
-1. Running anneal on Murail's .design/ directory (265 files) produces a graph with ~500 handles and ~2000 edges in <100ms
-2. Label handles in confirmed namespaces (OQ, FM, A, SR, etc.) resolve correctly; false positives (SHA-256, GPT-2) are excluded
-3. Frontmatter status values are parsed and partitioned into active/terminal sets
-4. The graph is ephemeral -- no persistent state created beyond the optional anneal.toml
+**Execution Order:** Phases 4 -> 5 -> 6 -> 7
 
-**Dependencies:** None -- this is the foundation.
-
-**Key implementation:**
-- `handle.rs`: Handle, HandleKind, HandleId types
-- `graph.rs`: DiGraph with dual adjacency lists (fwd + rev), Edge, EdgeKind
-- `lattice.rs`: Lattice trait, ConvergenceState, active/terminal partition
-- `parse.rs`: Frontmatter split + RegexSet scanning (5 patterns)
-- `resolve.rs`: Handle resolution across namespaces
-- `config.rs`: anneal.toml with #[serde(default, deny_unknown_fields)]
-- `main.rs`: Minimal CLI skeleton (cargo run -- parses and prints graph stats)
-
----
-
-### Phase 2: Checks & CLI
-
-**Goal:** Implement the five local consistency rules, impact analysis, and the core CLI commands that agents need.
-
-**Requirements:** CHECK-01, CHECK-02, CHECK-03, CHECK-04, CHECK-05, CHECK-06, IMPACT-01, IMPACT-02, IMPACT-03, CLI-01, CLI-02, CLI-03, CLI-06, CLI-07, CLI-09, CLI-10, CONFIG-03, CONFIG-04
-
-**Plans:** 3/3 plans complete
-
-Plans:
-- [x] 02-01-PLAN.md -- Foundation repairs + config extensibility: fix resolution gaps, extensible frontmatter mapping, terminal status wiring
-- [x] 02-02-PLAN.md -- Check rules + impact analysis: five local consistency rules (KB-R1..R5), diagnostics, reverse graph traversal
-- [x] 02-03-PLAN.md -- CLI subcommands: check, get, find, init, impact with --json support and CommandOutput pattern
-
-**Success Criteria:**
-1. `anneal check` on Murail's .design/ reports real broken references and stale references with compiler-style diagnostics
-2. `anneal get OQ-64` resolves the label, shows its definition, state, and references
-3. `anneal impact formal-model/v17.md` shows the files that depend on the formal model
-4. `anneal init` generates an anneal.toml from inferred structure that matches Murail's conventions
-5. All commands produce valid JSON with `--json` flag
-
-**Dependencies:** Phase 1 (graph must exist to check it).
-
-**Key implementation:**
-- `checks.rs`: Five rules (KB-R1 through KB-R5), diagnostic types with error codes
-- `impact.rs`: Reverse graph traversal with cycle detection
-- `cli.rs`: clap derive with 5 subcommands, global --json flag, CommandOutput pattern
-- `config.rs`: Extensible frontmatter field mapping (FrontmatterConfig)
-- `parse.rs`: Code block label skip, directory convention analysis, table-driven frontmatter
-- `resolve.rs`: Bare filename resolution wired
-
----
-
-### Phase 3: Convergence & Polish
-
-**Goal:** Add convergence tracking (the feature that makes anneal more than a linter), suggestions, and remaining commands.
-
-**Requirements:** CONVERGE-01, CONVERGE-02, CONVERGE-03, CONVERGE-04, CONVERGE-05, CLI-04, CLI-05, CLI-08, SUGGEST-01, SUGGEST-02, SUGGEST-03, SUGGEST-04, SUGGEST-05
-
-**Plans:** 5/5 plans complete
-
-Plans:
-- [x] 03-01-PLAN.md -- Snapshot infrastructure: Snapshot type, JSONL I/O, convergence summary, Severity::Suggestion
-- [x] 03-02-PLAN.md -- Suggestion engine: five suggestion rules (S001-S005) + check command filter flags
-- [x] 03-03-PLAN.md -- Map command: text and DOT rendering, --concern and --around subgraph extraction
-- [x] 03-04-PLAN.md -- Status command: dashboard with pipeline histogram, convergence summary, snapshot append
-- [x] 03-05-PLAN.md -- Diff command: snapshot-based and git-aware graph diff, three reference modes
-
-**Success Criteria:**
-1. `anneal status` shows pipeline histogram, convergence summary (advancing/holding/drifting), and top suggestions
-2. `anneal diff` shows what changed in the knowledge graph since last session
-3. `anneal map` renders the active knowledge graph (at least text format; --format=dot for graphviz)
-4. Suggestions detect at least: orphaned handles, pipeline stalls, and abandoned namespaces
-
-**Dependencies:** Phase 2 (checks must work for convergence tracking to be meaningful).
-
-**Key implementation:**
-- `snapshot.rs`: JSONL append/read, convergence summary computation, graph diff
-- Enhance `cli.rs`: status, map, diff commands
-- Suggestion engine in `checks.rs` or new `suggest.rs`
-
----
-
-## Verification
-
-- **Phase 1 verification:** Build graph from Murail's .design/, assert handle/edge counts, benchmark <100ms
-- **Phase 2 verification:** Run checks on .design/, compare results against known issues (stale v16 references, etc.)
-- **Phase 3 verification:** Run status across multiple sessions, verify convergence summary reflects actual changes
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Graph Foundation | v1.0 | 3/3 | Complete | 2026-03-29 |
+| 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
+| 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
+| 4. Types & Plausibility | v1.1 | 0/0 | Not started | - |
+| 5. pulldown-cmark Migration | v1.1 | 0/0 | Not started | - |
+| 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
+| 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-29 after Plan 03-02 completion*
+*v1.1 phases added: 2026-03-29*
