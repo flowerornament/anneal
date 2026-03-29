@@ -285,7 +285,7 @@ anneal --json check --active-only | jq '.errors'
 anneal --json get FM-17 | jq '.edges'
 ```
 
-## How it works
+## Design
 
 On every invocation, `anneal` walks a directory of markdown files and builds a typed knowledge graph in memory:
 
@@ -296,6 +296,8 @@ On every invocation, `anneal` walks a directory of markdown files and builds a t
 5. **Snapshot** — capture counts to `.anneal/history.jsonl` for convergence tracking over time
 
 No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived and deletable.
+
+The underlying model borrows from graded type systems: a document's convergence state has the same algebraic structure as a resource grade — both are values in bounded lattices that compose through meet/join operations. The active/terminal partition is a two-point lattice. Pipeline ordering extends it to a chain. Convergence tracking measures how the population moves through the lattice over time. Checks are local consistency rules — they examine a handle and its immediate neighbors, not global properties — which keeps them fast and compositional.
 
 ### Architecture
 
