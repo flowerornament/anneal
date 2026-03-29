@@ -1715,6 +1715,7 @@ fn build_graph_at_git_ref(
             &cfg,
             &unresolved_owned,
             section_ref_count,
+            &build_result.implausible_refs,
         );
         Ok(crate::snapshot::build_snapshot(
             &build_result.graph,
