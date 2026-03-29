@@ -1,40 +1,39 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: Milestone complete
-last_updated: "2026-03-29T09:01:29.949Z"
+milestone: v1.1
+milestone_name: Parser Hardening & UX Polish
+status: Defining requirements
+last_updated: "2026-03-29"
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 11
-  completed_plans: 11
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # State: anneal
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-28)
+See: .planning/PROJECT.md (updated 2026-03-29)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 02 — checks-cli (complete)
+**Current focus:** Defining requirements for v1.1
 
-## Current Phase
+## Current Position
 
-**Phase 3: Convergence & Polish**
-
-- Status: In Progress
-- Current Plan: 4 of 5
-- Goal: Add convergence tracking, status/map/diff commands, and suggestion engine to complete the full spec.
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-29 — Milestone v1.1 started
 
 ## Progress
 
 | Phase | Status | Completed |
 |-------|--------|-----------|
-| Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
-| Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | In Progress | Plans 01, 02, 03, 04 done |
+| (v1.0) Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
+| (v1.0) Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
+| (v1.0) Phase 3: Convergence & Polish | Complete | Plans 01, 02, 03, 04, 05 done |
 
 ## Decisions
 
