@@ -1497,9 +1497,14 @@ pub(crate) struct DiffOutput {
 impl DiffOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         if !self.has_history {
+            writeln!(w, "No snapshot history yet.")?;
             writeln!(
                 w,
-                "No history available. Run anneal check or anneal status to create a baseline snapshot."
+                "Run `anneal status` to create the first snapshot, then run it again later."
+            )?;
+            writeln!(
+                w,
+                "`anneal diff` compares the current state against a previous snapshot."
             )?;
             return Ok(());
         }
@@ -2248,7 +2253,7 @@ mod tests {
         output.print_human(&mut buf).expect("print_human");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
-            text.contains("No history available"),
+            text.contains("No snapshot history yet"),
             "Expected no-history message, got: {text}"
         );
     }

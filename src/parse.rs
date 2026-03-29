@@ -198,11 +198,24 @@ pub(crate) fn parse_frontmatter(
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
     match v {
-        serde_yaml_ng::Value::String(s) => Some(s.clone()),
+        serde_yaml_ng::Value::String(s) => Some(strip_trailing_parenthetical(s)),
         serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
         serde_yaml_ng::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
+}
+
+/// Strip trailing parenthetical annotations from frontmatter values.
+/// "specs/foo.md (the original plan)" → "specs/foo.md"
+/// "OQ-64 (see discussion)" → "OQ-64"
+fn strip_trailing_parenthetical(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(idx) = trimmed.rfind(" (")
+        && trimmed.ends_with(')')
+    {
+        return trimmed[..idx].to_string();
+    }
+    trimmed.to_string()
 }
 
 fn yaml_value_to_string_vec(v: &serde_yaml_ng::Value) -> Vec<String> {
