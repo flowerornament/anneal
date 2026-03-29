@@ -19,6 +19,20 @@ pub(crate) enum EdgeKind {
     Discharges,
 }
 
+impl EdgeKind {
+    /// Parse an edge kind from its string name (case-insensitive match on variant names).
+    pub(crate) fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "Cites" | "cites" => Some(Self::Cites),
+            "DependsOn" | "depends_on" => Some(Self::DependsOn),
+            "Supersedes" | "supersedes" => Some(Self::Supersedes),
+            "Verifies" | "verifies" => Some(Self::Verifies),
+            "Discharges" | "discharges" => Some(Self::Discharges),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(crate) struct Edge {
     pub(crate) source: NodeId,

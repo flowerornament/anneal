@@ -120,8 +120,11 @@ fn main() -> anyhow::Result<()> {
         &root,
     );
 
-    let terminal_by_directory = HashSet::new();
-    let lattice = lattice::infer_lattice(result.observed_statuses, &config, &terminal_by_directory);
+    let lattice = lattice::infer_lattice(
+        result.observed_statuses,
+        &config,
+        &result.terminal_by_directory,
+    );
     let graph = &result.graph;
 
     let root_str = root.to_string();

@@ -1,7 +1,84 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+/// Direction of an edge created from a frontmatter field.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Direction {
+    /// Source file -> referenced target (e.g., "depends-on: X" means this file `DependsOn` X).
+    Forward,
+    /// Referenced target -> source file (e.g., "affects: X" means X `DependsOn` this file).
+    Inverse,
+}
+
+/// Mapping from a frontmatter field name to an edge kind and direction.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct FrontmatterFieldMapping {
+    pub(crate) edge_kind: String,
+    pub(crate) direction: Direction,
+}
+
+/// Configuration for frontmatter field-to-edge mapping (D-05, D-06, CONFIG-03).
+///
+/// Does NOT use `deny_unknown_fields` because the `fields` map has arbitrary
+/// user-defined keys.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct FrontmatterConfig {
+    pub(crate) fields: HashMap<String, FrontmatterFieldMapping>,
+}
+
+impl Default for FrontmatterConfig {
+    fn default() -> Self {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "superseded-by".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "Supersedes".to_string(),
+                direction: Direction::Forward,
+            },
+        );
+        fields.insert(
+            "depends-on".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "DependsOn".to_string(),
+                direction: Direction::Forward,
+            },
+        );
+        fields.insert(
+            "discharges".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "Discharges".to_string(),
+                direction: Direction::Forward,
+            },
+        );
+        fields.insert(
+            "verifies".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "Verifies".to_string(),
+                direction: Direction::Forward,
+            },
+        );
+        fields.insert(
+            "supersedes".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "Supersedes".to_string(),
+                direction: Direction::Inverse,
+            },
+        );
+        fields.insert(
+            "affects".to_string(),
+            FrontmatterFieldMapping {
+                edge_kind: "DependsOn".to_string(),
+                direction: Direction::Inverse,
+            },
+        );
+        Self { fields }
+    }
+}
 
 /// Top-level configuration from `anneal.toml`.
 ///
@@ -21,6 +98,11 @@ pub(crate) struct AnnealConfig {
     pub(crate) handles: HandlesConfig,
     /// Freshness threshold configuration.
     pub(crate) freshness: FreshnessConfig,
+    /// Extensible frontmatter field-to-edge mapping (CONFIG-03).
+    pub(crate) frontmatter: FrontmatterConfig,
+    /// Concern groups mapping name -> list of handle patterns.
+    #[serde(default)]
+    pub(crate) concerns: HashMap<String, Vec<String>>,
 }
 
 /// Configuration for the convergence lattice (active/terminal partition).
@@ -43,6 +125,8 @@ pub(crate) struct HandlesConfig {
     pub(crate) confirmed: Vec<String>,
     /// Namespace prefixes rejected (false positives like SHA, AVX).
     pub(crate) rejected: Vec<String>,
+    /// Namespace prefixes whose handles are linear (must be discharged exactly once).
+    pub(crate) linear: Vec<String>,
 }
 
 /// Configuration for freshness thresholds.
