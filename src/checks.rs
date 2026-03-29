@@ -335,17 +335,20 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
 // SUGGEST-01: Orphaned handles (KB-E8)
 // ---------------------------------------------------------------------------
 
-/// Suggest orphaned handles: non-File handles with no incoming edges (D-17).
+/// Suggest orphaned handles: labels and versions with no incoming edges (D-17).
 ///
-/// File handles are roots and are always "orphaned" by definition, so they
-/// are excluded. Labels, sections, and versions with no incoming edges are
-/// likely disconnected from the graph.
+/// File handles are roots (always "orphaned" by definition). Section handles
+/// are structural (created from headings, rarely cross-referenced). Only labels
+/// and versions with no incoming edges represent genuinely disconnected knowledge.
 fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for (node_id, handle) in graph.nodes() {
-        // File handles are roots -- skip them (D-17)
-        if matches!(handle.kind, HandleKind::File(_)) {
+        // Only labels and versions — files are roots, sections are structural
+        if !matches!(
+            handle.kind,
+            HandleKind::Label { .. } | HandleKind::Version { .. }
+        ) {
             continue;
         }
 

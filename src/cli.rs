@@ -20,6 +20,24 @@ use crate::resolve::ResolveStats;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// Build the set of file paths that have terminal status.
+pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<String> {
+    graph
+        .nodes()
+        .filter_map(|(_, h)| {
+            if matches!(h.kind, HandleKind::File(_))
+                && h.status
+                    .as_ref()
+                    .is_some_and(|s| lattice.terminal.contains(s))
+            {
+                h.file_path.as_ref().map(ToString::to_string)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Look up a handle by exact match, falling back to case-insensitive search.
 fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
     node_index.get(handle).copied().or_else(|| {
@@ -83,6 +101,8 @@ pub(crate) struct CheckOutput {
     pub(crate) warnings: usize,
     pub(crate) info: usize,
     pub(crate) suggestions: usize,
+    /// Errors sourced from terminal (settled) files — informational, not actionable.
+    pub(crate) terminal_errors: usize,
 }
 
 impl CheckOutput {
@@ -94,17 +114,34 @@ impl CheckOutput {
         if !self.diagnostics.is_empty() {
             writeln!(w)?;
         }
-        writeln!(
-            w,
-            "{} error{}, {} warning{}, {} info, {} suggestion{}",
-            S.error.apply_to(self.errors),
-            plural(self.errors),
-            S.warning.apply_to(self.warnings),
-            plural(self.warnings),
-            self.info,
-            S.suggestion.apply_to(self.suggestions),
-            plural(self.suggestions),
-        )
+        let active_errors = self.errors.saturating_sub(self.terminal_errors);
+        if self.terminal_errors > 0 {
+            writeln!(
+                w,
+                "{} error{} ({} in active files, {} in terminal), {} warning{}, {} info, {} suggestion{}",
+                S.error.apply_to(self.errors),
+                plural(self.errors),
+                S.error.apply_to(active_errors),
+                S.dim.apply_to(self.terminal_errors),
+                S.warning.apply_to(self.warnings),
+                plural(self.warnings),
+                self.info,
+                S.suggestion.apply_to(self.suggestions),
+                plural(self.suggestions),
+            )
+        } else {
+            writeln!(
+                w,
+                "{} error{}, {} warning{}, {} info, {} suggestion{}",
+                S.error.apply_to(self.errors),
+                plural(self.errors),
+                S.warning.apply_to(self.warnings),
+                plural(self.warnings),
+                self.info,
+                S.suggestion.apply_to(self.suggestions),
+                plural(self.suggestions),
+            )
+        }
     }
 }
 
@@ -118,23 +155,31 @@ pub(crate) struct CheckFilters {
     pub(crate) suggest: bool,
     pub(crate) stale: bool,
     pub(crate) obligations: bool,
+    pub(crate) active_only: bool,
 }
 
 impl CheckFilters {
-    fn any_active(&self) -> bool {
+    fn any_severity_filter(&self) -> bool {
         self.errors_only || self.suggest || self.stale || self.obligations
     }
 }
 
 /// Produce check output from pre-computed diagnostics with optional filter flags (D-19).
 ///
-/// Filters are combined with OR logic when multiple are set. If no filter
-/// flags are set, all diagnostics are shown (default behavior).
+/// `terminal_files` is the set of file paths with terminal status — used to split
+/// the error count into active vs terminal, and to filter with `--active-only`.
 pub(crate) fn cmd_check(
     mut diagnostics: Vec<checks::Diagnostic>,
     filters: &CheckFilters,
+    terminal_files: &HashSet<String>,
 ) -> CheckOutput {
-    if filters.any_active() {
+    // --active-only: remove diagnostics sourced from terminal files
+    if filters.active_only {
+        diagnostics.retain(|d| d.file.as_ref().is_none_or(|f| !terminal_files.contains(f)));
+    }
+
+    // Severity/code filters
+    if filters.any_severity_filter() {
         diagnostics.retain(|d| {
             (filters.errors_only && d.severity == Severity::Error)
                 || (filters.suggest && d.severity == Severity::Suggestion)
@@ -159,6 +204,13 @@ pub(crate) fn cmd_check(
         .iter()
         .filter(|d| d.severity == Severity::Suggestion)
         .count();
+    let terminal_errors = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.file.as_ref().is_some_and(|f| terminal_files.contains(f))
+        })
+        .count();
 
     CheckOutput {
         diagnostics,
@@ -166,6 +218,7 @@ pub(crate) fn cmd_check(
         warnings,
         info,
         suggestions,
+        terminal_errors,
     }
 }
 
@@ -745,6 +798,7 @@ pub(crate) struct StatusOutput {
     pub(crate) active_handles: usize,
     pub(crate) frozen_handles: usize,
     pub(crate) pipeline: Option<Vec<PipelineLevel>>,
+    pub(crate) states: HashMap<String, usize>,
     pub(crate) obligations: ObligationSummary,
     pub(crate) diagnostics: DiagnosticSummary,
     pub(crate) convergence: Option<ConvergenceSummaryOutput>,
@@ -761,8 +815,30 @@ pub(crate) struct SuggestionCount {
 }
 
 impl StatusOutput {
-    /// Print human-readable dashboard matching spec section 12.4.
+    /// Print dashboard without verbose expansion (used by tests).
+    #[cfg(test)]
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        self.print_human_inner(w, false, None, None)
+    }
+
+    /// Print dashboard with optional verbose pipeline expansion.
+    pub(crate) fn print_human_with_options(
+        &self,
+        w: &mut dyn Write,
+        verbose: bool,
+        graph: &DiGraph,
+        lattice: &Lattice,
+    ) -> std::io::Result<()> {
+        self.print_human_inner(w, verbose, Some(graph), Some(lattice))
+    }
+
+    fn print_human_inner(
+        &self,
+        w: &mut dyn Write,
+        verbose: bool,
+        graph: Option<&DiGraph>,
+        lattice: Option<&Lattice>,
+    ) -> std::io::Result<()> {
         use crate::style::S;
 
         // -- Graph --
@@ -794,6 +870,38 @@ impl StatusOutput {
                 S.label.apply_to("pipeline"),
                 parts.join(" → ")
             )?;
+
+            // Verbose: list files at each pipeline level
+            if verbose && let (Some(graph), Some(lattice)) = (graph, lattice) {
+                for level in pipeline {
+                    if level.count == 0 {
+                        continue;
+                    }
+                    let mut files_at_level: Vec<&str> = graph
+                        .nodes()
+                        .filter_map(|(_, h)| {
+                            if let HandleKind::File(ref path) = h.kind
+                                && h.status.as_deref() == Some(&level.level)
+                                && !lattice.terminal.contains(&level.level)
+                            {
+                                Some(path.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    files_at_level.sort_unstable();
+                    writeln!(
+                        w,
+                        "              {} {}:",
+                        S.bold.apply_to(&level.level),
+                        S.dim.apply_to(format_args!("({})", files_at_level.len())),
+                    )?;
+                    for f in &files_at_level {
+                        writeln!(w, "                {f}")?;
+                    }
+                }
+            }
         }
 
         // -- Health --
@@ -976,6 +1084,7 @@ pub(crate) fn cmd_status(
         active_handles: snap.handles.active,
         frozen_handles: snap.handles.frozen,
         pipeline,
+        states: snap.states.clone(),
         obligations: ObligationSummary {
             discharged: snap.obligations.discharged,
             total: snap.obligations.outstanding
@@ -2177,6 +2286,7 @@ mod tests {
             active_handles: 142,
             frozen_handles: 345,
             pipeline: None,
+            states: HashMap::new(),
             obligations: ObligationSummary {
                 discharged: 6,
                 total: 20,

@@ -130,6 +130,7 @@ EXAMPLES:
   anneal check --suggest          # Show only structural suggestions
   anneal check --stale            # Show only staleness warnings (W001)
   anneal check --obligations      # Show only obligation diagnostics (E002/I002)
+  anneal check --active-only      # Skip diagnostics from terminal (settled) files
   anneal check --json             # Machine-readable output"
     )]
     Check {
@@ -145,6 +146,9 @@ EXAMPLES:
         /// Show only obligation diagnostics (E002 undischarged, I002 multi-discharge)
         #[arg(long)]
         obligations: bool,
+        /// Skip diagnostics sourced from terminal (settled) files
+        #[arg(long)]
+        active_only: bool,
     },
 
     /// Look up a handle by identity
@@ -310,9 +314,14 @@ convergence history — the signal becomes meaningful after 2+ snapshots.",
         after_help = "\
 EXAMPLES:
   anneal status                   # Human-readable dashboard
+  anneal status --verbose         # Expand pipeline to list files per level
   anneal status --json            # Full snapshot as JSON"
     )]
-    Status,
+    Status {
+        /// Expand pipeline histogram to list files per level
+        #[arg(long, short)]
+        verbose: bool,
+    },
 
     /// Show what changed since last session
     #[command(
@@ -454,6 +463,7 @@ fn run() -> anyhow::Result<()> {
             suggest,
             stale,
             obligations,
+            active_only,
         }) => {
             let (unresolved_owned, section_ref_count) =
                 collect_unresolved_owned(&result.pending_edges, &node_index);
@@ -467,14 +477,16 @@ fn run() -> anyhow::Result<()> {
                 section_ref_count,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+            let terminal_files = cli::terminal_file_set(graph, &lattice);
 
             let filters = cli::CheckFilters {
                 errors_only,
                 suggest,
                 stale,
                 obligations,
+                active_only,
             };
-            let output = cli::cmd_check(all_diagnostics, &filters);
+            let output = cli::cmd_check(all_diagnostics, &filters, &terminal_files);
             if cli_args.json {
                 cli::print_json(&output)?;
             } else {
@@ -594,7 +606,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::Status) => {
+        Some(Command::Status { verbose }) => {
             let (unresolved_owned, section_ref_count) =
                 collect_unresolved_owned(&result.pending_edges, &node_index);
 
@@ -624,7 +636,12 @@ fn run() -> anyhow::Result<()> {
                 cli::print_json(&output)?;
             } else {
                 output
-                    .print_human(&mut std::io::stdout().lock())
+                    .print_human_with_options(
+                        &mut std::io::stdout().lock(),
+                        verbose,
+                        graph,
+                        &lattice,
+                    )
                     .context("failed to write status output")?;
             }
         }
