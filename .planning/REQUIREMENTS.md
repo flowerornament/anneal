@@ -75,11 +75,11 @@
 
 ### Suggestions
 
-- [ ] **SUGGEST-01**: Detect orphaned handles (no incoming edges)
-- [ ] **SUGGEST-02**: Detect candidate handle namespaces (recurring regex patterns)
-- [ ] **SUGGEST-03**: Detect pipeline stalls (state levels with high population, no outflow)
-- [ ] **SUGGEST-04**: Detect abandoned namespaces (all members frozen >N days)
-- [ ] **SUGGEST-05**: Suggest concern groups from label co-occurrence
+- [x] **SUGGEST-01**: Detect orphaned handles (no incoming edges)
+- [x] **SUGGEST-02**: Detect candidate handle namespaces (recurring regex patterns)
+- [x] **SUGGEST-03**: Detect pipeline stalls (state levels with high population, no outflow)
+- [x] **SUGGEST-04**: Detect abandoned namespaces (all members frozen >N days)
+- [x] **SUGGEST-05**: Suggest concern groups from label co-occurrence
 
 ## v2 Requirements
 
@@ -162,11 +162,11 @@
 | CONFIG-02 | Phase 1 | Complete |
 | CONFIG-03 | Phase 2 | Complete |
 | CONFIG-04 | Phase 2 | Complete |
-| SUGGEST-01 | Phase 3 | Pending |
-| SUGGEST-02 | Phase 3 | Pending |
-| SUGGEST-03 | Phase 3 | Pending |
-| SUGGEST-04 | Phase 3 | Pending |
-| SUGGEST-05 | Phase 3 | Pending |
+| SUGGEST-01 | Phase 3 | Complete |
+| SUGGEST-02 | Phase 3 | Complete |
+| SUGGEST-03 | Phase 3 | Complete |
+| SUGGEST-04 | Phase 3 | Complete |
+| SUGGEST-05 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 48 total
