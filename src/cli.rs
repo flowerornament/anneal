@@ -95,8 +95,14 @@ impl CheckOutput {
         }
         writeln!(
             w,
-            "{} errors, {} warnings, {} info, {} suggestions",
-            self.errors, self.warnings, self.info, self.suggestions
+            "{} error{}, {} warning{}, {} info, {} suggestion{}",
+            self.errors,
+            plural(self.errors),
+            self.warnings,
+            plural(self.warnings),
+            self.info,
+            self.suggestions,
+            plural(self.suggestions),
         )
     }
 }
@@ -741,57 +747,98 @@ pub(crate) struct StatusOutput {
     pub(crate) obligations: ObligationSummary,
     pub(crate) diagnostics: DiagnosticSummary,
     pub(crate) convergence: Option<ConvergenceSummaryOutput>,
-    pub(crate) suggestions: usize,
+    pub(crate) suggestion_total: usize,
+    pub(crate) suggestion_breakdown: Vec<SuggestionCount>,
+}
+
+/// A single suggestion type with its count, for the status breakdown.
+#[derive(Serialize)]
+pub(crate) struct SuggestionCount {
+    pub(crate) code: String,
+    pub(crate) label: String,
+    pub(crate) count: usize,
 }
 
 impl StatusOutput {
     /// Print human-readable dashboard matching spec section 12.4.
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        // -- Graph --
         writeln!(
             w,
-            "Scanned: {} files, {} handles, {} edges",
-            self.files, self.handles, self.edges
+            " corpus  {}",
+            fmt_counts(&[
+                (self.files, "file"),
+                (self.handles, "handle"),
+                (self.edges, "edge"),
+            ])
         )?;
         writeln!(
             w,
-            "Active: {} handles | Frozen: {} handles",
-            self.active_handles, self.frozen_handles
+            "         {} active, {} frozen",
+            self.active_handles, self.frozen_handles,
         )?;
-        // Pipeline histogram if ordering exists, else active/terminal counts (D-11)
+
+        // Pipeline histogram or flat lattice (D-11)
         if let Some(ref pipeline) = self.pipeline {
             let parts: Vec<String> = pipeline
                 .iter()
                 .map(|p| format!("{} {}", p.count, p.level))
                 .collect();
-            writeln!(w, "Pipeline: {}", parts.join(" -> "))?;
-        } else {
-            writeln!(
+            writeln!(w, "  pipeline  {}", parts.join(" → "))?;
+        }
+
+        // -- Health --
+        writeln!(w)?;
+        write!(
+            w,
+            " health  {} error{}, {} warning{}",
+            self.diagnostics.errors,
+            plural(self.diagnostics.errors),
+            self.diagnostics.warnings,
+            plural(self.diagnostics.warnings),
+        )?;
+        if self.obligations.total > 0 {
+            let outstanding = self
+                .obligations
+                .total
+                .saturating_sub(self.obligations.discharged)
+                .saturating_sub(self.obligations.mooted);
+            write!(
                 w,
-                "  Active: {} | Terminal: {}",
-                self.active_handles, self.frozen_handles
+                ", {}/{} obligations discharged",
+                self.obligations.discharged, self.obligations.total,
             )?;
+            if self.obligations.mooted > 0 {
+                write!(w, " ({} mooted)", self.obligations.mooted)?;
+            }
+            if outstanding > 0 {
+                write!(w, " — {outstanding} outstanding")?;
+            }
         }
-        writeln!(
-            w,
-            "Obligations: {}/{} discharged, {} mooted",
-            self.obligations.discharged, self.obligations.total, self.obligations.mooted
-        )?;
-        writeln!(
-            w,
-            "Diagnostics: {} errors, {} warnings",
-            self.diagnostics.errors, self.diagnostics.warnings
-        )?;
-        // Convergence signal or "no history" (D-06)
+        writeln!(w)?;
+
+        // -- Convergence --
+        writeln!(w)?;
         if let Some(ref conv) = self.convergence {
-            writeln!(w, "Convergence: {} ({})", conv.signal, conv.detail)?;
+            writeln!(w, " convergence  {} ({})", conv.signal, conv.detail)?;
         } else {
-            writeln!(w, "Convergence: no history")?;
+            writeln!(w, " convergence  (no history yet)")?;
         }
-        writeln!(
-            w,
-            "Suggestions: {} (run anneal check --suggest)",
-            self.suggestions
-        )?;
+
+        // -- Suggestions --
+        let active: Vec<&SuggestionCount> = self
+            .suggestion_breakdown
+            .iter()
+            .filter(|s| s.count > 0)
+            .collect();
+        if !active.is_empty() {
+            writeln!(w)?;
+            writeln!(w, " suggestions  {}", self.suggestion_total)?;
+            for s in &active {
+                writeln!(w, "   {:>5}  {} ({})", s.count, s.code, s.label)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -800,6 +847,20 @@ impl StatusOutput {
         self.convergence = summary;
         self
     }
+}
+
+/// Format counts like "262 files, 9882 handles, 6974 edges".
+fn fmt_counts(items: &[(usize, &str)]) -> String {
+    items
+        .iter()
+        .map(|(n, label)| format!("{n} {label}{}", plural(*n)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Returns "s" for plural, "" for singular.
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 /// Build the status dashboard from the graph, lattice, config, and diagnostics.
@@ -839,10 +900,30 @@ pub(crate) fn cmd_status(
         )
     };
 
-    let suggestion_count = diagnostics_list
+    // Suggestion breakdown by code
+    let mut code_counts: HashMap<&str, usize> = HashMap::new();
+    for d in diagnostics_list {
+        if d.severity == Severity::Suggestion {
+            *code_counts.entry(d.code).or_insert(0) += 1;
+        }
+    }
+    let suggestion_total: usize = code_counts.values().sum();
+
+    let suggestion_labels: &[(&str, &str)] = &[
+        ("S001", "orphaned handles"),
+        ("S002", "candidate namespaces"),
+        ("S003", "pipeline stalls"),
+        ("S004", "abandoned namespaces"),
+        ("S005", "concern group candidates"),
+    ];
+    let suggestion_breakdown: Vec<SuggestionCount> = suggestion_labels
         .iter()
-        .filter(|d| d.severity == Severity::Suggestion)
-        .count();
+        .map(|&(code, label)| SuggestionCount {
+            code: code.to_string(),
+            label: label.to_string(),
+            count: code_counts.get(code).copied().unwrap_or(0),
+        })
+        .collect();
 
     StatusOutput {
         files,
@@ -863,7 +944,8 @@ pub(crate) fn cmd_status(
             warnings: snap.diagnostics.warnings,
         },
         convergence: None,
-        suggestions: suggestion_count,
+        suggestion_total,
+        suggestion_breakdown,
     }
 }
 
@@ -2053,7 +2135,7 @@ mod tests {
             pipeline: None,
             obligations: ObligationSummary {
                 discharged: 6,
-                total: 6,
+                total: 20,
                 mooted: 12,
             },
             diagnostics: DiagnosticSummary {
@@ -2061,31 +2143,45 @@ mod tests {
                 warnings: 3,
             },
             convergence: None,
-            suggestions: 2,
+            suggestion_total: 2,
+            suggestion_breakdown: vec![SuggestionCount {
+                code: "S001".into(),
+                label: "orphaned handles".into(),
+                count: 2,
+            }],
         }
+    }
+
+    /// Helper: render a StatusOutput to string for assertion.
+    fn render_status(output: &StatusOutput) -> String {
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        String::from_utf8(buf).expect("utf8")
     }
 
     #[test]
     fn status_print_human_scanned_line() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Scanned: 265 files, 487 handles, 2031 edges"),
-            "Expected Scanned line, got: {text}"
+            text.contains("265 files"),
+            "Expected file count, got: {text}"
+        );
+        assert!(
+            text.contains("487 handles"),
+            "Expected handle count, got: {text}"
+        );
+        assert!(
+            text.contains("2031 edges"),
+            "Expected edge count, got: {text}"
         );
     }
 
     #[test]
     fn status_print_human_active_frozen_line() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Active: 142 handles | Frozen: 345 handles"),
-            "Expected Active/Frozen line, got: {text}"
+            text.contains("142 active") && text.contains("345 frozen"),
+            "Expected active/frozen counts, got: {text}"
         );
     }
 
@@ -2106,12 +2202,10 @@ mod tests {
                 count: 6,
             },
         ]);
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&output);
         assert!(
-            text.contains("Pipeline:"),
-            "Expected Pipeline line, got: {text}"
+            text.contains("pipeline"),
+            "Expected pipeline section, got: {text}"
         );
         assert!(
             text.contains("12 raw"),
@@ -2120,51 +2214,39 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_flat_lattice_shows_active_terminal() {
-        let output = make_status_output_basic();
-        // pipeline is None => should show active/terminal counts
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+    fn status_print_human_flat_lattice_omits_pipeline() {
+        let text = render_status(&make_status_output_basic());
+        // pipeline is None => no pipeline line, active/frozen on the corpus line
         assert!(
-            text.contains("Active: 142") && text.contains("Terminal: 345"),
-            "Expected Active/Terminal counts for flat lattice (D-11), got: {text}"
+            !text.contains("pipeline"),
+            "Flat lattice should not show pipeline, got: {text}"
         );
     }
 
     #[test]
     fn status_print_human_obligations_line() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Obligations: 6/6 discharged, 12 mooted"),
-            "Expected Obligations line, got: {text}"
+            text.contains("6/20 obligations discharged"),
+            "Expected obligations line, got: {text}"
         );
     }
 
     #[test]
     fn status_print_human_diagnostics_line() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Diagnostics: 0 errors, 3 warnings"),
-            "Expected Diagnostics line, got: {text}"
+            text.contains("0 errors") && text.contains("3 warnings"),
+            "Expected diagnostics counts, got: {text}"
         );
     }
 
     #[test]
     fn status_print_human_convergence_no_history() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Convergence: no history"),
-            "Expected Convergence: no history, got: {text}"
+            text.contains("no history"),
+            "Expected no history message, got: {text}"
         );
     }
 
@@ -2175,28 +2257,31 @@ mod tests {
             signal: "advancing".to_string(),
             detail: "resolution +10, creation +5".to_string(),
         });
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = render_status(&output);
         assert!(
-            text.contains("Convergence: advancing"),
-            "Expected Convergence: advancing, got: {text}"
+            text.contains("advancing"),
+            "Expected advancing signal, got: {text}"
         );
         assert!(
-            text.contains("resolution +10, creation +5"),
+            text.contains("resolution +10"),
             "Expected convergence detail, got: {text}"
         );
     }
 
     #[test]
-    fn status_print_human_suggestions_line() {
-        let output = make_status_output_basic();
-        let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let text = String::from_utf8(buf).expect("utf8");
+    fn status_print_human_suggestions_breakdown() {
+        let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("Suggestions: 2 (run anneal check --suggest)"),
-            "Expected Suggestions line, got: {text}"
+            text.contains("suggestions"),
+            "Expected suggestions section, got: {text}"
+        );
+        assert!(
+            text.contains("S001"),
+            "Expected S001 in breakdown, got: {text}"
+        );
+        assert!(
+            text.contains("orphaned handles"),
+            "Expected S001 label, got: {text}"
         );
     }
 
