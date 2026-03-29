@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -127,6 +127,16 @@ pub(crate) struct HandlesConfig {
     pub(crate) rejected: Vec<String>,
     /// Namespace prefixes whose handles are linear (must be discharged exactly once).
     pub(crate) linear: Vec<String>,
+}
+
+impl HandlesConfig {
+    pub(crate) fn linear_set(&self) -> HashSet<&str> {
+        self.linear.iter().map(String::as_str).collect()
+    }
+
+    pub(crate) fn confirmed_set(&self) -> HashSet<&str> {
+        self.confirmed.iter().map(String::as_str).collect()
+    }
 }
 
 /// Configuration for freshness thresholds.

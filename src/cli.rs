@@ -13,7 +13,7 @@ use crate::config::{
 use crate::graph::{DiGraph, Edge};
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::impact;
-use crate::lattice::{self, Lattice};
+use crate::lattice::Lattice;
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -808,69 +808,22 @@ impl StatusOutput {
 /// obligations (linear namespaces), diagnostics, and suggestions.
 /// Convergence is set to `None` here; the caller in main.rs computes it
 /// from snapshot history via `with_convergence`.
+///
+/// Derives counts from the pre-built snapshot to avoid a redundant graph traversal.
+/// The only extra traversal is counting File handles (not tracked in snapshots).
 pub(crate) fn cmd_status(
     graph: &DiGraph,
     lattice: &Lattice,
-    config: &crate::config::AnnealConfig,
+    snap: &crate::snapshot::Snapshot,
     diagnostics_list: &[checks::Diagnostic],
 ) -> StatusOutput {
-    let mut files = 0usize;
-    let mut active_handles = 0usize;
-    let mut frozen_handles = 0usize;
+    // File count requires a quick pass (not tracked in snapshots)
+    let files = graph
+        .nodes()
+        .filter(|(_, h)| matches!(h.kind, HandleKind::File(_)))
+        .count();
 
-    // Track pipeline level counts (only if ordering exists)
-    let mut level_counts: HashMap<String, usize> = HashMap::new();
-
-    // Obligation tracking for linear namespaces
-    let linear_namespaces: HashSet<&str> =
-        config.handles.linear.iter().map(String::as_str).collect();
-    let mut obl_discharged = 0usize;
-    let mut obl_mooted = 0usize;
-    let mut obl_total = 0usize;
-
-    for (node_id, handle) in graph.nodes() {
-        if matches!(handle.kind, HandleKind::File(_)) {
-            files += 1;
-        }
-
-        // Active/frozen classification
-        if let Some(ref status) = handle.status {
-            if lattice.terminal.contains(status) {
-                frozen_handles += 1;
-            } else {
-                active_handles += 1;
-            }
-            // Pipeline level tracking
-            if !lattice.ordering.is_empty() && lattice::state_level(status, lattice).is_some() {
-                *level_counts.entry(status.clone()).or_insert(0) += 1;
-            }
-        } else {
-            active_handles += 1;
-        }
-
-        // Obligation tracking for linear namespaces (labels only)
-        if let HandleKind::Label { ref prefix, .. } = handle.kind
-            && linear_namespaces.contains(prefix.as_str())
-        {
-            obl_total += 1;
-            if let Some(ref status) = handle.status
-                && lattice.terminal.contains(status)
-            {
-                obl_mooted += 1;
-            } else {
-                let discharge_count = graph
-                    .incoming(node_id)
-                    .iter()
-                    .filter(|e| e.kind == crate::graph::EdgeKind::Discharges)
-                    .count();
-                if discharge_count > 0 {
-                    obl_discharged += 1;
-                }
-            }
-        }
-    }
-
-    // Build pipeline if ordering exists
+    // Pipeline histogram from snapshot states + lattice ordering
     let pipeline = if lattice.ordering.is_empty() {
         None
     } else {
@@ -880,20 +833,12 @@ pub(crate) fn cmd_status(
                 .iter()
                 .map(|level| PipelineLevel {
                     level: level.clone(),
-                    count: level_counts.get(level).copied().unwrap_or(0),
+                    count: snap.states.get(level).copied().unwrap_or(0),
                 })
                 .collect(),
         )
     };
 
-    let errors = diagnostics_list
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .count();
-    let warnings = diagnostics_list
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .count();
     let suggestion_count = diagnostics_list
         .iter()
         .filter(|d| d.severity == Severity::Suggestion)
@@ -901,17 +846,22 @@ pub(crate) fn cmd_status(
 
     StatusOutput {
         files,
-        handles: graph.node_count(),
-        edges: graph.edge_count(),
-        active_handles,
-        frozen_handles,
+        handles: snap.handles.total,
+        edges: snap.edges.total,
+        active_handles: snap.handles.active,
+        frozen_handles: snap.handles.frozen,
         pipeline,
         obligations: ObligationSummary {
-            discharged: obl_discharged,
-            total: obl_total,
-            mooted: obl_mooted,
+            discharged: snap.obligations.discharged,
+            total: snap.obligations.outstanding
+                + snap.obligations.discharged
+                + snap.obligations.mooted,
+            mooted: snap.obligations.mooted,
         },
-        diagnostics: DiagnosticSummary { errors, warnings },
+        diagnostics: DiagnosticSummary {
+            errors: snap.diagnostics.errors,
+            warnings: snap.diagnostics.warnings,
+        },
         convergence: None,
         suggestions: suggestion_count,
     }
@@ -1031,8 +981,12 @@ fn extract_subgraph(
     }
 }
 
-/// Count unique edges within the subgraph (both endpoints in the node set).
-fn count_subgraph_edges(graph: &DiGraph, nodes: &HashSet<NodeId>) -> usize {
+/// Collect unique edges within the subgraph (both endpoints in the node set),
+/// deduplicated by (source, target, kind). Returned in sorted order.
+fn subgraph_edges<'a>(
+    graph: &'a DiGraph,
+    nodes: &HashSet<NodeId>,
+) -> BTreeSet<(NodeId, NodeId, &'a str)> {
     let mut seen = BTreeSet::new();
     for &node_id in nodes {
         for edge in graph.outgoing(node_id) {
@@ -1041,7 +995,7 @@ fn count_subgraph_edges(graph: &DiGraph, nodes: &HashSet<NodeId>) -> usize {
             }
         }
     }
-    seen.len()
+    seen
 }
 
 /// Render the subgraph as grouped text (D-12, D-14).
@@ -1135,21 +1089,17 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     }
 
     // Edges within the subgraph
-    let mut edge_lines: Vec<String> = Vec::new();
-    let mut seen_edges = BTreeSet::new();
-    for &node_id in nodes {
-        for edge in graph.outgoing(node_id) {
-            if !nodes.contains(&edge.target) {
-                continue;
-            }
-            let key = (edge.source, edge.target, edge.kind.as_str());
-            if seen_edges.insert(key) {
-                let src = &graph.node(edge.source).id;
-                let tgt = &graph.node(edge.target).id;
-                edge_lines.push(format!("  {src} -{}- {tgt}", edge.kind.as_str()));
-            }
-        }
-    }
+    let edge_lines: Vec<String> = subgraph_edges(graph, nodes)
+        .iter()
+        .map(|&(src, tgt, kind)| {
+            format!(
+                "  {} -{}-> {}",
+                graph.node(src).id,
+                kind,
+                graph.node(tgt).id
+            )
+        })
+        .collect();
 
     if !edge_lines.is_empty() {
         let total = edge_lines.len();
@@ -1222,23 +1172,10 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
     let _ = writeln!(out);
 
     // Edges
-    let mut seen_edges = BTreeSet::new();
-    for &node_id in nodes {
-        for edge in graph.outgoing(node_id) {
-            if !nodes.contains(&edge.target) {
-                continue;
-            }
-            let key = (edge.source, edge.target, edge.kind.as_str());
-            if seen_edges.insert(key) {
-                let src = dot_escape(&graph.node(edge.source).id);
-                let tgt = dot_escape(&graph.node(edge.target).id);
-                let _ = writeln!(
-                    out,
-                    "  \"{src}\" -> \"{tgt}\" [label=\"{}\"];",
-                    edge.kind.as_str()
-                );
-            }
-        }
+    for (src_id, tgt_id, kind) in subgraph_edges(graph, nodes) {
+        let src = dot_escape(&graph.node(src_id).id);
+        let tgt = dot_escape(&graph.node(tgt_id).id);
+        let _ = writeln!(out, "  \"{src}\" -> \"{tgt}\" [label=\"{kind}\"];");
     }
 
     let _ = writeln!(out, "}}");
@@ -1271,7 +1208,7 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
         opts.depth,
         opts.config,
     );
-    let edge_count = count_subgraph_edges(opts.graph, &nodes);
+    let edge_count = subgraph_edges(opts.graph, &nodes).len();
 
     let content = match opts.format {
         "dot" => render_dot(opts.graph, &nodes, opts.lattice),
@@ -1637,41 +1574,17 @@ pub(crate) fn cmd_diff(
 mod tests {
     use super::*;
     use crate::graph::EdgeKind;
-    use crate::handle::HandleMetadata;
-    use camino::Utf8PathBuf;
 
     fn make_file_handle(id: &str) -> Handle {
-        Handle {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: None,
-            file_path: Some(Utf8PathBuf::from(id)),
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_file(id, None)
     }
 
     fn make_file_handle_with_status(id: &str, status: &str) -> Handle {
-        Handle {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: Some(status.to_string()),
-            file_path: Some(Utf8PathBuf::from(id)),
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_file(id, Some(status))
     }
 
     fn make_label_handle(prefix: &str, number: u32) -> Handle {
-        let id = format!("{prefix}-{number}");
-        Handle {
-            id,
-            kind: HandleKind::Label {
-                prefix: prefix.to_string(),
-                number,
-            },
-            status: None,
-            file_path: None,
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_label(prefix, number, None)
     }
 
     fn empty_lattice() -> Lattice {
@@ -2296,8 +2209,9 @@ mod tests {
 
         let lattice = empty_lattice();
         let config = AnnealConfig::default();
+        let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &config, &[]);
+        let output = cmd_status(&graph, &lattice, &snap, &[]);
 
         assert_eq!(output.files, 2);
         assert_eq!(output.handles, 3);
@@ -2313,8 +2227,9 @@ mod tests {
 
         let lattice = lattice_with_terminal(&["archived"]);
         let config = AnnealConfig::default();
+        let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &config, &[]);
+        let output = cmd_status(&graph, &lattice, &snap, &[]);
 
         // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
         assert_eq!(output.active_handles, 2);
