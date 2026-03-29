@@ -70,7 +70,7 @@
 
 - [x] **CONFIG-01**: Parse anneal.toml with all-optional fields via `#[serde(default, deny_unknown_fields)]`
 - [x] **CONFIG-02**: Zero-config is valid — tool works with no anneal.toml (existence lattice only)
-- [ ] **CONFIG-03**: Config supports: root, convergence (active/terminal/ordering), handles (confirmed/rejected), linear namespaces, freshness thresholds, concern groups
+- [x] **CONFIG-03**: Config supports: root, convergence (active/terminal/ordering), handles (confirmed/rejected), linear namespaces, freshness thresholds, concern groups
 - [ ] **CONFIG-04**: `anneal init` generates anneal.toml from inferred structure
 
 ### Suggestions
@@ -160,7 +160,7 @@
 | CLI-10 | Phase 2 | Pending |
 | CONFIG-01 | Phase 1 | Complete |
 | CONFIG-02 | Phase 1 | Complete |
-| CONFIG-03 | Phase 2 | Pending |
+| CONFIG-03 | Phase 2 | Complete |
 | CONFIG-04 | Phase 2 | Pending |
 | SUGGEST-01 | Phase 3 | Pending |
 | SUGGEST-02 | Phase 3 | Pending |
