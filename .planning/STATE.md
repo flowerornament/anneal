@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
 | Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | In Progress | Plans 01, 02 done |
+| Phase 3: Convergence & Polish | In Progress | Plans 01, 02, 03 done |
 
 ## Decisions
 
@@ -67,6 +67,9 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - BTreeMap for namespace grouping in S004 ensures deterministic output order
 - S004 checks both terminal status AND freshness via compute_freshness
 - S005 limits to top 5 co-occurring pairs to avoid noise
+- MapOptions struct bundles 8 cmd_map parameters (clippy too_many_arguments)
+- File handles always included in default map subgraph regardless of terminal status
+- Ord/PartialOrd derives on NodeId for BTreeSet edge deduplication
 
 ## Session Log
 
@@ -82,6 +85,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 
 | 2026-03-29 | 03 | Plan 01 complete: snapshot.rs with Snapshot type, JSONL I/O (append/read), convergence summary (advancing/holding/drifting), Severity::Suggestion variant. 10 new tests. |
 | 2026-03-29 | 03 | Plan 02 complete: Five suggestion rules S001-S005 in checks.rs (orphaned, candidate ns, pipeline stalls, abandoned ns, concern groups). CheckFilters struct with --suggest/--stale/--obligations. 12 new tests. |
+| 2026-03-29 | 03 | Plan 03 complete: anneal map command with text/DOT rendering, BFS --around, --concern filtering. MapOptions struct, 8 tests. |
 
 ---
-*Last updated: 2026-03-29 after Plan 03-02 completion*
+*Last updated: 2026-03-29 after Plan 03-03 merge*

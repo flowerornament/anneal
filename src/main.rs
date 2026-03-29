@@ -83,6 +83,21 @@ enum Command {
         /// Handle identity to analyze
         handle: String,
     },
+    /// Render the knowledge graph
+    Map {
+        /// Output format: text (default) or dot
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Show only handles in this concern group
+        #[arg(long)]
+        concern: Option<String>,
+        /// Show neighborhood around this handle
+        #[arg(long)]
+        around: Option<String>,
+        /// BFS depth for --around (default: 2)
+        #[arg(long, default_value = "2")]
+        depth: u32,
+    },
 }
 
 /// Build a lookup index from handle identity strings to `NodeId`s.
@@ -292,6 +307,35 @@ fn run() -> anyhow::Result<()> {
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
+            }
+        }
+
+        Some(Command::Map {
+            ref format,
+            ref concern,
+            ref around,
+            depth,
+        }) => {
+            if format != "text" && format != "dot" {
+                eprintln!("unknown format: {format} (expected 'text' or 'dot')");
+                std::process::exit(1);
+            }
+            let output = cli::cmd_map(&cli::MapOptions {
+                graph,
+                node_index: &node_index,
+                lattice: &lattice,
+                config: &config,
+                concern: concern.as_deref(),
+                around: around.as_deref(),
+                depth,
+                format,
+            });
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write map output")?;
             }
         }
     }
