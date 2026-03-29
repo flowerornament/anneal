@@ -55,7 +55,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- Foundation repairs + config extensibility: fix resolution gaps, extensible frontmatter mapping, terminal status wiring
+- [x] 02-01-PLAN.md -- Foundation repairs + config extensibility: fix resolution gaps, extensible frontmatter mapping, terminal status wiring
 - [ ] 02-02-PLAN.md -- Check rules + impact analysis: five local consistency rules (KB-R1..R5), diagnostics, reverse graph traversal
 - [ ] 02-03-PLAN.md -- CLI subcommands: check, get, find, init, impact with --json support and CommandOutput pattern
 
