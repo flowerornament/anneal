@@ -19,9 +19,9 @@
 - [x] **HANDLE-01**: Resolve File handles by filesystem path
 - [x] **HANDLE-02**: Resolve Section handles to heading ranges within parent files
 - [x] **HANDLE-03**: Resolve Label handles by scanning confirmed namespaces across all files
-- [ ] **HANDLE-04**: Resolve Version handles by matching versioned artifact naming conventions
-- [ ] **HANDLE-05**: Infer handle namespaces by sequential cardinality (N >= 3 members, M >= 2 files)
-- [ ] **HANDLE-06**: Only labels in confirmed namespaces generate broken-reference errors
+- [x] **HANDLE-04**: Resolve Version handles by matching versioned artifact naming conventions
+- [x] **HANDLE-05**: Infer handle namespaces by sequential cardinality (N >= 3 members, M >= 2 files)
+- [x] **HANDLE-06**: Only labels in confirmed namespaces generate broken-reference errors
 
 ### Convergence Lattice
 
@@ -127,9 +127,9 @@
 | HANDLE-01 | Phase 1 | Complete |
 | HANDLE-02 | Phase 1 | Complete |
 | HANDLE-03 | Phase 1 | Complete |
-| HANDLE-04 | Phase 1 | Pending |
-| HANDLE-05 | Phase 1 | Pending |
-| HANDLE-06 | Phase 1 | Pending |
+| HANDLE-04 | Phase 1 | Complete |
+| HANDLE-05 | Phase 1 | Complete |
+| HANDLE-06 | Phase 1 | Complete |
 | LATTICE-01 | Phase 1 | Complete |
 | LATTICE-02 | Phase 1 | Complete |
 | LATTICE-03 | Phase 1 | Complete |
