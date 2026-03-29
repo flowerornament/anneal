@@ -109,17 +109,47 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 ## Traceability
 
-(Populated by roadmapper)
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| — | — | — |
+| EXTRACT-01 | Phase 4 | Pending |
+| EXTRACT-02 | Phase 4 | Pending |
+| EXTRACT-03 | Phase 5 | Pending |
+| EXTRACT-04 | Phase 5 | Pending |
+| EXTRACT-05 | Phase 4 | Pending |
+| EXTRACT-06 | Phase 4 | Pending |
+| EXTRACT-07 | Phase 5 | Pending |
+| EXTRACT-08 | Phase 5 | Pending |
+| EXTRACT-09 | Phase 5 | Pending |
+| EXTRACT-10 | Phase 5 | Pending |
+| EXTRACT-11 | Phase 5 | Pending |
+| RESOLVE-01 | Phase 4 | Pending |
+| RESOLVE-02 | Phase 6 | Pending |
+| RESOLVE-03 | Phase 6 | Pending |
+| RESOLVE-04 | Phase 6 | Pending |
+| RESOLVE-05 | Phase 6 | Pending |
+| RESOLVE-06 | Phase 6 | Pending |
+| DIAG-01 | Phase 6 | Pending |
+| DIAG-02 | Phase 6 | Pending |
+| DIAG-03 | Phase 6 | Pending |
+| DIAG-04 | Phase 6 | Pending |
+| DIAG-05 | Phase 6 | Pending |
+| UX-01 | Phase 6 | Pending |
+| UX-02 | Phase 7 | Pending |
+| UX-03 | Phase 7 | Pending |
+| UX-04 | Phase 7 | Pending |
+| UX-05 | Phase 7 | Pending |
+| UX-06 | Phase 7 | Pending |
+| CONFIG-01 | Phase 7 | Pending |
+| CONFIG-02 | Phase 7 | Pending |
+| QUALITY-01 | Phase 5 | Pending |
+| QUALITY-02 | Phase 7 | Pending |
+| QUALITY-03 | Phase 7 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 30 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 30
+- v1.1 requirements: 33 total
+- Mapped to phases: 33/33
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-29*
-*Last updated: 2026-03-29 after v1.1 milestone definition*
+*Last updated: 2026-03-29 after v1.1 roadmap creation*
