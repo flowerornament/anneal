@@ -14,8 +14,9 @@ use crate::parse::{LabelCandidate, PendingEdge};
 // ---------------------------------------------------------------------------
 
 /// Matches filenames like `formal-model-v3.md`, `proof-v17.md`.
-static VERSION_FILENAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.+)-v(\d+)\.md$").expect("version filename regex must compile"));
+static VERSION_FILENAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+)-v(\d+)\.md$").expect("version filename regex must compile")
+});
 
 // ---------------------------------------------------------------------------
 // Resolve result types
@@ -49,10 +50,7 @@ pub struct ResolveStats {
 /// M >= 2 distinct files. Config overrides (`handles.confirmed`, `handles.rejected`)
 /// take precedence over inference. Prefixes with only large isolated numbers
 /// (e.g., SHA-256, AVX-512) are rejected.
-pub fn infer_namespaces(
-    candidates: &[LabelCandidate],
-    config: &AnnealConfig,
-) -> HashSet<String> {
+pub fn infer_namespaces(candidates: &[LabelCandidate], config: &AnnealConfig) -> HashSet<String> {
     let mut confirmed: HashSet<String> = config.handles.confirmed.iter().cloned().collect();
     let rejected: HashSet<String> = config.handles.rejected.iter().cloned().collect();
 
@@ -190,10 +188,7 @@ pub fn resolve_labels(
 /// 3. Add Supersedes edges forming a supersession chain (v3 -> v2 -> v1)
 ///
 /// Returns the count of version handles created.
-pub fn resolve_versions(
-    graph: &mut DiGraph,
-    node_index: &mut HashMap<String, NodeId>,
-) -> usize {
+pub fn resolve_versions(graph: &mut DiGraph, node_index: &mut HashMap<String, NodeId>) -> usize {
     // Collect versioned files from existing File handles
     // Group by base name: base -> Vec<(version, file_node_id)>
     let mut versioned: HashMap<String, Vec<(u32, NodeId)>> = HashMap::new();
