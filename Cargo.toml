@@ -41,6 +41,9 @@ serde_yaml_ng = "0.10"
 toml = "0.8"
 walkdir = "2"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = true
 strip = true
