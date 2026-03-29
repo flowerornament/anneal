@@ -21,7 +21,7 @@ An arriving agent can immediately understand what's settled, what's drifting, wh
 
 ### Active
 
-(None — all v1 requirements validated)
+See REQUIREMENTS.md for v1.1 requirements.
 
 ### Validated (Phase 2)
 
@@ -95,9 +95,33 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
+## Current Milestone: v1.1 Parser Hardening & UX Polish
+
+**Goal:** Make `anneal check` output trustworthy and actionable by introducing three missing intermediate types (Extraction, Resolution, Diagnostic enrichment), replacing the regex body scanner with pulldown-cmark, and enriching orientation commands.
+
+**Target features:**
+- Typed extraction pipeline with plausibility filtering (URLs, prose, wildcards classified not skipped)
+- Resolution cascade with "did you mean?" candidates (root-prefix, bare filename, version stem, zero-pad)
+- pulldown-cmark body scanner replacing regex (native markdown/wiki-links, section ref resolution, line numbers)
+- Rich diagnostics with mandatory source locations and structured evidence
+- Active-only check default, content snippets in `get`, obligations command, smarter init
+- External URL handles (HandleKind::External), false positive suppression config
+
+**Architecture evolution:**
+- `DiscoveredRef` + `RefHint` replaces `PendingEdge`, `LabelCandidate`, `FrontmatterEdge`, `ScanResult` (4 types → 1)
+- `Resolution` enum (Exact/Fuzzy/Unresolved) makes resolution cascade explicit
+- `Evidence` enum on Diagnostic makes line numbers, candidates, snippets structurally mandatory
+- Extractor function signature clean enough to become a trait when KB-OQ5 arrives
+
 ## Current State
 
-All three phases complete — v1 milestone achieved. Eight CLI commands (check, get, find, init, impact, status, map, diff), five check rules, five suggestion types, convergence tracking via JSONL snapshots. 75 tests, clippy clean, <100ms on 265-file corpus. Quality gate (`just check`) passes.
+v1.0 complete. Eight CLI commands, five check rules, five suggestion types, convergence tracking via JSONL snapshots. 77 tests, clippy clean, <50ms on 262-file corpus. Installed via nix flake.
+
+**Known issues from real-world testing (Murail 262 files, Herald 89 files):**
+- Murail: 186 errors → 9 with --active-only (95% are terminal-file noise)
+- Herald: 89 errors → 50 with --active-only (remaining are frontmatter URLs/prose false positives)
+- S003 pipeline stall fires for every level (needs temporal heuristic via snapshots)
+- 255 section references unresolvable in Herald (KB-OQ2)
 
 ---
-*Last updated: 2026-03-29 after Phase 3 completion (v1 complete)*
+*Last updated: 2026-03-29 after v1.1 milestone start*
