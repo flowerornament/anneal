@@ -397,10 +397,20 @@ pub(crate) fn scan_file(
                 if m.start() > 0 && line.as_bytes()[m.start() - 1] == b'.' {
                     continue;
                 }
-                let path = m.as_str().to_string();
-                if !path.is_empty() {
-                    result.file_refs.push(path);
+                let path = m.as_str();
+                // Reject hyphen-prefixed fragments: "-foo.md" is a suffix left
+                // after label extraction (e.g., "RQ-01-foo.md" → label "RQ-01" + "-foo.md")
+                if path.starts_with('-') {
+                    continue;
                 }
+                // Reject mid-word matches: if the character before the match is
+                // alphanumeric, this is a fragment of a longer token (e.g., "yBRk.md"
+                // from a YouTube ID). Real file references are preceded by whitespace,
+                // punctuation, or start of line.
+                if m.start() > 0 && line.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
+                    continue;
+                }
+                result.file_refs.push(path.to_string());
             }
         }
     }
@@ -743,6 +753,32 @@ mod tests {
         assert!(
             result2.file_refs.contains(&"summary.md".to_string()),
             "standalone file paths should still match"
+        );
+    }
+
+    #[test]
+    fn file_path_regex_rejects_mid_word_fragments() {
+        // YouTube ID "4eJrp9byBRk.md" should not match "k.md"
+        let body = "[transcript](refs/2026-02-06-4eJrp9byBRk.md)";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            !result.file_refs.iter().any(|r| r == "k.md"),
+            "should not extract k.md from YouTube ID, got: {:?}",
+            result.file_refs
+        );
+    }
+
+    #[test]
+    fn file_path_regex_rejects_hyphen_prefix_after_label() {
+        // "RQ-01-program-format-encoding.md" → label "RQ-01" + should NOT produce "-program-format-encoding.md"
+        let body = "See RQ-01-program-format-encoding.md for details";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            !result.file_refs.iter().any(|r| r.starts_with('-')),
+            "should not extract hyphen-prefixed fragments, got: {:?}",
+            result.file_refs
         );
     }
 }
