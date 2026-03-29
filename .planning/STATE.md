@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress
-last_updated: "2026-03-29T08:27:42Z"
+last_updated: "2026-03-29T08:38:49.079Z"
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 11
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # State: anneal
@@ -62,6 +62,8 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - cmd_find searches handle identities only, not file content
 - Init D-07 proposes Cites as default fallback for unknown frontmatter fields
 - observed_frontmatter_keys collected via second YAML parse in build_graph
+- [Phase 03]: ObligationDelta fields keep _delta suffix with clippy allow for JSON schema clarity
+- [Phase 03]: Git ref extraction via git archive | tar for single-subprocess file recovery
 
 ## Session Log
 

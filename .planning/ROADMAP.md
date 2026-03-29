@@ -91,7 +91,7 @@ Plans:
 - [ ] 03-02-PLAN.md -- Suggestion engine: five suggestion rules (S001-S005) + check command filter flags
 - [ ] 03-03-PLAN.md -- Map command: text and DOT rendering, --concern and --around subgraph extraction
 - [ ] 03-04-PLAN.md -- Status command: dashboard with pipeline histogram, convergence summary, snapshot append
-- [ ] 03-05-PLAN.md -- Diff command: snapshot-based and git-aware graph diff, three reference modes
+- [x] 03-05-PLAN.md -- Diff command: snapshot-based and git-aware graph diff, three reference modes
 
 **Success Criteria:**
 1. `anneal status` shows pipeline histogram, convergence summary (advancing/holding/drifting), and top suggestions
