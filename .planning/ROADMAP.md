@@ -9,8 +9,8 @@
 | # | Phase | Goal | Requirements | Success Criteria |
 |---|-------|------|--------------|------------------|
 | 1 | Graph Foundation | 3/3 | Complete   | 2026-03-29 |
-| 2 | Checks & CLI | Local consistency checks + core commands | 22 (CHECK-*, IMPACT-*, CLI-01..03/06..10, CONFIG-03/04) | 5 |
-| 3 | Convergence & Polish | Convergence tracking, suggestions, remaining commands | 8 (CONVERGE-*, CLI-04/05/08, SUGGEST-*) | 4 |
+| 2 | Checks & CLI | Local consistency checks + core commands | 18 (CHECK-*, IMPACT-*, CLI-01..03/06..10, CONFIG-03/04) | 5 |
+| 3 | Convergence & Polish | Convergence tracking, suggestions, remaining commands | 13 (CONVERGE-*, CLI-04/05/08, SUGGEST-*) | 4 |
 
 ## Phase Details
 
@@ -31,9 +31,9 @@ Plans:
 1. Running anneal on Murail's .design/ directory (265 files) produces a graph with ~500 handles and ~2000 edges in <100ms
 2. Label handles in confirmed namespaces (OQ, FM, A, SR, etc.) resolve correctly; false positives (SHA-256, GPT-2) are excluded
 3. Frontmatter status values are parsed and partitioned into active/terminal sets
-4. The graph is ephemeral — no persistent state created beyond the optional anneal.toml
+4. The graph is ephemeral -- no persistent state created beyond the optional anneal.toml
 
-**Dependencies:** None — this is the foundation.
+**Dependencies:** None -- this is the foundation.
 
 **Key implementation:**
 - `handle.rs`: Handle, HandleKind, HandleId types
@@ -52,6 +52,13 @@ Plans:
 
 **Requirements:** CHECK-01, CHECK-02, CHECK-03, CHECK-04, CHECK-05, CHECK-06, IMPACT-01, IMPACT-02, IMPACT-03, CLI-01, CLI-02, CLI-03, CLI-06, CLI-07, CLI-09, CLI-10, CONFIG-03, CONFIG-04
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md -- Foundation repairs + config extensibility: fix resolution gaps, extensible frontmatter mapping, terminal status wiring
+- [ ] 02-02-PLAN.md -- Check rules + impact analysis: five local consistency rules (KB-R1..R5), diagnostics, reverse graph traversal
+- [ ] 02-03-PLAN.md -- CLI subcommands: check, get, find, init, impact with --json support and CommandOutput pattern
+
 **Success Criteria:**
 1. `anneal check` on Murail's .design/ reports real broken references and stale references with compiler-style diagnostics
 2. `anneal get OQ-64` resolves the label, shows its definition, state, and references
@@ -64,7 +71,10 @@ Plans:
 **Key implementation:**
 - `checks.rs`: Five rules (KB-R1 through KB-R5), diagnostic types with error codes
 - `impact.rs`: Reverse graph traversal with cycle detection
-- `cli.rs`: clap derive with 8 subcommands, global --json flag, CommandOutput trait
+- `cli.rs`: clap derive with 5 subcommands, global --json flag, CommandOutput pattern
+- `config.rs`: Extensible frontmatter field mapping (FrontmatterConfig)
+- `parse.rs`: Code block label skip, directory convention analysis, table-driven frontmatter
+- `resolve.rs`: Bare filename resolution wired
 
 ---
 
@@ -97,4 +107,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-28 after phase 1 planning*
+*Last updated: 2026-03-29 after phase 2 planning*
