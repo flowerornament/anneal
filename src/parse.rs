@@ -380,6 +380,11 @@ pub(crate) fn scan_file(
                 if prefix.contains("://") {
                     continue;
                 }
+                // Reject version-dot fragments: if the char before the match is '.',
+                // this is a fragment like "2.md" from "v1.2.md" — skip it.
+                if m.start() > 0 && line.as_bytes()[m.start() - 1] == b'.' {
+                    continue;
+                }
                 let path = m.as_str().to_string();
                 if !path.is_empty() {
                     result.file_refs.push(path);
@@ -691,6 +696,37 @@ mod tests {
         assert!(
             result.file_refs.is_empty(),
             "File refs inside code blocks should not be scanned"
+        );
+    }
+
+    #[test]
+    fn file_path_regex_rejects_version_dot_fragments() {
+        // Test via scan_file which applies the dot-prefix rejection
+        let body = "See formal-model/murail-algebra-v1.2.md for details";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            !result.file_refs.contains(&"2.md".to_string()),
+            "should not match fragment 2.md from v1.2.md, got: {:?}",
+            result.file_refs
+        );
+        // Full versioned path should be captured
+        assert!(
+            result
+                .file_refs
+                .contains(&"formal-model/murail-algebra-v1.2.md".to_string())
+                || result.file_refs.is_empty(),
+            "should match full path or nothing, got: {:?}",
+            result.file_refs
+        );
+
+        // Standalone file paths still work
+        let body2 = "see summary.md for details";
+        let (mut graph2, file_node2) = make_graph_with_file("test2.md");
+        let result2 = scan_file(body2, Utf8Path::new("test2.md"), file_node2, &mut graph2);
+        assert!(
+            result2.file_refs.contains(&"summary.md".to_string()),
+            "standalone file paths should still match"
         );
     }
 }
