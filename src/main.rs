@@ -76,14 +76,6 @@ enum Command {
 }
 
 /// Build a lookup index from handle identity strings to `NodeId`s.
-fn build_node_index(graph: &graph::DiGraph) -> HashMap<String, NodeId> {
-    let mut index = HashMap::with_capacity(graph.node_count());
-    for (node_id, h) in graph.nodes() {
-        index.insert(h.id.clone(), node_id);
-    }
-    index
-}
-
 /// Collect unresolved pending edges after resolution.
 ///
 /// An edge is unresolved if its target identity does not appear in the
@@ -165,7 +157,7 @@ fn run() -> anyhow::Result<()> {
     let root_str = root.to_string();
 
     // Build node index for get/find/impact commands
-    let node_index = build_node_index(graph);
+    let node_index = resolve::build_node_index(graph);
 
     match cli_args.command {
         None => {

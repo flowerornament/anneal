@@ -113,14 +113,25 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 pub(crate) fn parse_frontmatter(
     yaml: &str,
     config: &FrontmatterConfig,
-) -> (Option<String>, HandleMetadata, Vec<FrontmatterEdge>) {
+) -> (
+    Option<String>,
+    HandleMetadata,
+    Vec<FrontmatterEdge>,
+    Vec<String>,
+) {
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return (None, HandleMetadata::default(), Vec::new());
+        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
     };
 
     let Some(mapping) = value.as_mapping() else {
-        return (None, HandleMetadata::default(), Vec::new());
+        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
     };
+
+    // Collect all frontmatter keys for init auto-detection (D-07)
+    let all_keys: Vec<String> = mapping
+        .keys()
+        .filter_map(|k| k.as_str().map(String::from))
+        .collect();
 
     let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_string()));
 
@@ -182,7 +193,7 @@ pub(crate) fn parse_frontmatter(
         verifies,
     };
 
-    (status, metadata, field_edges)
+    (status, metadata, field_edges, all_keys)
 }
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
@@ -517,22 +528,13 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let (frontmatter_yaml, body) = split_frontmatter(&content);
 
         // D-05: table-driven frontmatter parsing with extensible field mapping
-        let (status, metadata, field_edges) = frontmatter_yaml
+        // D-07: all_keys returned here to avoid double-parsing YAML
+        let (status, metadata, field_edges, all_keys) = frontmatter_yaml
             .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
             .unwrap_or_default();
 
-        // D-07: Collect all frontmatter keys for init auto-detection
-        if let Some(yaml) = frontmatter_yaml
-            && let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml)
-            && let Some(mapping) = value.as_mapping()
-        {
-            for key in mapping.keys() {
-                if let Some(key_str) = key.as_str() {
-                    *observed_frontmatter_keys
-                        .entry(key_str.to_string())
-                        .or_insert(0) += 1;
-                }
-            }
+        for key in &all_keys {
+            *observed_frontmatter_keys.entry(key.clone()).or_insert(0) += 1;
         }
 
         if let Some(ref s) = status {

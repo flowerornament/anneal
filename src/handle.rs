@@ -30,6 +30,17 @@ pub(crate) enum HandleKind {
     Version { artifact: NodeId, version: u32 },
 }
 
+impl HandleKind {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::File(_) => "file",
+            Self::Section { .. } => "section",
+            Self::Label { .. } => "label",
+            Self::Version { .. } => "version",
+        }
+    }
+}
+
 /// A handle is a triple (identity, kind, state) per KB-D1.
 ///
 /// Handles are the only objects in the system. Every question anneal

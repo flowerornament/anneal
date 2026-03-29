@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::Serialize;
 
 use crate::handle::{Handle, NodeId};
@@ -20,6 +22,16 @@ pub(crate) enum EdgeKind {
 }
 
 impl EdgeKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cites => "Cites",
+            Self::DependsOn => "DependsOn",
+            Self::Supersedes => "Supersedes",
+            Self::Verifies => "Verifies",
+            Self::Discharges => "Discharges",
+        }
+    }
+
     /// Parse an edge kind from its string name (case-insensitive match on variant names).
     pub(crate) fn from_name(s: &str) -> Option<Self> {
         match s {
@@ -30,6 +42,12 @@ impl EdgeKind {
             "Discharges" | "discharges" => Some(Self::Discharges),
             _ => None,
         }
+    }
+}
+
+impl fmt::Display for EdgeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
