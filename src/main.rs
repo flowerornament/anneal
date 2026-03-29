@@ -98,6 +98,8 @@ enum Command {
         #[arg(long, default_value = "2")]
         depth: u32,
     },
+    /// Dashboard with graph stats, convergence summary, and suggestions
+    Status,
     /// Show graph-level changes since a reference point
     Diff {
         /// Compare against snapshot from N days ago
@@ -219,6 +221,18 @@ fn run() -> anyhow::Result<()> {
                     inverse: e.inverse,
                 })
                 .collect();
+
+            // Build snapshot from full (unfiltered) diagnostics (D-04, D-20)
+            let all_diagnostics = checks::run_checks(
+                graph,
+                &lattice,
+                &config,
+                &unresolved_owned,
+                section_ref_count,
+            );
+            let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+
+            // Build check output (may filter diagnostics)
             let filters = cli::CheckFilters {
                 errors_only,
                 suggest,
@@ -240,6 +254,10 @@ fn run() -> anyhow::Result<()> {
                     .print_human(&mut std::io::stdout().lock())
                     .context("failed to write check output")?;
             }
+
+            // Append snapshot after output (D-04, D-20)
+            snapshot::append_snapshot(&root, &snap)?;
+
             if output.errors > 0 {
                 std::process::exit(1);
             }
@@ -345,6 +363,61 @@ fn run() -> anyhow::Result<()> {
                 output
                     .print_human(&mut std::io::stdout().lock())
                     .context("failed to write map output")?;
+            }
+        }
+
+        Some(Command::Status) => {
+            let (unresolved_refs, section_ref_count) =
+                collect_unresolved(&result.pending_edges, &node_index);
+            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
+                .iter()
+                .map(|e| parse::PendingEdge {
+                    source: e.source,
+                    target_identity: e.target_identity.clone(),
+                    kind: e.kind,
+                    inverse: e.inverse,
+                })
+                .collect();
+
+            let output = cli::cmd_status(
+                graph,
+                &lattice,
+                &config,
+                &unresolved_owned,
+                section_ref_count,
+            );
+
+            // Build snapshot from diagnostics for convergence tracking (D-04)
+            let all_diagnostics = checks::run_checks(
+                graph,
+                &lattice,
+                &config,
+                &unresolved_owned,
+                section_ref_count,
+            );
+            let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+
+            // Compute convergence from history (D-05, D-06)
+            let convergence =
+                snapshot::latest_summary(&root, &snap).map(|s| cli::ConvergenceSummaryOutput {
+                    signal: match s.signal {
+                        snapshot::ConvergenceSignal::Advancing => "advancing".to_string(),
+                        snapshot::ConvergenceSignal::Holding => "holding".to_string(),
+                        snapshot::ConvergenceSignal::Drifting => "drifting".to_string(),
+                    },
+                    detail: s.detail,
+                });
+            let output = output.with_convergence(convergence);
+
+            // Append snapshot AFTER computing convergence (D-04)
+            snapshot::append_snapshot(&root, &snap)?;
+
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write status output")?;
             }
         }
 
