@@ -17,6 +17,22 @@ Use the `anneal` CLI to understand, navigate, and track convergence of markdown 
 - User asks about handle relationships, label namespaces, pipeline status
 - Before editing files in a knowledge corpus (check impact first)
 
+## Root Directory
+
+`anneal` auto-detects the corpus root from the current working directory:
+
+1. If `--root <path>` is given, use that
+2. Else if `.design/` exists, use it
+3. Else if `docs/` exists, use it
+4. Else use the current directory
+
+`anneal.toml` (if present) lives at the corpus root.
+
+```bash
+anneal status                            # Auto-detect root
+anneal --root ~/project/.design/ status  # Explicit root
+```
+
 ## First Contact
 
 If this is your first time at this corpus:

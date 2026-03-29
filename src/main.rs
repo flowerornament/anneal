@@ -60,12 +60,22 @@ QUICK START:
 
   anneal status               Orient: what exists, what's broken, convergence direction
   anneal check                Find broken references, staleness, obligation violations
-  anneal get OQ-64            Look up a specific handle
-  anneal find FM              Search handles by text
-  anneal map --around=OQ-64   Visualize neighborhood of a handle
-  anneal impact v17.md        What depends on this file?
+  anneal get REQ-12           Look up a specific handle
+  anneal find ADR             Search handles by text
+  anneal map --around=REQ-12  Visualize neighborhood of a handle
+  anneal impact spec/v3.md    What depends on this file?
   anneal diff                 What changed since last session?
   anneal init                 Generate anneal.toml from inferred structure
+
+ROOT DIRECTORY:
+
+  anneal auto-detects the corpus root from the working directory:
+    1. --root <path>   if given explicitly
+    2. .design/        if it exists
+    3. docs/           if it exists
+    4. .               current directory (fallback)
+
+  anneal.toml (if present) is read from the root.
 
 CONFIGURATION:
 
