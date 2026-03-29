@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{HandleKind, NodeId};
-use crate::lattice::{self, Lattice};
+use crate::lattice::{self, FreshnessLevel, Lattice};
 use crate::parse::PendingEdge;
 
 /// Severity level for diagnostics, ordered so errors sort first.
@@ -335,7 +335,26 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
 /// are excluded. Labels, sections, and versions with no incoming edges are
 /// likely disconnected from the graph.
 fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
-    Vec::new() // TDD RED: stub
+    let mut diagnostics = Vec::new();
+
+    for (node_id, handle) in graph.nodes() {
+        // File handles are roots -- skip them (D-17)
+        if matches!(handle.kind, HandleKind::File(_)) {
+            continue;
+        }
+
+        if graph.incoming(node_id).is_empty() {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Suggestion,
+                code: "S001",
+                message: format!("orphaned handle: {} has no incoming edges", handle.id),
+                file: handle.file_path.as_ref().map(ToString::to_string),
+                line: None,
+            });
+        }
+    }
+
+    diagnostics
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +366,45 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
 /// Groups Label handles by prefix. Prefixes not in confirmed or rejected with
 /// count >= 3 are candidates. One diagnostic per candidate prefix.
 fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
-    Vec::new() // TDD RED: stub
+    let confirmed: HashSet<&str> = config
+        .handles
+        .confirmed
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
+
+    // Count labels per prefix
+    let mut prefix_counts: HashMap<&str, usize> = HashMap::new();
+    for (_, handle) in graph.nodes() {
+        if let HandleKind::Label { ref prefix, .. } = handle.kind {
+            *prefix_counts.entry(prefix.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    // Sort for deterministic output
+    let mut candidates: Vec<_> = prefix_counts
+        .into_iter()
+        .filter(|(prefix, count)| {
+            *count >= 3 && !confirmed.contains(prefix) && !rejected.contains(prefix)
+        })
+        .collect();
+    candidates.sort_by_key(|(prefix, _)| *prefix);
+
+    for (prefix, count) in candidates {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Suggestion,
+            code: "S002",
+            message: format!(
+                "candidate namespace: {prefix} ({count} labels found, not in confirmed namespaces)"
+            ),
+            file: None,
+            line: None,
+        });
+    }
+
+    diagnostics
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +414,65 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
 /// Suggest pipeline stalls: ordering levels with high population and no
 /// DependsOn outflow to the next level.
 fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
-    Vec::new() // TDD RED: stub
+    if lattice.ordering.is_empty() {
+        return Vec::new();
+    }
+
+    // Group handles by their ordering level
+    let mut by_level: HashMap<usize, Vec<NodeId>> = HashMap::new();
+    for (node_id, handle) in graph.nodes() {
+        if let Some(ref status) = handle.status
+            && let Some(level) = lattice::state_level(status, lattice)
+        {
+            by_level.entry(level).or_default().push(node_id);
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+
+    // Check each level except the last for stalls
+    for level_idx in 0..lattice.ordering.len().saturating_sub(1) {
+        let Some(handles_at_level) = by_level.get(&level_idx) else {
+            continue;
+        };
+
+        if handles_at_level.len() < 3 {
+            continue;
+        }
+
+        let next_level = level_idx + 1;
+
+        // Count handles that have at least one DependsOn edge to a handle at the next level
+        let has_outflow = handles_at_level.iter().any(|&node_id| {
+            graph
+                .edges_by_kind(node_id, EdgeKind::DependsOn)
+                .any(|edge| {
+                    let target = graph.node(edge.target);
+                    if let Some(ref target_status) = target.status {
+                        lattice::state_level(target_status, lattice) == Some(next_level)
+                    } else {
+                        false
+                    }
+                })
+        });
+
+        if !has_outflow {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Suggestion,
+                code: "S003",
+                message: format!(
+                    "pipeline stall: {} handles at status '{}' with no dependencies at next level '{}'",
+                    handles_at_level.len(),
+                    lattice.ordering[level_idx],
+                    lattice.ordering[next_level]
+                ),
+                file: None,
+                line: None,
+            });
+        }
+    }
+
+    diagnostics
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +489,68 @@ fn suggest_abandoned_namespaces(
     lattice: &Lattice,
     config: &AnnealConfig,
 ) -> Vec<Diagnostic> {
-    Vec::new() // TDD RED: stub
+    let confirmed: HashSet<&str> = config
+        .handles
+        .confirmed
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    // Group Label handles by prefix (confirmed namespaces only)
+    let mut by_prefix: BTreeMap<&str, Vec<(NodeId, &crate::handle::Handle)>> = BTreeMap::new();
+    for (node_id, handle) in graph.nodes() {
+        if let HandleKind::Label { ref prefix, .. } = handle.kind
+            && confirmed.contains(prefix.as_str())
+        {
+            by_prefix
+                .entry(prefix.as_str())
+                .or_default()
+                .push((node_id, handle));
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+
+    for (prefix, members) in &by_prefix {
+        if members.len() < 2 {
+            continue;
+        }
+
+        let all_abandoned = members.iter().all(|(_, handle)| {
+            // Terminal status -> abandoned
+            if let Some(ref status) = handle.status
+                && lattice.terminal.contains(status)
+            {
+                return true;
+            }
+
+            // Stale beyond error threshold -> abandoned
+            // Label handles don't have filesystem mtime, pass None
+            let freshness =
+                lattice::compute_freshness(handle.metadata.updated, None, &config.freshness);
+            if freshness.level == FreshnessLevel::Stale {
+                return true;
+            }
+
+            // No updated date and not terminal -> NOT abandoned (conservative)
+            false
+        });
+
+        if all_abandoned {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Suggestion,
+                code: "S004",
+                message: format!(
+                    "abandoned namespace: all {} members of {prefix} are terminal or stale",
+                    members.len()
+                ),
+                file: None,
+                line: None,
+            });
+        }
+    }
+
+    diagnostics
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +563,79 @@ fn suggest_abandoned_namespaces(
 /// prefixes. Pairs co-occurring in >= 3 files are candidates, unless already
 /// in the same concern group.
 fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
-    Vec::new() // TDD RED: stub
+    // Build set of existing concern group pairs for exclusion
+    let mut existing_pairs: HashSet<(&str, &str)> = HashSet::new();
+    for members in config.concerns.values() {
+        for (i, a) in members.iter().enumerate() {
+            for b in &members[i + 1..] {
+                let (lo, hi) = if a <= b {
+                    (a.as_str(), b.as_str())
+                } else {
+                    (b.as_str(), a.as_str())
+                };
+                existing_pairs.insert((lo, hi));
+            }
+        }
+    }
+
+    // For each File handle, collect label prefixes it references
+    let mut file_prefixes: Vec<HashSet<&str>> = Vec::new();
+    for (node_id, handle) in graph.nodes() {
+        if !matches!(handle.kind, HandleKind::File(_)) {
+            continue;
+        }
+
+        let mut prefixes = HashSet::new();
+        for edge in graph.outgoing(node_id) {
+            if matches!(edge.kind, EdgeKind::Cites | EdgeKind::DependsOn) {
+                let target = graph.node(edge.target);
+                if let HandleKind::Label { ref prefix, .. } = target.kind {
+                    prefixes.insert(prefix.as_str());
+                }
+            }
+        }
+
+        if prefixes.len() >= 2 {
+            file_prefixes.push(prefixes);
+        }
+    }
+
+    // Count co-occurrences for all prefix pairs
+    let mut pair_counts: HashMap<(&str, &str), usize> = HashMap::new();
+    for prefixes in &file_prefixes {
+        let mut sorted: Vec<&str> = prefixes.iter().copied().collect();
+        sorted.sort_unstable();
+        for (i, &a) in sorted.iter().enumerate() {
+            for &b in &sorted[i + 1..] {
+                *pair_counts.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Filter to pairs with >= 3 co-occurrences, excluding existing concern groups
+    let mut candidates: Vec<((&str, &str), usize)> = pair_counts
+        .into_iter()
+        .filter(|((a, b), count)| *count >= 3 && !existing_pairs.contains(&(*a, *b)))
+        .collect();
+
+    // Sort by count descending, then by pair name for determinism
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Limit to top 5 pairs to avoid noise
+    let mut diagnostics = Vec::new();
+    for ((prefix_a, prefix_b), count) in candidates.into_iter().take(5) {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Suggestion,
+            code: "S005",
+            message: format!(
+                "concern group candidate: {prefix_a} and {prefix_b} co-occur in {count} files"
+            ),
+            file: None,
+            line: None,
+        });
+    }
+
+    diagnostics
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +951,11 @@ mod tests {
         let _label = graph.add_node(make_label_handle("OQ", 1, None));
 
         let diags = suggest_orphaned(&graph);
-        assert_eq!(diags.len(), 1, "Expected 1 S001 diagnostic for orphaned label");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S001 diagnostic for orphaned label"
+        );
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S001");
         assert!(diags[0].message.contains("OQ-1"));
@@ -751,7 +1003,11 @@ mod tests {
         let config = AnnealConfig::default();
 
         let diags = suggest_candidate_namespaces(&graph, &config);
-        assert_eq!(diags.len(), 1, "Expected 1 S002 diagnostic for candidate namespace");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S002 diagnostic for candidate namespace"
+        );
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S002");
         assert!(diags[0].message.contains("NEW"));
@@ -796,7 +1052,11 @@ mod tests {
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice);
-        assert_eq!(diags.len(), 1, "Expected 1 S003 diagnostic for pipeline stall");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S003 diagnostic for pipeline stall"
+        );
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S003");
         assert!(diags[0].message.contains("draft"));
@@ -836,7 +1096,11 @@ mod tests {
         let lattice = make_lattice(&[], &["archived"], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
-        assert_eq!(diags.len(), 1, "Expected 1 S004 diagnostic for abandoned namespace");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S004 diagnostic for abandoned namespace"
+        );
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S004");
         assert!(diags[0].message.contains("OLD"));
@@ -847,9 +1111,11 @@ mod tests {
         let mut graph = DiGraph::new();
         // Create handles with old updated dates (stale beyond error threshold of 90 days)
         let mut h1 = make_label_handle("STALE", 1, Some("draft"));
-        h1.metadata.updated = Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
+        h1.metadata.updated =
+            Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
         let mut h2 = make_label_handle("STALE", 2, Some("draft"));
-        h2.metadata.updated = Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
+        h2.metadata.updated =
+            Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
         let _a = graph.add_node(h1);
         let _b = graph.add_node(h2);
 
@@ -917,7 +1183,11 @@ mod tests {
         let config = AnnealConfig::default();
 
         let diags = suggest_concern_groups(&graph, &config);
-        assert_eq!(diags.len(), 1, "Expected 1 S005 diagnostic for co-occurring prefixes");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S005 diagnostic for co-occurring prefixes"
+        );
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S005");
         assert!(
@@ -941,7 +1211,10 @@ mod tests {
         let unresolved: Vec<PendingEdge> = Vec::new();
 
         let diags = run_checks(&graph, &lattice, &config, &unresolved, 0);
-        let suggestion_count = diags.iter().filter(|d| d.severity == Severity::Suggestion).count();
+        let suggestion_count = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Suggestion)
+            .count();
         assert!(
             suggestion_count >= 1,
             "run_checks should include suggestions from run_suggestions, got {suggestion_count}"
