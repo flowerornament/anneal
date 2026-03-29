@@ -7,6 +7,7 @@ use regex::{Regex, RegexSet};
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
+use crate::extraction::{classify_frontmatter_value, RefHint};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
 
@@ -458,6 +459,19 @@ pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
 // Graph construction
 // ---------------------------------------------------------------------------
 
+/// A frontmatter value rejected by the plausibility filter.
+pub(crate) struct ImplausibleRef {
+    pub(crate) file: String,
+    pub(crate) raw_value: String,
+    pub(crate) reason: String,
+}
+
+/// An external URL found in frontmatter.
+pub(crate) struct ExternalRef {
+    pub(crate) file: String,
+    pub(crate) url: String,
+}
+
 /// Result of `build_graph`: the populated graph, label candidates for namespace
 /// inference, pending edges for resolution, and observed status values for
 /// lattice inference.
@@ -472,6 +486,10 @@ pub(crate) struct BuildResult {
     pub(crate) observed_frontmatter_keys: HashMap<String, usize>,
     /// Bare filename -> full relative paths, for corpus-wide resolution fallback.
     pub(crate) filename_index: HashMap<String, Vec<Utf8PathBuf>>,
+    /// Implausible frontmatter values that were filtered before resolution.
+    pub(crate) implausible_refs: Vec<ImplausibleRef>,
+    /// External URL references found in frontmatter (tracked, not resolved).
+    pub(crate) external_refs: Vec<ExternalRef>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -647,6 +665,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         terminal_by_directory,
         observed_frontmatter_keys,
         filename_index,
+        implausible_refs: Vec::new(),
+        external_refs: Vec::new(),
     })
 }
 
@@ -793,5 +813,184 @@ mod tests {
             "should not extract hyphen-prefixed fragments, got: {:?}",
             result.file_refs
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plausibility filter integration tests (build_graph)
+    // -----------------------------------------------------------------------
+
+    fn write_md_file(dir: &std::path::Path, name: &str, content: &str) {
+        std::fs::write(dir.join(name), content).expect("write test file");
+    }
+
+    #[test]
+    fn plausibility_filter_url_becomes_external() {
+        let tmp = std::env::temp_dir().join("anneal_test_url");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "test.md",
+            "---\ndepends-on: https://example.com\n---\nBody text\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        // URL should NOT appear in pending_edges
+        assert!(
+            !result
+                .pending_edges
+                .iter()
+                .any(|e| e.target_identity.contains("https://")),
+            "URL should not be in pending_edges, got: {:?}",
+            result.pending_edges.iter().map(|e| &e.target_identity).collect::<Vec<_>>()
+        );
+        // URL should appear in external_refs
+        assert!(
+            result.external_refs.iter().any(|e| e.url == "https://example.com"),
+            "URL should be in external_refs, got {} entries",
+            result.external_refs.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn plausibility_filter_prose_becomes_implausible() {
+        let tmp = std::env::temp_dir().join("anneal_test_prose");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "test.md",
+            "---\ndepends-on: claude-desktop session\n---\nBody text\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        // Prose should NOT appear in pending_edges
+        assert!(
+            !result
+                .pending_edges
+                .iter()
+                .any(|e| e.target_identity == "claude-desktop session"),
+            "prose should not be in pending_edges"
+        );
+        // Prose should appear in implausible_refs
+        assert!(
+            result
+                .implausible_refs
+                .iter()
+                .any(|r| r.raw_value == "claude-desktop session"
+                    && r.reason.contains("freeform prose")),
+            "prose should be in implausible_refs with 'freeform prose' reason, got {} entries",
+            result.implausible_refs.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn plausibility_filter_passes_valid_ref() {
+        let tmp = std::env::temp_dir().join("anneal_test_valid");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "test.md",
+            "---\ndepends-on: foo.md\n---\nBody text\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        // Valid .md ref should be in pending_edges
+        assert!(
+            result
+                .pending_edges
+                .iter()
+                .any(|e| e.target_identity == "foo.md"),
+            "valid ref should be in pending_edges, got: {:?}",
+            result.pending_edges.iter().map(|e| &e.target_identity).collect::<Vec<_>>()
+        );
+        // Should NOT be in implausible_refs
+        assert!(
+            result.implausible_refs.is_empty(),
+            "valid ref should not produce implausible_refs"
+        );
+        // Should NOT be in external_refs
+        assert!(
+            result.external_refs.is_empty(),
+            "valid ref should not produce external_refs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn plausibility_filter_absolute_path_becomes_implausible() {
+        let tmp = std::env::temp_dir().join("anneal_test_abspath");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "test.md",
+            "---\ndepends-on: /absolute/path.md\n---\nBody text\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(
+            !result
+                .pending_edges
+                .iter()
+                .any(|e| e.target_identity.contains("/absolute/")),
+            "absolute path should not be in pending_edges"
+        );
+        assert!(
+            result
+                .implausible_refs
+                .iter()
+                .any(|r| r.raw_value == "/absolute/path.md"
+                    && r.reason.contains("absolute path")),
+            "absolute path should be in implausible_refs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn plausibility_filter_wildcard_becomes_implausible() {
+        let tmp = std::env::temp_dir().join("anneal_test_wildcard");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "test.md",
+            "---\ndepends-on: \"*.md\"\n---\nBody text\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(
+            !result
+                .pending_edges
+                .iter()
+                .any(|e| e.target_identity.contains("*")),
+            "wildcard should not be in pending_edges"
+        );
+        assert!(
+            result
+                .implausible_refs
+                .iter()
+                .any(|r| r.raw_value == "*.md" && r.reason.contains("wildcard pattern")),
+            "wildcard should be in implausible_refs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
