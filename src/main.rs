@@ -117,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         &result.label_candidates,
         &result.pending_edges,
         &config,
+        &root,
     );
 
     let terminal_by_directory = HashSet::new();
@@ -175,6 +176,7 @@ mod tests {
             &result.label_candidates,
             &result.pending_edges,
             &config,
+            &root,
         );
 
         assert!(
