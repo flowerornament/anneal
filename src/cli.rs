@@ -744,7 +744,9 @@ impl DiffOutput {
         writeln!(
             w,
             "  Handles: {:+} ({:+} active, {:+} frozen)",
-            self.handle_delta.created, self.handle_delta.active_delta, self.handle_delta.frozen_delta
+            self.handle_delta.created,
+            self.handle_delta.active_delta,
+            self.handle_delta.frozen_delta
         )?;
         if !self.state_changes.is_empty() {
             for sc in &self.state_changes {
@@ -776,7 +778,11 @@ impl DiffOutput {
 
 /// Compute the diff between two snapshots.
 #[allow(clippy::cast_possible_wrap)]
-fn diff_snapshots(current: &crate::snapshot::Snapshot, previous: &crate::snapshot::Snapshot, reference: &str) -> DiffOutput {
+fn diff_snapshots(
+    current: &crate::snapshot::Snapshot,
+    previous: &crate::snapshot::Snapshot,
+    reference: &str,
+) -> DiffOutput {
     let handle_delta = HandleDelta {
         created: current.handles.total as i64 - previous.handles.total as i64,
         active_delta: current.handles.active as i64 - previous.handles.active as i64,
@@ -827,12 +833,11 @@ fn diff_snapshots(current: &crate::snapshot::Snapshot, previous: &crate::snapsho
         .filter_map(|prefix| {
             let curr = current.namespaces.get(&prefix);
             let prev = previous.namespaces.get(&prefix);
-            let total_delta = curr.map_or(0, |s| s.total as i64)
-                - prev.map_or(0, |s| s.total as i64);
-            let open_delta = curr.map_or(0, |s| s.open as i64)
-                - prev.map_or(0, |s| s.open as i64);
-            let resolved_delta = curr.map_or(0, |s| s.resolved as i64)
-                - prev.map_or(0, |s| s.resolved as i64);
+            let total_delta =
+                curr.map_or(0, |s| s.total as i64) - prev.map_or(0, |s| s.total as i64);
+            let open_delta = curr.map_or(0, |s| s.open as i64) - prev.map_or(0, |s| s.open as i64);
+            let resolved_delta =
+                curr.map_or(0, |s| s.resolved as i64) - prev.map_or(0, |s| s.resolved as i64);
 
             if total_delta != 0 || open_delta != 0 || resolved_delta != 0 {
                 Some(NamespaceDelta {
@@ -859,7 +864,10 @@ fn diff_snapshots(current: &crate::snapshot::Snapshot, previous: &crate::snapsho
 }
 
 /// Find the snapshot closest to `days` days ago in the history.
-fn find_snapshot_by_days(history: &[crate::snapshot::Snapshot], days: u32) -> Option<&crate::snapshot::Snapshot> {
+fn find_snapshot_by_days(
+    history: &[crate::snapshot::Snapshot],
+    days: u32,
+) -> Option<&crate::snapshot::Snapshot> {
     if history.is_empty() {
         return None;
     }
@@ -867,13 +875,11 @@ fn find_snapshot_by_days(history: &[crate::snapshot::Snapshot], days: u32) -> Op
     let target = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
     let target_ts = target.timestamp();
 
-    history
-        .iter()
-        .min_by_key(|s| {
-            chrono::DateTime::parse_from_rfc3339(&s.timestamp)
-                .map(|dt| (dt.timestamp() - target_ts).unsigned_abs())
-                .unwrap_or(u64::MAX)
-        })
+    history.iter().min_by_key(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s.timestamp)
+            .map(|dt| (dt.timestamp() - target_ts).unsigned_abs())
+            .unwrap_or(u64::MAX)
+    })
 }
 
 /// Reconstruct a snapshot from files at a git ref by extracting the tree
