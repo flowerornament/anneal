@@ -22,22 +22,19 @@ static VERSION_FILENAME_RE: LazyLock<Regex> = LazyLock::new(|| {
 // Resolve result types
 // ---------------------------------------------------------------------------
 
-/// Statistics from label resolution.
-pub struct ResolveResult {
-    pub labels_resolved: usize,
-    pub labels_skipped: usize,
-    pub namespaces_confirmed: usize,
-    pub edges_created: usize,
+struct ResolveResult {
+    labels_resolved: usize,
+    labels_skipped: usize,
 }
 
 /// Overall statistics from the full resolution pipeline.
-pub struct ResolveStats {
-    pub namespaces: HashSet<String>,
-    pub labels_resolved: usize,
-    pub labels_skipped: usize,
-    pub versions_resolved: usize,
-    pub pending_edges_resolved: usize,
-    pub pending_edges_unresolved: usize,
+pub(crate) struct ResolveStats {
+    pub(crate) namespaces: HashSet<String>,
+    pub(crate) labels_resolved: usize,
+    pub(crate) labels_skipped: usize,
+    pub(crate) versions_resolved: usize,
+    pub(crate) pending_edges_resolved: usize,
+    pub(crate) pending_edges_unresolved: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -50,43 +47,41 @@ pub struct ResolveStats {
 /// M >= 2 distinct files. Config overrides (`handles.confirmed`, `handles.rejected`)
 /// take precedence over inference. Prefixes with only large isolated numbers
 /// (e.g., SHA-256, AVX-512) are rejected.
-pub fn infer_namespaces(candidates: &[LabelCandidate], config: &AnnealConfig) -> HashSet<String> {
+pub(crate) fn infer_namespaces(
+    candidates: &[LabelCandidate],
+    config: &AnnealConfig,
+) -> HashSet<String> {
     let mut confirmed: HashSet<String> = config.handles.confirmed.iter().cloned().collect();
-    let rejected: HashSet<String> = config.handles.rejected.iter().cloned().collect();
+    let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
-    // Group candidates by prefix: prefix -> Vec<(number, file_path)>
-    let mut by_prefix: HashMap<String, Vec<(u32, Utf8PathBuf)>> = HashMap::new();
+    // Group candidates by prefix, borrowing from the candidates slice
+    let mut by_prefix: HashMap<&str, Vec<(u32, &Utf8Path)>> = HashMap::new();
     for c in candidates {
         by_prefix
-            .entry(c.prefix.clone())
+            .entry(&c.prefix)
             .or_default()
-            .push((c.number, c.file_path.clone()));
+            .push((c.number, &c.file_path));
     }
 
     for (prefix, occurrences) in &by_prefix {
-        if rejected.contains(prefix) || confirmed.contains(prefix) {
+        if rejected.contains(prefix) || confirmed.contains(*prefix) {
             continue;
         }
 
-        // Count distinct sequential numbers
         let numbers: BTreeSet<u32> = occurrences.iter().map(|(n, _)| *n).collect();
-        // Count distinct file paths
-        let distinct_files: HashSet<&Utf8PathBuf> = occurrences.iter().map(|(_, f)| f).collect();
+        let distinct_files: HashSet<&&Utf8Path> = occurrences.iter().map(|(_, f)| f).collect();
 
-        // Must have N >= 3 sequential members AND M >= 2 files
         if numbers.len() < 3 || distinct_files.len() < 2 {
             continue;
         }
 
-        // Additional heuristic: reject prefixes where the minimum number is large (>100)
-        // AND there are no sequential runs. A "sequential run" means at least 3
-        // consecutive numbers exist. This catches SHA-256, AVX-512, CRC-32 etc.
+        // Reject prefixes with only large isolated numbers (e.g., SHA-256, AVX-512)
         let min_num = numbers.iter().next().copied().unwrap_or(0);
         if min_num > 100 && !has_sequential_run(&numbers) {
             continue;
         }
 
-        confirmed.insert(prefix.clone());
+        confirmed.insert((*prefix).to_string());
     }
 
     confirmed
@@ -123,7 +118,7 @@ fn has_sequential_run(numbers: &BTreeSet<u32>) -> bool {
 /// - Create an edge from the file node to the label node with the candidate's edge kind
 ///
 /// Candidates with unconfirmed prefixes are skipped silently (HANDLE-06).
-pub fn resolve_labels(
+fn resolve_labels(
     graph: &mut DiGraph,
     candidates: &[LabelCandidate],
     namespaces: &HashSet<String>,
@@ -131,7 +126,6 @@ pub fn resolve_labels(
 ) -> ResolveResult {
     let mut labels_resolved: usize = 0;
     let mut labels_skipped: usize = 0;
-    let mut edges_created: usize = 0;
 
     for candidate in candidates {
         if !namespaces.contains(&candidate.prefix) {
@@ -141,7 +135,6 @@ pub fn resolve_labels(
 
         let label_id = format!("{}-{}", candidate.prefix, candidate.number);
 
-        // Create label node if not already present
         let label_node = if let Some(&existing) = node_index.get(&label_id) {
             existing
         } else {
@@ -160,19 +153,15 @@ pub fn resolve_labels(
             node
         };
 
-        // Find the file node for this candidate's file_path
         let file_id = candidate.file_path.to_string();
         if let Some(&source_node) = node_index.get(&file_id) {
             graph.add_edge(source_node, label_node, candidate.edge_kind);
-            edges_created += 1;
         }
     }
 
     ResolveResult {
         labels_resolved,
         labels_skipped,
-        namespaces_confirmed: namespaces.len(),
-        edges_created,
     }
 }
 
@@ -188,7 +177,10 @@ pub fn resolve_labels(
 /// 3. Add Supersedes edges forming a supersession chain (v3 -> v2 -> v1)
 ///
 /// Returns the count of version handles created.
-pub fn resolve_versions(graph: &mut DiGraph, node_index: &mut HashMap<String, NodeId>) -> usize {
+pub(crate) fn resolve_versions(
+    graph: &mut DiGraph,
+    node_index: &mut HashMap<String, NodeId>,
+) -> usize {
     // Collect versioned files from existing File handles
     // Group by base name: base -> Vec<(version, file_node_id)>
     let mut versioned: HashMap<String, Vec<(u32, NodeId)>> = HashMap::new();
@@ -253,7 +245,7 @@ pub fn resolve_versions(graph: &mut DiGraph, node_index: &mut HashMap<String, No
 /// the edge. Otherwise, skips it (Phase 2's CHECK-01 will report broken refs).
 ///
 /// Returns the count of edges resolved.
-pub fn resolve_pending_edges(
+pub(crate) fn resolve_pending_edges(
     graph: &mut DiGraph,
     pending: &[PendingEdge],
     node_index: &HashMap<String, NodeId>,
@@ -279,7 +271,9 @@ pub fn resolve_pending_edges(
 /// Joins the reference path relative to the referring file's parent directory,
 /// normalizes it (resolving `..` components), and makes it relative to root.
 /// Returns `Some(normalized)` if the resolved path exists, `None` otherwise.
-pub fn resolve_file_path(
+// Phase 2: CHECK-01 will wire this for bare filename resolution
+#[allow(dead_code)]
+pub(crate) fn resolve_file_path(
     reference: &str,
     referring_file: &Utf8Path,
     root: &Utf8Path,
@@ -346,7 +340,7 @@ fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
 /// - Label handles: identity = "PREFIX-NUMBER"
 /// - Version handles: identity = "{base}-vN"
 fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
-    let mut index = HashMap::new();
+    let mut index = HashMap::with_capacity(graph.node_count());
     for (node_id, handle) in graph.nodes() {
         index.insert(handle.id.clone(), node_id);
     }
@@ -358,37 +352,19 @@ fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
 // ---------------------------------------------------------------------------
 
 /// Resolve all handles: namespace inference, label nodes, version nodes, pending edges.
-///
-/// This is the main entry point for handle resolution. It:
-/// 1. Infers namespaces from label candidates
-/// 2. Builds a node index from existing graph nodes
-/// 3. Resolves labels into graph nodes and edges
-/// 4. Resolves version handles from file naming conventions
-/// 5. Rebuilds node index with new nodes
-/// 6. Resolves pending edges from frontmatter fields
-pub fn resolve_all(
+pub(crate) fn resolve_all(
     graph: &mut DiGraph,
     candidates: &[LabelCandidate],
     pending: &[PendingEdge],
     config: &AnnealConfig,
-    _root: &Utf8Path,
 ) -> ResolveStats {
-    // 1. Infer namespaces from label candidates
     let namespaces = infer_namespaces(candidates, config);
-
-    // 2. Build initial node index from existing graph nodes
     let mut node_index = build_node_index(graph);
 
-    // 3. Resolve labels: add label nodes and edges
     let label_result = resolve_labels(graph, candidates, &namespaces, &mut node_index);
-
-    // 4. Resolve version handles from file naming conventions
     let versions_resolved = resolve_versions(graph, &mut node_index);
 
-    // 5. Rebuild node index (now includes label and version nodes)
-    let node_index = build_node_index(graph);
-
-    // 6. Resolve pending edges (frontmatter-derived)
+    // node_index already contains label and version nodes (mutated in-place above)
     let pending_resolved = resolve_pending_edges(graph, pending, &node_index);
     let pending_unresolved = pending.len() - pending_resolved;
 

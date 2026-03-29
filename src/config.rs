@@ -10,49 +10,49 @@ use serde::{Deserialize, Serialize};
 /// `deny_unknown_fields` catches config typos early.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct AnnealConfig {
+pub(crate) struct AnnealConfig {
     /// Root directory to scan (defaults to inferred: `.design/` > `docs/` > `.`).
-    pub root: String,
+    pub(crate) root: String,
     /// Additional directories to exclude beyond defaults.
-    pub exclude: Vec<String>,
+    pub(crate) exclude: Vec<String>,
     /// Convergence lattice configuration.
-    pub convergence: ConvergenceConfig,
+    pub(crate) convergence: ConvergenceConfig,
     /// Handle namespace configuration.
-    pub handles: HandlesConfig,
+    pub(crate) handles: HandlesConfig,
     /// Freshness threshold configuration.
-    pub freshness: FreshnessConfig,
+    pub(crate) freshness: FreshnessConfig,
 }
 
 /// Configuration for the convergence lattice (active/terminal partition).
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ConvergenceConfig {
+pub(crate) struct ConvergenceConfig {
     /// Status values considered active (in-progress, not yet settled).
-    pub active: Vec<String>,
+    pub(crate) active: Vec<String>,
     /// Status values considered terminal (settled, no further work expected).
-    pub terminal: Vec<String>,
+    pub(crate) terminal: Vec<String>,
     /// Optional ordering for pipeline flow analysis.
-    pub ordering: Vec<String>,
+    pub(crate) ordering: Vec<String>,
 }
 
 /// Configuration for handle namespace recognition.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct HandlesConfig {
+pub(crate) struct HandlesConfig {
     /// Namespace prefixes confirmed as real label namespaces.
-    pub confirmed: Vec<String>,
+    pub(crate) confirmed: Vec<String>,
     /// Namespace prefixes rejected (false positives like SHA, AVX).
-    pub rejected: Vec<String>,
+    pub(crate) rejected: Vec<String>,
 }
 
 /// Configuration for freshness thresholds.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct FreshnessConfig {
+pub(crate) struct FreshnessConfig {
     /// Days before a file's age triggers a warning.
-    pub warn: u32,
+    pub(crate) warn: u32,
     /// Days before a file's age triggers an error.
-    pub error: u32,
+    pub(crate) error: u32,
 }
 
 impl Default for FreshnessConfig {
@@ -68,7 +68,7 @@ impl Default for FreshnessConfig {
 ///
 /// Returns `Ok(AnnealConfig::default())` if the file does not exist (CONFIG-02:
 /// zero-config is valid). Returns an error on malformed TOML.
-pub fn load_config(root: &Path) -> Result<AnnealConfig> {
+pub(crate) fn load_config(root: &Path) -> Result<AnnealConfig> {
     let config_path = root.join("anneal.toml");
 
     if !config_path.exists() {
