@@ -8,7 +8,7 @@ progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
 ---
 
 # State: anneal
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 **Phase 3: Convergence & Polish**
 
 - Status: In Progress
-- Current Plan: 3 of 5
+- Current Plan: 4 of 5
 - Goal: Add convergence tracking, status/map/diff commands, and suggestion engine to complete the full spec.
 
 ## Progress
@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
 | Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | In Progress | Plans 01, 02, 03 done |
+| Phase 3: Convergence & Polish | In Progress | Plans 01, 02, 03, 04 done |
 
 ## Decisions
 
@@ -72,6 +72,9 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - Ord/PartialOrd derives on NodeId for BTreeSet edge deduplication
 - ObligationDelta fields keep _delta suffix with clippy allow for JSON schema clarity
 - Git ref extraction via git archive | tar for single-subprocess file recovery
+- Convergence computed in main.rs (not cli.rs) since it requires snapshot I/O
+- Flat lattice shows Active/Terminal counts instead of pipeline histogram (D-11)
+- Check arm restructured: compute diagnostics once, build snapshot before filtering, append after output
 
 ## Session Log
 
@@ -88,6 +91,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-29 | 03 | Plan 01 complete: snapshot.rs with Snapshot type, JSONL I/O (append/read), convergence summary (advancing/holding/drifting), Severity::Suggestion variant. 10 new tests. |
 | 2026-03-29 | 03 | Plan 02 complete: Five suggestion rules S001-S005 in checks.rs (orphaned, candidate ns, pipeline stalls, abandoned ns, concern groups). CheckFilters struct with --suggest/--stale/--obligations. 12 new tests. |
 | 2026-03-29 | 03 | Plan 03 complete: anneal map command with text/DOT rendering, BFS --around, --concern filtering. MapOptions struct, 8 tests. |
+| 2026-03-29 | 03 | Plan 04 complete: anneal status dashboard (8 lines matching spec 12.4), snapshot append on status+check (D-04/D-20), convergence tracking. 11 new tests. |
 
 ---
-*Last updated: 2026-03-29 after Plan 03-03 merge*
+*Last updated: 2026-03-29 after Plan 03-04 completion*

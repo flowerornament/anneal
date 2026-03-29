@@ -58,7 +58,7 @@
 - [x] **CLI-01**: `anneal check` — run local checks, report diagnostics, exit non-zero on errors
 - [x] **CLI-02**: `anneal get <handle>` — resolve any handle, show content + state + context
 - [x] **CLI-03**: `anneal find <query>` — full-text search filtered by convergence state
-- [ ] **CLI-04**: `anneal status` — dashboard with graph stats, pipeline state, convergence summary
+- [x] **CLI-04**: `anneal status` — dashboard with graph stats, pipeline state, convergence summary
 - [x] **CLI-05**: `anneal map` — render knowledge graph, with --concern and --around flags
 - [x] **CLI-06**: `anneal init` — save inferred coloring as anneal.toml
 - [x] **CLI-07**: `anneal impact <handle>` — show what's affected if handle changes
@@ -151,7 +151,7 @@
 | CLI-01 | Phase 2 | Complete |
 | CLI-02 | Phase 2 | Complete |
 | CLI-03 | Phase 2 | Complete |
-| CLI-04 | Phase 3 | Pending |
+| CLI-04 | Phase 3 | Complete |
 | CLI-05 | Phase 3 | Complete |
 | CLI-06 | Phase 2 | Complete |
 | CLI-07 | Phase 2 | Complete |
