@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use regex::{Regex, RegexSet};
 use walkdir::WalkDir;
 
-use crate::config::AnnealConfig;
+use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
 
@@ -105,30 +105,74 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Parse YAML frontmatter into a status and `HandleMetadata`.
+/// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
 ///
 /// Deserializes as `serde_yaml_ng::Value` to handle arbitrary fields and
 /// YAML type coercion. On parse failure, returns defaults (never errors).
-pub(crate) fn parse_frontmatter(yaml: &str) -> (Option<String>, HandleMetadata) {
+/// The `config` parameter drives which frontmatter keys produce edges.
+pub(crate) fn parse_frontmatter(
+    yaml: &str,
+    config: &FrontmatterConfig,
+) -> (Option<String>, HandleMetadata, Vec<FrontmatterEdge>) {
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return (None, HandleMetadata::default());
+        return (None, HandleMetadata::default(), Vec::new());
     };
 
     let Some(mapping) = value.as_mapping() else {
-        return (None, HandleMetadata::default());
+        return (None, HandleMetadata::default(), Vec::new());
     };
 
     let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_string()));
 
+    // Special fields: status and updated (not edge-producing)
     let status = get("status").and_then(yaml_value_to_string);
     let updated = get("updated")
         .and_then(yaml_value_to_string)
         .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
-    let superseded_by = get("superseded-by").and_then(yaml_value_to_string);
-    // depends-on, discharges, verifies: each accepts a string or list of strings
-    let depends_on = get("depends-on").map_or_else(Vec::new, yaml_value_to_string_vec);
-    let discharges = get("discharges").map_or_else(Vec::new, yaml_value_to_string_vec);
-    let verifies = get("verifies").map_or_else(Vec::new, yaml_value_to_string_vec);
+
+    // Table-driven: scan all frontmatter keys against configured field mappings
+    let mut field_edges = Vec::new();
+    let mut superseded_by = None;
+    let mut depends_on = Vec::new();
+    let mut discharges = Vec::new();
+    let mut verifies = Vec::new();
+
+    for (key, val) in mapping {
+        let Some(key_str) = key.as_str() else {
+            continue;
+        };
+        // Skip special fields
+        if key_str == "status" || key_str == "updated" {
+            continue;
+        }
+
+        if let Some(field_mapping) = config.fields.get(key_str) {
+            let Some(edge_kind) = EdgeKind::from_name(&field_mapping.edge_kind) else {
+                continue;
+            };
+            let targets = yaml_value_to_string_vec(val);
+            if targets.is_empty() {
+                continue;
+            }
+
+            let inverse = matches!(field_mapping.direction, Direction::Inverse);
+
+            // Backward compat: populate HandleMetadata for the 4 known fields
+            match key_str {
+                "superseded-by" => superseded_by = targets.first().cloned(),
+                "depends-on" => depends_on.clone_from(&targets),
+                "discharges" => discharges.clone_from(&targets),
+                "verifies" => verifies.clone_from(&targets),
+                _ => {}
+            }
+
+            field_edges.push(FrontmatterEdge {
+                targets,
+                edge_kind,
+                inverse,
+            });
+        }
+    }
 
     let metadata = HandleMetadata {
         updated,
@@ -138,7 +182,7 @@ pub(crate) fn parse_frontmatter(yaml: &str) -> (Option<String>, HandleMetadata) 
         verifies,
     };
 
-    (status, metadata)
+    (status, metadata, field_edges)
 }
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
@@ -175,11 +219,20 @@ pub(crate) struct LabelCandidate {
 ///
 /// Frontmatter fields like `depends-on: OQ-64` reference targets that may not
 /// have been scanned yet. Resolution to actual `NodeId` values happens in
-/// `resolve.rs` (Plan 03).
+/// `resolve.rs`.
 pub(crate) struct PendingEdge {
     pub(crate) source: NodeId,
     pub(crate) target_identity: String,
     pub(crate) kind: EdgeKind,
+    /// If true, the actual graph edge is target -> source (inverse direction).
+    pub(crate) inverse: bool,
+}
+
+/// An edge descriptor parsed from a frontmatter field via the extensible mapping.
+pub(crate) struct FrontmatterEdge {
+    pub(crate) targets: Vec<String>,
+    pub(crate) edge_kind: EdgeKind,
+    pub(crate) inverse: bool,
 }
 
 /// Result of scanning a single file's body content.
@@ -373,6 +426,8 @@ pub(crate) struct BuildResult {
     pub(crate) label_candidates: Vec<LabelCandidate>,
     pub(crate) pending_edges: Vec<PendingEdge>,
     pub(crate) observed_statuses: HashSet<String>,
+    /// Statuses found exclusively in terminal-convention directories (D-04).
+    pub(crate) terminal_by_directory: HashSet<String>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -380,11 +435,29 @@ pub(crate) struct BuildResult {
 /// Walks the directory tree, creates File handles, scans content with
 /// the 5-pattern `RegexSet`, and collects label candidates and pending
 /// edges for later resolution.
+/// Directories whose contents signal terminal convergence state (D-04).
+const TERMINAL_DIRS: &[&str] = &["archive", "history", "prior"];
+
+/// Check if a relative path has any ancestor directory matching a terminal convention.
+fn is_in_terminal_directory(relative: &Utf8Path) -> bool {
+    for component in relative.components() {
+        let name = component.as_str();
+        if TERMINAL_DIRS.contains(&name) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<BuildResult> {
     let mut graph = DiGraph::new();
     let mut all_label_candidates = Vec::new();
     let mut pending_edges = Vec::new();
     let mut observed_statuses = HashSet::new();
+
+    // D-04: Track which statuses appear in terminal vs non-terminal directories
+    let mut status_in_terminal: HashMap<String, usize> = HashMap::new();
+    let mut status_in_nonterminal: HashMap<String, usize> = HashMap::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -433,34 +506,37 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
         let (frontmatter_yaml, body) = split_frontmatter(&content);
 
-        let (status, metadata) = frontmatter_yaml.map(parse_frontmatter).unwrap_or_default();
+        // D-05: table-driven frontmatter parsing with extensible field mapping
+        let (status, metadata, field_edges) = frontmatter_yaml
+            .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
+            .unwrap_or_default();
 
         if let Some(ref s) = status {
             observed_statuses.insert(s.clone());
+
+            // D-04: Track directory convention for terminal status classification
+            let in_terminal = is_in_terminal_directory(&relative);
+            if in_terminal {
+                *status_in_terminal.entry(s.clone()).or_insert(0) += 1;
+            } else {
+                *status_in_nonterminal.entry(s.clone()).or_insert(0) += 1;
+            }
         }
 
-        // Create pending edges from frontmatter relationship fields
+        // Create pending edges from extensible frontmatter field edges
         let file_node_placeholder =
             NodeId::new(u32::try_from(graph.node_count()).expect("graph exceeds u32::MAX nodes"));
-        if let Some(ref target) = metadata.superseded_by {
-            pending_edges.push(PendingEdge {
-                source: file_node_placeholder,
-                target_identity: target.clone(),
-                kind: EdgeKind::Supersedes,
-            });
-        }
-        let mut push_edges = |targets: &[String], kind: EdgeKind| {
-            for target in targets {
+
+        for fe in &field_edges {
+            for target in &fe.targets {
                 pending_edges.push(PendingEdge {
                     source: file_node_placeholder,
                     target_identity: target.clone(),
-                    kind,
+                    kind: fe.edge_kind,
+                    inverse: fe.inverse,
                 });
             }
-        };
-        push_edges(&metadata.depends_on, EdgeKind::DependsOn);
-        push_edges(&metadata.discharges, EdgeKind::Discharges);
-        push_edges(&metadata.verifies, EdgeKind::Verifies);
+        }
 
         let file_node = graph.add_node(Handle {
             id: relative.to_string(),
@@ -479,6 +555,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                 source: file_node,
                 target_identity: file_ref.clone(),
                 kind: EdgeKind::Cites,
+                inverse: false,
             });
         }
         for section_ref in &scan_result.section_refs {
@@ -486,7 +563,17 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                 source: file_node,
                 target_identity: format!("section:{section_ref}"),
                 kind: EdgeKind::Cites,
+                inverse: false,
             });
+        }
+    }
+
+    // D-04: Compute terminal_by_directory -- statuses that appear EXCLUSIVELY
+    // in terminal directories (count > 0 in terminal, count == 0 in nonterminal)
+    let mut terminal_by_directory = HashSet::new();
+    for (status, count) in &status_in_terminal {
+        if *count > 0 && !status_in_nonterminal.contains_key(status) {
+            terminal_by_directory.insert(status.clone());
         }
     }
 
@@ -495,6 +582,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         label_candidates: all_label_candidates,
         pending_edges,
         observed_statuses,
+        terminal_by_directory,
     })
 }
 

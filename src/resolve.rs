@@ -209,6 +209,9 @@ pub(crate) fn resolve_versions(
         for (version, file_node) in &versions {
             let version_id = format!("{base}-v{version}");
 
+            // D-09: Version handles inherit status from their parent file handle
+            let file_status = graph.node(*file_node).status.clone();
+
             // Create Version handle node
             let version_node = graph.add_node(Handle {
                 id: version_id.clone(),
@@ -216,7 +219,7 @@ pub(crate) fn resolve_versions(
                     artifact: *file_node,
                     version: *version,
                 },
-                status: None,
+                status: file_status,
                 file_path: None,
                 metadata: HandleMetadata::default(),
             });
@@ -256,32 +259,32 @@ pub(crate) fn resolve_pending_edges(
     let mut resolved: usize = 0;
 
     for edge in pending {
-        // First: exact identity lookup
-        if let Some(&target_id) = node_index.get(&edge.target_identity) {
-            graph.add_edge(edge.source, target_id, edge.kind);
-            resolved += 1;
-            continue;
-        }
-
-        // D-02: Bare filename resolution
-        // If target looks like a bare filename (has .md but no /), try filesystem
-        if std::path::Path::new(&edge.target_identity)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            && !edge.target_identity.contains('/')
-        {
-            // Get the source node's file_path for relative resolution
-            let referring_file = graph.node(edge.source).file_path.clone();
-            if let Some(ref referring) = referring_file
-                && let Some(resolved_path) =
-                    resolve_bare_filename(&edge.target_identity, referring, root)
+        let resolved_target = node_index.get(&edge.target_identity).copied().or_else(|| {
+            // D-02: Bare filename resolution
+            if std::path::Path::new(&edge.target_identity)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                && !edge.target_identity.contains('/')
             {
-                let resolved_str = resolved_path.to_string();
-                if let Some(&target_id) = node_index.get(&resolved_str) {
-                    graph.add_edge(edge.source, target_id, edge.kind);
-                    resolved += 1;
+                let referring_file = graph.node(edge.source).file_path.clone();
+                if let Some(ref referring) = referring_file
+                    && let Some(resolved_path) =
+                        resolve_bare_filename(&edge.target_identity, referring, root)
+                {
+                    return node_index.get(&resolved_path.to_string()).copied();
                 }
             }
+            None
+        });
+
+        if let Some(target_id) = resolved_target {
+            // Handle inverse direction: swap source and target for inverse edges
+            if edge.inverse {
+                graph.add_edge(target_id, edge.source, edge.kind);
+            } else {
+                graph.add_edge(edge.source, target_id, edge.kind);
+            }
+            resolved += 1;
         }
     }
 
