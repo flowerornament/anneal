@@ -6,7 +6,7 @@ use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{HandleKind, NodeId};
 use crate::lattice::{self, FreshnessLevel, Lattice};
-use crate::parse::PendingEdge;
+use crate::parse::{ImplausibleRef, PendingEdge};
 
 /// Severity level for diagnostics, ordered so errors sort first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -109,6 +109,30 @@ fn check_existence(
     }
 
     diagnostics
+}
+
+// ---------------------------------------------------------------------------
+// W004: Plausibility filter
+// ---------------------------------------------------------------------------
+
+/// W004: Implausible frontmatter values that were filtered before resolution.
+///
+/// These are frontmatter edge targets that could not plausibly be handle
+/// references: absolute paths, freeform prose, wildcard patterns, etc.
+fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
+    implausible_refs
+        .iter()
+        .map(|r| Diagnostic {
+            severity: Severity::Warning,
+            code: "W004",
+            message: format!(
+                "implausible frontmatter value {:?} ({})",
+                r.raw_value, r.reason
+            ),
+            file: Some(r.file.clone()),
+            line: None,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -664,9 +688,11 @@ pub(crate) fn run_checks(
     config: &AnnealConfig,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
+    implausible_refs: &[ImplausibleRef],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(check_existence(graph, unresolved_edges, section_ref_count));
+    diagnostics.extend(check_plausibility(implausible_refs));
     diagnostics.extend(check_staleness(graph, lattice));
     diagnostics.extend(check_confidence_gap(graph, lattice));
     diagnostics.extend(check_linearity(graph, config, lattice));
@@ -1187,7 +1213,7 @@ mod tests {
         let config = AnnealConfig::default();
         let unresolved: Vec<PendingEdge> = Vec::new();
 
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0);
+        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0, &[]);
         let suggestion_count = diags
             .iter()
             .filter(|d| d.severity == Severity::Suggestion)
@@ -1222,7 +1248,7 @@ mod tests {
             inverse: false,
         }];
 
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 5);
+        let diags = run_checks(&graph, &lattice, &config, &unresolved, 5, &[]);
 
         // Should have: E001 (error), W001 (warning), I001 (info)
         assert!(

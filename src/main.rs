@@ -480,6 +480,7 @@ fn run() -> anyhow::Result<()> {
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                &result.implausible_refs,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
@@ -618,6 +619,7 @@ fn run() -> anyhow::Result<()> {
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                &result.implausible_refs,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let output = cli::cmd_status(graph, &lattice, &snap, &all_diagnostics);
@@ -656,6 +658,7 @@ fn run() -> anyhow::Result<()> {
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                &result.implausible_refs,
             );
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
 

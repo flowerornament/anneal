@@ -7,7 +7,7 @@ use regex::{Regex, RegexSet};
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
-use crate::extraction::{classify_frontmatter_value, RefHint};
+use crate::extraction::{RefHint, classify_frontmatter_value};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
 
@@ -467,6 +467,7 @@ pub(crate) struct ImplausibleRef {
 }
 
 /// An external URL found in frontmatter.
+#[allow(dead_code)] // Fields consumed when external URL handling is wired
 pub(crate) struct ExternalRef {
     pub(crate) file: String,
     pub(crate) url: String,
@@ -489,6 +490,7 @@ pub(crate) struct BuildResult {
     /// Implausible frontmatter values that were filtered before resolution.
     pub(crate) implausible_refs: Vec<ImplausibleRef>,
     /// External URL references found in frontmatter (tracked, not resolved).
+    #[allow(dead_code)] // Consumed when HandleKind::External is added
     pub(crate) external_refs: Vec<ExternalRef>,
 }
 
@@ -526,6 +528,10 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
     // Bare filename -> relative paths, for corpus-wide resolution fallback
     let mut filename_index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
+
+    // Plausibility filter tracking
+    let mut implausible_refs: Vec<ImplausibleRef> = Vec::new();
+    let mut external_refs: Vec<ExternalRef> = Vec::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -609,12 +615,30 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
         for fe in &field_edges {
             for target in &fe.targets {
-                pending_edges.push(PendingEdge {
-                    source: file_node_placeholder,
-                    target_identity: target.clone(),
-                    kind: fe.edge_kind,
-                    inverse: fe.inverse,
-                });
+                let hint = classify_frontmatter_value(target);
+                match hint {
+                    RefHint::External => {
+                        external_refs.push(ExternalRef {
+                            file: relative.to_string(),
+                            url: target.clone(),
+                        });
+                    }
+                    RefHint::Implausible { reason } => {
+                        implausible_refs.push(ImplausibleRef {
+                            file: relative.to_string(),
+                            raw_value: target.clone(),
+                            reason,
+                        });
+                    }
+                    RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
+                        pending_edges.push(PendingEdge {
+                            source: file_node_placeholder,
+                            target_identity: target.clone(),
+                            kind: fe.edge_kind,
+                            inverse: fe.inverse,
+                        });
+                    }
+                }
             }
         }
 
@@ -665,8 +689,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         terminal_by_directory,
         observed_frontmatter_keys,
         filename_index,
-        implausible_refs: Vec::new(),
-        external_refs: Vec::new(),
+        implausible_refs,
+        external_refs,
     })
 }
 
@@ -844,11 +868,18 @@ mod tests {
                 .iter()
                 .any(|e| e.target_identity.contains("https://")),
             "URL should not be in pending_edges, got: {:?}",
-            result.pending_edges.iter().map(|e| &e.target_identity).collect::<Vec<_>>()
+            result
+                .pending_edges
+                .iter()
+                .map(|e| &e.target_identity)
+                .collect::<Vec<_>>()
         );
         // URL should appear in external_refs
         assert!(
-            result.external_refs.iter().any(|e| e.url == "https://example.com"),
+            result
+                .external_refs
+                .iter()
+                .any(|e| e.url == "https://example.com"),
             "URL should be in external_refs, got {} entries",
             result.external_refs.len()
         );
@@ -897,11 +928,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("anneal_test_valid");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        write_md_file(
-            &tmp,
-            "test.md",
-            "---\ndepends-on: foo.md\n---\nBody text\n",
-        );
+        write_md_file(&tmp, "test.md", "---\ndepends-on: foo.md\n---\nBody text\n");
         let config = AnnealConfig::default();
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
@@ -913,7 +940,11 @@ mod tests {
                 .iter()
                 .any(|e| e.target_identity == "foo.md"),
             "valid ref should be in pending_edges, got: {:?}",
-            result.pending_edges.iter().map(|e| &e.target_identity).collect::<Vec<_>>()
+            result
+                .pending_edges
+                .iter()
+                .map(|e| &e.target_identity)
+                .collect::<Vec<_>>()
         );
         // Should NOT be in implausible_refs
         assert!(
@@ -954,8 +985,7 @@ mod tests {
             result
                 .implausible_refs
                 .iter()
-                .any(|r| r.raw_value == "/absolute/path.md"
-                    && r.reason.contains("absolute path")),
+                .any(|r| r.raw_value == "/absolute/path.md" && r.reason.contains("absolute path")),
             "absolute path should be in implausible_refs"
         );
 
@@ -980,7 +1010,7 @@ mod tests {
             !result
                 .pending_edges
                 .iter()
-                .any(|e| e.target_identity.contains("*")),
+                .any(|e| e.target_identity.contains('*')),
             "wildcard should not be in pending_edges"
         );
         assert!(
