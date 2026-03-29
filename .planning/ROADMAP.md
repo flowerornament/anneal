@@ -84,6 +84,15 @@ Plans:
 
 **Requirements:** CONVERGE-01, CONVERGE-02, CONVERGE-03, CONVERGE-04, CONVERGE-05, CLI-04, CLI-05, CLI-08, SUGGEST-01, SUGGEST-02, SUGGEST-03, SUGGEST-04, SUGGEST-05
 
+**Plans:** 5 plans
+
+Plans:
+- [ ] 03-01-PLAN.md -- Snapshot infrastructure: Snapshot type, JSONL I/O, convergence summary, Severity::Suggestion
+- [ ] 03-02-PLAN.md -- Suggestion engine: five suggestion rules (S001-S005) + check command filter flags
+- [ ] 03-03-PLAN.md -- Map command: text and DOT rendering, --concern and --around subgraph extraction
+- [ ] 03-04-PLAN.md -- Status command: dashboard with pipeline histogram, convergence summary, snapshot append
+- [ ] 03-05-PLAN.md -- Diff command: snapshot-based and git-aware graph diff, three reference modes
+
 **Success Criteria:**
 1. `anneal status` shows pipeline histogram, convergence summary (advancing/holding/drifting), and top suggestions
 2. `anneal diff` shows what changed in the knowledge graph since last session
@@ -107,4 +116,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-29 after phase 2 completion*
+*Last updated: 2026-03-29 after phase 3 planning*
