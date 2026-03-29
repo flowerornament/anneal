@@ -32,18 +32,18 @@
 
 ### Local Checks
 
-- [ ] **CHECK-01**: Existence check — every edge target must resolve (error if not)
-- [ ] **CHECK-02**: Staleness check — active handle referencing terminal handle (warning)
-- [ ] **CHECK-03**: Confidence gap check — DependsOn edge where source state > target state (warning)
-- [ ] **CHECK-04**: Linearity check — linear handles discharged exactly once (error if zero, info if multiple)
-- [ ] **CHECK-05**: Convention adoption check — warn about missing frontmatter only when >50% of siblings have it
-- [ ] **CHECK-06**: Diagnostics use compiler-style format with error codes (E001, W001, I001)
+- [x] **CHECK-01**: Existence check — every edge target must resolve (error if not)
+- [x] **CHECK-02**: Staleness check — active handle referencing terminal handle (warning)
+- [x] **CHECK-03**: Confidence gap check — DependsOn edge where source state > target state (warning)
+- [x] **CHECK-04**: Linearity check — linear handles discharged exactly once (error if zero, info if multiple)
+- [x] **CHECK-05**: Convention adoption check — warn about missing frontmatter only when >50% of siblings have it
+- [x] **CHECK-06**: Diagnostics use compiler-style format with error codes (E001, W001, I001)
 
 ### Impact Analysis
 
-- [ ] **IMPACT-01**: Compute impact set by reverse traversal over DependsOn, Supersedes, Verifies edges
-- [ ] **IMPACT-02**: Handle cycles via visited-set detection
-- [ ] **IMPACT-03**: Show direct and indirect affected handles
+- [x] **IMPACT-01**: Compute impact set by reverse traversal over DependsOn, Supersedes, Verifies edges
+- [x] **IMPACT-02**: Handle cycles via visited-set detection
+- [x] **IMPACT-03**: Show direct and indirect affected handles
 
 ### Convergence Tracking
 
@@ -134,15 +134,15 @@
 | LATTICE-02 | Phase 1 | Complete |
 | LATTICE-03 | Phase 1 | Complete |
 | LATTICE-04 | Phase 1 | Complete |
-| CHECK-01 | Phase 2 | Pending |
-| CHECK-02 | Phase 2 | Pending |
-| CHECK-03 | Phase 2 | Pending |
-| CHECK-04 | Phase 2 | Pending |
-| CHECK-05 | Phase 2 | Pending |
-| CHECK-06 | Phase 2 | Pending |
-| IMPACT-01 | Phase 2 | Pending |
-| IMPACT-02 | Phase 2 | Pending |
-| IMPACT-03 | Phase 2 | Pending |
+| CHECK-01 | Phase 2 | Complete |
+| CHECK-02 | Phase 2 | Complete |
+| CHECK-03 | Phase 2 | Complete |
+| CHECK-04 | Phase 2 | Complete |
+| CHECK-05 | Phase 2 | Complete |
+| CHECK-06 | Phase 2 | Complete |
+| IMPACT-01 | Phase 2 | Complete |
+| IMPACT-02 | Phase 2 | Complete |
+| IMPACT-03 | Phase 2 | Complete |
 | CONVERGE-01 | Phase 3 | Pending |
 | CONVERGE-02 | Phase 3 | Pending |
 | CONVERGE-03 | Phase 3 | Pending |

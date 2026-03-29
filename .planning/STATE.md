@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress
-last_updated: "2026-03-29T04:48:58Z"
+last_updated: "2026-03-29T04:58:50Z"
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # State: anneal
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 **Phase 2: Checks & CLI**
 
 - Status: In progress
-- Current Plan: 1 of 3 (Plan 01 done)
+- Current Plan: 2 of 3 (Plans 01, 02 done)
 - Goal: Implement the five local consistency rules, impact analysis, and the core CLI commands that agents need.
 
 ## Progress
@@ -33,7 +33,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | Phase | Status | Completed |
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
-| Phase 2: Checks & CLI | In progress | Plan 01 done |
+| Phase 2: Checks & CLI | In progress | Plans 01, 02 done |
 | Phase 3: Convergence & Polish | Not started | — |
 
 ## Decisions
@@ -53,6 +53,8 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - Terminal-by-directory uses exclusive-presence heuristic (only in terminal dirs, never in non-terminal)
 - Table-driven frontmatter parsing via FrontmatterConfig.fields HashMap
 - node_mut() keeps dead_code allow since D-09 implemented at construction time
+- check_linearity takes &Lattice for terminal status mooting (KB-R4)
+- check_conventions groups files by parent directory path string
 
 ## Session Log
 
@@ -63,6 +65,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-28 | 01 | Plan 02 complete: parse.rs with frontmatter split + 5-pattern RegexSet + edge kind inference; lattice.rs with existence/confidence lattice + active/terminal partition + freshness. |
 | 2026-03-29 | 01 | Plan 03 complete: resolve.rs with namespace inference + label/version/edge resolution; main.rs pipeline wired end-to-end. Murail corpus: 259 files, 9788 handles, 6408 edges, 22 namespaces. |
 | 2026-03-29 | 02 | Plan 01 complete: Foundation repairs -- code block skip, URL rejection, bare filename resolution, extensible FrontmatterConfig with 6 defaults, directory convention terminal status, version status inheritance. Murail: 3191 unresolved (down from 3396). |
+| 2026-03-29 | 02 | Plan 02 complete: checks.rs with 5 check rules (KB-R1..R5), 7 diagnostic codes, compiler-style formatting. impact.rs with reverse BFS, cycle detection, direct/indirect distinction. 19 new tests. |
 
 ---
-*Last updated: 2026-03-29 after Plan 02-01 completion*
+*Last updated: 2026-03-29 after Plan 02-02 completion*
