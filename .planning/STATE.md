@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress
-last_updated: "2026-03-29T08:38:03Z"
+last_updated: "2026-03-29T08:38:49.079Z"
 progress:
   total_phases: 3
   completed_phases: 2
@@ -70,6 +70,8 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - MapOptions struct bundles 8 cmd_map parameters (clippy too_many_arguments)
 - File handles always included in default map subgraph regardless of terminal status
 - Ord/PartialOrd derives on NodeId for BTreeSet edge deduplication
+- ObligationDelta fields keep _delta suffix with clippy allow for JSON schema clarity
+- Git ref extraction via git archive | tar for single-subprocess file recovery
 
 ## Session Log
 

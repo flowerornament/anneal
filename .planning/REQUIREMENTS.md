@@ -50,7 +50,7 @@
 - [x] **CONVERGE-01**: Append snapshot to `.anneal/history.jsonl` after check/status runs
 - [x] **CONVERGE-02**: Snapshot includes handle counts, edge counts, state histogram, obligation status, diagnostic counts, namespace stats
 - [x] **CONVERGE-03**: Compute convergence summary: advancing, holding, or drifting (from snapshot delta)
-- [ ] **CONVERGE-04**: Compute graph diff between current state and previous snapshot
+- [x] **CONVERGE-04**: Compute graph diff between current state and previous snapshot
 - [x] **CONVERGE-05**: Graceful handling of missing/corrupted history file (skip bad lines, return empty on missing)
 
 ### CLI Commands
@@ -62,7 +62,7 @@
 - [x] **CLI-05**: `anneal map` — render knowledge graph, with --concern and --around flags
 - [x] **CLI-06**: `anneal init` — save inferred coloring as anneal.toml
 - [x] **CLI-07**: `anneal impact <handle>` — show what's affected if handle changes
-- [ ] **CLI-08**: `anneal diff [ref]` — graph-level changes since reference point
+- [x] **CLI-08**: `anneal diff [ref]` — graph-level changes since reference point
 - [x] **CLI-09**: All commands support `--json` output via global flag
 - [x] **CLI-10**: Human-readable output as default, via CommandOutput trait with print_human()
 
@@ -146,7 +146,7 @@
 | CONVERGE-01 | Phase 3 | Complete |
 | CONVERGE-02 | Phase 3 | Complete |
 | CONVERGE-03 | Phase 3 | Complete |
-| CONVERGE-04 | Phase 3 | Pending |
+| CONVERGE-04 | Phase 3 | Complete |
 | CONVERGE-05 | Phase 3 | Complete |
 | CLI-01 | Phase 2 | Complete |
 | CLI-02 | Phase 2 | Complete |
@@ -155,7 +155,7 @@
 | CLI-05 | Phase 3 | Complete |
 | CLI-06 | Phase 2 | Complete |
 | CLI-07 | Phase 2 | Complete |
-| CLI-08 | Phase 3 | Pending |
+| CLI-08 | Phase 3 | Complete |
 | CLI-09 | Phase 2 | Complete |
 | CLI-10 | Phase 2 | Complete |
 | CONFIG-01 | Phase 1 | Complete |
