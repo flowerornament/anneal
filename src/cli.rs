@@ -87,6 +87,7 @@ pub(crate) struct CheckOutput {
 
 impl CheckOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        use crate::style::S;
         for diag in &self.diagnostics {
             diag.print_human(w)?;
         }
@@ -96,12 +97,12 @@ impl CheckOutput {
         writeln!(
             w,
             "{} error{}, {} warning{}, {} info, {} suggestion{}",
-            self.errors,
+            S.error.apply_to(self.errors),
             plural(self.errors),
-            self.warnings,
+            S.warning.apply_to(self.warnings),
             plural(self.warnings),
             self.info,
-            self.suggestions,
+            S.suggestion.apply_to(self.suggestions),
             plural(self.suggestions),
         )
     }
@@ -762,10 +763,13 @@ pub(crate) struct SuggestionCount {
 impl StatusOutput {
     /// Print human-readable dashboard matching spec section 12.4.
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        use crate::style::S;
+
         // -- Graph --
         writeln!(
             w,
-            " corpus  {}",
+            " {}  {}",
+            S.label.apply_to("corpus"),
             fmt_counts(&[
                 (self.files, "file"),
                 (self.handles, "handle"),
@@ -778,21 +782,34 @@ impl StatusOutput {
             self.active_handles, self.frozen_handles,
         )?;
 
-        // Pipeline histogram or flat lattice (D-11)
+        // Pipeline histogram (D-11)
         if let Some(ref pipeline) = self.pipeline {
             let parts: Vec<String> = pipeline
                 .iter()
-                .map(|p| format!("{} {}", p.count, p.level))
+                .map(|p| format!("{} {}", S.bold.apply_to(p.count), p.level))
                 .collect();
-            writeln!(w, "  pipeline  {}", parts.join(" → "))?;
+            writeln!(
+                w,
+                "    {}  {}",
+                S.label.apply_to("pipeline"),
+                parts.join(" → ")
+            )?;
         }
 
         // -- Health --
         writeln!(w)?;
+        let health_color = if self.diagnostics.errors > 0 {
+            &S.error
+        } else if self.diagnostics.warnings > 0 {
+            &S.warning
+        } else {
+            &S.green
+        };
         write!(
             w,
-            " health  {} error{}, {} warning{}",
-            self.diagnostics.errors,
+            " {}  {} error{}, {} warning{}",
+            S.label.apply_to("health"),
+            health_color.apply_to(self.diagnostics.errors),
             plural(self.diagnostics.errors),
             self.diagnostics.warnings,
             plural(self.diagnostics.warnings),
@@ -820,9 +837,25 @@ impl StatusOutput {
         // -- Convergence --
         writeln!(w)?;
         if let Some(ref conv) = self.convergence {
-            writeln!(w, " convergence  {} ({})", conv.signal, conv.detail)?;
+            let signal_style = match conv.signal.as_str() {
+                "advancing" => &S.green,
+                "drifting" => &S.warning,
+                _ => &S.dim,
+            };
+            writeln!(
+                w,
+                " {}  {} {}",
+                S.label.apply_to("convergence"),
+                signal_style.apply_to(&conv.signal),
+                S.dim.apply_to(format_args!("({})", conv.detail)),
+            )?;
         } else {
-            writeln!(w, " convergence  (no history yet)")?;
+            writeln!(
+                w,
+                " {}  {}",
+                S.label.apply_to("convergence"),
+                S.dim.apply_to("(no history yet)"),
+            )?;
         }
 
         // -- Suggestions --
@@ -833,9 +866,20 @@ impl StatusOutput {
             .collect();
         if !active.is_empty() {
             writeln!(w)?;
-            writeln!(w, " suggestions  {}", self.suggestion_total)?;
+            writeln!(
+                w,
+                " {}  {}",
+                S.label.apply_to("suggestions"),
+                self.suggestion_total,
+            )?;
             for s in &active {
-                writeln!(w, "   {:>5}  {} ({})", s.count, s.code, s.label)?;
+                writeln!(
+                    w,
+                    "   {:>5}  {} {}",
+                    s.count,
+                    S.suggestion.apply_to(&s.code),
+                    S.dim.apply_to(&s.label),
+                )?;
             }
         }
 

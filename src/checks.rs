@@ -37,15 +37,22 @@ impl Diagnostic {
     ///   -> formal-model/v17.md
     /// ```
     pub(crate) fn print_human(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-        let prefix = match self.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warn",
-            Severity::Info => "info",
-            Severity::Suggestion => "suggestion",
+        use crate::style::S;
+        let (prefix, style) = match self.severity {
+            Severity::Error => ("error", &S.error),
+            Severity::Warning => ("warn", &S.warning),
+            Severity::Info => ("info", &S.info),
+            Severity::Suggestion => ("suggestion", &S.suggestion),
         };
-        write!(w, "{prefix}[{}]: {}", self.code, self.message)?;
+        write!(
+            w,
+            "{}{}{}",
+            style.apply_to(prefix),
+            S.dim.apply_to(format_args!("[{}]", self.code)),
+            format_args!(": {}", self.message),
+        )?;
         if let Some(ref file) = self.file {
-            write!(w, "\n  -> {file}")?;
+            write!(w, "\n  {} {file}", S.dim.apply_to("->"))?;
             if let Some(line) = self.line {
                 write!(w, ":{line}")?;
             }
