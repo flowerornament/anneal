@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod checks;
 mod cli;
 mod config;
+mod extraction;
 mod graph;
 mod handle;
 mod impact;
