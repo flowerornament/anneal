@@ -16,7 +16,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           meta = {
             description = "Convergence assistant for knowledge corpora";
-            license = with pkgs.lib.licenses; [ mit asl20 ];
+            license = pkgs.lib.licenses.mit;
             mainProgram = "anneal";
           };
         };
