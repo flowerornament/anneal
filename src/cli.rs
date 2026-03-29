@@ -9,7 +9,7 @@ use crate::config::{
     AnnealConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
     FrontmatterFieldMapping, HandlesConfig,
 };
-use crate::graph::{DiGraph, Edge, EdgeKind};
+use crate::graph::{DiGraph, Edge};
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::impact;
 use crate::lattice::Lattice;
@@ -787,17 +787,17 @@ fn extract_subgraph(
     }
 }
 
-/// Count edges within the subgraph (both endpoints in the node set).
+/// Count unique edges within the subgraph (both endpoints in the node set).
 fn count_subgraph_edges(graph: &DiGraph, nodes: &HashSet<NodeId>) -> usize {
-    let mut count = 0;
+    let mut seen = BTreeSet::new();
     for &node_id in nodes {
         for edge in graph.outgoing(node_id) {
             if nodes.contains(&edge.target) {
-                count += 1;
+                seen.insert((edge.source, edge.target, edge.kind.as_str()));
             }
         }
     }
-    count
+    seen.len()
 }
 
 /// Render the subgraph as grouped text (D-12, D-14).
@@ -944,10 +944,8 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
     let _ = writeln!(out);
 
     // Nodes
-    let mut node_list: Vec<(NodeId, &Handle)> = nodes
-        .iter()
-        .map(|&id| (id, graph.node(id)))
-        .collect();
+    let mut node_list: Vec<(NodeId, &Handle)> =
+        nodes.iter().map(|&id| (id, graph.node(id))).collect();
     node_list.sort_by(|a, b| a.1.id.cmp(&b.1.id));
 
     for (node_id, h) in &node_list {
@@ -1052,6 +1050,7 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::EdgeKind;
     use crate::handle::HandleMetadata;
     use camino::Utf8PathBuf;
 
