@@ -13,6 +13,7 @@ mod impact;
 mod lattice;
 mod parse;
 mod resolve;
+mod snapshot;
 
 use crate::handle::NodeId;
 
