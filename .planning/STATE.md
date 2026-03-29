@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-03-29T20:22:04.333Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-03-29T20:31:24.094Z"
 last_activity: 2026-03-29
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 55
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 ## Current Position
 
 Phase: 04 (types-plausibility) — EXECUTING
-Plan: 1 of 2
-Status: Executing Phase 04
-Last activity: 2026-03-29 — Completed 04-01, starting 04-02
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-03-29
 
 Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
 
@@ -43,6 +43,7 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [v1.1]: JSON schema changes additive-only (new nullable fields, no type changes)
 - [Phase 04-types-plausibility]: Compound label regex with optional hyphen supports KB-D1 style prefixes
 - [Phase 04-types-plausibility]: Classification cascade: comma-list before prose check to prevent misclassification
+- [Phase 04-types-plausibility]: ImplausibleRef/ExternalRef as parse.rs structs to avoid circular dependency with checks.rs
 
 ## Blockers/Concerns
 
@@ -50,8 +51,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-29T20:22:04.330Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-29T20:31:24.092Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
 
 ---
