@@ -282,8 +282,9 @@ pub(crate) fn cmd_find(
                 }
             }
 
-            // By default, exclude terminal handles
+            // By default, exclude terminal handles (unless user explicitly filtered by status)
             if !include_all
+                && status_filter.is_none()
                 && let Some(ref s) = h.status
                 && lattice.terminal.contains(s)
             {
