@@ -14,6 +14,7 @@ pub(crate) enum Severity {
     Error = 0,
     Warning = 1,
     Info = 2,
+    Suggestion = 3,
 }
 
 /// A single diagnostic produced by a check rule (CHECK-06).
@@ -40,6 +41,7 @@ impl Diagnostic {
             Severity::Error => "error",
             Severity::Warning => "warn",
             Severity::Info => "info",
+            Severity::Suggestion => "suggestion",
         };
         write!(w, "{prefix}[{}]: {}", self.code, self.message)?;
         if let Some(ref file) = self.file {
