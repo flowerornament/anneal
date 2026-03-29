@@ -82,6 +82,7 @@ pub(crate) struct CheckOutput {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
     pub(crate) info: usize,
+    pub(crate) suggestions: usize,
 }
 
 impl CheckOutput {
@@ -94,8 +95,8 @@ impl CheckOutput {
         }
         writeln!(
             w,
-            "{} errors, {} warnings, {} info",
-            self.errors, self.warnings, self.info
+            "{} errors, {} warnings, {} info, {} suggestions",
+            self.errors, self.warnings, self.info, self.suggestions
         )
     }
 }
@@ -128,12 +129,17 @@ pub(crate) fn cmd_check(
         .iter()
         .filter(|d| d.severity == Severity::Info)
         .count();
+    let suggestions = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Suggestion)
+        .count();
 
     CheckOutput {
         diagnostics,
         errors,
         warnings,
         info,
+        suggestions,
     }
 }
 
