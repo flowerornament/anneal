@@ -9,6 +9,7 @@ mod checks;
 mod config;
 mod graph;
 mod handle;
+mod impact;
 mod lattice;
 mod parse;
 mod resolve;
