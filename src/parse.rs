@@ -336,6 +336,93 @@ pub(crate) fn scan_file(
 // Root inference
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::DiGraph;
+    use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
+
+    fn make_graph_with_file(path: &str) -> (DiGraph, NodeId) {
+        let mut graph = DiGraph::new();
+        let node = graph.add_node(Handle {
+            id: path.to_string(),
+            kind: HandleKind::File(Utf8PathBuf::from(path)),
+            status: None,
+            file_path: Some(Utf8PathBuf::from(path)),
+            metadata: HandleMetadata::default(),
+        });
+        (graph, node)
+    }
+
+    #[test]
+    fn labels_inside_code_blocks_are_not_scanned() {
+        let body = "Some text\n```\nOQ-64 inside code\n```\nMore text";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            result.label_candidates.is_empty(),
+            "Labels inside code blocks should not be added to candidates"
+        );
+    }
+
+    #[test]
+    fn labels_outside_code_blocks_are_scanned() {
+        let body = "Some text\nOQ-64 outside code\nMore text";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            !result.label_candidates.is_empty(),
+            "Labels outside code blocks should be added to candidates"
+        );
+    }
+
+    #[test]
+    fn headings_inside_code_blocks_still_skipped() {
+        let body = "## Real heading\n```\n## Fake heading\n```\n";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        // Should have only 1 section handle (the real heading), not the fake one
+        let section_count = graph
+            .nodes()
+            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
+            .count();
+        assert_eq!(section_count, 1, "Only real headings should create sections");
+    }
+
+    #[test]
+    fn file_path_regex_rejects_urls() {
+        let body = "See https://example.com/rust-lang/guide.md for details";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            result.file_refs.is_empty(),
+            "URL fragments should not be matched as file refs"
+        );
+    }
+
+    #[test]
+    fn section_refs_inside_code_blocks_are_not_scanned() {
+        let body = "```\nSee §4.1\n```\n";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            result.section_refs.is_empty(),
+            "Section refs inside code blocks should not be scanned"
+        );
+    }
+
+    #[test]
+    fn file_refs_inside_code_blocks_are_not_scanned() {
+        let body = "```\nSee guide.md\n```\n";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(
+            result.file_refs.is_empty(),
+            "File refs inside code blocks should not be scanned"
+        );
+    }
+}
+
 /// Infer the root directory to scan (KB-D20).
 ///
 /// 1. If `.design/` exists -> `.design`
