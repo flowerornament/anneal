@@ -21,14 +21,21 @@ An arriving agent can immediately understand what's settled, what's drifting, wh
 
 ### Active
 
-- [ ] Check five local consistency rules: existence, staleness, confidence gap, linearity, convention adoption
-- [ ] Track obligations as linear handles (must be discharged exactly once)
-- [ ] Compute impact analysis: reverse graph traversal from a changed handle
-- [ ] Track convergence via append-only JSONL snapshots with summary (advancing/holding/drifting)
-- [ ] Compute graph diffs between snapshots
-- [ ] Eight CLI commands: check, get, find, status, map, init, impact, diff
-- [ ] All commands support --json output for agent consumption
-- [ ] Suggestions: detect patterns and propose structural improvements from graph analysis
+(None — all v1 requirements validated)
+
+### Validated (Phase 2)
+
+- [x] Check five local consistency rules: existence, staleness, confidence gap, linearity, convention adoption — Phase 2
+- [x] Track obligations as linear handles (must be discharged exactly once) — Phase 2
+- [x] Compute impact analysis: reverse graph traversal from a changed handle — Phase 2
+- [x] Five CLI commands: check, get, find, init, impact with --json — Phase 2
+
+### Validated (Phase 3)
+
+- [x] Track convergence via append-only JSONL snapshots with summary (advancing/holding/drifting) — Phase 3
+- [x] Compute graph diffs between snapshots — Phase 3
+- [x] Three remaining CLI commands: status, map, diff with --json — Phase 3
+- [x] Suggestions: detect patterns and propose structural improvements from graph analysis (S001-S005) — Phase 3
 
 ### Out of Scope
 
@@ -64,11 +71,11 @@ The primary test corpus is Murail's `.design/` directory at `~/code/murail/.desi
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Local checks over global propagation | Knowledge graphs are shallow (~3 hops); local checks catch the same issues without cascade false positives | — Pending |
+| Local checks over global propagation | Knowledge graphs are shallow (~3 hops); local checks catch the same issues without cascade false positives | Validated Phase 2 |
 | Hand-roll graph instead of petgraph | Only need traversal + toposort + reachability; 135 lines vs 1.5s compile cost for 5% of petgraph surface | Validated Phase 1 (131 lines) |
-| Cites vs DependsOn edge distinction | Not all references are dependencies; formal model citing OQ-64 shouldn't have its grade affected by OQ status | — Pending |
+| Cites vs DependsOn edge distinction | Not all references are dependencies; formal model citing OQ-64 shouldn't have its grade affected by OQ status | Validated Phase 2 |
 | serde_yaml_ng for frontmatter | Maintained fork of archived serde_yaml; manual ---/--- split is ~15 lines | Validated Phase 1 |
-| Convergence tracking via JSONL snapshots | Append-only, derived, deletable; enables status --history and diff without persistent database | — Pending |
+| Convergence tracking via JSONL snapshots | Append-only, derived, deletable; enables status --history and diff without persistent database | Validated Phase 3 |
 | anneal.toml optional with inference-first | Zero-config must work (existence lattice); config only overrides inference | Validated Phase 1 |
 
 ## Evolution
@@ -90,7 +97,7 @@ This document evolves at phase transitions and milestone boundaries.
 
 ## Current State
 
-Phase 1 complete — graph foundation is working end-to-end. Running `cargo run -- --root ~/code/murail/.design/` produces 9788 handles, 6408 edges, 22 namespaces from 259 files. The pipeline: parse files → infer namespaces → resolve labels/versions/edges → infer lattice → print stats. Quality gate (`just check`) passes.
+All three phases complete — v1 milestone achieved. Eight CLI commands (check, get, find, init, impact, status, map, diff), five check rules, five suggestion types, convergence tracking via JSONL snapshots. 75 tests, clippy clean, <100ms on 265-file corpus. Quality gate (`just check`) passes.
 
 ---
-*Last updated: 2026-03-29 after Phase 1 completion*
+*Last updated: 2026-03-29 after Phase 3 completion (v1 complete)*
