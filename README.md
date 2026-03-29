@@ -2,13 +2,13 @@
 
 Convergence assistant for knowledge corpora.
 
-anneal reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences -- agents across sessions with no shared memory -- orient in a body of knowledge and push it toward settledness.
+`anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge and push it toward settledness.
 
 ## The problem
 
 A knowledge corpus grows across many sessions. No single agent sees the full history. Documents reference each other, supersede each other, track obligations. Without tooling, every arriving agent has to read everything to understand what's settled, what's drifting, and what's connected to what.
 
-anneal makes that orientation instant:
+`anneal` makes that orientation instant:
 
 ```
 $ anneal status
@@ -99,7 +99,7 @@ anneal init
 | Verifies | Formal verification link |
 | Discharges | Obligation fulfillment |
 
-**Status** is a frontmatter `status:` field, partitioned into **active** (in-progress) and **terminal** (settled). When pipeline ordering is configured, anneal shows a histogram of handles flowing through status levels.
+**Status** is a frontmatter `status:` field, partitioned into **active** (in-progress) and **terminal** (settled). When pipeline ordering is configured, `anneal` shows a histogram of handles flowing through status levels.
 
 **Convergence** tracks whether the corpus is advancing (more handles reaching terminal state), holding (stable), or drifting (creation outpacing resolution). Measured by comparing snapshots over time.
 
@@ -138,7 +138,7 @@ error[E001]: broken reference: summary.md not found
 |------|--------|
 | `--active-only` | Skip diagnostics from terminal (settled) files |
 | `--errors-only` | Errors only (for CI/pre-commit) |
-| `--suggest` | Structural suggestions only (S001-S005) |
+| `--suggest` | Structural suggestions only (S001–S005) |
 | `--stale` | Staleness warnings only (W001) |
 | `--obligations` | Obligation diagnostics only (E002/I002) |
 
@@ -160,7 +160,7 @@ FM-17 (label)
 
 ### `anneal impact`
 
-Reverse dependency traversal -- what's affected if a handle changes:
+Reverse dependency traversal — what's affected if a handle changes:
 
 ```
 $ anneal impact formal-model/murail-formal-model-v17.md
@@ -222,7 +222,7 @@ Infers active/terminal partition, label namespaces, and frontmatter field mappin
 
 ## Configuration
 
-`anneal.toml` at the corpus root. Optional -- anneal works without it (existence lattice mode: reference checking only).
+`anneal.toml` at the corpus root. Optional — `anneal` works without it (existence lattice mode: reference checking only).
 
 ```toml
 [convergence]
@@ -257,11 +257,11 @@ formal = ["FM", "A", "D"]
 
 | Code | Severity | Description |
 |------|----------|-------------|
-| E001 | Error | Broken reference -- handle not found |
-| E002 | Error | Undischarged obligation -- linear handle without Discharges edge |
-| W001 | Warning | Stale reference -- active handle references terminal one |
-| W002 | Warning | Confidence gap -- higher pipeline level depends on lower |
-| W003 | Warning | Missing frontmatter -- file without `status:` field |
+| E001 | Error | Broken reference — handle not found |
+| E002 | Error | Undischarged obligation — linear handle without Discharges edge |
+| W001 | Warning | Stale reference — active handle references terminal one |
+| W002 | Warning | Confidence gap — higher pipeline level depends on lower |
+| W003 | Warning | Missing frontmatter — file without `status:` field |
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on single obligation |
 
@@ -269,11 +269,11 @@ formal = ["FM", "A", "D"]
 
 | Code | Description |
 |------|-------------|
-| S001 | Orphaned handles -- labels/versions with no incoming edges |
-| S002 | Candidate namespaces -- recurring prefix not in confirmed list |
-| S003 | Pipeline stalls -- status level with no outflow to next level |
-| S004 | Abandoned namespaces -- all members terminal or stale |
-| S005 | Concern group candidates -- label prefixes co-occurring across files |
+| S001 | Orphaned handles — labels/versions with no incoming edges |
+| S002 | Candidate namespaces — recurring prefix not in confirmed list |
+| S003 | Pipeline stalls — status level with no outflow to next level |
+| S004 | Abandoned namespaces — all members terminal or stale |
+| S005 | Concern group candidates — label prefixes co-occurring across files |
 
 ## JSON output
 
@@ -287,9 +287,9 @@ anneal --json get FM-17 | jq '.edges'
 
 ## Design
 
-anneal is built on the formal analogy between graded type systems and knowledge management: a document's convergence state has the same algebraic structure as a program's resource grade -- both are values in bounded lattices that compose through meet/join operations.
+`anneal` is built on the formal analogy between graded type systems and knowledge management: a document's convergence state has the same algebraic structure as a program's resource grade — both are values in bounded lattices that compose through meet/join operations.
 
-The graph is computed from files on every invocation. No persistent database. The only state is `.anneal/history.jsonl` -- append-only, derived, deletable.
+The graph is computed from files on every invocation. No persistent database. The only state is `.anneal/history.jsonl` — append-only, derived, deletable.
 
 ### Architecture
 
