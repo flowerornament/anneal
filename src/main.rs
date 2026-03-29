@@ -233,16 +233,36 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::Init { .. }) => {
-            // Placeholder: will be implemented in Task 2
-            eprintln!("init command not yet implemented");
-            std::process::exit(1);
+        Some(Command::Init { dry_run }) => {
+            let output = cli::cmd_init(
+                &root,
+                &lattice,
+                &stats,
+                &result.observed_frontmatter_keys,
+                dry_run,
+            )?;
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write init output")?;
+            }
         }
 
-        Some(Command::Impact { .. }) => {
-            // Placeholder: will be implemented in Task 2
-            eprintln!("impact command not yet implemented");
-            std::process::exit(1);
+        Some(Command::Impact { ref handle }) => {
+            if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
+                if cli_args.json {
+                    cli::print_json(&output)?;
+                } else {
+                    output
+                        .print_human(&mut std::io::stdout().lock())
+                        .context("failed to write impact output")?;
+                }
+            } else {
+                eprintln!("handle not found: {handle}");
+                std::process::exit(1);
+            }
         }
     }
 

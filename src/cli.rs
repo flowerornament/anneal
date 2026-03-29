@@ -1,11 +1,17 @@
 use std::collections::HashMap;
 use std::io::Write;
 
+use camino::Utf8Path;
 use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, Severity};
+use crate::config::{
+    AnnealConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
+    FrontmatterFieldMapping, HandlesConfig,
+};
 use crate::graph::DiGraph;
 use crate::handle::{HandleKind, NodeId};
+use crate::impact;
 use crate::lattice::Lattice;
 use crate::parse::PendingEdge;
 use crate::resolve::ResolveStats;
@@ -310,6 +316,219 @@ pub(crate) fn cmd_find(
         matches,
         total,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Impact command (CLI-07)
+// ---------------------------------------------------------------------------
+
+/// Output of `anneal impact <handle>`: affected handles.
+#[derive(Serialize)]
+pub(crate) struct ImpactOutput {
+    pub(crate) handle: String,
+    pub(crate) direct: Vec<String>,
+    pub(crate) indirect: Vec<String>,
+}
+
+impl ImpactOutput {
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        writeln!(w, "Directly affected (depend on this):")?;
+        if self.direct.is_empty() {
+            writeln!(w, "  (none)")?;
+        } else {
+            for id in &self.direct {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        writeln!(w, "Indirectly affected (depend on the above):")?;
+        if self.indirect.is_empty() {
+            writeln!(w, "  (none)")?;
+        } else {
+            for id in &self.indirect {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Compute impact analysis for a handle.
+pub(crate) fn cmd_impact(
+    graph: &DiGraph,
+    node_index: &HashMap<String, NodeId>,
+    handle: &str,
+) -> Option<ImpactOutput> {
+    // Look up handle by exact match, then case-insensitive
+    let node_id = if let Some(&id) = node_index.get(handle) {
+        id
+    } else {
+        let lower = handle.to_lowercase();
+        let found = node_index.iter().find(|(k, _)| k.to_lowercase() == lower);
+        found.map(|(_, &id)| id)?
+    };
+
+    let result = impact::compute_impact(graph, node_id);
+
+    let direct: Vec<String> = result
+        .direct
+        .iter()
+        .map(|&id| graph.node(id).id.clone())
+        .collect();
+    let indirect: Vec<String> = result
+        .indirect
+        .iter()
+        .map(|&id| graph.node(id).id.clone())
+        .collect();
+
+    Some(ImpactOutput {
+        handle: graph.node(node_id).id.clone(),
+        direct,
+        indirect,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Init command (CLI-06, CONFIG-04)
+// ---------------------------------------------------------------------------
+
+/// Output of `anneal init`: generated config.
+#[derive(Serialize)]
+pub(crate) struct InitOutput {
+    pub(crate) config: AnnealConfig,
+    pub(crate) written: bool,
+    pub(crate) path: String,
+}
+
+impl InitOutput {
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        let toml_str =
+            toml::to_string_pretty(&self.config).unwrap_or_else(|e| format!("# error: {e}"));
+        if self.written {
+            writeln!(w, "Wrote config to {}", self.path)?;
+            writeln!(w)?;
+        } else {
+            writeln!(w, "# anneal.toml (dry run -- not written)")?;
+            writeln!(w)?;
+        }
+        write!(w, "{toml_str}")?;
+        Ok(())
+    }
+}
+
+/// Propose frontmatter field mapping based on field name heuristics (D-07).
+fn propose_mapping(field_name: &str) -> FrontmatterFieldMapping {
+    let lower = field_name.to_lowercase();
+    match lower.as_str() {
+        "affects" | "impacts" => FrontmatterFieldMapping {
+            edge_kind: "DependsOn".to_string(),
+            direction: Direction::Inverse,
+        },
+        "source" | "sources" | "based-on" | "builds-on" | "extends" | "parent" => {
+            FrontmatterFieldMapping {
+                edge_kind: "DependsOn".to_string(),
+                direction: Direction::Forward,
+            }
+        }
+        "resolves" | "addresses" => FrontmatterFieldMapping {
+            edge_kind: "Discharges".to_string(),
+            direction: Direction::Forward,
+        },
+        _ => FrontmatterFieldMapping {
+            edge_kind: "Cites".to_string(),
+            direction: Direction::Forward,
+        },
+    }
+}
+
+/// Generate an `AnnealConfig` from inferred structure.
+///
+/// Scans the lattice, resolve stats, and observed frontmatter keys to build
+/// a config that represents the current corpus structure. The D-07 auto-
+/// detection adds frontmatter field mappings for keys seen >= 3 times that
+/// are not already in the default mapping.
+pub(crate) fn cmd_init(
+    root: &Utf8Path,
+    lattice: &Lattice,
+    stats: &ResolveStats,
+    observed_frontmatter_keys: &HashMap<String, usize>,
+    dry_run: bool,
+) -> anyhow::Result<InitOutput> {
+    // Build convergence section from lattice
+    let mut active: Vec<String> = lattice.active.iter().cloned().collect();
+    active.sort();
+    let mut terminal: Vec<String> = lattice.terminal.iter().cloned().collect();
+    terminal.sort();
+
+    let convergence = ConvergenceConfig {
+        active,
+        terminal,
+        ordering: lattice.ordering.clone(),
+    };
+
+    // Build handles section from namespaces
+    let mut confirmed: Vec<String> = stats.namespaces.iter().cloned().collect();
+    confirmed.sort();
+
+    let handles = HandlesConfig {
+        confirmed,
+        rejected: Vec::new(),
+        linear: Vec::new(),
+    };
+
+    // Build frontmatter section: start with defaults, add auto-detected fields
+    let default_fm = FrontmatterConfig::default();
+    let default_keys: std::collections::HashSet<String> =
+        default_fm.fields.keys().cloned().collect();
+
+    let mut fields = default_fm.fields;
+
+    // D-07: Auto-detect additional frontmatter fields
+    // Special keys that are not edge-producing:
+    let special_keys: std::collections::HashSet<&str> =
+        ["status", "updated", "title", "description", "tags", "date"]
+            .iter()
+            .copied()
+            .collect();
+
+    for (key, count) in observed_frontmatter_keys {
+        // Skip fields already in defaults or special non-edge fields
+        if default_keys.contains(key) || special_keys.contains(key.as_str()) {
+            continue;
+        }
+        // Only propose fields seen in >= 3 files
+        if *count >= 3 {
+            fields.insert(key.clone(), propose_mapping(key));
+        }
+    }
+
+    let frontmatter = FrontmatterConfig { fields };
+
+    let config = AnnealConfig {
+        root: String::new(),
+        exclude: Vec::new(),
+        convergence,
+        handles,
+        freshness: FreshnessConfig::default(),
+        frontmatter,
+        concerns: HashMap::new(),
+    };
+
+    let config_path = root.join("anneal.toml");
+    let path_str = config_path.to_string();
+
+    let written = if dry_run {
+        false
+    } else {
+        let toml_str = toml::to_string_pretty(&config)?;
+        std::fs::write(&config_path, toml_str)?;
+        true
+    };
+
+    Ok(InitOutput {
+        config,
+        written,
+        path: path_str,
+    })
 }
 
 // ---------------------------------------------------------------------------
