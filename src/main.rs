@@ -58,6 +58,9 @@ enum Command {
         /// Filter to handles with this status
         #[arg(long)]
         status: Option<String>,
+        /// Filter by handle kind: file, label, section, version
+        #[arg(long)]
+        kind: Option<String>,
     },
     /// Generate anneal.toml from inferred structure
     Init {
@@ -107,7 +110,22 @@ fn collect_unresolved<'a>(
     (unresolved, section_ref_count)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        // Silently exit on broken pipe (e.g., `anneal check | head`).
+        for cause in e.chain() {
+            if let Some(io_err) = cause.downcast_ref::<std::io::Error>()
+                && io_err.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                std::process::exit(0);
+            }
+        }
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli_args = Cli::parse();
 
     let cwd = Utf8PathBuf::try_from(
@@ -215,6 +233,7 @@ fn main() -> anyhow::Result<()> {
             all,
             ref namespace,
             ref status,
+            ref kind,
         }) => {
             let output = cli::cmd_find(
                 graph,
@@ -222,6 +241,7 @@ fn main() -> anyhow::Result<()> {
                 query,
                 namespace.as_deref(),
                 status.as_deref(),
+                kind.as_deref(),
                 all,
             );
             if cli_args.json {
