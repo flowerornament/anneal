@@ -12,15 +12,15 @@ An arriving agent can immediately understand what's settled, what's drifting, wh
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] Compute a knowledge graph from markdown files (handles as nodes, references as edges) — Phase 1
+- [x] Resolve handles uniformly: files, sections (headings), labels (OQ-64), versions (v17) — Phase 1
+- [x] Infer handle namespaces from sequential cardinality (OQ-1..OQ-69 is a namespace; SHA-256 is not) — Phase 1
+- [x] Parse YAML frontmatter for convergence state (status field) — Phase 1
+- [x] Infer active/terminal partition from directory conventions and observed status values — Phase 1
+- [x] Optional anneal.toml config; zero-config is valid (existence lattice = reference checking only) — Phase 1
 
 ### Active
 
-- [ ] Compute a knowledge graph from markdown files (handles as nodes, references as edges)
-- [ ] Resolve handles uniformly: files, sections (headings), labels (OQ-64), versions (v17)
-- [ ] Infer handle namespaces from sequential cardinality (OQ-1..OQ-69 is a namespace; SHA-256 is not)
-- [ ] Parse YAML frontmatter for convergence state (status field)
-- [ ] Infer active/terminal partition from directory conventions and observed status values
 - [ ] Check five local consistency rules: existence, staleness, confidence gap, linearity, convention adoption
 - [ ] Track obligations as linear handles (must be discharged exactly once)
 - [ ] Compute impact analysis: reverse graph traversal from a changed handle
@@ -28,7 +28,6 @@ An arriving agent can immediately understand what's settled, what's drifting, wh
 - [ ] Compute graph diffs between snapshots
 - [ ] Eight CLI commands: check, get, find, status, map, init, impact, diff
 - [ ] All commands support --json output for agent consumption
-- [ ] Optional anneal.toml config; zero-config is valid (existence lattice = reference checking only)
 - [ ] Suggestions: detect patterns and propose structural improvements from graph analysis
 
 ### Out of Scope
@@ -66,11 +65,11 @@ The primary test corpus is Murail's `.design/` directory at `~/code/murail/.desi
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Local checks over global propagation | Knowledge graphs are shallow (~3 hops); local checks catch the same issues without cascade false positives | — Pending |
-| Hand-roll graph instead of petgraph | Only need traversal + toposort + reachability; 135 lines vs 1.5s compile cost for 5% of petgraph surface | — Pending |
+| Hand-roll graph instead of petgraph | Only need traversal + toposort + reachability; 135 lines vs 1.5s compile cost for 5% of petgraph surface | Validated Phase 1 (131 lines) |
 | Cites vs DependsOn edge distinction | Not all references are dependencies; formal model citing OQ-64 shouldn't have its grade affected by OQ status | — Pending |
-| serde_yaml_ng for frontmatter | Maintained fork of archived serde_yaml; manual ---/--- split is ~15 lines | — Pending |
+| serde_yaml_ng for frontmatter | Maintained fork of archived serde_yaml; manual ---/--- split is ~15 lines | Validated Phase 1 |
 | Convergence tracking via JSONL snapshots | Append-only, derived, deletable; enables status --history and diff without persistent database | — Pending |
-| anneal.toml optional with inference-first | Zero-config must work (existence lattice); config only overrides inference | — Pending |
+| anneal.toml optional with inference-first | Zero-config must work (existence lattice); config only overrides inference | Validated Phase 1 |
 
 ## Evolution
 
@@ -89,5 +88,9 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
+## Current State
+
+Phase 1 complete — graph foundation is working end-to-end. Running `cargo run -- --root ~/code/murail/.design/` produces 9788 handles, 6408 edges, 22 namespaces from 259 files. The pipeline: parse files → infer namespaces → resolve labels/versions/edges → infer lattice → print stats. Quality gate (`just check`) passes.
+
 ---
-*Last updated: 2026-03-28 after initialization*
+*Last updated: 2026-03-29 after Phase 1 completion*
