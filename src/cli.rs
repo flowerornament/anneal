@@ -2285,11 +2285,12 @@ mod tests {
         }
     }
 
-    /// Helper: render a StatusOutput to string for assertion.
+    /// Helper: render a StatusOutput to string for assertion (ANSI stripped).
     fn render_status(output: &StatusOutput) -> String {
         let mut buf = Vec::new();
         output.print_human(&mut buf).expect("print_human");
-        String::from_utf8(buf).expect("utf8")
+        let raw = String::from_utf8(buf).expect("utf8");
+        console::strip_ansi_codes(&raw).to_string()
     }
 
     #[test]

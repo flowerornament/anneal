@@ -5,3 +5,4 @@
 .dolt/
 *.db
 .beads-credential-key
+result
