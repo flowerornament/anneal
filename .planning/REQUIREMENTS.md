@@ -3,83 +3,74 @@
 **Defined:** 2026-03-28
 **Core Value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
 
-## v1 Requirements
+## v1.0 Requirements (validated)
 
-### Graph Construction
+All 48 v1.0 requirements validated across 3 phases. See git history for full list.
 
-- [x] **GRAPH-01**: Scan directory tree for .md files and create File handles
-- [x] **GRAPH-02**: Parse YAML frontmatter between `---` fences, extract `status:` and metadata
-- [x] **GRAPH-03**: Parse markdown headings (`#{1,6}`) to create Section handles within files
-- [x] **GRAPH-04**: Scan content with RegexSet for labels, section refs, file paths, version refs
-- [x] **GRAPH-05**: Build directed graph with typed edges (Cites, DependsOn, Supersedes, Verifies, Discharges)
-- [x] **GRAPH-06**: Graph is computed from files on every invocation, never stored
+### Summary
 
-### Handle Resolution
+- Graph construction: 6 requirements (GRAPH-01..06) — Complete Phase 1
+- Handle resolution: 6 requirements (HANDLE-01..06) — Complete Phase 1
+- Convergence lattice: 4 requirements (LATTICE-01..04) — Complete Phase 1
+- Local checks: 6 requirements (CHECK-01..06) — Complete Phase 2
+- Impact analysis: 3 requirements (IMPACT-01..03) — Complete Phase 2
+- Convergence tracking: 5 requirements (CONVERGE-01..05) — Complete Phase 3
+- CLI commands: 10 requirements (CLI-01..10) — Complete Phases 2-3
+- Configuration: 4 requirements (CONFIG-01..04) — Complete Phases 1-2
+- Suggestions: 5 requirements (SUGGEST-01..05) — Complete Phase 3
 
-- [x] **HANDLE-01**: Resolve File handles by filesystem path
-- [x] **HANDLE-02**: Resolve Section handles to heading ranges within parent files
-- [x] **HANDLE-03**: Resolve Label handles by scanning confirmed namespaces across all files
-- [x] **HANDLE-04**: Resolve Version handles by matching versioned artifact naming conventions
-- [x] **HANDLE-05**: Infer handle namespaces by sequential cardinality (N >= 3 members, M >= 2 files)
-- [x] **HANDLE-06**: Only labels in confirmed namespaces generate broken-reference errors
+## v1.1 Requirements
 
-### Convergence Lattice
+### Extraction Pipeline
 
-- [x] **LATTICE-01**: Support two-element existence lattice {exists, missing} as zero-config baseline
-- [x] **LATTICE-02**: Infer confidence lattice from observed frontmatter status values
-- [x] **LATTICE-03**: Partition status values into active and terminal sets (by directory convention + config)
-- [x] **LATTICE-04**: Compute freshness from file mtime or `updated:` frontmatter field
+- [ ] **EXTRACT-01**: Introduce `FileExtraction` type as uniform extraction output from both frontmatter and body scanning
+- [ ] **EXTRACT-02**: Introduce `DiscoveredRef` with `RefHint` enum replacing `PendingEdge`, `LabelCandidate`, `FrontmatterEdge`, `ScanResult`
+- [ ] **EXTRACT-03**: Introduce `SourceSpan` with mandatory line numbers on all discovered references
+- [ ] **EXTRACT-04**: Build `LineIndex` from full file content for O(log n) byte-to-line lookup with frontmatter offset adjustment
+- [ ] **EXTRACT-05**: Plausibility filter rejects absolute paths, freeform prose, and wildcard patterns from frontmatter edge targets
+- [ ] **EXTRACT-06**: URLs in frontmatter classified as `RefHint::External` (not silently skipped)
+- [ ] **EXTRACT-07**: Replace regex body scanner with pulldown-cmark 0.13 event walker (ENABLE_HEADING_ATTRIBUTES + ENABLE_WIKILINKS)
+- [ ] **EXTRACT-08**: Concatenate text events per block element before applying regex patterns (label, section ref, version)
+- [ ] **EXTRACT-09**: Extract markdown links and wiki-links as `DiscoveredRef` from pulldown-cmark Link events
+- [ ] **EXTRACT-10**: Skip extraction inside code blocks (structural via pulldown-cmark) and inline code spans
+- [ ] **EXTRACT-11**: Scan HTML block content with regex patterns (pragmatic: anneal's job is finding references)
 
-### Local Checks
+### Resolution
 
-- [x] **CHECK-01**: Existence check — every edge target must resolve (error if not)
-- [x] **CHECK-02**: Staleness check — active handle referencing terminal handle (warning)
-- [x] **CHECK-03**: Confidence gap check — DependsOn edge where source state > target state (warning)
-- [x] **CHECK-04**: Linearity check — linear handles discharged exactly once (error if zero, info if multiple)
-- [x] **CHECK-05**: Convention adoption check — warn about missing frontmatter only when >50% of siblings have it
-- [x] **CHECK-06**: Diagnostics use compiler-style format with error codes (E001, W001, I001)
+- [ ] **RESOLVE-01**: Introduce `Resolution` enum (Exact / Fuzzy / Unresolved) with candidate collection
+- [ ] **RESOLVE-02**: Resolution cascade: exact match -> root-prefix strip -> bare filename -> version stem -> zero-pad normalize
+- [ ] **RESOLVE-03**: Root-prefix resolution (`.design/foo.md` -> `foo.md`) for corpus-relative path mismatches
+- [ ] **RESOLVE-04**: Version stem resolution (`formal-model-v11.md` -> suggest `formal-model-v17.md` if latest exists)
+- [ ] **RESOLVE-05**: Zero-pad label normalization (`OQ-01` resolves to `OQ-1`)
+- [ ] **RESOLVE-06**: Unresolved references carry candidate list for diagnostic enrichment (structural transforms only, no fuzzy edit distance)
 
-### Impact Analysis
+### Diagnostics
 
-- [x] **IMPACT-01**: Compute impact set by reverse traversal over DependsOn, Supersedes, Verifies edges
-- [x] **IMPACT-02**: Handle cycles via visited-set detection
-- [x] **IMPACT-03**: Show direct and indirect affected handles
+- [ ] **DIAG-01**: All diagnostics carry mandatory `SourceSpan` (file + line number, never null)
+- [ ] **DIAG-02**: Introduce `Evidence` enum on `Diagnostic` for structured check results
+- [ ] **DIAG-03**: E001 diagnostics include resolution candidates ("similar handle exists: subdir/foo.md")
+- [ ] **DIAG-04**: JSON output changes are additive-only (new fields allowed, existing fields preserve type and presence)
+- [ ] **DIAG-05**: Human output stays terse by default (line number is the only new addition to default format)
 
-### Convergence Tracking
+### CLI & UX
 
-- [x] **CONVERGE-01**: Append snapshot to `.anneal/history.jsonl` after check/status runs
-- [x] **CONVERGE-02**: Snapshot includes handle counts, edge counts, state histogram, obligation status, diagnostic counts, namespace stats
-- [x] **CONVERGE-03**: Compute convergence summary: advancing, holding, or drifting (from snapshot delta)
-- [x] **CONVERGE-04**: Compute graph diff between current state and previous snapshot
-- [x] **CONVERGE-05**: Graceful handling of missing/corrupted history file (skip bad lines, return empty on missing)
-
-### CLI Commands
-
-- [x] **CLI-01**: `anneal check` — run local checks, report diagnostics, exit non-zero on errors
-- [x] **CLI-02**: `anneal get <handle>` — resolve any handle, show content + state + context
-- [x] **CLI-03**: `anneal find <query>` — full-text search filtered by convergence state
-- [x] **CLI-04**: `anneal status` — dashboard with graph stats, pipeline state, convergence summary
-- [x] **CLI-05**: `anneal map` — render knowledge graph, with --concern and --around flags
-- [x] **CLI-06**: `anneal init` — save inferred coloring as anneal.toml
-- [x] **CLI-07**: `anneal impact <handle>` — show what's affected if handle changes
-- [x] **CLI-08**: `anneal diff [ref]` — graph-level changes since reference point
-- [x] **CLI-09**: All commands support `--json` output via global flag
-- [x] **CLI-10**: Human-readable output as default, via CommandOutput trait with print_human()
+- [ ] **UX-01**: `--active-only` available as config opt-in via `[check] default_filter = "active-only"` in anneal.toml
+- [ ] **UX-02**: Content snippet in `anneal get` output (first paragraph for files, heading context for labels)
+- [ ] **UX-03**: Smarter `anneal init` terminal inference from status name heuristics (superseded, archived, retired, etc.)
+- [ ] **UX-04**: Default `--depth=1` for `anneal map --around` (currently 2, too verbose on large corpora)
+- [ ] **UX-05**: `--file=<path>` filter for `anneal check` to scope diagnostics to one file
+- [ ] **UX-06**: `anneal obligations` command showing linear namespace status (outstanding/discharged/mooted)
 
 ### Configuration
 
-- [x] **CONFIG-01**: Parse anneal.toml with all-optional fields via `#[serde(default, deny_unknown_fields)]`
-- [x] **CONFIG-02**: Zero-config is valid — tool works with no anneal.toml (existence lattice only)
-- [x] **CONFIG-03**: Config supports: root, convergence (active/terminal/ordering), handles (confirmed/rejected), linear namespaces, freshness thresholds, concern groups
-- [x] **CONFIG-04**: `anneal init` generates anneal.toml from inferred structure
+- [ ] **CONFIG-01**: `[suppress]` section in anneal.toml for false positive suppression (patterns + identities)
+- [ ] **CONFIG-02**: `HandleKind::External` for URL references (participate in graph, skip convergence tracking)
 
-### Suggestions
+### Quality
 
-- [x] **SUGGEST-01**: Detect orphaned handles (no incoming edges)
-- [x] **SUGGEST-02**: Detect candidate handle namespaces (recurring regex patterns)
-- [x] **SUGGEST-03**: Detect pipeline stalls (state levels with high population, no outflow)
-- [x] **SUGGEST-04**: Detect abandoned namespaces (all members frozen >N days)
-- [x] **SUGGEST-05**: Suggest concern groups from label co-occurrence
+- [ ] **QUALITY-01**: Parallel-run comparison of old regex scanner vs new pulldown-cmark scanner on Murail and Herald corpora before removing regex
+- [ ] **QUALITY-02**: Self-check: `anneal --root .design/ check` on anneal's own spec passes cleanly
+- [ ] **QUALITY-03**: S003 pipeline stall diagnostic refined to use temporal signal (snapshot history) rather than static edge counting
 
 ## v2 Requirements
 
@@ -96,7 +87,7 @@
 ### Extended Scanning
 
 - **SCAN-01**: Comment scanning in non-markdown files (Agda, Lean, Rust)
-- **SCAN-02**: Edge kind inference from context keywords (incorporates, see also, cf.)
+- **SCAN-02**: Extractor trait for multi-format support (KB-OQ5)
 
 ### Extended Analysis
 
@@ -107,72 +98,28 @@
 
 | Feature | Reason |
 |---------|--------|
-| Markdown AST parsing | Five regexes + YAML parser is sufficient; AST adds complexity without value |
 | Content heuristics for suggestions | Fragile, language-dependent; structural analysis is reliable |
 | ML models for semantic search | Adds 2GB+ dependencies; full-text is v1, vector search is v2 |
 | Database storage for graph | Graph is computed from files; statelessness is a design principle (KB-P1) |
 | Document creation/editing | anneal reads and reports; it doesn't write content documents |
 | Process enforcement | anneal reports state; it doesn't gate transitions (KB-P4) |
+| Heavy diagnostic crates (codespan, miette) | Over-engineered for single-location diagnostics; hand-roll SourceSpan |
+| Generic fuzzy matching (strsim/Levenshtein) | Deterministic structural transforms are more reliable for handle IDs |
+| Changing --active-only to default | Breaks CI scripts and poisons convergence snapshots; config opt-in instead |
 
 ## Traceability
 
+(Populated by roadmapper)
+
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| GRAPH-01 | Phase 1 | Complete |
-| GRAPH-02 | Phase 1 | Complete |
-| GRAPH-03 | Phase 1 | Complete |
-| GRAPH-04 | Phase 1 | Complete |
-| GRAPH-05 | Phase 1 | Complete |
-| GRAPH-06 | Phase 1 | Complete |
-| HANDLE-01 | Phase 1 | Complete |
-| HANDLE-02 | Phase 1 | Complete |
-| HANDLE-03 | Phase 1 | Complete |
-| HANDLE-04 | Phase 1 | Complete |
-| HANDLE-05 | Phase 1 | Complete |
-| HANDLE-06 | Phase 1 | Complete |
-| LATTICE-01 | Phase 1 | Complete |
-| LATTICE-02 | Phase 1 | Complete |
-| LATTICE-03 | Phase 1 | Complete |
-| LATTICE-04 | Phase 1 | Complete |
-| CHECK-01 | Phase 2 | Complete |
-| CHECK-02 | Phase 2 | Complete |
-| CHECK-03 | Phase 2 | Complete |
-| CHECK-04 | Phase 2 | Complete |
-| CHECK-05 | Phase 2 | Complete |
-| CHECK-06 | Phase 2 | Complete |
-| IMPACT-01 | Phase 2 | Complete |
-| IMPACT-02 | Phase 2 | Complete |
-| IMPACT-03 | Phase 2 | Complete |
-| CONVERGE-01 | Phase 3 | Complete |
-| CONVERGE-02 | Phase 3 | Complete |
-| CONVERGE-03 | Phase 3 | Complete |
-| CONVERGE-04 | Phase 3 | Complete |
-| CONVERGE-05 | Phase 3 | Complete |
-| CLI-01 | Phase 2 | Complete |
-| CLI-02 | Phase 2 | Complete |
-| CLI-03 | Phase 2 | Complete |
-| CLI-04 | Phase 3 | Complete |
-| CLI-05 | Phase 3 | Complete |
-| CLI-06 | Phase 2 | Complete |
-| CLI-07 | Phase 2 | Complete |
-| CLI-08 | Phase 3 | Complete |
-| CLI-09 | Phase 2 | Complete |
-| CLI-10 | Phase 2 | Complete |
-| CONFIG-01 | Phase 1 | Complete |
-| CONFIG-02 | Phase 1 | Complete |
-| CONFIG-03 | Phase 2 | Complete |
-| CONFIG-04 | Phase 2 | Complete |
-| SUGGEST-01 | Phase 3 | Complete |
-| SUGGEST-02 | Phase 3 | Complete |
-| SUGGEST-03 | Phase 3 | Complete |
-| SUGGEST-04 | Phase 3 | Complete |
-| SUGGEST-05 | Phase 3 | Complete |
+| — | — | — |
 
 **Coverage:**
-- v1 requirements: 48 total
-- Mapped to phases: 48
-- Unmapped: 0
+- v1.1 requirements: 30 total
+- Mapped to phases: 0 (pending roadmap)
+- Unmapped: 30
 
 ---
-*Requirements defined: 2026-03-28*
-*Last updated: 2026-03-29 after Plan 03-01 completion*
+*Requirements defined: 2026-03-29*
+*Last updated: 2026-03-29 after v1.1 milestone definition*
