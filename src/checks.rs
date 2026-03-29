@@ -326,12 +326,97 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
 }
 
 // ---------------------------------------------------------------------------
+// SUGGEST-01: Orphaned handles (KB-E8)
+// ---------------------------------------------------------------------------
+
+/// Suggest orphaned handles: non-File handles with no incoming edges (D-17).
+///
+/// File handles are roots and are always "orphaned" by definition, so they
+/// are excluded. Labels, sections, and versions with no incoming edges are
+/// likely disconnected from the graph.
+fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
+    Vec::new() // TDD RED: stub
+}
+
+// ---------------------------------------------------------------------------
+// SUGGEST-02: Candidate namespaces
+// ---------------------------------------------------------------------------
+
+/// Suggest candidate namespaces: recurring label-like prefixes not yet confirmed.
+///
+/// Groups Label handles by prefix. Prefixes not in confirmed or rejected with
+/// count >= 3 are candidates. One diagnostic per candidate prefix.
+fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
+    Vec::new() // TDD RED: stub
+}
+
+// ---------------------------------------------------------------------------
+// SUGGEST-03: Pipeline stalls (KB-E4)
+// ---------------------------------------------------------------------------
+
+/// Suggest pipeline stalls: ordering levels with high population and no
+/// DependsOn outflow to the next level.
+fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
+    Vec::new() // TDD RED: stub
+}
+
+// ---------------------------------------------------------------------------
+// SUGGEST-04: Abandoned namespaces (KB-E8)
+// ---------------------------------------------------------------------------
+
+/// Suggest abandoned namespaces: all members are terminal or stale.
+///
+/// A namespace is abandoned if every member is either terminal (status in
+/// lattice.terminal) or stale (freshness beyond error threshold). Labels
+/// with no updated date and no terminal status are NOT considered abandoned.
+fn suggest_abandoned_namespaces(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &AnnealConfig,
+) -> Vec<Diagnostic> {
+    Vec::new() // TDD RED: stub
+}
+
+// ---------------------------------------------------------------------------
+// SUGGEST-05: Concern group candidates
+// ---------------------------------------------------------------------------
+
+/// Suggest concern group candidates: label prefixes co-occurring across files.
+///
+/// Builds a co-occurrence map from File handles to their referenced label
+/// prefixes. Pairs co-occurring in >= 3 files are candidates, unless already
+/// in the same concern group.
+fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
+    Vec::new() // TDD RED: stub
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion entry point
+// ---------------------------------------------------------------------------
+
+/// Run all five suggestion rules and return diagnostics.
+pub(crate) fn run_suggestions(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &AnnealConfig,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(suggest_orphaned(graph));
+    diagnostics.extend(suggest_candidate_namespaces(graph, config));
+    diagnostics.extend(suggest_pipeline_stalls(graph, lattice));
+    diagnostics.extend(suggest_abandoned_namespaces(graph, lattice, config));
+    diagnostics.extend(suggest_concern_groups(graph, config));
+    diagnostics
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Run all five check rules and return sorted diagnostics.
+/// Run all five check rules plus suggestions and return sorted diagnostics.
 ///
-/// Diagnostics are sorted by severity: errors first, then warnings, then info.
+/// Diagnostics are sorted by severity: errors first, then warnings, then info,
+/// then suggestions.
 pub(crate) fn run_checks(
     graph: &DiGraph,
     lattice: &Lattice,
@@ -345,6 +430,7 @@ pub(crate) fn run_checks(
     diagnostics.extend(check_confidence_gap(graph, lattice));
     diagnostics.extend(check_linearity(graph, config, lattice));
     diagnostics.extend(check_conventions(graph));
+    diagnostics.extend(run_suggestions(graph, lattice, config));
     diagnostics.sort_by_key(|d| d.severity);
     diagnostics
 }
@@ -603,6 +689,262 @@ mod tests {
         assert!(
             diags.is_empty(),
             "W003 should not be produced when adoption rate is <= 50%"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SUGGEST-01: Orphaned handles
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_s001_for_orphaned_label() {
+        let mut graph = DiGraph::new();
+        // Label with no incoming edges -> orphaned
+        let _label = graph.add_node(make_label_handle("OQ", 1, None));
+
+        let diags = suggest_orphaned(&graph);
+        assert_eq!(diags.len(), 1, "Expected 1 S001 diagnostic for orphaned label");
+        assert_eq!(diags[0].severity, Severity::Suggestion);
+        assert_eq!(diags[0].code, "S001");
+        assert!(diags[0].message.contains("OQ-1"));
+    }
+
+    #[test]
+    fn suggest_s001_not_for_file_handles() {
+        let mut graph = DiGraph::new();
+        // File handles are roots -- never orphaned
+        let _file = graph.add_node(make_file_handle("doc.md", None));
+
+        let diags = suggest_orphaned(&graph);
+        assert!(
+            diags.is_empty(),
+            "S001 should not be produced for File handles (they are roots)"
+        );
+    }
+
+    #[test]
+    fn suggest_s001_not_for_handles_with_incoming() {
+        let mut graph = DiGraph::new();
+        let file = graph.add_node(make_file_handle("doc.md", None));
+        let label = graph.add_node(make_label_handle("OQ", 1, None));
+        graph.add_edge(file, label, EdgeKind::Cites);
+
+        let diags = suggest_orphaned(&graph);
+        assert!(
+            diags.is_empty(),
+            "S001 should not be produced for handles with incoming edges"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SUGGEST-02: Candidate namespaces
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_s002_for_recurring_unconfirmed_prefix() {
+        let mut graph = DiGraph::new();
+        // 3 labels with prefix "NEW" -- not in confirmed namespaces
+        let _a = graph.add_node(make_label_handle("NEW", 1, None));
+        let _b = graph.add_node(make_label_handle("NEW", 2, None));
+        let _c = graph.add_node(make_label_handle("NEW", 3, None));
+
+        let config = AnnealConfig::default();
+
+        let diags = suggest_candidate_namespaces(&graph, &config);
+        assert_eq!(diags.len(), 1, "Expected 1 S002 diagnostic for candidate namespace");
+        assert_eq!(diags[0].severity, Severity::Suggestion);
+        assert_eq!(diags[0].code, "S002");
+        assert!(diags[0].message.contains("NEW"));
+    }
+
+    #[test]
+    fn suggest_s002_not_for_confirmed_prefix() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_label_handle("OQ", 1, None));
+        let _b = graph.add_node(make_label_handle("OQ", 2, None));
+        let _c = graph.add_node(make_label_handle("OQ", 3, None));
+
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                confirmed: vec!["OQ".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+
+        let diags = suggest_candidate_namespaces(&graph, &config);
+        assert!(
+            diags.is_empty(),
+            "S002 should not be produced for already-confirmed prefixes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SUGGEST-03: Pipeline stalls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_s003_stall_at_level_with_no_outflow() {
+        let mut graph = DiGraph::new();
+        // 3 handles at "draft" level, none with DependsOn to "review" level
+        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
+        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
+        // One handle at next level
+        let _d = graph.add_node(make_file_handle("d.md", Some("review")));
+
+        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+
+        let diags = suggest_pipeline_stalls(&graph, &lattice);
+        assert_eq!(diags.len(), 1, "Expected 1 S003 diagnostic for pipeline stall");
+        assert_eq!(diags[0].severity, Severity::Suggestion);
+        assert_eq!(diags[0].code, "S003");
+        assert!(diags[0].message.contains("draft"));
+    }
+
+    #[test]
+    fn suggest_s003_empty_when_no_ordering() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+
+        let lattice = make_lattice(&["draft"], &[], &[]);
+
+        let diags = suggest_pipeline_stalls(&graph, &lattice);
+        assert!(
+            diags.is_empty(),
+            "S003 should not be produced when ordering is empty (no pipeline)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SUGGEST-04: Abandoned namespaces
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_s004_all_members_terminal() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_label_handle("OLD", 1, Some("archived")));
+        let _b = graph.add_node(make_label_handle("OLD", 2, Some("archived")));
+
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                confirmed: vec!["OLD".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+        let lattice = make_lattice(&[], &["archived"], &[]);
+
+        let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
+        assert_eq!(diags.len(), 1, "Expected 1 S004 diagnostic for abandoned namespace");
+        assert_eq!(diags[0].severity, Severity::Suggestion);
+        assert_eq!(diags[0].code, "S004");
+        assert!(diags[0].message.contains("OLD"));
+    }
+
+    #[test]
+    fn suggest_s004_all_members_stale() {
+        let mut graph = DiGraph::new();
+        // Create handles with old updated dates (stale beyond error threshold of 90 days)
+        let mut h1 = make_label_handle("STALE", 1, Some("draft"));
+        h1.metadata.updated = Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
+        let mut h2 = make_label_handle("STALE", 2, Some("draft"));
+        h2.metadata.updated = Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
+        let _a = graph.add_node(h1);
+        let _b = graph.add_node(h2);
+
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                confirmed: vec!["STALE".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+        let lattice = make_lattice(&["draft"], &[], &[]);
+
+        let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 S004 diagnostic for stale namespace (all members beyond freshness threshold)"
+        );
+        assert_eq!(diags[0].code, "S004");
+    }
+
+    #[test]
+    fn suggest_s004_not_for_fresh_active_members() {
+        let mut graph = DiGraph::new();
+        // Fresh active handles -- should NOT be flagged
+        let mut h1 = make_label_handle("ACTIVE", 1, Some("draft"));
+        h1.metadata.updated = Some(chrono::Local::now().date_naive());
+        let mut h2 = make_label_handle("ACTIVE", 2, Some("draft"));
+        h2.metadata.updated = Some(chrono::Local::now().date_naive());
+        let _a = graph.add_node(h1);
+        let _b = graph.add_node(h2);
+
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                confirmed: vec!["ACTIVE".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+        let lattice = make_lattice(&["draft"], &[], &[]);
+
+        let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
+        assert!(
+            diags.is_empty(),
+            "S004 should not be produced when some members are fresh and active"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SUGGEST-05: Concern group candidates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_s005_cooccurring_prefixes() {
+        let mut graph = DiGraph::new();
+        // 3 files each reference both "OQ" and "FM" labels
+        for i in 0..3 {
+            let file = graph.add_node(make_file_handle(&format!("doc{i}.md"), None));
+            let oq = graph.add_node(make_label_handle("OQ", i + 1, None));
+            let fm = graph.add_node(make_label_handle("FM", i + 1, None));
+            graph.add_edge(file, oq, EdgeKind::Cites);
+            graph.add_edge(file, fm, EdgeKind::Cites);
+        }
+
+        let config = AnnealConfig::default();
+
+        let diags = suggest_concern_groups(&graph, &config);
+        assert_eq!(diags.len(), 1, "Expected 1 S005 diagnostic for co-occurring prefixes");
+        assert_eq!(diags[0].severity, Severity::Suggestion);
+        assert_eq!(diags[0].code, "S005");
+        assert!(
+            diags[0].message.contains("OQ") && diags[0].message.contains("FM"),
+            "S005 message should mention both co-occurring prefixes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // run_suggestions + run_checks integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_run_checks_includes_suggestions() {
+        let mut graph = DiGraph::new();
+        // Orphaned label -> S001
+        let _label = graph.add_node(make_label_handle("LONE", 1, None));
+
+        let lattice = make_lattice(&[], &[], &[]);
+        let config = AnnealConfig::default();
+        let unresolved: Vec<PendingEdge> = Vec::new();
+
+        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0);
+        let suggestion_count = diags.iter().filter(|d| d.severity == Severity::Suggestion).count();
+        assert!(
+            suggestion_count >= 1,
+            "run_checks should include suggestions from run_suggestions, got {suggestion_count}"
         );
     }
 
