@@ -8,7 +8,7 @@
 
 | # | Phase | Goal | Requirements | Success Criteria |
 |---|-------|------|--------------|------------------|
-| 1 | Graph Foundation | Build the knowledge graph from files | 18 (GRAPH-*, HANDLE-*, LATTICE-*, CONFIG-01/02) | 4 |
+| 1 | Graph Foundation | 3/3 | Complete   | 2026-03-29 |
 | 2 | Checks & CLI | Local consistency checks + core commands | 22 (CHECK-*, IMPACT-*, CLI-01..03/06..10, CONFIG-03/04) | 5 |
 | 3 | Convergence & Polish | Convergence tracking, suggestions, remaining commands | 8 (CONVERGE-*, CLI-04/05/08, SUGGEST-*) | 4 |
 
@@ -20,12 +20,12 @@
 
 **Requirements:** GRAPH-01, GRAPH-02, GRAPH-03, GRAPH-04, GRAPH-05, GRAPH-06, HANDLE-01, HANDLE-02, HANDLE-03, HANDLE-04, HANDLE-05, HANDLE-06, LATTICE-01, LATTICE-02, LATTICE-03, LATTICE-04, CONFIG-01, CONFIG-02
 
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 01-01-PLAN.md -- Types & Config: Handle, AnnealConfig, DiGraph foundational types
 - [x] 01-02-PLAN.md -- Parse & Lattice: Frontmatter split, RegexSet scanner, edge kind inference, convergence lattice
-- [ ] 01-03-PLAN.md -- Resolution & Wiring: Namespace inference, handle resolution, main.rs pipeline
+- [x] 01-03-PLAN.md -- Resolution & Wiring: Namespace inference, handle resolution, main.rs pipeline
 
 **Success Criteria:**
 1. Running anneal on Murail's .design/ directory (265 files) produces a graph with ~500 handles and ~2000 edges in <100ms
