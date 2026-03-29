@@ -52,7 +52,7 @@ Plans:
 
 **Milestone Goal:** Make `anneal check` output trustworthy and actionable by introducing typed extraction/resolution/diagnostic pipeline, replacing the regex body scanner with pulldown-cmark, and enriching orientation commands.
 
-- [x] **Phase 4: Types & Plausibility** - Typed extraction pipeline with plausibility filtering and external URL classification (completed 2026-03-29)
+- [ ] **Phase 4: Types & Plausibility** - Typed extraction pipeline with plausibility filtering and external URL classification
 - [ ] **Phase 5: pulldown-cmark Migration** - Replace regex body scanner with pulldown-cmark event walker, line number tracking
 - [ ] **Phase 6: Resolution Cascade** - Deterministic resolution strategies, enriched diagnostics with evidence, active-only config
 - [ ] **Phase 7: UX Enrichment** - Content snippets, smarter init, file-scoped checks, obligations command, config suppression, self-check
@@ -68,11 +68,12 @@ Plans:
   2. URLs in frontmatter edges appear as `RefHint::External` in extraction output instead of being silently dropped
   3. Absolute paths, freeform prose, and wildcard patterns in frontmatter are rejected with a plausibility diagnostic instead of creating false positive broken-reference errors
   4. All existing tests pass — `just check` green with no behavior change in final diagnostic output
-**Plans**: 2 plans
+**Plans**: 3 plans
 
 Plans:
 - [x] 04-01-PLAN.md -- Extraction types & classify function
 - [x] 04-02-PLAN.md -- Plausibility filter wiring & W004 diagnostic
+- [ ] 04-03-PLAN.md -- Gap closure: wire FileExtraction/DiscoveredRef into production & JSON output
 
 ### Phase 5: pulldown-cmark Migration
 **Goal**: Body scanning uses pulldown-cmark's structural AST instead of line-by-line regex, giving accurate line numbers and structural code block skipping
@@ -119,7 +120,7 @@ Plans:
 | 1. Graph Foundation | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
-| 4. Types & Plausibility | v1.1 | 2/2 | Complete   | 2026-03-29 |
+| 4. Types & Plausibility | v1.1 | 2/3 | Gap closure | - |
 | 5. pulldown-cmark Migration | v1.1 | 0/0 | Not started | - |
 | 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
