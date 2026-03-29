@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 **Phase 3: Convergence & Polish**
 
 - Status: In Progress
-- Current Plan: 2 of 5
+- Current Plan: 3 of 5
 - Goal: Add convergence tracking, status/map/diff commands, and suggestion engine to complete the full spec.
 
 ## Progress
@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
 | Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | In Progress | Plan 01 done |
+| Phase 3: Convergence & Polish | In Progress | Plans 01, 03 done |
 
 ## Decisions
 
@@ -62,6 +62,9 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - cmd_find searches handle identities only, not file content
 - Init D-07 proposes Cites as default fallback for unknown frontmatter fields
 - observed_frontmatter_keys collected via second YAML parse in build_graph
+- MapOptions struct bundles 8 cmd_map parameters (clippy too_many_arguments)
+- File handles always included in default map subgraph regardless of terminal status
+- Ord/PartialOrd derives on NodeId for BTreeSet edge deduplication
 
 ## Session Log
 
@@ -76,6 +79,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-29 | 02 | Plan 03 complete: cli.rs with 5 subcommands (check, get, find, init, impact). Clap dispatch, --json on all commands, D-07 frontmatter auto-detection. Murail: 1092 errors, 34 warnings, 1 info. |
 
 | 2026-03-29 | 03 | Plan 01 complete: snapshot.rs with Snapshot type, JSONL I/O (append/read), convergence summary (advancing/holding/drifting), Severity::Suggestion variant. 10 new tests. |
+| 2026-03-29 | 03 | Plan 03 complete: anneal map command with text/DOT rendering, BFS --around, --concern filtering. MapOptions struct, 8 tests. |
 
 ---
-*Last updated: 2026-03-29 after Plan 03-01 completion*
+*Last updated: 2026-03-29 after Plan 03-03 completion*
