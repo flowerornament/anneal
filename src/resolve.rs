@@ -278,11 +278,10 @@ pub(crate) fn resolve_pending_edges(
                 }
 
                 // Fallback: corpus-wide filename index lookup (unambiguous only)
-                if let Some(paths) = filename_index.get(&edge.target_identity) {
-                    if paths.len() == 1 {
-                        return node_index.get(&paths[0].to_string()).copied();
-                    }
-                    // Ambiguous (multiple files with same name): skip
+                if let Some(paths) = filename_index.get(&edge.target_identity)
+                    && paths.len() == 1
+                {
+                    return node_index.get(&paths[0].to_string()).copied();
                 }
             }
             None
@@ -419,13 +418,13 @@ fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
 fn build_filename_index(graph: &DiGraph) -> HashMap<String, Vec<Utf8PathBuf>> {
     let mut index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
     for (_, handle) in graph.nodes() {
-        if let HandleKind::File(ref path) = handle.kind {
-            if let Some(filename) = path.file_name() {
-                index
-                    .entry(filename.to_string())
-                    .or_default()
-                    .push(path.clone());
-            }
+        if let HandleKind::File(ref path) = handle.kind
+            && let Some(filename) = path.file_name()
+        {
+            index
+                .entry(filename.to_string())
+                .or_default()
+                .push(path.clone());
         }
     }
     index
