@@ -117,10 +117,14 @@ enum Command {
 /// An edge is unresolved if its target identity does not appear in the
 /// node index. Section refs (target starting with "section:") are counted
 /// separately for the I001 summary diagnostic.
-fn collect_unresolved<'a>(
-    pending: &'a [parse::PendingEdge],
+/// Collect unresolved pending edges and clone them into an owned vec.
+///
+/// Returns `(owned_unresolved_edges, section_ref_count)`. Section refs are
+/// counted separately for the I001 summary diagnostic.
+fn collect_unresolved_owned(
+    pending: &[parse::PendingEdge],
     node_index: &HashMap<String, NodeId>,
-) -> (Vec<&'a parse::PendingEdge>, usize) {
+) -> (Vec<parse::PendingEdge>, usize) {
     let mut unresolved = Vec::new();
     let mut section_ref_count: usize = 0;
 
@@ -131,7 +135,7 @@ fn collect_unresolved<'a>(
         if edge.target_identity.starts_with("section:") {
             section_ref_count += 1;
         } else {
-            unresolved.push(edge);
+            unresolved.push(edge.clone());
         }
     }
 
@@ -209,20 +213,10 @@ fn run() -> anyhow::Result<()> {
             stale,
             obligations,
         }) => {
-            let (unresolved_refs, section_ref_count) =
-                collect_unresolved(&result.pending_edges, &node_index);
-            // Convert &[&PendingEdge] to owned slice for run_checks
-            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
-                .iter()
-                .map(|e| parse::PendingEdge {
-                    source: e.source,
-                    target_identity: e.target_identity.clone(),
-                    kind: e.kind,
-                    inverse: e.inverse,
-                })
-                .collect();
+            let (unresolved_owned, section_ref_count) =
+                collect_unresolved_owned(&result.pending_edges, &node_index);
 
-            // Build snapshot from full (unfiltered) diagnostics (D-04, D-20)
+            // Compute diagnostics once — used for both check output and snapshot
             let all_diagnostics = checks::run_checks(
                 graph,
                 &lattice,
@@ -232,21 +226,13 @@ fn run() -> anyhow::Result<()> {
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
 
-            // Build check output (may filter diagnostics)
             let filters = cli::CheckFilters {
                 errors_only,
                 suggest,
                 stale,
                 obligations,
             };
-            let output = cli::cmd_check(
-                graph,
-                &lattice,
-                &config,
-                &unresolved_owned,
-                section_ref_count,
-                &filters,
-            );
+            let output = cli::cmd_check(all_diagnostics, &filters);
             if cli_args.json {
                 cli::print_json(&output)?;
             } else {
@@ -367,27 +353,10 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Status) => {
-            let (unresolved_refs, section_ref_count) =
-                collect_unresolved(&result.pending_edges, &node_index);
-            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
-                .iter()
-                .map(|e| parse::PendingEdge {
-                    source: e.source,
-                    target_identity: e.target_identity.clone(),
-                    kind: e.kind,
-                    inverse: e.inverse,
-                })
-                .collect();
+            let (unresolved_owned, section_ref_count) =
+                collect_unresolved_owned(&result.pending_edges, &node_index);
 
-            let output = cli::cmd_status(
-                graph,
-                &lattice,
-                &config,
-                &unresolved_owned,
-                section_ref_count,
-            );
-
-            // Build snapshot from diagnostics for convergence tracking (D-04)
+            // Compute diagnostics once — used for status output, snapshot, and convergence
             let all_diagnostics = checks::run_checks(
                 graph,
                 &lattice,
@@ -396,15 +365,12 @@ fn run() -> anyhow::Result<()> {
                 section_ref_count,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+            let output = cli::cmd_status(graph, &lattice, &config, &all_diagnostics);
 
             // Compute convergence from history (D-05, D-06)
             let convergence =
                 snapshot::latest_summary(&root, &snap).map(|s| cli::ConvergenceSummaryOutput {
-                    signal: match s.signal {
-                        snapshot::ConvergenceSignal::Advancing => "advancing".to_string(),
-                        snapshot::ConvergenceSignal::Holding => "holding".to_string(),
-                        snapshot::ConvergenceSignal::Drifting => "drifting".to_string(),
-                    },
+                    signal: s.signal.to_string(),
                     detail: s.detail,
                 });
             let output = output.with_convergence(convergence);
@@ -422,17 +388,8 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Diff { days, ref git_ref }) => {
-            let (unresolved_refs, section_ref_count) =
-                collect_unresolved(&result.pending_edges, &node_index);
-            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
-                .iter()
-                .map(|e| parse::PendingEdge {
-                    source: e.source,
-                    target_identity: e.target_identity.clone(),
-                    kind: e.kind,
-                    inverse: e.inverse,
-                })
-                .collect();
+            let (unresolved_owned, section_ref_count) =
+                collect_unresolved_owned(&result.pending_edges, &node_index);
             let all_diagnostics = checks::run_checks(
                 graph,
                 &lattice,

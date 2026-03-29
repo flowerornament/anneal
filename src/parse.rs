@@ -231,6 +231,7 @@ pub(crate) struct LabelCandidate {
 /// Frontmatter fields like `depends-on: OQ-64` reference targets that may not
 /// have been scanned yet. Resolution to actual `NodeId` values happens in
 /// `resolve.rs`.
+#[derive(Clone)]
 pub(crate) struct PendingEdge {
     pub(crate) source: NodeId,
     pub(crate) target_identity: String,

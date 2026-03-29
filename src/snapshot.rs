@@ -1,6 +1,3 @@
-// Phase 3: snapshot types and functions consumed by status/diff commands (Plans 03, 04)
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -75,6 +72,16 @@ pub(crate) enum ConvergenceSignal {
     Drifting,
 }
 
+impl std::fmt::Display for ConvergenceSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Advancing => f.write_str("advancing"),
+            Self::Holding => f.write_str("holding"),
+            Self::Drifting => f.write_str("drifting"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ConvergenceSummary {
     pub(crate) signal: ConvergenceSignal,
@@ -105,8 +112,6 @@ pub(crate) fn build_snapshot(
     let mut ns_total: HashMap<String, usize> = HashMap::new();
     let mut ns_open: HashMap<String, usize> = HashMap::new();
     let mut ns_resolved: HashMap<String, usize> = HashMap::new();
-    // deferred = active but stale (beyond freshness error threshold)
-    let ns_deferred: HashMap<String, usize> = HashMap::new();
 
     let linear_namespaces: std::collections::HashSet<&str> =
         config.handles.linear.iter().map(String::as_str).collect();
@@ -174,7 +179,7 @@ pub(crate) fn build_snapshot(
                 total: *count,
                 open: ns_open.get(prefix).copied().unwrap_or(0),
                 resolved: ns_resolved.get(prefix).copied().unwrap_or(0),
-                deferred: ns_deferred.get(prefix).copied().unwrap_or(0),
+                deferred: 0, // not yet computed; placeholder for future freshness-based deferred tracking
             },
         );
     }

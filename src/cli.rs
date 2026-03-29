@@ -14,7 +14,6 @@ use crate::graph::{DiGraph, Edge};
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::impact;
 use crate::lattice::{self, Lattice};
-use crate::parse::PendingEdge;
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -120,21 +119,14 @@ impl CheckFilters {
     }
 }
 
-/// Run all check rules and produce output with optional filter flags (D-19).
+/// Produce check output from pre-computed diagnostics with optional filter flags (D-19).
 ///
 /// Filters are combined with OR logic when multiple are set. If no filter
 /// flags are set, all diagnostics are shown (default behavior).
 pub(crate) fn cmd_check(
-    graph: &DiGraph,
-    lattice: &Lattice,
-    config: &crate::config::AnnealConfig,
-    unresolved_edges: &[PendingEdge],
-    section_ref_count: usize,
+    mut diagnostics: Vec<checks::Diagnostic>,
     filters: &CheckFilters,
 ) -> CheckOutput {
-    let mut diagnostics =
-        checks::run_checks(graph, lattice, config, unresolved_edges, section_ref_count);
-
     if filters.any_active() {
         diagnostics.retain(|d| {
             (filters.errors_only && d.severity == Severity::Error)
@@ -820,8 +812,7 @@ pub(crate) fn cmd_status(
     graph: &DiGraph,
     lattice: &Lattice,
     config: &crate::config::AnnealConfig,
-    unresolved_edges: &[PendingEdge],
-    section_ref_count: usize,
+    diagnostics_list: &[checks::Diagnostic],
 ) -> StatusOutput {
     let mut files = 0usize;
     let mut active_handles = 0usize;
@@ -895,9 +886,6 @@ pub(crate) fn cmd_status(
         )
     };
 
-    // Run diagnostics for counts
-    let diagnostics_list =
-        checks::run_checks(graph, lattice, config, unresolved_edges, section_ref_count);
     let errors = diagnostics_list
         .iter()
         .filter(|d| d.severity == Severity::Error)
@@ -906,10 +894,10 @@ pub(crate) fn cmd_status(
         .iter()
         .filter(|d| d.severity == Severity::Warning)
         .count();
-
-    // Run suggestions for count
-    let suggestion_list = checks::run_suggestions(graph, lattice, config);
-    let suggestion_count = suggestion_list.len();
+    let suggestion_count = diagnostics_list
+        .iter()
+        .filter(|d| d.severity == Severity::Suggestion)
+        .count();
 
     StatusOutput {
         files,
@@ -1204,7 +1192,7 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
         nodes.iter().map(|&id| (id, graph.node(id))).collect();
     node_list.sort_by(|a, b| a.1.id.cmp(&b.1.id));
 
-    for (node_id, h) in &node_list {
+    for (_, h) in &node_list {
         let shape = match &h.kind {
             HandleKind::File(_) => "note",
             HandleKind::Label { .. } => "box",
@@ -1229,7 +1217,6 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
             out,
             "  \"{id_escaped}\" [shape={shape}, label=\"{id_escaped}{status_label}\"{color_attr}];",
         );
-        let _ = node_id; // suppress unused warning
     }
 
     let _ = writeln!(out);
@@ -1564,17 +1551,8 @@ fn build_graph_at_git_ref(
             &build_result.terminal_by_directory,
         );
         let node_index = crate::resolve::build_node_index(&build_result.graph);
-        let (unresolved_refs, section_ref_count) =
-            super::collect_unresolved(&build_result.pending_edges, &node_index);
-        let unresolved_owned: Vec<crate::parse::PendingEdge> = unresolved_refs
-            .iter()
-            .map(|e| crate::parse::PendingEdge {
-                source: e.source,
-                target_identity: e.target_identity.clone(),
-                kind: e.kind,
-                inverse: e.inverse,
-            })
-            .collect();
+        let (unresolved_owned, section_ref_count) =
+            super::collect_unresolved_owned(&build_result.pending_edges, &node_index);
         let all_diagnostics = crate::checks::run_checks(
             &build_result.graph,
             &lattice,
@@ -2319,7 +2297,7 @@ mod tests {
         let lattice = empty_lattice();
         let config = AnnealConfig::default();
 
-        let output = cmd_status(&graph, &lattice, &config, &[], 0);
+        let output = cmd_status(&graph, &lattice, &config, &[]);
 
         assert_eq!(output.files, 2);
         assert_eq!(output.handles, 3);
@@ -2336,7 +2314,7 @@ mod tests {
         let lattice = lattice_with_terminal(&["archived"]);
         let config = AnnealConfig::default();
 
-        let output = cmd_status(&graph, &lattice, &config, &[], 0);
+        let output = cmd_status(&graph, &lattice, &config, &[]);
 
         // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
         assert_eq!(output.active_handles, 2);
