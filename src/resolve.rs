@@ -242,20 +242,46 @@ pub(crate) fn resolve_versions(
 /// Resolve pending edges by looking up target identities in the node index.
 ///
 /// For each pending edge, if the target identity maps to a known node, creates
-/// the edge. Otherwise, skips it (Phase 2's CHECK-01 will report broken refs).
+/// the edge. If not found and the target looks like a bare filename (contains
+/// `.md` but no `/`), attempts filesystem-based resolution via
+/// `resolve_file_path` (D-02).
 ///
 /// Returns the count of edges resolved.
 pub(crate) fn resolve_pending_edges(
     graph: &mut DiGraph,
     pending: &[PendingEdge],
     node_index: &HashMap<String, NodeId>,
+    root: &Utf8Path,
 ) -> usize {
     let mut resolved: usize = 0;
 
     for edge in pending {
+        // First: exact identity lookup
         if let Some(&target_id) = node_index.get(&edge.target_identity) {
             graph.add_edge(edge.source, target_id, edge.kind);
             resolved += 1;
+            continue;
+        }
+
+        // D-02: Bare filename resolution
+        // If target looks like a bare filename (has .md but no /), try filesystem
+        if std::path::Path::new(&edge.target_identity)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            && !edge.target_identity.contains('/')
+        {
+            // Get the source node's file_path for relative resolution
+            let referring_file = graph.node(edge.source).file_path.clone();
+            if let Some(ref referring) = referring_file
+                && let Some(resolved_path) =
+                    resolve_bare_filename(&edge.target_identity, referring, root)
+            {
+                let resolved_str = resolved_path.to_string();
+                if let Some(&target_id) = node_index.get(&resolved_str) {
+                    graph.add_edge(edge.source, target_id, edge.kind);
+                    resolved += 1;
+                }
+            }
         }
     }
 
@@ -266,13 +292,11 @@ pub(crate) fn resolve_pending_edges(
 // File path resolution (Pitfall 4)
 // ---------------------------------------------------------------------------
 
-/// Resolve a file path reference relative to the referring file's directory.
+/// Resolve a file path reference relative to the referring file's directory (D-02).
 ///
 /// Joins the reference path relative to the referring file's parent directory,
 /// normalizes it (resolving `..` components), and makes it relative to root.
 /// Returns `Some(normalized)` if the resolved path exists, `None` otherwise.
-// Phase 2: CHECK-01 will wire this for bare filename resolution
-#[allow(dead_code)]
 pub(crate) fn resolve_file_path(
     reference: &str,
     referring_file: &Utf8Path,
@@ -379,6 +403,7 @@ pub(crate) fn resolve_all(
     candidates: &[LabelCandidate],
     pending: &[PendingEdge],
     config: &AnnealConfig,
+    root: &Utf8Path,
 ) -> ResolveStats {
     let namespaces = infer_namespaces(candidates, config);
     let mut node_index = build_node_index(graph);
@@ -387,7 +412,7 @@ pub(crate) fn resolve_all(
     let versions_resolved = resolve_versions(graph, &mut node_index);
 
     // node_index already contains label and version nodes (mutated in-place above)
-    let pending_resolved = resolve_pending_edges(graph, pending, &node_index);
+    let pending_resolved = resolve_pending_edges(graph, pending, &node_index, root);
     let pending_unresolved = pending.len() - pending_resolved;
 
     ResolveStats {
