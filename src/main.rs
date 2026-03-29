@@ -14,6 +14,7 @@ mod lattice;
 mod parse;
 mod resolve;
 mod snapshot;
+mod style;
 
 use crate::handle::NodeId;
 
