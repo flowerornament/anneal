@@ -208,8 +208,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
 fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    let linear_namespaces: std::collections::HashSet<&str> =
-        config.handles.linear.iter().map(String::as_str).collect();
+    let linear_namespaces = config.handles.linear_set();
 
     if linear_namespaces.is_empty() {
         return diagnostics;
@@ -366,12 +365,7 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
 /// Groups Label handles by prefix. Prefixes not in confirmed or rejected with
 /// count >= 3 are candidates. One diagnostic per candidate prefix.
 fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
-    let confirmed: HashSet<&str> = config
-        .handles
-        .confirmed
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let confirmed = config.handles.confirmed_set();
     let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
     // Count labels per prefix
@@ -489,12 +483,7 @@ fn suggest_abandoned_namespaces(
     lattice: &Lattice,
     config: &AnnealConfig,
 ) -> Vec<Diagnostic> {
-    let confirmed: HashSet<&str> = config
-        .handles
-        .confirmed
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let confirmed = config.handles.confirmed_set();
 
     // Group Label handles by prefix (confirmed namespaces only)
     let mut by_prefix: BTreeMap<&str, Vec<(NodeId, &crate::handle::Handle)>> = BTreeMap::new();
@@ -692,10 +681,9 @@ mod tests {
     use super::*;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata};
+    use crate::handle::Handle;
     use crate::lattice::Lattice;
     use crate::parse::PendingEdge;
-    use camino::Utf8PathBuf;
 
     fn make_lattice(active: &[&str], terminal: &[&str], ordering: &[&str]) -> Lattice {
         Lattice {
@@ -713,26 +701,11 @@ mod tests {
     }
 
     fn make_file_handle(id: &str, status: Option<&str>) -> Handle {
-        Handle {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: status.map(String::from),
-            file_path: Some(Utf8PathBuf::from(id)),
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_file(id, status)
     }
 
     fn make_label_handle(prefix: &str, number: u32, status: Option<&str>) -> Handle {
-        Handle {
-            id: format!("{prefix}-{number}"),
-            kind: HandleKind::Label {
-                prefix: prefix.to_string(),
-                number,
-            },
-            status: status.map(String::from),
-            file_path: None,
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_label(prefix, number, status)
     }
 
     // -----------------------------------------------------------------------

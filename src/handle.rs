@@ -73,3 +73,33 @@ pub(crate) struct HandleMetadata {
     /// The `verifies:` frontmatter field (list of handle identities).
     pub(crate) verifies: Vec<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Test factories
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+impl Handle {
+    pub(crate) fn test_file(id: &str, status: Option<&str>) -> Self {
+        Self {
+            id: id.to_string(),
+            kind: HandleKind::File(Utf8PathBuf::from(id)),
+            status: status.map(String::from),
+            file_path: Some(Utf8PathBuf::from(id)),
+            metadata: HandleMetadata::default(),
+        }
+    }
+
+    pub(crate) fn test_label(prefix: &str, number: u32, status: Option<&str>) -> Self {
+        Self {
+            id: format!("{prefix}-{number}"),
+            kind: HandleKind::Label {
+                prefix: prefix.to_string(),
+                number,
+            },
+            status: status.map(String::from),
+            file_path: None,
+            metadata: HandleMetadata::default(),
+        }
+    }
+}

@@ -113,8 +113,7 @@ pub(crate) fn build_snapshot(
     let mut ns_open: HashMap<String, usize> = HashMap::new();
     let mut ns_resolved: HashMap<String, usize> = HashMap::new();
 
-    let linear_namespaces: std::collections::HashSet<&str> =
-        config.handles.linear.iter().map(String::as_str).collect();
+    let linear_namespaces = config.handles.linear_set();
 
     let mut obligations_outstanding = 0usize;
     let mut obligations_discharged = 0usize;
@@ -335,9 +334,8 @@ mod tests {
     use super::*;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata};
+    use crate::handle::Handle;
     use crate::lattice::{Lattice, LatticeKind};
-    use camino::Utf8PathBuf;
 
     fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
         Lattice {
@@ -355,26 +353,11 @@ mod tests {
     }
 
     fn make_file_handle(id: &str, status: Option<&str>) -> Handle {
-        Handle {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: status.map(String::from),
-            file_path: Some(Utf8PathBuf::from(id)),
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_file(id, status)
     }
 
     fn make_label_handle(prefix: &str, number: u32, status: Option<&str>) -> Handle {
-        Handle {
-            id: format!("{prefix}-{number}"),
-            kind: HandleKind::Label {
-                prefix: prefix.to_string(),
-                number,
-            },
-            status: status.map(String::from),
-            file_path: None,
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_label(prefix, number, status)
     }
 
     fn make_snapshot(total: usize, active: usize, frozen: usize, outstanding: usize) -> Snapshot {

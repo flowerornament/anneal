@@ -54,17 +54,10 @@ pub(crate) fn compute_impact(graph: &DiGraph, start: NodeId) -> ImpactResult {
 mod tests {
     use super::*;
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata};
-    use camino::Utf8PathBuf;
+    use crate::handle::Handle;
 
     fn make_file_handle(id: &str) -> Handle {
-        Handle {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: None,
-            file_path: Some(Utf8PathBuf::from(id)),
-            metadata: HandleMetadata::default(),
-        }
+        Handle::test_file(id, None)
     }
 
     #[test]

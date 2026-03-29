@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use camino::Utf8PathBuf;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod checks;
 mod cli;
@@ -86,8 +86,8 @@ enum Command {
     /// Render the knowledge graph
     Map {
         /// Output format: text (default) or dot
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value = "text")]
+        format: MapFormat,
         /// Show only handles in this concern group
         #[arg(long)]
         concern: Option<String>,
@@ -109,6 +109,12 @@ enum Command {
         #[arg(value_name = "REF")]
         git_ref: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MapFormat {
+    Text,
+    Dot,
 }
 
 /// Build a lookup index from handle identity strings to `NodeId`s.
@@ -324,15 +330,15 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Map {
-            ref format,
+            format,
             ref concern,
             ref around,
             depth,
         }) => {
-            if format != "text" && format != "dot" {
-                eprintln!("unknown format: {format} (expected 'text' or 'dot')");
-                std::process::exit(1);
-            }
+            let format_str = match format {
+                MapFormat::Text => "text",
+                MapFormat::Dot => "dot",
+            };
             let output = cli::cmd_map(&cli::MapOptions {
                 graph,
                 node_index: &node_index,
@@ -341,7 +347,7 @@ fn run() -> anyhow::Result<()> {
                 concern: concern.as_deref(),
                 around: around.as_deref(),
                 depth,
-                format,
+                format: format_str,
             });
             if cli_args.json {
                 cli::print_json(&output)?;
@@ -365,7 +371,7 @@ fn run() -> anyhow::Result<()> {
                 section_ref_count,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
-            let output = cli::cmd_status(graph, &lattice, &config, &all_diagnostics);
+            let output = cli::cmd_status(graph, &lattice, &snap, &all_diagnostics);
 
             // Compute convergence from history (D-05, D-06)
             let convergence =
