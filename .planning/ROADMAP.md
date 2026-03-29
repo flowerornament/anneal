@@ -71,7 +71,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- Extraction types & classify function
+- [x] 04-01-PLAN.md -- Extraction types & classify function
 - [ ] 04-02-PLAN.md -- Plausibility filter wiring & W004 diagnostic
 
 ### Phase 5: pulldown-cmark Migration

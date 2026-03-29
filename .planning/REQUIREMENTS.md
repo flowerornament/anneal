@@ -23,8 +23,8 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 ### Extraction Pipeline
 
-- [ ] **EXTRACT-01**: Introduce `FileExtraction` type as uniform extraction output from both frontmatter and body scanning
-- [ ] **EXTRACT-02**: Introduce `DiscoveredRef` with `RefHint` enum replacing `PendingEdge`, `LabelCandidate`, `FrontmatterEdge`, `ScanResult`
+- [x] **EXTRACT-01**: Introduce `FileExtraction` type as uniform extraction output from both frontmatter and body scanning
+- [x] **EXTRACT-02**: Introduce `DiscoveredRef` with `RefHint` enum replacing `PendingEdge`, `LabelCandidate`, `FrontmatterEdge`, `ScanResult`
 - [ ] **EXTRACT-03**: Introduce `SourceSpan` with mandatory line numbers on all discovered references
 - [ ] **EXTRACT-04**: Build `LineIndex` from full file content for O(log n) byte-to-line lookup with frontmatter offset adjustment
 - [ ] **EXTRACT-05**: Plausibility filter rejects absolute paths, freeform prose, and wildcard patterns from frontmatter edge targets
@@ -37,7 +37,7 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 ### Resolution
 
-- [ ] **RESOLVE-01**: Introduce `Resolution` enum (Exact / Fuzzy / Unresolved) with candidate collection
+- [x] **RESOLVE-01**: Introduce `Resolution` enum (Exact / Fuzzy / Unresolved) with candidate collection
 - [ ] **RESOLVE-02**: Resolution cascade: exact match -> root-prefix strip -> bare filename -> version stem -> zero-pad normalize
 - [ ] **RESOLVE-03**: Root-prefix resolution (`.design/foo.md` -> `foo.md`) for corpus-relative path mismatches
 - [ ] **RESOLVE-04**: Version stem resolution (`formal-model-v11.md` -> suggest `formal-model-v17.md` if latest exists)
@@ -111,8 +111,8 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EXTRACT-01 | Phase 4 | Pending |
-| EXTRACT-02 | Phase 4 | Pending |
+| EXTRACT-01 | Phase 4 | Complete |
+| EXTRACT-02 | Phase 4 | Complete |
 | EXTRACT-03 | Phase 5 | Pending |
 | EXTRACT-04 | Phase 5 | Pending |
 | EXTRACT-05 | Phase 4 | Pending |
@@ -122,7 +122,7 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | EXTRACT-09 | Phase 5 | Pending |
 | EXTRACT-10 | Phase 5 | Pending |
 | EXTRACT-11 | Phase 5 | Pending |
-| RESOLVE-01 | Phase 4 | Pending |
+| RESOLVE-01 | Phase 4 | Complete |
 | RESOLVE-02 | Phase 6 | Pending |
 | RESOLVE-03 | Phase 6 | Pending |
 | RESOLVE-04 | Phase 6 | Pending |
