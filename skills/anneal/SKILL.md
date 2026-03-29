@@ -7,6 +7,8 @@ description: "Orient in a knowledge corpus using the anneal CLI. Use when arrivi
 
 Use the `anneal` CLI to understand, navigate, and track convergence of markdown knowledge corpora.
 
+**IMPORTANT: If you haven't used `anneal` before, run `anneal help` first.** It explains core concepts (handles, edges, status, convergence, snapshots) and shows every command with examples. Run `anneal help <command>` for detailed usage of any subcommand. The help text is designed for agents — read it.
+
 ## When to Activate
 
 - Arriving at a project with `.design/`, `docs/`, or `anneal.toml`
@@ -14,6 +16,16 @@ Use the `anneal` CLI to understand, navigate, and track convergence of markdown 
 - User asks "what changed", "what depends on X", "show me the graph"
 - User asks about handle relationships, label namespaces, pipeline status
 - Before editing files in a knowledge corpus (check impact first)
+
+## First Contact
+
+If this is your first time at this corpus:
+
+```bash
+anneal help                      # Read this — concepts, commands, output format
+anneal status                    # Orient: what exists, health, convergence
+anneal check --active-only       # Actionable errors (skip terminal file noise)
+```
 
 ## Quick Orientation
 
