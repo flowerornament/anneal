@@ -174,6 +174,19 @@ mod tests {
         }
         let config = config::load_config(root.as_std_path()).expect("config load");
         let mut result = parse::build_graph(&root, &config).expect("build_graph");
+
+        // D-04: Verify directory convention analysis found terminal statuses
+        assert!(
+            !result.terminal_by_directory.is_empty(),
+            "Expected terminal statuses from directory convention, got empty set"
+        );
+        // "superseded" appears exclusively in history/ dirs in Murail
+        assert!(
+            result.terminal_by_directory.contains("superseded"),
+            "Expected 'superseded' in terminal_by_directory, got {:?}",
+            result.terminal_by_directory
+        );
+
         let stats = resolve::resolve_all(
             &mut result.graph,
             &result.label_candidates,
@@ -207,5 +220,24 @@ mod tests {
         assert!(!stats.namespaces.contains("SHA"), "SHA should be rejected");
         assert!(!stats.namespaces.contains("AVX"), "AVX should be rejected");
         assert!(!stats.namespaces.contains("GPT"), "GPT should be rejected");
+
+        // D-02: Bare filename resolution + D-03 URL rejection + D-08 code block skip
+        // should reduce unresolved count from Phase 1's 3396
+        assert!(
+            stats.pending_edges_unresolved < 3396,
+            "Expected fewer unresolved pending edges than Phase 1 baseline of 3396, got {}",
+            stats.pending_edges_unresolved
+        );
+
+        // D-04: Verify lattice has terminal statuses from directory convention
+        let lattice = lattice::infer_lattice(
+            result.observed_statuses.clone(),
+            &config,
+            &result.terminal_by_directory,
+        );
+        assert!(
+            !lattice.terminal.is_empty(),
+            "Expected terminal statuses in lattice from directory convention"
+        );
     }
 }

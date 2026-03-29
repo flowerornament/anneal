@@ -83,13 +83,11 @@ impl DiGraph {
         self.rev[target.index()].push(edge);
     }
 
-    // Phase 2: used by CHECK rules and CLI commands
-    #[allow(dead_code)]
     pub(crate) fn node(&self, id: NodeId) -> &Handle {
         &self.nodes[id.index()]
     }
 
-    // Phase 2: used by resolve and check mutations
+    // Phase 2: used by check mutations and future handle updates
     #[allow(dead_code)]
     pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut Handle {
         &mut self.nodes[id.index()]
