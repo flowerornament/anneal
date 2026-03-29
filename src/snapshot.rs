@@ -124,13 +124,10 @@ pub(crate) fn build_snapshot(
 
         if let Some(ref status) = handle.status {
             *states.entry(status.clone()).or_insert(0) += 1;
-            if lattice.terminal.contains(status) {
-                frozen += 1;
-            } else {
-                active += 1;
-            }
+        }
+        if handle.is_terminal(lattice) {
+            frozen += 1;
         } else {
-            // No status = active (exists but unclassified)
             active += 1;
         }
 
@@ -138,20 +135,15 @@ pub(crate) fn build_snapshot(
         if let HandleKind::Label { ref prefix, .. } = handle.kind {
             *ns_total.entry(prefix.clone()).or_insert(0) += 1;
 
-            match &handle.status {
-                Some(s) if lattice.terminal.contains(s) => {
-                    *ns_resolved.entry(prefix.clone()).or_insert(0) += 1;
-                }
-                None | Some(_) => {
-                    *ns_open.entry(prefix.clone()).or_insert(0) += 1;
-                }
+            if handle.is_terminal(lattice) {
+                *ns_resolved.entry(prefix.clone()).or_insert(0) += 1;
+            } else {
+                *ns_open.entry(prefix.clone()).or_insert(0) += 1;
             }
 
             // Obligation tracking for linear namespaces
             if linear_namespaces.contains(prefix.as_str()) {
-                if let Some(ref status) = handle.status
-                    && lattice.terminal.contains(status)
-                {
+                if handle.is_terminal(lattice) {
                     obligations_mooted += 1;
                 } else {
                     let discharge_count = graph

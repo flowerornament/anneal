@@ -362,12 +362,6 @@ enum MapFormat {
     Dot,
 }
 
-/// Build a lookup index from handle identity strings to `NodeId`s.
-/// Collect unresolved pending edges after resolution.
-///
-/// An edge is unresolved if its target identity does not appear in the
-/// node index. Section refs (target starting with "section:") are counted
-/// separately for the I001 summary diagnostic.
 /// Collect unresolved pending edges and clone them into an owned vec.
 ///
 /// Returns `(owned_unresolved_edges, section_ref_count)`. Section refs are
@@ -583,10 +577,6 @@ fn run() -> anyhow::Result<()> {
             ref around,
             depth,
         }) => {
-            let format_str = match format {
-                MapFormat::Text => "text",
-                MapFormat::Dot => "dot",
-            };
             let output = cli::cmd_map(&cli::MapOptions {
                 graph,
                 node_index: &node_index,
@@ -595,7 +585,7 @@ fn run() -> anyhow::Result<()> {
                 concern: concern.as_deref(),
                 around: around.as_deref(),
                 depth,
-                format: format_str,
+                format,
             });
             if cli_args.json {
                 cli::print_json(&output)?;

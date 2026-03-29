@@ -59,6 +59,15 @@ pub(crate) struct Handle {
     pub(crate) metadata: HandleMetadata,
 }
 
+impl Handle {
+    /// Whether this handle's status is in the terminal set.
+    pub(crate) fn is_terminal(&self, lattice: &crate::lattice::Lattice) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|s| lattice.terminal.contains(s))
+    }
+}
+
 /// Metadata extracted from YAML frontmatter fields.
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct HandleMetadata {
