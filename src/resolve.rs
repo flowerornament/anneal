@@ -398,7 +398,7 @@ fn resolve_bare_filename(
 /// - Section handles: identity = "{file}#{heading-slug}"
 /// - Label handles: identity = "PREFIX-NUMBER"
 /// - Version handles: identity = "{base}-vN"
-fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
+pub(crate) fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
     let mut index = HashMap::with_capacity(graph.node_count());
     for (node_id, handle) in graph.nodes() {
         index.insert(handle.id.clone(), node_id);

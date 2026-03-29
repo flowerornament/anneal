@@ -9,12 +9,53 @@ use crate::config::{
     AnnealConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
     FrontmatterFieldMapping, HandlesConfig,
 };
-use crate::graph::DiGraph;
+use crate::graph::{DiGraph, Edge};
 use crate::handle::{HandleKind, NodeId};
 use crate::impact;
 use crate::lattice::Lattice;
 use crate::parse::PendingEdge;
 use crate::resolve::ResolveStats;
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Look up a handle by exact match, falling back to case-insensitive search.
+fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
+    node_index.get(handle).copied().or_else(|| {
+        let lower = handle.to_lowercase();
+        node_index
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == lower)
+            .map(|(_, &id)| id)
+    })
+}
+
+/// Deduplicate edges by (kind, other_node) and build `EdgeSummary` list.
+fn dedup_edges(
+    edges: &[Edge],
+    other_node: impl Fn(&Edge) -> NodeId,
+    direction: &str,
+    graph: &DiGraph,
+) -> Vec<EdgeSummary> {
+    let mut seen = BTreeSet::new();
+    edges
+        .iter()
+        .filter_map(|e| {
+            let kind = e.kind.as_str().to_string();
+            let target = graph.node(other_node(e)).id.clone();
+            if seen.insert((kind.clone(), target.clone())) {
+                Some(EdgeSummary {
+                    kind,
+                    target,
+                    direction: direction.to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // JSON helper (CLI-09)
@@ -172,69 +213,17 @@ pub(crate) fn cmd_get(
     node_index: &HashMap<String, NodeId>,
     handle: &str,
 ) -> Option<GetOutput> {
-    // Exact match first
-    let node_id = if let Some(&id) = node_index.get(handle) {
-        id
-    } else {
-        // Case-insensitive label match
-        let lower = handle.to_lowercase();
-        let found = node_index.iter().find(|(k, _)| k.to_lowercase() == lower);
-        found.map(|(_, &id)| id)?
-    };
+    let node_id = lookup_handle(node_index, handle)?;
 
     let h = graph.node(node_id);
-
-    let kind_str = match &h.kind {
-        HandleKind::File(_) => "file",
-        HandleKind::Section { .. } => "section",
-        HandleKind::Label { .. } => "label",
-        HandleKind::Version { .. } => "version",
-    };
-
     let file = h.file_path.as_ref().map(ToString::to_string);
 
-    // Deduplicate edges by (kind, target) using BTreeSet for deterministic order
-    let mut seen_outgoing = BTreeSet::new();
-    let outgoing_edges: Vec<EdgeSummary> = graph
-        .outgoing(node_id)
-        .iter()
-        .filter_map(|e| {
-            let kind_str = format!("{:?}", e.kind);
-            let target_str = graph.node(e.target).id.clone();
-            if seen_outgoing.insert((kind_str.clone(), target_str.clone())) {
-                Some(EdgeSummary {
-                    kind: kind_str,
-                    target: target_str,
-                    direction: "outgoing".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let mut seen_incoming = BTreeSet::new();
-    let incoming_edges: Vec<EdgeSummary> = graph
-        .incoming(node_id)
-        .iter()
-        .filter_map(|e| {
-            let kind_str = format!("{:?}", e.kind);
-            let target_str = graph.node(e.source).id.clone();
-            if seen_incoming.insert((kind_str.clone(), target_str.clone())) {
-                Some(EdgeSummary {
-                    kind: kind_str,
-                    target: target_str,
-                    direction: "incoming".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
+    let outgoing_edges = dedup_edges(graph.outgoing(node_id), |e| e.target, "outgoing", graph);
+    let incoming_edges = dedup_edges(graph.incoming(node_id), |e| e.source, "incoming", graph);
 
     Some(GetOutput {
         id: h.id.clone(),
-        kind: kind_str.to_string(),
+        kind: h.kind.as_str().to_string(),
         status: h.status.clone(),
         file,
         outgoing_edges,
@@ -302,16 +291,10 @@ pub(crate) fn cmd_find(
             }
 
             // Kind filter: handle kind must match
-            if let Some(kf) = kind_filter {
-                let kind_str = match &h.kind {
-                    HandleKind::File(_) => "file",
-                    HandleKind::Section { .. } => "section",
-                    HandleKind::Label { .. } => "label",
-                    HandleKind::Version { .. } => "version",
-                };
-                if kind_str != kf {
-                    return false;
-                }
+            if let Some(kf) = kind_filter
+                && h.kind.as_str() != kf
+            {
+                return false;
             }
 
             // Namespace filter: label prefix must match
@@ -345,19 +328,11 @@ pub(crate) fn cmd_find(
 
             true
         })
-        .map(|(_, h)| {
-            let kind_str = match &h.kind {
-                HandleKind::File(_) => "file",
-                HandleKind::Section { .. } => "section",
-                HandleKind::Label { .. } => "label",
-                HandleKind::Version { .. } => "version",
-            };
-            FindMatch {
-                id: h.id.clone(),
-                kind: kind_str.to_string(),
-                status: h.status.clone(),
-                file: h.file_path.as_ref().map(ToString::to_string),
-            }
+        .map(|(_, h)| FindMatch {
+            id: h.id.clone(),
+            kind: h.kind.as_str().to_string(),
+            status: h.status.clone(),
+            file: h.file_path.as_ref().map(ToString::to_string),
         })
         .collect();
 
@@ -411,14 +386,7 @@ pub(crate) fn cmd_impact(
     node_index: &HashMap<String, NodeId>,
     handle: &str,
 ) -> Option<ImpactOutput> {
-    // Look up handle by exact match, then case-insensitive
-    let node_id = if let Some(&id) = node_index.get(handle) {
-        id
-    } else {
-        let lower = handle.to_lowercase();
-        let found = node_index.iter().find(|(k, _)| k.to_lowercase() == lower);
-        found.map(|(_, &id)| id)?
-    };
+    let node_id = lookup_handle(node_index, handle)?;
 
     let result = impact::compute_impact(graph, node_id);
 
