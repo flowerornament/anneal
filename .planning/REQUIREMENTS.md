@@ -55,23 +55,23 @@
 
 ### CLI Commands
 
-- [ ] **CLI-01**: `anneal check` — run local checks, report diagnostics, exit non-zero on errors
-- [ ] **CLI-02**: `anneal get <handle>` — resolve any handle, show content + state + context
-- [ ] **CLI-03**: `anneal find <query>` — full-text search filtered by convergence state
+- [x] **CLI-01**: `anneal check` — run local checks, report diagnostics, exit non-zero on errors
+- [x] **CLI-02**: `anneal get <handle>` — resolve any handle, show content + state + context
+- [x] **CLI-03**: `anneal find <query>` — full-text search filtered by convergence state
 - [ ] **CLI-04**: `anneal status` — dashboard with graph stats, pipeline state, convergence summary
 - [ ] **CLI-05**: `anneal map` — render knowledge graph, with --concern and --around flags
-- [ ] **CLI-06**: `anneal init` — save inferred coloring as anneal.toml
-- [ ] **CLI-07**: `anneal impact <handle>` — show what's affected if handle changes
+- [x] **CLI-06**: `anneal init` — save inferred coloring as anneal.toml
+- [x] **CLI-07**: `anneal impact <handle>` — show what's affected if handle changes
 - [ ] **CLI-08**: `anneal diff [ref]` — graph-level changes since reference point
-- [ ] **CLI-09**: All commands support `--json` output via global flag
-- [ ] **CLI-10**: Human-readable output as default, via CommandOutput trait with print_human()
+- [x] **CLI-09**: All commands support `--json` output via global flag
+- [x] **CLI-10**: Human-readable output as default, via CommandOutput trait with print_human()
 
 ### Configuration
 
 - [x] **CONFIG-01**: Parse anneal.toml with all-optional fields via `#[serde(default, deny_unknown_fields)]`
 - [x] **CONFIG-02**: Zero-config is valid — tool works with no anneal.toml (existence lattice only)
 - [x] **CONFIG-03**: Config supports: root, convergence (active/terminal/ordering), handles (confirmed/rejected), linear namespaces, freshness thresholds, concern groups
-- [ ] **CONFIG-04**: `anneal init` generates anneal.toml from inferred structure
+- [x] **CONFIG-04**: `anneal init` generates anneal.toml from inferred structure
 
 ### Suggestions
 
@@ -148,20 +148,20 @@
 | CONVERGE-03 | Phase 3 | Pending |
 | CONVERGE-04 | Phase 3 | Pending |
 | CONVERGE-05 | Phase 3 | Pending |
-| CLI-01 | Phase 2 | Pending |
-| CLI-02 | Phase 2 | Pending |
-| CLI-03 | Phase 2 | Pending |
+| CLI-01 | Phase 2 | Complete |
+| CLI-02 | Phase 2 | Complete |
+| CLI-03 | Phase 2 | Complete |
 | CLI-04 | Phase 3 | Pending |
 | CLI-05 | Phase 3 | Pending |
-| CLI-06 | Phase 2 | Pending |
-| CLI-07 | Phase 2 | Pending |
+| CLI-06 | Phase 2 | Complete |
+| CLI-07 | Phase 2 | Complete |
 | CLI-08 | Phase 3 | Pending |
-| CLI-09 | Phase 2 | Pending |
-| CLI-10 | Phase 2 | Pending |
+| CLI-09 | Phase 2 | Complete |
+| CLI-10 | Phase 2 | Complete |
 | CONFIG-01 | Phase 1 | Complete |
 | CONFIG-02 | Phase 1 | Complete |
 | CONFIG-03 | Phase 2 | Complete |
-| CONFIG-04 | Phase 2 | Pending |
+| CONFIG-04 | Phase 2 | Complete |
 | SUGGEST-01 | Phase 3 | Pending |
 | SUGGEST-02 | Phase 3 | Pending |
 | SUGGEST-03 | Phase 3 | Pending |
@@ -175,4 +175,4 @@
 
 ---
 *Requirements defined: 2026-03-28*
-*Last updated: 2026-03-28 after initialization*
+*Last updated: 2026-03-29 after Phase 2 completion*
