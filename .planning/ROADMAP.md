@@ -68,7 +68,11 @@ Plans:
   2. URLs in frontmatter edges appear as `RefHint::External` in extraction output instead of being silently dropped
   3. Absolute paths, freeform prose, and wildcard patterns in frontmatter are rejected with a plausibility diagnostic instead of creating false positive broken-reference errors
   4. All existing tests pass — `just check` green with no behavior change in final diagnostic output
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md -- Extraction types & classify function
+- [ ] 04-02-PLAN.md -- Plausibility filter wiring & W004 diagnostic
 
 ### Phase 5: pulldown-cmark Migration
 **Goal**: Body scanning uses pulldown-cmark's structural AST instead of line-by-line regex, giving accurate line numbers and structural code block skipping
@@ -115,7 +119,7 @@ Plans:
 | 1. Graph Foundation | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
-| 4. Types & Plausibility | v1.1 | 0/0 | Not started | - |
+| 4. Types & Plausibility | v1.1 | 0/2 | Planning complete | - |
 | 5. pulldown-cmark Migration | v1.1 | 0/0 | Not started | - |
 | 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
