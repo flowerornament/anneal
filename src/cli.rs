@@ -288,6 +288,7 @@ pub(crate) fn cmd_find(
     query: &str,
     namespace: Option<&str>,
     status_filter: Option<&str>,
+    kind_filter: Option<&str>,
     include_all: bool,
 ) -> FindOutput {
     let lower_query = query.to_lowercase();
@@ -298,6 +299,19 @@ pub(crate) fn cmd_find(
             // Substring match on handle identity
             if !h.id.to_lowercase().contains(&lower_query) {
                 return false;
+            }
+
+            // Kind filter: handle kind must match
+            if let Some(kf) = kind_filter {
+                let kind_str = match &h.kind {
+                    HandleKind::File(_) => "file",
+                    HandleKind::Section { .. } => "section",
+                    HandleKind::Label { .. } => "label",
+                    HandleKind::Version { .. } => "version",
+                };
+                if kind_str != kf {
+                    return false;
+                }
             }
 
             // Namespace filter: label prefix must match
@@ -455,27 +469,30 @@ impl InitOutput {
 }
 
 /// Propose frontmatter field mapping based on field name heuristics (D-07).
-fn propose_mapping(field_name: &str) -> FrontmatterFieldMapping {
+/// Returns Some(mapping) only for field names that look like edge-producing references.
+/// Scalar metadata fields (version, type, authors, etc.) return None.
+fn propose_mapping(field_name: &str) -> Option<FrontmatterFieldMapping> {
     let lower = field_name.to_lowercase();
     match lower.as_str() {
-        "affects" | "impacts" => FrontmatterFieldMapping {
+        "affects" | "impacts" => Some(FrontmatterFieldMapping {
             edge_kind: "DependsOn".to_string(),
             direction: Direction::Inverse,
-        },
+        }),
         "source" | "sources" | "based-on" | "builds-on" | "extends" | "parent" => {
-            FrontmatterFieldMapping {
+            Some(FrontmatterFieldMapping {
                 edge_kind: "DependsOn".to_string(),
                 direction: Direction::Forward,
-            }
+            })
         }
-        "resolves" | "addresses" => FrontmatterFieldMapping {
+        "resolves" | "addresses" => Some(FrontmatterFieldMapping {
             edge_kind: "Discharges".to_string(),
             direction: Direction::Forward,
-        },
-        _ => FrontmatterFieldMapping {
+        }),
+        "references" | "refs" | "related" | "see-also" | "cites" => Some(FrontmatterFieldMapping {
             edge_kind: "Cites".to_string(),
             direction: Direction::Forward,
-        },
+        }),
+        _ => None, // Scalar metadata — don't propose
     }
 }
 
@@ -534,9 +551,11 @@ pub(crate) fn cmd_init(
         if default_keys.contains(key) || special_keys.contains(key.as_str()) {
             continue;
         }
-        // Only propose fields seen in >= 3 files
-        if *count >= 3 {
-            fields.insert(key.clone(), propose_mapping(key));
+        // Only propose fields seen in >= 3 files with edge-like names
+        if *count >= 3
+            && let Some(mapping) = propose_mapping(key)
+        {
+            fields.insert(key.clone(), mapping);
         }
     }
 
@@ -580,6 +599,10 @@ pub(crate) struct GraphSummary {
     pub(crate) root: String,
     pub(crate) files: usize,
     pub(crate) handles: usize,
+    pub(crate) file_handles: usize,
+    pub(crate) label_handles: usize,
+    pub(crate) section_handles: usize,
+    pub(crate) version_handles: usize,
     pub(crate) edges: usize,
     pub(crate) namespaces: Vec<String>,
     pub(crate) versions: usize,
@@ -599,6 +622,11 @@ impl GraphSummary {
         writeln!(w, "  root: {}", self.root)?;
         writeln!(w, "  files: {}", self.files)?;
         writeln!(w, "  handles: {}", self.handles)?;
+        writeln!(
+            w,
+            "    {} files, {} labels, {} sections, {} versions",
+            self.file_handles, self.label_handles, self.section_handles, self.version_handles
+        )?;
         writeln!(w, "  edges: {}", self.edges)?;
         writeln!(
             w,
@@ -638,10 +666,24 @@ pub(crate) fn build_summary(
     stats: &ResolveStats,
     lattice: &Lattice,
 ) -> GraphSummary {
+    let (mut file_handles, mut label_handles, mut section_handles, mut version_handles) =
+        (0usize, 0usize, 0usize, 0usize);
+    for (_, h) in graph.nodes() {
+        match h.kind {
+            HandleKind::File(_) => file_handles += 1,
+            HandleKind::Label { .. } => label_handles += 1,
+            HandleKind::Section { .. } => section_handles += 1,
+            HandleKind::Version { .. } => version_handles += 1,
+        }
+    }
     GraphSummary {
         root: root.to_string(),
         files: file_count,
         handles: graph.node_count(),
+        file_handles,
+        label_handles,
+        section_handles,
+        version_handles,
         edges: graph.edge_count(),
         namespaces: sorted_namespace_names(&stats.namespaces),
         versions: stats.versions_resolved,
