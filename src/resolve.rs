@@ -247,7 +247,8 @@ pub(crate) fn resolve_versions(
 /// For each pending edge, if the target identity maps to a known node, creates
 /// the edge. If not found and the target looks like a bare filename (contains
 /// `.md` but no `/`), attempts filesystem-based resolution via
-/// `resolve_file_path` (D-02).
+/// `resolve_file_path` (D-02), then falls back to the corpus-wide filename
+/// index for unambiguous matches.
 ///
 /// Returns the count of edges resolved.
 pub(crate) fn resolve_pending_edges(
@@ -255,6 +256,7 @@ pub(crate) fn resolve_pending_edges(
     pending: &[PendingEdge],
     node_index: &HashMap<String, NodeId>,
     root: &Utf8Path,
+    filename_index: &HashMap<String, Vec<Utf8PathBuf>>,
 ) -> usize {
     let mut resolved: usize = 0;
 
@@ -266,12 +268,21 @@ pub(crate) fn resolve_pending_edges(
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                 && !edge.target_identity.contains('/')
             {
+                // Try relative-to-referring-file and root-relative resolution
                 let referring_file = graph.node(edge.source).file_path.clone();
                 if let Some(ref referring) = referring_file
                     && let Some(resolved_path) =
                         resolve_bare_filename(&edge.target_identity, referring, root)
                 {
                     return node_index.get(&resolved_path.to_string()).copied();
+                }
+
+                // Fallback: corpus-wide filename index lookup (unambiguous only)
+                if let Some(paths) = filename_index.get(&edge.target_identity) {
+                    if paths.len() == 1 {
+                        return node_index.get(&paths[0].to_string()).copied();
+                    }
+                    // Ambiguous (multiple files with same name): skip
                 }
             }
             None
@@ -400,6 +411,26 @@ fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
 // Top-level resolve orchestrator
 // ---------------------------------------------------------------------------
 
+/// Build a filename index mapping bare filenames to their full relative paths.
+///
+/// For each File handle in the graph, extracts the filename component and maps
+/// it to the full relative path. Multiple files sharing a name are all stored
+/// (ambiguous lookups are skipped during resolution).
+fn build_filename_index(graph: &DiGraph) -> HashMap<String, Vec<Utf8PathBuf>> {
+    let mut index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
+    for (_, handle) in graph.nodes() {
+        if let HandleKind::File(ref path) = handle.kind {
+            if let Some(filename) = path.file_name() {
+                index
+                    .entry(filename.to_string())
+                    .or_default()
+                    .push(path.clone());
+            }
+        }
+    }
+    index
+}
+
 /// Resolve all handles: namespace inference, label nodes, version nodes, pending edges.
 pub(crate) fn resolve_all(
     graph: &mut DiGraph,
@@ -414,8 +445,12 @@ pub(crate) fn resolve_all(
     let label_result = resolve_labels(graph, candidates, &namespaces, &mut node_index);
     let versions_resolved = resolve_versions(graph, &mut node_index);
 
+    // Build corpus-wide filename index for bare filename fallback resolution
+    let filename_index = build_filename_index(graph);
+
     // node_index already contains label and version nodes (mutated in-place above)
-    let pending_resolved = resolve_pending_edges(graph, pending, &node_index, root);
+    let pending_resolved =
+        resolve_pending_edges(graph, pending, &node_index, root, &filename_index);
     let pending_unresolved = pending.len() - pending_resolved;
 
     ResolveStats {
