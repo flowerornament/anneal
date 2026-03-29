@@ -13,7 +13,7 @@ use crate::config::{
 use crate::graph::{DiGraph, Edge};
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::impact;
-use crate::lattice::Lattice;
+use crate::lattice::{self, Lattice};
 use crate::parse::PendingEdge;
 use crate::resolve::ResolveStats;
 
@@ -698,6 +698,236 @@ pub(crate) fn sorted_namespace_names(ns: &std::collections::HashSet<String>) -> 
     let mut list: Vec<String> = ns.iter().cloned().collect();
     list.sort_unstable();
     list
+}
+
+// ---------------------------------------------------------------------------
+// Status command (CLI-04, KB-C4, spec section 12.4)
+// ---------------------------------------------------------------------------
+
+/// A single pipeline level with handle count.
+#[derive(Serialize)]
+pub(crate) struct PipelineLevel {
+    pub(crate) level: String,
+    pub(crate) count: usize,
+}
+
+/// Obligation summary for status dashboard.
+#[derive(Serialize)]
+pub(crate) struct ObligationSummary {
+    pub(crate) discharged: usize,
+    pub(crate) total: usize,
+    pub(crate) mooted: usize,
+}
+
+/// Diagnostic counts for status dashboard.
+#[derive(Serialize)]
+pub(crate) struct DiagnosticSummary {
+    pub(crate) errors: usize,
+    pub(crate) warnings: usize,
+}
+
+/// Convergence signal for status dashboard output.
+#[derive(Serialize)]
+pub(crate) struct ConvergenceSummaryOutput {
+    pub(crate) signal: String,
+    pub(crate) detail: String,
+}
+
+/// Output of `anneal status`: single-screen dashboard for arriving agents.
+///
+/// Matches spec section 12.4 / KB-C4. Shows file/handle/edge counts,
+/// active/frozen partition, pipeline histogram or flat lattice counts (D-11),
+/// obligation summary, diagnostic counts, convergence signal, and suggestions.
+#[derive(Serialize)]
+pub(crate) struct StatusOutput {
+    pub(crate) files: usize,
+    pub(crate) handles: usize,
+    pub(crate) edges: usize,
+    pub(crate) active_handles: usize,
+    pub(crate) frozen_handles: usize,
+    pub(crate) pipeline: Option<Vec<PipelineLevel>>,
+    pub(crate) obligations: ObligationSummary,
+    pub(crate) diagnostics: DiagnosticSummary,
+    pub(crate) convergence: Option<ConvergenceSummaryOutput>,
+    pub(crate) suggestions: usize,
+}
+
+impl StatusOutput {
+    /// Print human-readable dashboard matching spec section 12.4.
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "Scanned: {} files, {} handles, {} edges",
+            self.files, self.handles, self.edges
+        )?;
+        writeln!(
+            w,
+            "Active: {} handles | Frozen: {} handles",
+            self.active_handles, self.frozen_handles
+        )?;
+        // Pipeline histogram if ordering exists, else active/terminal counts (D-11)
+        if let Some(ref pipeline) = self.pipeline {
+            let parts: Vec<String> = pipeline
+                .iter()
+                .map(|p| format!("{} {}", p.count, p.level))
+                .collect();
+            writeln!(w, "Pipeline: {}", parts.join(" -> "))?;
+        } else {
+            writeln!(
+                w,
+                "  Active: {} | Terminal: {}",
+                self.active_handles, self.frozen_handles
+            )?;
+        }
+        writeln!(
+            w,
+            "Obligations: {}/{} discharged, {} mooted",
+            self.obligations.discharged, self.obligations.total, self.obligations.mooted
+        )?;
+        writeln!(
+            w,
+            "Diagnostics: {} errors, {} warnings",
+            self.diagnostics.errors, self.diagnostics.warnings
+        )?;
+        // Convergence signal or "no history" (D-06)
+        if let Some(ref conv) = self.convergence {
+            writeln!(w, "Convergence: {} ({})", conv.signal, conv.detail)?;
+        } else {
+            writeln!(w, "Convergence: no history")?;
+        }
+        writeln!(
+            w,
+            "Suggestions: {} (run anneal check --suggest)",
+            self.suggestions
+        )?;
+        Ok(())
+    }
+
+    /// Set convergence after construction (caller computes from snapshot history).
+    pub(crate) fn with_convergence(mut self, summary: Option<ConvergenceSummaryOutput>) -> Self {
+        self.convergence = summary;
+        self
+    }
+}
+
+/// Build the status dashboard from the graph, lattice, config, and diagnostics.
+///
+/// Counts files, handles, edges, active/frozen partition, pipeline levels,
+/// obligations (linear namespaces), diagnostics, and suggestions.
+/// Convergence is set to `None` here; the caller in main.rs computes it
+/// from snapshot history via `with_convergence`.
+pub(crate) fn cmd_status(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &crate::config::AnnealConfig,
+    unresolved_edges: &[PendingEdge],
+    section_ref_count: usize,
+) -> StatusOutput {
+    let mut files = 0usize;
+    let mut active_handles = 0usize;
+    let mut frozen_handles = 0usize;
+
+    // Track pipeline level counts (only if ordering exists)
+    let mut level_counts: HashMap<String, usize> = HashMap::new();
+
+    // Obligation tracking for linear namespaces
+    let linear_namespaces: HashSet<&str> = config.handles.linear.iter().map(String::as_str).collect();
+    let mut obl_discharged = 0usize;
+    let mut obl_mooted = 0usize;
+    let mut obl_total = 0usize;
+
+    for (node_id, handle) in graph.nodes() {
+        if matches!(handle.kind, HandleKind::File(_)) {
+            files += 1;
+        }
+
+        // Active/frozen classification
+        if let Some(ref status) = handle.status {
+            if lattice.terminal.contains(status) {
+                frozen_handles += 1;
+            } else {
+                active_handles += 1;
+            }
+            // Pipeline level tracking
+            if !lattice.ordering.is_empty()
+                && lattice::state_level(status, lattice).is_some()
+            {
+                *level_counts.entry(status.clone()).or_insert(0) += 1;
+            }
+        } else {
+            active_handles += 1;
+        }
+
+        // Obligation tracking for linear namespaces (labels only)
+        if let HandleKind::Label { ref prefix, .. } = handle.kind
+            && linear_namespaces.contains(prefix.as_str())
+        {
+            obl_total += 1;
+            if let Some(ref status) = handle.status
+                && lattice.terminal.contains(status)
+            {
+                obl_mooted += 1;
+            } else {
+                let discharge_count = graph
+                    .incoming(node_id)
+                    .iter()
+                    .filter(|e| e.kind == crate::graph::EdgeKind::Discharges)
+                    .count();
+                if discharge_count > 0 {
+                    obl_discharged += 1;
+                }
+            }
+        }
+    }
+
+    // Build pipeline if ordering exists
+    let pipeline = if lattice.ordering.is_empty() {
+        None
+    } else {
+        Some(
+            lattice
+                .ordering
+                .iter()
+                .map(|level| PipelineLevel {
+                    level: level.clone(),
+                    count: level_counts.get(level).copied().unwrap_or(0),
+                })
+                .collect(),
+        )
+    };
+
+    // Run diagnostics for counts
+    let diagnostics_list =
+        checks::run_checks(graph, lattice, config, unresolved_edges, section_ref_count);
+    let errors = diagnostics_list
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warnings = diagnostics_list
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .count();
+
+    // Run suggestions for count
+    let suggestion_list = checks::run_suggestions(graph, lattice, config);
+    let suggestion_count = suggestion_list.len();
+
+    StatusOutput {
+        files,
+        handles: graph.node_count(),
+        edges: graph.edge_count(),
+        active_handles,
+        frozen_handles,
+        pipeline,
+        obligations: ObligationSummary {
+            discharged: obl_discharged,
+            total: obl_total,
+            mooted: obl_mooted,
+        },
+        diagnostics: DiagnosticSummary { errors, warnings },
+        convergence: None,
+        suggestions: suggestion_count,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,5 +2147,192 @@ mod tests {
             text.contains("No history available"),
             "Expected no-history message, got: {text}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Status command tests (CLI-04, spec section 12.4)
+    // -----------------------------------------------------------------------
+
+    fn make_status_output_basic() -> StatusOutput {
+        StatusOutput {
+            files: 265,
+            handles: 487,
+            edges: 2031,
+            active_handles: 142,
+            frozen_handles: 345,
+            pipeline: None,
+            obligations: ObligationSummary {
+                discharged: 6,
+                total: 6,
+                mooted: 12,
+            },
+            diagnostics: DiagnosticSummary {
+                errors: 0,
+                warnings: 3,
+            },
+            convergence: None,
+            suggestions: 2,
+        }
+    }
+
+    #[test]
+    fn status_print_human_scanned_line() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Scanned: 265 files, 487 handles, 2031 edges"),
+            "Expected Scanned line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_active_frozen_line() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Active: 142 handles | Frozen: 345 handles"),
+            "Expected Active/Frozen line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_pipeline_histogram() {
+        let mut output = make_status_output_basic();
+        output.pipeline = Some(vec![
+            PipelineLevel { level: "raw".to_string(), count: 12 },
+            PipelineLevel { level: "digested".to_string(), count: 8 },
+            PipelineLevel { level: "formal".to_string(), count: 6 },
+        ]);
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Pipeline:"),
+            "Expected Pipeline line, got: {text}"
+        );
+        assert!(
+            text.contains("12 raw"),
+            "Expected '12 raw' in pipeline, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_flat_lattice_shows_active_terminal() {
+        let output = make_status_output_basic();
+        // pipeline is None => should show active/terminal counts
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Active: 142") && text.contains("Terminal: 345"),
+            "Expected Active/Terminal counts for flat lattice (D-11), got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_obligations_line() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Obligations: 6/6 discharged, 12 mooted"),
+            "Expected Obligations line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_diagnostics_line() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Diagnostics: 0 errors, 3 warnings"),
+            "Expected Diagnostics line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_convergence_no_history() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Convergence: no history"),
+            "Expected Convergence: no history, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_convergence_with_signal() {
+        let mut output = make_status_output_basic();
+        output.convergence = Some(ConvergenceSummaryOutput {
+            signal: "advancing".to_string(),
+            detail: "resolution +10, creation +5".to_string(),
+        });
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Convergence: advancing"),
+            "Expected Convergence: advancing, got: {text}"
+        );
+        assert!(
+            text.contains("resolution +10, creation +5"),
+            "Expected convergence detail, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_print_human_suggestions_line() {
+        let output = make_status_output_basic();
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("Suggestions: 2 (run anneal check --suggest)"),
+            "Expected Suggestions line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_cmd_status_basic_counts() {
+        let mut graph = DiGraph::new();
+        graph.add_node(make_file_handle("doc1.md"));
+        graph.add_node(make_file_handle("doc2.md"));
+        graph.add_node(make_label_handle("OQ", 1));
+
+        let lattice = empty_lattice();
+        let config = AnnealConfig::default();
+
+        let output = cmd_status(&graph, &lattice, &config, &[], 0);
+
+        assert_eq!(output.files, 2);
+        assert_eq!(output.handles, 3);
+        assert_eq!(output.edges, 0);
+    }
+
+    #[test]
+    fn status_cmd_status_counts_active_frozen() {
+        let mut graph = DiGraph::new();
+        graph.add_node(make_file_handle_with_status("doc1.md", "draft"));
+        graph.add_node(make_file_handle_with_status("doc2.md", "archived"));
+        graph.add_node(make_file_handle("doc3.md"));
+
+        let lattice = lattice_with_terminal(&["archived"]);
+        let config = AnnealConfig::default();
+
+        let output = cmd_status(&graph, &lattice, &config, &[], 0);
+
+        // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
+        assert_eq!(output.active_handles, 2);
+        // doc2.md (archived, terminal) = 1 frozen
+        assert_eq!(output.frozen_handles, 1);
     }
 }
