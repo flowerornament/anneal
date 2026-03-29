@@ -2,7 +2,7 @@ use camino::Utf8PathBuf;
 use serde::Serialize;
 
 /// Arena index into `DiGraph::nodes`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(crate) struct NodeId(u32);
 
 impl NodeId {
