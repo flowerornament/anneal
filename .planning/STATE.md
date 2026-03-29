@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-03-29T06:22:55.377Z"
+status: In progress
+last_updated: "2026-03-29T08:27:42Z"
 progress:
   total_phases: 3
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 11
+  completed_plans: 7
 ---
 
 # State: anneal
@@ -22,11 +22,11 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 
 ## Current Phase
 
-**Phase 2: Checks & CLI**
+**Phase 3: Convergence & Polish**
 
-- Status: Complete
-- Current Plan: 3 of 3 (all done)
-- Goal: Implement the five local consistency rules, impact analysis, and the core CLI commands that agents need.
+- Status: In Progress
+- Current Plan: 2 of 5
+- Goal: Add convergence tracking, status/map/diff commands, and suggestion engine to complete the full spec.
 
 ## Progress
 
@@ -34,10 +34,13 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
 | Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | Not started | — |
+| Phase 3: Convergence & Polish | In Progress | Plan 01 done |
 
 ## Decisions
 
+- Namespace stats deferred field left at 0 (per-handle freshness not available at snapshot time)
+- Convergence signal: frozen delta vs total delta with obligations tiebreaker
+- Module-level dead_code allow for snapshot types not yet consumed by CLI
 - Enable serde1 feature on camino for Utf8PathBuf serialization
 - Enable serde feature on chrono for NaiveDate serialization
 - Use expect() for u32 overflow guard in DiGraph::add_node
@@ -72,5 +75,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-29 | 02 | Plan 02 complete: checks.rs with 5 check rules (KB-R1..R5), 7 diagnostic codes, compiler-style formatting. impact.rs with reverse BFS, cycle detection, direct/indirect distinction. 19 new tests. |
 | 2026-03-29 | 02 | Plan 03 complete: cli.rs with 5 subcommands (check, get, find, init, impact). Clap dispatch, --json on all commands, D-07 frontmatter auto-detection. Murail: 1092 errors, 34 warnings, 1 info. |
 
+| 2026-03-29 | 03 | Plan 01 complete: snapshot.rs with Snapshot type, JSONL I/O (append/read), convergence summary (advancing/holding/drifting), Severity::Suggestion variant. 10 new tests. |
+
 ---
-*Last updated: 2026-03-29 after Plan 02-03 completion*
+*Last updated: 2026-03-29 after Plan 03-01 completion*

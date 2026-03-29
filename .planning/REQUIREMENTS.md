@@ -47,11 +47,11 @@
 
 ### Convergence Tracking
 
-- [ ] **CONVERGE-01**: Append snapshot to `.anneal/history.jsonl` after check/status runs
-- [ ] **CONVERGE-02**: Snapshot includes handle counts, edge counts, state histogram, obligation status, diagnostic counts, namespace stats
-- [ ] **CONVERGE-03**: Compute convergence summary: advancing, holding, or drifting (from snapshot delta)
+- [x] **CONVERGE-01**: Append snapshot to `.anneal/history.jsonl` after check/status runs
+- [x] **CONVERGE-02**: Snapshot includes handle counts, edge counts, state histogram, obligation status, diagnostic counts, namespace stats
+- [x] **CONVERGE-03**: Compute convergence summary: advancing, holding, or drifting (from snapshot delta)
 - [ ] **CONVERGE-04**: Compute graph diff between current state and previous snapshot
-- [ ] **CONVERGE-05**: Graceful handling of missing/corrupted history file (skip bad lines, return empty on missing)
+- [x] **CONVERGE-05**: Graceful handling of missing/corrupted history file (skip bad lines, return empty on missing)
 
 ### CLI Commands
 
@@ -143,11 +143,11 @@
 | IMPACT-01 | Phase 2 | Complete |
 | IMPACT-02 | Phase 2 | Complete |
 | IMPACT-03 | Phase 2 | Complete |
-| CONVERGE-01 | Phase 3 | Pending |
-| CONVERGE-02 | Phase 3 | Pending |
-| CONVERGE-03 | Phase 3 | Pending |
+| CONVERGE-01 | Phase 3 | Complete |
+| CONVERGE-02 | Phase 3 | Complete |
+| CONVERGE-03 | Phase 3 | Complete |
 | CONVERGE-04 | Phase 3 | Pending |
-| CONVERGE-05 | Phase 3 | Pending |
+| CONVERGE-05 | Phase 3 | Complete |
 | CLI-01 | Phase 2 | Complete |
 | CLI-02 | Phase 2 | Complete |
 | CLI-03 | Phase 2 | Complete |
@@ -175,4 +175,4 @@
 
 ---
 *Requirements defined: 2026-03-28*
-*Last updated: 2026-03-29 after Phase 2 completion*
+*Last updated: 2026-03-29 after Plan 03-01 completion*
