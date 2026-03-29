@@ -98,6 +98,15 @@ enum Command {
         #[arg(long, default_value = "2")]
         depth: u32,
     },
+    /// Show graph-level changes since a reference point
+    Diff {
+        /// Compare against snapshot from N days ago
+        #[arg(long)]
+        days: Option<u32>,
+        /// Git ref to compare against (e.g., HEAD~3, main, abc123)
+        #[arg(value_name = "REF")]
+        git_ref: Option<String>,
+    },
 }
 
 /// Build a lookup index from handle identity strings to `NodeId`s.
@@ -336,6 +345,38 @@ fn run() -> anyhow::Result<()> {
                 output
                     .print_human(&mut std::io::stdout().lock())
                     .context("failed to write map output")?;
+            }
+        }
+
+        Some(Command::Diff { days, ref git_ref }) => {
+            let (unresolved_refs, section_ref_count) =
+                collect_unresolved(&result.pending_edges, &node_index);
+            let unresolved_owned: Vec<parse::PendingEdge> = unresolved_refs
+                .iter()
+                .map(|e| parse::PendingEdge {
+                    source: e.source,
+                    target_identity: e.target_identity.clone(),
+                    kind: e.kind,
+                    inverse: e.inverse,
+                })
+                .collect();
+            let all_diagnostics = checks::run_checks(
+                graph,
+                &lattice,
+                &config,
+                &unresolved_owned,
+                section_ref_count,
+            );
+            let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+
+            let output = cli::cmd_diff(&root, &current_snap, days, git_ref.as_deref())?;
+
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write diff output")?;
             }
         }
     }
