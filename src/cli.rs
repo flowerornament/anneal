@@ -25,11 +25,7 @@ pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<S
     graph
         .nodes()
         .filter_map(|(_, h)| {
-            if matches!(h.kind, HandleKind::File(_))
-                && h.status
-                    .as_ref()
-                    .is_some_and(|s| lattice.terminal.contains(s))
-            {
+            if matches!(h.kind, HandleKind::File(_)) && h.is_terminal(lattice) {
                 h.file_path.as_ref().map(ToString::to_string)
             } else {
                 None
@@ -114,34 +110,27 @@ impl CheckOutput {
         if !self.diagnostics.is_empty() {
             writeln!(w)?;
         }
-        let active_errors = self.errors.saturating_sub(self.terminal_errors);
-        if self.terminal_errors > 0 {
-            writeln!(
-                w,
-                "{} error{} ({} in active files, {} in terminal), {} warning{}, {} info, {} suggestion{}",
-                S.error.apply_to(self.errors),
-                plural(self.errors),
-                S.error.apply_to(active_errors),
+        let error_detail = if self.terminal_errors > 0 {
+            let active = self.errors.saturating_sub(self.terminal_errors);
+            format!(
+                " ({} in active files, {} in terminal)",
+                S.error.apply_to(active),
                 S.dim.apply_to(self.terminal_errors),
-                S.warning.apply_to(self.warnings),
-                plural(self.warnings),
-                self.info,
-                S.suggestion.apply_to(self.suggestions),
-                plural(self.suggestions),
             )
         } else {
-            writeln!(
-                w,
-                "{} error{}, {} warning{}, {} info, {} suggestion{}",
-                S.error.apply_to(self.errors),
-                plural(self.errors),
-                S.warning.apply_to(self.warnings),
-                plural(self.warnings),
-                self.info,
-                S.suggestion.apply_to(self.suggestions),
-                plural(self.suggestions),
-            )
-        }
+            String::new()
+        };
+        writeln!(
+            w,
+            "{} error{}{error_detail}, {} warning{}, {} info, {} suggestion{}",
+            S.error.apply_to(self.errors),
+            plural(self.errors),
+            S.warning.apply_to(self.warnings),
+            plural(self.warnings),
+            self.info,
+            S.suggestion.apply_to(self.suggestions),
+            plural(self.suggestions),
+        )
     }
 }
 
@@ -173,12 +162,9 @@ pub(crate) fn cmd_check(
     filters: &CheckFilters,
     terminal_files: &HashSet<String>,
 ) -> CheckOutput {
-    // --active-only: remove diagnostics sourced from terminal files
     if filters.active_only {
         diagnostics.retain(|d| d.file.as_ref().is_none_or(|f| !terminal_files.contains(f)));
     }
-
-    // Severity/code filters
     if filters.any_severity_filter() {
         diagnostics.retain(|d| {
             (filters.errors_only && d.severity == Severity::Error)
@@ -188,29 +174,21 @@ pub(crate) fn cmd_check(
         });
     }
 
-    let errors = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .count();
-    let warnings = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .count();
-    let info = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Info)
-        .count();
-    let suggestions = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Suggestion)
-        .count();
-    let terminal_errors = diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Error
-                && d.file.as_ref().is_some_and(|f| terminal_files.contains(f))
-        })
-        .count();
+    let (mut errors, mut warnings, mut info, mut suggestions, mut terminal_errors) =
+        (0, 0, 0, 0, 0);
+    for d in &diagnostics {
+        match d.severity {
+            Severity::Error => {
+                errors += 1;
+                if d.file.as_ref().is_some_and(|f| terminal_files.contains(f)) {
+                    terminal_errors += 1;
+                }
+            }
+            Severity::Warning => warnings += 1,
+            Severity::Info => info += 1,
+            Severity::Suggestion => suggestions += 1,
+        }
+    }
 
     CheckOutput {
         diagnostics,
@@ -871,33 +849,33 @@ impl StatusOutput {
                 parts.join(" → ")
             )?;
 
-            // Verbose: list files at each pipeline level
+            // Verbose: list files at each pipeline level (single graph pass)
             if verbose && let (Some(graph), Some(lattice)) = (graph, lattice) {
-                for level in pipeline {
-                    if level.count == 0 {
-                        continue;
+                // Collect all files grouped by status in one pass
+                let mut by_status: HashMap<&str, Vec<&str>> = HashMap::new();
+                for (_, h) in graph.nodes() {
+                    if let HandleKind::File(ref path) = h.kind
+                        && let Some(ref status) = h.status
+                        && !lattice.terminal.contains(status)
+                    {
+                        by_status
+                            .entry(status.as_str())
+                            .or_default()
+                            .push(path.as_str());
                     }
-                    let mut files_at_level: Vec<&str> = graph
-                        .nodes()
-                        .filter_map(|(_, h)| {
-                            if let HandleKind::File(ref path) = h.kind
-                                && h.status.as_deref() == Some(&level.level)
-                                && !lattice.terminal.contains(&level.level)
-                            {
-                                Some(path.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    files_at_level.sort_unstable();
+                }
+                for level in pipeline {
+                    let Some(files) = by_status.get_mut(level.level.as_str()) else {
+                        continue;
+                    };
+                    files.sort_unstable();
                     writeln!(
                         w,
                         "              {} {}:",
                         S.bold.apply_to(&level.level),
-                        S.dim.apply_to(format_args!("({})", files_at_level.len())),
+                        S.dim.apply_to(format_args!("({})", files.len())),
                     )?;
-                    for f in &files_at_level {
+                    for f in files.iter() {
                         writeln!(w, "                {f}")?;
                     }
                 }
@@ -1389,10 +1367,7 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
             .as_deref()
             .map_or(String::new(), |s| format!("\\n[{s}]"));
         let id_escaped = dot_escape(&h.id);
-        let is_terminal = h
-            .status
-            .as_ref()
-            .is_some_and(|s| lattice.terminal.contains(s));
+        let is_terminal = h.is_terminal(lattice);
         let color_attr = if is_terminal {
             ", style=filled, fillcolor=grey"
         } else {
@@ -1426,7 +1401,7 @@ pub(crate) struct MapOptions<'a> {
     pub(crate) concern: Option<&'a str>,
     pub(crate) around: Option<&'a str>,
     pub(crate) depth: u32,
-    pub(crate) format: &'a str,
+    pub(crate) format: crate::MapFormat,
 }
 
 /// Render the knowledge graph in text or DOT format (CLI-05, KB-C5).
@@ -1446,12 +1421,16 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
     let edge_count = subgraph_edges(opts.graph, &nodes).len();
 
     let content = match opts.format {
-        "dot" => render_dot(opts.graph, &nodes, opts.lattice),
-        _ => render_text(opts.graph, &nodes),
+        crate::MapFormat::Dot => render_dot(opts.graph, &nodes, opts.lattice),
+        crate::MapFormat::Text => render_text(opts.graph, &nodes),
     };
 
     MapOutput {
-        format: opts.format.to_string(),
+        format: match opts.format {
+            crate::MapFormat::Text => "text",
+            crate::MapFormat::Dot => "dot",
+        }
+        .to_string(),
         nodes: nodes.len(),
         edges: edge_count,
         content,
@@ -1864,7 +1843,7 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         assert!(output.content.contains("Files (1):"));
@@ -1893,7 +1872,7 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         // File handles are always included per D-12 ("Include all File handles regardless of status")
@@ -1922,7 +1901,7 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         assert!(output.content.contains("OQ (2):"));
@@ -1946,7 +1925,7 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: "dot",
+            format: crate::MapFormat::Dot,
         });
 
         assert!(output.content.starts_with("digraph anneal {"));
@@ -1972,7 +1951,7 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: "dot",
+            format: crate::MapFormat::Dot,
         });
 
         assert!(output.content.contains("\"a.md\" -> \"b.md\""));
@@ -2003,7 +1982,7 @@ mod tests {
             concern: None,
             around: Some("b.md"),
             depth: 1,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         assert!(output.content.contains("a.md"));
@@ -2035,7 +2014,7 @@ mod tests {
             concern: None,
             around: Some("a.md"),
             depth: 0,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         assert_eq!(output.nodes, 1);
@@ -2066,7 +2045,7 @@ mod tests {
             concern: Some("questions"),
             around: None,
             depth: 2,
-            format: "text",
+            format: crate::MapFormat::Text,
         });
 
         assert!(output.content.contains("OQ-1"));

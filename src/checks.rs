@@ -132,10 +132,8 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
 
         for edge in graph.outgoing(node_id) {
             let target = graph.node(edge.target);
-            let Some(ref target_status) = target.status else {
-                continue;
-            };
-            if lattice.terminal.contains(target_status) {
+            if target.is_terminal(lattice) {
+                let target_status = target.status.as_deref().unwrap_or("unknown");
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W001",
@@ -231,9 +229,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
         }
 
         // Mooted: terminal status means obligation is automatically discharged
-        if let Some(ref status) = handle.status
-            && lattice.terminal.contains(status)
-        {
+        if handle.is_terminal(lattice) {
             continue;
         }
 
@@ -517,9 +513,7 @@ fn suggest_abandoned_namespaces(
 
         let all_abandoned = members.iter().all(|(_, handle)| {
             // Terminal status -> abandoned
-            if let Some(ref status) = handle.status
-                && lattice.terminal.contains(status)
-            {
+            if handle.is_terminal(lattice) {
                 return true;
             }
 
