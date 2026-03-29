@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress
-last_updated: "2026-03-29T04:58:50Z"
+last_updated: "2026-03-29T05:11:28Z"
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # State: anneal
@@ -18,14 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-28)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 02 — checks-cli
+**Current focus:** Phase 02 — checks-cli (complete)
 
 ## Current Phase
 
 **Phase 2: Checks & CLI**
 
-- Status: In progress
-- Current Plan: 2 of 3 (Plans 01, 02 done)
+- Status: Complete
+- Current Plan: 3 of 3 (all done)
 - Goal: Implement the five local consistency rules, impact analysis, and the core CLI commands that agents need.
 
 ## Progress
@@ -33,7 +33,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | Phase | Status | Completed |
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
-| Phase 2: Checks & CLI | In progress | Plans 01, 02 done |
+| Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
 | Phase 3: Convergence & Polish | Not started | — |
 
 ## Decisions
@@ -55,6 +55,10 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - node_mut() keeps dead_code allow since D-09 implemented at construction time
 - check_linearity takes &Lattice for terminal status mooting (KB-R4)
 - check_conventions groups files by parent directory path string
+- Concrete enum dispatch for CLI output (Serialize not object-safe, no trait objects)
+- cmd_find searches handle identities only, not file content
+- Init D-07 proposes Cites as default fallback for unknown frontmatter fields
+- observed_frontmatter_keys collected via second YAML parse in build_graph
 
 ## Session Log
 
@@ -66,6 +70,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-29 | 01 | Plan 03 complete: resolve.rs with namespace inference + label/version/edge resolution; main.rs pipeline wired end-to-end. Murail corpus: 259 files, 9788 handles, 6408 edges, 22 namespaces. |
 | 2026-03-29 | 02 | Plan 01 complete: Foundation repairs -- code block skip, URL rejection, bare filename resolution, extensible FrontmatterConfig with 6 defaults, directory convention terminal status, version status inheritance. Murail: 3191 unresolved (down from 3396). |
 | 2026-03-29 | 02 | Plan 02 complete: checks.rs with 5 check rules (KB-R1..R5), 7 diagnostic codes, compiler-style formatting. impact.rs with reverse BFS, cycle detection, direct/indirect distinction. 19 new tests. |
+| 2026-03-29 | 02 | Plan 03 complete: cli.rs with 5 subcommands (check, get, find, init, impact). Clap dispatch, --json on all commands, D-07 frontmatter auto-detection. Murail: 1092 errors, 34 warnings, 1 info. |
 
 ---
-*Last updated: 2026-03-29 after Plan 02-02 completion*
+*Last updated: 2026-03-29 after Plan 02-03 completion*
