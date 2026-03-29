@@ -285,11 +285,17 @@ anneal --json check --active-only | jq '.errors'
 anneal --json get FM-17 | jq '.edges'
 ```
 
-## Design
+## How it works
 
-`anneal` is built on the formal analogy between graded type systems and knowledge management: a document's convergence state has the same algebraic structure as a program's resource grade — both are values in bounded lattices that compose through meet/join operations.
+On every invocation, `anneal` walks a directory of markdown files and builds a typed knowledge graph in memory:
 
-The graph is computed from files on every invocation. No persistent database. The only state is `.anneal/history.jsonl` — append-only, derived, deletable.
+1. **Parse** — split YAML frontmatter from body text, scan body with a RegexSet for file references, section headings, label patterns (`OQ-64`), and version patterns (`v17`)
+2. **Resolve** — infer label namespaces from sequential cardinality (OQ-1 through OQ-69 is a namespace; SHA-256 is not), resolve cross-references to graph nodes
+3. **Lattice** — partition observed `status:` values into active and terminal sets, optionally infer from directory conventions (files only in `archive/` → terminal)
+4. **Check** — run five consistency rules and five suggestion rules against the graph
+5. **Snapshot** — capture counts to `.anneal/history.jsonl` for convergence tracking over time
+
+No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived and deletable.
 
 ### Architecture
 
