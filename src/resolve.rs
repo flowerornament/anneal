@@ -410,26 +410,6 @@ pub(crate) fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
 // Top-level resolve orchestrator
 // ---------------------------------------------------------------------------
 
-/// Build a filename index mapping bare filenames to their full relative paths.
-///
-/// For each File handle in the graph, extracts the filename component and maps
-/// it to the full relative path. Multiple files sharing a name are all stored
-/// (ambiguous lookups are skipped during resolution).
-fn build_filename_index(graph: &DiGraph) -> HashMap<String, Vec<Utf8PathBuf>> {
-    let mut index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
-    for (_, handle) in graph.nodes() {
-        if let HandleKind::File(ref path) = handle.kind
-            && let Some(filename) = path.file_name()
-        {
-            index
-                .entry(filename.to_string())
-                .or_default()
-                .push(path.clone());
-        }
-    }
-    index
-}
-
 /// Resolve all handles: namespace inference, label nodes, version nodes, pending edges.
 pub(crate) fn resolve_all(
     graph: &mut DiGraph,
@@ -437,6 +417,7 @@ pub(crate) fn resolve_all(
     pending: &[PendingEdge],
     config: &AnnealConfig,
     root: &Utf8Path,
+    filename_index: &HashMap<String, Vec<Utf8PathBuf>>,
 ) -> ResolveStats {
     let namespaces = infer_namespaces(candidates, config);
     let mut node_index = build_node_index(graph);
@@ -444,12 +425,8 @@ pub(crate) fn resolve_all(
     let label_result = resolve_labels(graph, candidates, &namespaces, &mut node_index);
     let versions_resolved = resolve_versions(graph, &mut node_index);
 
-    // Build corpus-wide filename index for bare filename fallback resolution
-    let filename_index = build_filename_index(graph);
-
     // node_index already contains label and version nodes (mutated in-place above)
-    let pending_resolved =
-        resolve_pending_edges(graph, pending, &node_index, root, &filename_index);
+    let pending_resolved = resolve_pending_edges(graph, pending, &node_index, root, filename_index);
     let pending_unresolved = pending.len() - pending_resolved;
 
     ResolveStats {

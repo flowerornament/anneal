@@ -446,6 +446,8 @@ pub(crate) struct BuildResult {
     pub(crate) terminal_by_directory: HashSet<String>,
     /// Frontmatter keys observed across all files with occurrence counts (D-07).
     pub(crate) observed_frontmatter_keys: HashMap<String, usize>,
+    /// Bare filename -> full relative paths, for corpus-wide resolution fallback.
+    pub(crate) filename_index: HashMap<String, Vec<Utf8PathBuf>>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -479,6 +481,9 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
     // D-07: Track all observed frontmatter keys for init auto-detection
     let mut observed_frontmatter_keys: HashMap<String, usize> = HashMap::new();
+
+    // Bare filename -> relative paths, for corpus-wide resolution fallback
+    let mut filename_index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -521,6 +526,13 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             .strip_prefix(root)
             .unwrap_or(&utf8_path)
             .to_path_buf();
+
+        if let Some(filename) = relative.file_name() {
+            filename_index
+                .entry(filename.to_string())
+                .or_default()
+                .push(relative.clone());
+        }
 
         let content = std::fs::read_to_string(&utf8_path)
             .with_context(|| format!("failed to read {utf8_path}"))?;
@@ -610,6 +622,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         observed_statuses,
         terminal_by_directory,
         observed_frontmatter_keys,
+        filename_index,
     })
 }
 

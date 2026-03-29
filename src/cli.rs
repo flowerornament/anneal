@@ -163,6 +163,9 @@ pub(crate) struct GetOutput {
 /// Maximum number of edges to display in human-readable output per direction.
 const EDGE_DISPLAY_LIMIT: usize = 20;
 
+/// Frontmatter keys that are metadata-only (not edge-producing references).
+const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
+
 impl GetOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         writeln!(w, "{} ({})", self.id, self.kind)?;
@@ -267,18 +270,21 @@ impl FindOutput {
     }
 }
 
+/// Filter options for the find command.
+#[derive(Default)]
+pub(crate) struct FindFilters<'a> {
+    pub(crate) namespace: Option<&'a str>,
+    pub(crate) status: Option<&'a str>,
+    pub(crate) kind: Option<&'a str>,
+    pub(crate) include_all: bool,
+}
+
 /// Search handle identities with case-insensitive substring matching.
-///
-/// Filters: `--namespace` (label prefix), `--status` (exact status),
-/// `--all` (include terminal handles; default excludes them).
 pub(crate) fn cmd_find(
     graph: &DiGraph,
     lattice: &Lattice,
     query: &str,
-    namespace: Option<&str>,
-    status_filter: Option<&str>,
-    kind_filter: Option<&str>,
-    include_all: bool,
+    filters: &FindFilters<'_>,
 ) -> FindOutput {
     let lower_query = query.to_lowercase();
 
@@ -290,15 +296,13 @@ pub(crate) fn cmd_find(
                 return false;
             }
 
-            // Kind filter: handle kind must match
-            if let Some(kf) = kind_filter
+            if let Some(kf) = filters.kind
                 && h.kind.as_str() != kf
             {
                 return false;
             }
 
-            // Namespace filter: label prefix must match
-            if let Some(ns) = namespace {
+            if let Some(ns) = filters.namespace {
                 match &h.kind {
                     HandleKind::Label { prefix, .. } => {
                         if prefix != ns {
@@ -309,17 +313,16 @@ pub(crate) fn cmd_find(
                 }
             }
 
-            // Status filter: exact match
-            if let Some(sf) = status_filter {
+            if let Some(sf) = filters.status {
                 match &h.status {
                     Some(s) if s == sf => {}
                     _ => return false,
                 }
             }
 
-            // By default, exclude terminal handles (unless user explicitly filtered by status)
-            if !include_all
-                && status_filter.is_none()
+            // Exclude terminal handles unless user explicitly filtered by status
+            if !filters.include_all
+                && filters.status.is_none()
                 && let Some(ref s) = h.status
                 && lattice.terminal.contains(s)
             {
@@ -506,17 +509,8 @@ pub(crate) fn cmd_init(
 
     let mut fields = default_fm.fields;
 
-    // D-07: Auto-detect additional frontmatter fields
-    // Special keys that are not edge-producing:
-    let special_keys: std::collections::HashSet<&str> =
-        ["status", "updated", "title", "description", "tags", "date"]
-            .iter()
-            .copied()
-            .collect();
-
     for (key, count) in observed_frontmatter_keys {
-        // Skip fields already in defaults or special non-edge fields
-        if default_keys.contains(key) || special_keys.contains(key.as_str()) {
+        if default_keys.contains(key) || METADATA_ONLY_KEYS.contains(&key.as_str()) {
             continue;
         }
         // Only propose fields seen in >= 3 files with edge-like names
@@ -565,12 +559,11 @@ pub(crate) fn cmd_init(
 #[derive(Serialize)]
 pub(crate) struct GraphSummary {
     pub(crate) root: String,
-    pub(crate) files: usize,
     pub(crate) handles: usize,
-    pub(crate) file_handles: usize,
-    pub(crate) label_handles: usize,
-    pub(crate) section_handles: usize,
-    pub(crate) version_handles: usize,
+    pub(crate) files: usize,
+    pub(crate) labels: usize,
+    pub(crate) sections: usize,
+    pub(crate) versions_count: usize,
     pub(crate) edges: usize,
     pub(crate) namespaces: Vec<String>,
     pub(crate) versions: usize,
@@ -588,12 +581,11 @@ impl GraphSummary {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         writeln!(w, "anneal: knowledge graph built")?;
         writeln!(w, "  root: {}", self.root)?;
-        writeln!(w, "  files: {}", self.files)?;
         writeln!(w, "  handles: {}", self.handles)?;
         writeln!(
             w,
             "    {} files, {} labels, {} sections, {} versions",
-            self.file_handles, self.label_handles, self.section_handles, self.version_handles
+            self.files, self.labels, self.sections, self.versions_count
         )?;
         writeln!(w, "  edges: {}", self.edges)?;
         writeln!(
@@ -629,29 +621,27 @@ impl GraphSummary {
 /// Build a `GraphSummary` from pipeline results.
 pub(crate) fn build_summary(
     root: &str,
-    file_count: usize,
     graph: &DiGraph,
     stats: &ResolveStats,
     lattice: &Lattice,
 ) -> GraphSummary {
-    let (mut file_handles, mut label_handles, mut section_handles, mut version_handles) =
+    let (mut files, mut labels, mut sections, mut versions_count) =
         (0usize, 0usize, 0usize, 0usize);
     for (_, h) in graph.nodes() {
         match h.kind {
-            HandleKind::File(_) => file_handles += 1,
-            HandleKind::Label { .. } => label_handles += 1,
-            HandleKind::Section { .. } => section_handles += 1,
-            HandleKind::Version { .. } => version_handles += 1,
+            HandleKind::File(_) => files += 1,
+            HandleKind::Label { .. } => labels += 1,
+            HandleKind::Section { .. } => sections += 1,
+            HandleKind::Version { .. } => versions_count += 1,
         }
     }
     GraphSummary {
         root: root.to_string(),
-        files: file_count,
         handles: graph.node_count(),
-        file_handles,
-        label_handles,
-        section_handles,
-        version_handles,
+        files,
+        labels,
+        sections,
+        versions_count,
         edges: graph.edge_count(),
         namespaces: sorted_namespace_names(&stats.namespaces),
         versions: stats.versions_resolved,

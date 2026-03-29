@@ -14,7 +14,7 @@ mod lattice;
 mod parse;
 mod resolve;
 
-use crate::handle::{HandleKind, NodeId};
+use crate::handle::NodeId;
 
 /// Convergence assistant for knowledge corpora.
 #[derive(Parser)]
@@ -134,18 +134,13 @@ fn run() -> anyhow::Result<()> {
     let config = config::load_config(root.as_std_path())?;
     let mut result = parse::build_graph(&root, &config)?;
 
-    let file_count = result
-        .graph
-        .nodes()
-        .filter(|(_, h)| matches!(h.kind, HandleKind::File(_)))
-        .count();
-
     let stats = resolve::resolve_all(
         &mut result.graph,
         &result.label_candidates,
         &result.pending_edges,
         &config,
         &root,
+        &result.filename_index,
     );
 
     let lattice = lattice::infer_lattice(
@@ -162,7 +157,7 @@ fn run() -> anyhow::Result<()> {
     match cli_args.command {
         None => {
             // Bare `anneal` (no subcommand): show graph summary
-            let summary = cli::build_summary(&root_str, file_count, graph, &stats, &lattice);
+            let summary = cli::build_summary(&root_str, graph, &stats, &lattice);
             if cli_args.json {
                 cli::print_json(&summary)?;
             } else {
@@ -231,10 +226,12 @@ fn run() -> anyhow::Result<()> {
                 graph,
                 &lattice,
                 query,
-                namespace.as_deref(),
-                status.as_deref(),
-                kind.as_deref(),
-                all,
+                &cli::FindFilters {
+                    namespace: namespace.as_deref(),
+                    status: status.as_deref(),
+                    kind: kind.as_deref(),
+                    include_all: all,
+                },
             );
             if cli_args.json {
                 cli::print_json(&output)?;
@@ -315,6 +312,7 @@ mod tests {
             &result.pending_edges,
             &config,
             &root,
+            &result.filename_index,
         );
 
         assert!(
