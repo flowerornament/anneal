@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::Parser;
 use serde::Serialize;
@@ -15,10 +16,6 @@ use crate::graph::DiGraph;
 use crate::lattice::{Lattice, LatticeKind};
 use crate::resolve::ResolveStats;
 
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
-
 /// Convergence assistant for knowledge corpora.
 #[derive(Parser)]
 #[command(name = "anneal", about = "Convergence assistant for knowledge corpora")]
@@ -32,14 +29,9 @@ struct Cli {
     json: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Output types
-// ---------------------------------------------------------------------------
-
-/// JSON-serializable summary of the constructed knowledge graph.
 #[derive(Serialize)]
-struct GraphSummary {
-    root: String,
+struct GraphSummary<'a> {
+    root: &'a str,
     files: usize,
     handles: usize,
     edges: usize,
@@ -49,15 +41,17 @@ struct GraphSummary {
     labels_skipped: usize,
     pending_edges_resolved: usize,
     pending_edges_unresolved: usize,
-    lattice_kind: String,
+    lattice_kind: LatticeKind,
     observed_statuses: usize,
     active_statuses: usize,
     terminal_statuses: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Human-readable output
-// ---------------------------------------------------------------------------
+fn sorted_namespace_names(ns: &HashSet<String>) -> Vec<&str> {
+    let mut list: Vec<&str> = ns.iter().map(String::as_str).collect();
+    list.sort_unstable();
+    list
+}
 
 fn print_summary(
     root: &str,
@@ -66,13 +60,7 @@ fn print_summary(
     stats: &ResolveStats,
     lattice: &Lattice,
 ) {
-    let mut ns_list: Vec<&String> = stats.namespaces.iter().collect();
-    ns_list.sort();
-    let ns_display = ns_list
-        .iter()
-        .map(|s| s.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let ns_display = sorted_namespace_names(&stats.namespaces).join(", ");
 
     println!("anneal: knowledge graph built");
     println!("  root: {root}");
@@ -101,80 +89,72 @@ fn print_summary(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Main pipeline
-// ---------------------------------------------------------------------------
-
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // 1. Determine root
-    let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
+    let cwd = Utf8PathBuf::try_from(
+        std::env::current_dir().context("failed to determine current directory")?,
+    )
+    .context("current directory is not valid UTF-8")?;
+
     let root = if let Some(ref r) = cli.root {
         Utf8PathBuf::from(r)
     } else {
         parse::infer_root(&cwd)
     };
 
-    // 2. Load config (zero-config is valid)
     let config = config::load_config(root.as_std_path())?;
+    let mut result = parse::build_graph(&root, &config)?;
 
-    // 3. Build raw graph (scan files, parse frontmatter, scan content)
-    let (mut graph, candidates, pending) = parse::build_graph(&root, &config)?;
-
-    // Count files before resolution adds label/version nodes
-    let file_count = graph
+    let file_count = result
+        .graph
         .nodes()
         .filter(|(_, h)| matches!(h.kind, handle::HandleKind::File(_)))
         .count();
 
-    // 4. Resolve handles (namespace inference, label nodes, version nodes, pending edges)
-    let stats = resolve::resolve_all(&mut graph, &candidates, &pending, &config, &root);
+    let stats = resolve::resolve_all(
+        &mut result.graph,
+        &result.label_candidates,
+        &result.pending_edges,
+        &config,
+    );
 
-    // 5. Infer lattice from observed statuses
-    let observed_statuses: HashSet<String> = graph
-        .nodes()
-        .filter_map(|(_, h)| h.status.clone())
-        .collect();
-    // For Phase 1, we don't compute terminal_by_directory (requires directory analysis).
-    // Pass an empty set -- config overrides still work, and unrecognized statuses default active.
     let terminal_by_directory = HashSet::new();
-    let lattice = lattice::infer_lattice(&observed_statuses, &config, &terminal_by_directory);
+    let lattice = lattice::infer_lattice(result.observed_statuses, &config, &terminal_by_directory);
+    let graph = &result.graph;
 
-    // 6. Print results
     let root_str = root.to_string();
 
     if cli.json {
-        let mut ns_list: Vec<String> = stats.namespaces.iter().cloned().collect();
-        ns_list.sort();
-
         let output = GraphSummary {
-            root: root_str,
+            root: &root_str,
             files: file_count,
             handles: graph.node_count(),
             edges: graph.edge_count(),
-            namespaces: ns_list,
+            namespaces: sorted_namespace_names(&stats.namespaces)
+                .into_iter()
+                .map(String::from)
+                .collect(),
             versions: stats.versions_resolved,
             labels_resolved: stats.labels_resolved,
             labels_skipped: stats.labels_skipped,
             pending_edges_resolved: stats.pending_edges_resolved,
             pending_edges_unresolved: stats.pending_edges_unresolved,
-            lattice_kind: format!("{:?}", lattice.kind),
+            lattice_kind: lattice.kind,
             observed_statuses: lattice.observed_statuses.len(),
             active_statuses: lattice.active.len(),
             terminal_statuses: lattice.terminal.len(),
         };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).context("failed to serialize JSON output")?
+        );
     } else {
-        print_summary(&root_str, file_count, &graph, &stats, &lattice);
+        print_summary(&root_str, file_count, graph, &stats, &lattice);
     }
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -189,24 +169,25 @@ mod tests {
             return;
         }
         let config = config::load_config(root.as_std_path()).expect("config load");
-        let (mut graph, candidates, pending) =
-            parse::build_graph(&root, &config).expect("build_graph");
-        let stats = resolve::resolve_all(&mut graph, &candidates, &pending, &config, &root);
+        let mut result = parse::build_graph(&root, &config).expect("build_graph");
+        let stats = resolve::resolve_all(
+            &mut result.graph,
+            &result.label_candidates,
+            &result.pending_edges,
+            &config,
+        );
 
-        // Phase 1 success criteria from ROADMAP:
-        // "~500 handles and ~2000 edges in <100ms"
         assert!(
-            graph.node_count() > 100,
+            result.graph.node_count() > 100,
             "Expected >100 handles, got {}",
-            graph.node_count()
+            result.graph.node_count()
         );
         assert!(
-            graph.edge_count() > 100,
+            result.graph.edge_count() > 100,
             "Expected >100 edges, got {}",
-            graph.edge_count()
+            result.graph.edge_count()
         );
 
-        // Namespace inference should find real namespaces
         assert!(
             stats.namespaces.contains("OQ"),
             "OQ namespace not found in {:?}",
@@ -218,7 +199,6 @@ mod tests {
             stats.namespaces
         );
 
-        // False positives should be rejected
         assert!(!stats.namespaces.contains("SHA"), "SHA should be rejected");
         assert!(!stats.namespaces.contains("AVX"), "AVX should be rejected");
         assert!(!stats.namespaces.contains("GPT"), "GPT should be rejected");
