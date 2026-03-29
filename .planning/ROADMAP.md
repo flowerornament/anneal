@@ -10,7 +10,7 @@
 |---|-------|------|--------------|------------------|
 | 1 | Graph Foundation | 3/3 | Complete   | 2026-03-29 |
 | 2 | Checks & CLI | 3/3 | Complete | 2026-03-29 |
-| 3 | Convergence & Polish | Convergence tracking, suggestions, remaining commands | 13 (CONVERGE-*, CLI-04/05/08, SUGGEST-*) | 1/5 in progress |
+| 3 | Convergence & Polish | Convergence tracking, suggestions, remaining commands | 13 (CONVERGE-*, CLI-04/05/08, SUGGEST-*) | 2/5 in progress |
 
 ## Phase Details
 
@@ -88,7 +88,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md -- Snapshot infrastructure: Snapshot type, JSONL I/O, convergence summary, Severity::Suggestion
-- [ ] 03-02-PLAN.md -- Suggestion engine: five suggestion rules (S001-S005) + check command filter flags
+- [x] 03-02-PLAN.md -- Suggestion engine: five suggestion rules (S001-S005) + check command filter flags
 - [ ] 03-03-PLAN.md -- Map command: text and DOT rendering, --concern and --around subgraph extraction
 - [ ] 03-04-PLAN.md -- Status command: dashboard with pipeline histogram, convergence summary, snapshot append
 - [ ] 03-05-PLAN.md -- Diff command: snapshot-based and git-aware graph diff, three reference modes
@@ -116,4 +116,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-03-28*
-*Last updated: 2026-03-29 after Plan 03-01 completion*
+*Last updated: 2026-03-29 after Plan 03-02 completion*

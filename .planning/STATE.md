@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress
-last_updated: "2026-03-29T08:27:42Z"
+last_updated: "2026-03-29T08:38:03Z"
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 11
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # State: anneal
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 **Phase 3: Convergence & Polish**
 
 - Status: In Progress
-- Current Plan: 2 of 5
+- Current Plan: 3 of 5
 - Goal: Add convergence tracking, status/map/diff commands, and suggestion engine to complete the full spec.
 
 ## Progress
@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 |-------|--------|-----------|
 | Phase 1: Graph Foundation | Complete | Plans 01, 02, 03 done |
 | Phase 2: Checks & CLI | Complete | Plans 01, 02, 03 done |
-| Phase 3: Convergence & Polish | In Progress | Plan 01 done |
+| Phase 3: Convergence & Polish | In Progress | Plans 01, 02 done |
 
 ## Decisions
 
@@ -62,6 +62,11 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 - cmd_find searches handle identities only, not file content
 - Init D-07 proposes Cites as default fallback for unknown frontmatter fields
 - observed_frontmatter_keys collected via second YAML parse in build_graph
+- CheckFilters struct encapsulates four boolean filter flags to satisfy clippy pedantic
+- Suggestions in checks.rs alongside existing rules (not separate suggest.rs)
+- BTreeMap for namespace grouping in S004 ensures deterministic output order
+- S004 checks both terminal status AND freshness via compute_freshness
+- S005 limits to top 5 co-occurring pairs to avoid noise
 
 ## Session Log
 
@@ -76,6 +81,7 @@ See: .planning/PROJECT.md (updated 2026-03-28)
 | 2026-03-29 | 02 | Plan 03 complete: cli.rs with 5 subcommands (check, get, find, init, impact). Clap dispatch, --json on all commands, D-07 frontmatter auto-detection. Murail: 1092 errors, 34 warnings, 1 info. |
 
 | 2026-03-29 | 03 | Plan 01 complete: snapshot.rs with Snapshot type, JSONL I/O (append/read), convergence summary (advancing/holding/drifting), Severity::Suggestion variant. 10 new tests. |
+| 2026-03-29 | 03 | Plan 02 complete: Five suggestion rules S001-S005 in checks.rs (orphaned, candidate ns, pipeline stalls, abandoned ns, concern groups). CheckFilters struct with --suggest/--stale/--obligations. 12 new tests. |
 
 ---
-*Last updated: 2026-03-29 after Plan 03-01 completion*
+*Last updated: 2026-03-29 after Plan 03-02 completion*
