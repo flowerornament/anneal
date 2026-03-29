@@ -40,6 +40,15 @@ enum Command {
         /// Show only errors (for pre-commit hooks)
         #[arg(long)]
         errors_only: bool,
+        /// Show only suggestions (structural improvement hints)
+        #[arg(long)]
+        suggest: bool,
+        /// Show only staleness diagnostics (W001)
+        #[arg(long)]
+        stale: bool,
+        /// Show only linearity/obligation diagnostics (E002/I002)
+        #[arg(long)]
+        obligations: bool,
     },
     /// Resolve a handle and show its content
     Get {
@@ -168,7 +177,12 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::Check { errors_only }) => {
+        Some(Command::Check {
+            errors_only,
+            suggest,
+            stale,
+            obligations,
+        }) => {
             let (unresolved_refs, section_ref_count) =
                 collect_unresolved(&result.pending_edges, &node_index);
             // Convert &[&PendingEdge] to owned slice for run_checks
@@ -181,13 +195,19 @@ fn run() -> anyhow::Result<()> {
                     inverse: e.inverse,
                 })
                 .collect();
+            let filters = cli::CheckFilters {
+                errors_only,
+                suggest,
+                stale,
+                obligations,
+            };
             let output = cli::cmd_check(
                 graph,
                 &lattice,
                 &config,
                 &unresolved_owned,
                 section_ref_count,
-                errors_only,
+                &filters,
             );
             if cli_args.json {
                 cli::print_json(&output)?;

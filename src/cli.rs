@@ -101,20 +101,46 @@ impl CheckOutput {
     }
 }
 
-/// Run all check rules and produce output, optionally filtering to errors only.
+/// Filter flags for the check command (D-19).
+///
+/// Combined with OR logic when multiple are set. If all are false, all
+/// diagnostics are shown (default behavior).
+#[derive(Default)]
+pub(crate) struct CheckFilters {
+    pub(crate) errors_only: bool,
+    pub(crate) suggest: bool,
+    pub(crate) stale: bool,
+    pub(crate) obligations: bool,
+}
+
+impl CheckFilters {
+    fn any_active(&self) -> bool {
+        self.errors_only || self.suggest || self.stale || self.obligations
+    }
+}
+
+/// Run all check rules and produce output with optional filter flags (D-19).
+///
+/// Filters are combined with OR logic when multiple are set. If no filter
+/// flags are set, all diagnostics are shown (default behavior).
 pub(crate) fn cmd_check(
     graph: &DiGraph,
     lattice: &Lattice,
     config: &crate::config::AnnealConfig,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
-    errors_only: bool,
+    filters: &CheckFilters,
 ) -> CheckOutput {
     let mut diagnostics =
         checks::run_checks(graph, lattice, config, unresolved_edges, section_ref_count);
 
-    if errors_only {
-        diagnostics.retain(|d| d.severity == Severity::Error);
+    if filters.any_active() {
+        diagnostics.retain(|d| {
+            (filters.errors_only && d.severity == Severity::Error)
+                || (filters.suggest && d.severity == Severity::Suggestion)
+                || (filters.stale && d.code == "W001")
+                || (filters.obligations && matches!(d.code, "E002" | "I002"))
+        });
     }
 
     let errors = diagnostics
