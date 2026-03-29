@@ -19,7 +19,6 @@ pub(crate) struct ImpactResult {
 /// Traverses reverse DependsOn, Supersedes, and Verifies edges. Uses a
 /// visited set for cycle detection (IMPACT-02). Distinguishes direct
 /// (depth=1) from indirect (depth>1) affected handles (IMPACT-03).
-#[allow(dead_code)] // Phase 2 Plan 03: CLI `anneal impact` will call this
 pub(crate) fn compute_impact(graph: &DiGraph, start: NodeId) -> ImpactResult {
     let mut visited = HashSet::new();
     let mut direct = Vec::new();

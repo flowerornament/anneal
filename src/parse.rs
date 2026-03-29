@@ -428,6 +428,8 @@ pub(crate) struct BuildResult {
     pub(crate) observed_statuses: HashSet<String>,
     /// Statuses found exclusively in terminal-convention directories (D-04).
     pub(crate) terminal_by_directory: HashSet<String>,
+    /// Frontmatter keys observed across all files with occurrence counts (D-07).
+    pub(crate) observed_frontmatter_keys: HashMap<String, usize>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -458,6 +460,9 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     // D-04: Track which statuses appear in terminal vs non-terminal directories
     let mut status_in_terminal: HashMap<String, usize> = HashMap::new();
     let mut status_in_nonterminal: HashMap<String, usize> = HashMap::new();
+
+    // D-07: Track all observed frontmatter keys for init auto-detection
+    let mut observed_frontmatter_keys: HashMap<String, usize> = HashMap::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -510,6 +515,20 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let (status, metadata, field_edges) = frontmatter_yaml
             .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
             .unwrap_or_default();
+
+        // D-07: Collect all frontmatter keys for init auto-detection
+        if let Some(yaml) = frontmatter_yaml
+            && let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml)
+            && let Some(mapping) = value.as_mapping()
+        {
+            for key in mapping.keys() {
+                if let Some(key_str) = key.as_str() {
+                    *observed_frontmatter_keys
+                        .entry(key_str.to_string())
+                        .or_insert(0) += 1;
+                }
+            }
+        }
 
         if let Some(ref s) = status {
             observed_statuses.insert(s.clone());
@@ -583,6 +602,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         pending_edges,
         observed_statuses,
         terminal_by_directory,
+        observed_frontmatter_keys,
     })
 }
 
