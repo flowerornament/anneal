@@ -12,6 +12,29 @@ use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
 use crate::parse::{LabelCandidate, PendingEdge};
 
 // ---------------------------------------------------------------------------
+// Resolution cascade types (Phase 6, RESOLVE-02..06)
+// ---------------------------------------------------------------------------
+
+/// Result of cascade resolution for a single unresolved pending edge.
+#[derive(Clone, Debug)]
+pub(crate) struct CascadeResult {
+    /// Index into the original pending_edges slice.
+    pub(crate) edge_index: usize,
+    /// Candidate handle identities found by structural transforms.
+    pub(crate) candidates: Vec<String>,
+    /// If exactly one unambiguous match was found, the resolved `NodeId`.
+    /// Root-prefix strip is the only strategy that produces this.
+    pub(crate) resolved: Option<NodeId>,
+}
+
+/// Regex for zero-pad normalization of compound labels like `KB-D01`, `OQ-01`.
+/// Captures full compound prefix and the zero-padded number.
+static COMPOUND_LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*)-0+(\d+)$")
+        .expect("compound label regex must compile")
+});
+
+// ---------------------------------------------------------------------------
 // Regex for version handle detection in filenames
 // ---------------------------------------------------------------------------
 
@@ -452,5 +475,383 @@ pub(crate) fn resolve_all(
         versions_resolved,
         pending_edges_resolved: pending_resolved,
         pending_edges_unresolved: pending_unresolved,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resolution cascade (Phase 6, RESOLVE-02..06)
+// ---------------------------------------------------------------------------
+
+/// Try stripping a root prefix from the target to match a known handle.
+///
+/// If target starts with `root_prefix/`, strip it and look up the remainder.
+/// Unambiguous match returns `(Some(node_id), vec![stripped])`.
+fn try_root_prefix_strip(
+    target: &str,
+    node_index: &HashMap<String, NodeId>,
+    root_prefix: &str,
+) -> (Option<NodeId>, Vec<String>) {
+    if root_prefix.is_empty() || root_prefix == "." {
+        return (None, Vec::new());
+    }
+
+    // Normalize: ensure prefix ends with /
+    let prefix_with_slash = if root_prefix.ends_with('/') {
+        root_prefix.to_string()
+    } else {
+        format!("{root_prefix}/")
+    };
+
+    if !target.starts_with(&prefix_with_slash) {
+        return (None, Vec::new());
+    }
+
+    let stripped = &target[prefix_with_slash.len()..];
+    if stripped.is_empty() {
+        return (None, Vec::new());
+    }
+
+    if let Some(&node_id) = node_index.get(stripped) {
+        (Some(node_id), vec![stripped.to_string()])
+    } else {
+        // Check for ambiguous matches (multiple keys ending with the stripped portion)
+        let candidates: Vec<String> = node_index
+            .keys()
+            .filter(|k| {
+                k.ends_with(stripped)
+                    && (k.len() == stripped.len()
+                        || k.as_bytes().get(k.len() - stripped.len() - 1) == Some(&b'/'))
+            })
+            .cloned()
+            .collect();
+
+        if candidates.len() == 1 {
+            let node_id = node_index[&candidates[0]];
+            (Some(node_id), candidates)
+        } else if candidates.is_empty() {
+            (None, Vec::new())
+        } else {
+            (None, candidates)
+        }
+    }
+}
+
+/// Try matching a versioned filename against other versions in the index.
+///
+/// If target matches `{base}-v{N}.md`, finds all `{base}-v{M}.md` where M != N,
+/// sorted by version descending (latest first).
+fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<String> {
+    let caps = match VERSION_FILENAME_RE.captures(target) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+
+    let base = caps.get(1).map_or("", |m| m.as_str());
+    let this_version: u32 = match caps.get(2).map_or("0", |m| m.as_str()).parse() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut matches: Vec<(u32, String)> = Vec::new();
+
+    for key in node_index.keys() {
+        // Extract filename from potential path
+        let filename = key.rsplit('/').next().unwrap_or(key);
+        if let Some(kcaps) = VERSION_FILENAME_RE.captures(filename) {
+            let kbase = kcaps.get(1).map_or("", |m| m.as_str());
+            if let Ok(kver) = kcaps.get(2).map_or("0", |m| m.as_str()).parse::<u32>() {
+                if kbase == base && kver != this_version {
+                    matches.push((kver, key.clone()));
+                }
+            }
+        }
+    }
+
+    // Sort by version descending (latest first)
+    matches.sort_by(|a, b| b.0.cmp(&a.0));
+    matches.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Try normalizing a zero-padded label to its canonical form.
+///
+/// `OQ-01` -> `OQ-1`, `KB-D01` -> `KB-D1`.
+fn try_zero_pad_normalize(
+    target: &str,
+    node_index: &HashMap<String, NodeId>,
+) -> Option<(NodeId, String)> {
+    let caps = COMPOUND_LABEL_RE.captures(target)?;
+
+    let prefix = caps.get(1)?.as_str();
+    let number_str = caps.get(2)?.as_str();
+    let number: u32 = number_str.parse().ok()?;
+
+    let canonical = format!("{prefix}-{number}");
+
+    // Only suggest if the canonical form differs (i.e., there were leading zeros)
+    if canonical == target {
+        return None;
+    }
+
+    node_index
+        .get(&canonical)
+        .map(|&node_id| (node_id, canonical))
+}
+
+/// Run deterministic structural transforms on unresolved pending edges.
+///
+/// Called after `resolve_all()`. For each unresolved edge, tries strategies
+/// in order: root-prefix strip, version stem, zero-pad normalize.
+/// Root-prefix matches that are unambiguous create graph edges.
+/// All other matches produce candidate lists for diagnostic enrichment.
+pub(crate) fn cascade_unresolved(
+    graph: &mut DiGraph,
+    pending: &[PendingEdge],
+    node_index: &HashMap<String, NodeId>,
+    root_prefix: &str,
+) -> Vec<CascadeResult> {
+    let mut results = Vec::new();
+
+    for (idx, edge) in pending.iter().enumerate() {
+        // Skip already-resolved edges
+        if node_index.contains_key(&edge.target_identity) {
+            continue;
+        }
+
+        // Skip section refs
+        if edge.target_identity.starts_with("section:") {
+            continue;
+        }
+
+        let mut candidates = Vec::new();
+        let mut resolved = None;
+
+        // Strategy 1: Root-prefix strip
+        let (rp_resolved, rp_candidates) =
+            try_root_prefix_strip(&edge.target_identity, node_index, root_prefix);
+        if let Some(node_id) = rp_resolved {
+            // Unambiguous root-prefix match: create graph edge
+            if edge.inverse {
+                graph.add_edge(node_id, edge.source, edge.kind);
+            } else {
+                graph.add_edge(edge.source, node_id, edge.kind);
+            }
+            resolved = Some(node_id);
+        }
+        candidates.extend(rp_candidates);
+
+        // Strategy 2: Version stem
+        let vs_candidates = try_version_stem(&edge.target_identity, node_index);
+        candidates.extend(vs_candidates);
+
+        // Strategy 3: Zero-pad normalize
+        if let Some((_node_id, canonical)) =
+            try_zero_pad_normalize(&edge.target_identity, node_index)
+        {
+            candidates.push(canonical);
+        }
+
+        if !candidates.is_empty() || resolved.is_some() {
+            results.push(CascadeResult {
+                edge_index: idx,
+                candidates,
+                resolved,
+            });
+        }
+    }
+
+    results
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+
+    fn build_test_graph_and_index() -> (DiGraph, HashMap<String, NodeId>) {
+        let mut graph = DiGraph::new();
+
+        let foo = graph.add_node(Handle::test_file("foo.md", None));
+        let bar = graph.add_node(Handle::test_file("bar.md", None));
+        let fmv17 = graph.add_node(Handle::test_file("formal-model-v17.md", None));
+        let fmv5 = graph.add_node(Handle::test_file("formal-model-v5.md", None));
+        let fmv4 = graph.add_node(Handle::test_file("formal-model-v4.md", None));
+        let oq1 = graph.add_node(Handle::test_label("OQ", 1, None));
+        let kbd1 = graph.add_node(Handle::test_label("KB-D", 1, None));
+
+        let _ = (foo, bar, fmv17, fmv5, fmv4, oq1, kbd1);
+
+        let index = build_node_index(&graph);
+        (graph, index)
+    }
+
+    fn make_pending(source: NodeId, target: &str) -> PendingEdge {
+        PendingEdge {
+            source,
+            target_identity: target.to_string(),
+            kind: EdgeKind::Cites,
+            inverse: false,
+            line: Some(1),
+        }
+    }
+
+    #[test]
+    fn cascade_root_prefix_strip_resolves() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("other.md", None));
+        let edges = vec![make_pending(source, ".design/foo.md")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].resolved.is_some(), "should resolve unambiguously");
+        assert!(results[0].candidates.contains(&"foo.md".to_string()));
+    }
+
+    #[test]
+    fn cascade_root_prefix_ambiguous_no_resolve() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(Handle::test_file("sub/foo.md", None));
+        let _b = graph.add_node(Handle::test_file("other/foo.md", None));
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+
+        // Neither sub/foo.md nor other/foo.md will match a root-prefix strip of ".design/foo.md"
+        // because the stripped "foo.md" doesn't exist in index (only sub/foo.md and other/foo.md do).
+        let index = build_node_index(&graph);
+        let edges = vec![make_pending(source, ".design/foo.md")];
+        let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
+
+        // No match because "foo.md" isn't in the index
+        assert!(
+            results.is_empty() || results[0].resolved.is_none(),
+            "ambiguous or non-matching should not resolve"
+        );
+    }
+
+    #[test]
+    fn cascade_version_stem_suggests_alternatives() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edges = vec![make_pending(source, "formal-model-v11.md")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].resolved.is_none(), "version stem does not resolve");
+
+        let cands = &results[0].candidates;
+        assert!(
+            cands.contains(&"formal-model-v17.md".to_string()),
+            "should suggest v17, got {:?}",
+            cands
+        );
+    }
+
+    #[test]
+    fn cascade_version_stem_sorted_latest_first() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edges = vec![make_pending(source, "proof-v3.md")];
+
+        // No proof-v*.md exist, so no candidates expected
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert!(results.is_empty());
+
+        // Use formal-model which has v4, v5, v17
+        let edges = vec![make_pending(source, "formal-model-v11.md")];
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert_eq!(results.len(), 1);
+
+        let cands = &results[0].candidates;
+        // Should be sorted latest first: v17, v5, v4
+        let v17_pos = cands
+            .iter()
+            .position(|c| c == "formal-model-v17.md")
+            .expect("v17 candidate");
+        let v5_pos = cands
+            .iter()
+            .position(|c| c == "formal-model-v5.md")
+            .expect("v5 candidate");
+        let v4_pos = cands
+            .iter()
+            .position(|c| c == "formal-model-v4.md")
+            .expect("v4 candidate");
+        assert!(
+            v17_pos < v5_pos && v5_pos < v4_pos,
+            "expected latest-first order: v17@{}, v5@{}, v4@{}",
+            v17_pos,
+            v5_pos,
+            v4_pos
+        );
+    }
+
+    #[test]
+    fn cascade_zero_pad_resolves() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edges = vec![make_pending(source, "OQ-01")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].candidates.contains(&"OQ-1".to_string()));
+    }
+
+    #[test]
+    fn cascade_zero_pad_compound_prefix() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        // KB-D-01 is the zero-padded form of KB-D-1 (prefix KB-D, number 01)
+        let edges = vec![make_pending(source, "KB-D-01")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].candidates.contains(&"KB-D-1".to_string()),
+            "expected KB-D-1 in candidates, got {:?}",
+            results[0].candidates
+        );
+    }
+
+    #[test]
+    fn cascade_non_matching_produces_empty() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edges = vec![make_pending(source, "totally-unknown-ref")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert!(results.is_empty(), "no strategies should match");
+    }
+
+    #[test]
+    fn cascade_root_prefix_creates_edge() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("other.md", None));
+        let edge_count_before = graph.edge_count();
+        let edges = vec![make_pending(source, ".design/foo.md")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
+        assert!(results[0].resolved.is_some());
+        assert_eq!(
+            graph.edge_count(),
+            edge_count_before + 1,
+            "root-prefix match should create graph edge"
+        );
+    }
+
+    #[test]
+    fn cascade_skips_already_resolved() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        // "foo.md" is already in the index
+        let edges = vec![make_pending(source, "foo.md")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert!(results.is_empty(), "already resolved edges should be skipped");
+    }
+
+    #[test]
+    fn cascade_skips_section_refs() {
+        let (mut graph, index) = build_test_graph_and_index();
+        let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edges = vec![make_pending(source, "section:some-heading")];
+
+        let results = cascade_unresolved(&mut graph, &edges, &index, "");
+        assert!(results.is_empty(), "section refs should be skipped");
     }
 }
