@@ -91,6 +91,18 @@ impl Diagnostic {
     }
 }
 
+/// For Version handles, resolve the artifact file_path from the parent file node.
+fn artifact_file(handle: &crate::handle::Handle, graph: &DiGraph) -> Option<String> {
+    if let HandleKind::Version { artifact, .. } = &handle.kind {
+        return graph
+            .node(*artifact)
+            .file_path
+            .as_ref()
+            .map(ToString::to_string);
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // CHECK-01: Existence (KB-R1)
 // ---------------------------------------------------------------------------
@@ -104,6 +116,7 @@ fn check_existence(
     graph: &DiGraph,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
+    section_ref_file: Option<&str>,
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -116,8 +129,8 @@ fn check_existence(
                 "{section_ref_count} section references use section notation, \
                  not resolvable to heading slugs"
             ),
-            file: None,
-            line: None,
+            file: section_ref_file.map(ToString::to_string),
+            line: Some(1),
             evidence: None,
         });
     }
@@ -213,6 +226,15 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             let target = graph.node(edge.target);
             if target.is_terminal(lattice) {
                 let target_status = target.status.as_deref().unwrap_or("unknown");
+                // Fall back to artifact file, target file, or target's artifact
+                let file = handle
+                    .file_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .or_else(|| artifact_file(handle, graph))
+                    .or_else(|| target.file_path.as_ref().map(ToString::to_string))
+                    .or_else(|| artifact_file(target, graph));
+
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W001",
@@ -220,7 +242,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         "stale reference: {} (active) references {} ({}, terminal)",
                         handle.id, target.id, target_status
                     ),
-                    file: handle.file_path.as_ref().map(ToString::to_string),
+                    file,
                     line: Some(1),
                     evidence: Some(Evidence::StaleRef {
                         source_status: source_status.clone(),
@@ -267,6 +289,12 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             };
 
             if source_level > target_level {
+                let file = handle
+                    .file_path
+                    .as_ref()
+                    .or(target.file_path.as_ref())
+                    .map(ToString::to_string);
+
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W002",
@@ -274,7 +302,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         "confidence gap: {} ({}) depends on {} ({})",
                         handle.id, source_status, target.id, target_status
                     ),
-                    file: handle.file_path.as_ref().map(ToString::to_string),
+                    file,
                     line: Some(1),
                     evidence: Some(Evidence::ConfidenceGap {
                         source_status: source_status.clone(),
@@ -328,6 +356,21 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
             .filter(|e| e.kind == EdgeKind::Discharges)
             .count();
 
+        // Label file_path, or fall back to first incoming edge source's file
+        let file = handle
+            .file_path
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| {
+                graph.incoming(node_id).iter().find_map(|edge| {
+                    graph
+                        .node(edge.source)
+                        .file_path
+                        .as_ref()
+                        .map(ToString::to_string)
+                })
+            });
+
         if discharge_count == 0 {
             diagnostics.push(Diagnostic {
                 severity: Severity::Error,
@@ -336,8 +379,8 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                     "undischarged obligation: {} has no Discharges edge",
                     handle.id
                 ),
-                file: handle.file_path.as_ref().map(ToString::to_string),
-                line: None,
+                file: file.clone(),
+                line: Some(1),
                 evidence: None,
             });
         } else if discharge_count >= 2 {
@@ -348,8 +391,8 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                     "multiple discharges: {} discharged {discharge_count} times (affine)",
                     handle.id
                 ),
-                file: handle.file_path.as_ref().map(ToString::to_string),
-                line: None,
+                file,
+                line: Some(1),
                 evidence: None,
             });
         }
@@ -441,11 +484,36 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
         }
 
         if graph.incoming(node_id).is_empty() {
+            // Use handle's own file_path, or fall back to artifact file
+            // (version handles), or any reachable edge target's file
+            let file = handle
+                .file_path
+                .as_ref()
+                .map(ToString::to_string)
+                .or_else(|| {
+                    // For Version handles, the artifact field points to the parent file
+                    if let HandleKind::Version { artifact, .. } = &handle.kind {
+                        return graph
+                            .node(*artifact)
+                            .file_path
+                            .as_ref()
+                            .map(ToString::to_string);
+                    }
+                    // Fall back to first outgoing edge target's file
+                    graph.outgoing(node_id).iter().find_map(|edge| {
+                        graph
+                            .node(edge.target)
+                            .file_path
+                            .as_ref()
+                            .map(ToString::to_string)
+                    })
+                });
+
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
                 code: "S001",
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
-                file: handle.file_path.as_ref().map(ToString::to_string),
+                file,
                 line: Some(1),
                 evidence: None,
             });
@@ -486,14 +554,24 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     candidates.sort_by_key(|(prefix, _)| *prefix);
 
     for (prefix, count) in candidates {
+        // Pick representative file: first label handle with this prefix
+        let representative_file = graph.nodes().find_map(|(_, handle)| {
+            if let HandleKind::Label { prefix: ref p, .. } = handle.kind
+                && p.as_str() == prefix
+            {
+                return handle.file_path.as_ref().map(ToString::to_string);
+            }
+            None
+        });
+
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S002",
             message: format!(
                 "candidate namespace: {prefix} ({count} labels found, not in confirmed namespaces)"
             ),
-            file: None,
-            line: None,
+            file: representative_file,
+            line: Some(1),
             evidence: None,
         });
     }
@@ -551,6 +629,10 @@ fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic
         });
 
         if !has_outflow {
+            let representative = handles_at_level
+                .first()
+                .and_then(|&nid| graph.node(nid).file_path.as_ref().map(ToString::to_string));
+
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
                 code: "S003",
@@ -560,8 +642,8 @@ fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic
                     lattice.ordering[level_idx],
                     lattice.ordering[next_level]
                 ),
-                file: None,
-                line: None,
+                file: representative,
+                line: Some(1),
                 evidence: None,
             });
         }
@@ -625,6 +707,10 @@ fn suggest_abandoned_namespaces(
         });
 
         if all_abandoned {
+            let representative = members
+                .first()
+                .and_then(|(_, handle)| handle.file_path.as_ref().map(ToString::to_string));
+
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
                 code: "S004",
@@ -632,8 +718,8 @@ fn suggest_abandoned_namespaces(
                     "abandoned namespace: all {} members of {prefix} are terminal or stale",
                     members.len()
                 ),
-                file: None,
-                line: None,
+                file: representative,
+                line: Some(1),
                 evidence: None,
             });
         }
@@ -713,14 +799,39 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
     // Limit to top 5 pairs to avoid noise
     let mut diagnostics = Vec::new();
     for ((prefix_a, prefix_b), count) in candidates.into_iter().take(5) {
+        // Find a file that references both prefixes as representative
+        let representative_file = graph.nodes().find_map(|(node_id, handle)| {
+            if !matches!(handle.kind, HandleKind::File(_)) {
+                return None;
+            }
+            let mut has_a = false;
+            let mut has_b = false;
+            for edge in graph.outgoing(node_id) {
+                let target = graph.node(edge.target);
+                if let HandleKind::Label { ref prefix, .. } = target.kind {
+                    if prefix.as_str() == prefix_a {
+                        has_a = true;
+                    }
+                    if prefix.as_str() == prefix_b {
+                        has_b = true;
+                    }
+                }
+            }
+            if has_a && has_b {
+                handle.file_path.as_ref().map(ToString::to_string)
+            } else {
+                None
+            }
+        });
+
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S005",
             message: format!(
                 "concern group candidate: {prefix_a} and {prefix_b} co-occur in {count} files"
             ),
-            file: None,
-            line: None,
+            file: representative_file,
+            line: Some(1),
             evidence: None,
         });
     }
@@ -755,12 +866,14 @@ pub(crate) fn run_suggestions(
 ///
 /// Diagnostics are sorted by severity: errors first, then warnings, then info,
 /// then suggestions.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_checks(
     graph: &DiGraph,
     lattice: &Lattice,
     config: &AnnealConfig,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
+    section_ref_file: Option<&str>,
     implausible_refs: &[ImplausibleRef],
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
@@ -769,6 +882,7 @@ pub(crate) fn run_checks(
         graph,
         unresolved_edges,
         section_ref_count,
+        section_ref_file,
         cascade_candidates,
     ));
     diagnostics.extend(check_plausibility(implausible_refs));
@@ -835,7 +949,7 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 0, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code, "E001");
@@ -853,10 +967,16 @@ mod tests {
         let unresolved: Vec<PendingEdge> = Vec::new();
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 42, &cascade);
+        let diags = check_existence(&graph, &unresolved, 42, Some("doc.md"), &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Info);
         assert_eq!(diags[0].code, "I001");
+        assert_eq!(
+            diags[0].file,
+            Some("doc.md".to_string()),
+            "I001 should carry representative file"
+        );
+        assert_eq!(diags[0].line, Some(1), "I001 should carry line 1");
         assert!(diags[0].message.contains("42"));
     }
 
@@ -1301,7 +1421,16 @@ mod tests {
         let unresolved: Vec<PendingEdge> = Vec::new();
 
         let cascade = HashMap::new();
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0, &[], &cascade);
+        let diags = run_checks(
+            &graph,
+            &lattice,
+            &config,
+            &unresolved,
+            0,
+            None,
+            &[],
+            &cascade,
+        );
         let suggestion_count = diags
             .iter()
             .filter(|d| d.severity == Severity::Suggestion)
@@ -1381,7 +1510,7 @@ mod tests {
         let mut cascade = HashMap::new();
         cascade.insert("OQ-99".to_string(), vec!["OQ-9".to_string()]);
 
-        let diags = check_existence(&graph, &unresolved, 0, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("similar handle exists: OQ-9"));
         match &diags[0].evidence {
@@ -1407,7 +1536,7 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 0, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
         assert_eq!(diags.len(), 1);
         assert!(!diags[0].message.contains("similar handle"));
         match &diags[0].evidence {
@@ -1441,7 +1570,16 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 5, &[], &cascade);
+        let diags = run_checks(
+            &graph,
+            &lattice,
+            &config,
+            &unresolved,
+            5,
+            None,
+            &[],
+            &cascade,
+        );
 
         // Should have: E001 (error), W001 (warning), I001 (info)
         assert!(
