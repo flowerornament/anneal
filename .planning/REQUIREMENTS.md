@@ -46,15 +46,15 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 ### Diagnostics
 
-- [ ] **DIAG-01**: All diagnostics carry mandatory `SourceSpan` (file + line number, never null)
+- [x] **DIAG-01**: All diagnostics carry mandatory `SourceSpan` (file + line number, never null)
 - [ ] **DIAG-02**: Introduce `Evidence` enum on `Diagnostic` for structured check results
 - [ ] **DIAG-03**: E001 diagnostics include resolution candidates ("similar handle exists: subdir/foo.md")
 - [ ] **DIAG-04**: JSON output changes are additive-only (new fields allowed, existing fields preserve type and presence)
-- [ ] **DIAG-05**: Human output stays terse by default (line number is the only new addition to default format)
+- [x] **DIAG-05**: Human output stays terse by default (line number is the only new addition to default format)
 
 ### CLI & UX
 
-- [ ] **UX-01**: `--active-only` available as config opt-in via `[check] default_filter = "active-only"` in anneal.toml
+- [x] **UX-01**: `--active-only` available as config opt-in via `[check] default_filter = "active-only"` in anneal.toml
 - [ ] **UX-02**: Content snippet in `anneal get` output (first paragraph for files, heading context for labels)
 - [ ] **UX-03**: Smarter `anneal init` terminal inference from status name heuristics (superseded, archived, retired, etc.)
 - [ ] **UX-04**: Default `--depth=1` for `anneal map --around` (currently 2, too verbose on large corpora)
@@ -128,12 +128,12 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | RESOLVE-04 | Phase 6 | Pending |
 | RESOLVE-05 | Phase 6 | Pending |
 | RESOLVE-06 | Phase 6 | Pending |
-| DIAG-01 | Phase 6 | Pending |
+| DIAG-01 | Phase 6 | Complete |
 | DIAG-02 | Phase 6 | Pending |
 | DIAG-03 | Phase 6 | Pending |
 | DIAG-04 | Phase 6 | Pending |
-| DIAG-05 | Phase 6 | Pending |
-| UX-01 | Phase 6 | Pending |
+| DIAG-05 | Phase 6 | Complete |
+| UX-01 | Phase 6 | Complete |
 | UX-02 | Phase 7 | Pending |
 | UX-03 | Phase 7 | Pending |
 | UX-04 | Phase 7 | Pending |

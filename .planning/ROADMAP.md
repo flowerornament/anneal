@@ -105,7 +105,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 06-01-PLAN.md -- PendingEdge line threading & CheckConfig for active-only
+- [x] 06-01-PLAN.md -- PendingEdge line threading & CheckConfig for active-only
 - [ ] 06-02-PLAN.md -- Resolution cascade strategies (root-prefix, version-stem, zero-pad)
 - [ ] 06-03-PLAN.md -- Evidence enum & diagnostic enrichment with candidates
 
