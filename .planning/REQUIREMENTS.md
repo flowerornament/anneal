@@ -68,7 +68,7 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 ### Quality
 
-- [ ] **QUALITY-01**: Parallel-run comparison of old regex scanner vs new pulldown-cmark scanner on Murail and Herald corpora before removing regex
+- [x] **QUALITY-01**: Parallel-run comparison of old regex scanner vs new pulldown-cmark scanner on Murail and Herald corpora before removing regex
 - [ ] **QUALITY-02**: Self-check: `anneal --root .design/ check` on anneal's own spec passes cleanly
 - [ ] **QUALITY-03**: S003 pipeline stall diagnostic refined to use temporal signal (snapshot history) rather than static edge counting
 
@@ -141,7 +141,7 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | UX-06 | Phase 7 | Pending |
 | CONFIG-01 | Phase 7 | Pending |
 | CONFIG-02 | Phase 7 | Pending |
-| QUALITY-01 | Phase 5 | Pending |
+| QUALITY-01 | Phase 5 | Complete |
 | QUALITY-02 | Phase 7 | Pending |
 | QUALITY-03 | Phase 7 | Pending |
 
