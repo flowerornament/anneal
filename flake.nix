@@ -11,7 +11,7 @@
       packages = forAllSystems ({ pkgs }: {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "anneal";
-          version = "0.1.0";
+          version = "0.1.1";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           meta = {
