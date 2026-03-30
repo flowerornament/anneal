@@ -102,7 +102,12 @@ Plans:
   3. Every diagnostic in `--json` output carries a `SourceSpan` (file + line), never null
   4. JSON output changes are additive-only — existing fields preserve type and presence, new fields are nullable
   5. `--active-only` is configurable via `[check] default_filter = "active-only"` in anneal.toml (no default behavior change)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md -- PendingEdge line threading & CheckConfig for active-only
+- [ ] 06-02-PLAN.md -- Resolution cascade strategies (root-prefix, version-stem, zero-pad)
+- [ ] 06-03-PLAN.md -- Evidence enum & diagnostic enrichment with candidates
 
 ### Phase 7: UX Enrichment
 **Goal**: Orientation commands are richer and more actionable — content snippets, obligations tracking, file-scoped checks, smarter init, and false positive suppression
@@ -126,8 +131,8 @@ Plans:
 | 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 5. pulldown-cmark Migration | v1.1 | 1/3 | In progress | - |
-| 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
+| 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
+| 6. Resolution Cascade | v1.1 | 0/3 | Not started | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
 
 ---
