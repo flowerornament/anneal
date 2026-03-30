@@ -120,7 +120,13 @@ Plans:
   3. `anneal check --file=path.md` scopes diagnostics to a single file
   4. `anneal --root .design/ check` on anneal's own spec directory passes cleanly (self-check)
   5. S003 pipeline stall suggestion uses temporal signal from snapshot history rather than static edge counting
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 07-01-PLAN.md -- Config suppress + External handle kind + depth default
+- [ ] 07-02-PLAN.md -- Content snippets + obligations command
+- [ ] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
+- [ ] 07-04-PLAN.md -- Self-check closure
 
 ## Progress
 
@@ -133,8 +139,8 @@ Plans:
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 6. Resolution Cascade | v1.1 | 3/4 | In progress | - |
-| 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
+| 6. Resolution Cascade | v1.1 | 4/4 | Complete | 2026-03-30 |
+| 7. UX Enrichment | v1.1 | 0/4 | Not started | - |
 
 ---
 *Roadmap created: 2026-03-28*
