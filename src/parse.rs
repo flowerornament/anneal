@@ -232,6 +232,9 @@ pub(crate) struct PendingEdge {
     pub(crate) kind: EdgeKind,
     /// If true, the actual graph edge is target -> source (inverse direction).
     pub(crate) inverse: bool,
+    /// 1-based line number in the source file. Frontmatter edges use line 1 as
+    /// pragmatic fallback; body edges carry the line from the cmark scanner.
+    pub(crate) line: Option<u32>,
 }
 
 /// An edge descriptor parsed from a frontmatter field via the extensible mapping.
@@ -244,8 +247,10 @@ pub(crate) struct FrontmatterEdge {
 /// Result of scanning a single file's body content.
 pub(crate) struct ScanResult {
     pub(crate) label_candidates: Vec<LabelCandidate>,
-    pub(crate) section_refs: Vec<String>,
-    pub(crate) file_refs: Vec<String>,
+    /// Section references with their 1-based line numbers.
+    pub(crate) section_refs: Vec<(String, u32)>,
+    /// File path references with their 1-based line numbers.
+    pub(crate) file_refs: Vec<(String, u32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -410,12 +415,12 @@ pub(crate) fn scan_file_cmark(
                                     });
                                 }
                                 RefHint::FilePath => {
-                                    result.file_refs.push(dest.to_string());
+                                    result.file_refs.push((dest.to_string(), line));
                                 }
                                 RefHint::SectionRef => {
                                     // Strip "section:" prefix for backward compat
                                     if let Some(num) = dest.strip_prefix("section:") {
-                                        result.section_refs.push(num.to_string());
+                                        result.section_refs.push((num.to_string(), line));
                                     }
                                 }
                                 _ => {}
@@ -459,11 +464,11 @@ pub(crate) fn scan_file_cmark(
                                         });
                                     }
                                     RefHint::FilePath => {
-                                        result.file_refs.push(clean_dest.to_string());
+                                        result.file_refs.push((clean_dest.to_string(), line));
                                     }
                                     RefHint::SectionRef => {
                                         if let Some(num) = clean_dest.strip_prefix("section:") {
-                                            result.section_refs.push(num.to_string());
+                                            result.section_refs.push((num.to_string(), line));
                                         }
                                     }
                                     _ => {}
@@ -670,7 +675,7 @@ fn scan_text_for_refs(
             .as_str()
             .to_string();
         if !section_num.is_empty() {
-            result.section_refs.push(section_num.clone());
+            result.section_refs.push((section_num.clone(), line));
             discovered_refs.push(DiscoveredRef {
                 raw: format!("§{section_num}"),
                 hint: RefHint::SectionRef,
@@ -701,7 +706,7 @@ fn scan_text_for_refs(
         if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
             continue;
         }
-        result.file_refs.push(path.to_string());
+        result.file_refs.push((path.to_string(), line));
         discovered_refs.push(DiscoveredRef {
             raw: path.to_string(),
             hint: RefHint::FilePath,
@@ -930,6 +935,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                             target_identity: target.clone(),
                             kind: fe.edge_kind,
                             inverse: fe.inverse,
+                            line: Some(1),
                         });
                     }
                 }
@@ -976,20 +982,22 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             all_keys: all_keys.clone(),
         });
 
-        for file_ref in &scan_result.file_refs {
+        for (file_ref, line) in &scan_result.file_refs {
             pending_edges.push(PendingEdge {
                 source: file_node,
                 target_identity: file_ref.clone(),
                 kind: EdgeKind::Cites,
                 inverse: false,
+                line: Some(*line),
             });
         }
-        for section_ref in &scan_result.section_refs {
+        for (section_ref, line) in &scan_result.section_refs {
             pending_edges.push(PendingEdge {
                 source: file_node,
                 target_identity: format!("section:{section_ref}"),
                 kind: EdgeKind::Cites,
                 inverse: false,
+                line: Some(*line),
             });
         }
     }
@@ -1491,7 +1499,7 @@ mod tests {
         let body = "[link](foo.md)\n";
         let (result, refs, _) = cmark_scan(body);
         assert!(
-            result.file_refs.contains(&"foo.md".to_string()),
+            result.file_refs.iter().any(|(r, _)| r == "foo.md"),
             "should extract foo.md from link, got: {:?}",
             result.file_refs
         );
@@ -1535,7 +1543,7 @@ mod tests {
         let body = "text with guide.md ref\n";
         let (result, refs, _) = cmark_scan(body);
         assert!(
-            result.file_refs.contains(&"guide.md".to_string()),
+            result.file_refs.iter().any(|(r, _)| r == "guide.md"),
             "should extract guide.md from text, got: {:?}",
             result.file_refs
         );
@@ -1563,7 +1571,7 @@ mod tests {
         let body = "See §4.1 for details\n";
         let (result, _refs, _) = cmark_scan(body);
         assert!(
-            result.section_refs.contains(&"4.1".to_string()),
+            result.section_refs.iter().any(|(r, _)| r == "4.1"),
             "should extract section ref 4.1, got: {:?}",
             result.section_refs
         );
@@ -1585,7 +1593,7 @@ mod tests {
         let body = "See formal-model/murail-algebra-v1.2.md for details\n";
         let (result, _, _) = cmark_scan(body);
         assert!(
-            !result.file_refs.contains(&"2.md".to_string()),
+            !result.file_refs.iter().any(|(r, _)| r == "2.md"),
             "should not match fragment 2.md from v1.2.md, got: {:?}",
             result.file_refs
         );
@@ -1596,7 +1604,7 @@ mod tests {
         let body = "See RQ-01-program-format-encoding.md for details\n";
         let (result, _, _) = cmark_scan(body);
         assert!(
-            !result.file_refs.iter().any(|r| r.starts_with('-')),
+            !result.file_refs.iter().any(|(r, _)| r.starts_with('-')),
             "should not extract hyphen-prefixed fragments, got: {:?}",
             result.file_refs
         );
@@ -1633,7 +1641,7 @@ mod tests {
         let body = "[see](foo.md#section)\n";
         let (result, _refs, _) = cmark_scan(body);
         assert!(
-            result.file_refs.contains(&"foo.md".to_string()),
+            result.file_refs.iter().any(|(r, _)| r == "foo.md"),
             "should extract foo.md stripping fragment, got: {:?}",
             result.file_refs
         );
