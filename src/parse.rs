@@ -309,6 +309,8 @@ fn infer_edge_kind_from_line(line: &str) -> EdgeKind {
 /// Creates Section handles directly in the graph. Collects label candidates,
 /// section refs, file refs, and version refs for later resolution.
 /// Tracks code block boundaries to avoid spurious heading detection (Pitfall 3).
+/// Regex-based body scanner. Retained for parallel-run comparison tests only.
+/// Production scanning uses `scan_file_cmark` (pulldown-cmark event walker).
 pub(crate) fn scan_file(
     body: &str,
     file_path: &Utf8Path,
@@ -496,7 +498,6 @@ pub(crate) fn scan_file_cmark(
             // These are listed explicitly (not in the wildcard) to document
             // that they are intentionally unsearched, unlike other text-bearing events.
             Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
-
 
             // -- HTML blocks: accumulate and scan with regex --
             Event::Start(Tag::HtmlBlock) => {
@@ -1036,6 +1037,13 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
         let (frontmatter_yaml, body) = split_frontmatter(&content);
 
+        // Compute frontmatter line count for LineIndex offset calculation
+        #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
+        let frontmatter_line_count = frontmatter_yaml.map_or(0, |yaml| {
+            // +2 for the opening and closing --- lines
+            yaml.lines().count() as u32 + 2
+        });
+
         // D-05: table-driven frontmatter parsing with extensible field mapping
         // D-07: all_keys returned here to avoid double-parsing YAML
         let (status, metadata, field_edges, all_keys) = frontmatter_yaml
@@ -1091,7 +1099,22 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             }
         }
 
-        // Build FileExtraction with DiscoveredRef for each frontmatter target
+        let file_node = graph.add_node(Handle {
+            id: relative.to_string(),
+            kind: HandleKind::File(relative.clone()),
+            status: status.clone(),
+            file_path: Some(relative.clone()),
+            metadata: metadata.clone(),
+        });
+        debug_assert_eq!(file_node, file_node_placeholder);
+
+        // Use pulldown-cmark scanner for production body scanning
+        let line_index = LineIndex::from_content(body, frontmatter_line_count);
+        let (scan_result, body_refs) =
+            scan_file_cmark(body, &relative, file_node, &mut graph, &line_index);
+        all_label_candidates.extend(scan_result.label_candidates);
+
+        // Build FileExtraction with DiscoveredRef for frontmatter + body refs
         let mut discovered_refs = Vec::new();
         for fe in &field_edges {
             for target in &fe.targets {
@@ -1108,24 +1131,13 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                 });
             }
         }
+        discovered_refs.extend(body_refs);
         extractions.push(FileExtraction {
-            status: status.clone(),
-            metadata: metadata.clone(),
+            status,
+            metadata,
             refs: discovered_refs,
             all_keys: all_keys.clone(),
         });
-
-        let file_node = graph.add_node(Handle {
-            id: relative.to_string(),
-            kind: HandleKind::File(relative.clone()),
-            status,
-            file_path: Some(relative.clone()),
-            metadata,
-        });
-        debug_assert_eq!(file_node, file_node_placeholder);
-
-        let scan_result = scan_file(body, &relative, file_node, &mut graph);
-        all_label_candidates.extend(scan_result.label_candidates);
 
         for file_ref in &scan_result.file_refs {
             pending_edges.push(PendingEdge {

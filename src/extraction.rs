@@ -30,7 +30,6 @@ pub(crate) enum RefHint {
 
 /// Where a reference was discovered within a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[allow(dead_code)] // Body variant unused until Phase 5 body scanner
 pub(crate) enum RefSource {
     /// From a YAML frontmatter field.
     Frontmatter { field: String },
@@ -51,7 +50,6 @@ pub(crate) struct SourceSpan {
 ///
 /// Accounts for frontmatter offset so that body byte 0 maps to the correct
 /// file-relative line number.
-#[allow(dead_code)] // Used starting in Phase 5 Plan 02 (pulldown-cmark walker)
 pub(crate) struct LineIndex {
     /// Byte offsets where each newline occurs in the content.
     newline_offsets: Vec<usize>,
