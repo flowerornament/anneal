@@ -7,7 +7,9 @@ use regex::{Regex, RegexSet};
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
-use crate::extraction::{RefHint, classify_frontmatter_value};
+use crate::extraction::{
+    DiscoveredRef, FileExtraction, RefHint, RefSource, classify_frontmatter_value,
+};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
 
@@ -492,6 +494,8 @@ pub(crate) struct BuildResult {
     /// External URL references found in frontmatter (tracked, not resolved).
     #[allow(dead_code)] // Consumed when HandleKind::External is added
     pub(crate) external_refs: Vec<ExternalRef>,
+    /// Per-file typed extraction output (populated alongside existing PendingEdge flow).
+    pub(crate) extractions: Vec<FileExtraction>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -532,6 +536,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     // Plausibility filter tracking
     let mut implausible_refs: Vec<ImplausibleRef> = Vec::new();
     let mut external_refs: Vec<ExternalRef> = Vec::new();
+    let mut extractions: Vec<FileExtraction> = Vec::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -642,6 +647,29 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             }
         }
 
+        // Build FileExtraction with DiscoveredRef for each frontmatter target
+        let mut discovered_refs = Vec::new();
+        for fe in &field_edges {
+            for target in &fe.targets {
+                let hint = classify_frontmatter_value(target);
+                discovered_refs.push(DiscoveredRef {
+                    raw: target.clone(),
+                    hint,
+                    source: RefSource::Frontmatter {
+                        field: fe.edge_kind.as_str().to_string(),
+                    },
+                    edge_kind: fe.edge_kind,
+                    inverse: fe.inverse,
+                });
+            }
+        }
+        extractions.push(FileExtraction {
+            status: status.clone(),
+            metadata: metadata.clone(),
+            refs: discovered_refs,
+            all_keys: all_keys.clone(),
+        });
+
         let file_node = graph.add_node(Handle {
             id: relative.to_string(),
             kind: HandleKind::File(relative.clone()),
@@ -691,6 +719,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         filename_index,
         implausible_refs,
         external_refs,
+        extractions,
     })
 }
 

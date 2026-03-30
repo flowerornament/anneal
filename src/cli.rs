@@ -99,6 +99,9 @@ pub(crate) struct CheckOutput {
     pub(crate) suggestions: usize,
     /// Errors sourced from terminal (settled) files — informational, not actionable.
     pub(crate) terminal_errors: usize,
+    /// Per-file extraction data with reference classification (Phase 4).
+    /// Shown in JSON output only (not printed in human mode).
+    pub(crate) extractions: Vec<crate::extraction::FileExtraction>,
 }
 
 impl CheckOutput {
@@ -161,6 +164,7 @@ pub(crate) fn cmd_check(
     mut diagnostics: Vec<checks::Diagnostic>,
     filters: &CheckFilters,
     terminal_files: &HashSet<String>,
+    extractions: Vec<crate::extraction::FileExtraction>,
 ) -> CheckOutput {
     if filters.active_only {
         diagnostics.retain(|d| d.file.as_ref().is_none_or(|f| !terminal_files.contains(f)));
@@ -197,6 +201,7 @@ pub(crate) fn cmd_check(
         info,
         suggestions,
         terminal_errors,
+        extractions,
     }
 }
 

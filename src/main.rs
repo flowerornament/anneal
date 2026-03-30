@@ -492,7 +492,12 @@ fn run() -> anyhow::Result<()> {
                 obligations,
                 active_only,
             };
-            let output = cli::cmd_check(all_diagnostics, &filters, &terminal_files);
+            let output = cli::cmd_check(
+                all_diagnostics,
+                &filters,
+                &terminal_files,
+                result.extractions.clone(),
+            );
             if cli_args.json {
                 cli::print_json(&output)?;
             } else {
