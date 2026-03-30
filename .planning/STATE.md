@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-29)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 05 — pulldown-cmark-migration
+**Current focus:** Phase 06 — resolution-cascade
 
 ## Current Position
 
-Phase: 6
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-03-30
+Phase: 06 (resolution-cascade) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 06
+Last activity: 2026-03-30 -- Phase 06 execution started
 
 Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
 
