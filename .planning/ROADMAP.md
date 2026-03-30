@@ -73,7 +73,7 @@ Plans:
 Plans:
 - [x] 04-01-PLAN.md -- Extraction types & classify function
 - [x] 04-02-PLAN.md -- Plausibility filter wiring & W004 diagnostic
-- [ ] 04-03-PLAN.md -- Gap closure: wire FileExtraction/DiscoveredRef into production & JSON output
+- [x] 04-03-PLAN.md -- Gap closure: wire FileExtraction/DiscoveredRef into production & JSON output
 
 ### Phase 5: pulldown-cmark Migration
 **Goal**: Body scanning uses pulldown-cmark's structural AST instead of line-by-line regex, giving accurate line numbers and structural code block skipping
