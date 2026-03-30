@@ -660,6 +660,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                     },
                     edge_kind: fe.edge_kind,
                     inverse: fe.inverse,
+                    span: None,
                 });
             }
         }
