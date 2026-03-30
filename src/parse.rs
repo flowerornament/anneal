@@ -753,6 +753,7 @@ pub(crate) struct ImplausibleRef {
     pub(crate) file: String,
     pub(crate) raw_value: String,
     pub(crate) reason: String,
+    pub(crate) line: u32,
 }
 
 /// An external URL found in frontmatter.
@@ -927,6 +928,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                             file: relative.to_string(),
                             raw_value: target.clone(),
                             reason,
+                            line: 1,
                         });
                     }
                     RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
