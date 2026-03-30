@@ -28,6 +28,16 @@ $ anneal status
 
 ## Install
 
+### Quick install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash
+```
+
+Installs to `~/.local/bin`. Override with `INSTALL_DIR=/usr/local/bin`.
+
+Binaries available for: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+
 ### From source
 
 ```bash
