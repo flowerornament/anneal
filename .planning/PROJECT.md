@@ -62,7 +62,7 @@ The primary test corpus is Murail's `.design/` directory at `~/code/murail/.desi
 - **Language**: Rust (1.94 stable, edition 2024)
 - **Stateless**: Graph computed from files on every invocation; no .anneal/ database
 - **One piece of state**: `.anneal/history.jsonl` — append-only convergence snapshots (derived, deletable)
-- **Dependencies**: Minimal — 10 crates (anyhow, clap, serde, serde_json, serde_yaml_ng, toml, regex, walkdir, camino, chrono)
+- **Dependencies**: Minimal — 11 crates (anyhow, clap, serde, serde_json, serde_yaml_ng, toml, regex, walkdir, camino, chrono, pulldown-cmark)
 - **No heavy deps**: Hand-roll graph (~135 lines), frontmatter split (~15 lines), JSONL (~30 lines) instead of petgraph, gray_matter, jsonl crates
 - **Build time**: Target <10s clean build
 - **Performance**: <100ms for full pipeline on ~300 files
@@ -77,6 +77,7 @@ The primary test corpus is Murail's `.design/` directory at `~/code/murail/.desi
 | serde_yaml_ng for frontmatter | Maintained fork of archived serde_yaml; manual ---/--- split is ~15 lines | Validated Phase 1 |
 | Convergence tracking via JSONL snapshots | Append-only, derived, deletable; enables status --history and diff without persistent database | Validated Phase 3 |
 | anneal.toml optional with inference-first | Zero-config must work (existence lattice); config only overrides inference | Validated Phase 1 |
+| pulldown-cmark over regex for body scanning | Structural markdown parsing avoids false positives in code blocks, handles wiki-links/markdown links natively, provides SourceSpan line numbers | Validated Phase 5 |
 
 ## Evolution
 
