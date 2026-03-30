@@ -541,9 +541,8 @@ fn try_root_prefix_strip(
 /// If target matches `{base}-v{N}.md`, finds all `{base}-v{M}.md` where M != N,
 /// sorted by version descending (latest first).
 fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<String> {
-    let caps = match VERSION_FILENAME_RE.captures(target) {
-        Some(c) => c,
-        None => return Vec::new(),
+    let Some(caps) = VERSION_FILENAME_RE.captures(target) else {
+        return Vec::new();
     };
 
     let base = caps.get(1).map_or("", |m| m.as_str());
@@ -559,10 +558,11 @@ fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<S
         let filename = key.rsplit('/').next().unwrap_or(key);
         if let Some(kcaps) = VERSION_FILENAME_RE.captures(filename) {
             let kbase = kcaps.get(1).map_or("", |m| m.as_str());
-            if let Ok(kver) = kcaps.get(2).map_or("0", |m| m.as_str()).parse::<u32>() {
-                if kbase == base && kver != this_version {
-                    matches.push((kver, key.clone()));
-                }
+            if let Ok(kver) = kcaps.get(2).map_or("0", |m| m.as_str()).parse::<u32>()
+                && kbase == base
+                && kver != this_version
+            {
+                matches.push((kver, key.clone()));
             }
         }
     }
@@ -701,7 +701,10 @@ mod cascade_tests {
 
         let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
         assert_eq!(results.len(), 1);
-        assert!(results[0].resolved.is_some(), "should resolve unambiguously");
+        assert!(
+            results[0].resolved.is_some(),
+            "should resolve unambiguously"
+        );
         assert!(results[0].candidates.contains(&"foo.md".to_string()));
     }
 
@@ -733,13 +736,15 @@ mod cascade_tests {
 
         let results = cascade_unresolved(&mut graph, &edges, &index, "");
         assert_eq!(results.len(), 1);
-        assert!(results[0].resolved.is_none(), "version stem does not resolve");
+        assert!(
+            results[0].resolved.is_none(),
+            "version stem does not resolve"
+        );
 
         let cands = &results[0].candidates;
         assert!(
             cands.contains(&"formal-model-v17.md".to_string()),
-            "should suggest v17, got {:?}",
-            cands
+            "should suggest v17, got {cands:?}",
         );
     }
 
@@ -774,10 +779,7 @@ mod cascade_tests {
             .expect("v4 candidate");
         assert!(
             v17_pos < v5_pos && v5_pos < v4_pos,
-            "expected latest-first order: v17@{}, v5@{}, v4@{}",
-            v17_pos,
-            v5_pos,
-            v4_pos
+            "expected latest-first order: v17@{v17_pos}, v5@{v5_pos}, v4@{v4_pos}",
         );
     }
 
@@ -842,7 +844,10 @@ mod cascade_tests {
         let edges = vec![make_pending(source, "foo.md")];
 
         let results = cascade_unresolved(&mut graph, &edges, &index, "");
-        assert!(results.is_empty(), "already resolved edges should be skipped");
+        assert!(
+            results.is_empty(),
+            "already resolved edges should be skipped"
+        );
     }
 
     #[test]

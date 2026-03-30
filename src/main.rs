@@ -439,15 +439,35 @@ fn run() -> anyhow::Result<()> {
         &result.filename_index,
     );
 
+    // Phase 6: Resolution cascade -- structural transforms on remaining unresolved edges
+    let pre_cascade_index = resolve::build_node_index(&result.graph);
+    let root_str = root.to_string();
+    let cascade_results = resolve::cascade_unresolved(
+        &mut result.graph,
+        &result.pending_edges,
+        &pre_cascade_index,
+        &root_str,
+    );
+
+    // Build cascade candidates lookup for diagnostic enrichment (consumed by Plan 03)
+    #[allow(unused_variables)]
+    let cascade_candidates: HashMap<String, Vec<String>> = cascade_results
+        .iter()
+        .filter(|r| !r.candidates.is_empty())
+        .map(|r| {
+            let target = result.pending_edges[r.edge_index].target_identity.clone();
+            (target, r.candidates.clone())
+        })
+        .collect();
+
     let lattice = lattice::infer_lattice(
         result.observed_statuses,
         &config,
         &result.terminal_by_directory,
     );
     let graph = &result.graph;
-    let root_str = root.to_string();
 
-    // Build node index for get/find/impact commands
+    // Rebuild node index after cascade may have added edges via root-prefix resolution
     let node_index = resolve::build_node_index(graph);
 
     match cli_args.command {
