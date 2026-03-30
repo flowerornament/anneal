@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anneal"
+  short_description: "Orient in markdown knowledge corpora with anneal"
+  default_prompt: "Use $anneal to inspect this knowledge corpus, explain its health, and trace handles, changes, or impact before edits."
