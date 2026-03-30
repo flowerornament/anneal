@@ -34,10 +34,7 @@ pub(crate) enum Evidence {
         target_level: usize,
     },
     /// W004: implausible frontmatter value.
-    Implausible {
-        value: String,
-        reason: String,
-    },
+    Implausible { value: String, reason: String },
 }
 
 /// Severity level for diagnostics, ordered so errors sort first.
@@ -1334,7 +1331,10 @@ mod tests {
             evidence: None,
         };
         let json = serde_json::to_value(&diag).expect("serialize");
-        assert!(json["evidence"].is_null(), "evidence: None should serialize as null");
+        assert!(
+            json["evidence"].is_null(),
+            "evidence: None should serialize as null"
+        );
         // Existing fields still present
         assert_eq!(json["code"], "E001");
         assert_eq!(json["message"], "test");
