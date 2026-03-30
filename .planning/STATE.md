@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
-status: executing
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-03-29T20:31:24.094Z"
-last_activity: 2026-03-29
+status: verifying
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-03-30T00:39:27.641Z"
+last_activity: 2026-03-30
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 3
+  completed_plans: 3
   percent: 55
 ---
 
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 
 Phase: 04 (types-plausibility) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
-Last activity: 2026-03-29
+Status: Phase complete — ready for verification
+Last activity: 2026-03-30
 
 Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
 
@@ -44,6 +44,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 04-types-plausibility]: Compound label regex with optional hyphen supports KB-D1 style prefixes
 - [Phase 04-types-plausibility]: Classification cascade: comma-list before prose check to prevent misclassification
 - [Phase 04-types-plausibility]: ImplausibleRef/ExternalRef as parse.rs structs to avoid circular dependency with checks.rs
+- [Phase 04]: Dual-pass over field_edges: existing PendingEdge flow untouched, new DiscoveredRef flow added in parallel
+- [Phase 04]: RefSource::Frontmatter field from EdgeKind::as_str() since FrontmatterEdge lacks field name
 
 ## Blockers/Concerns
 
@@ -51,8 +53,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-29T20:31:24.092Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-03-30T00:39:27.638Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None
 
 ---
