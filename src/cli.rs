@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, Severity};
 use crate::config::{
-    AnnealConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
+    AnnealConfig, CheckConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
     FrontmatterFieldMapping, HandlesConfig,
 };
 use crate::graph::{DiGraph, Edge};
@@ -598,6 +598,7 @@ pub(crate) fn cmd_init(
         handles,
         freshness: FreshnessConfig::default(),
         frontmatter,
+        check: CheckConfig::default(),
         concerns: HashMap::new(),
     };
 
