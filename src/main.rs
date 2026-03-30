@@ -375,14 +375,18 @@ enum MapFormat {
 
 /// Collect unresolved pending edges and clone them into an owned vec.
 ///
-/// Returns `(owned_unresolved_edges, section_ref_count)`. Section refs are
-/// counted separately for the I001 summary diagnostic.
+/// Returns `(owned_unresolved_edges, section_ref_count, section_ref_file)`.
+/// Section refs are counted separately for the I001 summary diagnostic.
+/// `section_ref_file` is the file path of the first section-ref source, used
+/// as a representative location for the I001 diagnostic.
 fn collect_unresolved_owned(
     pending: &[parse::PendingEdge],
     node_index: &HashMap<String, NodeId>,
-) -> (Vec<parse::PendingEdge>, usize) {
+    graph: &crate::graph::DiGraph,
+) -> (Vec<parse::PendingEdge>, usize, Option<String>) {
     let mut unresolved = Vec::new();
     let mut section_ref_count: usize = 0;
+    let mut section_ref_file: Option<String> = None;
 
     for edge in pending {
         if node_index.contains_key(&edge.target_identity) {
@@ -390,12 +394,19 @@ fn collect_unresolved_owned(
         }
         if edge.target_identity.starts_with("section:") {
             section_ref_count += 1;
+            if section_ref_file.is_none() {
+                section_ref_file = graph
+                    .node(edge.source)
+                    .file_path
+                    .as_ref()
+                    .map(ToString::to_string);
+            }
         } else {
             unresolved.push(edge.clone());
         }
     }
 
-    (unresolved, section_ref_count)
+    (unresolved, section_ref_count, section_ref_file)
 }
 
 fn main() {
@@ -493,8 +504,8 @@ fn run() -> anyhow::Result<()> {
             let active_only =
                 active_only || config.check.default_filter.as_deref() == Some("active-only");
 
-            let (unresolved_owned, section_ref_count) =
-                collect_unresolved_owned(&result.pending_edges, &node_index);
+            let (unresolved_owned, section_ref_count, section_ref_file) =
+                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
 
             // Compute diagnostics once — used for both check output and snapshot
             let all_diagnostics = checks::run_checks(
@@ -503,6 +514,7 @@ fn run() -> anyhow::Result<()> {
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
             );
@@ -638,8 +650,8 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Status { verbose }) => {
-            let (unresolved_owned, section_ref_count) =
-                collect_unresolved_owned(&result.pending_edges, &node_index);
+            let (unresolved_owned, section_ref_count, section_ref_file) =
+                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
 
             // Compute diagnostics once — used for status output, snapshot, and convergence
             let all_diagnostics = checks::run_checks(
@@ -648,6 +660,7 @@ fn run() -> anyhow::Result<()> {
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
             );
@@ -680,14 +693,15 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Diff { days, ref git_ref }) => {
-            let (unresolved_owned, section_ref_count) =
-                collect_unresolved_owned(&result.pending_edges, &node_index);
+            let (unresolved_owned, section_ref_count, section_ref_file) =
+                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
             let all_diagnostics = checks::run_checks(
                 graph,
                 &lattice,
                 &config,
                 &unresolved_owned,
                 section_ref_count,
+                section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
             );
