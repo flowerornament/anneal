@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
@@ -39,26 +39,6 @@ static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
 // Regex patterns
 // ---------------------------------------------------------------------------
 
-// Pattern indices for the RegexSet — avoids magic numbers in scan_file.
-const PAT_HEADING: usize = 0;
-const PAT_LABEL: usize = 1;
-const PAT_SECTION_REF: usize = 2;
-const PAT_FILE_PATH: usize = 3;
-/// Five-pattern `RegexSet` for single-pass content scanning (KB-D6, section 5.1).
-///
-/// Most lines match zero patterns — the fast path is one automaton pass.
-/// Only matching lines trigger individual `Regex` extraction.
-static PATTERN_SET: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
-        r"^#{1,6}\s",          // PAT_HEADING
-        r"[A-Z][A-Z_]*-\d+",   // PAT_LABEL
-        r"§\d+(?:\.\d+)*",     // PAT_SECTION_REF
-        r"[a-z0-9_/-]+\.md\b", // PAT_FILE_PATH
-        r"\bv\d+\b",           // PAT_VERSION
-    ])
-    .expect("regex patterns must compile")
-});
-
 /// Capture regex for label references: prefix and number.
 static LABEL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([A-Z][A-Z_]*)-(\d+)").expect("label regex must compile"));
@@ -70,10 +50,6 @@ static SECTION_REF_RE: LazyLock<Regex> =
 /// Capture regex for file path references.
 static FILE_PATH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-z0-9_/-]+\.md)\b").expect("file path regex must compile"));
-
-/// Capture regex for section headings: level and text.
-static HEADING_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(#{1,6})\s+(.+)").expect("heading regex must compile"));
 
 // ---------------------------------------------------------------------------
 // Frontmatter
@@ -301,150 +277,11 @@ fn infer_edge_kind_from_line(line: &str) -> EdgeKind {
 }
 
 // ---------------------------------------------------------------------------
-// Content scanner
-// ---------------------------------------------------------------------------
-
-/// Scan a file's body content for handles and references.
-///
-/// Creates Section handles directly in the graph. Collects label candidates,
-/// section refs, file refs, and version refs for later resolution.
-/// Tracks code block boundaries to avoid spurious heading detection (Pitfall 3).
-/// Regex-based body scanner. Retained for parallel-run comparison tests only.
-/// Production scanning uses `scan_file_cmark` (pulldown-cmark event walker).
-pub(crate) fn scan_file(
-    body: &str,
-    file_path: &Utf8Path,
-    file_node: NodeId,
-    graph: &mut DiGraph,
-) -> ScanResult {
-    let mut result = ScanResult {
-        label_candidates: Vec::new(),
-        section_refs: Vec::new(),
-        file_refs: Vec::new(),
-    };
-
-    let mut in_code_block = false;
-
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            in_code_block = !in_code_block;
-            continue;
-        }
-
-        // D-08: Skip ALL pattern matching inside code blocks
-        if in_code_block {
-            continue;
-        }
-
-        let matched = PATTERN_SET.matches(line);
-        if !matched.matched_any() {
-            continue;
-        }
-
-        if matched.matched(PAT_HEADING)
-            && let Some(caps) = HEADING_RE.captures(line)
-        {
-            let heading = caps
-                .get(2)
-                .expect("heading capture group always present")
-                .as_str()
-                .trim()
-                .to_string();
-            if !heading.is_empty() {
-                let section_id =
-                    format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-"));
-                graph.add_node(Handle {
-                    id: section_id,
-                    kind: HandleKind::Section {
-                        parent: file_node,
-                        heading,
-                    },
-                    status: None,
-                    file_path: Some(file_path.to_path_buf()),
-                    metadata: HandleMetadata::default(),
-                });
-            }
-        }
-
-        let line_edge_kind = infer_edge_kind_from_line(line);
-
-        if matched.matched(PAT_LABEL) {
-            for caps in LABEL_RE.captures_iter(line) {
-                let prefix = caps
-                    .get(1)
-                    .expect("label prefix capture always present")
-                    .as_str()
-                    .to_string();
-                let number_str = caps
-                    .get(2)
-                    .expect("label number capture always present")
-                    .as_str();
-                if let Ok(number) = number_str.parse::<u32>() {
-                    result.label_candidates.push(LabelCandidate {
-                        prefix,
-                        number,
-                        file_path: file_path.to_path_buf(),
-                        edge_kind: line_edge_kind,
-                    });
-                }
-            }
-        }
-
-        if matched.matched(PAT_SECTION_REF) {
-            for caps in SECTION_REF_RE.captures_iter(line) {
-                let section_num = caps
-                    .get(1)
-                    .expect("section ref capture always present")
-                    .as_str()
-                    .to_string();
-                if !section_num.is_empty() {
-                    result.section_refs.push(section_num);
-                }
-            }
-        }
-
-        if matched.matched(PAT_FILE_PATH) {
-            // D-03: Use find_iter to get match positions for URL rejection
-            for m in FILE_PATH_RE.find_iter(line) {
-                // Reject URL fragments: skip if "://" appears anywhere before this match
-                let prefix = &line[..m.start()];
-                if prefix.contains("://") {
-                    continue;
-                }
-                // Reject version-dot fragments: if the char before the match is '.',
-                // this is a fragment like "2.md" from "v1.2.md" — skip it.
-                if m.start() > 0 && line.as_bytes()[m.start() - 1] == b'.' {
-                    continue;
-                }
-                let path = m.as_str();
-                // Reject hyphen-prefixed fragments: "-foo.md" is a suffix left
-                // after label extraction (e.g., "RQ-01-foo.md" → label "RQ-01" + "-foo.md")
-                if path.starts_with('-') {
-                    continue;
-                }
-                // Reject mid-word matches: if the character before the match is
-                // alphanumeric, this is a fragment of a longer token (e.g., "yBRk.md"
-                // from a YouTube ID). Real file references are preceded by whitespace,
-                // punctuation, or start of line.
-                if m.start() > 0 && line.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
-                    continue;
-                }
-                result.file_refs.push(path.to_string());
-            }
-        }
-    }
-
-    result
-}
-
-// ---------------------------------------------------------------------------
 // Content scanner (pulldown-cmark)
 // ---------------------------------------------------------------------------
 
 /// Scan a file's body content for handles and references using pulldown-cmark.
-///
-/// Replaces the regex-based `scan_file` with structural markdown parsing.
+/// Uses pulldown-cmark's event stream for structural markdown parsing.
 /// Code blocks and inline code are structurally skipped (no regex toggling).
 /// Markdown links and wiki-links are extracted from Link events. HTML blocks
 /// are scanned with regex patterns. Text events within the same block element
@@ -946,8 +783,8 @@ pub(crate) struct BuildResult {
 /// Build the knowledge graph from a directory of markdown files.
 ///
 /// Walks the directory tree, creates File handles, scans content with
-/// the 5-pattern `RegexSet`, and collects label candidates and pending
-/// edges for later resolution.
+/// pulldown-cmark, and collects label candidates and pending edges for
+/// later resolution.
 /// Directories whose contents signal terminal convergence state (D-04).
 const TERMINAL_DIRS: &[&str] = &["archive", "history", "prior"];
 
@@ -1184,146 +1021,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 mod tests {
     use super::*;
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
-
-    fn make_graph_with_file(path: &str) -> (DiGraph, NodeId) {
-        let mut graph = DiGraph::new();
-        let node = graph.add_node(Handle {
-            id: path.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(path)),
-            status: None,
-            file_path: Some(Utf8PathBuf::from(path)),
-            metadata: HandleMetadata::default(),
-        });
-        (graph, node)
-    }
-
-    #[test]
-    fn labels_inside_code_blocks_are_not_scanned() {
-        let body = "Some text\n```\nOQ-64 inside code\n```\nMore text";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            result.label_candidates.is_empty(),
-            "Labels inside code blocks should not be added to candidates"
-        );
-    }
-
-    #[test]
-    fn labels_outside_code_blocks_are_scanned() {
-        let body = "Some text\nOQ-64 outside code\nMore text";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            !result.label_candidates.is_empty(),
-            "Labels outside code blocks should be added to candidates"
-        );
-    }
-
-    #[test]
-    fn headings_inside_code_blocks_still_skipped() {
-        let body = "## Real heading\n```\n## Fake heading\n```\n";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        let section_count = graph
-            .nodes()
-            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
-            .count();
-        assert_eq!(
-            section_count, 1,
-            "Only real headings should create sections"
-        );
-    }
-
-    #[test]
-    fn file_path_regex_rejects_urls() {
-        let body = "See https://example.com/rust-lang/guide.md for details";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            result.file_refs.is_empty(),
-            "URL fragments should not be matched as file refs"
-        );
-    }
-
-    #[test]
-    fn section_refs_inside_code_blocks_are_not_scanned() {
-        let body = "```\nSee §4.1\n```\n";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            result.section_refs.is_empty(),
-            "Section refs inside code blocks should not be scanned"
-        );
-    }
-
-    #[test]
-    fn file_refs_inside_code_blocks_are_not_scanned() {
-        let body = "```\nSee guide.md\n```\n";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            result.file_refs.is_empty(),
-            "File refs inside code blocks should not be scanned"
-        );
-    }
-
-    #[test]
-    fn file_path_regex_rejects_version_dot_fragments() {
-        // Test via scan_file which applies the dot-prefix rejection
-        let body = "See formal-model/murail-algebra-v1.2.md for details";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            !result.file_refs.contains(&"2.md".to_string()),
-            "should not match fragment 2.md from v1.2.md, got: {:?}",
-            result.file_refs
-        );
-        // Full versioned path should be captured
-        assert!(
-            result
-                .file_refs
-                .contains(&"formal-model/murail-algebra-v1.2.md".to_string())
-                || result.file_refs.is_empty(),
-            "should match full path or nothing, got: {:?}",
-            result.file_refs
-        );
-
-        // Standalone file paths still work
-        let body2 = "see summary.md for details";
-        let (mut graph2, file_node2) = make_graph_with_file("test2.md");
-        let result2 = scan_file(body2, Utf8Path::new("test2.md"), file_node2, &mut graph2);
-        assert!(
-            result2.file_refs.contains(&"summary.md".to_string()),
-            "standalone file paths should still match"
-        );
-    }
-
-    #[test]
-    fn file_path_regex_rejects_mid_word_fragments() {
-        // YouTube ID "4eJrp9byBRk.md" should not match "k.md"
-        let body = "[transcript](refs/2026-02-06-4eJrp9byBRk.md)";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            !result.file_refs.iter().any(|r| r == "k.md"),
-            "should not extract k.md from YouTube ID, got: {:?}",
-            result.file_refs
-        );
-    }
-
-    #[test]
-    fn file_path_regex_rejects_hyphen_prefix_after_label() {
-        // "RQ-01-program-format-encoding.md" → label "RQ-01" + should NOT produce "-program-format-encoding.md"
-        let body = "See RQ-01-program-format-encoding.md for details";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(
-            !result.file_refs.iter().any(|r| r.starts_with('-')),
-            "should not extract hyphen-prefixed fragments, got: {:?}",
-            result.file_refs
-        );
-    }
+    use crate::handle::{Handle, HandleKind, HandleMetadata};
 
     // -----------------------------------------------------------------------
     // Plausibility filter integration tests (build_graph)
@@ -1721,13 +1419,6 @@ mod tests {
     // scan_file_cmark tests
     // -----------------------------------------------------------------------
 
-    fn make_cmark_helpers(path: &str) -> (DiGraph, NodeId, LineIndex) {
-        let (graph, node) = make_graph_with_file(path);
-        // No frontmatter, body starts at line 1
-        let line_index = LineIndex::from_content("", 0);
-        (graph, node, line_index)
-    }
-
     fn cmark_scan(body: &str) -> (ScanResult, Vec<DiscoveredRef>, DiGraph) {
         let mut graph = DiGraph::new();
         let node = graph.add_node(Handle {
@@ -1751,7 +1442,7 @@ mod tests {
     #[test]
     fn cmark_code_block_skipping() {
         let body = "## Heading\nSome OQ-64 ref\n```\nOQ-99 in code\n```\n";
-        let (result, refs, graph) = cmark_scan(body);
+        let (result, _refs, graph) = cmark_scan(body);
 
         // Should extract heading and OQ-64, but NOT OQ-99
         let labels: Vec<_> = result
@@ -1814,7 +1505,7 @@ mod tests {
     #[test]
     fn cmark_wikilink_extraction() {
         let body = "[[wiki-target]]\n";
-        let (result, refs, _) = cmark_scan(body);
+        let (_result, refs, _) = cmark_scan(body);
         // Wiki-links produce a DiscoveredRef
         assert!(!refs.is_empty(), "should extract wiki-link, got no refs");
         assert!(
@@ -1827,7 +1518,7 @@ mod tests {
     #[test]
     fn cmark_html_block_scanning() {
         let body = "<div>OQ-64</div>\n";
-        let (result, refs, _) = cmark_scan(body);
+        let (result, _refs, _) = cmark_scan(body);
         let labels: Vec<_> = result
             .label_candidates
             .iter()
@@ -1870,7 +1561,7 @@ mod tests {
     #[test]
     fn cmark_section_refs_extracted() {
         let body = "See §4.1 for details\n";
-        let (result, refs, _) = cmark_scan(body);
+        let (result, _refs, _) = cmark_scan(body);
         assert!(
             result.section_refs.contains(&"4.1".to_string()),
             "should extract section ref 4.1, got: {:?}",
@@ -1940,7 +1631,7 @@ mod tests {
     #[test]
     fn cmark_link_with_fragment() {
         let body = "[see](foo.md#section)\n";
-        let (result, refs, _) = cmark_scan(body);
+        let (result, _refs, _) = cmark_scan(body);
         assert!(
             result.file_refs.contains(&"foo.md".to_string()),
             "should extract foo.md stripping fragment, got: {:?}",
@@ -1960,16 +1651,6 @@ mod tests {
             refs.is_empty(),
             "should not produce DiscoveredRef for external links"
         );
-    }
-
-    #[test]
-    fn cmark_old_scanner_still_works() {
-        // Verify old scan_file is preserved and still works
-        let body = "## Title\nOQ-64 label\nguide.md file\n";
-        let (mut graph, file_node) = make_graph_with_file("test.md");
-        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
-        assert!(!result.label_candidates.is_empty());
-        assert!(!result.file_refs.is_empty());
     }
 
     #[test]
@@ -2001,158 +1682,5 @@ mod tests {
             "should NOT extract OQ-2 from indented code, got: {labels:?}"
         );
         assert!(labels.contains(&3), "should extract OQ-3, got: {labels:?}");
-    }
-
-    // -----------------------------------------------------------------------
-    // Parallel-run comparison tests: old regex scanner vs new pulldown-cmark scanner
-    // -----------------------------------------------------------------------
-
-    /// Run both scanners on every .md file in a corpus directory, comparing results.
-    /// Returns (old_total_refs, new_total_refs, fewer_count, more_count, spans_with_line).
-    fn parallel_run_corpus(
-        corpus_path: &str,
-        corpus_name: &str,
-    ) -> (usize, usize, usize, usize, usize, usize) {
-        let corpus = std::path::Path::new(corpus_path);
-        if !corpus.exists() {
-            println!("=== Parallel Run: {corpus_name} ===");
-            println!("SKIPPED: corpus not found at {corpus_path}");
-            return (0, 0, 0, 0, 0, 0);
-        }
-
-        let mut files_scanned: usize = 0;
-        let mut old_total: usize = 0;
-        let mut new_total: usize = 0;
-        let mut fewer_count: usize = 0;
-        let mut more_count: usize = 0;
-        let mut total_body_refs: usize = 0;
-        let mut body_refs_with_span: usize = 0;
-
-        for entry in WalkDir::new(corpus) {
-            let Ok(entry) = entry else { continue };
-            if entry.file_type().is_dir() {
-                continue;
-            }
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-
-            let Ok(content) = std::fs::read_to_string(path) else {
-                continue;
-            };
-
-            let relative_str = path.strip_prefix(corpus).unwrap_or(path).to_string_lossy();
-            let relative = Utf8Path::new(&*relative_str);
-
-            let (_, body) = split_frontmatter(&content);
-
-            // Old scanner
-            let (mut graph_old, file_node_old) = make_graph_with_file(&relative_str);
-            let old_result = scan_file(body, relative, file_node_old, &mut graph_old);
-            let old_refs = old_result.label_candidates.len()
-                + old_result.section_refs.len()
-                + old_result.file_refs.len();
-
-            // New scanner
-            let (frontmatter_yaml, _) = split_frontmatter(&content);
-            #[allow(clippy::cast_possible_truncation)]
-            let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
-            let line_index = LineIndex::from_content(body, fm_lines);
-            let (mut graph_new, file_node_new) = make_graph_with_file(&relative_str);
-            let (new_result, body_discovered) =
-                scan_file_cmark(body, relative, file_node_new, &mut graph_new, &line_index);
-            let new_refs = new_result.label_candidates.len()
-                + new_result.section_refs.len()
-                + new_result.file_refs.len();
-
-            old_total += old_refs;
-            new_total += new_refs;
-            files_scanned += 1;
-
-            if new_refs < old_refs {
-                fewer_count += 1;
-            } else if new_refs > old_refs {
-                more_count += 1;
-            }
-
-            // Check spans on body DiscoveredRefs
-            for dr in &body_discovered {
-                total_body_refs += 1;
-                if dr.span.as_ref().is_some_and(|s| s.line > 0) {
-                    body_refs_with_span += 1;
-                }
-            }
-        }
-
-        println!("=== Parallel Run: {corpus_name} ===");
-        println!("Files scanned: {files_scanned}");
-        println!("Old scanner refs: {old_total}");
-        println!("New scanner refs: {new_total}");
-        println!("Files with fewer refs (code block filtering): {fewer_count}");
-        println!("Files with more refs (link extraction): {more_count}");
-        println!(
-            "Body refs with SourceSpan: {body_refs_with_span} / {total_body_refs} ({}%)",
-            if total_body_refs > 0 {
-                body_refs_with_span * 100 / total_body_refs
-            } else {
-                100
-            }
-        );
-
-        // The new scanner should not produce significantly MORE false positives
-        // Some difference is expected: new scanner finds markdown links that old
-        // regex missed, and old scanner finds refs inside code blocks that new one skips
-        if new_total <= old_total {
-            println!("RESULT: PASS - new scanner produces equal or fewer false positives");
-        } else {
-            let delta = new_total - old_total;
-            println!(
-                "RESULT: PASS - new scanner found {delta} more refs (link extraction improvement)"
-            );
-        }
-
-        (
-            old_total,
-            new_total,
-            fewer_count,
-            more_count,
-            total_body_refs,
-            body_refs_with_span,
-        )
-    }
-
-    #[test]
-    #[ignore = "requires external corpus at ~/code/murail/.design/"]
-    fn parallel_run_murail() {
-        let home = std::env::var("HOME").expect("HOME must be set");
-        let corpus_path = format!("{home}/code/murail/.design/");
-        let (old_total, _new_total, _fewer, _more, total_body, body_with_span) =
-            parallel_run_corpus(&corpus_path, "Murail (.design/)");
-
-        // Only assert if corpus exists (non-zero totals)
-        if old_total > 0 {
-            assert_eq!(
-                body_with_span, total_body,
-                "every body DiscoveredRef must have a SourceSpan with line > 0"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "requires external corpus at ~/code/herald/.design/"]
-    fn parallel_run_herald() {
-        let home = std::env::var("HOME").expect("HOME must be set");
-        let corpus_path = format!("{home}/code/herald/.design/");
-        let (old_total, _new_total, _fewer, _more, total_body, body_with_span) =
-            parallel_run_corpus(&corpus_path, "Herald (.design/)");
-
-        // Only assert if corpus exists (non-zero totals)
-        if old_total > 0 {
-            assert_eq!(
-                body_with_span, total_body,
-                "every body DiscoveredRef must have a SourceSpan with line > 0"
-            );
-        }
     }
 }
