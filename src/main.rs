@@ -449,8 +449,7 @@ fn run() -> anyhow::Result<()> {
         &root_str,
     );
 
-    // Build cascade candidates lookup for diagnostic enrichment (consumed by Plan 03)
-    #[allow(unused_variables)]
+    // Build cascade candidates lookup for diagnostic enrichment
     let cascade_candidates: HashMap<String, Vec<String>> = cascade_results
         .iter()
         .filter(|r| !r.candidates.is_empty())
@@ -505,6 +504,7 @@ fn run() -> anyhow::Result<()> {
                 &unresolved_owned,
                 section_ref_count,
                 &result.implausible_refs,
+                &cascade_candidates,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
@@ -649,6 +649,7 @@ fn run() -> anyhow::Result<()> {
                 &unresolved_owned,
                 section_ref_count,
                 &result.implausible_refs,
+                &cascade_candidates,
             );
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let output = cli::cmd_status(graph, &lattice, &snap, &all_diagnostics);
@@ -688,6 +689,7 @@ fn run() -> anyhow::Result<()> {
                 &unresolved_owned,
                 section_ref_count,
                 &result.implausible_refs,
+                &cascade_candidates,
             );
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
 
