@@ -3,12 +3,14 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::{Regex, RegexSet};
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extraction::{
-    DiscoveredRef, FileExtraction, RefHint, RefSource, classify_frontmatter_value,
+    DiscoveredRef, FileExtraction, LineIndex, RefHint, RefSource, SourceSpan,
+    classify_frontmatter_value,
 };
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
@@ -432,6 +434,448 @@ pub(crate) fn scan_file(
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Content scanner (pulldown-cmark)
+// ---------------------------------------------------------------------------
+
+/// Scan a file's body content for handles and references using pulldown-cmark.
+///
+/// Replaces the regex-based `scan_file` with structural markdown parsing.
+/// Code blocks and inline code are structurally skipped (no regex toggling).
+/// Markdown links and wiki-links are extracted from Link events. HTML blocks
+/// are scanned with regex patterns. Text events within the same block element
+/// are concatenated before regex matching.
+///
+/// Returns both a `ScanResult` (for backward compat) and a `Vec<DiscoveredRef>`
+/// for the new typed extraction pipeline.
+pub(crate) fn scan_file_cmark(
+    body: &str,
+    file_path: &Utf8Path,
+    file_node: NodeId,
+    graph: &mut DiGraph,
+    line_index: &LineIndex,
+) -> (ScanResult, Vec<DiscoveredRef>) {
+    let mut result = ScanResult {
+        label_candidates: Vec::new(),
+        section_refs: Vec::new(),
+        file_refs: Vec::new(),
+    };
+    let mut discovered_refs: Vec<DiscoveredRef> = Vec::new();
+
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    opts.insert(Options::ENABLE_WIKILINKS);
+
+    let parser = Parser::new_ext(body, opts);
+
+    // State tracking
+    let mut in_code_block = false;
+    let mut heading_text: Option<String> = None;
+    let mut text_accumulator = String::new();
+    let mut block_start_offset: usize = 0;
+    let mut in_html_block = false;
+    let mut html_accumulator = String::new();
+    let mut html_block_start_offset: usize = 0;
+
+    let file_path_str = file_path.as_str();
+
+    for (event, range) in parser.into_offset_iter() {
+        #[allow(clippy::match_same_arms)] // Code/Math arms intentionally explicit for documentation
+        match event {
+            // -- Code block: skip everything inside --
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+            }
+
+            // Inline code spans and display/inline math: skip entirely.
+            // These are listed explicitly (not in the wildcard) to document
+            // that they are intentionally unsearched, unlike other text-bearing events.
+            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
+
+
+            // -- HTML blocks: accumulate and scan with regex --
+            Event::Start(Tag::HtmlBlock) => {
+                in_html_block = true;
+                html_accumulator.clear();
+                html_block_start_offset = range.start;
+            }
+            Event::End(TagEnd::HtmlBlock) => {
+                in_html_block = false;
+                if !html_accumulator.is_empty() {
+                    scan_text_for_refs(
+                        &html_accumulator,
+                        html_block_start_offset,
+                        file_path,
+                        file_path_str,
+                        line_index,
+                        &mut result,
+                        &mut discovered_refs,
+                    );
+                    html_accumulator.clear();
+                }
+            }
+
+            // -- Headings --
+            Event::Start(Tag::Heading { .. }) => {
+                heading_text = Some(String::new());
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(heading) = heading_text.take() {
+                    let heading = heading.trim().to_string();
+                    if !heading.is_empty() {
+                        let section_id =
+                            format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-"));
+                        graph.add_node(Handle {
+                            id: section_id,
+                            kind: HandleKind::Section {
+                                parent: file_node,
+                                heading,
+                            },
+                            status: None,
+                            file_path: Some(file_path.to_path_buf()),
+                            metadata: HandleMetadata::default(),
+                        });
+                    }
+                }
+            }
+
+            // -- Links (markdown and wiki-links) --
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            }) => {
+                if in_code_block {
+                    continue;
+                }
+                let dest = dest_url.as_ref();
+                let offset = range.start;
+                let line = line_index.offset_to_line(offset);
+
+                match link_type {
+                    LinkType::WikiLink { .. } => {
+                        // Wiki-links: [[target]] - dest_url contains the target
+                        if !dest.is_empty() {
+                            let hint = classify_body_ref(dest);
+                            match &hint {
+                                RefHint::Label { prefix, number } => {
+                                    result.label_candidates.push(LabelCandidate {
+                                        prefix: prefix.clone(),
+                                        number: *number,
+                                        file_path: file_path.to_path_buf(),
+                                        edge_kind: EdgeKind::Cites,
+                                    });
+                                }
+                                RefHint::FilePath => {
+                                    result.file_refs.push(dest.to_string());
+                                }
+                                RefHint::SectionRef => {
+                                    // Strip "section:" prefix for backward compat
+                                    if let Some(num) = dest.strip_prefix("section:") {
+                                        result.section_refs.push(num.to_string());
+                                    }
+                                }
+                                _ => {}
+                            }
+                            discovered_refs.push(DiscoveredRef {
+                                raw: dest.to_string(),
+                                hint,
+                                source: RefSource::Body,
+                                edge_kind: EdgeKind::Cites,
+                                inverse: false,
+                                span: Some(SourceSpan {
+                                    file: file_path_str.to_string(),
+                                    line,
+                                }),
+                            });
+                        }
+                    }
+                    _ => {
+                        // Standard links: [text](target.md)
+                        if !dest.is_empty()
+                            && !dest.starts_with('#')
+                            && !dest.starts_with("http://")
+                            && !dest.starts_with("https://")
+                            && !dest.starts_with("mailto:")
+                        {
+                            // Strip fragment identifiers from file paths
+                            let clean_dest = if let Some(pos) = dest.find('#') {
+                                &dest[..pos]
+                            } else {
+                                dest
+                            };
+                            if !clean_dest.is_empty() {
+                                let hint = classify_body_ref(clean_dest);
+                                match &hint {
+                                    RefHint::Label { prefix, number } => {
+                                        result.label_candidates.push(LabelCandidate {
+                                            prefix: prefix.clone(),
+                                            number: *number,
+                                            file_path: file_path.to_path_buf(),
+                                            edge_kind: EdgeKind::Cites,
+                                        });
+                                    }
+                                    RefHint::FilePath => {
+                                        result.file_refs.push(clean_dest.to_string());
+                                    }
+                                    RefHint::SectionRef => {
+                                        if let Some(num) = clean_dest.strip_prefix("section:") {
+                                            result.section_refs.push(num.to_string());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                discovered_refs.push(DiscoveredRef {
+                                    raw: clean_dest.to_string(),
+                                    hint,
+                                    source: RefSource::Body,
+                                    edge_kind: EdgeKind::Cites,
+                                    inverse: false,
+                                    span: Some(SourceSpan {
+                                        file: file_path_str.to_string(),
+                                        line,
+                                    }),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // -- Block element boundaries --
+            Event::Start(Tag::Paragraph | Tag::Item | Tag::BlockQuote(_)) => {
+                if !in_code_block {
+                    text_accumulator.clear();
+                    block_start_offset = range.start;
+                }
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_)) => {
+                if !in_code_block && !text_accumulator.is_empty() {
+                    scan_text_for_refs(
+                        &text_accumulator,
+                        block_start_offset,
+                        file_path,
+                        file_path_str,
+                        line_index,
+                        &mut result,
+                        &mut discovered_refs,
+                    );
+                    text_accumulator.clear();
+                }
+            }
+
+            // -- Text events: accumulate for block-level scanning --
+            Event::Text(text) => {
+                if in_code_block {
+                    continue;
+                }
+                if in_html_block {
+                    html_accumulator.push_str(text.as_ref());
+                    continue;
+                }
+                if let Some(ref mut h) = heading_text {
+                    h.push_str(text.as_ref());
+                }
+                text_accumulator.push_str(text.as_ref());
+            }
+
+            Event::Html(html) => {
+                if in_html_block {
+                    html_accumulator.push_str(html.as_ref());
+                } else {
+                    // Standalone HTML line outside HtmlBlock
+                    scan_text_for_refs(
+                        html.as_ref(),
+                        range.start,
+                        file_path,
+                        file_path_str,
+                        line_index,
+                        &mut result,
+                        &mut discovered_refs,
+                    );
+                }
+            }
+
+            Event::InlineHtml(html) => {
+                if !in_code_block {
+                    scan_text_for_refs(
+                        html.as_ref(),
+                        range.start,
+                        file_path,
+                        file_path_str,
+                        line_index,
+                        &mut result,
+                        &mut discovered_refs,
+                    );
+                }
+            }
+
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(ref mut h) = heading_text {
+                    h.push(' ');
+                }
+                text_accumulator.push(' ');
+            }
+
+            // All other events: skip
+            _ => {}
+        }
+    }
+
+    // Flush any remaining accumulated text (e.g., body without block wrappers)
+    if !text_accumulator.is_empty() && !in_code_block {
+        scan_text_for_refs(
+            &text_accumulator,
+            block_start_offset,
+            file_path,
+            file_path_str,
+            line_index,
+            &mut result,
+            &mut discovered_refs,
+        );
+    }
+
+    (result, discovered_refs)
+}
+
+/// Classify a body text reference into a `RefHint`.
+///
+/// Unlike `classify_frontmatter_value`, this does not check for prose or
+/// comma lists since body refs come from regex matches on specific patterns.
+fn classify_body_ref(value: &str) -> RefHint {
+    // Label pattern
+    if let Some(caps) = LABEL_RE.captures(value)
+        && let Ok(number) = caps[2].parse::<u32>()
+    {
+        return RefHint::Label {
+            prefix: caps[1].to_string(),
+            number,
+        };
+    }
+
+    // Section ref
+    if value.starts_with("section:") {
+        return RefHint::SectionRef;
+    }
+
+    // File path (.md extension)
+    if std::path::Path::new(value)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        return RefHint::FilePath;
+    }
+
+    // Default: FilePath (handle identity)
+    RefHint::FilePath
+}
+
+/// Scan accumulated text for labels, section refs, file paths using the same
+/// regex patterns as the old scanner. Creates both `LabelCandidate`/ScanResult
+/// entries and `DiscoveredRef` entries.
+fn scan_text_for_refs(
+    text: &str,
+    block_start_offset: usize,
+    file_path: &Utf8Path,
+    file_path_str: &str,
+    line_index: &LineIndex,
+    result: &mut ScanResult,
+    discovered_refs: &mut Vec<DiscoveredRef>,
+) {
+    let line = line_index.offset_to_line(block_start_offset);
+
+    // Edge kind inference from full accumulated text
+    let edge_kind = infer_edge_kind_from_line(text);
+
+    // Labels
+    for caps in LABEL_RE.captures_iter(text) {
+        let prefix = caps
+            .get(1)
+            .expect("label prefix capture always present")
+            .as_str()
+            .to_string();
+        let number_str = caps
+            .get(2)
+            .expect("label number capture always present")
+            .as_str();
+        if let Ok(number) = number_str.parse::<u32>() {
+            result.label_candidates.push(LabelCandidate {
+                prefix: prefix.clone(),
+                number,
+                file_path: file_path.to_path_buf(),
+                edge_kind,
+            });
+            discovered_refs.push(DiscoveredRef {
+                raw: format!("{prefix}-{number}"),
+                hint: RefHint::Label { prefix, number },
+                source: RefSource::Body,
+                edge_kind,
+                inverse: false,
+                span: Some(SourceSpan {
+                    file: file_path_str.to_string(),
+                    line,
+                }),
+            });
+        }
+    }
+
+    // Section refs
+    for caps in SECTION_REF_RE.captures_iter(text) {
+        let section_num = caps
+            .get(1)
+            .expect("section ref capture always present")
+            .as_str()
+            .to_string();
+        if !section_num.is_empty() {
+            result.section_refs.push(section_num.clone());
+            discovered_refs.push(DiscoveredRef {
+                raw: format!("§{section_num}"),
+                hint: RefHint::SectionRef,
+                source: RefSource::Body,
+                edge_kind: EdgeKind::Cites,
+                inverse: false,
+                span: Some(SourceSpan {
+                    file: file_path_str.to_string(),
+                    line,
+                }),
+            });
+        }
+    }
+
+    // File paths
+    for m in FILE_PATH_RE.find_iter(text) {
+        let prefix = &text[..m.start()];
+        if prefix.contains("://") {
+            continue;
+        }
+        if m.start() > 0 && text.as_bytes()[m.start() - 1] == b'.' {
+            continue;
+        }
+        let path = m.as_str();
+        if path.starts_with('-') {
+            continue;
+        }
+        if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        result.file_refs.push(path.to_string());
+        discovered_refs.push(DiscoveredRef {
+            raw: path.to_string(),
+            hint: RefHint::FilePath,
+            source: RefSource::Body,
+            edge_kind,
+            inverse: false,
+            span: Some(SourceSpan {
+                file: file_path_str.to_string(),
+                line,
+            }),
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,5 +1703,291 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_file_cmark tests
+    // -----------------------------------------------------------------------
+
+    fn make_cmark_helpers(path: &str) -> (DiGraph, NodeId, LineIndex) {
+        let (graph, node) = make_graph_with_file(path);
+        // No frontmatter, body starts at line 1
+        let line_index = LineIndex::from_content("", 0);
+        (graph, node, line_index)
+    }
+
+    fn cmark_scan(body: &str) -> (ScanResult, Vec<DiscoveredRef>, DiGraph) {
+        let mut graph = DiGraph::new();
+        let node = graph.add_node(Handle {
+            id: "test.md".to_string(),
+            kind: HandleKind::File(Utf8PathBuf::from("test.md")),
+            status: None,
+            file_path: Some(Utf8PathBuf::from("test.md")),
+            metadata: HandleMetadata::default(),
+        });
+        let line_index = LineIndex::from_content(body, 0);
+        let (result, refs) = scan_file_cmark(
+            body,
+            Utf8Path::new("test.md"),
+            node,
+            &mut graph,
+            &line_index,
+        );
+        (result, refs, graph)
+    }
+
+    #[test]
+    fn cmark_code_block_skipping() {
+        let body = "## Heading\nSome OQ-64 ref\n```\nOQ-99 in code\n```\n";
+        let (result, refs, graph) = cmark_scan(body);
+
+        // Should extract heading and OQ-64, but NOT OQ-99
+        let labels: Vec<_> = result
+            .label_candidates
+            .iter()
+            .map(|c| (c.prefix.as_str(), c.number))
+            .collect();
+        assert!(
+            labels.contains(&("OQ", 64)),
+            "should extract OQ-64, got: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l.1 == 99),
+            "should NOT extract OQ-99 from code block, got: {labels:?}"
+        );
+
+        // Should have created a section for "Heading"
+        let section_count = graph
+            .nodes()
+            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
+            .count();
+        assert_eq!(section_count, 1, "should create one section handle");
+    }
+
+    #[test]
+    fn cmark_inline_code_skipping() {
+        let body = "See `OQ-64` inline\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.label_candidates.is_empty(),
+            "should NOT extract OQ-64 from inline code, got: {:?}",
+            result
+                .label_candidates
+                .iter()
+                .map(|c| format!("{}-{}", c.prefix, c.number))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            refs.is_empty(),
+            "should have no discovered refs from inline code"
+        );
+    }
+
+    #[test]
+    fn cmark_markdown_link_extraction() {
+        let body = "[link](foo.md)\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.file_refs.contains(&"foo.md".to_string()),
+            "should extract foo.md from link, got: {:?}",
+            result.file_refs
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.raw == "foo.md" && r.hint == RefHint::FilePath),
+            "should have DiscoveredRef for foo.md"
+        );
+    }
+
+    #[test]
+    fn cmark_wikilink_extraction() {
+        let body = "[[wiki-target]]\n";
+        let (result, refs, _) = cmark_scan(body);
+        // Wiki-links produce a DiscoveredRef
+        assert!(!refs.is_empty(), "should extract wiki-link, got no refs");
+        assert!(
+            refs.iter().any(|r| r.raw == "wiki-target"),
+            "should have DiscoveredRef for wiki-target, got: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cmark_html_block_scanning() {
+        let body = "<div>OQ-64</div>\n";
+        let (result, refs, _) = cmark_scan(body);
+        let labels: Vec<_> = result
+            .label_candidates
+            .iter()
+            .map(|c| (c.prefix.as_str(), c.number))
+            .collect();
+        assert!(
+            labels.contains(&("OQ", 64)),
+            "should extract OQ-64 from HTML block, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn cmark_text_file_ref_from_body() {
+        let body = "text with guide.md ref\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.file_refs.contains(&"guide.md".to_string()),
+            "should extract guide.md from text, got: {:?}",
+            result.file_refs
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.raw == "guide.md" && r.hint == RefHint::FilePath),
+            "should have DiscoveredRef for guide.md"
+        );
+    }
+
+    #[test]
+    fn cmark_discovered_ref_has_span() {
+        let body = "first line\nOQ-42 on second line\n";
+        let (_, refs, _) = cmark_scan(body);
+        assert!(!refs.is_empty(), "should find OQ-42");
+        let oq_ref = refs.iter().find(|r| r.raw == "OQ-42").expect("OQ-42 ref");
+        assert!(oq_ref.span.is_some(), "DiscoveredRef should have a span");
+        let span = oq_ref.span.as_ref().expect("span present");
+        assert_eq!(span.file, "test.md", "span file should be test.md");
+        assert!(span.line >= 1, "span line should be >= 1");
+    }
+
+    #[test]
+    fn cmark_section_refs_extracted() {
+        let body = "See §4.1 for details\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.section_refs.contains(&"4.1".to_string()),
+            "should extract section ref 4.1, got: {:?}",
+            result.section_refs
+        );
+    }
+
+    #[test]
+    fn cmark_url_rejection_in_text() {
+        let body = "See https://example.com/rust-lang/guide.md for details\n";
+        let (result, _, _) = cmark_scan(body);
+        assert!(
+            result.file_refs.is_empty(),
+            "URL fragments should not be matched as file refs, got: {:?}",
+            result.file_refs
+        );
+    }
+
+    #[test]
+    fn cmark_version_dot_rejection() {
+        let body = "See formal-model/murail-algebra-v1.2.md for details\n";
+        let (result, _, _) = cmark_scan(body);
+        assert!(
+            !result.file_refs.contains(&"2.md".to_string()),
+            "should not match fragment 2.md from v1.2.md, got: {:?}",
+            result.file_refs
+        );
+    }
+
+    #[test]
+    fn cmark_hyphen_prefix_rejection() {
+        let body = "See RQ-01-program-format-encoding.md for details\n";
+        let (result, _, _) = cmark_scan(body);
+        assert!(
+            !result.file_refs.iter().any(|r| r.starts_with('-')),
+            "should not extract hyphen-prefixed fragments, got: {:?}",
+            result.file_refs
+        );
+    }
+
+    #[test]
+    fn cmark_mid_word_rejection() {
+        let body = "[transcript](refs/2026-02-06-4eJrp9byBRk.md)";
+        let (_, refs, _) = cmark_scan(body);
+        // The link itself should be extracted from the Link event (as file ref)
+        // but the text inside should NOT produce a "k.md" match
+        assert!(
+            !refs.iter().any(|r| r.raw == "k.md"),
+            "should not extract k.md from mid-word, got: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cmark_ref_source_is_body() {
+        let body = "OQ-42 in body text\n";
+        let (_, refs, _) = cmark_scan(body);
+        assert!(!refs.is_empty(), "should find OQ-42");
+        for r in &refs {
+            assert!(
+                matches!(r.source, RefSource::Body),
+                "body refs should have RefSource::Body"
+            );
+        }
+    }
+
+    #[test]
+    fn cmark_link_with_fragment() {
+        let body = "[see](foo.md#section)\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.file_refs.contains(&"foo.md".to_string()),
+            "should extract foo.md stripping fragment, got: {:?}",
+            result.file_refs
+        );
+    }
+
+    #[test]
+    fn cmark_external_links_skipped() {
+        let body = "[google](https://google.com)\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            result.file_refs.is_empty(),
+            "should not extract external URLs as file refs"
+        );
+        assert!(
+            refs.is_empty(),
+            "should not produce DiscoveredRef for external links"
+        );
+    }
+
+    #[test]
+    fn cmark_old_scanner_still_works() {
+        // Verify old scan_file is preserved and still works
+        let body = "## Title\nOQ-64 label\nguide.md file\n";
+        let (mut graph, file_node) = make_graph_with_file("test.md");
+        let result = scan_file(body, Utf8Path::new("test.md"), file_node, &mut graph);
+        assert!(!result.label_candidates.is_empty());
+        assert!(!result.file_refs.is_empty());
+    }
+
+    #[test]
+    fn cmark_edge_kind_inference() {
+        let body = "This incorporates OQ-42 into the design\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(!result.label_candidates.is_empty());
+        // "incorporates" keyword should produce DependsOn edge
+        assert_eq!(
+            result.label_candidates[0].edge_kind,
+            EdgeKind::DependsOn,
+            "incorporates keyword should produce DependsOn edge"
+        );
+        assert!(
+            refs.iter().any(|r| r.edge_kind == EdgeKind::DependsOn),
+            "DiscoveredRef should also have DependsOn"
+        );
+    }
+
+    #[test]
+    fn cmark_indented_code_block_skipping() {
+        // Indented code blocks (4 spaces) should also be skipped
+        let body = "Normal text OQ-1\n\n    OQ-2 in indented code\n\nMore text OQ-3\n";
+        let (result, _, _) = cmark_scan(body);
+        let labels: Vec<u32> = result.label_candidates.iter().map(|c| c.number).collect();
+        assert!(labels.contains(&1), "should extract OQ-1, got: {labels:?}");
+        assert!(
+            !labels.contains(&2),
+            "should NOT extract OQ-2 from indented code, got: {labels:?}"
+        );
+        assert!(labels.contains(&3), "should extract OQ-3, got: {labels:?}");
     }
 }
