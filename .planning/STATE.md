@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 06-03-PLAN.md
-last_updated: "2026-03-30T05:11:28.647Z"
+stopped_at: Completed 06-04-PLAN.md
+last_updated: "2026-03-30T07:15:35.820Z"
 last_activity: 2026-03-30
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 10
+  completed_plans: 10
   percent: 55
 ---
 
@@ -55,6 +55,7 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 06]: Root-prefix strip creates graph edges; version-stem and zero-pad produce candidates only
 - [Phase 06]: Evidence uses serde(tag=type) for internally-tagged JSON serialization
 - [Phase 06]: E001 always gets Evidence::BrokenRef even with empty candidates for JSON consistency
+- [Phase 06]: Line 1 for all frontmatter-sourced diagnostics; Version handles resolve file_path through artifact field
 
 ## Blockers/Concerns
 
@@ -62,8 +63,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T05:11:28.644Z
-Stopped at: Completed 06-03-PLAN.md
+Last session: 2026-03-30T07:15:35.817Z
+Stopped at: Completed 06-04-PLAN.md
 Resume file: None
 
 ---
