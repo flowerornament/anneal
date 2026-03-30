@@ -104,7 +104,7 @@ fn check_existence(
             code: "E001",
             message: format!("broken reference: {} not found", edge.target_identity),
             file,
-            line: None,
+            line: edge.line,
         });
     }
 
@@ -752,6 +752,7 @@ mod tests {
             target_identity: "OQ-99".to_string(),
             kind: EdgeKind::Cites,
             inverse: false,
+            line: Some(42),
         }];
 
         let diags = check_existence(&graph, &unresolved, 0);
@@ -759,6 +760,11 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code, "E001");
         assert!(diags[0].message.contains("OQ-99"));
+        assert_eq!(
+            diags[0].line,
+            Some(42),
+            "E001 diagnostic should carry PendingEdge line number"
+        );
     }
 
     #[test]
@@ -1246,6 +1252,7 @@ mod tests {
             target_identity: "missing-ref".to_string(),
             kind: EdgeKind::Cites,
             inverse: false,
+            line: None,
         }];
 
         let diags = run_checks(&graph, &lattice, &config, &unresolved, 5, &[]);
