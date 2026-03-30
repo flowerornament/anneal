@@ -100,6 +100,8 @@ pub(crate) struct AnnealConfig {
     pub(crate) freshness: FreshnessConfig,
     /// Extensible frontmatter field-to-edge mapping (CONFIG-03).
     pub(crate) frontmatter: FrontmatterConfig,
+    /// Check command behavior configuration.
+    pub(crate) check: CheckConfig,
     /// Concern groups mapping name -> list of handle patterns.
     #[serde(default)]
     pub(crate) concerns: HashMap<String, Vec<String>>,
@@ -139,6 +141,15 @@ impl HandlesConfig {
     }
 }
 
+/// Configuration for check command behavior.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CheckConfig {
+    /// Default filter for `anneal check`. Set to `"active-only"` to skip
+    /// diagnostics from terminal files without requiring the `--active-only` flag.
+    pub(crate) default_filter: Option<String>,
+}
+
 /// Configuration for freshness thresholds.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -176,4 +187,55 @@ pub(crate) fn load_config(root: &Path) -> Result<AnnealConfig> {
         .with_context(|| format!("failed to parse {}", config_path.display()))?;
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_check_section_parses() {
+        let toml_str = r#"
+root = "docs"
+exclude = [".git"]
+"#;
+        let config: AnnealConfig = toml::from_str(toml_str).expect("should parse without [check]");
+        assert!(
+            config.check.default_filter.is_none(),
+            "default_filter should be None when [check] section absent"
+        );
+    }
+
+    #[test]
+    fn config_with_check_active_only() {
+        let toml_str = r#"
+[check]
+default_filter = "active-only"
+"#;
+        let config: AnnealConfig =
+            toml::from_str(toml_str).expect("should parse with [check] section");
+        assert_eq!(
+            config.check.default_filter.as_deref(),
+            Some("active-only"),
+            "default_filter should be active-only"
+        );
+    }
+
+    #[test]
+    fn config_with_unknown_filter_value_accepted() {
+        let toml_str = r#"
+[check]
+default_filter = "errors-only"
+"#;
+        let config: AnnealConfig =
+            toml::from_str(toml_str).expect("unknown filter values should be accepted");
+        assert_eq!(config.check.default_filter.as_deref(), Some("errors-only"));
+    }
+
+    #[test]
+    fn config_empty_parses_to_default() {
+        let config: AnnealConfig = toml::from_str("").expect("empty TOML should parse");
+        assert!(config.check.default_filter.is_none());
+        assert!(config.root.is_empty());
+    }
 }

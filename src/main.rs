@@ -470,6 +470,10 @@ fn run() -> anyhow::Result<()> {
             obligations,
             active_only,
         }) => {
+            // Merge CLI flag with config opt-in: either triggers active-only filtering
+            let active_only =
+                active_only || config.check.default_filter.as_deref() == Some("active-only");
+
             let (unresolved_owned, section_ref_count) =
                 collect_unresolved_owned(&result.pending_edges, &node_index);
 
