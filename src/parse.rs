@@ -1683,4 +1683,90 @@ mod tests {
         );
         assert!(labels.contains(&3), "should extract OQ-3, got: {labels:?}");
     }
+
+    // -----------------------------------------------------------------------
+    // Corpus smoke tests — validate cmark scanner on real corpora
+    // -----------------------------------------------------------------------
+
+    /// Walk a corpus, run scan_file_cmark on each .md file, verify SourceSpan coverage.
+    fn corpus_smoke_test(corpus_path: &str, corpus_name: &str) {
+        let corpus = std::path::Path::new(corpus_path);
+        if !corpus.exists() {
+            println!("SKIPPED: {corpus_name} corpus not found at {corpus_path}");
+            return;
+        }
+
+        let mut files_scanned: usize = 0;
+        let mut total_refs: usize = 0;
+        let mut total_body_refs: usize = 0;
+        let mut body_refs_with_span: usize = 0;
+
+        for entry in walkdir::WalkDir::new(corpus) {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            let relative_str = path.strip_prefix(corpus).unwrap_or(path).to_string_lossy();
+            let relative = Utf8Path::new(&*relative_str);
+            let (frontmatter_yaml, body) = split_frontmatter(&content);
+
+            #[allow(clippy::cast_possible_truncation)]
+            let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
+            let line_index = LineIndex::from_content(body, fm_lines);
+            let mut graph = DiGraph::new();
+            let file_node = graph.add_node(Handle {
+                id: relative_str.to_string(),
+                kind: HandleKind::File(Utf8PathBuf::from(&*relative_str)),
+                status: None,
+                file_path: Some(Utf8PathBuf::from(&*relative_str)),
+                metadata: HandleMetadata::default(),
+            });
+            let (result, body_discovered) =
+                scan_file_cmark(body, relative, file_node, &mut graph, &line_index);
+
+            let refs =
+                result.label_candidates.len() + result.section_refs.len() + result.file_refs.len();
+            total_refs += refs;
+            files_scanned += 1;
+
+            for dr in &body_discovered {
+                total_body_refs += 1;
+                if dr.span.as_ref().is_some_and(|s| s.line > 0) {
+                    body_refs_with_span += 1;
+                }
+            }
+        }
+
+        println!("=== Corpus Smoke Test: {corpus_name} ===");
+        println!("Files: {files_scanned}, Refs: {total_refs}");
+        println!("SourceSpan coverage: {body_refs_with_span}/{total_body_refs}");
+
+        assert!(files_scanned > 0, "should scan at least one file");
+        assert_eq!(
+            body_refs_with_span, total_body_refs,
+            "every body DiscoveredRef must have a SourceSpan with line > 0"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires external corpus at ~/code/murail/.design/"]
+    fn corpus_smoke_murail() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        corpus_smoke_test(&format!("{home}/code/murail/.design/"), "Murail");
+    }
+
+    #[test]
+    #[ignore = "requires external corpus at ~/code/herald/.design/"]
+    fn corpus_smoke_herald() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        corpus_smoke_test(&format!("{home}/code/herald/.design/"), "Herald");
+    }
 }
