@@ -1052,4 +1052,123 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn build_graph_populates_file_extraction() {
+        let tmp = std::env::temp_dir().join("anneal_test_extraction");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        write_md_file(
+            &tmp,
+            "source.md",
+            "---\nstatus: draft\ndepends-on: target.md\n---\nBody text.\n",
+        );
+        write_md_file(
+            &tmp,
+            "target.md",
+            "---\nstatus: active\n---\nTarget body.\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        // Must have extractions for both files
+        assert_eq!(
+            result.extractions.len(),
+            2,
+            "should have one FileExtraction per file, got {}",
+            result.extractions.len()
+        );
+
+        // Find the source.md extraction (it has the depends-on reference)
+        let source_ext = result
+            .extractions
+            .iter()
+            .find(|e| e.status.as_deref() == Some("draft"))
+            .expect("should find extraction for source.md (status=draft)");
+
+        // source.md should have one DiscoveredRef for "target.md"
+        assert_eq!(
+            source_ext.refs.len(),
+            1,
+            "source.md should have 1 discovered ref, got {}",
+            source_ext.refs.len()
+        );
+
+        let ref0 = &source_ext.refs[0];
+        assert_eq!(ref0.raw, "target.md", "raw value should be target.md");
+        assert_eq!(
+            ref0.hint,
+            RefHint::FilePath,
+            "target.md should classify as FilePath"
+        );
+        assert!(!ref0.inverse, "forward edge should not be inverse");
+
+        // Check RefSource is Frontmatter
+        match &ref0.source {
+            RefSource::Frontmatter { field } => {
+                assert!(!field.is_empty(), "field name should not be empty");
+            }
+            RefSource::Body => panic!("frontmatter ref should have Frontmatter source, not Body"),
+        }
+
+        // target.md extraction should have no refs (no frontmatter edges)
+        let target_ext = result
+            .extractions
+            .iter()
+            .find(|e| e.status.as_deref() == Some("active"))
+            .expect("should find extraction for target.md (status=active)");
+        assert!(
+            target_ext.refs.is_empty(),
+            "target.md should have 0 discovered refs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_graph_extraction_includes_all_ref_types() {
+        let tmp = std::env::temp_dir().join("anneal_test_extraction_types");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        write_md_file(
+            &tmp,
+            "multi.md",
+            "---\nstatus: draft\ndepends-on:\n  - https://example.com\n  - claude-desktop session\n  - valid.md\n---\nBody.\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+        assert_eq!(result.extractions.len(), 1);
+
+        let ext = &result.extractions[0];
+        assert_eq!(
+            ext.refs.len(),
+            3,
+            "should have 3 discovered refs (URL + prose + valid)"
+        );
+
+        // Check classifications
+        let hints: Vec<_> = ext.refs.iter().map(|r| &r.hint).collect();
+        assert!(
+            hints.iter().any(|h| matches!(h, RefHint::External)),
+            "should have External ref for URL"
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|h| matches!(h, RefHint::Implausible { .. })),
+            "should have Implausible ref for prose"
+        );
+        assert!(
+            hints.iter().any(|h| matches!(h, RefHint::FilePath)),
+            "should have FilePath ref for valid.md"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
