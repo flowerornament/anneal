@@ -29,11 +29,11 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 - [x] **EXTRACT-04**: Build `LineIndex` from full file content for O(log n) byte-to-line lookup with frontmatter offset adjustment
 - [x] **EXTRACT-05**: Plausibility filter rejects absolute paths, freeform prose, and wildcard patterns from frontmatter edge targets
 - [x] **EXTRACT-06**: URLs in frontmatter classified as `RefHint::External` (not silently skipped)
-- [ ] **EXTRACT-07**: Replace regex body scanner with pulldown-cmark 0.13 event walker (ENABLE_HEADING_ATTRIBUTES + ENABLE_WIKILINKS)
-- [ ] **EXTRACT-08**: Concatenate text events per block element before applying regex patterns (label, section ref, version)
-- [ ] **EXTRACT-09**: Extract markdown links and wiki-links as `DiscoveredRef` from pulldown-cmark Link events
-- [ ] **EXTRACT-10**: Skip extraction inside code blocks (structural via pulldown-cmark) and inline code spans
-- [ ] **EXTRACT-11**: Scan HTML block content with regex patterns (pragmatic: anneal's job is finding references)
+- [x] **EXTRACT-07**: Replace regex body scanner with pulldown-cmark 0.13 event walker (ENABLE_HEADING_ATTRIBUTES + ENABLE_WIKILINKS)
+- [x] **EXTRACT-08**: Concatenate text events per block element before applying regex patterns (label, section ref, version)
+- [x] **EXTRACT-09**: Extract markdown links and wiki-links as `DiscoveredRef` from pulldown-cmark Link events
+- [x] **EXTRACT-10**: Skip extraction inside code blocks (structural via pulldown-cmark) and inline code spans
+- [x] **EXTRACT-11**: Scan HTML block content with regex patterns (pragmatic: anneal's job is finding references)
 
 ### Resolution
 
@@ -117,11 +117,11 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | EXTRACT-04 | Phase 5 | Complete |
 | EXTRACT-05 | Phase 4 | Complete |
 | EXTRACT-06 | Phase 4 | Complete |
-| EXTRACT-07 | Phase 5 | Pending |
-| EXTRACT-08 | Phase 5 | Pending |
-| EXTRACT-09 | Phase 5 | Pending |
-| EXTRACT-10 | Phase 5 | Pending |
-| EXTRACT-11 | Phase 5 | Pending |
+| EXTRACT-07 | Phase 5 | Complete |
+| EXTRACT-08 | Phase 5 | Complete |
+| EXTRACT-09 | Phase 5 | Complete |
+| EXTRACT-10 | Phase 5 | Complete |
+| EXTRACT-11 | Phase 5 | Complete |
 | RESOLVE-01 | Phase 4 | Complete |
 | RESOLVE-02 | Phase 6 | Pending |
 | RESOLVE-03 | Phase 6 | Pending |

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 04-03-PLAN.md
-last_updated: "2026-03-30T03:51:41.039Z"
-last_activity: 2026-03-30 -- Phase 05 execution started
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-30T04:07:20.221Z"
+last_activity: 2026-03-30
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 5
   percent: 55
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 ## Current Position
 
 Phase: 05 (pulldown-cmark-migration) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 05
-Last activity: 2026-03-30 -- Phase 05 execution started
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-03-30
 
 Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
 
@@ -46,6 +46,7 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 04-types-plausibility]: ImplausibleRef/ExternalRef as parse.rs structs to avoid circular dependency with checks.rs
 - [Phase 04]: Dual-pass over field_edges: existing PendingEdge flow untouched, new DiscoveredRef flow added in parallel
 - [Phase 04]: RefSource::Frontmatter field from EdgeKind::as_str() since FrontmatterEdge lacks field name
+- [Phase 05]: classify_body_ref as separate simpler classifier for body references from regex/link events
 
 ## Blockers/Concerns
 
@@ -53,8 +54,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T00:39:27.638Z
-Stopped at: Completed 04-03-PLAN.md
+Last session: 2026-03-30T04:07:20.216Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
 
 ---

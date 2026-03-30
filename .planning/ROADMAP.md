@@ -89,7 +89,7 @@ Plans:
 
 Plans:
 - [x] 05-01-PLAN.md -- SourceSpan & LineIndex types + pulldown-cmark dependency
-- [ ] 05-02-PLAN.md -- pulldown-cmark event walker (scan_file_cmark)
+- [x] 05-02-PLAN.md -- pulldown-cmark event walker (scan_file_cmark)
 - [ ] 05-03-PLAN.md -- Production wiring + parallel-run comparison
 
 ### Phase 6: Resolution Cascade
