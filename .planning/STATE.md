@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-03-30T04:55:00.362Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-03-30T05:03:35.558Z"
 last_activity: 2026-03-30
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 9
-  completed_plans: 7
+  total_plans: 6
+  completed_plans: 8
   percent: 55
 ---
 
@@ -51,6 +51,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 05]: FileExtraction construction moved after scan_file_cmark to include body refs
 - [Phase 06]: ScanResult file_refs/section_refs carry (String, u32) tuples for line numbers
 - [Phase 06]: CheckConfig.default_filter is Option<String> for future-proofing
+- [Phase 06]: COMPOUND_LABEL_RE regex for zero-pad normalization of compound label prefixes
+- [Phase 06]: Root-prefix strip creates graph edges; version-stem and zero-pad produce candidates only
 
 ## Blockers/Concerns
 
@@ -58,8 +60,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T04:55:00.356Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-03-30T05:03:35.555Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None
 
 ---
