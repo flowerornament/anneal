@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 05-03-PLAN.md
-last_updated: "2026-03-30T04:26:06.368Z"
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-03-30T04:55:00.362Z"
 last_activity: 2026-03-30
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 9
+  completed_plans: 7
   percent: 55
 ---
 
@@ -49,6 +49,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 05]: classify_body_ref as separate simpler classifier for body references from regex/link events
 - [Phase 05]: scan_file retained pub(crate) for parallel-run comparison tests
 - [Phase 05]: FileExtraction construction moved after scan_file_cmark to include body refs
+- [Phase 06]: ScanResult file_refs/section_refs carry (String, u32) tuples for line numbers
+- [Phase 06]: CheckConfig.default_filter is Option<String> for future-proofing
 
 ## Blockers/Concerns
 
@@ -56,8 +58,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T04:13:35.161Z
-Stopped at: Completed 05-03-PLAN.md
+Last session: 2026-03-30T04:55:00.356Z
+Stopped at: Completed 06-01-PLAN.md
 Resume file: None
 
 ---
