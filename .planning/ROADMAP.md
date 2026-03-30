@@ -90,7 +90,7 @@ Plans:
 Plans:
 - [x] 05-01-PLAN.md -- SourceSpan & LineIndex types + pulldown-cmark dependency
 - [x] 05-02-PLAN.md -- pulldown-cmark event walker (scan_file_cmark)
-- [ ] 05-03-PLAN.md -- Production wiring + parallel-run comparison
+- [x] 05-03-PLAN.md -- Production wiring + parallel-run comparison
 
 ### Phase 6: Resolution Cascade
 **Goal**: Unresolved references get deterministic "did you mean?" candidates, and all diagnostics carry structured evidence with mandatory source locations

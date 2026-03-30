@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-30T04:07:20.221Z"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-03-30T04:13:35.166Z"
 last_activity: 2026-03-30
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
   percent: 55
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 ## Current Position
 
 Phase: 05 (pulldown-cmark-migration) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-03-30
 
@@ -47,6 +47,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 04]: Dual-pass over field_edges: existing PendingEdge flow untouched, new DiscoveredRef flow added in parallel
 - [Phase 04]: RefSource::Frontmatter field from EdgeKind::as_str() since FrontmatterEdge lacks field name
 - [Phase 05]: classify_body_ref as separate simpler classifier for body references from regex/link events
+- [Phase 05]: scan_file retained pub(crate) for parallel-run comparison tests
+- [Phase 05]: FileExtraction construction moved after scan_file_cmark to include body refs
 
 ## Blockers/Concerns
 
@@ -54,8 +56,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T04:07:20.216Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-30T04:13:35.161Z
+Stopped at: Completed 05-03-PLAN.md
 Resume file: None
 
 ---
