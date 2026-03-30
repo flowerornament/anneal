@@ -14,6 +14,8 @@ human_verification:
   - test: "Run anneal check on a corpus with URLs in frontmatter and verify no E001 for URL targets"
     expected: "No E001 diagnostic for https:// targets; they appear in extractions array with hint=External"
     why_human: "Needs a corpus with configured frontmatter fields pointing to URLs (murail has none)"
+    status: resolved
+    resolution: "Added url_in_frontmatter_no_e001_and_external_in_extraction integration test with contrived corpus (https + http URLs in frontmatter). Verifies URLs never enter pending_edges, appear in external_refs, and classify as RefHint::External in extractions."
 ---
 
 # Phase 4: Types & Plausibility Verification Report
