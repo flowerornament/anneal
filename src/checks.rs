@@ -181,7 +181,7 @@ fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
                 r.raw_value, r.reason
             ),
             file: Some(r.file.clone()),
-            line: None,
+            line: Some(r.line),
             evidence: Some(Evidence::Implausible {
                 value: r.raw_value.clone(),
                 reason: r.reason.clone(),
@@ -221,7 +221,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         handle.id, target.id, target_status
                     ),
                     file: handle.file_path.as_ref().map(ToString::to_string),
-                    line: None,
+                    line: Some(1),
                     evidence: Some(Evidence::StaleRef {
                         source_status: source_status.clone(),
                         target_status: target_status.to_string(),
@@ -275,7 +275,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         handle.id, source_status, target.id, target_status
                     ),
                     file: handle.file_path.as_ref().map(ToString::to_string),
-                    line: None,
+                    line: Some(1),
                     evidence: Some(Evidence::ConfidenceGap {
                         source_status: source_status.clone(),
                         source_level,
@@ -410,7 +410,7 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
                     handle.id
                 ),
                 file: handle.file_path.as_ref().map(ToString::to_string),
-                line: None,
+                line: Some(1),
                 evidence: None,
             });
         }
@@ -446,7 +446,7 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
                 code: "S001",
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file: handle.file_path.as_ref().map(ToString::to_string),
-                line: None,
+                line: Some(1),
                 evidence: None,
             });
         }
