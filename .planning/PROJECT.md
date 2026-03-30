@@ -116,7 +116,9 @@ This document evolves at phase transitions and milestone boundaries.
 
 ## Current State
 
-v1.0 complete. Eight CLI commands, five check rules, five suggestion types, convergence tracking via JSONL snapshots. 77 tests, clippy clean, <50ms on 262-file corpus. Installed via nix flake.
+v1.0 complete, Phases 4-6 of v1.1 shipped. Eight CLI commands, five check rules, five suggestion types, convergence tracking via JSONL snapshots. 139 tests, clippy clean, <50ms on 262-file corpus. Installed via nix flake.
+
+Phase 6 complete — resolution cascade with "did you mean?" candidates, structured Evidence on diagnostics, and mandatory source locations (0 null file/line on Murail's 334 diagnostics). Remaining: Phase 7 (UX enrichment).
 
 **Known issues from real-world testing (Murail 262 files, Herald 89 files):**
 - Murail: 186 errors → 9 with --active-only (95% are terminal-file noise)
@@ -125,4 +127,4 @@ v1.0 complete. Eight CLI commands, five check rules, five suggestion types, conv
 - 255 section references unresolvable in Herald (KB-OQ2)
 
 ---
-*Last updated: 2026-03-29 after v1.1 milestone start*
+*Last updated: 2026-03-30 after Phase 6 completion*
