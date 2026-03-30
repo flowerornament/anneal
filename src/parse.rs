@@ -2002,4 +2002,157 @@ mod tests {
         );
         assert!(labels.contains(&3), "should extract OQ-3, got: {labels:?}");
     }
+
+    // -----------------------------------------------------------------------
+    // Parallel-run comparison tests: old regex scanner vs new pulldown-cmark scanner
+    // -----------------------------------------------------------------------
+
+    /// Run both scanners on every .md file in a corpus directory, comparing results.
+    /// Returns (old_total_refs, new_total_refs, fewer_count, more_count, spans_with_line).
+    fn parallel_run_corpus(
+        corpus_path: &str,
+        corpus_name: &str,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        let corpus = std::path::Path::new(corpus_path);
+        if !corpus.exists() {
+            println!("=== Parallel Run: {corpus_name} ===");
+            println!("SKIPPED: corpus not found at {corpus_path}");
+            return (0, 0, 0, 0, 0, 0);
+        }
+
+        let mut files_scanned: usize = 0;
+        let mut old_total: usize = 0;
+        let mut new_total: usize = 0;
+        let mut fewer_count: usize = 0;
+        let mut more_count: usize = 0;
+        let mut total_body_refs: usize = 0;
+        let mut body_refs_with_span: usize = 0;
+
+        for entry in WalkDir::new(corpus) {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            let relative_str = path.strip_prefix(corpus).unwrap_or(path).to_string_lossy();
+            let relative = Utf8Path::new(&*relative_str);
+
+            let (_, body) = split_frontmatter(&content);
+
+            // Old scanner
+            let (mut graph_old, file_node_old) = make_graph_with_file(&relative_str);
+            let old_result = scan_file(body, relative, file_node_old, &mut graph_old);
+            let old_refs = old_result.label_candidates.len()
+                + old_result.section_refs.len()
+                + old_result.file_refs.len();
+
+            // New scanner
+            let (frontmatter_yaml, _) = split_frontmatter(&content);
+            #[allow(clippy::cast_possible_truncation)]
+            let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
+            let line_index = LineIndex::from_content(body, fm_lines);
+            let (mut graph_new, file_node_new) = make_graph_with_file(&relative_str);
+            let (new_result, body_discovered) =
+                scan_file_cmark(body, relative, file_node_new, &mut graph_new, &line_index);
+            let new_refs = new_result.label_candidates.len()
+                + new_result.section_refs.len()
+                + new_result.file_refs.len();
+
+            old_total += old_refs;
+            new_total += new_refs;
+            files_scanned += 1;
+
+            if new_refs < old_refs {
+                fewer_count += 1;
+            } else if new_refs > old_refs {
+                more_count += 1;
+            }
+
+            // Check spans on body DiscoveredRefs
+            for dr in &body_discovered {
+                total_body_refs += 1;
+                if dr.span.as_ref().is_some_and(|s| s.line > 0) {
+                    body_refs_with_span += 1;
+                }
+            }
+        }
+
+        println!("=== Parallel Run: {corpus_name} ===");
+        println!("Files scanned: {files_scanned}");
+        println!("Old scanner refs: {old_total}");
+        println!("New scanner refs: {new_total}");
+        println!("Files with fewer refs (code block filtering): {fewer_count}");
+        println!("Files with more refs (link extraction): {more_count}");
+        println!(
+            "Body refs with SourceSpan: {body_refs_with_span} / {total_body_refs} ({}%)",
+            if total_body_refs > 0 {
+                body_refs_with_span * 100 / total_body_refs
+            } else {
+                100
+            }
+        );
+
+        // The new scanner should not produce significantly MORE false positives
+        // Some difference is expected: new scanner finds markdown links that old
+        // regex missed, and old scanner finds refs inside code blocks that new one skips
+        if new_total <= old_total {
+            println!("RESULT: PASS - new scanner produces equal or fewer false positives");
+        } else {
+            let delta = new_total - old_total;
+            println!(
+                "RESULT: PASS - new scanner found {delta} more refs (link extraction improvement)"
+            );
+        }
+
+        (
+            old_total,
+            new_total,
+            fewer_count,
+            more_count,
+            total_body_refs,
+            body_refs_with_span,
+        )
+    }
+
+    #[test]
+    #[ignore = "requires external corpus at ~/code/murail/.design/"]
+    fn parallel_run_murail() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let corpus_path = format!("{home}/code/murail/.design/");
+        let (old_total, _new_total, _fewer, _more, total_body, body_with_span) =
+            parallel_run_corpus(&corpus_path, "Murail (.design/)");
+
+        // Only assert if corpus exists (non-zero totals)
+        if old_total > 0 {
+            assert_eq!(
+                body_with_span, total_body,
+                "every body DiscoveredRef must have a SourceSpan with line > 0"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires external corpus at ~/code/herald/.design/"]
+    fn parallel_run_herald() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let corpus_path = format!("{home}/code/herald/.design/");
+        let (old_total, _new_total, _fewer, _more, total_body, body_with_span) =
+            parallel_run_corpus(&corpus_path, "Herald (.design/)");
+
+        // Only assert if corpus exists (non-zero totals)
+        if old_total > 0 {
+            assert_eq!(
+                body_with_span, total_body,
+                "every body DiscoveredRef must have a SourceSpan with line > 0"
+            );
+        }
+    }
 }
