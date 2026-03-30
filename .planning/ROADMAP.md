@@ -85,7 +85,12 @@ Plans:
   3. References inside fenced code blocks and inline code spans are not extracted (structural skip, not regex toggle)
   4. Wiki-links (`[[target]]`) and standard markdown links are extracted as typed references from pulldown-cmark events
   5. HTML block content is scanned for references (pragmatic: anneal's job is finding all references)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md -- SourceSpan & LineIndex types + pulldown-cmark dependency
+- [ ] 05-02-PLAN.md -- pulldown-cmark event walker (scan_file_cmark)
+- [ ] 05-03-PLAN.md -- Production wiring + parallel-run comparison
 
 ### Phase 6: Resolution Cascade
 **Goal**: Unresolved references get deterministic "did you mean?" candidates, and all diagnostics carry structured evidence with mandatory source locations
@@ -120,8 +125,8 @@ Plans:
 | 1. Graph Foundation | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
-| 4. Types & Plausibility | v1.1 | 2/3 | Gap closure | - |
-| 5. pulldown-cmark Migration | v1.1 | 0/0 | Not started | - |
+| 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
+| 5. pulldown-cmark Migration | v1.1 | 0/3 | Planned | - |
 | 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
 
