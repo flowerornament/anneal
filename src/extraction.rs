@@ -38,6 +38,65 @@ pub(crate) enum RefSource {
     Body,
 }
 
+/// Source location of a discovered reference.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct SourceSpan {
+    /// File path (relative to corpus root).
+    pub(crate) file: String,
+    /// 1-based line number within the file.
+    pub(crate) line: u32,
+}
+
+/// Index for converting byte offsets to 1-based line numbers in O(log n).
+///
+/// Accounts for frontmatter offset so that body byte 0 maps to the correct
+/// file-relative line number.
+#[allow(dead_code)] // Used starting in Phase 5 Plan 02 (pulldown-cmark walker)
+pub(crate) struct LineIndex {
+    /// Byte offsets where each newline occurs in the content.
+    newline_offsets: Vec<usize>,
+    /// 1-based line number of the first byte (accounts for frontmatter).
+    base_line: u32,
+}
+
+impl LineIndex {
+    /// Build a `LineIndex` from body content.
+    ///
+    /// `frontmatter_line_count` is the number of lines consumed by frontmatter
+    /// (including the opening `---` but NOT the closing `---`). The closing
+    /// `---` line is accounted for by the +1 in `base_line`.
+    ///
+    /// If `frontmatter_line_count == 0`, body starts at file line 1.
+    pub(crate) fn from_content(content: &str, frontmatter_line_count: u32) -> Self {
+        let newline_offsets: Vec<usize> = content
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+            .collect();
+        let base_line = if frontmatter_line_count == 0 {
+            1
+        } else {
+            // frontmatter lines + closing --- line + 1 for 1-based
+            frontmatter_line_count + 1 + 1
+        };
+        Self {
+            newline_offsets,
+            base_line,
+        }
+    }
+
+    /// Convert a byte offset within the body to a 1-based file line number.
+    ///
+    /// Uses binary search for O(log n) performance.
+    pub(crate) fn offset_to_line(&self, byte_offset: usize) -> u32 {
+        // partition_point returns the number of newlines strictly before byte_offset
+        let lines_before = self.newline_offsets.partition_point(|&nl| nl < byte_offset);
+        #[allow(clippy::cast_possible_truncation)] // line count will never exceed u32::MAX
+        let lines = lines_before as u32;
+        self.base_line + lines
+    }
+}
+
 /// A reference discovered during file extraction, before resolution.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DiscoveredRef {
@@ -51,6 +110,8 @@ pub(crate) struct DiscoveredRef {
     pub(crate) edge_kind: EdgeKind,
     /// If true, the actual graph edge is target -> source (inverse direction).
     pub(crate) inverse: bool,
+    /// Source location (file + line). None until populated by the scanner.
+    pub(crate) span: Option<SourceSpan>,
 }
 
 /// Uniform per-file extraction output.
@@ -345,6 +406,7 @@ mod tests {
                 source: RefSource::Body,
                 edge_kind: EdgeKind::Cites,
                 inverse: false,
+                span: None,
             };
             // Just verify it can be constructed and debug-printed
             let _ = format!("{r:?}");
@@ -363,5 +425,111 @@ mod tests {
         };
         assert!(fe.refs.is_empty());
         assert!(fe.status.is_none());
+    }
+
+    // -- SourceSpan tests --
+
+    #[test]
+    fn source_span_constructable_and_eq() {
+        let span = SourceSpan {
+            file: "foo.md".into(),
+            line: 42,
+        };
+        assert_eq!(span.file, "foo.md");
+        assert_eq!(span.line, 42);
+
+        let span2 = SourceSpan {
+            file: "foo.md".into(),
+            line: 42,
+        };
+        assert_eq!(span, span2);
+    }
+
+    #[test]
+    fn source_span_serializable() {
+        let span = SourceSpan {
+            file: "bar.md".into(),
+            line: 7,
+        };
+        let json = serde_json::to_string(&span).expect("serialize SourceSpan");
+        assert!(json.contains("\"file\":\"bar.md\""));
+        assert!(json.contains("\"line\":7"));
+    }
+
+    // -- LineIndex tests --
+
+    #[test]
+    fn line_index_first_line() {
+        let idx = LineIndex::from_content("line1\nline2\nline3", 0);
+        assert_eq!(idx.offset_to_line(0), 1, "byte 0 = line 1");
+    }
+
+    #[test]
+    fn line_index_second_line() {
+        // "line1\n" = 6 bytes, so byte 6 is start of line 2
+        let idx = LineIndex::from_content("line1\nline2\nline3", 0);
+        assert_eq!(idx.offset_to_line(6), 2, "byte 6 = line 2");
+    }
+
+    #[test]
+    fn line_index_third_line() {
+        // "line1\nline2\n" = 12 bytes, so byte 12 is start of line 3
+        let idx = LineIndex::from_content("line1\nline2\nline3", 0);
+        assert_eq!(idx.offset_to_line(12), 3, "byte 12 = line 3");
+    }
+
+    #[test]
+    fn line_index_with_frontmatter_offset() {
+        // Frontmatter has 3 lines (e.g. "---\nstatus: active\n---\n"),
+        // so frontmatter_line_count = 3 (opening --- + content + closing ---).
+        // Actually, frontmatter_line_count does NOT include closing ---,
+        // so if we have "---\nstatus: active\n", that's 2 lines.
+        // base_line = 2 + 1 + 1 = 4 (closing --- is line 3, body starts line 4).
+        let idx = LineIndex::from_content("body line 1\nbody line 2\n", 2);
+        assert_eq!(idx.offset_to_line(0), 4, "body byte 0 = file line 4");
+        assert_eq!(idx.offset_to_line(12), 5, "body byte 12 = file line 5");
+    }
+
+    #[test]
+    fn line_index_offset_beyond_content() {
+        let idx = LineIndex::from_content("short", 0);
+        // offset beyond content should return last line (line 1 for single-line content)
+        assert_eq!(idx.offset_to_line(100), 1, "beyond content = last line");
+    }
+
+    #[test]
+    fn line_index_empty_content() {
+        let idx = LineIndex::from_content("", 0);
+        assert_eq!(idx.offset_to_line(0), 1, "empty content byte 0 = line 1");
+    }
+
+    #[test]
+    fn line_index_empty_content_with_offset() {
+        let idx = LineIndex::from_content("", 5);
+        // base_line = 5 + 1 + 1 = 7
+        assert_eq!(
+            idx.offset_to_line(0),
+            7,
+            "empty content with frontmatter offset"
+        );
+    }
+
+    #[test]
+    fn discovered_ref_with_span() {
+        let r = DiscoveredRef {
+            raw: "OQ-1".into(),
+            hint: RefHint::Label {
+                prefix: "OQ".into(),
+                number: 1,
+            },
+            source: RefSource::Body,
+            edge_kind: EdgeKind::Cites,
+            inverse: false,
+            span: Some(SourceSpan {
+                file: "test.md".into(),
+                line: 10,
+            }),
+        };
+        assert_eq!(r.span.as_ref().expect("span present").line, 10);
     }
 }
