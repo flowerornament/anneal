@@ -30,7 +30,7 @@ pub(crate) enum RefHint {
 
 /// Where a reference was discovered within a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[allow(dead_code)] // Variants used by Phase 4 Plan 02 wiring
+#[allow(dead_code)] // Body variant unused until Phase 5 body scanner
 pub(crate) enum RefSource {
     /// From a YAML frontmatter field.
     Frontmatter { field: String },
