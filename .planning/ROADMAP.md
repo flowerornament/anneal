@@ -106,7 +106,7 @@ Plans:
 
 Plans:
 - [x] 06-01-PLAN.md -- PendingEdge line threading & CheckConfig for active-only
-- [ ] 06-02-PLAN.md -- Resolution cascade strategies (root-prefix, version-stem, zero-pad)
+- [x] 06-02-PLAN.md -- Resolution cascade strategies (root-prefix, version-stem, zero-pad)
 - [ ] 06-03-PLAN.md -- Evidence enum & diagnostic enrichment with candidates
 
 ### Phase 7: UX Enrichment
@@ -132,7 +132,7 @@ Plans:
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 6. Resolution Cascade | v1.1 | 0/3 | Not started | - |
+| 6. Resolution Cascade | v1.1 | 2/3 | In progress | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
 
 ---

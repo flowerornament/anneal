@@ -38,11 +38,11 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 ### Resolution
 
 - [x] **RESOLVE-01**: Introduce `Resolution` enum (Exact / Fuzzy / Unresolved) with candidate collection
-- [ ] **RESOLVE-02**: Resolution cascade: exact match -> root-prefix strip -> bare filename -> version stem -> zero-pad normalize
-- [ ] **RESOLVE-03**: Root-prefix resolution (`.design/foo.md` -> `foo.md`) for corpus-relative path mismatches
-- [ ] **RESOLVE-04**: Version stem resolution (`formal-model-v11.md` -> suggest `formal-model-v17.md` if latest exists)
-- [ ] **RESOLVE-05**: Zero-pad label normalization (`OQ-01` resolves to `OQ-1`)
-- [ ] **RESOLVE-06**: Unresolved references carry candidate list for diagnostic enrichment (structural transforms only, no fuzzy edit distance)
+- [x] **RESOLVE-02**: Resolution cascade: exact match -> root-prefix strip -> bare filename -> version stem -> zero-pad normalize
+- [x] **RESOLVE-03**: Root-prefix resolution (`.design/foo.md` -> `foo.md`) for corpus-relative path mismatches
+- [x] **RESOLVE-04**: Version stem resolution (`formal-model-v11.md` -> suggest `formal-model-v17.md` if latest exists)
+- [x] **RESOLVE-05**: Zero-pad label normalization (`OQ-01` resolves to `OQ-1`)
+- [x] **RESOLVE-06**: Unresolved references carry candidate list for diagnostic enrichment (structural transforms only, no fuzzy edit distance)
 
 ### Diagnostics
 
@@ -123,11 +123,11 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | EXTRACT-10 | Phase 5 | Complete |
 | EXTRACT-11 | Phase 5 | Complete |
 | RESOLVE-01 | Phase 4 | Complete |
-| RESOLVE-02 | Phase 6 | Pending |
-| RESOLVE-03 | Phase 6 | Pending |
-| RESOLVE-04 | Phase 6 | Pending |
-| RESOLVE-05 | Phase 6 | Pending |
-| RESOLVE-06 | Phase 6 | Pending |
+| RESOLVE-02 | Phase 6 | Complete |
+| RESOLVE-03 | Phase 6 | Complete |
+| RESOLVE-04 | Phase 6 | Complete |
+| RESOLVE-05 | Phase 6 | Complete |
+| RESOLVE-06 | Phase 6 | Complete |
 | DIAG-01 | Phase 6 | Complete |
 | DIAG-02 | Phase 6 | Pending |
 | DIAG-03 | Phase 6 | Pending |
