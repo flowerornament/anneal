@@ -107,7 +107,7 @@ Plans:
 Plans:
 - [x] 06-01-PLAN.md -- PendingEdge line threading & CheckConfig for active-only
 - [x] 06-02-PLAN.md -- Resolution cascade strategies (root-prefix, version-stem, zero-pad)
-- [ ] 06-03-PLAN.md -- Evidence enum & diagnostic enrichment with candidates
+- [x] 06-03-PLAN.md -- Evidence enum & diagnostic enrichment with candidates
 
 ### Phase 7: UX Enrichment
 **Goal**: Orientation commands are richer and more actionable — content snippets, obligations tracking, file-scoped checks, smarter init, and false positive suppression

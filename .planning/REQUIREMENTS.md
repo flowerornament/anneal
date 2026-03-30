@@ -47,9 +47,9 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 ### Diagnostics
 
 - [x] **DIAG-01**: All diagnostics carry mandatory `SourceSpan` (file + line number, never null)
-- [ ] **DIAG-02**: Introduce `Evidence` enum on `Diagnostic` for structured check results
-- [ ] **DIAG-03**: E001 diagnostics include resolution candidates ("similar handle exists: subdir/foo.md")
-- [ ] **DIAG-04**: JSON output changes are additive-only (new fields allowed, existing fields preserve type and presence)
+- [x] **DIAG-02**: Introduce `Evidence` enum on `Diagnostic` for structured check results
+- [x] **DIAG-03**: E001 diagnostics include resolution candidates ("similar handle exists: subdir/foo.md")
+- [x] **DIAG-04**: JSON output changes are additive-only (new fields allowed, existing fields preserve type and presence)
 - [x] **DIAG-05**: Human output stays terse by default (line number is the only new addition to default format)
 
 ### CLI & UX
@@ -129,9 +129,9 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | RESOLVE-05 | Phase 6 | Complete |
 | RESOLVE-06 | Phase 6 | Complete |
 | DIAG-01 | Phase 6 | Complete |
-| DIAG-02 | Phase 6 | Pending |
-| DIAG-03 | Phase 6 | Pending |
-| DIAG-04 | Phase 6 | Pending |
+| DIAG-02 | Phase 6 | Complete |
+| DIAG-03 | Phase 6 | Complete |
+| DIAG-04 | Phase 6 | Complete |
 | DIAG-05 | Phase 6 | Complete |
 | UX-01 | Phase 6 | Complete |
 | UX-02 | Phase 7 | Pending |

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-03-30T05:03:35.558Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-03-30T05:11:28.647Z"
 last_activity: 2026-03-30
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 8
+  completed_phases: 3
+  total_plans: 9
+  completed_plans: 9
   percent: 55
 ---
 
@@ -53,6 +53,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 06]: CheckConfig.default_filter is Option<String> for future-proofing
 - [Phase 06]: COMPOUND_LABEL_RE regex for zero-pad normalization of compound label prefixes
 - [Phase 06]: Root-prefix strip creates graph edges; version-stem and zero-pad produce candidates only
+- [Phase 06]: Evidence uses serde(tag=type) for internally-tagged JSON serialization
+- [Phase 06]: E001 always gets Evidence::BrokenRef even with empty candidates for JSON consistency
 
 ## Blockers/Concerns
 
@@ -60,8 +62,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T05:03:35.555Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-03-30T05:11:28.644Z
+Stopped at: Completed 06-03-PLAN.md
 Resume file: None
 
 ---
