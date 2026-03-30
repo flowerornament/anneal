@@ -88,7 +88,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05-01-PLAN.md -- SourceSpan & LineIndex types + pulldown-cmark dependency
+- [x] 05-01-PLAN.md -- SourceSpan & LineIndex types + pulldown-cmark dependency
 - [ ] 05-02-PLAN.md -- pulldown-cmark event walker (scan_file_cmark)
 - [ ] 05-03-PLAN.md -- Production wiring + parallel-run comparison
 
@@ -126,7 +126,7 @@ Plans:
 | 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
 | 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 5. pulldown-cmark Migration | v1.1 | 0/3 | Planned | - |
+| 5. pulldown-cmark Migration | v1.1 | 1/3 | In progress | - |
 | 6. Resolution Cascade | v1.1 | 0/0 | Not started | - |
 | 7. UX Enrichment | v1.1 | 0/0 | Not started | - |
 

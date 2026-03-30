@@ -25,8 +25,8 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 
 - [x] **EXTRACT-01**: Introduce `FileExtraction` type as uniform extraction output from both frontmatter and body scanning
 - [x] **EXTRACT-02**: Introduce `DiscoveredRef` with `RefHint` enum replacing `PendingEdge`, `LabelCandidate`, `FrontmatterEdge`, `ScanResult`
-- [ ] **EXTRACT-03**: Introduce `SourceSpan` with mandatory line numbers on all discovered references
-- [ ] **EXTRACT-04**: Build `LineIndex` from full file content for O(log n) byte-to-line lookup with frontmatter offset adjustment
+- [x] **EXTRACT-03**: Introduce `SourceSpan` with mandatory line numbers on all discovered references
+- [x] **EXTRACT-04**: Build `LineIndex` from full file content for O(log n) byte-to-line lookup with frontmatter offset adjustment
 - [x] **EXTRACT-05**: Plausibility filter rejects absolute paths, freeform prose, and wildcard patterns from frontmatter edge targets
 - [x] **EXTRACT-06**: URLs in frontmatter classified as `RefHint::External` (not silently skipped)
 - [ ] **EXTRACT-07**: Replace regex body scanner with pulldown-cmark 0.13 event walker (ENABLE_HEADING_ATTRIBUTES + ENABLE_WIKILINKS)
@@ -113,8 +113,8 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 |-------------|-------|--------|
 | EXTRACT-01 | Phase 4 | Complete |
 | EXTRACT-02 | Phase 4 | Complete |
-| EXTRACT-03 | Phase 5 | Pending |
-| EXTRACT-04 | Phase 5 | Pending |
+| EXTRACT-03 | Phase 5 | Complete |
+| EXTRACT-04 | Phase 5 | Complete |
 | EXTRACT-05 | Phase 4 | Complete |
 | EXTRACT-06 | Phase 4 | Complete |
 | EXTRACT-07 | Phase 5 | Pending |

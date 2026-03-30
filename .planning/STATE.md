@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: verifying
-stopped_at: Completed 04-03-PLAN.md
+stopped_at: Completed 05-01-PLAN.md
 last_updated: "2026-03-30T00:44:21.923Z"
 last_activity: 2026-03-30
 progress:
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 ## Current Position
 
 Phase: 5
-Plan: Not started
-Status: Phase complete — ready for verification
+Plan: 1 of 3 complete
+Status: Executing phase 05-pulldown-cmark-migration
 Last activity: 2026-03-30
 
-Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
+Progress: [████████████░░░░░░░░] 57% (12/~21 plans, v1.0 complete)
 
 ## Decisions
 
@@ -46,6 +46,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 04-types-plausibility]: ImplausibleRef/ExternalRef as parse.rs structs to avoid circular dependency with checks.rs
 - [Phase 04]: Dual-pass over field_edges: existing PendingEdge flow untouched, new DiscoveredRef flow added in parallel
 - [Phase 04]: RefSource::Frontmatter field from EdgeKind::as_str() since FrontmatterEdge lacks field name
+- [Phase 05]: LineIndex uses partition_point binary search for O(log n) byte-offset to line lookup
+- [Phase 05]: pulldown-cmark 0.13 added with default-features=false
 
 ## Blockers/Concerns
 
@@ -53,8 +55,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T00:39:27.638Z
-Stopped at: Completed 04-03-PLAN.md
+Last session: 2026-03-30T03:56:17Z
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None
 
 ---
