@@ -912,6 +912,12 @@ mod tests {
             "URL should be in external_refs, got {} entries",
             result.external_refs.len()
         );
+        // URL should appear in extraction as RefHint::External
+        assert_eq!(result.extractions.len(), 1);
+        let ext = &result.extractions[0];
+        assert_eq!(ext.refs.len(), 1);
+        assert_eq!(ext.refs[0].raw, "https://example.com");
+        assert_eq!(ext.refs[0].hint, RefHint::External);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1167,6 +1173,88 @@ mod tests {
         assert!(
             hints.iter().any(|h| matches!(h, RefHint::FilePath)),
             "should have FilePath ref for valid.md"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// End-to-end: URLs in frontmatter produce no E001 diagnostic and appear
+    /// as `RefHint::External` in the extractions array. Exercises the full
+    /// pipeline from build_graph through check_existence.
+    #[test]
+    fn url_in_frontmatter_no_e001_and_external_in_extraction() {
+        let tmp = std::env::temp_dir().join("anneal_test_url_e2e");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // A file whose only frontmatter ref is a URL — should produce zero E001
+        write_md_file(
+            &tmp,
+            "spec.md",
+            "---\nstatus: active\ndepends-on:\n  - https://rfc.example.org/123\n  - http://archive.org/old\n---\nBody.\n",
+        );
+        // A file with a mix: one valid .md ref + one URL
+        write_md_file(
+            &tmp,
+            "impl.md",
+            "---\nstatus: draft\ndepends-on:\n  - spec.md\n  - https://docs.example.com/api\n---\nBody.\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        // URLs must never enter pending_edges (which is what produces E001)
+        let url_edges: Vec<_> = result
+            .pending_edges
+            .iter()
+            .filter(|e| e.target_identity.starts_with("http"))
+            .collect();
+        assert!(
+            url_edges.is_empty(),
+            "URLs should never enter pending_edges (source of E001), got: {:?}",
+            url_edges
+                .iter()
+                .map(|e| &e.target_identity)
+                .collect::<Vec<_>>()
+        );
+
+        // URLs should be in external_refs
+        assert_eq!(
+            result.external_refs.len(),
+            3,
+            "should have 3 external refs (2 from spec.md + 1 from impl.md)"
+        );
+
+        // --- Extraction pipeline ---
+        assert_eq!(result.extractions.len(), 2);
+
+        // spec.md: two URLs, both External
+        let spec_ext = result
+            .extractions
+            .iter()
+            .find(|e| e.status.as_deref() == Some("active"))
+            .expect("spec.md extraction");
+        assert_eq!(spec_ext.refs.len(), 2);
+        assert!(
+            spec_ext.refs.iter().all(|r| r.hint == RefHint::External),
+            "all spec.md refs should be External"
+        );
+
+        // impl.md: one FilePath + one External
+        let impl_ext = result
+            .extractions
+            .iter()
+            .find(|e| e.status.as_deref() == Some("draft"))
+            .expect("impl.md extraction");
+        assert_eq!(impl_ext.refs.len(), 2);
+        assert!(
+            impl_ext.refs.iter().any(|r| r.hint == RefHint::FilePath),
+            "impl.md should have a FilePath ref"
+        );
+        assert!(
+            impl_ext.refs.iter().any(|r| r.hint == RefHint::External),
+            "impl.md should have an External ref"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
