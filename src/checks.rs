@@ -8,6 +8,38 @@ use crate::handle::{HandleKind, NodeId};
 use crate::lattice::{self, FreshnessLevel, Lattice};
 use crate::parse::{ImplausibleRef, PendingEdge};
 
+/// Structured evidence attached to diagnostics for JSON consumers (DIAG-02).
+///
+/// Each variant corresponds to a diagnostic code and carries the data that
+/// produced the diagnostic. Human output uses the `message` string; JSON
+/// consumers use `evidence` for programmatic access.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type")]
+pub(crate) enum Evidence {
+    /// E001: broken reference with resolution cascade candidates.
+    BrokenRef {
+        target: String,
+        candidates: Vec<String>,
+    },
+    /// W001: stale reference (active -> terminal).
+    StaleRef {
+        source_status: String,
+        target_status: String,
+    },
+    /// W002: confidence gap in pipeline ordering.
+    ConfidenceGap {
+        source_status: String,
+        source_level: usize,
+        target_status: String,
+        target_level: usize,
+    },
+    /// W004: implausible frontmatter value.
+    Implausible {
+        value: String,
+        reason: String,
+    },
+}
+
 /// Severity level for diagnostics, ordered so errors sort first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) enum Severity {
@@ -28,6 +60,7 @@ pub(crate) struct Diagnostic {
     pub(crate) message: String,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
+    pub(crate) evidence: Option<Evidence>,
 }
 
 impl Diagnostic {
@@ -74,6 +107,7 @@ fn check_existence(
     graph: &DiGraph,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
+    cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -87,6 +121,7 @@ fn check_existence(
             ),
             file: None,
             line: None,
+            evidence: None,
         });
     }
 
@@ -99,12 +134,31 @@ fn check_existence(
             .file_path
             .as_ref()
             .map(ToString::to_string);
+
+        let candidates = cascade_candidates
+            .get(&edge.target_identity)
+            .cloned()
+            .unwrap_or_default();
+
+        let candidate_msg = if candidates.is_empty() {
+            String::new()
+        } else {
+            format!("; similar handle exists: {}", candidates.join(", "))
+        };
+
         diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: "E001",
-            message: format!("broken reference: {} not found", edge.target_identity),
+            message: format!(
+                "broken reference: {} not found{}",
+                edge.target_identity, candidate_msg
+            ),
             file,
             line: edge.line,
+            evidence: Some(Evidence::BrokenRef {
+                target: edge.target_identity.clone(),
+                candidates,
+            }),
         });
     }
 
@@ -131,6 +185,10 @@ fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
             ),
             file: Some(r.file.clone()),
             line: None,
+            evidence: Some(Evidence::Implausible {
+                value: r.raw_value.clone(),
+                reason: r.reason.clone(),
+            }),
         })
         .collect()
 }
@@ -167,6 +225,10 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                     ),
                     file: handle.file_path.as_ref().map(ToString::to_string),
                     line: None,
+                    evidence: Some(Evidence::StaleRef {
+                        source_status: source_status.clone(),
+                        target_status: target_status.to_string(),
+                    }),
                 });
             }
         }
@@ -217,6 +279,12 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                     ),
                     file: handle.file_path.as_ref().map(ToString::to_string),
                     line: None,
+                    evidence: Some(Evidence::ConfidenceGap {
+                        source_status: source_status.clone(),
+                        source_level,
+                        target_status: target_status.clone(),
+                        target_level,
+                    }),
                 });
             }
         }
@@ -273,6 +341,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                 ),
                 file: handle.file_path.as_ref().map(ToString::to_string),
                 line: None,
+                evidence: None,
             });
         } else if discharge_count >= 2 {
             diagnostics.push(Diagnostic {
@@ -284,6 +353,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                 ),
                 file: handle.file_path.as_ref().map(ToString::to_string),
                 line: None,
+                evidence: None,
             });
         }
     }
@@ -344,6 +414,7 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
                 ),
                 file: handle.file_path.as_ref().map(ToString::to_string),
                 line: None,
+                evidence: None,
             });
         }
     }
@@ -379,6 +450,7 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file: handle.file_path.as_ref().map(ToString::to_string),
                 line: None,
+                evidence: None,
             });
         }
     }
@@ -425,6 +497,7 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
             ),
             file: None,
             line: None,
+            evidence: None,
         });
     }
 
@@ -492,6 +565,7 @@ fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic
                 ),
                 file: None,
                 line: None,
+                evidence: None,
             });
         }
     }
@@ -563,6 +637,7 @@ fn suggest_abandoned_namespaces(
                 ),
                 file: None,
                 line: None,
+                evidence: None,
             });
         }
     }
@@ -649,6 +724,7 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
             ),
             file: None,
             line: None,
+            evidence: None,
         });
     }
 
@@ -689,9 +765,15 @@ pub(crate) fn run_checks(
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
     implausible_refs: &[ImplausibleRef],
+    cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    diagnostics.extend(check_existence(graph, unresolved_edges, section_ref_count));
+    diagnostics.extend(check_existence(
+        graph,
+        unresolved_edges,
+        section_ref_count,
+        cascade_candidates,
+    ));
     diagnostics.extend(check_plausibility(implausible_refs));
     diagnostics.extend(check_staleness(graph, lattice));
     diagnostics.extend(check_confidence_gap(graph, lattice));
@@ -755,7 +837,8 @@ mod tests {
             line: Some(42),
         }];
 
-        let diags = check_existence(&graph, &unresolved, 0);
+        let cascade = HashMap::new();
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code, "E001");
@@ -772,7 +855,8 @@ mod tests {
         let graph = DiGraph::new();
         let unresolved: Vec<PendingEdge> = Vec::new();
 
-        let diags = check_existence(&graph, &unresolved, 42);
+        let cascade = HashMap::new();
+        let diags = check_existence(&graph, &unresolved, 42, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Info);
         assert_eq!(diags[0].code, "I001");
@@ -1219,7 +1303,8 @@ mod tests {
         let config = AnnealConfig::default();
         let unresolved: Vec<PendingEdge> = Vec::new();
 
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0, &[]);
+        let cascade = HashMap::new();
+        let diags = run_checks(&graph, &lattice, &config, &unresolved, 0, &[], &cascade);
         let suggestion_count = diags
             .iter()
             .filter(|d| d.severity == Severity::Suggestion)
@@ -1233,6 +1318,106 @@ mod tests {
     // -----------------------------------------------------------------------
     // run_checks integration
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Evidence serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn evidence_none_serializes_as_null() {
+        let diag = Diagnostic {
+            severity: Severity::Error,
+            code: "E001",
+            message: "test".to_string(),
+            file: None,
+            line: None,
+            evidence: None,
+        };
+        let json = serde_json::to_value(&diag).expect("serialize");
+        assert!(json["evidence"].is_null(), "evidence: None should serialize as null");
+        // Existing fields still present
+        assert_eq!(json["code"], "E001");
+        assert_eq!(json["message"], "test");
+    }
+
+    #[test]
+    fn evidence_broken_ref_serializes_with_type_tag() {
+        let diag = Diagnostic {
+            severity: Severity::Error,
+            code: "E001",
+            message: "test".to_string(),
+            file: Some("doc.md".to_string()),
+            line: Some(10),
+            evidence: Some(Evidence::BrokenRef {
+                target: "OQ-99".to_string(),
+                candidates: vec!["OQ-9".to_string()],
+            }),
+        };
+        let json = serde_json::to_value(&diag).expect("serialize");
+        let ev = &json["evidence"];
+        assert_eq!(ev["type"], "BrokenRef");
+        assert_eq!(ev["target"], "OQ-99");
+        assert_eq!(ev["candidates"][0], "OQ-9");
+        // Existing fields unchanged
+        assert_eq!(json["severity"], "Error");
+        assert_eq!(json["code"], "E001");
+        assert_eq!(json["file"], "doc.md");
+        assert_eq!(json["line"], 10);
+    }
+
+    #[test]
+    fn check_existence_with_candidates_produces_evidence() {
+        let mut graph = DiGraph::new();
+        let source = graph.add_node(make_file_handle("doc.md", None));
+
+        let unresolved = vec![PendingEdge {
+            source,
+            target_identity: "OQ-99".to_string(),
+            kind: EdgeKind::Cites,
+            inverse: false,
+            line: Some(5),
+        }];
+
+        let mut cascade = HashMap::new();
+        cascade.insert("OQ-99".to_string(), vec!["OQ-9".to_string()]);
+
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("similar handle exists: OQ-9"));
+        match &diags[0].evidence {
+            Some(Evidence::BrokenRef { target, candidates }) => {
+                assert_eq!(target, "OQ-99");
+                assert_eq!(candidates, &["OQ-9"]);
+            }
+            other => panic!("Expected Evidence::BrokenRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_existence_without_candidates_produces_empty_candidates() {
+        let mut graph = DiGraph::new();
+        let source = graph.add_node(make_file_handle("doc.md", None));
+
+        let unresolved = vec![PendingEdge {
+            source,
+            target_identity: "MISSING-1".to_string(),
+            kind: EdgeKind::Cites,
+            inverse: false,
+            line: None,
+        }];
+
+        let cascade = HashMap::new();
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
+        assert_eq!(diags.len(), 1);
+        assert!(!diags[0].message.contains("similar handle"));
+        match &diags[0].evidence {
+            Some(Evidence::BrokenRef { target, candidates }) => {
+                assert_eq!(target, "MISSING-1");
+                assert!(candidates.is_empty());
+            }
+            other => panic!("Expected Evidence::BrokenRef with empty candidates, got {other:?}"),
+        }
+    }
 
     #[test]
     fn run_checks_sorts_by_severity() {
@@ -1255,7 +1440,8 @@ mod tests {
             line: None,
         }];
 
-        let diags = run_checks(&graph, &lattice, &config, &unresolved, 5, &[]);
+        let cascade = HashMap::new();
+        let diags = run_checks(&graph, &lattice, &config, &unresolved, 5, &[], &cascade);
 
         // Should have: E001 (error), W001 (warning), I001 (info)
         assert!(

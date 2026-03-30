@@ -1715,6 +1715,7 @@ fn build_graph_at_git_ref(
         let node_index = crate::resolve::build_node_index(&build_result.graph);
         let (unresolved_owned, section_ref_count) =
             super::collect_unresolved_owned(&build_result.pending_edges, &node_index);
+        let cascade_candidates = std::collections::HashMap::new();
         let all_diagnostics = crate::checks::run_checks(
             &build_result.graph,
             &lattice,
@@ -1722,6 +1723,7 @@ fn build_graph_at_git_ref(
             &unresolved_owned,
             section_ref_count,
             &build_result.implausible_refs,
+            &cascade_candidates,
         );
         Ok(crate::snapshot::build_snapshot(
             &build_result.graph,

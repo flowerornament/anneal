@@ -647,6 +647,7 @@ mod tests {
                 message: "test error".to_string(),
                 file: None,
                 line: None,
+                evidence: None,
             },
             Diagnostic {
                 severity: Severity::Warning,
@@ -654,6 +655,7 @@ mod tests {
                 message: "test warning".to_string(),
                 file: None,
                 line: None,
+                evidence: None,
             },
         ];
 
