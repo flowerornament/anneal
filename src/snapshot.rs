@@ -222,7 +222,7 @@ pub(crate) fn append_snapshot(
     state: &ResolvedStateConfig,
     snapshot: &Snapshot,
 ) -> anyhow::Result<()> {
-    let Some(history_path) = write_history_path(root, state)? else {
+    let Some(history_path) = write_history_path(root, state) else {
         return Ok(());
     };
 
@@ -329,31 +329,29 @@ fn read_history_path(root: &Utf8Path, state: &ResolvedStateConfig) -> Option<Utf
         HistoryMode::Off => None,
         HistoryMode::Repo => Some(repo_history_path(root)),
         HistoryMode::Xdg => {
-            let xdg_path = xdg_history_path(root, state)?;
-            if xdg_path.exists() {
-                Some(xdg_path)
-            } else {
-                let legacy = repo_history_path(root);
-                if legacy.exists() {
+            let legacy = repo_history_path(root);
+            if let Some(xdg_path) = xdg_history_path(root, state) {
+                if xdg_path.exists() {
+                    Some(xdg_path)
+                } else if legacy.exists() {
                     Some(legacy)
                 } else {
                     Some(xdg_path)
                 }
+            } else if legacy.exists() {
+                Some(legacy)
+            } else {
+                None
             }
         }
     }
 }
 
-fn write_history_path(
-    root: &Utf8Path,
-    state: &ResolvedStateConfig,
-) -> anyhow::Result<Option<Utf8PathBuf>> {
+fn write_history_path(root: &Utf8Path, state: &ResolvedStateConfig) -> Option<Utf8PathBuf> {
     match state.history_mode {
-        HistoryMode::Off => Ok(None),
-        HistoryMode::Repo => Ok(Some(repo_history_path(root))),
-        HistoryMode::Xdg => Ok(Some(xdg_history_path(root, state).ok_or_else(|| {
-            anyhow::anyhow!("could not determine XDG state directory for anneal history")
-        })?)),
+        HistoryMode::Off => None,
+        HistoryMode::Repo => Some(repo_history_path(root)),
+        HistoryMode::Xdg => xdg_history_path(root, state),
     }
 }
 
