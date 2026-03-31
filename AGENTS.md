@@ -8,7 +8,7 @@ Convergence assistant for knowledge corpora.
 
 - `.design/anneal-spec.md` — authoritative product and implementation spec
 - `.design/anneal.toml` — self-check config for anneal's own spec corpus
-- `.design/.anneal/` — derived local history/state; ignored
+- `.design/.anneal/` — optional repo-local anneal state when explicitly configured
 - `.planning/ROADMAP.md` — roadmap and milestone spine
 - `.planning/STATE.md` — current project state
 - `install.sh` — shipped installer for release binaries

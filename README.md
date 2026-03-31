@@ -4,6 +4,8 @@ Convergence assistant for knowledge corpora.
 
 `anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge, recover relevant context quickly, and push it toward settledness.
 
+By default, anneal stores derived snapshot history in machine-local XDG state, not in the repo worktree. Repo-local history remains available as an explicit configuration choice.
+
 ## The problem
 
 A knowledge corpus grows across many sessions. No single agent sees the full history. Documents reference each other, supersede each other, track obligations. Without tooling, every arriving agent has to read everything to understand what's settled, what's drifting, and what's connected to what.
@@ -112,6 +114,29 @@ anneal diff
 anneal init
 ```
 
+## Configuration and local state
+
+`anneal` separates corpus behavior from machine-local runtime preferences.
+
+- Repo config lives in `anneal.toml` at the corpus root.
+- User config lives in XDG config:
+  - `$XDG_CONFIG_HOME/anneal/config.toml`
+  - fallback `~/.config/anneal/config.toml`
+- Derived snapshot history lives in XDG state by default:
+  - `$XDG_STATE_HOME/anneal/...`
+  - fallback `~/.local/state/anneal/...`
+
+This keeps automatic convergence tracking and `anneal diff` useful without dirtying the git worktree during normal use.
+
+Example user config:
+
+```toml
+[state]
+history_mode = "xdg"   # xdg | repo | off
+```
+
+Use `history_mode = "repo"` if you explicitly want repo-local history at `<root>/.anneal/history.jsonl`.
+
 ## Workflow
 
 `anneal` supports a practical loop for corpus work:
@@ -167,7 +192,7 @@ $ anneal status -v
                 ...
 ```
 
-Appends a snapshot to `.anneal/history.jsonl` for convergence tracking.
+Appends a snapshot to local anneal history for convergence tracking. By default this is machine-local XDG state, not a repo file.
 
 ### `anneal check`
 
@@ -371,9 +396,9 @@ On every invocation, `anneal` walks a directory of markdown files and builds a t
 2. **Resolve** — infer label namespaces from sequential cardinality (REQ-1 through REQ-50 is a namespace; SHA-256 is not), resolve cross-references to graph nodes with deterministic fallback candidates
 3. **Lattice** — partition observed `status:` values into active and terminal sets, optionally infer from directory conventions (files only in `archive/` → terminal)
 4. **Check** — run five consistency rules and five suggestion rules against the graph, then apply optional suppressions
-5. **Snapshot** — capture counts to `.anneal/history.jsonl` for convergence tracking over time
+5. **Snapshot** — capture counts to local anneal history for convergence tracking over time
 
-No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived and deletable.
+No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived, deletable, and machine-local by default.
 
 The underlying model borrows a simple idea from type theory and static analysis: statuses are ordered, so the tool can compare neighboring handles and ask questions like "is this dependency less settled than the thing that depends on it?" The active/terminal split is the simplest form of that ordering. A configured pipeline turns it into a richer progression. Convergence tracking measures how the population moves through that progression over time. Checks stay local — they compare a handle with its immediate neighbors rather than trying to solve a whole-program global proof — which keeps the tool fast and predictable.
 
