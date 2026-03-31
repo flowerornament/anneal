@@ -7,7 +7,9 @@ metadata:
 
 # Anneal
 
-Use `anneal` to interrogate a markdown knowledge corpus, recover relevant context quickly, and validate structural assumptions before making claims or edits.
+Use `anneal` to orient in a markdown knowledge corpus, recover relevant context quickly, and validate structural assumptions before making claims or edits.
+
+`anneal` treats a corpus as a convergence system rather than a pile of files: handles move through degrees of settledness, obligations are either discharged or left hanging, and snapshot history shows whether the body of knowledge is advancing, holding, or drifting.
 
 Use `anneal help <command>` for exact flags and edge cases. Do not guess the CLI from memory.
 
@@ -39,7 +41,7 @@ anneal status -v --json
 anneal check --json
 ```
 
-`status --json` gives corpus shape and current context. `check --json` gives actionable problems without terminal-file noise by default; use `--include-terminal` for the full picture.
+`status --json` gives corpus shape and convergence context. `check --json` gives actionable problems without terminal-file noise by default; use `--include-terminal` for the full picture.
 
 ### Inspect A Specific Thing
 
@@ -75,8 +77,9 @@ Use this when the corpus lacks `anneal.toml` or when the user is formalizing sta
 ## Minimal Mental Model
 
 - `handle`: a file, section, label, version, or external URL
-- `status`: frontmatter lifecycle state; typically split into active vs terminal
-- `snapshot`: `status` and `check` append to `.anneal/history.jsonl`, which powers convergence and diff
+- `status`: frontmatter lifecycle state; typically split into active vs terminal, representing how settled the knowledge is
+- `snapshot`: `status` and `check` append to local anneal history, which powers convergence and diff
+- `convergence`: structural evidence that the corpus is settling rather than fragmenting
 
 You do not need the full model in your head. Reach for `anneal help` when exact semantics matter.
 
