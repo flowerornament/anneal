@@ -125,7 +125,7 @@ Plans:
 Plans:
 - [x] 07-01-PLAN.md -- Config suppress + External handle kind + depth default
 - [x] 07-02-PLAN.md -- Content snippets + obligations command
-- [ ] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
+- [x] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
 - [ ] 07-04-PLAN.md -- Self-check closure
 
 ## Progress
