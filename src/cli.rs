@@ -1893,7 +1893,7 @@ fn shell_escape(s: &str) -> String {
 /// Three modes:
 /// 1. `git_ref` — reconstruct graph at that ref and diff structurally
 /// 2. `days` — find closest snapshot to N days ago in history
-/// 3. Default — diff against last snapshot in history
+/// 3. Default — diff against the most recent snapshot only
 pub(crate) fn cmd_diff(
     root: &Utf8Path,
     current_snapshot: &crate::snapshot::Snapshot,
@@ -1905,9 +1905,8 @@ pub(crate) fn cmd_diff(
         return Ok(diff_snapshots(current_snapshot, &previous, git_ref));
     }
 
-    let history = crate::snapshot::read_history(root);
-
     if let Some(days) = days {
+        let history = crate::snapshot::read_all_snapshots(root);
         if let Some(previous) = find_snapshot_by_days(&history, days) {
             return Ok(diff_snapshots(
                 current_snapshot,
@@ -1915,7 +1914,7 @@ pub(crate) fn cmd_diff(
                 &format!("{days} days ago"),
             ));
         }
-    } else if let Some(previous) = history.last() {
+    } else if let Some(previous) = crate::snapshot::read_latest_snapshot(root).as_ref() {
         return Ok(diff_snapshots(current_snapshot, previous, "last snapshot"));
     }
 
@@ -2410,6 +2409,44 @@ mod tests {
             text.contains("No snapshot history yet"),
             "Expected no-history message, got: {text}"
         );
+    }
+
+    #[test]
+    fn diff_default_compares_against_most_recent_snapshot() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8");
+
+        let mut oldest = make_snapshot_base();
+        oldest.handles.total = 60;
+        oldest.handles.active = 40;
+        oldest.handles.frozen = 20;
+
+        let mut middle = make_snapshot_base();
+        middle.handles.total = 80;
+        middle.handles.active = 48;
+        middle.handles.frozen = 32;
+
+        let mut latest = make_snapshot_base();
+        latest.handles.total = 95;
+        latest.handles.active = 59;
+        latest.handles.frozen = 36;
+
+        crate::snapshot::append_snapshot(root, &oldest).expect("append oldest");
+        crate::snapshot::append_snapshot(root, &middle).expect("append middle");
+        crate::snapshot::append_snapshot(root, &latest).expect("append latest");
+
+        let mut current = make_snapshot_base();
+        current.handles.total = 100;
+        current.handles.active = 63;
+        current.handles.frozen = 37;
+
+        let output = cmd_diff(root, &current, None, None).expect("cmd_diff");
+
+        assert!(output.has_history);
+        assert_eq!(output.reference, "last snapshot");
+        assert_eq!(output.handle_delta.created, 5);
+        assert_eq!(output.handle_delta.active_delta, 4);
+        assert_eq!(output.handle_delta.frozen_delta, 1);
     }
 
     // -----------------------------------------------------------------------
