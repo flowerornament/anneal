@@ -2,6 +2,14 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.3.1 - 2026-03-31
+
+### Changed
+
+- Tightened the anneal skill defaults so broad orientation uses compact health checks instead of raw diagnostic JSON dumps.
+- Replaced brittle skill examples with commands that work in anneal's own corpus or clearly use placeholders where the argument must come from the active corpus.
+- Made the release helper scaffold a changelog entry on version bump and require a non-placeholder release entry during release verification.
+
 ## 0.3.0 - 2026-03-31
 
 ### Added

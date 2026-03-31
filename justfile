@@ -50,11 +50,11 @@ test:
 build:
     cargo build --release
 
-# Update release versions in Cargo.toml, Cargo.lock, and flake.nix
+# Update release versions in Cargo.toml, Cargo.lock, flake.nix, and scaffold CHANGELOG.md
 release-bump version:
     python3 scripts/release.py bump {{version}}
 
-# Release readiness checks: versions, targets, quality gate, release binary
+# Release readiness checks: versions, changelog, targets, quality gate, release binary
 release-verify:
     python3 scripts/release.py verify
 

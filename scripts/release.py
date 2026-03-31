@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from datetime import date
 from pathlib import Path
 
 
@@ -81,6 +82,56 @@ def beads_config_is_public_safe() -> bool:
     return re.search(r'(?m)^federation\.remote:\s*".+"', text) is None
 
 
+def changelog_text() -> str:
+    return read_text(ROOT / "CHANGELOG.md")
+
+
+def changelog_has_entry(version: str) -> bool:
+    pattern = rf"(?m)^## {re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$"
+    return re.search(pattern, changelog_text()) is not None
+
+
+def changelog_entry(version: str) -> str:
+    text = changelog_text()
+    heading = re.search(
+        rf"(?m)^## {re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$",
+        text,
+    )
+    if heading is None:
+        fail(f"CHANGELOG.md is missing an entry for {version}")
+
+    next_heading = re.search(r"(?m)^## \d+\.\d+\.\d+ - \d{4}-\d{2}-\d{2}$", text[heading.end() :])
+    if next_heading is None:
+        return text[heading.end() :]
+    return text[heading.end() : heading.end() + next_heading.start()]
+
+
+def changelog_insert_entry(version: str) -> None:
+    if changelog_has_entry(version):
+        return
+
+    today = date.today().isoformat()
+    scaffold = (
+        f"## {version} - {today}\n\n"
+        "### Changed\n\n"
+        "- TODO: summarize release changes.\n\n"
+    )
+
+    text = changelog_text()
+    marker = "All notable changes to `anneal` are documented in this file.\n\n"
+    if marker not in text:
+        fail("could not find CHANGELOG.md insertion marker")
+    updated = text.replace(marker, marker + scaffold, 1)
+    write_text(ROOT / "CHANGELOG.md", updated)
+
+
+def changelog_entry_is_ready(version: str) -> bool:
+    entry = changelog_entry(version)
+    if "TODO:" in entry or "TBD" in entry:
+        return False
+    return re.search(r"(?m)^- ", entry) is not None
+
+
 def replace_once(text: str, pattern: str, replacement: str) -> str:
     updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
     if count != 1:
@@ -119,11 +170,13 @@ def bump(version: str) -> None:
         rf'\1\g<indent>version = "{version}";',
     )
     write_text(flake_nix, flake_text)
+    changelog_insert_entry(version)
 
     print(f"updated release version to {version}")
     print("  - Cargo.toml")
     print("  - Cargo.lock")
     print("  - flake.nix")
+    print("  - CHANGELOG.md")
 
 
 def run(cmd: list[str]) -> None:
@@ -154,12 +207,18 @@ def verify() -> None:
     if not beads_config_is_public_safe():
         fail(".beads/config.yaml contains a concrete federation.remote; use local configuration instead")
 
+    version = unique_versions.pop()
+    if not changelog_entry_is_ready(version):
+        fail(
+            "CHANGELOG.md must contain a release entry for "
+            f"{version} with at least one bullet and no TODO/TBD placeholders"
+        )
+
     run(["just", "check"])
     run(["just", "build"])
     run(["./target/release/anneal", "--version"])
     run(["./target/release/anneal", "--root", ".design", "check"])
 
-    version = unique_versions.pop()
     print(f"release verification passed for {version}")
     print(f"release targets: {', '.join(workflow)}")
 

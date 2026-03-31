@@ -60,8 +60,11 @@ git push origin master
 just release-tag 0.2.1
 ```
 
+`just release-bump` also scaffolds a `CHANGELOG.md` entry for the target version.
+
 `just release-verify` checks:
 - version alignment across `Cargo.toml`, `Cargo.lock`, and `flake.nix`
+- release entry present in `CHANGELOG.md` with at least one bullet and no `TODO`/`TBD` placeholders
 - release target alignment across `release.yml`, `install.sh`, and `README.md`
 - public-repo safety for `.beads/config.yaml`
 - `just check`
