@@ -25,9 +25,9 @@ Use this skill for knowledge-corpus structure, health, impact, and validation.
 Use this orientation loop when the request is broad:
 
 1. `anneal status --json`
-2. `anneal check --json`
-3. `anneal get <handle> --json` or `anneal find <text> --json` for the item the user cares about
-4. `anneal impact <file-or-handle> --json` before editing corpus files
+2. `anneal check --active-only`
+3. `anneal get <handle>` or `anneal find <text>` for the item the user cares about
+4. `anneal impact <file-or-handle>` before editing corpus files
 
 For a single concrete question, run the matching command directly.
 
@@ -37,19 +37,19 @@ For a single concrete question, run the matching command directly.
 
 ```bash
 anneal status --json
-anneal status -v --json
-anneal check --json
+anneal status -v
+anneal check --active-only
 ```
 
-`status --json` gives corpus shape and convergence context. `check --json` gives actionable problems without terminal-file noise by default; use `--include-terminal` for the full picture.
+Use `status --json` to capture corpus shape and convergence context. Use plain-text `check --active-only` for default health checks and session orientation.
 
 ### Inspect A Specific Thing
 
 ```bash
-anneal get OQ-64 --json
-anneal find FM --json
-anneal find "" --status=draft --json
-anneal map --around=OQ-64 --json
+anneal get anneal-spec.md
+anneal find <text>
+anneal find "" --status=draft
+anneal map --around=anneal-spec.md
 ```
 
 Use `get` for one known handle, `find` for discovery, and `map --around` when relationship shape matters more than raw text.
@@ -57,10 +57,10 @@ Use `get` for one known handle, `find` for discovery, and `map --around` when re
 ### Understand Change Or Blast Radius
 
 ```bash
-anneal diff --json
-anneal diff --days=7 --json
-anneal impact formal-model/v17.md --json
-anneal impact OQ-64 --json
+anneal diff
+anneal diff --days=7
+anneal impact anneal-spec.md
+anneal impact <file-or-handle>
 ```
 
 Use `anneal diff` when the question is about structural corpus changes rather than line edits.
@@ -68,8 +68,8 @@ Use `anneal diff` when the question is about structural corpus changes rather th
 ### Initialize Or Adjust Config
 
 ```bash
-anneal init --dry-run --json
-anneal init --json
+anneal init --dry-run
+anneal init
 ```
 
 Use this when the corpus lacks `anneal.toml` or when the user is formalizing status pipelines and handle namespaces.
@@ -85,11 +85,18 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 
 ## Agent Rules
 
-- Default to `--json` for fact gathering and reasoning.
+- Use `anneal status --json` for orientation. Use plain-text output for routine `check`, `get`, `find`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
+- Use plain-text `anneal check --active-only` for default orientation and health checks.
 - Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
-- Before editing knowledge files, run `anneal impact <file-or-handle> --json`.
-- After editing knowledge files, run `anneal check --json`.
+- Before editing knowledge files, run `anneal impact <file-or-handle>`.
+- After editing knowledge files, run `anneal check --active-only`.
 - If error counts look surprisingly high, confirm whether terminal files are included before reporting the corpus as unhealthy.
+
+When you need structured diagnostics, filter them to a narrow summary before returning them to the model, for example:
+
+```bash
+anneal check --active-only --json | jq '{summary, diagnostic_count: (.diagnostics | length)}'
+```
 
 ## High-Value Diagnostics
 
