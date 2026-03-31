@@ -112,3 +112,17 @@ impl Handle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::HandleKind;
+
+    #[test]
+    fn external_handle_kind_reports_external_tag() {
+        let kind = HandleKind::External {
+            url: "https://example.com/spec".to_string(),
+        };
+
+        assert_eq!(kind.as_str(), "external");
+    }
+}
