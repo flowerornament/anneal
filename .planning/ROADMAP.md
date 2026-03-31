@@ -3,7 +3,7 @@
 ## Milestones
 
 - [x] **v1.0 MVP** - Phases 1-3 (shipped 2026-03-29)
-- [ ] **v1.1 Parser Hardening & UX Polish** - Phases 4-7 (in progress)
+- [x] **v1.1 Parser Hardening & UX Polish** - Phases 4-7 (shipped 2026-03-31)
 
 ## Phases
 
@@ -48,14 +48,14 @@ Plans:
 
 </details>
 
-### v1.1 Parser Hardening & UX Polish (In Progress)
+### v1.1 Parser Hardening & UX Polish (Complete)
 
 **Milestone Goal:** Make `anneal check` output trustworthy and actionable by introducing typed extraction/resolution/diagnostic pipeline, replacing the regex body scanner with pulldown-cmark, and enriching orientation commands.
 
-- [ ] **Phase 4: Types & Plausibility** - Typed extraction pipeline with plausibility filtering and external URL classification
-- [ ] **Phase 5: pulldown-cmark Migration** - Replace regex body scanner with pulldown-cmark event walker, line number tracking
-- [ ] **Phase 6: Resolution Cascade** - Deterministic resolution strategies, enriched diagnostics with evidence, active-only config
-- [ ] **Phase 7: UX Enrichment** - Content snippets, smarter init, file-scoped checks, obligations command, config suppression, self-check
+- [x] **Phase 4: Types & Plausibility** - Typed extraction pipeline with plausibility filtering and external URL classification
+- [x] **Phase 5: pulldown-cmark Migration** - Replace regex body scanner with pulldown-cmark event walker, line number tracking
+- [x] **Phase 6: Resolution Cascade** - Deterministic resolution strategies, enriched diagnostics with evidence, active-only config
+- [x] **Phase 7: UX Enrichment** - Content snippets, smarter init, file-scoped checks, obligations command, config suppression, self-check
 
 ## Phase Details
 
@@ -126,7 +126,7 @@ Plans:
 - [x] 07-01-PLAN.md -- Config suppress + External handle kind + depth default
 - [x] 07-02-PLAN.md -- Content snippets + obligations command
 - [x] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
-- [ ] 07-04-PLAN.md -- Self-check closure
+- [x] 07-04-PLAN.md -- Self-check closure
 
 ## Progress
 
@@ -140,7 +140,7 @@ Plans:
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 6. Resolution Cascade | v1.1 | 4/4 | Complete | 2026-03-30 |
-| 7. UX Enrichment | v1.1 | 3/4 | In Progress | - |
+| 7. UX Enrichment | v1.1 | 4/4 | Complete | 2026-03-31 |
 
 ---
 *Roadmap created: 2026-03-28*

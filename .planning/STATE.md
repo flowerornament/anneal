@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
-status: executing
-stopped_at: Completed 07-03-PLAN.md
-last_updated: "2026-03-31T02:45:47.919Z"
+status: ready_for_verification
+stopped_at: Completed 07-04-PLAN.md
+last_updated: "2026-03-31T02:50:34.945Z"
 last_activity: 2026-03-31
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 14
-  completed_plans: 13
-  percent: 93
+  completed_plans: 14
+  percent: 100
 ---
 
 # State: anneal
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-29)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 07 — ux-enrichment
+**Current focus:** Phase 07 — ux-enrichment complete
 
 ## Current Position
 
-Phase: 07 (ux-enrichment) — EXECUTING
+Phase: 07 (ux-enrichment) — COMPLETE
 Plan: 4 of 4
-Status: Ready to execute
+Status: Ready for verification
 Last activity: 2026-03-31
 
-Progress: [█████████░] 93% (13/14 plans, v1.0 complete)
+Progress: [██████████] 100% (14/14 plans, v1.1 ready for verification)
 
 ## Decisions
 
@@ -62,6 +62,7 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 07]: Obligation reporting groups IDs by configured linear namespace and still returns a valid empty JSON payload when no linear namespaces are configured.
 - [Phase 07]: File scoping stays after suppressions so displayed diagnostics and snapshots are filtered the same way.
 - [Phase 07]: Temporal S003 compares the current status population with the latest snapshot and falls back to static edge analysis when no history exists.
+- [Phase 07]: Used a targeted E001 suppress rule in .design/anneal.toml instead of editing anneal-spec.md because synthesis/v17.md is an illustrative prose example, not corpus truth.
 
 ## Performance Metrics
 
@@ -71,12 +72,13 @@ Recent decisions affecting current work (full log in PROJECT.md):
 | Phase 07 P01 | 6 min | 2 tasks | 7 files |
 | Phase 07 P02 | 9 min | 2 tasks | 2 files |
 | Phase 07 P03 | 4 min | 2 tasks | 5 files |
+| Phase 07 P04 | 2 min | 1 task | 1 file |
 
 ## Session Continuity
 
-Last session: 2026-03-31T02:45:09.687Z
-Stopped at: Completed 07-03-PLAN.md
+Last session: 2026-03-31T02:50:34.945Z
+Stopped at: Completed 07-04-PLAN.md
 Resume file: None
 
 ---
-*Last updated: 2026-03-31 after 07-03 plan completion*
+*Last updated: 2026-03-31 after 07-04 plan completion*
