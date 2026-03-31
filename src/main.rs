@@ -24,6 +24,7 @@ use crate::handle::NodeId;
 #[command(
     name = "anneal",
     about = "Convergence assistant for knowledge corpora",
+    version,
     long_about = "\
 Convergence assistant for knowledge corpora.
 
@@ -34,11 +35,12 @@ in a body of knowledge and push it toward settledness.
 
 CORE CONCEPTS:
 
-  Handle    The unit of knowledge. Four kinds:
+  Handle    The unit of knowledge. Five kinds:
               file     — a markdown document (e.g., formal-model/v17.md)
               section  — a heading within a file (e.g., v17.md#§definitions)
               label    — a cross-reference tag (e.g., OQ-64, FM-17)
               version  — a versioned artifact (e.g., v17 of formal-model)
+              external — an external URL referenced from corpus metadata
 
   Edge      A typed relationship between handles:
               Cites      — references without dependency (most body-text refs)
@@ -66,6 +68,7 @@ QUICK START:
   anneal map --around=REQ-12  Visualize neighborhood of a handle
   anneal impact spec/v3.md    What depends on this file?
   anneal diff                 What changed since last session?
+  anneal obligations          Show obligation status for linear namespaces
   anneal init                 Generate anneal.toml from inferred structure
 
 ROOT DIRECTORY:
@@ -286,7 +289,7 @@ input — pipe to `dot -Tpng` for visual output.",
 EXAMPLES:
   anneal map                                    # Full active graph (text)
   anneal map --format=dot | dot -Tpng -o g.png  # Graphviz PNG
-  anneal map --around=OQ-64 --depth=2           # 2-hop neighborhood of OQ-64
+  anneal map --around=OQ-64 --depth=1           # 1-hop neighborhood of OQ-64
   anneal map --around=FM-17 --depth=1           # Immediate neighbors only
   anneal map --concern=formal-model             # Concern group subgraph
   anneal map --json                             # JSON with node/edge counts"

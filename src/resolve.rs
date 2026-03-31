@@ -22,9 +22,6 @@ pub(crate) struct CascadeResult {
     pub(crate) edge_index: usize,
     /// Candidate handle identities found by structural transforms.
     pub(crate) candidates: Vec<String>,
-    /// If exactly one unambiguous match was found, the resolved `NodeId`.
-    /// Root-prefix strip is the only strategy that produces this.
-    pub(crate) resolved: Option<NodeId>,
 }
 
 /// Regex for zero-pad normalization of compound labels like `KB-D01`, `OQ-01`.
@@ -623,8 +620,6 @@ pub(crate) fn cascade_unresolved(
         }
 
         let mut candidates = Vec::new();
-        let mut resolved = None;
-
         // Strategy 1: Root-prefix strip
         let (rp_resolved, rp_candidates) =
             try_root_prefix_strip(&edge.target_identity, node_index, root_prefix);
@@ -635,7 +630,6 @@ pub(crate) fn cascade_unresolved(
             } else {
                 graph.add_edge(edge.source, node_id, edge.kind);
             }
-            resolved = Some(node_id);
         }
         candidates.extend(rp_candidates);
 
@@ -650,11 +644,10 @@ pub(crate) fn cascade_unresolved(
             candidates.push(canonical);
         }
 
-        if !candidates.is_empty() || resolved.is_some() {
+        if !candidates.is_empty() || rp_resolved.is_some() {
             results.push(CascadeResult {
                 edge_index: idx,
                 candidates,
-                resolved,
             });
         }
     }
@@ -697,15 +690,17 @@ mod cascade_tests {
     fn cascade_root_prefix_strip_resolves() {
         let (mut graph, index) = build_test_graph_and_index();
         let source = graph.add_node(Handle::test_file("other.md", None));
+        let edge_count_before = graph.edge_count();
         let edges = vec![make_pending(source, ".design/foo.md")];
 
         let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
         assert_eq!(results.len(), 1);
-        assert!(
-            results[0].resolved.is_some(),
-            "should resolve unambiguously"
-        );
         assert!(results[0].candidates.contains(&"foo.md".to_string()));
+        assert_eq!(
+            graph.edge_count(),
+            edge_count_before + 1,
+            "root-prefix strip should create a graph edge"
+        );
     }
 
     #[test]
@@ -714,17 +709,18 @@ mod cascade_tests {
         let _a = graph.add_node(Handle::test_file("sub/foo.md", None));
         let _b = graph.add_node(Handle::test_file("other/foo.md", None));
         let source = graph.add_node(Handle::test_file("ref.md", None));
+        let edge_count_before = graph.edge_count();
 
         // Neither sub/foo.md nor other/foo.md will match a root-prefix strip of ".design/foo.md"
         // because the stripped "foo.md" doesn't exist in index (only sub/foo.md and other/foo.md do).
         let index = build_node_index(&graph);
         let edges = vec![make_pending(source, ".design/foo.md")];
-        let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
+        let _results = cascade_unresolved(&mut graph, &edges, &index, ".design");
 
-        // No match because "foo.md" isn't in the index
-        assert!(
-            results.is_empty() || results[0].resolved.is_none(),
-            "ambiguous or non-matching should not resolve"
+        assert_eq!(
+            graph.edge_count(),
+            edge_count_before,
+            "ambiguous or non-matching should not create a graph edge"
         );
     }
 
@@ -736,11 +732,6 @@ mod cascade_tests {
 
         let results = cascade_unresolved(&mut graph, &edges, &index, "");
         assert_eq!(results.len(), 1);
-        assert!(
-            results[0].resolved.is_none(),
-            "version stem does not resolve"
-        );
-
         let cands = &results[0].candidates;
         assert!(
             cands.contains(&"formal-model-v17.md".to_string()),
@@ -828,7 +819,8 @@ mod cascade_tests {
         let edges = vec![make_pending(source, ".design/foo.md")];
 
         let results = cascade_unresolved(&mut graph, &edges, &index, ".design");
-        assert!(results[0].resolved.is_some());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].candidates.contains(&"foo.md".to_string()));
         assert_eq!(
             graph.edge_count(),
             edge_count_before + 1,

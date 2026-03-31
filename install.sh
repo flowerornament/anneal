@@ -38,7 +38,7 @@ info "Finding latest release..."
 TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 
 if [ -z "$TAG" ]; then
-    error "No releases found. Install from source: cargo install --path ."
+    error "No releases found. Install from source: cargo install --path . --locked"
 fi
 
 info "Installing anneal $TAG for $TARGET"

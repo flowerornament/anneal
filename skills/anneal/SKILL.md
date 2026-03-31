@@ -74,7 +74,7 @@ Use this when the corpus lacks `anneal.toml` or when the user is formalizing sta
 
 ## Minimal Mental Model
 
-- `handle`: a file, section, label, or version
+- `handle`: a file, section, label, version, or external URL
 - `status`: frontmatter lifecycle state; typically split into active vs terminal
 - `snapshot`: `status` and `check` append to `.anneal/history.jsonl`, which powers convergence and diff
 
