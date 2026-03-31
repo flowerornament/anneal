@@ -140,7 +140,7 @@ Plans:
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 6. Resolution Cascade | v1.1 | 4/4 | Complete | 2026-03-30 |
-| 7. UX Enrichment | v1.1 | 2/4 | In Progress | - |
+| 7. UX Enrichment | v1.1 | 3/4 | In Progress | - |
 
 ---
 *Roadmap created: 2026-03-28*
