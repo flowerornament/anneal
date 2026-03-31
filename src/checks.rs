@@ -930,6 +930,9 @@ mod tests {
     use crate::handle::Handle;
     use crate::lattice::Lattice;
     use crate::parse::PendingEdge;
+    use crate::snapshot::{
+        DiagnosticCounts, EdgeCounts, HandleCounts, NamespaceStats, ObligationCounts, Snapshot,
+    };
 
     fn make_lattice(active: &[&str], terminal: &[&str], ordering: &[&str]) -> Lattice {
         Lattice {
@@ -1302,11 +1305,81 @@ mod tests {
 
         let lattice = make_lattice(&["draft"], &[], &[]);
 
-        let diags = suggest_pipeline_stalls(&graph, &lattice);
+        let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert!(
             diags.is_empty(),
             "S003 should not be produced when ordering is empty (no pipeline)"
         );
+    }
+
+    fn make_snapshot(states: &[(&str, usize)]) -> Snapshot {
+        Snapshot {
+            timestamp: "2026-03-30T00:00:00Z".to_string(),
+            handles: HandleCounts {
+                total: states.iter().map(|(_, count)| count).sum(),
+                active: states.iter().map(|(_, count)| count).sum(),
+                frozen: 0,
+            },
+            edges: EdgeCounts { total: 0 },
+            states: states
+                .iter()
+                .map(|(status, count)| ((*status).to_string(), *count))
+                .collect(),
+            obligations: ObligationCounts {
+                outstanding: 0,
+                discharged: 0,
+                mooted: 0,
+            },
+            diagnostics: DiagnosticCounts {
+                errors: 0,
+                warnings: 0,
+            },
+            namespaces: HashMap::<String, NamespaceStats>::new(),
+        }
+    }
+
+    #[test]
+    fn suggest_s003_static_fallback_without_history() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
+        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
+        let _d = graph.add_node(make_file_handle("d.md", Some("review")));
+
+        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+
+        let diags = suggest_pipeline_stalls(&graph, &lattice, None);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("pipeline stall: 3 handles at status 'draft'"));
+    }
+
+    #[test]
+    fn suggest_s003_uses_temporal_signal_when_population_unchanged() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
+        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
+
+        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let previous = make_snapshot(&[("draft", 3)]);
+
+        let diags = suggest_pipeline_stalls(&graph, &lattice, Some(&previous));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unchanged from previous snapshot"));
+    }
+
+    #[test]
+    fn suggest_s003_skips_temporal_signal_when_population_decreases() {
+        let mut graph = DiGraph::new();
+        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
+        let _c = graph.add_node(make_file_handle("d.md", Some("review")));
+
+        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let previous = make_snapshot(&[("draft", 4)]);
+
+        let diags = suggest_pipeline_stalls(&graph, &lattice, Some(&previous));
+        assert!(diags.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1453,6 +1526,7 @@ mod tests {
             None,
             &[],
             &cascade,
+            None,
         );
         let suggestion_count = diags
             .iter()
@@ -1602,6 +1676,7 @@ mod tests {
             None,
             &[],
             &cascade,
+            None,
         );
 
         // Should have: E001 (error), W001 (warning), I001 (info)
