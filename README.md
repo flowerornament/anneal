@@ -34,7 +34,20 @@ $ anneal status
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash
 ```
 
-The installer is the primary path for prebuilt binaries. It installs to `~/.local/bin` by default, fails fast on unsupported targets, and stays aligned with the published release matrix. Override with `INSTALL_DIR=/usr/local/bin`.
+The installer is the primary path for prebuilt binaries. It installs to `~/.local/bin` by default, prints the exact target / URL / destination before it writes anything, fails fast on unsupported targets, and stays aligned with the published release matrix.
+
+Common variations:
+
+```bash
+# Install somewhere else
+curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | INSTALL_DIR="$HOME/bin" bash
+
+# Same override, but passed as an installer flag
+curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --install-dir "$HOME/bin"
+
+# Preview what would happen without writing anything
+curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --dry-run
+```
 
 Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
 
