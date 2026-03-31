@@ -15,7 +15,7 @@ impl NodeId {
     }
 }
 
-/// The four kinds of handle per KB-D2.
+/// The five kinds of handle per KB-D2.
 ///
 /// Kind determines discovery, resolution, and valid states.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -28,6 +28,8 @@ pub(crate) enum HandleKind {
     Label { prefix: String, number: u32 },
     /// A version of a versioned artifact (e.g., v17 of formal-model).
     Version { artifact: NodeId, version: u32 },
+    /// An external URL referenced from frontmatter.
+    External { url: String },
 }
 
 impl HandleKind {
@@ -37,6 +39,7 @@ impl HandleKind {
             Self::Section { .. } => "section",
             Self::Label { .. } => "label",
             Self::Version { .. } => "version",
+            Self::External { .. } => "external",
         }
     }
 }

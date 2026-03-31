@@ -298,8 +298,8 @@ EXAMPLES:
         /// Show BFS neighborhood around this handle
         #[arg(long)]
         around: Option<String>,
-        /// BFS depth for --around (default: 2)
-        #[arg(long, default_value = "2")]
+        /// BFS depth for --around (default: 1)
+        #[arg(long, default_value = "1")]
         depth: u32,
     },
 
