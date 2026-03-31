@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 07-02-PLAN.md
-last_updated: "2026-03-31T02:34:12.832Z"
+stopped_at: Completed 07-03-PLAN.md
+last_updated: "2026-03-31T02:45:09.691Z"
 last_activity: 2026-03-31
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 14
-  completed_plans: 12
+  completed_plans: 13
   percent: 86
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-29)
 ## Current Position
 
 Phase: 07 (ux-enrichment) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-03-31
 
@@ -60,6 +60,8 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 07]: External URLs reuse one graph node per URL identity while each source file still emits its own Cites edge. — Deduplicating URL nodes preserves handle identity uniqueness and prevents ambiguous lookups when multiple files cite the same external reference.
 - [Phase 07]: Snippets are read on demand from source files so the graph stays lean and get output can add context without storing document bodies.
 - [Phase 07]: Obligation reporting groups IDs by configured linear namespace and still returns a valid empty JSON payload when no linear namespaces are configured.
+- [Phase 07]: File scoping stays after suppressions so displayed diagnostics and snapshots are filtered the same way.
+- [Phase 07]: Temporal S003 compares the current status population with the latest snapshot and falls back to static edge analysis when no history exists.
 
 ## Performance Metrics
 
@@ -68,11 +70,12 @@ Recent decisions affecting current work (full log in PROJECT.md):
 
 | Phase 07 P01 | 6 min | 2 tasks | 7 files |
 | Phase 07 P02 | 9 min | 2 tasks | 2 files |
+| Phase 07 P03 | 4 min | 2 tasks | 5 files |
 
 ## Session Continuity
 
-Last session: 2026-03-31T02:34:12.829Z
-Stopped at: Completed 07-02-PLAN.md
+Last session: 2026-03-31T02:45:09.687Z
+Stopped at: Completed 07-03-PLAN.md
 Resume file: None
 
 ---
