@@ -20,6 +20,15 @@ SUPPORTED_RELEASE_TARGETS=(
 info()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
 error() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+source_install_hint() {
+    cat >&2 <<'EOF'
+Install from source:
+  git clone https://github.com/flowerornament/anneal.git
+  cargo install --path anneal --locked
+EOF
+    exit 1
+}
+
 # Detect platform
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -47,7 +56,8 @@ for supported_target in "${SUPPORTED_RELEASE_TARGETS[@]}"; do
 done
 
 if [ "$supported" != true ]; then
-    error "No prebuilt binary is published for $TARGET. Install from source: cargo install --path . --locked"
+    error "No prebuilt binary is published for $TARGET."
+    source_install_hint
 fi
 
 # Get latest release tag
@@ -55,7 +65,8 @@ info "Finding latest release..."
 TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 
 if [ -z "$TAG" ]; then
-    error "No releases found. Install from source: cargo install --path . --locked"
+    error "No releases found."
+    source_install_hint
 fi
 
 info "Installing anneal $TAG for $TARGET"

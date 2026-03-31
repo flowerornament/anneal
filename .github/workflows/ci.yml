@@ -25,6 +25,12 @@ jobs:
       - name: Installer
         run: bash -n install.sh
 
+      - name: Installer smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          INSTALL_DIR="$tmpdir" bash install.sh
+          "$tmpdir/anneal" --version
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

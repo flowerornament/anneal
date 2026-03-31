@@ -41,10 +41,25 @@ Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aar
 ### From source
 
 ```bash
-cargo install --path . --locked
+git clone https://github.com/flowerornament/anneal.git
+cargo install --path anneal --locked
 ```
 
 ### Nix
+
+Run without installing:
+
+```bash
+nix run github:flowerornament/anneal
+```
+
+Install into your profile:
+
+```bash
+nix profile install github:flowerornament/anneal
+```
+
+Add as a flake input:
 
 ```nix
 anneal = {
