@@ -226,6 +226,7 @@ pub(crate) struct GetOutput {
     pub(crate) file: Option<String>,
     pub(crate) outgoing_edges: Vec<EdgeSummary>,
     pub(crate) incoming_edges: Vec<EdgeSummary>,
+    pub(crate) snippet: Option<String>,
 }
 
 /// Maximum number of edges to display in human-readable output per direction.
@@ -242,6 +243,9 @@ impl GetOutput {
         }
         if let Some(ref file) = self.file {
             writeln!(w, "  File: {file}")?;
+        }
+        if let Some(ref snippet) = self.snippet {
+            writeln!(w, "  Snippet: {snippet}")?;
         }
         if !self.outgoing_edges.is_empty() {
             writeln!(w, "  Outgoing:")?;
@@ -275,11 +279,84 @@ impl GetOutput {
     }
 }
 
+/// Extract first paragraph after frontmatter from a file.
+fn extract_file_snippet(root: &Utf8Path, file_path: &Utf8Path) -> Option<String> {
+    let full_path = root.join(file_path);
+    let content = std::fs::read_to_string(full_path.as_std_path()).ok()?;
+    let (_, body) = crate::parse::split_frontmatter(&content);
+
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() && !lines.is_empty() {
+            break;
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            lines.push(trimmed);
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let text = lines.join(" ");
+    Some(truncate_snippet(&text, 200))
+}
+
+/// Extract heading context for a label handle from its defining file.
+fn extract_label_snippet(root: &Utf8Path, file_path: &Utf8Path, label_id: &str) -> Option<String> {
+    let full_path = root.join(file_path);
+    let content = std::fs::read_to_string(full_path.as_std_path()).ok()?;
+
+    let mut heading = String::new();
+    for line in content.lines() {
+        if line.starts_with('#') {
+            heading = line.trim_start_matches('#').trim().to_string();
+        }
+        if line.contains(label_id) {
+            let context = if heading.is_empty() {
+                line.trim().to_string()
+            } else {
+                format!("{heading}: {}", line.trim())
+            };
+            return Some(truncate_snippet(&context, 200));
+        }
+    }
+
+    None
+}
+
+fn truncate_snippet(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        return s.to_string();
+    }
+
+    let mut cut_indices = Vec::new();
+    for (count, (idx, ch)) in s.char_indices().enumerate() {
+        if count >= max_len {
+            break;
+        }
+        if ch == ' ' {
+            cut_indices.push(idx);
+        }
+    }
+
+    let end = cut_indices.last().copied().unwrap_or_else(|| {
+        s.char_indices()
+            .nth(max_len)
+            .map_or(s.len(), |(idx, _)| idx)
+    });
+
+    format!("{}...", s[..end].trim_end())
+}
+
 /// Resolve a handle by identity string and build output.
 ///
 /// Looks up the handle by exact match first, then tries case-insensitive
 /// match against label identities.
 pub(crate) fn cmd_get(
+    root: &Utf8Path,
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
     handle: &str,
@@ -291,6 +368,14 @@ pub(crate) fn cmd_get(
 
     let outgoing_edges = dedup_edges(graph.outgoing(node_id), |e| e.target, "outgoing", graph);
     let incoming_edges = dedup_edges(graph.incoming(node_id), |e| e.source, "incoming", graph);
+    let snippet = match &h.kind {
+        HandleKind::File(path) => extract_file_snippet(root, path),
+        HandleKind::Label { .. } => h
+            .file_path
+            .as_ref()
+            .and_then(|fp| extract_label_snippet(root, fp, &h.id)),
+        _ => None,
+    };
 
     Some(GetOutput {
         id: h.id.clone(),
@@ -299,6 +384,7 @@ pub(crate) fn cmd_get(
         file,
         outgoing_edges,
         incoming_edges,
+        snippet,
     })
 }
 

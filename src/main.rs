@@ -553,7 +553,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Get { ref handle }) => {
-            if let Some(output) = cli::cmd_get(graph, &node_index, handle) {
+            if let Some(output) = cli::cmd_get(&root, graph, &node_index, handle) {
                 if cli_args.json {
                     cli::print_json(&output)?;
                 } else {
