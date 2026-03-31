@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Parser Hardening & UX Polish
 status: executing
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-03-30T07:20:12.987Z"
-last_activity: 2026-03-30
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-03-31T02:34:12.832Z"
+last_activity: 2026-03-31
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
-  percent: 55
+  total_plans: 14
+  completed_plans: 12
+  percent: 86
 ---
 
 # State: anneal
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-29)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** Phase 06 — resolution-cascade
+**Current focus:** Phase 07 — ux-enrichment
 
 ## Current Position
 
-Phase: 7
-Plan: Not started
-Status: Executing Phase 06
-Last activity: 2026-03-30
+Phase: 07 (ux-enrichment) — EXECUTING
+Plan: 3 of 4
+Status: Ready to execute
+Last activity: 2026-03-31
 
-Progress: [███████████░░░░░░░░░] 55% (11/~20 plans, v1.0 complete)
+Progress: [█████████░] 86% (12/14 plans, v1.0 complete)
 
 ## Decisions
 
@@ -56,16 +56,24 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [Phase 06]: Evidence uses serde(tag=type) for internally-tagged JSON serialization
 - [Phase 06]: E001 always gets Evidence::BrokenRef even with empty candidates for JSON consistency
 - [Phase 06]: Line 1 for all frontmatter-sourced diagnostics; Version handles resolve file_path through artifact field
+- [Phase 07]: Suppressions are applied after run_checks and before snapshot generation so human output and recorded diagnostics stay aligned. — Filtering once after diagnostics are assembled avoids duplicating suppression logic across individual check rules and keeps snapshot counts consistent with displayed output.
+- [Phase 07]: External URLs reuse one graph node per URL identity while each source file still emits its own Cites edge. — Deduplicating URL nodes preserves handle identity uniqueness and prevents ambiguous lookups when multiple files cite the same external reference.
+- [Phase 07]: Snippets are read on demand from source files so the graph stays lean and get output can add context without storing document bodies.
+- [Phase 07]: Obligation reporting groups IDs by configured linear namespace and still returns a valid empty JSON payload when no linear namespaces are configured.
 
-## Blockers/Concerns
+## Performance Metrics
 
-None yet.
+| Phase | Plan | Duration | Tasks | Files |
+| ----- | ---- | -------- | ----- | ----- |
+
+| Phase 07 P01 | 6 min | 2 tasks | 7 files |
+| Phase 07 P02 | 9 min | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-03-30T07:15:35.817Z
-Stopped at: Completed 06-04-PLAN.md
+Last session: 2026-03-31T02:34:12.829Z
+Stopped at: Completed 07-02-PLAN.md
 Resume file: None
 
 ---
-*Last updated: 2026-03-29 after v1.1 roadmap creation*
+*Last updated: 2026-03-31 after 07-02 plan completion*
