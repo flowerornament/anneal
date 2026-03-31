@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::checks::{Diagnostic, Severity};
-use crate::config::AnnealConfig;
+use crate::config::{AnnealConfig, HistoryMode, ResolvedStateConfig};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
@@ -210,15 +210,30 @@ pub(crate) fn build_snapshot(
 // JSONL I/O (per spec section 15.2, decisions D-01, D-02)
 // ---------------------------------------------------------------------------
 
-/// Append a snapshot as a single JSON line to `.anneal/history.jsonl`.
+/// Append a snapshot as a single JSON line to the resolved history backend.
 ///
-/// Creates the `.anneal/` directory if it does not exist (D-02).
-/// Uses `O_APPEND` for practically atomic writes (D-01).
-pub(crate) fn append_snapshot(root: &Utf8Path, snapshot: &Snapshot) -> anyhow::Result<()> {
-    let anneal_dir = root.join(".anneal");
-    fs::create_dir_all(anneal_dir.as_std_path())?;
+/// In `xdg` mode, writes to machine-local state outside the repo. In `repo`
+/// mode, writes to `<root>/.anneal/history.jsonl`. In `off` mode, this is a
+/// no-op. If legacy repo history exists on first write in `xdg` mode, it is
+/// copied into XDG state once so convergence history continues without further
+/// repo mutation.
+pub(crate) fn append_snapshot(
+    root: &Utf8Path,
+    state: &ResolvedStateConfig,
+    snapshot: &Snapshot,
+) -> anyhow::Result<()> {
+    let Some(history_path) = write_history_path(root, state)? else {
+        return Ok(());
+    };
 
-    let history_path = anneal_dir.join("history.jsonl");
+    if state.history_mode == HistoryMode::Xdg {
+        maybe_seed_xdg_history_from_repo(root, &history_path)?;
+    }
+
+    if let Some(parent) = history_path.parent() {
+        fs::create_dir_all(parent.as_std_path())?;
+    }
+
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -245,15 +260,17 @@ fn parse_snapshot_line(line: &str) -> Option<Snapshot> {
     }
 }
 
-/// Read the full snapshot history from `.anneal/history.jsonl`.
+/// Read the full snapshot history from the resolved history backend.
 ///
 /// Prefer [`read_latest_snapshot`] unless the caller truly needs chronological
 /// traversal (for example, selecting a snapshot from N days ago).
 ///
 /// Returns empty Vec if file is missing (CONVERGE-05).
 /// Skips unparseable lines with a stderr warning (handles truncated writes).
-pub(crate) fn read_all_snapshots(root: &Utf8Path) -> Vec<Snapshot> {
-    let history_path = root.join(".anneal/history.jsonl");
+pub(crate) fn read_all_snapshots(root: &Utf8Path, state: &ResolvedStateConfig) -> Vec<Snapshot> {
+    let Some(history_path) = read_history_path(root, state) else {
+        return Vec::new();
+    };
 
     let Ok(file) = fs::File::open(history_path.as_std_path()) else {
         return Vec::new();
@@ -274,11 +291,15 @@ pub(crate) fn read_all_snapshots(root: &Utf8Path) -> Vec<Snapshot> {
     snapshots
 }
 
-/// Read only the most recent parseable snapshot from `.anneal/history.jsonl`.
+/// Read only the most recent parseable snapshot from the resolved history
+/// backend.
 ///
 /// Returns `None` if the file is missing or contains no valid snapshots.
-pub(crate) fn read_latest_snapshot(root: &Utf8Path) -> Option<Snapshot> {
-    let history_path = root.join(".anneal/history.jsonl");
+pub(crate) fn read_latest_snapshot(
+    root: &Utf8Path,
+    state: &ResolvedStateConfig,
+) -> Option<Snapshot> {
+    let history_path = read_history_path(root, state)?;
 
     let Ok(file) = fs::File::open(history_path.as_std_path()) else {
         return None;
@@ -297,6 +318,114 @@ pub(crate) fn read_latest_snapshot(root: &Utf8Path) -> Option<Snapshot> {
     }
 
     latest
+}
+
+fn repo_history_path(root: &Utf8Path) -> Utf8PathBuf {
+    root.join(".anneal/history.jsonl")
+}
+
+fn read_history_path(root: &Utf8Path, state: &ResolvedStateConfig) -> Option<Utf8PathBuf> {
+    match state.history_mode {
+        HistoryMode::Off => None,
+        HistoryMode::Repo => Some(repo_history_path(root)),
+        HistoryMode::Xdg => {
+            let xdg_path = xdg_history_path(root, state)?;
+            if xdg_path.exists() {
+                Some(xdg_path)
+            } else {
+                let legacy = repo_history_path(root);
+                if legacy.exists() {
+                    Some(legacy)
+                } else {
+                    Some(xdg_path)
+                }
+            }
+        }
+    }
+}
+
+fn write_history_path(
+    root: &Utf8Path,
+    state: &ResolvedStateConfig,
+) -> anyhow::Result<Option<Utf8PathBuf>> {
+    match state.history_mode {
+        HistoryMode::Off => Ok(None),
+        HistoryMode::Repo => Ok(Some(repo_history_path(root))),
+        HistoryMode::Xdg => Ok(Some(xdg_history_path(root, state).ok_or_else(|| {
+            anyhow::anyhow!("could not determine XDG state directory for anneal history")
+        })?)),
+    }
+}
+
+fn maybe_seed_xdg_history_from_repo(
+    root: &Utf8Path,
+    xdg_history_path: &Utf8Path,
+) -> anyhow::Result<()> {
+    if xdg_history_path.exists() {
+        return Ok(());
+    }
+
+    let legacy = repo_history_path(root);
+    if !legacy.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = xdg_history_path.parent() {
+        fs::create_dir_all(parent.as_std_path())?;
+    }
+    fs::copy(legacy.as_std_path(), xdg_history_path.as_std_path())?;
+    Ok(())
+}
+
+fn xdg_history_path(root: &Utf8Path, state: &ResolvedStateConfig) -> Option<Utf8PathBuf> {
+    let base = state
+        .history_dir
+        .clone()
+        .or_else(default_state_dir)?
+        .join("anneal/history");
+    Some(base.join(root_history_key(root)).join("history.jsonl"))
+}
+
+fn default_state_dir() -> Option<Utf8PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+        Utf8PathBuf::from_path_buf(dir.into()).ok()
+    } else {
+        std::env::var_os("HOME")
+            .and_then(|home| Utf8PathBuf::from_path_buf(home.into()).ok())
+            .map(|home| home.join(".local/state"))
+    }
+}
+
+fn root_history_key(root: &Utf8Path) -> String {
+    let identity = canonical_root_identity(root);
+    format!("{:016x}", fnv1a64(identity.as_bytes()))
+}
+
+fn canonical_root_identity(root: &Utf8Path) -> String {
+    fs::canonicalize(root.as_std_path())
+        .ok()
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        .map_or_else(
+            || {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| Utf8PathBuf::from_path_buf(cwd).ok())
+                    .map_or_else(
+                        || root.as_str().to_string(),
+                        |cwd| cwd.join(root).to_string(),
+                    )
+            },
+            |path| path.to_string(),
+        )
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3_u64);
+    }
+    hash
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +540,13 @@ mod tests {
         }
     }
 
+    fn repo_state() -> ResolvedStateConfig {
+        ResolvedStateConfig {
+            history_mode: HistoryMode::Repo,
+            history_dir: None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Test 1: Snapshot serialization matches spec section 10 schema
     // -----------------------------------------------------------------------
@@ -482,9 +618,9 @@ mod tests {
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
         let snapshot = make_snapshot(10, 5, 5, 0);
-        append_snapshot(root, &snapshot).expect("append");
+        append_snapshot(root, &repo_state(), &snapshot).expect("append");
 
-        let history_path = root.join(".anneal/history.jsonl");
+        let history_path = repo_history_path(root);
         assert!(history_path.exists(), "history.jsonl should exist");
 
         let content = std::fs::read_to_string(history_path.as_std_path()).expect("read");
@@ -505,7 +641,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
-        let history = read_all_snapshots(root);
+        let history = read_all_snapshots(root, &repo_state());
         assert!(
             history.is_empty(),
             "Should return empty Vec for missing file"
@@ -531,7 +667,7 @@ mod tests {
         let content = format!("{valid_line}\nthis is garbage\n{valid_line}\n");
         fs::write(history_path.as_std_path(), content).expect("write");
 
-        let history = read_all_snapshots(root);
+        let history = read_all_snapshots(root, &repo_state());
         assert_eq!(
             history.len(),
             2,
@@ -552,11 +688,12 @@ mod tests {
         let s2 = make_snapshot(20, 10, 10, 0);
         let s3 = make_snapshot(30, 15, 15, 0);
 
-        append_snapshot(root, &s1).expect("append1");
-        append_snapshot(root, &s2).expect("append2");
-        append_snapshot(root, &s3).expect("append3");
+        let state = repo_state();
+        append_snapshot(root, &state, &s1).expect("append1");
+        append_snapshot(root, &state, &s2).expect("append2");
+        append_snapshot(root, &state, &s3).expect("append3");
 
-        let history = read_all_snapshots(root);
+        let history = read_all_snapshots(root, &state);
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].handles.total, 10);
         assert_eq!(history[1].handles.total, 20);
@@ -572,11 +709,44 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
-        let result = read_latest_snapshot(root);
+        let result = read_latest_snapshot(root, &repo_state());
         assert!(
             result.is_none(),
             "Should return None when no history exists"
         );
+    }
+
+    #[test]
+    fn xdg_mode_seeds_from_legacy_repo_history_once() {
+        let root_tmp = tempfile::tempdir().expect("root tmpdir");
+        let state_tmp = tempfile::tempdir().expect("state tmpdir");
+        let root = Utf8Path::from_path(root_tmp.path()).expect("utf8");
+
+        let legacy = repo_history_path(root);
+        fs::create_dir_all(
+            legacy
+                .parent()
+                .expect("legacy history parent")
+                .as_std_path(),
+        )
+        .expect("mkdir legacy");
+        let previous = make_snapshot(10, 5, 5, 0);
+        let legacy_line = serde_json::to_string(&previous).expect("serialize");
+        fs::write(legacy.as_std_path(), format!("{legacy_line}\n")).expect("write legacy");
+
+        let state = ResolvedStateConfig {
+            history_mode: HistoryMode::Xdg,
+            history_dir: Some(
+                Utf8PathBuf::from_path_buf(state_tmp.path().to_path_buf()).expect("utf8 state dir"),
+            ),
+        };
+        let current = make_snapshot(20, 10, 10, 0);
+        append_snapshot(root, &state, &current).expect("append xdg");
+
+        let history = read_all_snapshots(root, &state);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].handles.total, 10);
+        assert_eq!(history[1].handles.total, 20);
     }
 
     // -----------------------------------------------------------------------

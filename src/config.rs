@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Direction of an edge created from a frontmatter field.
@@ -99,7 +100,6 @@ pub(crate) struct SuppressRule {
 
 /// Top-level configuration from `anneal.toml`.
 ///
-/// All fields use concrete types with `Default` impls -- no `Option<T>` wrapping.
 /// An absent `anneal.toml` is a valid coloring (zero-config case, KB-P3).
 /// `deny_unknown_fields` catches config typos early.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -121,9 +121,45 @@ pub(crate) struct AnnealConfig {
     pub(crate) check: CheckConfig,
     /// Known false-positive suppressions for diagnostics.
     pub(crate) suppress: SuppressConfig,
+    /// Local runtime state preferences.
+    pub(crate) state: StateConfig,
     /// Concern groups mapping name -> list of handle patterns.
     #[serde(default)]
     pub(crate) concerns: HashMap<String, Vec<String>>,
+}
+
+/// Where derived history should be stored.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum HistoryMode {
+    Xdg,
+    Repo,
+    Off,
+}
+
+/// Repo-local or user-local state preferences.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct StateConfig {
+    /// History backend preference. If absent, falls back to user config, then
+    /// the built-in default (`xdg`).
+    pub(crate) history_mode: Option<HistoryMode>,
+    /// Optional override for the base directory used for XDG-style history.
+    pub(crate) history_dir: Option<String>,
+}
+
+/// Machine-local user configuration loaded from XDG config.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UserConfig {
+    pub(crate) state: StateConfig,
+}
+
+/// Fully resolved runtime state settings after applying precedence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedStateConfig {
+    pub(crate) history_mode: HistoryMode,
+    pub(crate) history_dir: Option<Utf8PathBuf>,
 }
 
 /// Configuration for the convergence lattice (active/terminal partition).
@@ -219,6 +255,66 @@ pub(crate) fn load_config(root: &Path) -> Result<AnnealConfig> {
     Ok(config)
 }
 
+/// Load machine-local user configuration from XDG config.
+///
+/// Search path:
+/// - `$XDG_CONFIG_HOME/anneal/config.toml`
+/// - `~/.config/anneal/config.toml`
+///
+/// Missing config is valid and resolves to defaults.
+pub(crate) fn load_user_config() -> Result<UserConfig> {
+    let Some(config_path) = user_config_path() else {
+        return Ok(UserConfig::default());
+    };
+
+    let content = match std::fs::read_to_string(config_path.as_std_path()) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(UserConfig::default());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", config_path.as_str()));
+        }
+    };
+
+    toml::from_str(&content).with_context(|| format!("failed to parse {}", config_path.as_str()))
+}
+
+pub(crate) fn resolve_state_config(
+    repo_config: &AnnealConfig,
+    user_config: &UserConfig,
+) -> ResolvedStateConfig {
+    let history_mode = repo_config
+        .state
+        .history_mode
+        .or(user_config.state.history_mode)
+        .unwrap_or(HistoryMode::Xdg);
+
+    let history_dir = repo_config
+        .state
+        .history_dir
+        .as_deref()
+        .or(user_config.state.history_dir.as_deref())
+        .map(Utf8PathBuf::from);
+
+    ResolvedStateConfig {
+        history_mode,
+        history_dir,
+    }
+}
+
+fn user_config_path() -> Option<Utf8PathBuf> {
+    let base = if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        Utf8PathBuf::from_path_buf(dir.into()).ok()
+    } else {
+        std::env::var_os("HOME")
+            .and_then(|home| Utf8PathBuf::from_path_buf(home.into()).ok())
+            .map(|home| home.join(".config"))
+    }?;
+
+    Some(base.join("anneal/config.toml"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +366,8 @@ default_filter = "all"
         assert!(config.root.is_empty());
         assert!(config.suppress.codes.is_empty());
         assert!(config.suppress.rules.is_empty());
+        assert_eq!(config.state.history_mode, None);
+        assert_eq!(config.state.history_dir, None);
     }
 
     #[test]
@@ -309,5 +407,62 @@ default_filter = "active-only"
             toml::from_str(toml_str).expect("should parse without [suppress]");
         assert!(config.suppress.codes.is_empty());
         assert!(config.suppress.rules.is_empty());
+    }
+
+    #[test]
+    fn config_with_state_section_parses() {
+        let toml_str = r#"
+[state]
+history_mode = "repo"
+history_dir = "/tmp/anneal-state"
+"#;
+        let config: AnnealConfig = toml::from_str(toml_str).expect("should parse with [state]");
+        assert_eq!(config.state.history_mode, Some(HistoryMode::Repo));
+        assert_eq!(
+            config.state.history_dir.as_deref(),
+            Some("/tmp/anneal-state")
+        );
+    }
+
+    #[test]
+    fn resolve_state_config_prefers_repo_over_user_over_default() {
+        let repo = AnnealConfig {
+            state: StateConfig {
+                history_mode: Some(HistoryMode::Repo),
+                history_dir: Some("/repo".to_string()),
+            },
+            ..AnnealConfig::default()
+        };
+        let user = UserConfig {
+            state: StateConfig {
+                history_mode: Some(HistoryMode::Off),
+                history_dir: Some("/user".to_string()),
+            },
+        };
+
+        let resolved = resolve_state_config(&repo, &user);
+        assert_eq!(resolved.history_mode, HistoryMode::Repo);
+        assert_eq!(
+            resolved
+                .history_dir
+                .as_deref()
+                .map(camino::Utf8Path::as_str),
+            Some("/repo")
+        );
+    }
+
+    #[test]
+    fn resolve_state_config_uses_user_when_repo_omits_state() {
+        let repo = AnnealConfig::default();
+        let user = UserConfig {
+            state: StateConfig {
+                history_mode: Some(HistoryMode::Off),
+                history_dir: None,
+            },
+        };
+
+        let resolved = resolve_state_config(&repo, &user);
+        assert_eq!(resolved.history_mode, HistoryMode::Off);
+        assert_eq!(resolved.history_dir, None);
     }
 }

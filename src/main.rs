@@ -58,7 +58,8 @@ CORE CONCEPTS:
             terminal. If ordering is configured, anneal shows a pipeline
             histogram (e.g., 10 raw → 3 draft → 6 exploratory → 11 authoritative).
 
-  Snapshot  A point-in-time capture of graph state, appended to .anneal/history.jsonl.
+  Snapshot  A point-in-time capture of graph state, appended to local anneal
+            history (XDG state by default, repo-local only if configured).
             Enables convergence tracking (advancing/holding/drifting) and diff.
 
 QUICK START:
@@ -82,6 +83,7 @@ ROOT DIRECTORY:
     4. .               current directory (fallback)
 
   anneal.toml (if present) is read from the root.
+  Machine-local anneal config (if present) is read from XDG config.
 
 CONFIGURATION:
 
@@ -89,7 +91,8 @@ CONFIGURATION:
   existence-lattice mode (reference checking only). With it, you get pipeline
   tracking, obligation monitoring, and targeted suggestions.
 
-  Run `anneal init` to generate a config from inferred structure, then tune it.
+  Run `anneal init` to generate a repo config from inferred structure, then
+  tune it. Local runtime preferences like history location live in user config.
 
 OUTPUT:
 
@@ -140,7 +143,7 @@ skips terminal-file noise. Use `--include-terminal` for the full picture.
 
 Filter flags are mutually exclusive subsets. If none set, all diagnostics shown.
 
-Appends a snapshot to .anneal/history.jsonl for convergence tracking.
+Appends a snapshot to anneal history for convergence tracking.
 Exit code 1 if any errors found, 0 otherwise.",
         after_help = "\
 EXAMPLES:
@@ -335,7 +338,7 @@ Shows:
                   drifting  — creation outpacing resolution
   suggestions   Count by type (S001-S005) with labels.
 
-Appends a snapshot to .anneal/history.jsonl. Run status periodically to build
+Appends a snapshot to anneal history. Run status periodically to build
 convergence history — the signal becomes meaningful after 2+ snapshots.",
         after_help = "\
 EXAMPLES:
@@ -355,7 +358,7 @@ EXAMPLES:
 Graph-level change tracking. Answers: what changed while I was away?
 
 Three reference modes:
-  (default)      Compare against the most recent snapshot in .anneal/history.jsonl
+  (default)      Compare against the most recent snapshot in local anneal history
   --days=N       Compare against the snapshot closest to N days ago
   <REF>          Reconstruct graph at a git ref (e.g., HEAD~3) and diff structurally
 
@@ -470,6 +473,7 @@ struct AnalysisContext<'a> {
     graph: &'a crate::graph::DiGraph,
     lattice: &'a lattice::Lattice,
     config: &'a config::AnnealConfig,
+    state_config: &'a config::ResolvedStateConfig,
     result: &'a parse::BuildResult,
     node_index: &'a HashMap<String, NodeId>,
     cascade_candidates: &'a HashMap<String, Vec<String>>,
@@ -481,7 +485,7 @@ fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> AnalysisArtifacts 
         context.node_index,
         context.graph,
     );
-    let previous_snapshot = snapshot::read_latest_snapshot(context.root);
+    let previous_snapshot = snapshot::read_latest_snapshot(context.root, context.state_config);
 
     let mut diagnostics = checks::run_checks(
         context.graph,
@@ -546,6 +550,8 @@ fn run() -> anyhow::Result<()> {
     };
 
     let config = config::load_config(root.as_std_path())?;
+    let user_config = config::load_user_config()?;
+    let state_config = config::resolve_state_config(&config, &user_config);
     let mut result = parse::build_graph(&root, &config)?;
 
     let stats = resolve::resolve_all(
@@ -591,6 +597,7 @@ fn run() -> anyhow::Result<()> {
         graph,
         lattice: &lattice,
         config: &config,
+        state_config: &state_config,
         result: &result,
         node_index: &node_index,
         cascade_candidates: &cascade_candidates,
@@ -637,12 +644,12 @@ fn run() -> anyhow::Result<()> {
                 obligations,
                 active_only,
             };
-            let output = cli::cmd_check(
-                diagnostics,
-                &filters,
-                &terminal_files,
-                result.extractions.clone(),
-            );
+            let extractions = if cli_args.json {
+                result.extractions.clone()
+            } else {
+                Vec::new()
+            };
+            let output = cli::cmd_check(diagnostics, &filters, &terminal_files, extractions);
             emit_output(
                 &output,
                 cli_args.json,
@@ -651,7 +658,7 @@ fn run() -> anyhow::Result<()> {
             )?;
 
             // Append snapshot after output (D-04, D-20)
-            snapshot::append_snapshot(&root, &snap)?;
+            snapshot::append_snapshot(&root, &state_config, &snap)?;
 
             if output.errors > 0 {
                 std::process::exit(1);
@@ -775,7 +782,7 @@ fn run() -> anyhow::Result<()> {
             let output = output.with_convergence(convergence);
 
             // Append snapshot AFTER computing convergence (D-04)
-            snapshot::append_snapshot(&root, &snap)?;
+            snapshot::append_snapshot(&root, &state_config, &snap)?;
 
             emit_output(
                 &output,
@@ -789,7 +796,13 @@ fn run() -> anyhow::Result<()> {
             let diagnostics = build_analysis_artifacts(&analysis).diagnostics;
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
 
-            let output = cli::cmd_diff(&root, &current_snap, days, git_ref.as_deref())?;
+            let output = cli::cmd_diff(
+                &root,
+                &state_config,
+                &current_snap,
+                days,
+                git_ref.as_deref(),
+            )?;
 
             emit_output(
                 &output,

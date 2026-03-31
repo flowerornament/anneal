@@ -345,7 +345,7 @@ Impact is computed by reverse graph traversal. Supersedes chains are acyclic by 
 
 ### §10 Convergence Tracking [KB-D17]
 
-**Definition KB-D17 (Convergence Tracking).** The tool maintains an append-only history of graph snapshots in `.anneal/history.jsonl`. Each entry records:
+**Definition KB-D17 (Convergence Tracking).** The tool maintains an append-only history of graph snapshots in local anneal state. By default this lives in machine-local XDG state; repo-local `.anneal/history.jsonl` remains an explicit compatibility mode. Each entry records:
 
 ```json
 {
@@ -369,7 +369,7 @@ Snapshots are:
 - **Optional** (the tool works fully without them; `--history` just shows less)
 - **Small** (~1KB per snapshot)
 
-If `.anneal/history.jsonl` is deleted, nothing breaks. History restarts from the next run.
+If the local anneal history is deleted, nothing breaks. History restarts from the next run.
 
 #### §10.1 Convergence Summary [KB-D18]
 
@@ -471,7 +471,7 @@ info[I001]: pipeline stall
   → 6 files at status: raw with no synthesis downstream
 ```
 
-Exit code: non-zero if errors exist. Integrates with `just check` and pre-commit hooks. Appends a snapshot to `.anneal/history.jsonl`.
+Exit code: non-zero if errors exist. Integrates with `just check` and pre-commit hooks. Appends a snapshot to local anneal history.
 
 #### §12.2 `anneal get <handle>` [KB-C2]
 
@@ -518,7 +518,7 @@ anneal status
   Suggestions: 2 (run anneal check --suggest)
 ```
 
-Appends a snapshot to `.anneal/history.jsonl`.
+Appends a snapshot to local anneal history.
 
 #### §12.5 `anneal map` [KB-C5]
 
@@ -662,7 +662,7 @@ error = 90
          │            │          │          │             │
    ┌─────┴─────┐ ┌───┴───┐ ┌───┴───┐ ┌───┴───┐ ┌───────┴───────┐
    │  Checker   │ │Resolve│ │Impact │ │Converge│ │   Snapshots   │
-   │  5 rules   │ │       │ │       │ │ track  │ │  .anneal/history  │
+   │  5 rules   │ │       │ │       │ │ track  │ │  local anneal     │
    │  §7        │ │  §4.2 │ │  §9   │ │  §10   │ │    §10       │
    └─────┬─────┘ └───┬───┘ └───┬───┘ └───┬───┘ └───────┬───────┘
          │            │         │         │             │
@@ -758,7 +758,7 @@ trait CommandOutput: Serialize {
 
 **Graph construction.** `NodeId(u32)` indices into `Vec<Node>`. Dual adjacency lists for O(1) forward and reverse traversal. Edge kinds stored per-edge. Typed traversal methods (`edges_by_kind(id, EdgeKind)`) as first-class API rather than post-hoc filtering.
 
-**Snapshot append.** `serde_json::to_vec` serializes the snapshot to a buffer, push `b'\n'`, single `write_all` to `O_APPEND` file. Practically atomic for ~1KB entries on local filesystems. On read, `BufReader::lines()` with `filter_map` — warn and skip unparseable lines (handles mid-write truncation gracefully).
+**Snapshot append.** `serde_json::to_vec` serializes the snapshot to a buffer, push `b'\n'`, single `write_all` to an append-only history file. Practically atomic for ~1KB entries on local filesystems. On read, `BufReader::lines()` with `filter_map` — warn and skip unparseable lines (handles mid-write truncation gracefully).
 
 ### §16 Integration Points
 

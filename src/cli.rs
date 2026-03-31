@@ -736,6 +736,7 @@ pub(crate) fn cmd_init(
         frontmatter,
         check: CheckConfig::default(),
         suppress: SuppressConfig::default(),
+        state: crate::config::StateConfig::default(),
         concerns: HashMap::new(),
     };
 
@@ -1908,6 +1909,7 @@ fn shell_escape(s: &str) -> String {
 /// 3. Default — diff against the most recent snapshot only
 pub(crate) fn cmd_diff(
     root: &Utf8Path,
+    state: &crate::config::ResolvedStateConfig,
     current_snapshot: &crate::snapshot::Snapshot,
     days: Option<u32>,
     git_ref: Option<&str>,
@@ -1918,7 +1920,7 @@ pub(crate) fn cmd_diff(
     }
 
     if let Some(days) = days {
-        let history = crate::snapshot::read_all_snapshots(root);
+        let history = crate::snapshot::read_all_snapshots(root, state);
         if let Some(previous) = find_snapshot_by_days(&history, days) {
             return Ok(diff_snapshots(
                 current_snapshot,
@@ -1926,7 +1928,7 @@ pub(crate) fn cmd_diff(
                 &format!("{days} days ago"),
             ));
         }
-    } else if let Some(previous) = crate::snapshot::read_latest_snapshot(root).as_ref() {
+    } else if let Some(previous) = crate::snapshot::read_latest_snapshot(root, state).as_ref() {
         return Ok(diff_snapshots(current_snapshot, previous, "last snapshot"));
     }
 
@@ -2301,6 +2303,13 @@ mod tests {
         DiagnosticCounts, EdgeCounts, HandleCounts, NamespaceStats, ObligationCounts, Snapshot,
     };
 
+    fn repo_state() -> crate::config::ResolvedStateConfig {
+        crate::config::ResolvedStateConfig {
+            history_mode: crate::config::HistoryMode::Repo,
+            history_dir: None,
+        }
+    }
+
     fn make_snapshot_base() -> Snapshot {
         Snapshot {
             timestamp: "2026-03-29T00:00:00Z".to_string(),
@@ -2485,7 +2494,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
-        let output = cmd_diff(root, &current, None, None).expect("cmd_diff");
+        let output = cmd_diff(root, &repo_state(), &current, None, None).expect("cmd_diff");
 
         assert!(!output.has_history);
         let mut buf = Vec::new();
@@ -2517,16 +2526,17 @@ mod tests {
         latest.handles.active = 59;
         latest.handles.frozen = 36;
 
-        crate::snapshot::append_snapshot(root, &oldest).expect("append oldest");
-        crate::snapshot::append_snapshot(root, &middle).expect("append middle");
-        crate::snapshot::append_snapshot(root, &latest).expect("append latest");
+        let state = repo_state();
+        crate::snapshot::append_snapshot(root, &state, &oldest).expect("append oldest");
+        crate::snapshot::append_snapshot(root, &state, &middle).expect("append middle");
+        crate::snapshot::append_snapshot(root, &state, &latest).expect("append latest");
 
         let mut current = make_snapshot_base();
         current.handles.total = 100;
         current.handles.active = 63;
         current.handles.frozen = 37;
 
-        let output = cmd_diff(root, &current, None, None).expect("cmd_diff");
+        let output = cmd_diff(root, &state, &current, None, None).expect("cmd_diff");
 
         assert!(output.has_history);
         assert_eq!(output.reference, "last snapshot");

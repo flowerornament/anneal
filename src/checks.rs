@@ -120,7 +120,7 @@ fn check_existence(
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut bare_filename_cache: HashMap<String, Vec<String>> = HashMap::new();
+    let bare_filename_index = build_bare_filename_index(graph);
 
     if section_ref_count > 0 {
         diagnostics.push(Diagnostic {
@@ -151,10 +151,7 @@ fn check_existence(
                 .get(&edge.target_identity)
                 .cloned()
                 .unwrap_or_default(),
-            bare_filename_cache
-                .entry(edge.target_identity.clone())
-                .or_insert_with(|| bare_filename_candidates(graph, &edge.target_identity))
-                .clone(),
+            bare_filename_candidates(&bare_filename_index, &edge.target_identity),
         );
 
         let candidate_msg = if candidates.is_empty() {
@@ -185,24 +182,37 @@ fn check_existence(
     diagnostics
 }
 
-fn bare_filename_candidates(graph: &DiGraph, target: &str) -> Vec<String> {
+fn build_bare_filename_index(graph: &DiGraph) -> HashMap<String, Vec<String>> {
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+    for (_, handle) in graph.nodes() {
+        let HandleKind::File(path) = &handle.kind else {
+            continue;
+        };
+        let Some(filename) = path.file_name() else {
+            continue;
+        };
+        index
+            .entry(filename.to_string())
+            .or_default()
+            .push(path.as_str().to_string());
+    }
+    index
+}
+
+fn bare_filename_candidates(
+    bare_filename_index: &HashMap<String, Vec<String>>,
+    target: &str,
+) -> Vec<String> {
     if target.contains('/') {
         return Vec::new();
     }
 
-    graph
-        .nodes()
-        .filter_map(|(_, handle)| match &handle.kind {
-            HandleKind::File(path) => {
-                let path_str = path.as_str();
-                if path_str != target && path_str.ends_with(&format!("/{target}")) {
-                    Some(path_str.to_string())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
+    bare_filename_index
+        .get(target)
+        .into_iter()
+        .flatten()
+        .filter(|path| path.as_str() != target)
+        .cloned()
         .collect()
 }
 
