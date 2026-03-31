@@ -88,7 +88,7 @@ anneal = {
 anneal status
 
 # Actionable issues in active work
-anneal check --active-only
+anneal check
 
 # Resolve a specific handle
 anneal get REQ-12
@@ -116,10 +116,10 @@ anneal init
 
 `anneal` supports a practical loop for corpus work:
 
-1. Orient: run `anneal status` and `anneal check --active-only` to understand the corpus shape and the actionable problems.
+1. Orient: run `anneal status` and `anneal check` to understand the corpus shape and the actionable problems.
 2. Locate context: use `anneal get`, `anneal find`, and `anneal map --around=...` to understand the specific files, labels, or versions involved in the task.
 3. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
-4. Verify: run `anneal check --file=...` for a local pass or `anneal check --active-only` for a broader pass after editing.
+4. Verify: run `anneal check --file=...` for a local pass or `anneal check` for a broader pass after editing.
 5. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
 
 This is what the tool buys you in practice: quick context recovery, structural inspection, and safer edits in a corpus that outlives any one session.
@@ -174,7 +174,7 @@ Appends a snapshot to `.anneal/history.jsonl` for convergence tracking.
 Five check rules and five suggestion rules with compiler-style diagnostics:
 
 ```
-$ anneal check --active-only
+$ anneal check
 error[E001]: broken reference: auth-flow.md not found
   -> spec/api-v3.md
 error[E001]: broken reference: REQ-99 not found
@@ -183,8 +183,11 @@ error[E001]: broken reference: REQ-99 not found
 23 errors (23 in active files), 11 warnings, 1 info, 7 suggestions
 ```
 
+`anneal check` reports active-file diagnostics by default. Use `--include-terminal` when you want the full picture, including settled material.
+
 | Flag             | Effect                                         |
 | ---------------- | ---------------------------------------------- |
+| `--include-terminal` | Include diagnostics from terminal (settled) files |
 | `--active-only`  | Skip diagnostics from terminal (settled) files |
 | `--errors-only`  | Errors only (for CI/pre-commit)                |
 | `--suggest`      | Structural suggestions only (S001–S005)        |
@@ -355,7 +358,7 @@ All commands support `--json` for machine consumption:
 
 ```bash
 anneal status --json | jq '.convergence'
-anneal check --active-only --json | jq '.errors'
+anneal check --json | jq '.errors'
 anneal get REQ-12 --json | jq '.edges'
 anneal obligations --json | jq '.total_outstanding'
 ```

@@ -161,12 +161,20 @@ impl HandlesConfig {
 }
 
 /// Configuration for check command behavior.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct CheckConfig {
-    /// Default filter for `anneal check`. Set to `"active-only"` to skip
-    /// diagnostics from terminal files without requiring the `--active-only` flag.
+    /// Default filter for `anneal check`. `"active-only"` skips diagnostics
+    /// from terminal files; any other value keeps the full picture.
     pub(crate) default_filter: Option<String>,
+}
+
+impl Default for CheckConfig {
+    fn default() -> Self {
+        Self {
+            default_filter: Some("active-only".to_string()),
+        }
+    }
 }
 
 /// Configuration for freshness thresholds.
@@ -222,9 +230,10 @@ root = "docs"
 exclude = [".git"]
 "#;
         let config: AnnealConfig = toml::from_str(toml_str).expect("should parse without [check]");
-        assert!(
-            config.check.default_filter.is_none(),
-            "default_filter should be None when [check] section absent"
+        assert_eq!(
+            config.check.default_filter.as_deref(),
+            Some("active-only"),
+            "default_filter should default to active-only when [check] section absent"
         );
     }
 
@@ -244,20 +253,20 @@ default_filter = "active-only"
     }
 
     #[test]
-    fn config_with_unknown_filter_value_accepted() {
+    fn config_with_non_active_default_filter_is_preserved() {
         let toml_str = r#"
 [check]
-default_filter = "errors-only"
+default_filter = "all"
 "#;
         let config: AnnealConfig =
-            toml::from_str(toml_str).expect("unknown filter values should be accepted");
-        assert_eq!(config.check.default_filter.as_deref(), Some("errors-only"));
+            toml::from_str(toml_str).expect("non-active default filter values should be accepted");
+        assert_eq!(config.check.default_filter.as_deref(), Some("all"));
     }
 
     #[test]
     fn config_empty_parses_to_default() {
         let config: AnnealConfig = toml::from_str("").expect("empty TOML should parse");
-        assert!(config.check.default_filter.is_none());
+        assert_eq!(config.check.default_filter.as_deref(), Some("active-only"));
         assert!(config.root.is_empty());
         assert!(config.suppress.codes.is_empty());
         assert!(config.suppress.rules.is_empty());
