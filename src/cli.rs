@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::checks::{self, Diagnostic, Severity};
 use crate::config::{
     AnnealConfig, CheckConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
-    FrontmatterFieldMapping, HandlesConfig,
+    FrontmatterFieldMapping, HandlesConfig, SuppressConfig,
 };
 use crate::graph::{DiGraph, Edge};
 use crate::handle::{Handle, HandleKind, NodeId};
@@ -599,6 +599,7 @@ pub(crate) fn cmd_init(
         freshness: FreshnessConfig::default(),
         frontmatter,
         check: CheckConfig::default(),
+        suppress: SuppressConfig::default(),
         concerns: HashMap::new(),
     };
 
@@ -702,6 +703,7 @@ pub(crate) fn build_summary(
             HandleKind::Label { .. } => labels += 1,
             HandleKind::Section { .. } => sections += 1,
             HandleKind::Version { .. } => versions_count += 1,
+            HandleKind::External { .. } => {}
         }
     }
     GraphSummary {
@@ -1230,6 +1232,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     let mut labels_by_ns: HashMap<&str, Vec<(NodeId, &Handle)>> = HashMap::new();
     let mut sections: Vec<(NodeId, &Handle)> = Vec::new();
     let mut versions: Vec<(NodeId, &Handle)> = Vec::new();
+    let mut externals: Vec<(NodeId, &Handle)> = Vec::new();
 
     for &node_id in nodes {
         let h = graph.node(node_id);
@@ -1243,6 +1246,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
             }
             HandleKind::Section { .. } => sections.push((node_id, h)),
             HandleKind::Version { .. } => versions.push((node_id, h)),
+            HandleKind::External { .. } => externals.push((node_id, h)),
         }
     }
 
@@ -1250,6 +1254,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     files.sort_by(|a, b| a.1.id.cmp(&b.1.id));
     sections.sort_by(|a, b| a.1.id.cmp(&b.1.id));
     versions.sort_by(|a, b| a.1.id.cmp(&b.1.id));
+    externals.sort_by(|a, b| a.1.id.cmp(&b.1.id));
 
     // Files
     if !files.is_empty() {
@@ -1303,6 +1308,15 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
                 .as_deref()
                 .map_or(String::new(), |s| format!(" [{s}]"));
             let _ = writeln!(out, "  {}{status_str}", h.id);
+        }
+        let _ = writeln!(out);
+    }
+
+    // External URLs
+    if !externals.is_empty() {
+        let _ = writeln!(out, "External URLs ({}):", externals.len());
+        for (_, h) in &externals {
+            let _ = writeln!(out, "  {}", h.id);
         }
         let _ = writeln!(out);
     }
@@ -1367,6 +1381,7 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
             HandleKind::Label { .. } => "box",
             HandleKind::Section { .. } => "ellipse",
             HandleKind::Version { .. } => "diamond",
+            HandleKind::External { .. } => "oval",
         };
         let status_label = h
             .status

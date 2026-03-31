@@ -80,6 +80,23 @@ impl Default for FrontmatterConfig {
     }
 }
 
+/// Suppression rules for known false positives in diagnostics.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct SuppressConfig {
+    /// Diagnostic codes suppressed globally.
+    pub(crate) codes: Vec<String>,
+    /// Targeted suppressions for a specific code + target pair.
+    pub(crate) rules: Vec<SuppressRule>,
+}
+
+/// A targeted suppression rule for one diagnostic code and target identity.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct SuppressRule {
+    pub(crate) code: String,
+    pub(crate) target: String,
+}
+
 /// Top-level configuration from `anneal.toml`.
 ///
 /// All fields use concrete types with `Default` impls -- no `Option<T>` wrapping.
@@ -102,6 +119,8 @@ pub(crate) struct AnnealConfig {
     pub(crate) frontmatter: FrontmatterConfig,
     /// Check command behavior configuration.
     pub(crate) check: CheckConfig,
+    /// Known false-positive suppressions for diagnostics.
+    pub(crate) suppress: SuppressConfig,
     /// Concern groups mapping name -> list of handle patterns.
     #[serde(default)]
     pub(crate) concerns: HashMap<String, Vec<String>>,
