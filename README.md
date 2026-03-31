@@ -186,6 +186,8 @@ error[E001]: broken reference: REQ-99 not found
 
 `anneal check` reports active-file diagnostics by default. Use `--include-terminal` when you want the full picture, including settled material.
 
+For interactive health checks, prefer the plain-text report. When you need machine-readable diagnostics, summarize them with `jq` before surfacing them.
+
 | Flag                 | Effect                                            |
 | -------------------- | ------------------------------------------------- |
 | `--include-terminal` | Include diagnostics from terminal (settled) files |
@@ -390,13 +392,12 @@ Important boundary: repo config can choose whether history is machine-local, rep
 
 ## JSON output
 
-All commands support `--json` for machine consumption:
+All commands support `--json` for machine consumption. Use it for compact facts and jq-filtered summaries rather than dumping full structured output back into chat:
 
 ```bash
 anneal status --json | jq '.convergence'
-anneal check --json | jq '.errors'
-anneal get REQ-12 --json | jq '.edges'
-anneal obligations --json | jq '.total_outstanding'
+anneal check --active-only --json | jq '{diagnostic_count: (.diagnostics | length)}'
+anneal check --active-only --json | jq '.diagnostics[:5]'
 ```
 
 ## Design
