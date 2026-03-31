@@ -145,15 +145,21 @@ fn check_existence(
             .as_ref()
             .map(ToString::to_string);
 
-        let candidates = cascade_candidates
-            .get(&edge.target_identity)
-            .cloned()
-            .unwrap_or_default();
+        let candidates = merge_candidates(
+            cascade_candidates
+                .get(&edge.target_identity)
+                .cloned()
+                .unwrap_or_default(),
+            bare_filename_candidates(graph, &edge.target_identity),
+        );
 
         let candidate_msg = if candidates.is_empty() {
             String::new()
         } else {
-            format!("; similar handle exists: {}", candidates.join(", "))
+            format!(
+                "; {}",
+                format_candidate_suggestion(&edge.target_identity, &candidates)
+            )
         };
 
         diagnostics.push(Diagnostic {
@@ -173,6 +179,55 @@ fn check_existence(
     }
 
     diagnostics
+}
+
+fn bare_filename_candidates(graph: &DiGraph, target: &str) -> Vec<String> {
+    if target.contains('/') {
+        return Vec::new();
+    }
+
+    graph
+        .nodes()
+        .filter_map(|(_, handle)| match &handle.kind {
+            HandleKind::File(path) => {
+                let path_str = path.as_str();
+                if path_str != target && path_str.ends_with(&format!("/{target}")) {
+                    Some(path_str.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn merge_candidates(primary: Vec<String>, secondary: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    primary
+        .into_iter()
+        .chain(secondary)
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .collect()
+}
+
+fn format_candidate_suggestion(target: &str, candidates: &[String]) -> String {
+    let is_bare_filename = !target.contains('/')
+        && std::path::Path::new(target)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+
+    if is_bare_filename {
+        match candidates {
+            [candidate] => return format!("did you mean {candidate}?"),
+            [first, rest @ ..] if rest.iter().all(|candidate| candidate.contains('/')) => {
+                return format!("did you mean one of: {}?", candidates.join(", "));
+            }
+            _ => {}
+        }
+    }
+
+    format!("similar handle exists: {}", candidates.join(", "))
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,6 +1727,60 @@ mod tests {
             }
             other => panic!("Expected Evidence::BrokenRef with empty candidates, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_existence_suggests_subdirectory_file_for_bare_filename() {
+        let mut graph = DiGraph::new();
+        let source = graph.add_node(make_file_handle("doc.md", None));
+        let _nested = graph.add_node(make_file_handle("notes/foo.md", None));
+
+        let unresolved = vec![PendingEdge {
+            source,
+            target_identity: "foo.md".to_string(),
+            kind: EdgeKind::Cites,
+            inverse: false,
+            line: Some(7),
+        }];
+
+        let diags = check_existence(&graph, &unresolved, 0, None, &HashMap::new());
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("did you mean notes/foo.md?"));
+        match &diags[0].evidence {
+            Some(Evidence::BrokenRef { target, candidates }) => {
+                assert_eq!(target, "foo.md");
+                assert_eq!(candidates, &["notes/foo.md"]);
+            }
+            other => panic!("Expected Evidence::BrokenRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_existence_keeps_generic_candidates_for_non_bare_target() {
+        let mut graph = DiGraph::new();
+        let source = graph.add_node(make_file_handle("doc.md", None));
+
+        let unresolved = vec![PendingEdge {
+            source,
+            target_identity: "formal/foo.md".to_string(),
+            kind: EdgeKind::Cites,
+            inverse: false,
+            line: Some(9),
+        }];
+
+        let mut cascade = HashMap::new();
+        cascade.insert(
+            "formal/foo.md".to_string(),
+            vec!["formal-model/foo.md".to_string()],
+        );
+
+        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0]
+                .message
+                .contains("similar handle exists: formal-model/foo.md")
+        );
     }
 
     #[test]
