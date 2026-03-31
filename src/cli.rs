@@ -281,8 +281,7 @@ impl GetOutput {
 
 /// Extract first paragraph after frontmatter from a file.
 fn extract_file_snippet(root: &Utf8Path, file_path: &Utf8Path) -> Option<String> {
-    let full_path = root.join(file_path);
-    let content = std::fs::read_to_string(full_path.as_std_path()).ok()?;
+    let content = read_corpus_file(root, file_path)?;
     let (_, body) = crate::parse::split_frontmatter(&content);
 
     let mut lines = Vec::new();
@@ -306,8 +305,7 @@ fn extract_file_snippet(root: &Utf8Path, file_path: &Utf8Path) -> Option<String>
 
 /// Extract heading context for a label handle from its defining file.
 fn extract_label_snippet(root: &Utf8Path, file_path: &Utf8Path, label_id: &str) -> Option<String> {
-    let full_path = root.join(file_path);
-    let content = std::fs::read_to_string(full_path.as_std_path()).ok()?;
+    let content = read_corpus_file(root, file_path)?;
 
     let mut heading = String::new();
     for line in content.lines() {
@@ -325,6 +323,11 @@ fn extract_label_snippet(root: &Utf8Path, file_path: &Utf8Path, label_id: &str) 
     }
 
     None
+}
+
+fn read_corpus_file(root: &Utf8Path, file_path: &Utf8Path) -> Option<String> {
+    let full_path = root.join(file_path);
+    std::fs::read_to_string(full_path.as_std_path()).ok()
 }
 
 fn truncate_snippet(s: &str, max_len: usize) -> String {

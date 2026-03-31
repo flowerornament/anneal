@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::io::Write;
 
 use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 mod checks;
 mod cli;
@@ -435,6 +437,78 @@ fn collect_unresolved_owned(
     (unresolved, section_ref_count, section_ref_file)
 }
 
+fn emit_output<T: Serialize>(
+    output: &T,
+    json: bool,
+    render_human: impl FnOnce(&mut dyn Write) -> std::io::Result<()>,
+    human_context: &'static str,
+) -> anyhow::Result<()> {
+    if json {
+        cli::print_json(output)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        render_human(&mut lock).context(human_context)?;
+    }
+    Ok(())
+}
+
+struct AnalysisArtifacts {
+    previous_snapshot: Option<snapshot::Snapshot>,
+    diagnostics: Vec<checks::Diagnostic>,
+}
+
+struct AnalysisContext<'a> {
+    root: &'a camino::Utf8Path,
+    graph: &'a crate::graph::DiGraph,
+    lattice: &'a lattice::Lattice,
+    config: &'a config::AnnealConfig,
+    result: &'a parse::BuildResult,
+    node_index: &'a HashMap<String, NodeId>,
+    cascade_candidates: &'a HashMap<String, Vec<String>>,
+}
+
+fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> AnalysisArtifacts {
+    let (unresolved_owned, section_ref_count, section_ref_file) = collect_unresolved_owned(
+        context.result.pending_edges.as_slice(),
+        context.node_index,
+        context.graph,
+    );
+    let previous_snapshot = snapshot::read_latest_snapshot(context.root);
+
+    let mut diagnostics = checks::run_checks(
+        context.graph,
+        context.lattice,
+        context.config,
+        &unresolved_owned,
+        section_ref_count,
+        section_ref_file.as_deref(),
+        context.result.implausible_refs.as_slice(),
+        context.cascade_candidates,
+        previous_snapshot.as_ref(),
+    );
+    checks::apply_suppressions(&mut diagnostics, &context.config.suppress);
+
+    AnalysisArtifacts {
+        previous_snapshot,
+        diagnostics,
+    }
+}
+
+fn retain_diagnostics_for_file(diagnostics: &mut Vec<checks::Diagnostic>, root: &str, file: &str) {
+    let normalized = file.strip_prefix("./").unwrap_or(file);
+    let normalized = normalized
+        .strip_prefix(&format!("{root}/"))
+        .unwrap_or(normalized);
+
+    diagnostics.retain(|d| {
+        d.file.as_ref().is_some_and(|diag_file| {
+            let diag_file = diag_file.strip_prefix("./").unwrap_or(diag_file);
+            diag_file == normalized || diag_file.ends_with(&format!("/{normalized}"))
+        })
+    });
+}
+
 fn main() {
     if let Err(e) = run() {
         // Silently exit on broken pipe (e.g., `anneal check | head`).
@@ -497,7 +571,7 @@ fn run() -> anyhow::Result<()> {
         .collect();
 
     let lattice = lattice::infer_lattice(
-        result.observed_statuses,
+        std::mem::take(&mut result.observed_statuses),
         &config,
         &result.terminal_by_directory,
     );
@@ -505,18 +579,26 @@ fn run() -> anyhow::Result<()> {
 
     // Rebuild node index after cascade may have added edges via root-prefix resolution
     let node_index = resolve::build_node_index(graph);
+    let analysis = AnalysisContext {
+        root: &root,
+        graph,
+        lattice: &lattice,
+        config: &config,
+        result: &result,
+        node_index: &node_index,
+        cascade_candidates: &cascade_candidates,
+    };
 
     match cli_args.command {
         None => {
             // Bare `anneal` (no subcommand): show graph summary
             let summary = cli::build_summary(&root_str, graph, &stats, &lattice);
-            if cli_args.json {
-                cli::print_json(&summary)?;
-            } else {
-                summary
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write summary")?;
-            }
+            emit_output(
+                &summary,
+                cli_args.json,
+                |w| summary.print_human(w),
+                "failed to write summary",
+            )?;
         }
 
         Some(Command::Check {
@@ -531,39 +613,11 @@ fn run() -> anyhow::Result<()> {
             let active_only =
                 active_only || config.check.default_filter.as_deref() == Some("active-only");
 
-            let (unresolved_owned, section_ref_count, section_ref_file) =
-                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
-            let history = snapshot::read_history(&root);
-            let previous_snapshot = history.last();
-
-            // Compute diagnostics once — used for both check output and snapshot
-            let all_diagnostics = checks::run_checks(
-                graph,
-                &lattice,
-                &config,
-                &unresolved_owned,
-                section_ref_count,
-                section_ref_file.as_deref(),
-                &result.implausible_refs,
-                &cascade_candidates,
-                previous_snapshot,
-            );
-            let mut all_diagnostics = all_diagnostics;
-            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
+            let mut diagnostics = build_analysis_artifacts(&analysis).diagnostics;
             if let Some(ref file_filter) = file {
-                let normalized = file_filter.strip_prefix("./").unwrap_or(file_filter);
-                let normalized = normalized
-                    .strip_prefix(&format!("{root}/"))
-                    .unwrap_or(normalized);
-                all_diagnostics.retain(|d| {
-                    d.file.as_ref().is_some_and(|f| {
-                        let f_normalized = f.strip_prefix("./").unwrap_or(f);
-                        f_normalized == normalized
-                            || f_normalized.ends_with(&format!("/{normalized}"))
-                    })
-                });
+                retain_diagnostics_for_file(&mut diagnostics, &root_str, file_filter);
             }
-            let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+            let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
 
             let filters = cli::CheckFilters {
@@ -574,18 +628,17 @@ fn run() -> anyhow::Result<()> {
                 active_only,
             };
             let output = cli::cmd_check(
-                all_diagnostics,
+                diagnostics,
                 &filters,
                 &terminal_files,
                 result.extractions.clone(),
             );
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write check output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write check output",
+            )?;
 
             // Append snapshot after output (D-04, D-20)
             snapshot::append_snapshot(&root, &snap)?;
@@ -597,13 +650,12 @@ fn run() -> anyhow::Result<()> {
 
         Some(Command::Get { ref handle }) => {
             if let Some(output) = cli::cmd_get(&root, graph, &node_index, handle) {
-                if cli_args.json {
-                    cli::print_json(&output)?;
-                } else {
-                    output
-                        .print_human(&mut std::io::stdout().lock())
-                        .context("failed to write get output")?;
-                }
+                emit_output(
+                    &output,
+                    cli_args.json,
+                    |w| output.print_human(w),
+                    "failed to write get output",
+                )?;
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
@@ -628,13 +680,12 @@ fn run() -> anyhow::Result<()> {
                     include_all: all,
                 },
             );
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write find output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write find output",
+            )?;
         }
 
         Some(Command::Init { dry_run }) => {
@@ -645,24 +696,22 @@ fn run() -> anyhow::Result<()> {
                 &result.observed_frontmatter_keys,
                 dry_run,
             )?;
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write init output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write init output",
+            )?;
         }
 
         Some(Command::Impact { ref handle }) => {
             if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
-                if cli_args.json {
-                    cli::print_json(&output)?;
-                } else {
-                    output
-                        .print_human(&mut std::io::stdout().lock())
-                        .context("failed to write impact output")?;
-                }
+                emit_output(
+                    &output,
+                    cli_args.json,
+                    |w| output.print_human(w),
+                    "failed to write impact output",
+                )?;
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
@@ -685,103 +734,63 @@ fn run() -> anyhow::Result<()> {
                 depth,
                 format,
             });
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write map output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write map output",
+            )?;
         }
 
         Some(Command::Status { verbose }) => {
-            let (unresolved_owned, section_ref_count, section_ref_file) =
-                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
-            let history = snapshot::read_history(&root);
-            let previous_snapshot = history.last();
-
-            // Compute diagnostics once — used for status output, snapshot, and convergence
-            let all_diagnostics = checks::run_checks(
-                graph,
-                &lattice,
-                &config,
-                &unresolved_owned,
-                section_ref_count,
-                section_ref_file.as_deref(),
-                &result.implausible_refs,
-                &cascade_candidates,
+            let AnalysisArtifacts {
                 previous_snapshot,
-            );
-            let mut all_diagnostics = all_diagnostics;
-            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
-            let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
-            let output = cli::cmd_status(graph, &lattice, &snap, &all_diagnostics);
+                diagnostics,
+            } = build_analysis_artifacts(&analysis);
+            let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
+            let output = cli::cmd_status(graph, &lattice, &snap, &diagnostics);
 
             // Compute convergence from history (D-05, D-06)
-            let convergence =
-                snapshot::latest_summary(&root, &snap).map(|s| cli::ConvergenceSummaryOutput {
-                    signal: s.signal.to_string(),
-                    detail: s.detail,
+            let convergence = snapshot::summary_from_previous(&snap, previous_snapshot.as_ref())
+                .map(|summary| cli::ConvergenceSummaryOutput {
+                    signal: summary.signal.to_string(),
+                    detail: summary.detail,
                 });
             let output = output.with_convergence(convergence);
 
             // Append snapshot AFTER computing convergence (D-04)
             snapshot::append_snapshot(&root, &snap)?;
 
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human_with_options(
-                        &mut std::io::stdout().lock(),
-                        verbose,
-                        graph,
-                        &lattice,
-                    )
-                    .context("failed to write status output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human_with_options(w, verbose, graph, &lattice),
+                "failed to write status output",
+            )?;
         }
 
         Some(Command::Diff { days, ref git_ref }) => {
-            let (unresolved_owned, section_ref_count, section_ref_file) =
-                collect_unresolved_owned(&result.pending_edges, &node_index, graph);
-            let history = snapshot::read_history(&root);
-            let previous_snapshot = history.last();
-            let all_diagnostics = checks::run_checks(
-                graph,
-                &lattice,
-                &config,
-                &unresolved_owned,
-                section_ref_count,
-                section_ref_file.as_deref(),
-                &result.implausible_refs,
-                &cascade_candidates,
-                previous_snapshot,
-            );
-            let mut all_diagnostics = all_diagnostics;
-            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
-            let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
+            let diagnostics = build_analysis_artifacts(&analysis).diagnostics;
+            let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
 
             let output = cli::cmd_diff(&root, &current_snap, days, git_ref.as_deref())?;
 
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write diff output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write diff output",
+            )?;
         }
 
         Some(Command::Obligations) => {
             let output = cli::cmd_obligations(graph, &lattice, &config);
-            if cli_args.json {
-                cli::print_json(&output)?;
-            } else {
-                output
-                    .print_human(&mut std::io::stdout().lock())
-                    .context("failed to write obligations output")?;
-            }
+            emit_output(
+                &output,
+                cli_args.json,
+                |w| output.print_human(w),
+                "failed to write obligations output",
+            )?;
         }
     }
 
