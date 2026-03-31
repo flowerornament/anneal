@@ -279,89 +279,15 @@ impl GetOutput {
     }
 }
 
-/// Extract first paragraph after frontmatter from a file.
-fn extract_file_snippet(root: &Utf8Path, file_path: &Utf8Path) -> Option<String> {
-    let content = read_corpus_file(root, file_path)?;
-    let (_, body) = crate::parse::split_frontmatter(&content);
-
-    let mut lines = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() && !lines.is_empty() {
-            break;
-        }
-        if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            lines.push(trimmed);
-        }
-    }
-
-    if lines.is_empty() {
-        return None;
-    }
-
-    let text = lines.join(" ");
-    Some(truncate_snippet(&text, 200))
-}
-
-/// Extract heading context for a label handle from its defining file.
-fn extract_label_snippet(root: &Utf8Path, file_path: &Utf8Path, label_id: &str) -> Option<String> {
-    let content = read_corpus_file(root, file_path)?;
-
-    let mut heading = String::new();
-    for line in content.lines() {
-        if line.starts_with('#') {
-            heading = line.trim_start_matches('#').trim().to_string();
-        }
-        if line.contains(label_id) {
-            let context = if heading.is_empty() {
-                line.trim().to_string()
-            } else {
-                format!("{heading}: {}", line.trim())
-            };
-            return Some(truncate_snippet(&context, 200));
-        }
-    }
-
-    None
-}
-
-fn read_corpus_file(root: &Utf8Path, file_path: &Utf8Path) -> Option<String> {
-    let full_path = root.join(file_path);
-    std::fs::read_to_string(full_path.as_std_path()).ok()
-}
-
-fn truncate_snippet(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        return s.to_string();
-    }
-
-    let mut cut_indices = Vec::new();
-    for (count, (idx, ch)) in s.char_indices().enumerate() {
-        if count >= max_len {
-            break;
-        }
-        if ch == ' ' {
-            cut_indices.push(idx);
-        }
-    }
-
-    let end = cut_indices.last().copied().unwrap_or_else(|| {
-        s.char_indices()
-            .nth(max_len)
-            .map_or(s.len(), |(idx, _)| idx)
-    });
-
-    format!("{}...", s[..end].trim_end())
-}
-
 /// Resolve a handle by identity string and build output.
 ///
 /// Looks up the handle by exact match first, then tries case-insensitive
 /// match against label identities.
 pub(crate) fn cmd_get(
-    root: &Utf8Path,
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
+    file_snippets: &HashMap<String, String>,
+    label_snippets: &HashMap<String, String>,
     handle: &str,
 ) -> Option<GetOutput> {
     let node_id = lookup_handle(node_index, handle)?;
@@ -372,11 +298,8 @@ pub(crate) fn cmd_get(
     let outgoing_edges = dedup_edges(graph.outgoing(node_id), |e| e.target, "outgoing", graph);
     let incoming_edges = dedup_edges(graph.incoming(node_id), |e| e.source, "incoming", graph);
     let snippet = match &h.kind {
-        HandleKind::File(path) => extract_file_snippet(root, path),
-        HandleKind::Label { .. } => h
-            .file_path
-            .as_ref()
-            .and_then(|fp| extract_label_snippet(root, fp, &h.id)),
+        HandleKind::File(path) => file_snippets.get(path.as_str()).cloned(),
+        HandleKind::Label { .. } => label_snippets.get(&h.id).cloned(),
         _ => None,
     };
 
@@ -2690,5 +2613,58 @@ mod tests {
         assert_eq!(output.active_handles, 2);
         // doc2.md (archived, terminal) = 1 frozen
         assert_eq!(output.frozen_handles, 1);
+    }
+
+    #[test]
+    fn cmd_get_uses_precomputed_snippets() {
+        let mut graph = DiGraph::new();
+        let file_node = graph.add_node(crate::handle::Handle::test_file("guide.md", Some("draft")));
+        let label_node = graph.add_node(crate::handle::Handle {
+            id: "OQ-64".to_string(),
+            kind: HandleKind::Label {
+                prefix: "OQ".to_string(),
+                number: 64,
+            },
+            status: None,
+            file_path: Some("guide.md".into()),
+            metadata: crate::handle::HandleMetadata::default(),
+        });
+
+        let node_index = HashMap::from([
+            ("guide.md".to_string(), file_node),
+            ("OQ-64".to_string(), label_node),
+        ]);
+        let file_snippets = HashMap::from([(
+            "guide.md".to_string(),
+            "First paragraph line. Still same paragraph.".to_string(),
+        )]);
+        let label_snippets =
+            HashMap::from([("OQ-64".to_string(), "Details: See OQ-64 here.".to_string())]);
+
+        let file_output = cmd_get(
+            &graph,
+            &node_index,
+            &file_snippets,
+            &label_snippets,
+            "guide.md",
+        )
+        .expect("file output");
+        assert_eq!(
+            file_output.snippet.as_deref(),
+            Some("First paragraph line. Still same paragraph.")
+        );
+
+        let label_output = cmd_get(
+            &graph,
+            &node_index,
+            &file_snippets,
+            &label_snippets,
+            "OQ-64",
+        )
+        .expect("label output");
+        assert_eq!(
+            label_output.snippet.as_deref(),
+            Some("Details: See OQ-64 here.")
+        );
     }
 }

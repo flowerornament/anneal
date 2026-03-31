@@ -130,6 +130,74 @@ pub(crate) struct FileExtraction {
 }
 
 // ---------------------------------------------------------------------------
+// Snippet extraction
+// ---------------------------------------------------------------------------
+
+/// Extract the first paragraph snippet from a file body.
+pub(crate) fn extract_file_snippet_from_body(body: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() && !lines.is_empty() {
+            break;
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            lines.push(trimmed);
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    Some(truncate_snippet(&lines.join(" "), 200))
+}
+
+/// Extract the first heading-qualified line mentioning `label_id`.
+pub(crate) fn extract_label_snippet_from_content(content: &str, label_id: &str) -> Option<String> {
+    let mut heading = String::new();
+    for line in content.lines() {
+        if line.starts_with('#') {
+            heading = line.trim_start_matches('#').trim().to_string();
+        }
+        if line.contains(label_id) {
+            let context = if heading.is_empty() {
+                line.trim().to_string()
+            } else {
+                format!("{heading}: {}", line.trim())
+            };
+            return Some(truncate_snippet(&context, 200));
+        }
+    }
+
+    None
+}
+
+fn truncate_snippet(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        return s.to_string();
+    }
+
+    let mut cut_indices = Vec::new();
+    for (count, (idx, ch)) in s.char_indices().enumerate() {
+        if count >= max_len {
+            break;
+        }
+        if ch == ' ' {
+            cut_indices.push(idx);
+        }
+    }
+
+    let end = cut_indices.last().copied().unwrap_or_else(|| {
+        s.char_indices()
+            .nth(max_len)
+            .map_or(s.len(), |(idx, _)| idx)
+    });
+
+    format!("{}...", s[..end].trim_end())
+}
+
+// ---------------------------------------------------------------------------
 // Classification regexes (anchored, for exact matching)
 // ---------------------------------------------------------------------------
 
