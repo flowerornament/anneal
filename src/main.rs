@@ -530,6 +530,8 @@ fn run() -> anyhow::Result<()> {
 
             let (unresolved_owned, section_ref_count, section_ref_file) =
                 collect_unresolved_owned(&result.pending_edges, &node_index, graph);
+            let history = snapshot::read_history(&root);
+            let previous_snapshot = history.last();
 
             // Compute diagnostics once — used for both check output and snapshot
             let all_diagnostics = checks::run_checks(
@@ -541,6 +543,7 @@ fn run() -> anyhow::Result<()> {
                 section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
+                previous_snapshot,
             );
             let mut all_diagnostics = all_diagnostics;
             checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
@@ -691,6 +694,8 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Status { verbose }) => {
             let (unresolved_owned, section_ref_count, section_ref_file) =
                 collect_unresolved_owned(&result.pending_edges, &node_index, graph);
+            let history = snapshot::read_history(&root);
+            let previous_snapshot = history.last();
 
             // Compute diagnostics once — used for status output, snapshot, and convergence
             let all_diagnostics = checks::run_checks(
@@ -702,6 +707,7 @@ fn run() -> anyhow::Result<()> {
                 section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
+                previous_snapshot,
             );
             let mut all_diagnostics = all_diagnostics;
             checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
@@ -736,6 +742,8 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Diff { days, ref git_ref }) => {
             let (unresolved_owned, section_ref_count, section_ref_file) =
                 collect_unresolved_owned(&result.pending_edges, &node_index, graph);
+            let history = snapshot::read_history(&root);
+            let previous_snapshot = history.last();
             let all_diagnostics = checks::run_checks(
                 graph,
                 &lattice,
@@ -745,6 +753,7 @@ fn run() -> anyhow::Result<()> {
                 section_ref_file.as_deref(),
                 &result.implausible_refs,
                 &cascade_candidates,
+                previous_snapshot,
             );
             let mut all_diagnostics = all_diagnostics;
             checks::apply_suppressions(&mut all_diagnostics, &config.suppress);

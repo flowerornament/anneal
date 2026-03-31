@@ -81,9 +81,8 @@ pub(crate) fn infer_lattice(
         if active.contains(status) || terminal.contains(status) {
             continue;
         }
-        if terminal_by_directory.contains(status) {
-            terminal.insert(status.clone());
-        } else if crate::parse::is_terminal_by_heuristic(status) {
+        if terminal_by_directory.contains(status) || crate::parse::is_terminal_by_heuristic(status)
+        {
             terminal.insert(status.clone());
         } else {
             active.insert(status.clone());

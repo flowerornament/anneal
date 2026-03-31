@@ -1942,6 +1942,7 @@ fn build_graph_at_git_ref(
             section_ref_file.as_deref(),
             &build_result.implausible_refs,
             &cascade_candidates,
+            None,
         );
         Ok(crate::snapshot::build_snapshot(
             &build_result.graph,

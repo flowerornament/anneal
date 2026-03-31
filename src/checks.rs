@@ -584,8 +584,12 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
 // ---------------------------------------------------------------------------
 
 /// Suggest pipeline stalls: ordering levels with high population and no
-/// DependsOn outflow to the next level.
-fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
+/// forward movement signal.
+fn suggest_pipeline_stalls(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    previous_snapshot: Option<&crate::snapshot::Snapshot>,
+) -> Vec<Diagnostic> {
     if lattice.ordering.is_empty() {
         return Vec::new();
     }
@@ -612,36 +616,51 @@ fn suggest_pipeline_stalls(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic
             continue;
         }
 
-        let next_level = level_idx + 1;
+        let status_name = &lattice.ordering[level_idx];
+        let is_stall = if let Some(previous) = previous_snapshot {
+            let prev_count = previous.states.get(status_name).copied().unwrap_or(0);
+            let current_count = handles_at_level.len();
+            current_count >= prev_count && prev_count >= 3
+        } else {
+            let next_level = level_idx + 1;
+            !handles_at_level.iter().any(|&node_id| {
+                graph
+                    .edges_by_kind(node_id, EdgeKind::DependsOn)
+                    .any(|edge| {
+                        let target = graph.node(edge.target);
+                        if let Some(ref target_status) = target.status {
+                            lattice::state_level(target_status, lattice) == Some(next_level)
+                        } else {
+                            false
+                        }
+                    })
+            })
+        };
 
-        // Count handles that have at least one DependsOn edge to a handle at the next level
-        let has_outflow = handles_at_level.iter().any(|&node_id| {
-            graph
-                .edges_by_kind(node_id, EdgeKind::DependsOn)
-                .any(|edge| {
-                    let target = graph.node(edge.target);
-                    if let Some(ref target_status) = target.status {
-                        lattice::state_level(target_status, lattice) == Some(next_level)
-                    } else {
-                        false
-                    }
-                })
-        });
-
-        if !has_outflow {
+        if is_stall {
             let representative = handles_at_level
                 .first()
                 .and_then(|&nid| graph.node(nid).file_path.as_ref().map(ToString::to_string));
 
+            let message = if previous_snapshot.is_some() {
+                format!(
+                    "pipeline stall at '{status_name}': {} handles (unchanged from previous snapshot)",
+                    handles_at_level.len()
+                )
+            } else {
+                let next_level = level_idx + 1;
+                format!(
+                    "pipeline stall: {} handles at status '{}' with no dependencies at next level '{}'",
+                    handles_at_level.len(),
+                    status_name,
+                    lattice.ordering[next_level]
+                )
+            };
+
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
                 code: "S003",
-                message: format!(
-                    "pipeline stall: {} handles at status '{}' with no dependencies at next level '{}'",
-                    handles_at_level.len(),
-                    lattice.ordering[level_idx],
-                    lattice.ordering[next_level]
-                ),
+                message,
                 file: representative,
                 line: Some(1),
                 evidence: None,
@@ -848,11 +867,12 @@ pub(crate) fn run_suggestions(
     graph: &DiGraph,
     lattice: &Lattice,
     config: &AnnealConfig,
+    previous_snapshot: Option<&crate::snapshot::Snapshot>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(suggest_orphaned(graph));
     diagnostics.extend(suggest_candidate_namespaces(graph, config));
-    diagnostics.extend(suggest_pipeline_stalls(graph, lattice));
+    diagnostics.extend(suggest_pipeline_stalls(graph, lattice, previous_snapshot));
     diagnostics.extend(suggest_abandoned_namespaces(graph, lattice, config));
     diagnostics.extend(suggest_concern_groups(graph, config));
     diagnostics
@@ -876,6 +896,7 @@ pub(crate) fn run_checks(
     section_ref_file: Option<&str>,
     implausible_refs: &[ImplausibleRef],
     cascade_candidates: &HashMap<String, Vec<String>>,
+    previous_snapshot: Option<&crate::snapshot::Snapshot>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(check_existence(
@@ -890,7 +911,7 @@ pub(crate) fn run_checks(
     diagnostics.extend(check_confidence_gap(graph, lattice));
     diagnostics.extend(check_linearity(graph, config, lattice));
     diagnostics.extend(check_conventions(graph));
-    diagnostics.extend(run_suggestions(graph, lattice, config));
+    diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
     diagnostics.sort_by_key(|d| d.severity);
     diagnostics
 }
@@ -1287,7 +1308,7 @@ mod tests {
 
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
 
-        let diags = suggest_pipeline_stalls(&graph, &lattice);
+        let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert_eq!(
             diags.len(),
             1,
@@ -1350,7 +1371,11 @@ mod tests {
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert_eq!(diags.len(), 1);
-        assert!(diags[0].message.contains("pipeline stall: 3 handles at status 'draft'"));
+        assert!(
+            diags[0]
+                .message
+                .contains("pipeline stall: 3 handles at status 'draft'")
+        );
     }
 
     #[test]
@@ -1365,7 +1390,11 @@ mod tests {
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, Some(&previous));
         assert_eq!(diags.len(), 1);
-        assert!(diags[0].message.contains("unchanged from previous snapshot"));
+        assert!(
+            diags[0]
+                .message
+                .contains("unchanged from previous snapshot")
+        );
     }
 
     #[test]
