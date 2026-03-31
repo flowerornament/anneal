@@ -23,7 +23,11 @@ jobs:
         run: cargo fmt --check
 
       - name: Installer
-        run: bash -n install.sh
+        run: |
+          bash -n install.sh
+          bash install.sh --help >/dev/null
+          bash install.sh --print-target >/dev/null
+          bash install.sh --dry-run >/dev/null
 
       - name: Installer smoke test
         run: |
