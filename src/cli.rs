@@ -1,8 +1,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
+use std::sync::LazyLock;
 
 use anyhow::Context;
 use camino::Utf8Path;
+use regex::Regex;
 use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, Severity};
@@ -36,13 +38,49 @@ pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<S
 
 /// Look up a handle by exact match, falling back to case-insensitive search.
 fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
-    node_index.get(handle).copied().or_else(|| {
-        let lower = handle.to_lowercase();
-        node_index
-            .iter()
-            .find(|(k, _)| k.to_lowercase() == lower)
-            .map(|(_, &id)| id)
-    })
+    node_index
+        .get(handle)
+        .copied()
+        .or_else(|| lookup_canonical_label(node_index, handle))
+        .or_else(|| {
+            let lower = handle.to_lowercase();
+            node_index
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == lower)
+                .map(|(_, &id)| id)
+        })
+}
+
+/// Matches label-like handles with compound uppercase prefixes and zero-padded numbers.
+static COMPOUND_LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*)-?0+(\d+)$")
+        .expect("compound label regex must compile")
+});
+
+fn canonical_label_candidates(handle: &str) -> Option<[String; 2]> {
+    let captures = COMPOUND_LABEL_RE.captures(handle)?;
+    let prefix = captures.get(1)?.as_str();
+    let number = captures.get(2)?.as_str().parse::<u32>().ok()?;
+    let has_separator = handle[prefix.len()..].starts_with('-');
+    let primary = if has_separator {
+        format!("{prefix}-{number}")
+    } else {
+        format!("{prefix}{number}")
+    };
+    let alternate = if has_separator {
+        format!("{prefix}{number}")
+    } else {
+        format!("{prefix}-{number}")
+    };
+    Some([primary, alternate])
+}
+
+fn lookup_canonical_label(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
+    let [primary, alternate] = canonical_label_candidates(handle)?;
+    node_index
+        .get(&primary)
+        .copied()
+        .or_else(|| node_index.get(&alternate).copied())
 }
 
 /// Deduplicate edges by (kind, other_node) and build `EdgeSummary` list.
@@ -1992,6 +2030,33 @@ mod tests {
             line: Some(1),
             evidence: None,
         }
+    }
+
+    #[test]
+    fn lookup_handle_normalizes_zero_padded_labels() {
+        let mut graph = DiGraph::new();
+        let label = graph.add_node(make_label_handle("OQ", 1));
+        let node_index = test_node_index(&graph);
+
+        assert_eq!(lookup_handle(&node_index, "OQ-01"), Some(label));
+    }
+
+    #[test]
+    fn lookup_handle_normalizes_zero_padded_compound_labels() {
+        let mut graph = DiGraph::new();
+        let label = graph.add_node(make_label_handle("KB-D", 1));
+        let node_index = test_node_index(&graph);
+
+        assert_eq!(lookup_handle(&node_index, "KB-D01"), Some(label));
+    }
+
+    #[test]
+    fn lookup_handle_accepts_hyphenated_zero_padded_compound_labels() {
+        let mut graph = DiGraph::new();
+        let label = graph.add_node(make_label_handle("KB-D", 1));
+        let node_index = test_node_index(&graph);
+
+        assert_eq!(lookup_handle(&node_index, "KB-D-01"), Some(label));
     }
 
     #[test]
