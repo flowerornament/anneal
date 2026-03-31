@@ -25,9 +25,9 @@ pub(crate) struct CascadeResult {
 }
 
 /// Regex for zero-pad normalization of compound labels like `KB-D01`, `OQ-01`.
-/// Captures full compound prefix and the zero-padded number.
+/// Validates compound label prefixes before trailing digits are normalized.
 static COMPOUND_LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*)-0+(\d+)$")
+    Regex::new(r"^[A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*-?$")
         .expect("compound label regex must compile")
 });
 
@@ -564,6 +564,37 @@ fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<S
     matches.into_iter().map(|(_, s)| s).collect()
 }
 
+/// Build canonical candidate identities for a zero-padded label.
+///
+/// Preserves the separator style used by the query first, then tries the
+/// alternate form so both `OQ-01`/`OQ-1` and `KB-D01`/`KB-D-01` can resolve.
+pub(crate) fn zero_padded_label_candidates(target: &str) -> Option<[String; 2]> {
+    let digit_start = target
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_ascii_digit())
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let (prefix, digits) = target.split_at(digit_start);
+    if digits.is_empty() || !digits.starts_with('0') || !COMPOUND_LABEL_RE.is_match(prefix) {
+        return None;
+    }
+
+    let number: u32 = digits.parse().ok()?;
+    let has_separator = prefix.ends_with('-');
+    let prefix = prefix.trim_end_matches('-');
+    let primary = if has_separator {
+        format!("{prefix}-{number}")
+    } else {
+        format!("{prefix}{number}")
+    };
+    let alternate = if has_separator {
+        format!("{prefix}{number}")
+    } else {
+        format!("{prefix}-{number}")
+    };
+    Some([primary, alternate])
+}
+
 /// Try normalizing a zero-padded label to its canonical form.
 ///
 /// `OQ-01` -> `OQ-1`, `KB-D01` -> `KB-D1`.
@@ -571,22 +602,16 @@ fn try_zero_pad_normalize(
     target: &str,
     node_index: &HashMap<String, NodeId>,
 ) -> Option<(NodeId, String)> {
-    let caps = COMPOUND_LABEL_RE.captures(target)?;
-
-    let prefix = caps.get(1)?.as_str();
-    let number_str = caps.get(2)?.as_str();
-    let number: u32 = number_str.parse().ok()?;
-
-    let canonical = format!("{prefix}-{number}");
-
-    // Only suggest if the canonical form differs (i.e., there were leading zeros)
-    if canonical == target {
-        return None;
-    }
+    let [primary, alternate] = zero_padded_label_candidates(target)?;
 
     node_index
-        .get(&canonical)
-        .map(|&node_id| (node_id, canonical))
+        .get(&primary)
+        .map(|&node_id| (node_id, primary.clone()))
+        .or_else(|| {
+            node_index
+                .get(&alternate)
+                .map(|&node_id| (node_id, alternate))
+        })
 }
 
 /// Run deterministic structural transforms on unresolved pending edges.

@@ -1,10 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
-use std::sync::LazyLock;
 
 use anyhow::Context;
 use camino::Utf8Path;
-use regex::Regex;
 use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, Severity};
@@ -16,7 +14,7 @@ use crate::graph::{DiGraph, Edge, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::impact;
 use crate::lattice::Lattice;
-use crate::resolve::ResolveStats;
+use crate::resolve::{ResolveStats, zero_padded_label_candidates};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -51,32 +49,8 @@ fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<N
         })
 }
 
-/// Matches label-like handles with compound uppercase prefixes and zero-padded numbers.
-static COMPOUND_LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*)-?0+(\d+)$")
-        .expect("compound label regex must compile")
-});
-
-fn canonical_label_candidates(handle: &str) -> Option<[String; 2]> {
-    let captures = COMPOUND_LABEL_RE.captures(handle)?;
-    let prefix = captures.get(1)?.as_str();
-    let number = captures.get(2)?.as_str().parse::<u32>().ok()?;
-    let has_separator = handle[prefix.len()..].starts_with('-');
-    let primary = if has_separator {
-        format!("{prefix}-{number}")
-    } else {
-        format!("{prefix}{number}")
-    };
-    let alternate = if has_separator {
-        format!("{prefix}{number}")
-    } else {
-        format!("{prefix}-{number}")
-    };
-    Some([primary, alternate])
-}
-
 fn lookup_canonical_label(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
-    let [primary, alternate] = canonical_label_candidates(handle)?;
+    let [primary, alternate] = zero_padded_label_candidates(handle)?;
     node_index
         .get(&primary)
         .copied()
