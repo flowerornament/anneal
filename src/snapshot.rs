@@ -326,7 +326,7 @@ mod tests {
     use super::*;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
-    use crate::handle::Handle;
+    use crate::handle::{Handle, HandleKind, HandleMetadata};
     use crate::lattice::{Lattice, LatticeKind};
 
     fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
@@ -693,5 +693,38 @@ mod tests {
         // OBL has 1 total
         let obl_stats = snapshot.namespaces.get("OBL").expect("OBL namespace");
         assert_eq!(obl_stats.total, 1);
+    }
+
+    #[test]
+    fn build_snapshot_ignores_external_handles_for_obligations_and_namespaces() {
+        let mut graph = DiGraph::new();
+        let obligation = graph.add_node(make_label_handle("OBL", 1, None));
+        let discharger = graph.add_node(make_file_handle("proof.md", Some("draft")));
+        graph.add_edge(discharger, obligation, crate::graph::EdgeKind::Discharges);
+        graph.add_node(Handle {
+            id: "https://example.com/spec".to_string(),
+            kind: HandleKind::External {
+                url: "https://example.com/spec".to_string(),
+            },
+            status: None,
+            file_path: Some(camino::Utf8PathBuf::from("proof.md")),
+            metadata: HandleMetadata::default(),
+        });
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                linear: vec!["OBL".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+
+        let snapshot = build_snapshot(&graph, &lattice, &config, &[]);
+
+        assert_eq!(snapshot.obligations.discharged, 1);
+        assert_eq!(snapshot.obligations.outstanding, 0);
+        assert_eq!(snapshot.namespaces.len(), 1);
+        assert!(snapshot.namespaces.contains_key("OBL"));
     }
 }

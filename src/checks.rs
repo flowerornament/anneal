@@ -902,7 +902,7 @@ pub(crate) fn run_checks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AnnealConfig, HandlesConfig};
+    use crate::config::{AnnealConfig, HandlesConfig, SuppressConfig, SuppressRule};
     use crate::graph::DiGraph;
     use crate::handle::Handle;
     use crate::lattice::Lattice;
@@ -1599,5 +1599,102 @@ mod tests {
             );
             last_severity = d.severity;
         }
+    }
+
+    #[test]
+    fn apply_suppressions_removes_global_code_matches() {
+        let mut diagnostics = vec![
+            Diagnostic {
+                severity: Severity::Info,
+                code: "I001",
+                message: "section refs".to_string(),
+                file: Some("doc.md".to_string()),
+                line: Some(1),
+                evidence: None,
+            },
+            Diagnostic {
+                severity: Severity::Error,
+                code: "E001",
+                message: "broken reference: target.md not found".to_string(),
+                file: Some("doc.md".to_string()),
+                line: Some(1),
+                evidence: None,
+            },
+        ];
+
+        apply_suppressions(
+            &mut diagnostics,
+            &SuppressConfig {
+                codes: vec!["I001".to_string()],
+                rules: Vec::new(),
+            },
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "E001");
+    }
+
+    #[test]
+    fn apply_suppressions_removes_targeted_rule_matches() {
+        let mut diagnostics = vec![
+            Diagnostic {
+                severity: Severity::Error,
+                code: "E001",
+                message: "broken reference: synthesis/v17.md not found".to_string(),
+                file: Some("anneal-spec.md".to_string()),
+                line: Some(1),
+                evidence: None,
+            },
+            Diagnostic {
+                severity: Severity::Error,
+                code: "E001",
+                message: "broken reference: spec.md not found".to_string(),
+                file: Some("anneal-spec.md".to_string()),
+                line: Some(1),
+                evidence: None,
+            },
+        ];
+
+        apply_suppressions(
+            &mut diagnostics,
+            &SuppressConfig {
+                codes: Vec::new(),
+                rules: vec![SuppressRule {
+                    code: "E001".to_string(),
+                    target: "synthesis/v17.md".to_string(),
+                }],
+            },
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("spec.md"));
+    }
+
+    #[test]
+    fn apply_suppressions_keeps_non_matching_diagnostics() {
+        let original = Diagnostic {
+            severity: Severity::Warning,
+            code: "W001",
+            message: "stale reference: doc.md references archived.md".to_string(),
+            file: Some("doc.md".to_string()),
+            line: Some(1),
+            evidence: None,
+        };
+        let mut diagnostics = vec![original.clone()];
+
+        apply_suppressions(
+            &mut diagnostics,
+            &SuppressConfig {
+                codes: vec!["E001".to_string()],
+                rules: vec![SuppressRule {
+                    code: "W001".to_string(),
+                    target: "other.md".to_string(),
+                }],
+            },
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, original.code);
+        assert_eq!(diagnostics[0].message, original.message);
     }
 }

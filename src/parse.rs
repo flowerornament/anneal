@@ -1084,6 +1084,14 @@ mod tests {
         assert_eq!(ext.refs[0].raw, "https://example.com");
         assert_eq!(ext.refs[0].hint, RefHint::External);
 
+        let external_nodes: Vec<_> = result
+            .graph
+            .nodes()
+            .filter(|(_, handle)| matches!(handle.kind, HandleKind::External { .. }))
+            .collect();
+        assert_eq!(external_nodes.len(), 1, "expected one external handle node");
+        assert_eq!(external_nodes[0].1.id, "https://example.com");
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
