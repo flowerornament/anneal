@@ -2,25 +2,51 @@
 
 Convergence assistant for knowledge corpora.
 
+`anneal` reads a markdown corpus, computes a typed knowledge graph, checks local consistency, and tracks convergence over time.
+
 ## Key Files
 
 - `.design/anneal-spec.md` — authoritative product and implementation spec
 - `.design/anneal.toml` — self-check config for anneal's own spec corpus
 - `.design/.anneal/` — derived local history/state; ignored
+- `.planning/ROADMAP.md` — roadmap and milestone spine
+- `.planning/STATE.md` — current project state
+- `install.sh` — shipped installer for release binaries
 - `.beads/config.yaml` — tracked repo config only; keep federation settings local
+
+For orientation in the spec, read:
+- `§1-§3` for model and motivation
+- `§12` for CLI surface
+- `§15` for implementation patterns and dependencies
+
+## Task Tracking
+
+This project uses beads for issue tracking:
+
+```bash
+bd ready
+bd show <id>
+bd update <id> --claim
+bd close <id>
+bd dolt push
+```
+
+Keep machine-specific federation settings out of the repo. For anneal, the local remote should come from your shell environment rather than tracked `.beads/config.yaml`.
 
 ## Build & Quality
 
 Use `just` for routine work:
 
 ```bash
-just check          # fmt + clippy + test
+just check          # fmt + installer syntax + clippy + test
 just build          # cargo build --release
 just release-verify # release readiness checks
 ```
 
 Toolchain is pinned in `rust-toolchain.toml` to Rust 1.94.0 with `rustfmt` and `clippy`.
 Workspace lint policy denies Clippy `all` and `pedantic` with a small set of targeted allows in `Cargo.toml`.
+
+The shipped surfaces are the CLI binary, the tag-driven GitHub release assets, and `install.sh`. Treat installer correctness as release-critical.
 
 ## Release Flow
 
@@ -48,19 +74,12 @@ Pushing `vX.Y.Z` triggers `.github/workflows/release.yml`, which publishes binar
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 
-## Task Tracking
+## Test Corpus
 
-This project uses beads:
+Primary real-world corpus: `~/code/murail/.design/`
 
-```bash
-bd ready
-bd show <id>
-bd update <id> --claim
-bd close <id>
-bd dolt push
-```
-
-Set machine-specific federation config locally with `BD_FEDERATION_REMOTE`.
+- useful for smoke-checking `status`, `get`, `check --file`, `map`, `impact`, and `obligations`
+- integration tests may skip if the external corpus is unavailable
 
 ## Session Completion
 
