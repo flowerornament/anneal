@@ -23,7 +23,7 @@ Use this skill for knowledge-corpus structure, health, impact, and validation.
 Use this orientation loop when the request is broad:
 
 1. `anneal status --json`
-2. `anneal check --active-only --json`
+2. `anneal check --json`
 3. `anneal get <handle> --json` or `anneal find <text> --json` for the item the user cares about
 4. `anneal impact <file-or-handle> --json` before editing corpus files
 
@@ -36,10 +36,10 @@ For a single concrete question, run the matching command directly.
 ```bash
 anneal status --json
 anneal status -v --json
-anneal check --active-only --json
+anneal check --json
 ```
 
-`status --json` gives corpus shape and current context. `check --active-only --json` gives actionable problems without terminal-file noise.
+`status --json` gives corpus shape and current context. `check --json` gives actionable problems without terminal-file noise by default; use `--include-terminal` for the full picture.
 
 ### Inspect A Specific Thing
 
@@ -85,7 +85,7 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 - Default to `--json` for fact gathering and reasoning.
 - Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
 - Before editing knowledge files, run `anneal impact <file-or-handle> --json`.
-- After editing knowledge files, run `anneal check --active-only --json`.
+- After editing knowledge files, run `anneal check --json`.
 - If error counts look surprisingly high, confirm whether terminal files are included before reporting the corpus as unhealthy.
 
 ## High-Value Diagnostics

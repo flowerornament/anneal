@@ -447,7 +447,8 @@ Eight commands. Each supports `--json` for agent consumption [KB-P8].
 Run local checks [KB-D13], report diagnostics.
 
 ```
-anneal check                     # all diagnostics
+anneal check                     # actionable diagnostics from active files
+anneal check --include-terminal  # full diagnostics, including terminal files
 anneal check --errors-only       # errors only (for pre-commit hooks)
 anneal check --stale             # staleness diagnostics only [KB-E2]
 anneal check --obligations       # obligation status only [KB-E5]

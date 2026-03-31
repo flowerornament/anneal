@@ -135,18 +135,22 @@ SUGGESTION RULES (shown with --suggest):
   S004  Abandoned namespaces — all members terminal or stale
   S005  Concern group candidates — label prefixes co-occurring across files
 
+By default, `anneal check` shows actionable diagnostics from active files and
+skips terminal-file noise. Use `--include-terminal` for the full picture.
+
 Filter flags are mutually exclusive subsets. If none set, all diagnostics shown.
 
 Appends a snapshot to .anneal/history.jsonl for convergence tracking.
 Exit code 1 if any errors found, 0 otherwise.",
         after_help = "\
 EXAMPLES:
-  anneal check                    # All diagnostics
+  anneal check                    # Actionable diagnostics from active files
+  anneal check --include-terminal # Full diagnostics, including terminal files
   anneal check --errors-only      # Errors only (for CI/pre-commit hooks)
   anneal check --suggest          # Show only structural suggestions
   anneal check --stale            # Show only staleness warnings (W001)
   anneal check --obligations      # Show only obligation diagnostics (E002/I002)
-  anneal check --active-only      # Skip diagnostics from terminal (settled) files
+  anneal check --active-only      # Explicitly keep active-only filtering
   anneal check --json             # Machine-readable output"
     )]
     Check {
@@ -163,8 +167,11 @@ EXAMPLES:
         #[arg(long)]
         obligations: bool,
         /// Skip diagnostics sourced from terminal (settled) files
-        #[arg(long)]
+        #[arg(long, conflicts_with = "include_terminal")]
         active_only: bool,
+        /// Include diagnostics sourced from terminal (settled) files
+        #[arg(long, conflicts_with = "active_only")]
+        include_terminal: bool,
         /// Scope diagnostics to a single file path
         #[arg(long)]
         file: Option<String>,
@@ -607,11 +614,14 @@ fn run() -> anyhow::Result<()> {
             stale,
             obligations,
             active_only,
+            include_terminal,
             file,
         }) => {
-            // Merge CLI flag with config opt-in: either triggers active-only filtering
-            let active_only =
-                active_only || config.check.default_filter.as_deref() == Some("active-only");
+            let active_only = if include_terminal {
+                false
+            } else {
+                active_only || config.check.default_filter.as_deref() == Some("active-only")
+            };
 
             let mut diagnostics = build_analysis_artifacts(&analysis).diagnostics;
             if let Some(ref file_filter) = file {

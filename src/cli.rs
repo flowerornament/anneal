@@ -1983,6 +1983,53 @@ mod tests {
         crate::resolve::build_node_index(graph)
     }
 
+    fn test_diag(code: &'static str, file: &str) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Error,
+            code,
+            message: format!("{code} from {file}"),
+            file: Some(file.to_string()),
+            line: Some(1),
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn cmd_check_filters_terminal_files_when_active_only() {
+        let diagnostics = vec![test_diag("E001", "active.md"), test_diag("E001", "done.md")];
+        let terminal_files = HashSet::from([String::from("done.md")]);
+
+        let output = cmd_check(
+            diagnostics,
+            &CheckFilters {
+                active_only: true,
+                ..CheckFilters::default()
+            },
+            &terminal_files,
+            Vec::new(),
+        );
+
+        assert_eq!(output.errors, 1);
+        assert_eq!(output.diagnostics.len(), 1);
+        assert_eq!(output.diagnostics[0].file.as_deref(), Some("active.md"));
+    }
+
+    #[test]
+    fn cmd_check_keeps_terminal_files_when_not_active_only() {
+        let diagnostics = vec![test_diag("E001", "active.md"), test_diag("E001", "done.md")];
+        let terminal_files = HashSet::from([String::from("done.md")]);
+
+        let output = cmd_check(
+            diagnostics,
+            &CheckFilters::default(),
+            &terminal_files,
+            Vec::new(),
+        );
+
+        assert_eq!(output.errors, 2);
+        assert_eq!(output.terminal_errors, 1);
+    }
+
     #[test]
     fn map_text_renders_all_active_handles_grouped_by_kind() {
         let mut graph = DiGraph::new();
