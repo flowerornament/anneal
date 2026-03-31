@@ -365,6 +365,26 @@ EXAMPLES:
         #[arg(value_name = "REF")]
         git_ref: Option<String>,
     },
+
+    /// Show linear namespace obligation status
+    #[command(
+        long_about = "\
+Show outstanding, discharged, and mooted obligations for linear namespaces.
+
+Linear namespaces are configured in anneal.toml [handles] linear = [...].
+Each label in a linear namespace is an obligation that must be discharged
+exactly once by a Discharges edge from another handle.
+
+STATUS:
+  outstanding  No Discharges edge yet (work remains)
+  discharged   Has a Discharges edge (obligation fulfilled)
+  mooted       Handle has terminal status (no longer relevant)",
+        after_help = "\
+EXAMPLES:
+  anneal obligations              # Human-readable summary
+  anneal obligations --json       # Machine-readable output"
+    )]
+    Obligations,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -721,6 +741,17 @@ fn run() -> anyhow::Result<()> {
                 output
                     .print_human(&mut std::io::stdout().lock())
                     .context("failed to write diff output")?;
+            }
+        }
+
+        Some(Command::Obligations) => {
+            let output = cli::cmd_obligations(graph, &lattice, &config);
+            if cli_args.json {
+                cli::print_json(&output)?;
+            } else {
+                output
+                    .print_human(&mut std::io::stdout().lock())
+                    .context("failed to write obligations output")?;
             }
         }
     }
