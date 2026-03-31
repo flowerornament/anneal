@@ -53,4 +53,5 @@
 # - github.org
 # - github.repo
 
-federation.remote: "file:///Users/morgan/.local/share/beads-remotes/anneal"
+# federation.remote is intentionally unset in this public repo.
+# Configure it locally with BD_FEDERATION_REMOTE if you use beads federation.

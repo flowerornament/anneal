@@ -48,3 +48,15 @@ test:
 # Release build
 build:
     cargo build --release
+
+# Update release versions in Cargo.toml, Cargo.lock, and flake.nix
+release-bump version:
+    python3 scripts/release.py bump {{version}}
+
+# Release readiness checks: versions, targets, quality gate, release binary
+release-verify:
+    python3 scripts/release.py verify
+
+# Create and push an annotated release tag (triggers GitHub release workflow)
+release-tag version:
+    python3 scripts/release.py tag {{version}}

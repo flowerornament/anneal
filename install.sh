@@ -11,6 +11,11 @@ set -euo pipefail
 
 REPO="flowerornament/anneal"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+SUPPORTED_RELEASE_TARGETS=(
+    "aarch64-apple-darwin"
+    "x86_64-unknown-linux-gnu"
+    "aarch64-unknown-linux-gnu"
+)
 
 info()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
 error() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -32,6 +37,18 @@ case "$ARCH" in
 esac
 
 TARGET="${arch}-${os}"
+
+supported=false
+for supported_target in "${SUPPORTED_RELEASE_TARGETS[@]}"; do
+    if [ "$TARGET" = "$supported_target" ]; then
+        supported=true
+        break
+    fi
+done
+
+if [ "$supported" != true ]; then
+    error "No prebuilt binary is published for $TARGET. Install from source: cargo install --path . --locked"
+fi
 
 # Get latest release tag
 info "Finding latest release..."

@@ -1,6 +1,10 @@
 /target
 .anneal/
 
+# anneal local derived state
+.design/.anneal/
+.claude/settings.local.json
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
