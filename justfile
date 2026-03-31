@@ -21,6 +21,7 @@ check:
     rm -f /tmp/anneal-check-times.$$
     echo "--- quality gate ---" >&2
     _t fmt     cargo fmt --check
+    _t install bash -n install.sh
     _t clippy  cargo clippy --all-targets
     _t test    cargo test
     echo "--------------------" >&2
