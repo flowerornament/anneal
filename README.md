@@ -4,8 +4,6 @@ Convergence assistant for knowledge corpora.
 
 `anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge, recover relevant context quickly, and push it toward settledness.
 
-By default, anneal stores derived snapshot history in machine-local XDG state, not in the repo worktree. Repo-local history remains available as an explicit configuration choice.
-
 ## The problem
 
 A knowledge corpus grows across many sessions. No single agent sees the full history. Documents reference each other, supersede each other, track obligations. Without tooling, every arriving agent has to read everything to understand what's settled, what's drifting, and what's connected to what.
@@ -114,29 +112,6 @@ anneal diff
 anneal init
 ```
 
-## Configuration and local state
-
-`anneal` separates corpus behavior from machine-local runtime preferences.
-
-- Repo config lives in `anneal.toml` at the corpus root.
-- User config lives in XDG config:
-  - `$XDG_CONFIG_HOME/anneal/config.toml`
-  - fallback `~/.config/anneal/config.toml`
-- Derived snapshot history lives in XDG state by default:
-  - `$XDG_STATE_HOME/anneal/...`
-  - fallback `~/.local/state/anneal/...`
-
-This keeps automatic convergence tracking and `anneal diff` useful without dirtying the git worktree during normal use.
-
-Example user config:
-
-```toml
-[state]
-history_mode = "xdg"   # xdg | repo | off
-```
-
-Use `history_mode = "repo"` if you explicitly want repo-local history at `<root>/.anneal/history.jsonl`.
-
 ## Workflow
 
 `anneal` supports a practical loop for corpus work:
@@ -210,15 +185,15 @@ error[E001]: broken reference: REQ-99 not found
 
 `anneal check` reports active-file diagnostics by default. Use `--include-terminal` when you want the full picture, including settled material.
 
-| Flag             | Effect                                         |
-| ---------------- | ---------------------------------------------- |
+| Flag                 | Effect                                            |
+| -------------------- | ------------------------------------------------- |
 | `--include-terminal` | Include diagnostics from terminal (settled) files |
-| `--active-only`  | Skip diagnostics from terminal (settled) files |
-| `--errors-only`  | Errors only (for CI/pre-commit)                |
-| `--suggest`      | Structural suggestions only (S001–S005)        |
-| `--stale`        | Staleness warnings only (W001)                 |
-| `--obligations`  | Obligation diagnostics only (E002/I002)        |
-| `--file=path.md` | Scope diagnostics to a single file             |
+| `--active-only`      | Skip diagnostics from terminal (settled) files    |
+| `--errors-only`      | Errors only (for CI/pre-commit)                   |
+| `--suggest`          | Structural suggestions only (S001–S005)           |
+| `--stale`            | Staleness warnings only (W001)                    |
+| `--obligations`      | Obligation diagnostics only (E002/I002)           |
+| `--file=path.md`     | Scope diagnostics to a single file                |
 
 ### `anneal get`
 
@@ -277,6 +252,8 @@ Since last snapshot:
 
 Three reference modes: last snapshot (default), `--days=N` (time-based), or a git ref (`HEAD~3`, `main`) for structural diff.
 
+By default, `diff` reads the same machine-local snapshot history used by `status` and `check`. If you previously used repo-local `.anneal/history.jsonl`, anneal will continue reading that legacy history for compatibility.
+
 ### `anneal obligations`
 
 Summarize outstanding, discharged, and mooted obligations for configured linear namespaces:
@@ -319,6 +296,18 @@ Infers active/terminal partition, label namespaces, and frontmatter field mappin
 
 `anneal.toml` at the corpus root. Optional — `anneal` works without it (existence lattice mode: reference checking only).
 
+`anneal` separates repo-owned corpus behavior from machine-local runtime preferences:
+
+- Repo config lives in `anneal.toml` at the corpus root.
+- User config lives in XDG config:
+  - `$XDG_CONFIG_HOME/anneal/config.toml`
+  - fallback `~/.config/anneal/config.toml`
+- Derived snapshot history lives in XDG state by default:
+  - `$XDG_STATE_HOME/anneal/...`
+  - fallback `~/.local/state/anneal/...`
+
+This keeps automatic convergence tracking and `anneal diff` useful without dirtying the git worktree during normal use.
+
 ```toml
 [convergence]
 active = ["draft", "review", "approved"]
@@ -351,7 +340,28 @@ direction = "forward"
 
 [concerns]
 api = ["REQ", "ADR"]
+
+[state]
+history_mode = "xdg"  # optional: xdg | repo | off
 ```
+
+`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, and the history backend mode (`xdg`, `repo`, or `off`).
+
+If you want repo-local snapshots, set:
+
+```toml
+[state]
+history_mode = "repo"
+```
+
+User config controls machine-local preferences such as the base directory for derived history:
+
+```toml
+[state]
+history_dir = "/Users/alice/.local/state"
+```
+
+Important boundary: repo config can choose whether history is machine-local, repo-local, or disabled, but it cannot choose an arbitrary machine-local path. Only user config can override `history_dir`.
 
 ## Diagnostic reference
 
