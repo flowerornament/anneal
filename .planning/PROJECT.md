@@ -21,7 +21,7 @@ An arriving agent can immediately understand what's settled, what's drifting, wh
 
 ### Active
 
-See REQUIREMENTS.md for v1.1 requirements.
+No active milestone requirements. v1.1 is shipped; see REQUIREMENTS.md for the validated traceability record.
 
 ### Validated (Phase 2)
 
@@ -36,6 +36,12 @@ See REQUIREMENTS.md for v1.1 requirements.
 - [x] Compute graph diffs between snapshots — Phase 3
 - [x] Three remaining CLI commands: status, map, diff with --json — Phase 3
 - [x] Suggestions: detect patterns and propose structural improvements from graph analysis (S001-S005) — Phase 3
+
+### Validated (Phase 7)
+
+- [x] Enrich orientation commands with content snippets, obligations reporting, and file-scoped checks — Phase 7
+- [x] Add smarter terminal-state inference, suppression-backed self-checking, and external URL graph handles — Phase 7
+- [x] Use snapshot history to detect pipeline stalls temporally instead of relying only on static edge shape — Phase 7
 
 ### Out of Scope
 
@@ -96,7 +102,7 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
-## Current Milestone: v1.1 Parser Hardening & UX Polish
+## Current Milestone: v1.1 Parser Hardening & UX Polish (Shipped)
 
 **Goal:** Make `anneal check` output trustworthy and actionable by introducing three missing intermediate types (Extraction, Resolution, Diagnostic enrichment), replacing the regex body scanner with pulldown-cmark, and enriching orientation commands.
 
@@ -116,9 +122,9 @@ This document evolves at phase transitions and milestone boundaries.
 
 ## Current State
 
-v1.0 complete, Phases 4-6 of v1.1 shipped. Eight CLI commands, five check rules, five suggestion types, convergence tracking via JSONL snapshots. 139 tests, clippy clean, <50ms on 262-file corpus. Installed via nix flake.
+v1.1 is shipped. anneal now has a typed extraction/resolution/diagnostic pipeline, pulldown-cmark-based body scanning, deterministic resolution candidates, snippet-enriched orientation commands, obligations reporting, file-scoped checks, smarter init heuristics, suppression-backed self-checking, and temporal S003 pipeline analysis.
 
-Phase 6 complete — resolution cascade with "did you mean?" candidates, structured Evidence on diagnostics, and mandatory source locations (0 null file/line on Murail's 334 diagnostics). Remaining: Phase 7 (UX enrichment).
+Quality is green on the shipped state: `just check` passes, `cargo test` passes with 152 tests in the suite (150 passing, 2 external-corpus smoke tests ignored), and `cargo run --quiet -- --root .design check` exits 0 with only the informational section-notation note.
 
 **Known issues from real-world testing (Murail 262 files, Herald 89 files):**
 - Murail: 186 errors → 9 with --active-only (95% are terminal-file noise)
@@ -127,4 +133,4 @@ Phase 6 complete — resolution cascade with "did you mean?" candidates, structu
 - 255 section references unresolvable in Herald (KB-OQ2)
 
 ---
-*Last updated: 2026-03-30 after Phase 6 completion*
+*Last updated: 2026-03-31 after Phase 7 completion*
