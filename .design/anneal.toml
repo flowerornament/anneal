@@ -1,0 +1,8 @@
+# Configuration for self-check of anneal's own specification.
+# Suppress only known prose-example false positives from anneal-spec.md.
+
+[suppress]
+
+[[suppress.rules]]
+code = "E001"
+target = "synthesis/v17.md"
