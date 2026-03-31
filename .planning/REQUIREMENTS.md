@@ -55,16 +55,16 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 ### CLI & UX
 
 - [x] **UX-01**: `--active-only` available as config opt-in via `[check] default_filter = "active-only"` in anneal.toml
-- [ ] **UX-02**: Content snippet in `anneal get` output (first paragraph for files, heading context for labels)
+- [x] **UX-02**: Content snippet in `anneal get` output (first paragraph for files, heading context for labels)
 - [ ] **UX-03**: Smarter `anneal init` terminal inference from status name heuristics (superseded, archived, retired, etc.)
-- [ ] **UX-04**: Default `--depth=1` for `anneal map --around` (currently 2, too verbose on large corpora)
+- [x] **UX-04**: Default `--depth=1` for `anneal map --around` (currently 2, too verbose on large corpora)
 - [ ] **UX-05**: `--file=<path>` filter for `anneal check` to scope diagnostics to one file
-- [ ] **UX-06**: `anneal obligations` command showing linear namespace status (outstanding/discharged/mooted)
+- [x] **UX-06**: `anneal obligations` command showing linear namespace status (outstanding/discharged/mooted)
 
 ### Configuration
 
-- [ ] **CONFIG-01**: `[suppress]` section in anneal.toml for false positive suppression (patterns + identities)
-- [ ] **CONFIG-02**: `HandleKind::External` for URL references (participate in graph, skip convergence tracking)
+- [x] **CONFIG-01**: `[suppress]` section in anneal.toml for false positive suppression (patterns + identities)
+- [x] **CONFIG-02**: `HandleKind::External` for URL references (participate in graph, skip convergence tracking)
 
 ### Quality
 
@@ -134,13 +134,13 @@ All 48 v1.0 requirements validated across 3 phases. See git history for full lis
 | DIAG-04 | Phase 6 | Complete |
 | DIAG-05 | Phase 6 | Complete |
 | UX-01 | Phase 6 | Complete |
-| UX-02 | Phase 7 | Pending |
+| UX-02 | Phase 7 | Complete |
 | UX-03 | Phase 7 | Pending |
-| UX-04 | Phase 7 | Pending |
+| UX-04 | Phase 7 | Complete |
 | UX-05 | Phase 7 | Pending |
-| UX-06 | Phase 7 | Pending |
-| CONFIG-01 | Phase 7 | Pending |
-| CONFIG-02 | Phase 7 | Pending |
+| UX-06 | Phase 7 | Complete |
+| CONFIG-01 | Phase 7 | Complete |
+| CONFIG-02 | Phase 7 | Complete |
 | QUALITY-01 | Phase 5 | Complete |
 | QUALITY-02 | Phase 7 | Pending |
 | QUALITY-03 | Phase 7 | Pending |

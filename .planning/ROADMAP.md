@@ -123,8 +123,8 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 07-01-PLAN.md -- Config suppress + External handle kind + depth default
-- [ ] 07-02-PLAN.md -- Content snippets + obligations command
+- [x] 07-01-PLAN.md -- Config suppress + External handle kind + depth default
+- [x] 07-02-PLAN.md -- Content snippets + obligations command
 - [ ] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
 - [ ] 07-04-PLAN.md -- Self-check closure
 
@@ -140,7 +140,7 @@ Plans:
 | 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
 | 6. Resolution Cascade | v1.1 | 4/4 | Complete | 2026-03-30 |
-| 7. UX Enrichment | v1.1 | 0/4 | Not started | - |
+| 7. UX Enrichment | v1.1 | 2/4 | In Progress | - |
 
 ---
 *Roadmap created: 2026-03-28*
