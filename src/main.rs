@@ -160,6 +160,9 @@ EXAMPLES:
         /// Skip diagnostics sourced from terminal (settled) files
         #[arg(long)]
         active_only: bool,
+        /// Scope diagnostics to a single file path
+        #[arg(long)]
+        file: Option<String>,
     },
 
     /// Look up a handle by identity
@@ -519,6 +522,7 @@ fn run() -> anyhow::Result<()> {
             stale,
             obligations,
             active_only,
+            file,
         }) => {
             // Merge CLI flag with config opt-in: either triggers active-only filtering
             let active_only =
@@ -540,6 +544,19 @@ fn run() -> anyhow::Result<()> {
             );
             let mut all_diagnostics = all_diagnostics;
             checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
+            if let Some(ref file_filter) = file {
+                let normalized = file_filter.strip_prefix("./").unwrap_or(file_filter);
+                let normalized = normalized
+                    .strip_prefix(&format!("{root}/"))
+                    .unwrap_or(normalized);
+                all_diagnostics.retain(|d| {
+                    d.file.as_ref().is_some_and(|f| {
+                        let f_normalized = f.strip_prefix("./").unwrap_or(f);
+                        f_normalized == normalized
+                            || f_normalized.ends_with(&format!("/{normalized}"))
+                    })
+                });
+            }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
 
