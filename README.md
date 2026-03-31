@@ -41,7 +41,7 @@ Binaries available for: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-u
 ### From source
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ### Nix
@@ -72,7 +72,10 @@ anneal find ADR
 anneal impact spec/api-v3.md
 
 # Visualize a handle's neighborhood
-anneal map --around=REQ-12 --depth=2
+anneal map --around=REQ-12 --depth=1
+
+# See obligation status for linear namespaces
+anneal obligations
 
 # What changed since last session?
 anneal diff
@@ -83,7 +86,7 @@ anneal init
 
 ## Concepts
 
-**Handles** are the unit of knowledge. Four kinds:
+**Handles** are the unit of knowledge. Five kinds:
 
 | Kind | Example | Description |
 |------|---------|-------------|
@@ -91,6 +94,7 @@ anneal init
 | section | `api-v3.md#authentication` | A heading within a file |
 | label | `REQ-12` | A cross-reference tag (namespace + number) |
 | version | `v3` | A versioned artifact |
+| external | `https://example.com/spec` | An external URL referenced from corpus metadata |
 
 **Edges** are typed relationships between handles:
 
@@ -146,6 +150,7 @@ error[E001]: broken reference: REQ-99 not found
 | `--suggest` | Structural suggestions only (S001–S005) |
 | `--stale` | Staleness warnings only (W001) |
 | `--obligations` | Obligation diagnostics only (E002/I002) |
+| `--file=path.md` | Scope diagnostics to a single file |
 
 ### `anneal get`
 
@@ -155,11 +160,14 @@ Resolve a handle and show its edges:
 $ anneal get REQ-12
 REQ-12 (label)
   File: requirements/REQUIREMENTS.md
+  Snippet: Requirements (REQ-): | REQ-12 | Authentication requests must be signed | draft |
   Incoming:
     Cites <- spec/api-v3.md
     Cites <- decisions/ADR-003.md
     Cites <- notes/2025-01-15-auth-redesign.md
 ```
+
+`get` now includes a snippet when anneal can extract one from the source file.
 
 ### `anneal impact`
 
@@ -201,6 +209,23 @@ Since last snapshot:
 
 Three reference modes: last snapshot (default), `--days=N` (time-based), or a git ref (`HEAD~3`, `main`) for structural diff.
 
+### `anneal obligations`
+
+Summarize outstanding, discharged, and mooted obligations for configured linear namespaces:
+
+```bash
+$ anneal obligations
+Obligations: 3 outstanding, 12 discharged, 1 mooted
+
+REQ
+  Outstanding:
+    REQ-14
+    REQ-19
+    REQ-22
+```
+
+Use `--json` for machine-readable totals and per-namespace buckets.
+
 ### `anneal find`
 
 Search handle identities:
@@ -236,6 +261,13 @@ ordering = ["raw", "draft", "review", "approved", "published"]
 confirmed = ["REQ", "ADR", "RFC"]
 rejected = ["SHA", "GPT"]
 linear = ["REQ"]  # obligations: must be discharged exactly once
+
+[suppress]
+codes = ["I001"]  # optional global suppressions
+
+[[suppress.rules]]
+code = "E001"
+target = "synthesis/v17.md"
 
 [freshness]
 warn = 30   # days before staleness warning
@@ -285,16 +317,17 @@ All commands support `--json` for machine consumption:
 anneal --json status | jq '.convergence'
 anneal --json check --active-only | jq '.errors'
 anneal --json get REQ-12 | jq '.edges'
+anneal --json obligations | jq '.total_outstanding'
 ```
 
 ## Design
 
 On every invocation, `anneal` walks a directory of markdown files and builds a typed knowledge graph in memory:
 
-1. **Parse** — split YAML frontmatter from body text, scan body with a RegexSet for file references, section headings, label patterns (`REQ-12`), and version patterns (`v3`)
-2. **Resolve** — infer label namespaces from sequential cardinality (REQ-1 through REQ-50 is a namespace; SHA-256 is not), resolve cross-references to graph nodes
+1. **Parse** — split YAML frontmatter from body text, extract typed references, and scan markdown structure with pulldown-cmark
+2. **Resolve** — infer label namespaces from sequential cardinality (REQ-1 through REQ-50 is a namespace; SHA-256 is not), resolve cross-references to graph nodes with deterministic fallback candidates
 3. **Lattice** — partition observed `status:` values into active and terminal sets, optionally infer from directory conventions (files only in `archive/` → terminal)
-4. **Check** — run five consistency rules and five suggestion rules against the graph
+4. **Check** — run five consistency rules and five suggestion rules against the graph, then apply optional suppressions
 5. **Snapshot** — capture counts to `.anneal/history.jsonl` for convergence tracking over time
 
 No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived and deletable.
@@ -307,19 +340,20 @@ The underlying model borrows from graded type systems: a document's convergence 
 src/
   handle.rs       Handle, HandleKind, NodeId          (~100 lines)
   graph.rs        DiGraph with dual adjacency lists   (~130 lines)
-  parse.rs        Frontmatter + RegexSet scanning     (~700 lines)
+  parse.rs        Frontmatter + markdown scanning     (~900 lines)
+  extraction.rs   Typed reference extraction          (~150 lines)
   resolve.rs      Handle resolution across namespaces (~350 lines)
   lattice.rs      Convergence lattice, freshness      (~200 lines)
   config.rs       anneal.toml parsing                 (~190 lines)
   checks.rs       5 check rules + 5 suggestion rules  (~700 lines)
   impact.rs       Reverse graph traversal             (~50 lines)
   snapshot.rs     JSONL history, convergence summary   (~500 lines)
-  cli.rs          8 commands + output formatting      (~2500 lines)
+  cli.rs          9 commands + output formatting      (~2800 lines)
   style.rs        Terminal styling via console crate   (~30 lines)
   main.rs         Entry point + CLI dispatch          (~700 lines)
 ```
 
-~7200 lines of Rust. 75 tests. 11 dependencies. <50ms on a 262-file corpus.
+~8000 lines of Rust. 152 tests (150 passing, 2 external-corpus smoke tests ignored without external fixtures). 11 dependencies. <50ms on a 262-file corpus.
 
 ## License
 
