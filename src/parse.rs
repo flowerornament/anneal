@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extraction::{
     DiscoveredRef, FileExtraction, LineIndex, RefHint, RefSource, SourceSpan,
-    classify_frontmatter_value,
+    classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
 };
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
@@ -793,6 +793,10 @@ pub(crate) struct BuildResult {
     pub(crate) external_refs: Vec<ExternalRef>,
     /// Per-file typed extraction output (populated alongside existing PendingEdge flow).
     pub(crate) extractions: Vec<FileExtraction>,
+    /// Precomputed snippets for file handles, keyed by relative file path.
+    pub(crate) file_snippets: HashMap<String, String>,
+    /// Precomputed snippets for label handles, keyed by label identity.
+    pub(crate) label_snippets: HashMap<String, String>,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -835,6 +839,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     let mut external_refs: Vec<ExternalRef> = Vec::new();
     let mut external_nodes: HashMap<String, NodeId> = HashMap::new();
     let mut extractions: Vec<FileExtraction> = Vec::new();
+    let mut file_snippets: HashMap<String, String> = HashMap::new();
+    let mut label_snippets: HashMap<String, String> = HashMap::new();
 
     let extra_exclusions = &config.exclude;
 
@@ -889,6 +895,9 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             .with_context(|| format!("failed to read {utf8_path}"))?;
 
         let (frontmatter_yaml, body) = split_frontmatter(&content);
+        if let Some(snippet) = extract_file_snippet_from_body(body) {
+            file_snippets.insert(relative.to_string(), snippet);
+        }
 
         // Compute frontmatter line count for LineIndex offset calculation
         #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
@@ -989,6 +998,17 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let line_index = LineIndex::from_content(body, frontmatter_line_count);
         let (scan_result, body_refs) =
             scan_file_cmark(body, &relative, file_node, &mut graph, &line_index);
+
+        let mut seen_label_ids = HashSet::new();
+        for candidate in &scan_result.label_candidates {
+            let label_id = format!("{}-{}", candidate.prefix, candidate.number);
+            if !seen_label_ids.insert(label_id.clone()) || label_snippets.contains_key(&label_id) {
+                continue;
+            }
+            if let Some(snippet) = extract_label_snippet_from_content(&content, &label_id) {
+                label_snippets.insert(label_id, snippet);
+            }
+        }
         all_label_candidates.extend(scan_result.label_candidates);
 
         // Build FileExtraction with DiscoveredRef for frontmatter + body refs
@@ -1056,6 +1076,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         implausible_refs,
         external_refs,
         extractions,
+        file_snippets,
+        label_snippets,
     })
 }
 
@@ -1378,6 +1400,34 @@ mod tests {
         assert!(
             hints.iter().any(|h| matches!(h, RefHint::FilePath)),
             "should have FilePath ref for valid.md"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_graph_populates_snippet_indexes() {
+        let tmp = std::env::temp_dir().join("anneal_test_snippet_indexes");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        write_md_file(
+            &tmp,
+            "guide.md",
+            "---\nstatus: draft\n---\n# Overview\nFirst paragraph line.\nStill same paragraph.\n\n## Details\nSee OQ-64 here.\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert_eq!(
+            result.file_snippets.get("guide.md").map(String::as_str),
+            Some("First paragraph line. Still same paragraph.")
+        );
+        assert_eq!(
+            result.label_snippets.get("OQ-64").map(String::as_str),
+            Some("Details: See OQ-64 here.")
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

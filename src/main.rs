@@ -649,7 +649,13 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Get { ref handle }) => {
-            if let Some(output) = cli::cmd_get(&root, graph, &node_index, handle) {
+            if let Some(output) = cli::cmd_get(
+                graph,
+                &node_index,
+                &result.file_snippets,
+                &result.label_snippets,
+                handle,
+            ) {
                 emit_output(
                     &output,
                     cli_args.json,
