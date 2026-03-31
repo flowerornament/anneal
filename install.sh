@@ -32,7 +32,7 @@ Usage:
 
 Options:
   --install-dir PATH   Install to PATH instead of ~/.local/bin
-  --tag TAG            Install a specific release tag (for example v0.2.0)
+  --tag TAG            Install a specific release tag (for example v0.3.0)
   --print-target       Print the detected release target and exit
   --dry-run            Print the install plan without downloading or writing
   -h, --help           Show this help
