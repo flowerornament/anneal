@@ -245,11 +245,14 @@ fn parse_snapshot_line(line: &str) -> Option<Snapshot> {
     }
 }
 
-/// Read all snapshots from `.anneal/history.jsonl`.
+/// Read the full snapshot history from `.anneal/history.jsonl`.
+///
+/// Prefer [`read_latest_snapshot`] unless the caller truly needs chronological
+/// traversal (for example, selecting a snapshot from N days ago).
 ///
 /// Returns empty Vec if file is missing (CONVERGE-05).
 /// Skips unparseable lines with a stderr warning (handles truncated writes).
-pub(crate) fn read_history(root: &Utf8Path) -> Vec<Snapshot> {
+pub(crate) fn read_all_snapshots(root: &Utf8Path) -> Vec<Snapshot> {
     let history_path = root.join(".anneal/history.jsonl");
 
     let Ok(file) = fs::File::open(history_path.as_std_path()) else {
@@ -494,15 +497,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: read_history returns empty Vec when file missing (CONVERGE-05)
+    // Test 3: read_all_snapshots returns empty Vec when file missing (CONVERGE-05)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn read_history_returns_empty_when_file_missing() {
+    fn read_all_snapshots_returns_empty_when_file_missing() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
-        let history = read_history(root);
+        let history = read_all_snapshots(root);
         assert!(
             history.is_empty(),
             "Should return empty Vec for missing file"
@@ -510,11 +513,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: read_history skips unparseable lines (CONVERGE-05)
+    // Test 4: read_all_snapshots skips unparseable lines (CONVERGE-05)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn read_history_skips_unparseable_lines() {
+    fn read_all_snapshots_skips_unparseable_lines() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
@@ -528,7 +531,7 @@ mod tests {
         let content = format!("{valid_line}\nthis is garbage\n{valid_line}\n");
         fs::write(history_path.as_std_path(), content).expect("write");
 
-        let history = read_history(root);
+        let history = read_all_snapshots(root);
         assert_eq!(
             history.len(),
             2,
@@ -537,11 +540,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: read_history returns snapshots in file order
+    // Test 5: read_all_snapshots returns snapshots in file order
     // -----------------------------------------------------------------------
 
     #[test]
-    fn read_history_returns_snapshots_in_file_order() {
+    fn read_all_snapshots_returns_snapshots_in_file_order() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
@@ -553,7 +556,7 @@ mod tests {
         append_snapshot(root, &s2).expect("append2");
         append_snapshot(root, &s3).expect("append3");
 
-        let history = read_history(root);
+        let history = read_all_snapshots(root);
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].handles.total, 10);
         assert_eq!(history[1].handles.total, 20);
