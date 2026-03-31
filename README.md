@@ -2,7 +2,7 @@
 
 Convergence assistant for knowledge corpora.
 
-`anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge and push it toward settledness.
+`anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge, recover relevant context quickly, and push it toward settledness.
 
 ## The problem
 
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/instal
 
 Installs to `~/.local/bin`. Override with `INSTALL_DIR=/usr/local/bin`.
 
-Binaries available for: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
 
 ### From source
 
@@ -56,55 +56,67 @@ anneal = {
 ## Quick start
 
 ```bash
-# Orient: what exists, what's broken, what direction
+# Corpus shape, health, and convergence direction
 anneal status
 
-# Find broken references and structural issues
-anneal check
+# Actionable issues in active work
+anneal check --active-only
 
-# Look up a specific handle
+# Resolve a specific handle
 anneal get REQ-12
 
-# Search handles
+# Search handle identities
 anneal find ADR
 
-# What depends on this file?
+# Reverse dependencies for a file or handle
 anneal impact spec/api-v3.md
 
-# Visualize a handle's neighborhood
+# Local graph neighborhood
 anneal map --around=REQ-12 --depth=1
 
-# See obligation status for linear namespaces
+# Linear namespace summary
 anneal obligations
 
-# What changed since last session?
+# Snapshot delta
 anneal diff
 
-# Generate config from inferred structure
+# Infer configuration
 anneal init
 ```
+
+## Workflow
+
+`anneal` supports a practical loop for corpus work:
+
+1. Orient: run `anneal status` and `anneal check --active-only` to understand the corpus shape and the actionable problems.
+2. Locate context: use `anneal get`, `anneal find`, and `anneal map --around=...` to understand the specific files, labels, or versions involved in the task.
+3. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
+4. Verify: run `anneal check --file=...` for a local pass or `anneal check --active-only` for a broader pass after editing.
+5. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
+
+This is what the tool buys you in practice: quick context recovery, structural inspection, and safer edits in a corpus that outlives any one session.
 
 ## Concepts
 
 **Handles** are the unit of knowledge. Five kinds:
 
-| Kind | Example | Description |
-|------|---------|-------------|
-| file | `spec/api-v3.md` | A markdown document |
-| section | `api-v3.md#authentication` | A heading within a file |
-| label | `REQ-12` | A cross-reference tag (namespace + number) |
-| version | `v3` | A versioned artifact |
+| Kind     | Example                    | Description                                     |
+| -------- | -------------------------- | ----------------------------------------------- |
+| file     | `spec/api-v3.md`           | A markdown document                             |
+| section  | `api-v3.md#authentication` | A heading within a file                         |
+| label    | `REQ-12`                   | A cross-reference tag (namespace + number)      |
+| version  | `v3`                       | A versioned artifact                            |
 | external | `https://example.com/spec` | An external URL referenced from corpus metadata |
 
 **Edges** are typed relationships between handles:
 
-| Edge | Meaning |
-|------|---------|
-| Cites | References without dependency |
-| DependsOn | Structural dependency |
+| Edge       | Meaning                          |
+| ---------- | -------------------------------- |
+| Cites      | References without dependency    |
+| DependsOn  | Structural dependency            |
 | Supersedes | Version chain (v3 supersedes v2) |
-| Verifies | Formal verification link |
-| Discharges | Obligation fulfillment |
+| Verifies   | Formal verification link         |
+| Discharges | Obligation fulfillment           |
 
 **Status** is a frontmatter `status:` field, partitioned into **active** (in-progress) and **terminal** (settled). When pipeline ordering is configured, `anneal` shows a histogram of handles flowing through status levels.
 
@@ -114,7 +126,7 @@ anneal init
 
 ### `anneal status`
 
-Single-screen dashboard for arriving agents. Shows corpus size, active/frozen partition, pipeline histogram, health (errors + warnings), convergence direction, and suggestion breakdown.
+Single-screen dashboard for quick orientation. Shows corpus size, active/frozen partition, pipeline histogram, health (errors + warnings), convergence direction, and suggestion breakdown.
 
 ```
 $ anneal status -v
@@ -143,14 +155,14 @@ error[E001]: broken reference: REQ-99 not found
 23 errors (23 in active files), 11 warnings, 1 info, 7 suggestions
 ```
 
-| Flag | Effect |
-|------|--------|
-| `--active-only` | Skip diagnostics from terminal (settled) files |
-| `--errors-only` | Errors only (for CI/pre-commit) |
-| `--suggest` | Structural suggestions only (S001–S005) |
-| `--stale` | Staleness warnings only (W001) |
-| `--obligations` | Obligation diagnostics only (E002/I002) |
-| `--file=path.md` | Scope diagnostics to a single file |
+| Flag             | Effect                                         |
+| ---------------- | ---------------------------------------------- |
+| `--active-only`  | Skip diagnostics from terminal (settled) files |
+| `--errors-only`  | Errors only (for CI/pre-commit)                |
+| `--suggest`      | Structural suggestions only (S001–S005)        |
+| `--stale`        | Staleness warnings only (W001)                 |
+| `--obligations`  | Obligation diagnostics only (E002/I002)        |
+| `--file=path.md` | Scope diagnostics to a single file             |
 
 ### `anneal get`
 
@@ -167,7 +179,7 @@ REQ-12 (label)
     Cites <- notes/2025-01-15-auth-redesign.md
 ```
 
-`get` now includes a snippet when anneal can extract one from the source file.
+`get` includes a snippet when anneal can extract one from the source file.
 
 ### `anneal impact`
 
@@ -186,7 +198,7 @@ Traverses DependsOn, Supersedes, and Verifies edges in reverse. Does not travers
 
 ### `anneal map`
 
-Render the knowledge graph. Text for terminals, DOT for graphviz:
+Render the knowledge graph. Text for terminal use, DOT for graphviz:
 
 ```bash
 anneal map --around=REQ-12 --depth=1          # Text neighborhood
@@ -289,24 +301,24 @@ api = ["REQ", "ADR"]
 
 ### Check rules
 
-| Code | Severity | Description |
-|------|----------|-------------|
-| E001 | Error | Broken reference — handle not found |
-| E002 | Error | Undischarged obligation — linear handle without Discharges edge |
-| W001 | Warning | Stale reference — active handle references terminal one |
-| W002 | Warning | Confidence gap — higher pipeline level depends on lower |
-| W003 | Warning | Missing frontmatter — file without `status:` field |
-| I001 | Info | Section reference summary |
-| I002 | Info | Multiple discharges on single obligation |
+| Code | Severity | Description                                                     |
+| ---- | -------- | --------------------------------------------------------------- |
+| E001 | Error    | Broken reference — handle not found                             |
+| E002 | Error    | Undischarged obligation — linear handle without Discharges edge |
+| W001 | Warning  | Stale reference — active handle references terminal one         |
+| W002 | Warning  | Confidence gap — higher pipeline level depends on lower         |
+| W003 | Warning  | Missing frontmatter — file without `status:` field              |
+| I001 | Info     | Section reference summary                                       |
+| I002 | Info     | Multiple discharges on single obligation                        |
 
 ### Suggestion rules
 
-| Code | Description |
-|------|-------------|
-| S001 | Orphaned handles — labels/versions with no incoming edges |
-| S002 | Candidate namespaces — recurring prefix not in confirmed list |
-| S003 | Pipeline stalls — status level with no outflow to next level |
-| S004 | Abandoned namespaces — all members terminal or stale |
+| Code | Description                                                         |
+| ---- | ------------------------------------------------------------------- |
+| S001 | Orphaned handles — labels/versions with no incoming edges           |
+| S002 | Candidate namespaces — recurring prefix not in confirmed list       |
+| S003 | Pipeline stalls — status level with no outflow to next level        |
+| S004 | Abandoned namespaces — all members terminal or stale                |
 | S005 | Concern group candidates — label prefixes co-occurring across files |
 
 ## JSON output
@@ -314,10 +326,10 @@ api = ["REQ", "ADR"]
 All commands support `--json` for machine consumption:
 
 ```bash
-anneal --json status | jq '.convergence'
-anneal --json check --active-only | jq '.errors'
-anneal --json get REQ-12 | jq '.edges'
-anneal --json obligations | jq '.total_outstanding'
+anneal status --json | jq '.convergence'
+anneal check --active-only --json | jq '.errors'
+anneal get REQ-12 --json | jq '.edges'
+anneal obligations --json | jq '.total_outstanding'
 ```
 
 ## Design
@@ -332,28 +344,28 @@ On every invocation, `anneal` walks a directory of markdown files and builds a t
 
 No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived and deletable.
 
-The underlying model borrows from graded type systems: a document's convergence state has the same algebraic structure as a resource grade — both are values in bounded lattices that compose through meet/join operations. The active/terminal partition is a two-point lattice. Pipeline ordering extends it to a chain. Convergence tracking measures how the population moves through the lattice over time. Checks are local consistency rules — they examine a handle and its immediate neighbors, not global properties — which keeps them fast and compositional.
+The underlying model borrows a simple idea from type theory and static analysis: statuses are ordered, so the tool can compare neighboring handles and ask questions like "is this dependency less settled than the thing that depends on it?" The active/terminal split is the simplest form of that ordering. A configured pipeline turns it into a richer progression. Convergence tracking measures how the population moves through that progression over time. Checks stay local — they compare a handle with its immediate neighbors rather than trying to solve a whole-program global proof — which keeps the tool fast and predictable.
 
 ### Architecture
 
 ```
 src/
-  handle.rs       Handle, HandleKind, NodeId          (~100 lines)
-  graph.rs        DiGraph with dual adjacency lists   (~130 lines)
-  parse.rs        Frontmatter + markdown scanning     (~900 lines)
-  extraction.rs   Typed reference extraction          (~150 lines)
-  resolve.rs      Handle resolution across namespaces (~350 lines)
-  lattice.rs      Convergence lattice, freshness      (~200 lines)
-  config.rs       anneal.toml parsing                 (~190 lines)
-  checks.rs       5 check rules + 5 suggestion rules  (~700 lines)
-  impact.rs       Reverse graph traversal             (~50 lines)
-  snapshot.rs     JSONL history, convergence summary   (~500 lines)
-  cli.rs          9 commands + output formatting      (~2800 lines)
-  style.rs        Terminal styling via console crate   (~30 lines)
-  main.rs         Entry point + CLI dispatch          (~700 lines)
+  handle.rs       Handle, HandleKind, NodeId
+  graph.rs        DiGraph with dual adjacency lists
+  parse.rs        Frontmatter + markdown scanning
+  extraction.rs   Typed reference extraction
+  resolve.rs      Handle resolution across namespaces
+  lattice.rs      Convergence lattice, freshness
+  config.rs       anneal.toml parsing
+  checks.rs       Check rules + suggestion rules
+  impact.rs       Reverse graph traversal
+  snapshot.rs     JSONL history, convergence summary
+  cli.rs          Commands + output formatting
+  style.rs        Terminal styling via console crate
+  main.rs         Entry point + CLI dispatch
 ```
 
-~8000 lines of Rust. 152 tests (150 passing, 2 external-corpus smoke tests ignored without external fixtures). 11 dependencies. <50ms on a 262-file corpus.
+The codebase is intentionally straightforward: parse markdown, build an in-memory graph, run local checks, and emit either human-readable output or JSON. The direct dependency set is small, the test suite covers the core graph/check/CLI paths, and the tool is fast enough for interactive use on a few-hundred-file corpus.
 
 ## License
 
