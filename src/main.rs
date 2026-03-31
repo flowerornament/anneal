@@ -31,9 +31,13 @@ use crate::handle::NodeId;
 Convergence assistant for knowledge corpora.
 
 anneal reads a directory of markdown files, computes a typed knowledge graph,
-checks it for local consistency, and tracks convergence over time. It helps
-disconnected intelligences (agents across sessions with no shared memory) orient
-in a body of knowledge and push it toward settledness.
+checks it for local consistency, and tracks convergence over time.
+
+Use it to:
+  orient       What exists here? What is active? What is broken?
+  inspect      What does this handle mean? What depends on it?
+  validate     Which references, obligations, or pipeline states are wrong?
+  resume       What changed since the last session?
 
 CORE CONCEPTS:
 
@@ -62,16 +66,16 @@ CORE CONCEPTS:
             history (XDG state by default, repo-local only if configured).
             Enables convergence tracking (advancing/holding/drifting) and diff.
 
-QUICK START:
+START HERE:
 
-  anneal status               Orient: what exists, what's broken, convergence direction
-  anneal check                Find broken references, staleness, obligation violations
-  anneal get REQ-12           Look up a handle with status, edges, and snippet
-  anneal find ADR             Search handle identities by text
-  anneal map --around=REQ-12  Visualize neighborhood of a handle
-  anneal impact spec/v3.md    What depends on this file?
-  anneal diff                 What changed since last session?
-  anneal obligations          Show obligation status for linear namespaces
+  anneal status               Dashboard: corpus health, pipeline, convergence
+  anneal check                Diagnostics: broken refs, staleness, obligations
+  anneal get REQ-12           Inspect one handle with snippet and edges
+  anneal find ADR             Search handle identities
+  anneal impact spec/v3.md    Reverse dependencies for safe edits
+  anneal diff                 Change since last snapshot or git ref
+  anneal obligations          Linear namespace obligation summary
+  anneal map --around=REQ-12  Neighborhood view around one handle
   anneal init                 Generate anneal.toml from inferred structure
 
 ROOT DIRECTORY:
@@ -91,7 +95,7 @@ CONFIGURATION:
 
   anneal.toml is optional. Without it, anneal infers structure and runs in
   existence-lattice mode (reference checking only). With it, you get pipeline
-  tracking, obligation monitoring, and targeted suggestions.
+  tracking, obligation monitoring, concern groups, and targeted suggestions.
 
   Run `anneal init` to generate a repo config from inferred structure, then
   tune it. Local runtime preferences like history location live in user config.
@@ -143,8 +147,9 @@ SUGGESTION RULES (shown with --suggest):
 By default, `anneal check` shows actionable diagnostics from active files and
 skips terminal-file noise. Use `--include-terminal` for the full picture.
 
-Filter flags select subsets of diagnostics. `--file=<path>` scopes output to a
-single source file while preserving the default active-file view.
+Use filter flags to narrow the result set. `--file=<path>` scopes output to a
+single source file. `--errors-only`, `--stale`, `--obligations`, and `--suggest`
+select diagnostic families.
 
 Appends a snapshot to anneal history for convergence tracking.
 Exit code 1 if any errors found, 0 otherwise.",
@@ -196,7 +201,8 @@ Handle identities are strings like:
   formal-model/v17.md      file path (relative to root)
   v17.md#§definitions      section heading
 
-Use `anneal find` to search if you don't know the exact identity.",
+Use `anneal find` to search if you don't know the exact identity. Use
+`anneal impact` if you need reverse dependencies from this handle.",
         after_help = "\
 EXAMPLES:
   anneal get OQ-64
@@ -349,7 +355,10 @@ Shows:
   suggestions   Count by type (S001-S005) with labels.
 
 Appends a snapshot to anneal history. Run status periodically to build
-convergence history — the signal becomes meaningful after 2+ snapshots.",
+convergence history — the signal becomes meaningful after 2+ snapshots.
+
+Use `anneal check` for detailed diagnostics and `anneal diff` for a
+between-sessions view.",
         after_help = "\
 EXAMPLES:
   anneal status                   # Human-readable dashboard
@@ -377,7 +386,10 @@ edges, and per-namespace statistics. Only non-zero deltas are shown.
 
 Requires at least one prior snapshot (from `anneal status` or `anneal check`).
 Legacy repo-local history is still read for compatibility when available.
-On first run with no history, prints an informative message.",
+On first run with no history, prints an informative message.
+
+Use this for session resume. Use git refs when you want structural comparison
+against repository history instead of local anneal history.",
         after_help = "\
 EXAMPLES:
   anneal diff                     # Changes since last snapshot
