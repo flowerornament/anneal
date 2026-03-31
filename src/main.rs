@@ -518,6 +518,8 @@ fn run() -> anyhow::Result<()> {
                 &result.implausible_refs,
                 &cascade_candidates,
             );
+            let mut all_diagnostics = all_diagnostics;
+            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
 
@@ -664,6 +666,8 @@ fn run() -> anyhow::Result<()> {
                 &result.implausible_refs,
                 &cascade_candidates,
             );
+            let mut all_diagnostics = all_diagnostics;
+            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
             let output = cli::cmd_status(graph, &lattice, &snap, &all_diagnostics);
 
@@ -705,6 +709,8 @@ fn run() -> anyhow::Result<()> {
                 &result.implausible_refs,
                 &cascade_candidates,
             );
+            let mut all_diagnostics = all_diagnostics;
+            checks::apply_suppressions(&mut all_diagnostics, &config.suppress);
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &all_diagnostics);
 
             let output = cli::cmd_diff(&root, &current_snap, days, git_ref.as_deref())?;

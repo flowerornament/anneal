@@ -824,6 +824,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     // Plausibility filter tracking
     let mut implausible_refs: Vec<ImplausibleRef> = Vec::new();
     let mut external_refs: Vec<ExternalRef> = Vec::new();
+    let mut external_nodes: HashMap<String, NodeId> = HashMap::new();
     let mut extractions: Vec<FileExtraction> = Vec::new();
 
     let extra_exclusions = &config.exclude;
@@ -912,6 +913,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         // Create pending edges from extensible frontmatter field edges
         let file_node_placeholder =
             NodeId::new(u32::try_from(graph.node_count()).expect("graph exceeds u32::MAX nodes"));
+        let mut file_external_targets: Vec<String> = Vec::new();
 
         for fe in &field_edges {
             for target in &fe.targets {
@@ -922,6 +924,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                             file: relative.to_string(),
                             url: target.clone(),
                         });
+                        file_external_targets.push(target.clone());
                     }
                     RefHint::Implausible { reason } => {
                         implausible_refs.push(ImplausibleRef {
@@ -952,6 +955,26 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             metadata: metadata.clone(),
         });
         debug_assert_eq!(file_node, file_node_placeholder);
+
+        for target in file_external_targets {
+            let external_node = if let Some(existing) = external_nodes.get(&target).copied() {
+                existing
+            } else {
+                let node_id = graph.add_node(Handle {
+                    id: target.clone(),
+                    kind: HandleKind::External {
+                        url: target.clone(),
+                    },
+                    status: None,
+                    file_path: Some(relative.clone()),
+                    metadata: HandleMetadata::default(),
+                });
+                external_nodes.insert(target.clone(), node_id);
+                node_id
+            };
+
+            graph.add_edge(file_node, external_node, EdgeKind::Cites);
+        }
 
         // Use pulldown-cmark scanner for production body scanning
         let line_index = LineIndex::from_content(body, frontmatter_line_count);

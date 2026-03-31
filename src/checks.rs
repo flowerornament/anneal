@@ -895,6 +895,29 @@ pub(crate) fn run_checks(
     diagnostics
 }
 
+pub(crate) fn apply_suppressions(
+    diagnostics: &mut Vec<Diagnostic>,
+    suppress: &crate::config::SuppressConfig,
+) {
+    if suppress.codes.is_empty() && suppress.rules.is_empty() {
+        return;
+    }
+
+    diagnostics.retain(|diagnostic| {
+        if suppress.codes.iter().any(|code| code == diagnostic.code) {
+            return false;
+        }
+
+        for rule in &suppress.rules {
+            if diagnostic.code == rule.code.as_str() && diagnostic.message.contains(&rule.target) {
+                return false;
+            }
+        }
+
+        true
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
