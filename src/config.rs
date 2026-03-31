@@ -237,5 +237,46 @@ default_filter = "errors-only"
         let config: AnnealConfig = toml::from_str("").expect("empty TOML should parse");
         assert!(config.check.default_filter.is_none());
         assert!(config.root.is_empty());
+        assert!(config.suppress.codes.is_empty());
+        assert!(config.suppress.rules.is_empty());
+    }
+
+    #[test]
+    fn config_with_suppress_codes_parses() {
+        let toml_str = r#"
+[suppress]
+codes = ["I001"]
+"#;
+        let config: AnnealConfig =
+            toml::from_str(toml_str).expect("should parse with suppress codes");
+        assert_eq!(config.suppress.codes, vec!["I001"]);
+        assert!(config.suppress.rules.is_empty());
+    }
+
+    #[test]
+    fn config_with_suppress_rule_parses() {
+        let toml_str = r#"
+[[suppress.rules]]
+code = "E001"
+target = "synthesis/v17.md"
+"#;
+        let config: AnnealConfig =
+            toml::from_str(toml_str).expect("should parse with suppress rules");
+        assert!(config.suppress.codes.is_empty());
+        assert_eq!(config.suppress.rules.len(), 1);
+        assert_eq!(config.suppress.rules[0].code, "E001");
+        assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
+    }
+
+    #[test]
+    fn config_without_suppress_section_uses_default() {
+        let toml_str = r#"
+[check]
+default_filter = "active-only"
+"#;
+        let config: AnnealConfig =
+            toml::from_str(toml_str).expect("should parse without [suppress]");
+        assert!(config.suppress.codes.is_empty());
+        assert!(config.suppress.rules.is_empty());
     }
 }
