@@ -66,8 +66,8 @@ QUICK START:
 
   anneal status               Orient: what exists, what's broken, convergence direction
   anneal check                Find broken references, staleness, obligation violations
-  anneal get REQ-12           Look up a specific handle
-  anneal find ADR             Search handles by text
+  anneal get REQ-12           Look up a handle with status, edges, and snippet
+  anneal find ADR             Search handle identities by text
   anneal map --around=REQ-12  Visualize neighborhood of a handle
   anneal impact spec/v3.md    What depends on this file?
   anneal diff                 What changed since last session?
@@ -143,8 +143,8 @@ SUGGESTION RULES (shown with --suggest):
 By default, `anneal check` shows actionable diagnostics from active files and
 skips terminal-file noise. Use `--include-terminal` for the full picture.
 
-Filter flags select subsets of diagnostics. With no filter flags, anneal shows
-the default active-file view. Use `--include-terminal` for the full picture.
+Filter flags select subsets of diagnostics. `--file=<path>` scopes output to a
+single source file while preserving the default active-file view.
 
 Appends a snapshot to anneal history for convergence tracking.
 Exit code 1 if any errors found, 0 otherwise.",
@@ -152,6 +152,7 @@ Exit code 1 if any errors found, 0 otherwise.",
 EXAMPLES:
   anneal check                    # Actionable diagnostics from active files
   anneal check --include-terminal # Full diagnostics, including terminal files
+  anneal check --file=spec/v3.md  # Scope to one file
   anneal check --errors-only      # Errors only (for CI/pre-commit hooks)
   anneal check --suggest          # Show only structural suggestions
   anneal check --stale            # Show only staleness warnings (W001)
@@ -186,10 +187,12 @@ EXAMPLES:
     /// Look up a handle by identity
     #[command(
         long_about = "\
-Resolve a handle identity and show its kind, status, source file, and edges.
+Resolve a handle identity and show its kind, status, source file, snippet, and
+edges.
 
 Handle identities are strings like:
   OQ-64                    label (namespace OQ, number 64)
+  OQ-064                   zero-padded label alias for OQ-64
   formal-model/v17.md      file path (relative to root)
   v17.md#§definitions      section heading
 
@@ -197,8 +200,9 @@ Use `anneal find` to search if you don't know the exact identity.",
         after_help = "\
 EXAMPLES:
   anneal get OQ-64
+  anneal get OQ-064               # Zero-padded labels normalize automatically
   anneal get formal-model/v17.md
-  anneal get --json OQ-64        # JSON with edges, status, file path"
+  anneal get --json OQ-64        # JSON with snippet, edges, and file path"
     )]
     Get {
         /// Handle identity to look up (e.g., OQ-64, formal-model/v17.md)
@@ -218,6 +222,7 @@ EXAMPLES:
   anneal find FM                          # All active FM-* labels
   anneal find FM --all                    # Include terminal FM labels
   anneal find formal --kind=file          # Only file handles
+  anneal find github --kind=external      # External URL handles
   anneal find draft --status=draft        # Handles with status 'draft'
   anneal find OQ --namespace=OQ           # Labels in OQ namespace"
     )]
@@ -233,7 +238,7 @@ EXAMPLES:
         /// Filter to handles with this frontmatter status value
         #[arg(long)]
         status: Option<String>,
-        /// Filter by handle kind: file, label, section, version
+        /// Filter by handle kind: file, label, section, version, external
         #[arg(long)]
         kind: Option<String>,
     },
@@ -300,8 +305,8 @@ namespace. Use --around to focus on a specific handle's neighborhood, or
 --concern to show a configured concern group.
 
 Text format groups handles by kind (files, labels by namespace, sections,
-versions) with edges listed separately. DOT format produces valid graphviz
-input — pipe to `dot -Tpng` for visual output.",
+versions, external URLs) with edges listed separately. DOT format produces
+valid graphviz input — pipe to `dot -Tpng` for visual output.",
         after_help = "\
 EXAMPLES:
   anneal map                                    # Full active graph (text)
