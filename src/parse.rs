@@ -35,6 +35,22 @@ static DEPENDS_ON_KEYWORDS: &[&str] = &["incorporates", "builds on", "extends", 
 /// Body-text keywords that explicitly confirm a Cites edge (D-01).
 static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
 
+/// Status names that heuristically indicate terminal state (UX-03).
+pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
+    "superseded",
+    "archived",
+    "retired",
+    "deprecated",
+    "obsolete",
+    "withdrawn",
+    "cancelled",
+    "canceled",
+    "closed",
+    "resolved",
+    "done",
+    "completed",
+];
+
 // ---------------------------------------------------------------------------
 // Regex patterns
 // ---------------------------------------------------------------------------
@@ -84,6 +100,14 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     } else {
         (None, content)
     }
+}
+
+/// Check if a status name matches terminal heuristics (case-insensitive substring match).
+pub(crate) fn is_terminal_by_heuristic(status: &str) -> bool {
+    let lower = status.to_lowercase();
+    TERMINAL_STATUS_HEURISTICS
+        .iter()
+        .any(|heuristic| lower.contains(heuristic))
 }
 
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
