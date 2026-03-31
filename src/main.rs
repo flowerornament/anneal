@@ -550,7 +550,13 @@ fn run() -> anyhow::Result<()> {
     };
 
     let config = config::load_config(root.as_std_path())?;
-    let user_config = config::load_user_config()?;
+    let user_config = match config::load_user_config() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("warning: ignoring malformed anneal user config: {err:#}");
+            config::UserConfig::default()
+        }
+    };
     let state_config = config::resolve_state_config(&config, &user_config);
     let mut result = parse::build_graph(&root, &config)?;
 

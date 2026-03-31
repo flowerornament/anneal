@@ -290,11 +290,13 @@ pub(crate) fn resolve_state_config(
         .or(user_config.state.history_mode)
         .unwrap_or(HistoryMode::Xdg);
 
-    let history_dir = repo_config
+    // Machine-local storage paths come only from user config. Repo config may
+    // choose the backend mode, but not an arbitrary location on the user's
+    // machine.
+    let history_dir = user_config
         .state
         .history_dir
         .as_deref()
-        .or(user_config.state.history_dir.as_deref())
         .map(Utf8PathBuf::from);
 
     ResolvedStateConfig {
@@ -447,7 +449,7 @@ history_dir = "/tmp/anneal-state"
                 .history_dir
                 .as_deref()
                 .map(camino::Utf8Path::as_str),
-            Some("/repo")
+            Some("/user")
         );
     }
 
