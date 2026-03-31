@@ -39,7 +39,7 @@ Recent decisions affecting current work (full log in PROJECT.md):
 - [v1.1]: pulldown-cmark 0.13 replaces regex body scanner (research validated)
 - [v1.1]: Do NOT enable ENABLE_YAML_STYLE_METADATA_BLOCKS (conflicts with split_frontmatter)
 - [v1.1]: Deterministic structural transforms only for resolution, no fuzzy edit distance
-- [v1.1]: --active-only stays non-default, config opt-in instead (avoids CI/snapshot breakage)
+- [post-v1.1 backlog cleanup]: `anneal check` now defaults to active-file diagnostics; `--include-terminal` opts back into the full picture
 - [v1.1]: JSON schema changes additive-only (new nullable fields, no type changes)
 - [Phase 04-types-plausibility]: Compound label regex with optional hyphen supports KB-D1 style prefixes
 - [Phase 04-types-plausibility]: Classification cascade: comma-list before prose check to prevent misclassification
