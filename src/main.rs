@@ -31,10 +31,12 @@ use crate::handle::NodeId;
 Convergence assistant for knowledge corpora.
 
 anneal reads a directory of markdown files, computes a typed knowledge graph,
-checks it for local consistency, and tracks convergence over time.
+checks it for local consistency, and tracks convergence over time. It helps
+disconnected intelligences (agents across sessions with no shared memory)
+orient in a shared body of knowledge and push it toward settledness.
 
 Use it to:
-  orient       What exists here? What is active? What is broken?
+  orient       What exists here? What is active? Where is uncertainty highest?
   inspect      What does this handle mean? What depends on it?
   validate     Which references, obligations, or pipeline states are wrong?
   resume       What changed since the last session?
@@ -61,6 +63,8 @@ CORE CONCEPTS:
   Lattice   The convergence lattice tracks how handles move from active toward
             terminal. If ordering is configured, anneal shows a pipeline
             histogram (e.g., 10 raw → 3 draft → 6 exploratory → 11 authoritative).
+            This is anneal's core mental model: knowledge has a degree of
+            settledness, and the corpus is healthier when it is converging.
 
   Snapshot  A point-in-time capture of graph state, appended to local anneal
             history (XDG state by default, repo-local only if configured).
@@ -357,6 +361,9 @@ Shows:
 Appends a snapshot to anneal history. Run status periodically to build
 convergence history — the signal becomes meaningful after 2+ snapshots.
 
+This is the command that teaches the corpus as a convergence system rather than
+just a pile of files.
+
 Use `anneal check` for detailed diagnostics and `anneal diff` for a
 between-sessions view.",
         after_help = "\
@@ -389,7 +396,8 @@ Legacy repo-local history is still read for compatibility when available.
 On first run with no history, prints an informative message.
 
 Use this for session resume. Use git refs when you want structural comparison
-against repository history instead of local anneal history.",
+against repository history instead of local anneal history. In anneal's terms,
+this is how a disconnected intelligence recovers the delta it did not witness.",
         after_help = "\
 EXAMPLES:
   anneal diff                     # Changes since last snapshot
