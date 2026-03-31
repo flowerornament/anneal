@@ -195,12 +195,15 @@ impl Default for FreshnessConfig {
 pub(crate) fn load_config(root: &Path) -> Result<AnnealConfig> {
     let config_path = root.join("anneal.toml");
 
-    if !config_path.exists() {
-        return Ok(AnnealConfig::default());
-    }
-
-    let content = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AnnealConfig::default());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", config_path.display()));
+        }
+    };
 
     let config: AnnealConfig = toml::from_str(&content)
         .with_context(|| format!("failed to parse {}", config_path.display()))?;

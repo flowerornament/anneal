@@ -305,6 +305,57 @@ fn infer_edge_kind_from_line(line: &str) -> EdgeKind {
     EdgeKind::Cites
 }
 
+struct BodyRefRecorder<'a> {
+    file_path: &'a Utf8Path,
+    file_path_str: &'a str,
+    line: u32,
+    result: &'a mut ScanResult,
+    discovered_refs: &'a mut Vec<DiscoveredRef>,
+}
+
+impl BodyRefRecorder<'_> {
+    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: EdgeKind) {
+        let discovered_edge_kind = match &hint {
+            RefHint::Label { prefix, number } => {
+                self.result.label_candidates.push(LabelCandidate {
+                    prefix: prefix.clone(),
+                    number: *number,
+                    file_path: self.file_path.to_path_buf(),
+                    edge_kind,
+                });
+                edge_kind
+            }
+            RefHint::FilePath => {
+                self.result.file_refs.push((raw.to_string(), self.line));
+                edge_kind
+            }
+            RefHint::SectionRef => {
+                let section_num = raw
+                    .strip_prefix("section:")
+                    .or_else(|| raw.strip_prefix('§'))
+                    .unwrap_or(raw);
+                self.result
+                    .section_refs
+                    .push((section_num.to_string(), self.line));
+                EdgeKind::Cites
+            }
+            RefHint::External | RefHint::Implausible { .. } => return,
+        };
+
+        self.discovered_refs.push(DiscoveredRef {
+            raw: raw.to_string(),
+            hint,
+            source: RefSource::Body,
+            edge_kind: discovered_edge_kind,
+            inverse: false,
+            span: Some(SourceSpan {
+                file: self.file_path_str.to_string(),
+                line: self.line,
+            }),
+        });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Content scanner (pulldown-cmark)
 // ---------------------------------------------------------------------------
@@ -428,38 +479,18 @@ pub(crate) fn scan_file_cmark(
                     LinkType::WikiLink { .. } => {
                         // Wiki-links: [[target]] - dest_url contains the target
                         if !dest.is_empty() {
-                            let hint = classify_body_ref(dest);
-                            match &hint {
-                                RefHint::Label { prefix, number } => {
-                                    result.label_candidates.push(LabelCandidate {
-                                        prefix: prefix.clone(),
-                                        number: *number,
-                                        file_path: file_path.to_path_buf(),
-                                        edge_kind: EdgeKind::Cites,
-                                    });
-                                }
-                                RefHint::FilePath => {
-                                    result.file_refs.push((dest.to_string(), line));
-                                }
-                                RefHint::SectionRef => {
-                                    // Strip "section:" prefix for backward compat
-                                    if let Some(num) = dest.strip_prefix("section:") {
-                                        result.section_refs.push((num.to_string(), line));
-                                    }
-                                }
-                                _ => {}
+                            BodyRefRecorder {
+                                file_path,
+                                file_path_str,
+                                line,
+                                result: &mut result,
+                                discovered_refs: &mut discovered_refs,
                             }
-                            discovered_refs.push(DiscoveredRef {
-                                raw: dest.to_string(),
-                                hint,
-                                source: RefSource::Body,
-                                edge_kind: EdgeKind::Cites,
-                                inverse: false,
-                                span: Some(SourceSpan {
-                                    file: file_path_str.to_string(),
-                                    line,
-                                }),
-                            });
+                            .record(
+                                dest,
+                                classify_body_ref(dest),
+                                EdgeKind::Cites,
+                            );
                         }
                     }
                     _ => {
@@ -477,37 +508,18 @@ pub(crate) fn scan_file_cmark(
                                 dest
                             };
                             if !clean_dest.is_empty() {
-                                let hint = classify_body_ref(clean_dest);
-                                match &hint {
-                                    RefHint::Label { prefix, number } => {
-                                        result.label_candidates.push(LabelCandidate {
-                                            prefix: prefix.clone(),
-                                            number: *number,
-                                            file_path: file_path.to_path_buf(),
-                                            edge_kind: EdgeKind::Cites,
-                                        });
-                                    }
-                                    RefHint::FilePath => {
-                                        result.file_refs.push((clean_dest.to_string(), line));
-                                    }
-                                    RefHint::SectionRef => {
-                                        if let Some(num) = clean_dest.strip_prefix("section:") {
-                                            result.section_refs.push((num.to_string(), line));
-                                        }
-                                    }
-                                    _ => {}
+                                BodyRefRecorder {
+                                    file_path,
+                                    file_path_str,
+                                    line,
+                                    result: &mut result,
+                                    discovered_refs: &mut discovered_refs,
                                 }
-                                discovered_refs.push(DiscoveredRef {
-                                    raw: clean_dest.to_string(),
-                                    hint,
-                                    source: RefSource::Body,
-                                    edge_kind: EdgeKind::Cites,
-                                    inverse: false,
-                                    span: Some(SourceSpan {
-                                        file: file_path_str.to_string(),
-                                        line,
-                                    }),
-                                });
+                                .record(
+                                    clean_dest,
+                                    classify_body_ref(clean_dest),
+                                    EdgeKind::Cites,
+                                );
                             }
                         }
                     }
@@ -655,6 +667,13 @@ fn scan_text_for_refs(
     discovered_refs: &mut Vec<DiscoveredRef>,
 ) {
     let line = line_index.offset_to_line(block_start_offset);
+    let mut recorder = BodyRefRecorder {
+        file_path,
+        file_path_str,
+        line,
+        result,
+        discovered_refs,
+    };
 
     // Edge kind inference from full accumulated text
     let edge_kind = infer_edge_kind_from_line(text);
@@ -671,23 +690,11 @@ fn scan_text_for_refs(
             .expect("label number capture always present")
             .as_str();
         if let Ok(number) = number_str.parse::<u32>() {
-            result.label_candidates.push(LabelCandidate {
-                prefix: prefix.clone(),
-                number,
-                file_path: file_path.to_path_buf(),
+            recorder.record(
+                &format!("{prefix}-{number}"),
+                RefHint::Label { prefix, number },
                 edge_kind,
-            });
-            discovered_refs.push(DiscoveredRef {
-                raw: format!("{prefix}-{number}"),
-                hint: RefHint::Label { prefix, number },
-                source: RefSource::Body,
-                edge_kind,
-                inverse: false,
-                span: Some(SourceSpan {
-                    file: file_path_str.to_string(),
-                    line,
-                }),
-            });
+            );
         }
     }
 
@@ -699,18 +706,7 @@ fn scan_text_for_refs(
             .as_str()
             .to_string();
         if !section_num.is_empty() {
-            result.section_refs.push((section_num.clone(), line));
-            discovered_refs.push(DiscoveredRef {
-                raw: format!("§{section_num}"),
-                hint: RefHint::SectionRef,
-                source: RefSource::Body,
-                edge_kind: EdgeKind::Cites,
-                inverse: false,
-                span: Some(SourceSpan {
-                    file: file_path_str.to_string(),
-                    line,
-                }),
-            });
+            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, edge_kind);
         }
     }
 
@@ -730,18 +726,7 @@ fn scan_text_for_refs(
         if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
             continue;
         }
-        result.file_refs.push((path.to_string(), line));
-        discovered_refs.push(DiscoveredRef {
-            raw: path.to_string(),
-            hint: RefHint::FilePath,
-            source: RefSource::Body,
-            edge_kind,
-            inverse: false,
-            span: Some(SourceSpan {
-                file: file_path_str.to_string(),
-                line,
-            }),
-        });
+        recorder.record(path, RefHint::FilePath, edge_kind);
     }
 }
 

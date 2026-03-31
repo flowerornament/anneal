@@ -308,9 +308,9 @@ pub(crate) fn resolve_pending_edges(
                 let referring_file = graph.node(edge.source).file_path.clone();
                 if let Some(ref referring) = referring_file
                     && let Some(resolved_path) =
-                        resolve_bare_filename(&edge.target_identity, referring, root)
+                        resolve_bare_filename(&edge.target_identity, referring, root, node_index)
                 {
-                    return node_index.get(&resolved_path.to_string()).copied();
+                    return Some(resolved_path);
                 }
 
                 // Fallback: corpus-wide filename index lookup (unambiguous only)
@@ -345,7 +345,7 @@ pub(crate) fn resolve_pending_edges(
 ///
 /// Joins the reference path relative to the referring file's parent directory,
 /// normalizes it (resolving `..` components), and makes it relative to root.
-/// Returns `Some(normalized)` if the resolved path exists, `None` otherwise.
+/// Returns `None` when the normalized path escapes the corpus root.
 pub(crate) fn resolve_file_path(
     reference: &str,
     referring_file: &Utf8Path,
@@ -360,16 +360,11 @@ pub(crate) fn resolve_file_path(
     // Normalize the path (resolve .. components)
     let normalized = normalize_path(&absolute);
 
-    // Check if the file exists
-    if normalized.exists() {
-        // Make relative to root
-        normalized
-            .strip_prefix(root)
-            .ok()
-            .map(Utf8Path::to_path_buf)
-    } else {
-        None
-    }
+    // Make relative to root
+    normalized
+        .strip_prefix(root)
+        .ok()
+        .map(Utf8Path::to_path_buf)
 }
 
 /// Normalize a UTF-8 path by resolving `.` and `..` components without
@@ -413,18 +408,18 @@ fn resolve_bare_filename(
     reference: &str,
     referring_file: &Utf8Path,
     root: &Utf8Path,
-) -> Option<Utf8PathBuf> {
+    node_index: &HashMap<String, NodeId>,
+) -> Option<NodeId> {
     // First try relative to referring file's directory
     if let Some(found) = resolve_file_path(reference, referring_file, root) {
-        return Some(found);
+        let key = found.as_str();
+        if let Some(&node_id) = node_index.get(key) {
+            return Some(node_id);
+        }
     }
+
     // Fallback: try at root level
-    let root_path = root.join(reference);
-    if root_path.exists() {
-        root_path.strip_prefix(root).ok().map(Utf8Path::to_path_buf)
-    } else {
-        None
-    }
+    node_index.get(reference).copied()
 }
 
 /// Build a mapping from handle identity strings to `NodeId`s.

@@ -231,6 +231,20 @@ pub(crate) fn append_snapshot(root: &Utf8Path, snapshot: &Snapshot) -> anyhow::R
     Ok(())
 }
 
+fn parse_snapshot_line(line: &str) -> Option<Snapshot> {
+    if line.trim().is_empty() {
+        return None;
+    }
+
+    match serde_json::from_str::<Snapshot>(line) {
+        Ok(snapshot) => Some(snapshot),
+        Err(e) => {
+            eprintln!("warning: skipping unparseable snapshot line: {e}");
+            None
+        }
+    }
+}
+
 /// Read all snapshots from `.anneal/history.jsonl`.
 ///
 /// Returns empty Vec if file is missing (CONVERGE-05).
@@ -249,18 +263,37 @@ pub(crate) fn read_history(root: &Utf8Path) -> Vec<Snapshot> {
         let Ok(line) = line else {
             continue;
         };
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Snapshot>(&line) {
-            Ok(s) => snapshots.push(s),
-            Err(e) => {
-                eprintln!("warning: skipping unparseable snapshot line: {e}");
-            }
+        if let Some(snapshot) = parse_snapshot_line(&line) {
+            snapshots.push(snapshot);
         }
     }
 
     snapshots
+}
+
+/// Read only the most recent parseable snapshot from `.anneal/history.jsonl`.
+///
+/// Returns `None` if the file is missing or contains no valid snapshots.
+pub(crate) fn read_latest_snapshot(root: &Utf8Path) -> Option<Snapshot> {
+    let history_path = root.join(".anneal/history.jsonl");
+
+    let Ok(file) = fs::File::open(history_path.as_std_path()) else {
+        return None;
+    };
+
+    let reader = BufReader::new(file);
+    let mut latest = None;
+
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            continue;
+        };
+        if let Some(snapshot) = parse_snapshot_line(&line) {
+            latest = Some(snapshot);
+        }
+    }
+
+    latest
 }
 
 // ---------------------------------------------------------------------------
@@ -307,14 +340,14 @@ pub(crate) fn compute_convergence_summary(
     }
 }
 
-/// Get the latest convergence summary by comparing current snapshot against
-/// the most recent entry in history (D-06).
+/// Compute convergence summary against an already-loaded previous snapshot.
 ///
-/// Returns `None` if no previous snapshot exists (first run).
-pub(crate) fn latest_summary(root: &Utf8Path, current: &Snapshot) -> Option<ConvergenceSummary> {
-    let history = read_history(root);
-    let previous = history.last()?;
-    Some(compute_convergence_summary(current, previous))
+/// Returns `None` when there is no previous snapshot (first run).
+pub(crate) fn summary_from_previous(
+    current: &Snapshot,
+    previous: Option<&Snapshot>,
+) -> Option<ConvergenceSummary> {
+    previous.map(|snapshot| compute_convergence_summary(current, snapshot))
 }
 
 // ---------------------------------------------------------------------------
@@ -532,12 +565,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn latest_summary_returns_none_when_no_history() {
+    fn read_latest_snapshot_returns_none_when_no_history() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = Utf8Path::from_path(tmp.path()).expect("utf8");
 
-        let snapshot = make_snapshot(10, 5, 5, 0);
-        let result = latest_summary(root, &snapshot);
+        let result = read_latest_snapshot(root);
         assert!(
             result.is_none(),
             "Should return None when no history exists"
