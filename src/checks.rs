@@ -120,6 +120,7 @@ fn check_existence(
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    let mut bare_filename_cache: HashMap<String, Vec<String>> = HashMap::new();
 
     if section_ref_count > 0 {
         diagnostics.push(Diagnostic {
@@ -150,7 +151,10 @@ fn check_existence(
                 .get(&edge.target_identity)
                 .cloned()
                 .unwrap_or_default(),
-            bare_filename_candidates(graph, &edge.target_identity),
+            bare_filename_cache
+                .entry(edge.target_identity.clone())
+                .or_insert_with(|| bare_filename_candidates(graph, &edge.target_identity))
+                .clone(),
         );
 
         let candidate_msg = if candidates.is_empty() {
