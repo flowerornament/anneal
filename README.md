@@ -55,7 +55,8 @@ Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aar
 
 ```bash
 git clone https://github.com/flowerornament/anneal.git
-cargo install --path anneal --locked
+cd anneal
+cargo install --path . --locked
 ```
 
 ### Nix
