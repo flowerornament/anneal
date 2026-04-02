@@ -87,21 +87,24 @@ anneal = {
 ```bash
 # Corpus shape, health, and convergence direction
 anneal status
+anneal status --json --compact
 
 # Actionable issues in active work
 anneal check
 
 # Resolve a specific handle
 anneal get REQ-12
+anneal get REQ-12 --context
 
 # Search handle identities
-anneal find ADR
+anneal find ADR --limit 25
 
 # Reverse dependencies for a file or handle
 anneal impact spec/api-v3.md
 
 # Local graph neighborhood
 anneal map --around=REQ-12 --depth=1
+anneal map --render=text --full
 
 # Linear namespace summary
 anneal obligations
@@ -117,8 +120,8 @@ anneal init
 
 `anneal` supports a practical loop for corpus work:
 
-1. Orient: run `anneal status` and `anneal check` to understand the corpus shape and the actionable problems.
-2. Locate context: use `anneal get`, `anneal find`, and `anneal map --around=...` to understand the specific files, labels, or versions involved in the task.
+1. Orient: run `anneal status` or `anneal status --json --compact`, then `anneal check`, to understand the corpus shape and the actionable problems.
+2. Locate context: use `anneal get --context`, bounded `anneal find --limit ...`, and `anneal map --around=...` to understand the specific files, labels, or versions involved in the task.
 3. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
 4. Verify: run `anneal check --file=...` for a local pass or `anneal check` for a broader pass after editing.
 5. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
@@ -170,6 +173,12 @@ $ anneal status -v
 
 Appends a snapshot to local anneal history for convergence tracking. By default this is machine-local XDG state, not a repo file.
 
+For agents and other tools, prefer:
+
+```bash
+anneal status --json --compact
+```
+
 ### `anneal check`
 
 Five check rules and five suggestion rules with compiler-style diagnostics:
@@ -186,7 +195,7 @@ error[E001]: broken reference: REQ-99 not found
 
 `anneal check` reports active-file diagnostics by default. Use `--include-terminal` when you want the full picture, including settled material.
 
-For interactive health checks, prefer the plain-text report. When you need machine-readable diagnostics, summarize them with `jq` before surfacing them.
+For interactive health checks, prefer the plain-text report. JSON is summary-first by default, then expands deliberately with explicit flags.
 
 | Flag                 | Effect                                            |
 | -------------------- | ------------------------------------------------- |
@@ -197,10 +206,15 @@ For interactive health checks, prefer the plain-text report. When you need machi
 | `--stale`            | Staleness warnings only (W001)                    |
 | `--obligations`      | Obligation diagnostics only (E002/I002)           |
 | `--file=path.md`     | Scope diagnostics to a single file                |
+| `--diagnostics`      | Include bounded diagnostics in JSON output        |
+| `--limit=N`          | Cap JSON diagnostic samples                       |
+| `--extractions-summary` | Include aggregate extraction facts in JSON output |
+| `--full-extractions` | Include full extraction payloads in JSON output   |
+| `--full`             | Explicitly request full diagnostics + extractions |
 
 ### `anneal get`
 
-Resolve a handle and show its edges:
+Resolve a handle and show bounded graph context:
 
 ```
 $ anneal get REQ-12
@@ -213,7 +227,16 @@ REQ-12 (label)
     Cites <- notes/2025-01-15-auth-redesign.md
 ```
 
-`get` includes a snippet when anneal can extract one from the source file.
+Useful expansions:
+
+```bash
+anneal get REQ-12 --context            # compact agent briefing
+anneal get REQ-12 --refs               # bounded incoming/outgoing references
+anneal get REQ-12 --trace --full       # full adjacency
+anneal get REQ-12 --json               # summary JSON with counts and samples
+```
+
+`get` includes a snippet when anneal can extract one from the source file. JSON reports edge counts and truncation by default instead of dumping the full adjacency list.
 
 ### `anneal impact`
 
@@ -232,12 +255,16 @@ Traverses DependsOn, Supersedes, and Verifies edges in reverse. Does not travers
 
 ### `anneal map`
 
-Render the knowledge graph. Text for terminal use, DOT for graphviz:
+Render or summarize the knowledge graph:
 
 ```bash
-anneal map --around=REQ-12 --depth=1          # Text neighborhood
-anneal map --format=dot | dot -Tpng -o g.png  # Graphviz PNG
-anneal map --concern=api                      # Concern group subgraph
+anneal map                                    # Graph summary
+anneal map --around=REQ-12 --depth=1          # Focused text neighborhood
+anneal map --render=text --full               # Full active graph (text)
+anneal map --render=dot --full | dot -Tpng -o g.png
+                                               # Graphviz PNG
+anneal map --json                             # Summary JSON
+anneal map --json --nodes --limit-nodes 50    # Structured node sample
 ```
 
 ### `anneal diff`
@@ -279,10 +306,15 @@ Use `--json` for machine-readable totals and per-namespace buckets.
 Search handle identities:
 
 ```bash
-anneal find ADR                    # All active ADR-* labels
-anneal find "" --status=draft      # All handles with status "draft"
+anneal find ADR                    # Bounded active ADR-* sample
+anneal find ADR --limit 50         # Larger sample
+anneal find "" --status=draft      # Broad but narrowed query
 anneal find "" --kind=file --all   # All files including terminal
+anneal find "" --status=draft --json
+                                   # JSON sample with counts, truncation, and facets
 ```
+
+`find` is bounded by default. Use `--offset` to page through results or `--full` when you intentionally want the full match set.
 
 ### `anneal init`
 
@@ -392,12 +424,20 @@ Important boundary: repo config can choose whether history is machine-local, rep
 
 ## JSON output
 
-All commands support `--json` for machine consumption. Use it for compact facts and jq-filtered summaries rather than dumping full structured output back into chat:
+All commands support `--json` for machine consumption. Risky commands now use progressive disclosure:
+
+- default JSON is bounded and explicit about truncation
+- expansion flags like `--diagnostics`, `--refs`, `--nodes`, and `--full` request more detail
+- `--pretty` exists for humans; plain `--json` stays compact for tools
+
+Use JSON for compact facts and jq-filtered summaries rather than dumping full structured output back into chat:
 
 ```bash
-anneal status --json | jq '.convergence'
-anneal check --active-only --json | jq '{diagnostic_count: (.diagnostics | length)}'
-anneal check --active-only --json | jq '.diagnostics[:5]'
+anneal status --json --compact | jq '.convergence'
+anneal check --active-only --json | jq '.summary'
+anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
+anneal find ADR --json | jq '._meta'
+anneal map --json | jq '{nodes, edges, by_kind}'
 ```
 
 ## Design

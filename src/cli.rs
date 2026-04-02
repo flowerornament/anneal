@@ -87,12 +87,78 @@ fn dedup_edges(
 // JSON helper (CLI-09)
 // ---------------------------------------------------------------------------
 
-/// Serialize any output type to pretty-printed JSON and print to stdout.
+#[derive(Clone, Copy)]
+pub(crate) enum JsonStyle {
+    Compact,
+    Pretty,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DetailLevel {
+    Summary,
+    Sample,
+    Full,
+}
+
+#[derive(Serialize)]
+pub(crate) struct OutputMeta {
+    pub(crate) schema_version: u32,
+    pub(crate) detail: DetailLevel,
+    pub(crate) truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) returned: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total: Option<usize>,
+    pub(crate) expand: Vec<String>,
+}
+
+impl OutputMeta {
+    pub(crate) fn new(
+        detail: DetailLevel,
+        truncated: bool,
+        returned: Option<usize>,
+        total: Option<usize>,
+        expand: Vec<String>,
+    ) -> Self {
+        Self {
+            schema_version: 2,
+            detail,
+            truncated,
+            returned,
+            total,
+            expand,
+        }
+    }
+
+    pub(crate) fn full() -> Self {
+        Self::new(DetailLevel::Full, false, None, None, Vec::new())
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct JsonEnvelope<T: Serialize> {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    #[serde(flatten)]
+    pub(crate) data: T,
+}
+
+impl<T: Serialize> JsonEnvelope<T> {
+    pub(crate) fn new(meta: OutputMeta, data: T) -> Self {
+        Self { meta, data }
+    }
+}
+
+/// Serialize any output type to JSON and print to stdout.
 ///
 /// Since `Serialize` is not object-safe, each command returns its own concrete
 /// output struct rather than using trait objects (Pitfall 5).
-pub(crate) fn print_json<T: Serialize>(output: &T) -> anyhow::Result<()> {
-    let json = serde_json::to_string_pretty(output)?;
+pub(crate) fn print_json<T: Serialize>(output: &T, style: JsonStyle) -> anyhow::Result<()> {
+    let json = match style {
+        JsonStyle::Compact => serde_json::to_string(output)?,
+        JsonStyle::Pretty => serde_json::to_string_pretty(output)?,
+    };
     println!("{json}");
     Ok(())
 }
@@ -111,9 +177,60 @@ pub(crate) struct CheckOutput {
     pub(crate) suggestions: usize,
     /// Errors sourced from terminal (settled) files — informational, not actionable.
     pub(crate) terminal_errors: usize,
-    /// Per-file extraction data with reference classification (Phase 4).
-    /// Shown in JSON output only (not printed in human mode).
-    pub(crate) extractions: Vec<crate::extraction::FileExtraction>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CodeCount {
+    pub(crate) code: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CheckSummary {
+    pub(crate) errors: usize,
+    pub(crate) warnings: usize,
+    pub(crate) info: usize,
+    pub(crate) suggestions: usize,
+    pub(crate) terminal_errors: usize,
+    pub(crate) total_diagnostics: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ExtractionSummary {
+    pub(crate) files: usize,
+    pub(crate) refs: usize,
+    pub(crate) frontmatter_refs: usize,
+    pub(crate) body_refs: usize,
+    pub(crate) by_hint: Vec<HintCount>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct HintCount {
+    pub(crate) hint: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CheckJsonOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    pub(crate) summary: CheckSummary,
+    pub(crate) by_code: Vec<CodeCount>,
+    pub(crate) sample_diagnostics: Vec<Diagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) diagnostics: Option<Vec<Diagnostic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) extractions_summary: Option<ExtractionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) extractions: Option<Vec<crate::extraction::FileExtraction>>,
+}
+
+pub(crate) struct CheckJsonOptions {
+    pub(crate) include_diagnostics: bool,
+    pub(crate) diagnostics_limit: usize,
+    pub(crate) include_extractions_summary: bool,
+    pub(crate) include_full_extractions: bool,
+    pub(crate) full: bool,
 }
 
 impl CheckOutput {
@@ -176,7 +293,6 @@ pub(crate) fn cmd_check(
     mut diagnostics: Vec<checks::Diagnostic>,
     filters: &CheckFilters,
     terminal_files: &HashSet<String>,
-    extractions: Vec<crate::extraction::FileExtraction>,
 ) -> CheckOutput {
     if filters.active_only {
         diagnostics.retain(|d| d.file.as_ref().is_none_or(|f| !terminal_files.contains(f)));
@@ -213,7 +329,141 @@ pub(crate) fn cmd_check(
         info,
         suggestions,
         terminal_errors,
-        extractions,
+    }
+}
+
+fn summarize_diagnostic_codes(diagnostics: &[Diagnostic]) -> Vec<CodeCount> {
+    let mut by_code: HashMap<&'static str, usize> = HashMap::new();
+    for diagnostic in diagnostics {
+        *by_code.entry(diagnostic.code).or_insert(0) += 1;
+    }
+
+    let mut counts: Vec<CodeCount> = by_code
+        .into_iter()
+        .map(|(code, count)| CodeCount {
+            code: code.to_string(),
+            count,
+        })
+        .collect();
+    counts.sort_by(|a, b| a.code.cmp(&b.code));
+    counts
+}
+
+fn summarize_extractions(extractions: &[crate::extraction::FileExtraction]) -> ExtractionSummary {
+    let mut by_hint: HashMap<String, usize> = HashMap::new();
+    let mut frontmatter_refs = 0usize;
+    let mut body_refs = 0usize;
+
+    for extraction in extractions {
+        for discovered in &extraction.refs {
+            *by_hint
+                .entry(match &discovered.hint {
+                    crate::extraction::RefHint::Label { .. } => "label".to_string(),
+                    crate::extraction::RefHint::FilePath => "file_path".to_string(),
+                    crate::extraction::RefHint::SectionRef => "section_ref".to_string(),
+                    crate::extraction::RefHint::External => "external".to_string(),
+                    crate::extraction::RefHint::Implausible { .. } => "implausible".to_string(),
+                })
+                .or_insert(0) += 1;
+
+            match discovered.source {
+                crate::extraction::RefSource::Frontmatter { .. } => frontmatter_refs += 1,
+                crate::extraction::RefSource::Body => body_refs += 1,
+            }
+        }
+    }
+
+    let mut by_hint: Vec<HintCount> = by_hint
+        .into_iter()
+        .map(|(hint, count)| HintCount { hint, count })
+        .collect();
+    by_hint.sort_by(|a, b| a.hint.cmp(&b.hint));
+
+    ExtractionSummary {
+        files: extractions.len(),
+        refs: frontmatter_refs + body_refs,
+        frontmatter_refs,
+        body_refs,
+        by_hint,
+    }
+}
+
+pub(crate) fn build_check_json_output(
+    output: &CheckOutput,
+    extractions: &[crate::extraction::FileExtraction],
+    options: &CheckJsonOptions,
+) -> CheckJsonOutput {
+    let sample_limit = output.diagnostics.len().min(5);
+    let sample_diagnostics = output
+        .diagnostics
+        .iter()
+        .take(sample_limit)
+        .cloned()
+        .collect();
+
+    let diagnostics = if options.full {
+        Some(output.diagnostics.clone())
+    } else if options.include_diagnostics {
+        Some(
+            output
+                .diagnostics
+                .iter()
+                .take(options.diagnostics_limit)
+                .cloned()
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    let diagnostics_returned = diagnostics.as_ref().map(Vec::len);
+    let diagnostics_total = output.diagnostics.len();
+    let diagnostics_truncated =
+        diagnostics_returned.is_some_and(|returned| returned < diagnostics_total);
+
+    let include_extractions_summary = options.include_extractions_summary || options.full;
+    let extractions_summary =
+        include_extractions_summary.then(|| summarize_extractions(extractions));
+    let full_extractions =
+        (options.include_full_extractions || options.full).then(|| extractions.to_vec());
+
+    let expand = if options.full {
+        Vec::new()
+    } else {
+        vec![
+            "--diagnostics".to_string(),
+            "--extractions-summary".to_string(),
+            "--full".to_string(),
+        ]
+    };
+
+    CheckJsonOutput {
+        meta: OutputMeta::new(
+            if options.full {
+                DetailLevel::Full
+            } else if options.include_diagnostics {
+                DetailLevel::Sample
+            } else {
+                DetailLevel::Summary
+            },
+            diagnostics_truncated || (!options.full && diagnostics_total > sample_limit),
+            diagnostics_returned,
+            diagnostics_returned.map(|_| diagnostics_total),
+            expand,
+        ),
+        summary: CheckSummary {
+            errors: output.errors,
+            warnings: output.warnings,
+            info: output.info,
+            suggestions: output.suggestions,
+            terminal_errors: output.terminal_errors,
+            total_diagnostics: diagnostics_total,
+        },
+        by_code: summarize_diagnostic_codes(&output.diagnostics),
+        sample_diagnostics,
+        diagnostics,
+        extractions_summary,
+        extractions: full_extractions,
     }
 }
 
@@ -222,16 +472,14 @@ pub(crate) fn cmd_check(
 // ---------------------------------------------------------------------------
 
 /// Summary of a single edge for display.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct EdgeSummary {
     pub(crate) kind: String,
     pub(crate) target: String,
     pub(crate) direction: String,
 }
 
-/// Output of `anneal get <handle>`: resolved handle with context.
-#[derive(Serialize)]
-pub(crate) struct GetOutput {
+pub(crate) struct GetData {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) status: Option<String>,
@@ -241,13 +489,179 @@ pub(crate) struct GetOutput {
     pub(crate) snippet: Option<String>,
 }
 
-/// Maximum number of edges to display in human-readable output per direction.
-const EDGE_DISPLAY_LIMIT: usize = 20;
-
 /// Frontmatter keys that are metadata-only (not edge-producing references).
 const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
 
-impl GetOutput {
+#[derive(Serialize)]
+pub(crate) struct EdgeCounts {
+    pub(crate) incoming: usize,
+    pub(crate) outgoing: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct GetJsonOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snippet: Option<String>,
+    pub(crate) edge_counts: EdgeCounts,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sample_incoming: Vec<EdgeSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sample_outgoing: Vec<EdgeSummary>,
+    pub(crate) truncated_edges: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) incoming_edges: Option<Vec<EdgeSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) outgoing_edges: Option<Vec<EdgeSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) briefing: Option<String>,
+}
+
+pub(crate) struct GetHumanOutput {
+    pub(crate) data: GetData,
+    pub(crate) limit_edges: usize,
+    pub(crate) context: bool,
+}
+
+impl GetHumanOutput {
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        if self.context {
+            let briefing = build_get_briefing(&self.data, self.limit_edges);
+            if !briefing.is_empty() {
+                writeln!(w, "{briefing}")?;
+                return Ok(());
+            }
+        }
+
+        let output = GetJsonOutput::summary(&self.data, self.limit_edges);
+        output.print_human(w)
+    }
+}
+
+impl GetJsonOutput {
+    fn summary(data: &GetData, limit_edges: usize) -> Self {
+        let sample_incoming: Vec<EdgeSummary> = data
+            .incoming_edges
+            .iter()
+            .take(limit_edges)
+            .cloned()
+            .collect();
+        let sample_outgoing: Vec<EdgeSummary> = data
+            .outgoing_edges
+            .iter()
+            .take(limit_edges)
+            .cloned()
+            .collect();
+        let truncated_edges =
+            data.incoming_edges.len() > limit_edges || data.outgoing_edges.len() > limit_edges;
+
+        Self {
+            meta: OutputMeta::new(
+                DetailLevel::Summary,
+                truncated_edges,
+                Some(sample_incoming.len() + sample_outgoing.len()),
+                Some(data.incoming_edges.len() + data.outgoing_edges.len()),
+                vec![
+                    format!("--limit-edges {limit_edges}"),
+                    "--refs".to_string(),
+                    "--trace".to_string(),
+                    "--full".to_string(),
+                ],
+            ),
+            id: data.id.clone(),
+            kind: data.kind.clone(),
+            status: data.status.clone(),
+            file: data.file.clone(),
+            snippet: data.snippet.clone(),
+            edge_counts: EdgeCounts {
+                incoming: data.incoming_edges.len(),
+                outgoing: data.outgoing_edges.len(),
+            },
+            sample_incoming,
+            sample_outgoing,
+            truncated_edges,
+            incoming_edges: None,
+            outgoing_edges: None,
+            briefing: None,
+        }
+    }
+
+    fn refs(data: &GetData, limit_edges: usize, full: bool) -> Self {
+        let incoming = if full {
+            data.incoming_edges.clone()
+        } else {
+            data.incoming_edges
+                .iter()
+                .take(limit_edges)
+                .cloned()
+                .collect()
+        };
+        let outgoing = if full {
+            data.outgoing_edges.clone()
+        } else {
+            data.outgoing_edges
+                .iter()
+                .take(limit_edges)
+                .cloned()
+                .collect()
+        };
+        let truncated_edges = !full
+            && (incoming.len() < data.incoming_edges.len()
+                || outgoing.len() < data.outgoing_edges.len());
+
+        Self {
+            meta: OutputMeta::new(
+                if full {
+                    DetailLevel::Full
+                } else {
+                    DetailLevel::Sample
+                },
+                truncated_edges,
+                Some(incoming.len() + outgoing.len()),
+                Some(data.incoming_edges.len() + data.outgoing_edges.len()),
+                if full {
+                    Vec::new()
+                } else {
+                    vec![
+                        format!("--limit-edges {}", limit_edges * 2),
+                        "--full".to_string(),
+                    ]
+                },
+            ),
+            id: data.id.clone(),
+            kind: data.kind.clone(),
+            status: data.status.clone(),
+            file: data.file.clone(),
+            snippet: data.snippet.clone(),
+            edge_counts: EdgeCounts {
+                incoming: data.incoming_edges.len(),
+                outgoing: data.outgoing_edges.len(),
+            },
+            sample_incoming: Vec::new(),
+            sample_outgoing: Vec::new(),
+            truncated_edges,
+            incoming_edges: Some(incoming),
+            outgoing_edges: Some(outgoing),
+            briefing: None,
+        }
+    }
+
+    fn context(data: &GetData, limit_edges: usize) -> Self {
+        let mut output = Self::summary(data, limit_edges);
+        output.meta.detail = DetailLevel::Summary;
+        output.briefing = Some(build_get_briefing(data, limit_edges));
+        output.sample_incoming.clear();
+        output.sample_outgoing.clear();
+        output
+    }
+
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         writeln!(w, "{} ({})", self.id, self.kind)?;
         if let Some(ref status) = self.status {
@@ -259,36 +673,89 @@ impl GetOutput {
         if let Some(ref snippet) = self.snippet {
             writeln!(w, "  Snippet: {snippet}")?;
         }
-        if !self.outgoing_edges.is_empty() {
+        let outgoing = self
+            .outgoing_edges
+            .as_ref()
+            .unwrap_or(&self.sample_outgoing);
+        if !outgoing.is_empty() {
             writeln!(w, "  Outgoing:")?;
-            let total = self.outgoing_edges.len();
-            for edge in self.outgoing_edges.iter().take(EDGE_DISPLAY_LIMIT) {
+            let total = self.edge_counts.outgoing;
+            for edge in outgoing {
                 writeln!(w, "    {} -> {}", edge.kind, edge.target)?;
             }
-            if total > EDGE_DISPLAY_LIMIT {
+            if total > outgoing.len() {
                 writeln!(
                     w,
                     "    ... and {} more outgoing edges ({total} unique)",
-                    total - EDGE_DISPLAY_LIMIT
+                    total - outgoing.len()
                 )?;
             }
         }
-        if !self.incoming_edges.is_empty() {
+        let incoming = self
+            .incoming_edges
+            .as_ref()
+            .unwrap_or(&self.sample_incoming);
+        if !incoming.is_empty() {
             writeln!(w, "  Incoming:")?;
-            let total = self.incoming_edges.len();
-            for edge in self.incoming_edges.iter().take(EDGE_DISPLAY_LIMIT) {
+            let total = self.edge_counts.incoming;
+            for edge in incoming {
                 writeln!(w, "    {} <- {}", edge.kind, edge.target)?;
             }
-            if total > EDGE_DISPLAY_LIMIT {
+            if total > incoming.len() {
                 writeln!(
                     w,
                     "    ... and {} more incoming edges ({total} unique)",
-                    total - EDGE_DISPLAY_LIMIT
+                    total - incoming.len()
                 )?;
             }
         }
         Ok(())
     }
+}
+
+fn build_get_briefing(data: &GetData, limit_edges: usize) -> String {
+    let mut parts = vec![format!("{} is a {}", data.id, data.kind)];
+    if let Some(status) = &data.status {
+        parts.push(format!("status {status}"));
+    }
+    if let Some(file) = &data.file {
+        parts.push(format!("defined in {file}"));
+    }
+    if let Some(snippet) = &data.snippet {
+        parts.push(format!("snippet: {snippet}"));
+    }
+
+    let incoming = data
+        .incoming_edges
+        .iter()
+        .take(limit_edges)
+        .map(|edge| format!("{} from {}", edge.kind, edge.target))
+        .collect::<Vec<_>>();
+    let outgoing = data
+        .outgoing_edges
+        .iter()
+        .take(limit_edges)
+        .map(|edge| format!("{} to {}", edge.kind, edge.target))
+        .collect::<Vec<_>>();
+
+    if !outgoing.is_empty() {
+        parts.push(format!(
+            "outgoing refs (showing {} of {}): {}",
+            outgoing.len(),
+            data.outgoing_edges.len(),
+            outgoing.join(", ")
+        ));
+    }
+    if !incoming.is_empty() {
+        parts.push(format!(
+            "incoming refs (showing {} of {}): {}",
+            incoming.len(),
+            data.incoming_edges.len(),
+            incoming.join(", ")
+        ));
+    }
+
+    parts.join(". ")
 }
 
 /// Resolve a handle by identity string and build output.
@@ -301,7 +768,7 @@ pub(crate) fn cmd_get(
     file_snippets: &HashMap<String, String>,
     label_snippets: &HashMap<String, String>,
     handle: &str,
-) -> Option<GetOutput> {
+) -> Option<GetData> {
     let node_id = lookup_handle(node_index, handle)?;
 
     let h = graph.node(node_id);
@@ -315,7 +782,7 @@ pub(crate) fn cmd_get(
         _ => None,
     };
 
-    Some(GetOutput {
+    Some(GetData {
         id: h.id.clone(),
         kind: h.kind.as_str().to_string(),
         status: h.status.clone(),
@@ -324,6 +791,26 @@ pub(crate) fn cmd_get(
         incoming_edges,
         snippet,
     })
+}
+
+pub(crate) struct GetJsonOptions {
+    pub(crate) refs: bool,
+    pub(crate) context: bool,
+    pub(crate) trace: bool,
+    pub(crate) full: bool,
+    pub(crate) limit_edges: usize,
+}
+
+pub(crate) fn build_get_json_output(data: &GetData, options: &GetJsonOptions) -> GetJsonOutput {
+    if options.context {
+        GetJsonOutput::context(data, options.limit_edges)
+    } else if options.trace || options.full {
+        GetJsonOutput::refs(data, options.limit_edges, true)
+    } else if options.refs {
+        GetJsonOutput::refs(data, options.limit_edges, false)
+    } else {
+        GetJsonOutput::summary(data, options.limit_edges)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +930,7 @@ pub(crate) fn cmd_obligations(
 // ---------------------------------------------------------------------------
 
 /// A single match from a find query.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct FindMatch {
     pub(crate) id: String,
     pub(crate) kind: String,
@@ -451,17 +938,43 @@ pub(crate) struct FindMatch {
     pub(crate) file: Option<String>,
 }
 
+#[derive(Serialize)]
+pub(crate) struct FindFacetValue {
+    pub(crate) value: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct FindFacets {
+    pub(crate) kind: Vec<FindFacetValue>,
+    pub(crate) status: Vec<FindFacetValue>,
+}
+
 /// Output of `anneal find <query>`: matching handles.
 #[derive(Serialize)]
 pub(crate) struct FindOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
     pub(crate) query: String,
     pub(crate) matches: Vec<FindMatch>,
     pub(crate) total: usize,
+    pub(crate) returned: usize,
+    pub(crate) offset: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) facets: Option<FindFacets>,
 }
 
 impl FindOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(w, "Found {} matches for \"{}\":", self.total, self.query)?;
+        if self.meta.truncated || self.offset > 0 {
+            writeln!(
+                w,
+                "Showing {} of {} matches for \"{}\" (offset {}):",
+                self.returned, self.total, self.query, self.offset
+            )?;
+        } else {
+            writeln!(w, "Found {} matches for \"{}\":", self.total, self.query)?;
+        }
         for m in &self.matches {
             let status_str = m
                 .status
@@ -469,6 +982,10 @@ impl FindOutput {
                 .map_or(String::new(), |s| format!(" status: {s}"));
             let file_str = m.file.as_deref().unwrap_or("");
             writeln!(w, "  {} ({}){status_str}  {file_str}", m.id, m.kind)?;
+        }
+        if self.meta.truncated && !self.meta.expand.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "More available: {}", self.meta.expand.join(", "))?;
         }
         Ok(())
     }
@@ -481,6 +998,10 @@ pub(crate) struct FindFilters<'a> {
     pub(crate) status: Option<&'a str>,
     pub(crate) kind: Option<&'a str>,
     pub(crate) include_all: bool,
+    pub(crate) limit: Option<usize>,
+    pub(crate) offset: usize,
+    pub(crate) full: bool,
+    pub(crate) no_facets: bool,
 }
 
 /// Search handle identities with case-insensitive substring matching.
@@ -489,14 +1010,20 @@ pub(crate) fn cmd_find(
     lattice: &Lattice,
     query: &str,
     filters: &FindFilters<'_>,
-) -> FindOutput {
+) -> anyhow::Result<FindOutput> {
     let lower_query = query.to_lowercase();
 
-    let mut matches: Vec<FindMatch> = graph
+    let has_narrowing_filter =
+        filters.namespace.is_some() || filters.status.is_some() || filters.kind.is_some();
+    if lower_query.is_empty() && !filters.full && !has_narrowing_filter {
+        anyhow::bail!("empty query requires a narrowing filter or --full");
+    }
+
+    let all_matches: Vec<FindMatch> = graph
         .nodes()
         .filter(|(_, h)| {
             // Substring match on handle identity
-            if !h.id.to_lowercase().contains(&lower_query) {
+            if !lower_query.is_empty() && !h.id.to_lowercase().contains(&lower_query) {
                 return false;
             }
 
@@ -543,14 +1070,81 @@ pub(crate) fn cmd_find(
         })
         .collect();
 
-    matches.sort_by(|a, b| a.id.cmp(&b.id));
-    let total = matches.len();
+    let mut sorted_matches = all_matches;
+    sorted_matches.sort_by(|a, b| a.id.cmp(&b.id));
+    let total = sorted_matches.len();
+    let offset = filters.offset.min(total);
+    let limit = if filters.full {
+        total.saturating_sub(offset)
+    } else {
+        filters.limit.unwrap_or(25)
+    };
+    let returned_matches: Vec<FindMatch> = sorted_matches
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect();
+    let returned = returned_matches.len();
 
-    FindOutput {
+    let facets = if filters.no_facets {
+        None
+    } else {
+        Some(build_find_facets(&sorted_matches))
+    };
+
+    Ok(FindOutput {
+        meta: OutputMeta::new(
+            if filters.full {
+                DetailLevel::Full
+            } else {
+                DetailLevel::Sample
+            },
+            !filters.full && offset + returned < total,
+            Some(returned),
+            Some(total),
+            if filters.full || offset + returned >= total {
+                Vec::new()
+            } else {
+                vec![
+                    format!("--limit {}", limit.saturating_mul(2).max(25)),
+                    format!("--offset {}", offset + returned),
+                    "--full".to_string(),
+                ]
+            },
+        ),
         query: query.to_string(),
-        matches,
+        matches: returned_matches,
         total,
+        returned,
+        offset,
+        facets,
+    })
+}
+
+fn build_find_facets(matches: &[FindMatch]) -> FindFacets {
+    let mut kind_counts: HashMap<String, usize> = HashMap::new();
+    let mut status_counts: HashMap<String, usize> = HashMap::new();
+    for entry in matches {
+        *kind_counts.entry(entry.kind.clone()).or_insert(0) += 1;
+        if let Some(status) = &entry.status {
+            *status_counts.entry(status.clone()).or_insert(0) += 1;
+        }
     }
+
+    let mut kind: Vec<FindFacetValue> = kind_counts
+        .into_iter()
+        .map(|(value, count)| FindFacetValue { value, count })
+        .collect();
+    kind.sort_by(|a, b| a.value.cmp(&b.value));
+
+    let mut status: Vec<FindFacetValue> = status_counts
+        .into_iter()
+        .map(|(value, count)| FindFacetValue { value, count })
+        .collect();
+    status.sort_by(|a, b| a.value.cmp(&b.value));
+
+    FindFacets { kind, status }
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +1155,8 @@ pub(crate) fn cmd_find(
 #[derive(Serialize)]
 pub(crate) struct ImpactOutput {
     pub(crate) handle: String,
+    pub(crate) direct_count: usize,
+    pub(crate) indirect_count: usize,
     pub(crate) direct: Vec<String>,
     pub(crate) indirect: Vec<String>,
 }
@@ -610,6 +1206,8 @@ pub(crate) fn cmd_impact(
 
     Some(ImpactOutput {
         handle: graph.node(node_id).id.clone(),
+        direct_count: direct.len(),
+        indirect_count: indirect.len(),
         direct,
         indirect,
     })
@@ -880,14 +1478,14 @@ pub(crate) fn sorted_namespace_names(ns: &std::collections::HashSet<String>) -> 
 // ---------------------------------------------------------------------------
 
 /// A single pipeline level with handle count.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct PipelineLevel {
     pub(crate) level: String,
     pub(crate) count: usize,
 }
 
 /// Obligation summary for status dashboard.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct ObligationSummary {
     pub(crate) discharged: usize,
     pub(crate) total: usize,
@@ -895,14 +1493,14 @@ pub(crate) struct ObligationSummary {
 }
 
 /// Diagnostic counts for status dashboard.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct DiagnosticSummary {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
 }
 
 /// Convergence signal for status dashboard output.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct ConvergenceSummaryOutput {
     pub(crate) signal: String,
     pub(crate) detail: String,
@@ -927,6 +1525,23 @@ pub(crate) struct StatusOutput {
     pub(crate) convergence: Option<ConvergenceSummaryOutput>,
     pub(crate) suggestion_total: usize,
     pub(crate) suggestion_breakdown: Vec<SuggestionCount>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct StatusCompactOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    pub(crate) files: usize,
+    pub(crate) handles: usize,
+    pub(crate) edges: usize,
+    pub(crate) active_handles: usize,
+    pub(crate) frozen_handles: usize,
+    pub(crate) pipeline: Option<Vec<PipelineLevel>>,
+    pub(crate) states: HashMap<String, usize>,
+    pub(crate) obligations: ObligationSummary,
+    pub(crate) diagnostics: DiagnosticSummary,
+    pub(crate) convergence: Option<ConvergenceSummaryOutput>,
+    pub(crate) suggestion_total: usize,
 }
 
 /// A single suggestion type with its count, for the status breakdown.
@@ -1122,6 +1737,36 @@ impl StatusOutput {
         self.convergence = summary;
         self
     }
+
+    pub(crate) fn compact_json(&self) -> StatusCompactOutput {
+        StatusCompactOutput {
+            meta: OutputMeta::new(
+                DetailLevel::Summary,
+                false,
+                None,
+                None,
+                vec!["status --json".to_string()],
+            ),
+            files: self.files,
+            handles: self.handles,
+            edges: self.edges,
+            active_handles: self.active_handles,
+            frozen_handles: self.frozen_handles,
+            pipeline: self.pipeline.clone(),
+            states: self.states.clone(),
+            obligations: ObligationSummary {
+                discharged: self.obligations.discharged,
+                total: self.obligations.total,
+                mooted: self.obligations.mooted,
+            },
+            diagnostics: DiagnosticSummary {
+                errors: self.diagnostics.errors,
+                warnings: self.diagnostics.warnings,
+            },
+            convergence: self.convergence.clone(),
+            suggestion_total: self.suggestion_total,
+        }
+    }
 }
 
 /// Format counts like "262 files, 9882 handles, 6974 edges".
@@ -1229,18 +1874,79 @@ pub(crate) fn cmd_status(
 // Map command (CLI-05, KB-C5)
 // ---------------------------------------------------------------------------
 
-/// Output of `anneal map`: rendered graph in text or DOT format.
+#[derive(Serialize)]
+pub(crate) struct KindCount {
+    pub(crate) kind: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct NamespaceCount {
+    pub(crate) namespace: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct MapNodeEntry {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) status: Option<String>,
+    pub(crate) file: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct MapEdgeEntry {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) kind: String,
+}
+
 #[derive(Serialize)]
 pub(crate) struct MapOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
     pub(crate) format: String,
     pub(crate) nodes: usize,
     pub(crate) edges: usize,
-    pub(crate) content: String,
+    pub(crate) by_kind: Vec<KindCount>,
+    pub(crate) top_namespaces: Vec<NamespaceCount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) node_list: Option<Vec<MapNodeEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) edge_list: Option<Vec<MapEdgeEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rendered_content: Option<String>,
 }
 
 impl MapOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        write!(w, "{}", self.content)
+        if let Some(content) = &self.rendered_content {
+            write!(w, "{content}")?;
+            return Ok(());
+        }
+
+        writeln!(
+            w,
+            "Graph summary: {} nodes, {} edges",
+            self.nodes, self.edges
+        )?;
+        if !self.by_kind.is_empty() {
+            writeln!(w, "By kind:")?;
+            for count in &self.by_kind {
+                writeln!(w, "  {} {}", count.count, count.kind)?;
+            }
+        }
+        if !self.top_namespaces.is_empty() {
+            writeln!(w, "Top namespaces:")?;
+            for ns in &self.top_namespaces {
+                writeln!(w, "  {} {}", ns.count, ns.namespace)?;
+            }
+        }
+        if !self.meta.expand.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "Expand with: {}", self.meta.expand.join(", "))?;
+        }
+        Ok(())
     }
 }
 
@@ -1559,13 +2265,102 @@ pub(crate) struct MapOptions<'a> {
     pub(crate) concern: Option<&'a str>,
     pub(crate) around: Option<&'a str>,
     pub(crate) depth: u32,
-    pub(crate) format: crate::MapFormat,
+    pub(crate) render: crate::MapRender,
+    pub(crate) include_nodes: bool,
+    pub(crate) include_edges: bool,
+    pub(crate) full: bool,
+    pub(crate) limit_nodes: usize,
+    pub(crate) limit_edges: usize,
 }
 
-/// Render the knowledge graph in text or DOT format (CLI-05, KB-C5).
-///
-/// Extracts a subgraph based on `concern`, `around`/`depth` filters, then
-/// renders in the requested format. Counts nodes and edges in the subgraph.
+fn map_kind_counts(graph: &DiGraph, nodes: &HashSet<NodeId>) -> Vec<KindCount> {
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    for node_id in nodes {
+        *counts
+            .entry(graph.node(*node_id).kind.as_str())
+            .or_insert(0) += 1;
+    }
+
+    let mut counts: Vec<KindCount> = counts
+        .into_iter()
+        .map(|(kind, count)| KindCount {
+            kind: kind.to_string(),
+            count,
+        })
+        .collect();
+    counts.sort_by(|a, b| a.kind.cmp(&b.kind));
+    counts
+}
+
+fn map_top_namespaces(graph: &DiGraph, nodes: &HashSet<NodeId>) -> Vec<NamespaceCount> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for node_id in nodes {
+        if let HandleKind::Label { prefix, .. } = &graph.node(*node_id).kind {
+            *counts.entry(prefix.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut namespaces: Vec<NamespaceCount> = counts
+        .into_iter()
+        .map(|(namespace, count)| NamespaceCount { namespace, count })
+        .collect();
+    namespaces.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.namespace.cmp(&b.namespace))
+    });
+    namespaces.truncate(10);
+    namespaces
+}
+
+fn build_map_node_entries(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    full: bool,
+    limit_nodes: usize,
+) -> (Vec<MapNodeEntry>, bool) {
+    let mut list: Vec<MapNodeEntry> = nodes
+        .iter()
+        .map(|node_id| {
+            let handle = graph.node(*node_id);
+            MapNodeEntry {
+                id: handle.id.clone(),
+                kind: handle.kind.as_str().to_string(),
+                status: handle.status.clone(),
+                file: handle.file_path.as_ref().map(ToString::to_string),
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| a.id.cmp(&b.id));
+    let truncated = !full && list.len() > limit_nodes;
+    if truncated {
+        list.truncate(limit_nodes);
+    }
+    (list, truncated)
+}
+
+fn build_map_edge_entries(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    full: bool,
+    limit_edges: usize,
+) -> (Vec<MapEdgeEntry>, bool) {
+    let mut list: Vec<MapEdgeEntry> = subgraph_edges(graph, nodes)
+        .into_iter()
+        .map(|(source, target, kind)| MapEdgeEntry {
+            source: graph.node(source).id.clone(),
+            target: graph.node(target).id.clone(),
+            kind: kind.to_string(),
+        })
+        .collect();
+    let truncated = !full && list.len() > limit_edges;
+    if truncated {
+        list.truncate(limit_edges);
+    }
+    (list, truncated)
+}
+
+/// Render or summarize the knowledge graph (CLI-05, KB-C5).
 pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
     let nodes = extract_subgraph(
         opts.graph,
@@ -1577,21 +2372,81 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
         opts.config,
     );
     let edge_count = subgraph_edges(opts.graph, &nodes).len();
+    let by_kind = map_kind_counts(opts.graph, &nodes);
+    let top_namespaces = map_top_namespaces(opts.graph, &nodes);
 
-    let content = match opts.format {
-        crate::MapFormat::Dot => render_dot(opts.graph, &nodes, opts.lattice),
-        crate::MapFormat::Text => render_text(opts.graph, &nodes),
+    let (node_list, nodes_truncated) = if opts.include_nodes {
+        let (list, truncated) =
+            build_map_node_entries(opts.graph, &nodes, opts.full, opts.limit_nodes);
+        (Some(list), truncated)
+    } else {
+        (None, false)
+    };
+
+    let (edge_list, edges_truncated) = if opts.include_edges {
+        let (list, truncated) =
+            build_map_edge_entries(opts.graph, &nodes, opts.full, opts.limit_edges);
+        (Some(list), truncated)
+    } else {
+        (None, false)
+    };
+
+    let rendered_content = match opts.render {
+        crate::MapRender::Summary => None,
+        crate::MapRender::Dot => Some(render_dot(opts.graph, &nodes, opts.lattice)),
+        crate::MapRender::Text => Some(render_text(opts.graph, &nodes)),
+    };
+
+    let expand = if opts.full {
+        Vec::new()
+    } else if opts.around.is_some() || opts.concern.is_some() {
+        vec![
+            "--nodes".to_string(),
+            "--edges".to_string(),
+            "--render text --full".to_string(),
+        ]
+    } else {
+        vec![
+            "--around <handle>".to_string(),
+            "--nodes".to_string(),
+            "--edges".to_string(),
+            "--render text --full".to_string(),
+        ]
     };
 
     MapOutput {
-        format: match opts.format {
-            crate::MapFormat::Text => "text",
-            crate::MapFormat::Dot => "dot",
+        meta: OutputMeta::new(
+            if opts.full {
+                DetailLevel::Full
+            } else if opts.render == crate::MapRender::Summary {
+                DetailLevel::Summary
+            } else {
+                DetailLevel::Sample
+            },
+            nodes_truncated || edges_truncated,
+            node_list
+                .as_ref()
+                .map(Vec::len)
+                .or(edge_list.as_ref().map(Vec::len)),
+            node_list
+                .as_ref()
+                .map(|_| nodes.len())
+                .or(edge_list.as_ref().map(|_| edge_count)),
+            expand,
+        ),
+        format: match opts.render {
+            crate::MapRender::Summary => "summary",
+            crate::MapRender::Text => "text",
+            crate::MapRender::Dot => "dot",
         }
         .to_string(),
         nodes: nodes.len(),
         edges: edge_count,
-        content,
+        by_kind,
+        top_namespaces,
+        node_list,
+        edge_list,
+        rendered_content,
     }
 }
 
@@ -2047,7 +2902,6 @@ mod tests {
                 ..CheckFilters::default()
             },
             &terminal_files,
-            Vec::new(),
         );
 
         assert_eq!(output.errors, 1);
@@ -2060,12 +2914,7 @@ mod tests {
         let diagnostics = vec![test_diag("E001", "active.md"), test_diag("E001", "done.md")];
         let terminal_files = HashSet::from([String::from("done.md")]);
 
-        let output = cmd_check(
-            diagnostics,
-            &CheckFilters::default(),
-            &terminal_files,
-            Vec::new(),
-        );
+        let output = cmd_check(diagnostics, &CheckFilters::default(), &terminal_files);
 
         assert_eq!(output.errors, 2);
         assert_eq!(output.terminal_errors, 1);
@@ -2089,14 +2938,49 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.contains("Files (1):"));
-        assert!(output.content.contains("doc.md"));
-        assert!(output.content.contains("Labels:"));
-        assert!(output.content.contains("OQ (1):"));
-        assert!(output.content.contains("OQ-1"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("Files (1):")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("doc.md")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("Labels:")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("OQ (1):")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("OQ-1")
+        );
         assert_eq!(output.nodes, 2);
     }
 
@@ -2118,14 +3002,31 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
         // File handles are always included per D-12 ("Include all File handles regardless of status")
         // But terminal labels/sections/versions ARE excluded
-        assert!(output.content.contains("active.md"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("active.md")
+        );
         // Files always included for structure
-        assert!(output.content.contains("settled.md"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("settled.md")
+        );
     }
 
     #[test]
@@ -2147,11 +3048,28 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.contains("OQ (2):"));
-        assert!(output.content.contains("FM (1):"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("OQ (2):")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("FM (1):")
+        );
     }
 
     #[test]
@@ -2171,10 +3089,21 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: crate::MapFormat::Dot,
+            render: crate::MapRender::Dot,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.starts_with("digraph anneal {"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .starts_with("digraph anneal {")
+        );
         assert!(output.format == "dot");
     }
 
@@ -2197,10 +3126,21 @@ mod tests {
             concern: None,
             around: None,
             depth: 2,
-            format: crate::MapFormat::Dot,
+            render: crate::MapRender::Dot,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.contains("\"a.md\" -> \"b.md\""));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("\"a.md\" -> \"b.md\"")
+        );
     }
 
     #[test]
@@ -2228,14 +3168,41 @@ mod tests {
             concern: None,
             around: Some("b.md"),
             depth: 1,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.contains("a.md"));
-        assert!(output.content.contains("b.md"));
-        assert!(output.content.contains("c.md"));
         assert!(
-            !output.content.contains("d.md"),
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("a.md")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("b.md")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("c.md")
+        );
+        assert!(
+            !output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("d.md"),
             "d.md should be beyond depth 1"
         );
         assert_eq!(output.nodes, 3);
@@ -2260,12 +3227,29 @@ mod tests {
             concern: None,
             around: Some("a.md"),
             depth: 0,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
         assert_eq!(output.nodes, 1);
-        assert!(output.content.contains("a.md"));
-        assert!(!output.content.contains("b.md"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("a.md")
+        );
+        assert!(
+            !output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("b.md")
+        );
     }
 
     #[test]
@@ -2291,11 +3275,28 @@ mod tests {
             concern: Some("questions"),
             around: None,
             depth: 2,
-            format: crate::MapFormat::Text,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
         });
 
-        assert!(output.content.contains("OQ-1"));
-        assert!(output.content.contains("OQ-2"));
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("OQ-1")
+        );
+        assert!(
+            output
+                .rendered_content
+                .as_deref()
+                .expect("rendered content")
+                .contains("OQ-2")
+        );
         // FM-1 may or may not be included (only if connected to OQ handles)
     }
 
@@ -2799,5 +3800,157 @@ mod tests {
             label_output.snippet.as_deref(),
             Some("Details: See OQ-64 here.")
         );
+    }
+
+    #[test]
+    fn check_json_default_is_summary_first() {
+        let diagnostics = vec![
+            test_diag("E001", "active.md"),
+            test_diag("E002", "active.md"),
+            test_diag("E002", "active.md"),
+        ];
+        let terminal_files = HashSet::new();
+        let output = cmd_check(diagnostics, &CheckFilters::default(), &terminal_files);
+        let extraction = crate::extraction::FileExtraction {
+            file: "active.md".into(),
+            status: Some("draft".into()),
+            metadata: crate::handle::HandleMetadata::default(),
+            refs: vec![],
+            all_keys: vec!["status".into()],
+        };
+
+        let json = build_check_json_output(
+            &output,
+            &[extraction],
+            &CheckJsonOptions {
+                include_diagnostics: false,
+                diagnostics_limit: 50,
+                include_extractions_summary: false,
+                include_full_extractions: false,
+                full: false,
+            },
+        );
+
+        assert!(matches!(json.meta.detail, DetailLevel::Summary));
+        assert!(json.diagnostics.is_none());
+        assert!(json.extractions.is_none());
+        assert_eq!(json.summary.total_diagnostics, 3);
+        assert_eq!(json.by_code.len(), 2);
+    }
+
+    #[test]
+    fn find_default_limit_truncates_results() {
+        let mut graph = DiGraph::new();
+        for number in 1..=30 {
+            graph.add_node(crate::handle::Handle {
+                id: format!("OQ-{number}"),
+                kind: HandleKind::Label {
+                    prefix: "OQ".into(),
+                    number,
+                },
+                status: Some("draft".into()),
+                file_path: Some("questions.md".into()),
+                metadata: crate::handle::HandleMetadata::default(),
+            });
+        }
+
+        let output = cmd_find(
+            &graph,
+            &empty_lattice(),
+            "",
+            &FindFilters {
+                status: Some("draft"),
+                ..FindFilters::default()
+            },
+        )
+        .expect("find output");
+
+        assert_eq!(output.total, 30);
+        assert_eq!(output.returned, 25);
+        assert!(output.meta.truncated);
+    }
+
+    #[test]
+    fn find_empty_query_requires_scope_or_full() {
+        let graph = DiGraph::new();
+        match cmd_find(&graph, &empty_lattice(), "", &FindFilters::default()) {
+            Ok(_) => panic!("empty query should fail"),
+            Err(err) => assert!(err.to_string().contains("empty query")),
+        }
+    }
+
+    #[test]
+    fn get_json_summary_caps_edges() {
+        let mut graph = DiGraph::new();
+        let center = graph.add_node(make_file_handle("center.md"));
+        for idx in 0..15 {
+            let source = graph.add_node(make_file_handle(&format!("source-{idx}.md")));
+            let target = graph.add_node(make_file_handle(&format!("target-{idx}.md")));
+            graph.add_edge(source, center, EdgeKind::Cites);
+            graph.add_edge(center, target, EdgeKind::DependsOn);
+        }
+
+        let node_index = test_node_index(&graph);
+        let data = cmd_get(
+            &graph,
+            &node_index,
+            &HashMap::new(),
+            &HashMap::new(),
+            "center.md",
+        )
+        .expect("get output");
+        let json = build_get_json_output(
+            &data,
+            &GetJsonOptions {
+                refs: false,
+                context: false,
+                trace: false,
+                full: false,
+                limit_edges: 10,
+            },
+        );
+
+        assert!(json.truncated_edges);
+        assert_eq!(json.edge_counts.incoming, 15);
+        assert_eq!(json.edge_counts.outgoing, 15);
+        assert_eq!(json.sample_incoming.len(), 10);
+        assert_eq!(json.sample_outgoing.len(), 10);
+        assert!(json.incoming_edges.is_none());
+    }
+
+    #[test]
+    fn map_summary_omits_rendered_content() {
+        let mut graph = DiGraph::new();
+        graph.add_node(make_file_handle("doc.md"));
+        graph.add_node(make_label_handle("OQ", 1));
+
+        let output = cmd_map(&MapOptions {
+            graph: &graph,
+            node_index: &test_node_index(&graph),
+            lattice: &empty_lattice(),
+            config: &AnnealConfig::default(),
+            concern: None,
+            around: None,
+            depth: 1,
+            render: crate::MapRender::Summary,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
+        });
+
+        assert_eq!(output.format, "summary");
+        assert!(output.rendered_content.is_none());
+        assert!(!output.by_kind.is_empty());
+    }
+
+    #[test]
+    fn status_compact_json_keeps_core_counts() {
+        let compact = make_status_output_basic().compact_json();
+        assert_eq!(compact.files, 265);
+        assert_eq!(compact.handles, 487);
+        assert_eq!(compact.suggestion_total, 2);
+        assert!(matches!(compact.meta.detail, DetailLevel::Summary));
     }
 }
