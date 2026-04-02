@@ -20,10 +20,6 @@ SUPPORTED_RELEASE_TARGETS=(
     "x86_64-unknown-linux-gnu"
     "aarch64-unknown-linux-gnu"
 )
-SKILL_FILES=(
-    "SKILL.md"
-    "agents/openai.yaml"
-)
 
 info()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
 error() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -160,7 +156,7 @@ fi
 # Download and extract
 URL="https://github.com/$REPO/releases/download/$TAG/anneal-$TARGET.tar.gz"
 DEST="$INSTALL_DIR/anneal"
-SKILL_BASE_URL="https://raw.githubusercontent.com/$REPO/$TAG/skills/anneal"
+SOURCE_URL="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
 
 info "Install plan"
 printf '  release: %s\n' "$TAG"
@@ -168,6 +164,7 @@ printf '  target:  %s\n' "$TARGET"
 printf '  url:     %s\n' "$URL"
 printf '  dest:    %s\n' "$DEST"
 if [ "${#SKILL_TARGETS[@]}" -gt 0 ]; then
+    printf '  source:  %s\n' "$SOURCE_URL"
     printf '  skills:\n'
     for skill_target in "${SKILL_TARGETS[@]}"; do
         printf '    - %s\n' "$skill_target"
@@ -192,9 +189,27 @@ chmod +x "$DEST"
 
 info "Installed to $DEST"
 
+stage_skill_bundle() {
+    local source_archive="$TMPDIR/source.tar.gz"
+    local source_dir="$TMPDIR/source"
+    local bundle_dir="$TMPDIR/skill"
+    local found_dir
+
+    rm -rf "$source_dir" "$bundle_dir"
+    mkdir -p "$source_dir"
+
+    curl -fsSL "$SOURCE_URL" -o "$source_archive" || error "Failed to download source archive for skill bundle"
+    tar xzf "$source_archive" -C "$source_dir" || error "Failed to extract source archive for skill bundle"
+
+    found_dir=$(find "$source_dir" -type d -path '*/skills/anneal' | head -n1)
+    [ -n "$found_dir" ] || error "Failed to locate skills/anneal in source archive"
+
+    mkdir -p "$bundle_dir"
+    cp -R "$found_dir/." "$bundle_dir/"
+}
+
 install_skill() {
     local target="$1"
-    local tmp_skill_dir="$TMPDIR/skill"
 
     case "$target" in
         "")
@@ -206,19 +221,15 @@ install_skill() {
         error "Skill target exists and is not a directory: $target"
     fi
 
-    rm -rf "$tmp_skill_dir"
-    mkdir -p "$tmp_skill_dir"
-
-    for skill_file in "${SKILL_FILES[@]}"; do
-        mkdir -p "$tmp_skill_dir/$(dirname "$skill_file")"
-        curl -fsSL "$SKILL_BASE_URL/$skill_file" -o "$tmp_skill_dir/$skill_file" \
-            || error "Failed to download skill file: $skill_file"
-    done
-
+    rm -rf "$target"
     mkdir -p "$target"
-    cp -R "$tmp_skill_dir/." "$target/"
+    cp -R "$TMPDIR/skill/." "$target/"
     info "Installed anneal skill to $target"
 }
+
+if [ "${#SKILL_TARGETS[@]}" -gt 0 ]; then
+    stage_skill_bundle
+fi
 
 for skill_target in "${SKILL_TARGETS[@]}"; do
     install_skill "$skill_target"

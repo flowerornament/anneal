@@ -34,8 +34,7 @@ jobs:
           tmpdir="$(mktemp -d)"
           INSTALL_DIR="$tmpdir/bin" bash install.sh --skill-target "$tmpdir/skills/anneal"
           "$tmpdir/bin/anneal" --version
-          test -f "$tmpdir/skills/anneal/SKILL.md"
-          test -f "$tmpdir/skills/anneal/agents/openai.yaml"
+          diff -ru skills/anneal "$tmpdir/skills/anneal"
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
