@@ -2,6 +2,16 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.4.3 - 2026-04-02
+
+### Changed
+
+- Made `install.sh --skill-target` stage the bundled skill once per install and fan it out to each requested target instead of re-downloading the same bundle for every target.
+
+### Fixed
+
+- Made installer smoke coverage compare the installed skill directory against the bundled `skills/anneal` tree, removing duplicated file-list assumptions from CI.
+
 ## 0.4.2 - 2026-04-02
 
 ### Added
