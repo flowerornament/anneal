@@ -128,6 +128,11 @@ Available module options:
 This only manages machine-local anneal user config. Repo-owned corpus behavior
 still lives in `anneal.toml`.
 
+If you already use Home Manager through nix-darwin, add the exported module to
+`home-manager.sharedModules` (or otherwise make it available in your shared
+Home Manager module set), then enable `programs.anneal` in the user config that
+owns your shell environment.
+
 ## Quick start
 
 ```bash

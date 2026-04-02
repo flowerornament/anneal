@@ -2,6 +2,24 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.4.0 - 2026-04-02
+
+### Added
+
+- Added an exported Home Manager module so Nix users can install `anneal` and manage its XDG user config declaratively.
+- Added smoke coverage for the Home Manager integration path, including CI coverage and a repo-local smoke test helper.
+
+### Changed
+
+- Redesigned `check`, `find`, `get`, and `map` around progressive disclosure so risky JSON output is bounded by default and expands explicitly.
+- Polished human progressive-disclosure output on hub handles so `get --context` is easier to scan and `map --around` summarizes large neighborhoods instead of dumping them by default.
+- Clarified README installation guidance for Nix profile installs versus Home Manager-managed configuration.
+
+### Fixed
+
+- Removed self-corpus check noise caused by absolute repo-local references in redesign docs.
+- Fixed the Home Manager module so it works in a real Home Manager / nix-darwin configuration without recursive module evaluation.
+
 ## 0.3.1 - 2026-03-31
 
 ### Changed
