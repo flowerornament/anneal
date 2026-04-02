@@ -2,12 +2,25 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.4.2 - 2026-04-02
+
+### Added
+
+- Added optional `install.sh --skill-target ...` support so the curl installer can populate one or more agent skill directories with the bundled anneal skill.
+
+### Changed
+
+- Clarified README installer guidance so binary-only installs and installer-managed skill targets are documented together.
+
+### Fixed
+
+- Added installer smoke coverage for bundled skill installation so the curl install path and documented skill targets stay verified together.
+
 ## 0.4.1 - 2026-04-02
 
 ### Added
 
 - Added optional Home Manager skill installation so anneal can declaratively link its bundled skill into agent-specific locations such as `.agents/skills/anneal` and `.codex/skills/anneal`.
-- Added optional `install.sh --skill-target ...` support so the curl installer can populate one or more agent skill directories with the bundled anneal skill.
 
 ### Changed
 
@@ -18,7 +31,6 @@ All notable changes to `anneal` are documented in this file.
 
 - Fixed the Home Manager smoke test to match anneal's text-based config emission and keep CI green after the config output refactor.
 - Updated GitHub Actions checkout steps to `actions/checkout@v5`, removing the Node 20 deprecation warning from CI.
-- Added installer smoke coverage for bundled skill installation so the curl install path and documented skill targets stay verified together.
 
 ## 0.4.0 - 2026-04-02
 
