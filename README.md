@@ -37,7 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/instal
 The installer is the primary path for prebuilt binaries. It installs to `~/.local/bin` by default, prints the exact target / URL / destination before it writes anything, fails fast on unsupported targets, and stays aligned with the published release matrix.
 
 By default it installs only the binary. To also install the bundled anneal
-skill, pass one or more explicit skill targets.
+skill, pass one or more explicit skill targets. Each target is a directory path
+that anneal will populate with the bundled skill files.
 
 Common variations:
 
