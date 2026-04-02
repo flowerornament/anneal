@@ -82,6 +82,52 @@ anneal = {
 };
 ```
 
+This installs the binary only. `anneal` keeps the same runtime config layout no
+matter how it was installed:
+
+- repo config: `anneal.toml` at the corpus root
+- user config: `$XDG_CONFIG_HOME/anneal/config.toml`
+- derived history: `$XDG_STATE_HOME/anneal/...`
+
+### Nix + Home Manager
+
+For a declarative Nix-native setup, use the exported Home Manager module. It
+installs `anneal` and writes the same XDG user config that non-Nix setups use.
+
+Add the flake input:
+
+```nix
+anneal = {
+  url = "github:flowerornament/anneal";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Then include the module in your Home Manager configuration:
+
+```nix
+{
+  imports = [
+    inputs.anneal.homeManagerModules.default
+  ];
+
+  programs.anneal = {
+    enable = true;
+    settings.state.historyDir = config.xdg.stateHome;
+  };
+}
+```
+
+Available module options:
+
+- `programs.anneal.enable`
+- `programs.anneal.package`
+- `programs.anneal.settings.state.historyMode`
+- `programs.anneal.settings.state.historyDir`
+
+This only manages machine-local anneal user config. Repo-owned corpus behavior
+still lives in `anneal.toml`.
+
 ## Quick start
 
 ```bash
@@ -397,6 +443,10 @@ history_dir = "/Users/alice/.local/state"
 ```
 
 Important boundary: repo config can choose whether history is machine-local, repo-local, or disabled, but it cannot choose an arbitrary machine-local path. Only user config can override `history_dir`.
+
+For Nix users, the Home Manager module writes this same user config file
+declaratively. It does not introduce a separate anneal-specific config path or
+runtime mode.
 
 ## Diagnostic reference
 
