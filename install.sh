@@ -14,10 +14,15 @@ REPO="flowerornament/anneal"
 INSTALL_DIR="${INSTALL_DIR:-${BIN_DIR:-$HOME/.local/bin}}"
 REQUESTED_TAG=""
 DRY_RUN=false
+SKILL_TARGETS=()
 SUPPORTED_RELEASE_TARGETS=(
     "aarch64-apple-darwin"
     "x86_64-unknown-linux-gnu"
     "aarch64-unknown-linux-gnu"
+)
+SKILL_FILES=(
+    "SKILL.md"
+    "agents/openai.yaml"
 )
 
 info()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
@@ -33,6 +38,7 @@ Usage:
 Options:
   --install-dir PATH   Install to PATH instead of ~/.local/bin
   --tag TAG            Install a specific release tag (for example v0.3.0)
+  --skill-target PATH  Install the bundled anneal skill to PATH; repeatable
   --print-target       Print the detected release target and exit
   --dry-run            Print the install plan without downloading or writing
   -h, --help           Show this help
@@ -45,6 +51,7 @@ Examples:
   curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash
   curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | INSTALL_DIR="$HOME/bin" bash
   curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --install-dir "$HOME/bin"
+  curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --skill-target "$HOME/.agents/skills/anneal"
   curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --dry-run
 EOF
 }
@@ -72,6 +79,11 @@ while [ "$#" -gt 0 ]; do
         --tag)
             [ "$#" -ge 2 ] || error "--tag requires a value"
             REQUESTED_TAG="$2"
+            shift 2
+            ;;
+        --skill-target)
+            [ "$#" -ge 2 ] || error "--skill-target requires a path"
+            SKILL_TARGETS+=("$2")
             shift 2
             ;;
         --print-target)
@@ -148,12 +160,19 @@ fi
 # Download and extract
 URL="https://github.com/$REPO/releases/download/$TAG/anneal-$TARGET.tar.gz"
 DEST="$INSTALL_DIR/anneal"
+SKILL_BASE_URL="https://raw.githubusercontent.com/$REPO/$TAG/skills/anneal"
 
 info "Install plan"
 printf '  release: %s\n' "$TAG"
 printf '  target:  %s\n' "$TARGET"
 printf '  url:     %s\n' "$URL"
 printf '  dest:    %s\n' "$DEST"
+if [ "${#SKILL_TARGETS[@]}" -gt 0 ]; then
+    printf '  skills:\n'
+    for skill_target in "${SKILL_TARGETS[@]}"; do
+        printf '    - %s\n' "$skill_target"
+    done
+fi
 
 if [ "$DRY_RUN" = true ]; then
     info "Dry run complete. No changes made."
@@ -172,6 +191,38 @@ mv "$TMPDIR/anneal" "$DEST"
 chmod +x "$DEST"
 
 info "Installed to $DEST"
+
+install_skill() {
+    local target="$1"
+    local tmp_skill_dir="$TMPDIR/skill"
+
+    case "$target" in
+        "")
+            error "Skill target must not be empty"
+            ;;
+    esac
+
+    if [ -e "$target" ] && [ ! -d "$target" ]; then
+        error "Skill target exists and is not a directory: $target"
+    fi
+
+    rm -rf "$tmp_skill_dir"
+    mkdir -p "$tmp_skill_dir"
+
+    for skill_file in "${SKILL_FILES[@]}"; do
+        mkdir -p "$tmp_skill_dir/$(dirname "$skill_file")"
+        curl -fsSL "$SKILL_BASE_URL/$skill_file" -o "$tmp_skill_dir/$skill_file" \
+            || error "Failed to download skill file: $skill_file"
+    done
+
+    mkdir -p "$target"
+    cp -R "$tmp_skill_dir/." "$target/"
+    info "Installed anneal skill to $target"
+}
+
+for skill_target in "${SKILL_TARGETS[@]}"; do
+    install_skill "$skill_target"
+done
 
 # Check PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
