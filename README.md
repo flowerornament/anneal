@@ -36,6 +36,9 @@ curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/instal
 
 The installer is the primary path for prebuilt binaries. It installs to `~/.local/bin` by default, prints the exact target / URL / destination before it writes anything, fails fast on unsupported targets, and stays aligned with the published release matrix.
 
+By default it installs only the binary. To also install the bundled anneal
+skill, pass one or more explicit skill targets.
+
 Common variations:
 
 ```bash
@@ -47,6 +50,11 @@ curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/instal
 
 # Preview what would happen without writing anything
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --dry-run
+
+# Install the bundled skill into agent-managed locations
+curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- \
+  --skill-target "$HOME/.agents/skills/anneal" \
+  --skill-target "$HOME/.codex/skills/anneal"
 ```
 
 Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
@@ -82,8 +90,9 @@ anneal = {
 };
 ```
 
-This installs the binary only. `anneal` keeps the same runtime config layout no
-matter how it was installed:
+This installs the binary only unless you additionally wire skill installation
+yourself. `anneal` keeps the same runtime config layout no matter how it was
+installed:
 
 - repo config: `anneal.toml` at the corpus root
 - user config: `$XDG_CONFIG_HOME/anneal/config.toml`

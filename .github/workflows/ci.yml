@@ -32,8 +32,10 @@ jobs:
       - name: Installer smoke test
         run: |
           tmpdir="$(mktemp -d)"
-          INSTALL_DIR="$tmpdir" bash install.sh
-          "$tmpdir/anneal" --version
+          INSTALL_DIR="$tmpdir/bin" bash install.sh --skill-target "$tmpdir/skills/anneal"
+          "$tmpdir/bin/anneal" --version
+          test -f "$tmpdir/skills/anneal/SKILL.md"
+          test -f "$tmpdir/skills/anneal/agents/openai.yaml"
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
