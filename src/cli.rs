@@ -533,11 +533,7 @@ pub(crate) struct GetHumanOutput {
 impl GetHumanOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         if self.context {
-            let briefing = build_get_briefing(&self.data, self.limit_edges);
-            if !briefing.is_empty() {
-                writeln!(w, "{briefing}")?;
-                return Ok(());
-            }
+            return print_get_context_human(&self.data, self.limit_edges, w);
         }
 
         let output = GetJsonOutput::summary(&self.data, self.limit_edges);
@@ -756,6 +752,85 @@ fn build_get_briefing(data: &GetData, limit_edges: usize) -> String {
     }
 
     parts.join(". ")
+}
+
+fn print_get_context_human(
+    data: &GetData,
+    limit_edges: usize,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "{} ({})", data.id, data.kind)?;
+    if let Some(status) = &data.status {
+        writeln!(w, "  Status: {status}")?;
+    }
+    if let Some(file) = &data.file {
+        writeln!(w, "  File: {file}")?;
+    }
+
+    if let Some(snippet) = &data.snippet {
+        writeln!(w)?;
+        writeln!(w, "Context:")?;
+        writeln!(w, "  {snippet}")?;
+    }
+
+    writeln!(w)?;
+    writeln!(w, "Refs:")?;
+
+    if data.outgoing_edges.is_empty() {
+        writeln!(w, "  Outgoing: none")?;
+    } else {
+        let shown = data.outgoing_edges.len().min(limit_edges);
+        writeln!(
+            w,
+            "  Outgoing (showing {shown} of {}):",
+            data.outgoing_edges.len()
+        )?;
+        for edge in data.outgoing_edges.iter().take(limit_edges) {
+            writeln!(w, "    {} -> {}", edge.kind, edge.target)?;
+        }
+        if data.outgoing_edges.len() > limit_edges {
+            writeln!(
+                w,
+                "    ... and {} more",
+                data.outgoing_edges.len() - limit_edges
+            )?;
+        }
+    }
+
+    if data.incoming_edges.is_empty() {
+        writeln!(w, "  Incoming: none")?;
+    } else {
+        let shown = data.incoming_edges.len().min(limit_edges);
+        writeln!(
+            w,
+            "  Incoming (showing {shown} of {}):",
+            data.incoming_edges.len()
+        )?;
+        for edge in data.incoming_edges.iter().take(limit_edges) {
+            writeln!(w, "    {} <- {}", edge.kind, edge.target)?;
+        }
+        if data.incoming_edges.len() > limit_edges {
+            writeln!(
+                w,
+                "    ... and {} more",
+                data.incoming_edges.len() - limit_edges
+            )?;
+        }
+    }
+
+    let mut expand = vec![
+        format!(
+            "anneal get {} --refs --limit-edges {}",
+            data.id,
+            limit_edges * 2
+        ),
+        format!("anneal get {} --trace", data.id),
+    ];
+    if data.outgoing_edges.len() > limit_edges || data.incoming_edges.len() > limit_edges {
+        expand.push(format!("anneal get {} --full", data.id));
+    }
+    writeln!(w)?;
+    writeln!(w, "Expand with: {}", expand.join(", "))
 }
 
 /// Resolve a handle by identity string and build output.
@@ -1921,6 +1996,10 @@ impl MapOutput {
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
             write!(w, "{content}")?;
+            if !self.meta.expand.is_empty() {
+                writeln!(w)?;
+                writeln!(w, "Expand with: {}", self.meta.expand.join(", "))?;
+            }
             return Ok(());
         }
 
@@ -1951,6 +2030,25 @@ impl MapOutput {
 
 /// Maximum number of edges to display in map text rendering.
 const MAP_EDGE_DISPLAY_LIMIT: usize = 50;
+/// Edge count above which a focused neighborhood is treated as a hub summary.
+const MAP_HUB_EDGE_THRESHOLD: usize = 50;
+/// Label count above which a focused neighborhood is treated as a hub summary.
+const MAP_HUB_LABEL_THRESHOLD: usize = 40;
+/// Maximum namespaces to show in a hub summary.
+const MAP_HUB_NAMESPACE_DISPLAY_LIMIT: usize = 8;
+/// Maximum labels to sample per namespace in a hub summary.
+const MAP_HUB_LABEL_SAMPLE_LIMIT: usize = 5;
+/// Maximum focus-handle edges to sample per direction in a hub summary.
+const MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT: usize = 10;
+/// Maximum non-focus neighborhood edges to sample in a hub summary.
+const MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT: usize = 12;
+/// Maximum files to show in a hub summary.
+const MAP_HUB_FILE_DISPLAY_LIMIT: usize = 8;
+
+struct TextRenderOutput {
+    content: String,
+    truncated: bool,
+}
 
 /// Extract the subgraph of `NodeId`s to render, based on filters.
 ///
@@ -2061,11 +2159,32 @@ fn subgraph_edges<'a>(
     seen
 }
 
+fn format_handle_with_status(handle: &Handle) -> String {
+    let status_str = handle
+        .status
+        .as_deref()
+        .map_or(String::new(), |status| format!(" [{status}]"));
+    format!("{}{}", handle.id, status_str)
+}
+
+fn format_edge_line(graph: &DiGraph, source: NodeId, target: NodeId, kind: &str) -> String {
+    format!(
+        "  {} -{}-> {}",
+        graph.node(source).id,
+        kind,
+        graph.node(target).id
+    )
+}
+
 /// Render the subgraph as grouped text (D-12, D-14).
 ///
 /// Groups handles by kind, then by namespace for Labels. Edges are listed
-/// separately with deduplication and a display limit.
-fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
+/// separately with deduplication and an optional display limit.
+fn render_text_full(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    edge_display_limit: Option<usize>,
+) -> TextRenderOutput {
     use std::fmt::Write as FmtWrite;
     let mut out = String::new();
 
@@ -2102,11 +2221,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     if !files.is_empty() {
         let _ = writeln!(out, "Files ({}):", files.len());
         for (_, h) in &files {
-            let status_str = h
-                .status
-                .as_deref()
-                .map_or(String::new(), |s| format!(" [{s}]"));
-            let _ = writeln!(out, "  {}{status_str}", h.id);
+            let _ = writeln!(out, "  {}", format_handle_with_status(h));
         }
         let _ = writeln!(out);
     }
@@ -2122,11 +2237,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
             sorted_items.sort_by(|a, b| a.1.id.cmp(&b.1.id));
             let _ = writeln!(out, "  {ns} ({}):", sorted_items.len());
             for (_, h) in sorted_items {
-                let status_str = h
-                    .status
-                    .as_deref()
-                    .map_or(String::new(), |s| format!(" [{s}]"));
-                let _ = writeln!(out, "    {}{status_str}", h.id);
+                let _ = writeln!(out, "    {}", format_handle_with_status(h));
             }
         }
         let _ = writeln!(out);
@@ -2145,11 +2256,7 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     if !versions.is_empty() {
         let _ = writeln!(out, "Versions ({}):", versions.len());
         for (_, h) in &versions {
-            let status_str = h
-                .status
-                .as_deref()
-                .map_or(String::new(), |s| format!(" [{s}]"));
-            let _ = writeln!(out, "  {}{status_str}", h.id);
+            let _ = writeln!(out, "  {}", format_handle_with_status(h));
         }
         let _ = writeln!(out);
     }
@@ -2166,29 +2273,258 @@ fn render_text(graph: &DiGraph, nodes: &HashSet<NodeId>) -> String {
     // Edges within the subgraph
     let edge_lines: Vec<String> = subgraph_edges(graph, nodes)
         .iter()
-        .map(|&(src, tgt, kind)| {
-            format!(
-                "  {} -{}-> {}",
-                graph.node(src).id,
-                kind,
-                graph.node(tgt).id
-            )
-        })
+        .map(|&(src, tgt, kind)| format_edge_line(graph, src, tgt, kind))
         .collect();
 
+    let mut truncated = false;
     if !edge_lines.is_empty() {
         let total = edge_lines.len();
         let _ = writeln!(out, "Edges ({total}):");
-        for line in edge_lines.iter().take(MAP_EDGE_DISPLAY_LIMIT) {
+        let display_limit = edge_display_limit.unwrap_or(total);
+        for line in edge_lines.iter().take(display_limit) {
             let _ = writeln!(out, "{line}");
         }
-        if total > MAP_EDGE_DISPLAY_LIMIT {
-            let _ = writeln!(out, "  ... and {} more", total - MAP_EDGE_DISPLAY_LIMIT);
+        if total > display_limit {
+            truncated = true;
+            let _ = writeln!(out, "  ... and {} more", total - display_limit);
         }
         let _ = writeln!(out);
     }
 
-    out
+    TextRenderOutput {
+        content: out,
+        truncated,
+    }
+}
+
+fn render_text_hub_summary(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    focus: NodeId,
+    depth: u32,
+) -> TextRenderOutput {
+    use std::fmt::Write as FmtWrite;
+
+    let mut out = String::new();
+    let focus_handle = graph.node(focus);
+    let edge_set = subgraph_edges(graph, nodes);
+    let edge_count = edge_set.len();
+
+    let mut files: Vec<&Handle> = Vec::new();
+    let mut labels_by_ns: HashMap<String, Vec<&Handle>> = HashMap::new();
+    let mut sections_count = 0usize;
+    let mut versions_count = 0usize;
+    let mut externals_count = 0usize;
+
+    for &node_id in nodes {
+        let handle = graph.node(node_id);
+        match &handle.kind {
+            HandleKind::File(_) => files.push(handle),
+            HandleKind::Label { prefix, .. } => {
+                labels_by_ns.entry(prefix.clone()).or_default().push(handle);
+            }
+            HandleKind::Section { .. } => sections_count += 1,
+            HandleKind::Version { .. } => versions_count += 1,
+            HandleKind::External { .. } => externals_count += 1,
+        }
+    }
+
+    files.sort_by(|a, b| a.id.cmp(&b.id));
+    let label_count: usize = labels_by_ns.values().map(Vec::len).sum();
+
+    let _ = writeln!(
+        out,
+        "Neighborhood around {} (depth {}):",
+        focus_handle.id, depth
+    );
+    let _ = writeln!(out, "  {} nodes, {} edges", nodes.len(), edge_count);
+    let _ = writeln!(
+        out,
+        "  {} files, {} labels across {} namespaces",
+        files.len(),
+        label_count,
+        labels_by_ns.len()
+    );
+
+    let mut other_handle_counts = Vec::new();
+    if sections_count > 0 {
+        other_handle_counts.push(format!("{sections_count} sections"));
+    }
+    if versions_count > 0 {
+        other_handle_counts.push(format!("{versions_count} versions"));
+    }
+    if externals_count > 0 {
+        other_handle_counts.push(format!("{externals_count} external URLs"));
+    }
+    if !other_handle_counts.is_empty() {
+        let _ = writeln!(out, "  Other handles: {}", other_handle_counts.join(", "));
+    }
+    let _ = writeln!(out);
+
+    if !files.is_empty() {
+        let shown = files.len().min(MAP_HUB_FILE_DISPLAY_LIMIT);
+        let _ = writeln!(out, "Files (showing {shown} of {}):", files.len());
+        for handle in files.iter().take(MAP_HUB_FILE_DISPLAY_LIMIT) {
+            let _ = writeln!(out, "  {}", format_handle_with_status(handle));
+        }
+        if files.len() > MAP_HUB_FILE_DISPLAY_LIMIT {
+            let _ = writeln!(
+                out,
+                "  ... and {} more files",
+                files.len() - MAP_HUB_FILE_DISPLAY_LIMIT
+            );
+        }
+        let _ = writeln!(out);
+    }
+
+    if !labels_by_ns.is_empty() {
+        let mut namespaces: Vec<(String, Vec<&Handle>)> = labels_by_ns.into_iter().collect();
+        namespaces.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+        let total_namespaces = namespaces.len();
+        let shown = total_namespaces.min(MAP_HUB_NAMESPACE_DISPLAY_LIMIT);
+        let _ = writeln!(out, "Namespaces (showing {shown} of {total_namespaces}):");
+        for (namespace, mut handles) in namespaces.into_iter().take(MAP_HUB_NAMESPACE_DISPLAY_LIMIT)
+        {
+            handles.sort_by(|a, b| a.id.cmp(&b.id));
+            let sample: Vec<&str> = handles
+                .iter()
+                .take(MAP_HUB_LABEL_SAMPLE_LIMIT)
+                .map(|handle| handle.id.as_str())
+                .collect();
+            let suffix = if handles.len() > sample.len() {
+                format!(", ... and {} more", handles.len() - sample.len())
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                out,
+                "  {namespace} ({}): {}{suffix}",
+                handles.len(),
+                sample.join(", ")
+            );
+        }
+        if shown < total_namespaces {
+            let _ = writeln!(
+                out,
+                "  ... and {} more namespaces",
+                total_namespaces - shown
+            );
+        }
+        let _ = writeln!(out);
+    }
+
+    let mut outgoing_edges: Vec<(String, String)> = edge_set
+        .iter()
+        .filter(|(source, _, _)| *source == focus)
+        .map(|(_, target, kind)| (kind.to_string(), graph.node(*target).id.clone()))
+        .collect();
+    outgoing_edges.sort();
+
+    let mut incoming_edges: Vec<(String, String)> = edge_set
+        .iter()
+        .filter(|(_, target, _)| *target == focus)
+        .map(|(source, _, kind)| (kind.to_string(), graph.node(*source).id.clone()))
+        .collect();
+    incoming_edges.sort();
+
+    let _ = writeln!(out, "Focus edges for {}:", focus_handle.id);
+    if outgoing_edges.is_empty() {
+        let _ = writeln!(out, "  Outgoing: none");
+    } else {
+        let shown = outgoing_edges.len().min(MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT);
+        let _ = writeln!(
+            out,
+            "  Outgoing (showing {shown} of {}):",
+            outgoing_edges.len()
+        );
+        for (kind, target) in outgoing_edges.iter().take(MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT) {
+            let _ = writeln!(out, "    {kind} -> {target}");
+        }
+        if outgoing_edges.len() > MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT {
+            let _ = writeln!(
+                out,
+                "    ... and {} more",
+                outgoing_edges.len() - MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT
+            );
+        }
+    }
+    if incoming_edges.is_empty() {
+        let _ = writeln!(out, "  Incoming: none");
+    } else {
+        let shown = incoming_edges.len().min(MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT);
+        let _ = writeln!(
+            out,
+            "  Incoming (showing {shown} of {}):",
+            incoming_edges.len()
+        );
+        for (kind, source) in incoming_edges.iter().take(MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT) {
+            let _ = writeln!(out, "    {kind} <- {source}");
+        }
+        if incoming_edges.len() > MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT {
+            let _ = writeln!(
+                out,
+                "    ... and {} more",
+                incoming_edges.len() - MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT
+            );
+        }
+    }
+    let _ = writeln!(out);
+
+    let other_edges: Vec<String> = edge_set
+        .iter()
+        .filter(|(source, target, _)| *source != focus && *target != focus)
+        .map(|&(source, target, kind)| format_edge_line(graph, source, target, kind))
+        .collect();
+    if !other_edges.is_empty() {
+        let shown = other_edges.len().min(MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT);
+        let _ = writeln!(
+            out,
+            "Other neighborhood edges (showing {shown} of {}):",
+            other_edges.len()
+        );
+        for line in other_edges.iter().take(MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT) {
+            let _ = writeln!(out, "{line}");
+        }
+        if other_edges.len() > MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT {
+            let _ = writeln!(
+                out,
+                "  ... and {} more",
+                other_edges.len() - MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT
+            );
+        }
+        let _ = writeln!(out);
+    }
+
+    TextRenderOutput {
+        content: out,
+        truncated: true,
+    }
+}
+
+fn render_text(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    focus: Option<NodeId>,
+    depth: u32,
+    full: bool,
+) -> TextRenderOutput {
+    if full {
+        return render_text_full(graph, nodes, None);
+    }
+
+    let edge_count = subgraph_edges(graph, nodes).len();
+    let label_count = nodes
+        .iter()
+        .filter(|node_id| matches!(graph.node(**node_id).kind, HandleKind::Label { .. }))
+        .count();
+
+    if let Some(focus) = focus
+        && (edge_count > MAP_HUB_EDGE_THRESHOLD || label_count > MAP_HUB_LABEL_THRESHOLD)
+    {
+        return render_text_hub_summary(graph, nodes, focus, depth);
+    }
+
+    render_text_full(graph, nodes, Some(MAP_EDGE_DISPLAY_LIMIT))
 }
 
 /// Escape a string for use as a DOT identifier.
@@ -2390,10 +2726,22 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
         (None, false)
     };
 
+    let mut rendered_truncated = false;
     let rendered_content = match opts.render {
         crate::MapRender::Summary => None,
         crate::MapRender::Dot => Some(render_dot(opts.graph, &nodes, opts.lattice)),
-        crate::MapRender::Text => Some(render_text(opts.graph, &nodes)),
+        crate::MapRender::Text => {
+            let rendered = render_text(
+                opts.graph,
+                &nodes,
+                opts.around
+                    .and_then(|handle| lookup_handle(opts.node_index, handle)),
+                opts.depth,
+                opts.full,
+            );
+            rendered_truncated = rendered.truncated;
+            Some(rendered.content)
+        }
     };
 
     let expand = if opts.full {
@@ -2422,7 +2770,7 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
             } else {
                 DetailLevel::Sample
             },
-            nodes_truncated || edges_truncated,
+            nodes_truncated || edges_truncated || rendered_truncated,
             node_list
                 .as_ref()
                 .map(Vec::len)
@@ -3915,6 +4263,52 @@ mod tests {
     }
 
     #[test]
+    fn get_context_human_is_multiline_and_scannable() {
+        let output = GetHumanOutput {
+            data: GetData {
+                id: "LABELS.md".into(),
+                kind: "file".into(),
+                status: Some("living".into()),
+                file: Some("LABELS.md".into()),
+                outgoing_edges: vec![
+                    EdgeSummary {
+                        kind: "Cites".into(),
+                        target: "OQ-1".into(),
+                        direction: "outgoing".into(),
+                    },
+                    EdgeSummary {
+                        kind: "Cites".into(),
+                        target: "OQ-2".into(),
+                        direction: "outgoing".into(),
+                    },
+                ],
+                incoming_edges: vec![EdgeSummary {
+                    kind: "DependsOn".into(),
+                    target: "synthesis.md".into(),
+                    direction: "incoming".into(),
+                }],
+                snippet: Some("Label index for the corpus.".into()),
+            },
+            limit_edges: 1,
+            context: true,
+        };
+
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+
+        assert!(text.contains("Context:\n  Label index for the corpus."));
+        assert!(text.contains("Refs:\n  Outgoing (showing 1 of 2):"));
+        assert!(text.contains("    Cites -> OQ-1"));
+        assert!(text.contains("  Incoming (showing 1 of 1):"));
+        assert!(text.contains("Expand with: anneal get LABELS.md --refs --limit-edges 2"));
+        assert!(
+            !text.contains("LABELS.md is a file."),
+            "context output should no longer be a single stitched sentence: {text}"
+        );
+    }
+
+    #[test]
     fn map_summary_omits_rendered_content() {
         let mut graph = DiGraph::new();
         graph.add_node(make_file_handle("doc.md"));
@@ -3939,6 +4333,92 @@ mod tests {
         assert_eq!(output.format, "summary");
         assert!(output.rendered_content.is_none());
         assert!(!output.by_kind.is_empty());
+    }
+
+    #[test]
+    fn map_text_full_shows_all_edges() {
+        let mut graph = DiGraph::new();
+        let center = graph.add_node(make_file_handle("center.md"));
+        for number in 1..=60 {
+            let target = graph.add_node(make_label_handle("OQ", number));
+            graph.add_edge(center, target, EdgeKind::Cites);
+        }
+
+        let output = cmd_map(&MapOptions {
+            graph: &graph,
+            node_index: &test_node_index(&graph),
+            lattice: &empty_lattice(),
+            config: &AnnealConfig::default(),
+            concern: None,
+            around: Some("center.md"),
+            depth: 1,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: true,
+            limit_nodes: 100,
+            limit_edges: 250,
+        });
+
+        let text = output.rendered_content.expect("rendered content");
+        assert!(text.contains("Edges (60):"));
+        assert!(text.contains("center.md -Cites-> OQ-60"));
+        assert!(
+            !text.contains("... and 10 more"),
+            "full text rendering should not keep the old edge cap: {text}"
+        );
+    }
+
+    #[test]
+    fn map_around_hub_uses_hub_summary() {
+        let mut graph = DiGraph::new();
+        let hub = graph.add_node(make_file_handle_with_status("LABELS.md", "living"));
+        let synthesis = graph.add_node(make_file_handle_with_status("synthesis.md", "historical"));
+        graph.add_edge(synthesis, hub, EdgeKind::DependsOn);
+
+        for number in 1..=30 {
+            let label = graph.add_node(make_label_handle("OQ", number));
+            graph.add_edge(hub, label, EdgeKind::Cites);
+            if number <= 4 {
+                graph.add_edge(synthesis, label, EdgeKind::Cites);
+            }
+        }
+        for number in 1..=20 {
+            let label = graph.add_node(make_label_handle("FM", number));
+            graph.add_edge(hub, label, EdgeKind::DependsOn);
+        }
+
+        let output = cmd_map(&MapOptions {
+            graph: &graph,
+            node_index: &test_node_index(&graph),
+            lattice: &empty_lattice(),
+            config: &AnnealConfig::default(),
+            concern: None,
+            around: Some("LABELS.md"),
+            depth: 1,
+            render: crate::MapRender::Text,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
+        });
+
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print_human");
+        let text = String::from_utf8(buf).expect("utf8");
+
+        assert!(text.contains("Neighborhood around LABELS.md (depth 1):"));
+        assert!(text.contains("Namespaces (showing 2 of 2):"));
+        assert!(text.contains("OQ (30):"));
+        assert!(text.contains("FM (20):"));
+        assert!(text.contains("Focus edges for LABELS.md:"));
+        assert!(text.contains("Other neighborhood edges (showing"));
+        assert!(text.contains("Expand with: --nodes, --edges, --render text --full"));
+        assert!(
+            !text.contains("OQ-30"),
+            "hub summary should sample namespace members instead of dumping them all: {text}"
+        );
     }
 
     #[test]
