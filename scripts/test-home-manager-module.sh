@@ -12,6 +12,15 @@ require_cmd nix
 require_cmd python3
 require_cmd git
 
+json_quote() {
+    python3 - <<'PY' "$1"
+import json
+import sys
+
+print(json.dumps(sys.argv[1]))
+PY
+}
+
 ROOT="$(git rev-parse --show-toplevel)"
 TMPDIR="$(python3 - <<'PY'
 import os
@@ -24,10 +33,13 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 configured_json="$TMPDIR/configured.json"
 bare_json="$TMPDIR/bare.json"
+eval_module="$TMPDIR/eval-home-manager-module.nix"
+root_json="$(json_quote "$ROOT")"
 
-nix eval --impure --json --expr "
+cat > "$eval_module" <<'EOF'
+{ root, mode }:
 let
-  flake = builtins.getFlake \"path:${ROOT}\";
+  flake = builtins.getFlake "path:${root}";
   pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
   lib = flake.inputs.nixpkgs.lib;
   module = flake.outputs.homeManagerModules.default;
@@ -57,82 +69,59 @@ let
       default = { };
     };
   };
-  evaluated = lib.evalModules {
-    modules = [
-      module
-      stub
+  caseModule =
+    if mode == "configured" then
       {
         programs.anneal.enable = true;
-        programs.anneal.settings.state.historyMode = \"xdg\";
-        programs.anneal.settings.state.historyDir = \"/tmp/anneal-state\";
+        programs.anneal.settings.state.historyMode = "xdg";
+        programs.anneal.settings.state.historyDir = "/tmp/anneal-state";
         programs.anneal.skill.enable = true;
         programs.anneal.skill.targets = [
-          \".agents/skills/anneal-test\"
-          \".codex/skills/anneal-test\"
+          ".agents/skills/anneal-test"
+          ".codex/skills/anneal-test"
         ];
       }
-    ];
-    specialArgs = { inherit pkgs; };
-  };
-in {
-  hasFile = evaluated.config.xdg.configFile ? \"anneal/config.toml\";
-  text = evaluated.config.xdg.configFile.\"anneal/config.toml\".text;
-  hasAgentsSkill = evaluated.config.home.file ? \".agents/skills/anneal-test\";
-  hasCodexSkill = evaluated.config.home.file ? \".codex/skills/anneal-test\";
-  agentsSkillSource = evaluated.config.home.file.\".agents/skills/anneal-test\".source;
-  codexSkillSource = evaluated.config.home.file.\".codex/skills/anneal-test\".source;
-  packageCount = builtins.length evaluated.config.home.packages;
-}
-" > "$configured_json"
-
-nix eval --impure --json --expr "
-let
-  flake = builtins.getFlake \"path:${ROOT}\";
-  pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
-  lib = flake.inputs.nixpkgs.lib;
-  module = flake.outputs.homeManagerModules.default;
-  stub = { lib, ... }: {
-    options.assertions = lib.mkOption {
-      type = lib.types.listOf lib.types.attrs;
-      default = [ ];
-    };
-    options.home.packages = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [ ];
-    };
-    options.home.file = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options.source = lib.mkOption {
-          type = lib.types.path;
-        };
-      });
-      default = { };
-    };
-    options.xdg.configFile = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options.text = lib.mkOption {
-          type = lib.types.lines;
-        };
-      });
-      default = { };
-    };
-  };
-  evaluated = lib.evalModules {
-    modules = [
-      module
-      stub
+    else if mode == "bare" then
       {
         programs.anneal.enable = true;
       }
-    ];
+    else
+      {
+        programs.anneal.enable = true;
+        programs.anneal.skill.enable = true;
+        programs.anneal.skill.targets = [ "/tmp/anneal-skill" ];
+      };
+  evaluated = lib.evalModules {
+    modules = [ module stub caseModule ];
     specialArgs = { inherit pkgs; };
   };
-in {
-  hasFile = evaluated.config.xdg.configFile ? \"anneal/config.toml\";
-  hasAgentsSkill = evaluated.config.home.file ? \".agents/skills/anneal\";
-  packageCount = builtins.length evaluated.config.home.packages;
-}
-" > "$bare_json"
+in
+if mode == "configured" then
+  {
+    hasFile = evaluated.config.xdg.configFile ? "anneal/config.toml";
+    text = evaluated.config.xdg.configFile."anneal/config.toml".text;
+    hasAgentsSkill = evaluated.config.home.file ? ".agents/skills/anneal-test";
+    hasCodexSkill = evaluated.config.home.file ? ".codex/skills/anneal-test";
+    agentsSkillSource = evaluated.config.home.file.".agents/skills/anneal-test".source;
+    codexSkillSource = evaluated.config.home.file.".codex/skills/anneal-test".source;
+    packageCount = builtins.length evaluated.config.home.packages;
+  }
+else
+  {
+    hasFile = evaluated.config.xdg.configFile ? "anneal/config.toml";
+    hasAgentsSkill = evaluated.config.home.file ? ".agents/skills/anneal";
+    packageCount = builtins.length evaluated.config.home.packages;
+  }
+EOF
+
+eval_module_json="$(json_quote "$eval_module")"
+nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"configured\"; }" > "$configured_json"
+nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"bare\"; }" > "$bare_json"
+
+if nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"invalid\"; }" >/dev/null 2>&1; then
+    printf 'invalid skill target case unexpectedly succeeded\n' >&2
+    exit 1
+fi
 
 python3 - <<'PY' "$configured_json" "$bare_json"
 import json
