@@ -6,6 +6,7 @@ let
     inherit src;
     version = annealVersion;
   };
+  isRelativeSkillTarget = target: target != "" && builtins.substring 0 1 target != "/";
 in
 {
   options.programs.anneal = {
@@ -46,7 +47,7 @@ in
       enable = lib.mkEnableOption "anneal skill symlink management";
 
       targets = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
+        type = lib.types.listOf (lib.types.addCheck lib.types.str isRelativeSkillTarget);
         default = [ ".agents/skills/anneal" ];
         example = lib.literalExpression ''
           [
@@ -68,6 +69,7 @@ in
       hasStateConfig =
         cfg.settings.state.historyMode != null
         || cfg.settings.state.historyDir != null;
+      hasUniqueSkillTargets = builtins.length cfg.skill.targets == builtins.length (lib.unique cfg.skill.targets);
       userConfigText =
         lib.concatStringsSep "\n" (
           [ "[state]" ]
@@ -77,14 +79,10 @@ in
             "history_dir = ${builtins.toJSON (toString cfg.settings.state.historyDir)}"
         )
         + "\n";
-      skillFiles = builtins.listToAttrs (
-        map
-          (target: {
-            name = target;
-            value.source = "${src}/skills/anneal";
-          })
-          cfg.skill.targets
-      );
+      skillSource = "${src}/skills/anneal";
+      skillFiles = lib.genAttrs cfg.skill.targets (_: {
+        source = skillSource;
+      });
     in
     lib.mkMerge [
       {
@@ -92,6 +90,10 @@ in
           {
             assertion = !cfg.skill.enable || cfg.enable;
             message = "programs.anneal.skill.enable requires programs.anneal.enable = true";
+          }
+          {
+            assertion = !cfg.skill.enable || hasUniqueSkillTargets;
+            message = "programs.anneal.skill.targets must not contain duplicate paths";
           }
         ];
       }
