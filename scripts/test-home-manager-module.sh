@@ -38,8 +38,8 @@ let
     };
     options.xdg.configFile = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
-        options.source = lib.mkOption {
-          type = lib.types.path;
+        options.text = lib.mkOption {
+          type = lib.types.lines;
         };
       });
       default = { };
@@ -59,7 +59,7 @@ let
   };
 in {
   hasFile = evaluated.config.xdg.configFile ? \"anneal/config.toml\";
-  source = evaluated.config.xdg.configFile.\"anneal/config.toml\".source;
+  text = evaluated.config.xdg.configFile.\"anneal/config.toml\".text;
   packageCount = builtins.length evaluated.config.home.packages;
 }
 " > "$configured_json"
@@ -77,8 +77,8 @@ let
     };
     options.xdg.configFile = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
-        options.source = lib.mkOption {
-          type = lib.types.path;
+        options.text = lib.mkOption {
+          type = lib.types.lines;
         };
       });
       default = { };
@@ -122,8 +122,7 @@ bare_package_count = bare["packageCount"]
 if bare_package_count < 1:
     raise SystemExit("bare case did not add anneal to home.packages")
 
-source = pathlib.Path(configured["source"])
-content = source.read_text()
+content = configured["text"]
 
 expected_lines = [
     "[state]",
@@ -134,7 +133,7 @@ for line in expected_lines:
     if line not in content:
         raise SystemExit(f"generated config missing line: {line!r}\n{content}")
 
-print(f"configured_source={source}")
+print("configured_text=true")
 print("--- configured file ---")
 print(content.rstrip())
 print("--- assertions ---")
