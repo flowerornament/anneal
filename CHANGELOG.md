@@ -2,6 +2,22 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.4.1 - 2026-04-02
+
+### Added
+
+- Added optional Home Manager skill installation so anneal can declaratively link its bundled skill into agent-specific locations such as `.agents/skills/anneal` and `.codex/skills/anneal`.
+
+### Changed
+
+- Hardened Home Manager skill target handling by rejecting non-home-relative paths and duplicate targets.
+- Simplified the Home Manager smoke harness so configured and bare cases share one evaluator instead of duplicating module stubs.
+
+### Fixed
+
+- Fixed the Home Manager smoke test to match anneal's text-based config emission and keep CI green after the config output refactor.
+- Updated GitHub Actions checkout steps to `actions/checkout@v5`, removing the Node 20 deprecation warning from CI.
+
 ## 0.4.0 - 2026-04-02
 
 ### Added
