@@ -24,9 +24,9 @@ Use this skill for knowledge-corpus structure, health, impact, and validation.
 
 Use this orientation loop when the request is broad:
 
-1. `anneal status --json`
+1. `anneal status --json --compact`
 2. `anneal check --active-only`
-3. `anneal get <handle>` or `anneal find <text>` for the item the user cares about
+3. `anneal get <handle> --context` or `anneal find <text> --limit 25` for the item the user cares about
 4. `anneal impact <file-or-handle>` before editing corpus files
 
 For a single concrete question, run the matching command directly.
@@ -36,18 +36,18 @@ For a single concrete question, run the matching command directly.
 ### Orient
 
 ```bash
-anneal status --json
+anneal status --json --compact
 anneal status -v
 anneal check --active-only
 ```
 
-Use `status --json` to capture corpus shape and convergence context. Use plain-text `check --active-only` for default health checks and session orientation.
+Use `status --json --compact` to capture corpus shape and convergence context. Use plain-text `check --active-only` for default health checks and session orientation.
 
 ### Inspect A Specific Thing
 
 ```bash
-anneal get anneal-spec.md
-anneal find <text>
+anneal get anneal-spec.md --context
+anneal find <text> --limit 25
 anneal find "" --status=draft
 anneal map --around=anneal-spec.md
 ```
@@ -85,8 +85,9 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 
 ## Agent Rules
 
-- Use `anneal status --json` for orientation. Use plain-text output for routine `check`, `get`, `find`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
+- Use `anneal status --json --compact` for orientation. Use plain-text output for routine `check`, `get`, `find`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
 - Use plain-text `anneal check --active-only` for default orientation and health checks.
+- Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, and `anneal map --around=<handle>`.
 - Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
 - Before editing knowledge files, run `anneal impact <file-or-handle>`.
 - After editing knowledge files, run `anneal check --active-only`.
@@ -95,7 +96,8 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 When you need structured diagnostics, filter them to a narrow summary before returning them to the model, for example:
 
 ```bash
-anneal check --active-only --json | jq '{summary, diagnostic_count: (.diagnostics | length)}'
+anneal check --active-only --json | jq '.summary'
+anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
 ```
 
 ## High-Value Diagnostics

@@ -19,6 +19,15 @@ For orientation in the spec, read:
 - `§12` for CLI surface
 - `§15` for implementation patterns and dependencies
 
+For low-context corpus orientation, prefer:
+- `anneal status --json --compact`
+- `anneal check --active-only`
+- `anneal get <handle> --context`
+- `anneal find <text> --limit 25`
+- `anneal map --around=<handle>`
+
+Avoid broad default dumps like raw `check --json`, empty-query `find --json`, or full-graph renders unless you are intentionally expanding with flags like `--diagnostics`, `--refs`, `--nodes`, or `--full`.
+
 ## Task Tracking
 
 This project uses beads for issue tracking:

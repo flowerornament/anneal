@@ -482,26 +482,30 @@ anneal get OQ-64                          # label: definition + state
 anneal get formal-model/v17.md            # file: frontmatter + state
 anneal get formal-model/v17.md:§14.3      # section: content range + state
 anneal get P-3                            # obligation: status + creator + discharger
-anneal get OQ-64 --refs                   # + reference graph (incoming + outgoing)
+anneal get OQ-64 --refs                   # bounded reference graph (incoming + outgoing)
 anneal get OQ-64 --context                # compressed agent briefing (~200 tokens)
-anneal get OQ-64 --trace                  # full lineage (created by, blocks, blocked by)
+anneal get OQ-64 --trace --full           # full adjacency / lineage detail
 ```
 
 One command, any handle type. The handle kind [KB-D2] determines what "content" means.
 
+Human output remains readable and bounded by default. JSON output is summary-first: metadata, snippet, edge counts, bounded edge samples, explicit truncation markers, and explicit expansion hints. Full adjacency is opt-in via `--trace` or `--full`.
+
 #### §12.3 `anneal find <query>` [KB-C3]
 
-Search handle referents. Results filtered to active handles by default.
+Search handle identities. Results are filtered to active handles by default and bounded unless `--full` is explicitly requested.
 
 ```
-anneal find "stability"                   # full-text search across active handles
-anneal find "stability" --all             # include frozen handles
-anneal find --status=current              # filter by convergence state
-anneal find --namespace=OQ                # all handles in a namespace
-anneal find --namespace=OQ --status=open  # composed filters
+anneal find OQ                            # bounded identity search across active handles
+anneal find OQ --limit 50                # larger bounded sample
+anneal find "" --status=current          # broad search with narrowing filter
+anneal find --namespace=OQ               # all handles in a namespace
+anneal find --namespace=OQ --status=open # composed filters
+anneal find OQ --offset 25               # page through sorted results
+anneal find OQ --full                    # full result set
 ```
 
-Search is full-text in v1. The interface accommodates a future vector search backend without changing the command surface [KB-OQ3].
+Search is identity-substring based in v1. The interface leaves room for richer search later without changing the command surface [KB-OQ3].
 
 #### §12.4 `anneal status` [KB-C4]
 
@@ -520,16 +524,22 @@ anneal status
 
 Appends a snapshot to local anneal history.
 
+For agent session start, `anneal status --json --compact` returns a bounded orientation payload: corpus counts, active/frozen split, pipeline/state summary, diagnostics counts, obligations, convergence summary, and suggestion total.
+
 #### §12.5 `anneal map` [KB-C5]
 
-Render the knowledge graph.
+Render or summarize the knowledge graph.
 
 ```
-anneal map                                # full active graph
+anneal map                                # graph summary
 anneal map --concern="cost model"         # subgraph for a concern group
 anneal map --around=OQ-64 --depth=2       # neighborhood of a handle
-anneal map --format=dot                   # graphviz output
+anneal map --render=text --full           # full active graph
+anneal map --render=dot --full            # graphviz output
+anneal map --json                         # graph summary as JSON
 ```
+
+`map` uses progressive disclosure. Summary is the default. Full rendered graphs and full node/edge lists require explicit expansion flags.
 
 #### §12.6 `anneal init` [KB-C6]
 
@@ -746,7 +756,7 @@ RegexSet (single pass) → matched? → individual Regex (extract captures)
                        → no match → skip (fast path)
 ```
 
-**Dual output.** Every command returns a struct that is both `Serialize` (JSON via `--json`) and implements a `print_human()` method. Global `--json` flag via `#[arg(global = true)]` in clap derive — works at any position (`anneal --json check` and `anneal check --json` are equivalent).
+**Dual output.** Every command exposes both human and machine-readable output, but the two forms are parallel contracts rather than identical field-for-field serializations. Human output optimizes for readability. JSON optimizes for bounded, tool-compatible progressive disclosure. Global `--json` flag via `#[arg(global = true)]` in clap derive — works at any position (`anneal --json check` and `anneal check --json` are equivalent).
 
 ```rust
 trait CommandOutput: Serialize {
@@ -777,7 +787,7 @@ trait CommandOutput: Serialize {
 
 **[KB-OQ2] Section reference ambiguity.** Bare `§14` references are ambiguous across documents. Current decision: resolve within current file; qualify cross-document references as `formal-model/v17:§14.3`. Unresolvable section references are warnings, not errors.
 
-**[KB-OQ3] Semantic search.** `anneal find` uses full-text matching in v1. A vector search backend (local GGUF model, following QMD's approach) would enable semantic queries. The interface accommodates this without changing the command surface.
+**[KB-OQ3] Semantic search.** `anneal find` uses identity-substring matching in v1. A future semantic or vector backend (for example, local GGUF following QMD's approach) could broaden discovery without changing the command surface.
 
 **[KB-OQ4] MCP server.** Wrapping the eight commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
 
@@ -814,7 +824,7 @@ trait CommandOutput: Serialize {
 | KB-P5 | Suggestions surface patterns | §3 |
 | KB-P6 | Decay is healthy | §3 |
 | KB-P7 | Local checks over global propagation | §3 |
-| KB-P8 | Machine-readable by default | §3 |
+| KB-P8 | Machine-readable and progressively disclosed by default | §3 |
 
 ### KB-D (Definitions)
 

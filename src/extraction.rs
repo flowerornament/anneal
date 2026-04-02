@@ -119,6 +119,8 @@ pub(crate) struct DiscoveredRef {
 /// (not replacing them).
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FileExtraction {
+    /// File path relative to the corpus root.
+    pub(crate) file: String,
     /// Frontmatter `status` value.
     pub(crate) status: Option<String>,
     /// Extracted metadata from frontmatter.
@@ -484,6 +486,7 @@ mod tests {
     #[test]
     fn file_extraction_empty() {
         let fe = FileExtraction {
+            file: "doc.md".into(),
             status: None,
             metadata: HandleMetadata::default(),
             refs: vec![],

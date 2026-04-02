@@ -74,7 +74,7 @@ START HERE:
 
   anneal status               Dashboard: corpus health, pipeline, convergence
   anneal check                Diagnostics: broken refs, staleness, obligations
-  anneal get REQ-12           Inspect one handle with snippet and edges
+  anneal get REQ-12           Inspect one handle with bounded context
   anneal find ADR             Search handle identities
   anneal impact spec/v3.md    Reverse dependencies for safe edits
   anneal diff                 Change since last snapshot or git ref
@@ -106,8 +106,11 @@ CONFIGURATION:
 
 OUTPUT:
 
-  All commands support --json for machine consumption. Human output is designed
-  for terminal use with auto-colored diagnostics (disabled when piped).
+  All commands support --json for machine consumption. Risky commands use
+  progressive disclosure: bounded JSON by default, explicit expansion flags for
+  more detail, and --full for full dumps when intentionally requested.
+  Human output is designed for terminal use with auto-colored diagnostics
+  (disabled when piped).
 
   Exit code 1 when errors are found (check command), 0 otherwise."
 )]
@@ -119,6 +122,10 @@ struct Cli {
     /// Output as JSON (all commands). Disables color. Suitable for piping to jq or programmatic consumption.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Pretty-print JSON output for humans. Only applies with --json.
+    #[arg(long, global = true)]
+    pretty: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -167,7 +174,10 @@ EXAMPLES:
   anneal check --stale            # Show only staleness warnings (W001)
   anneal check --obligations      # Show only obligation diagnostics (E002/I002)
   anneal check --active-only      # Explicitly keep active-only filtering
-  anneal check --json             # Machine-readable output"
+  anneal check --json             # Bounded machine-readable summary
+  anneal check --json --diagnostics --limit 50
+                                  # Include 50 diagnostics in JSON
+  anneal check --json --full      # Full diagnostics and extraction detail"
     )]
     Check {
         /// Show only errors (for CI/pre-commit hooks)
@@ -191,6 +201,21 @@ EXAMPLES:
         /// Scope diagnostics to a single file path
         #[arg(long)]
         file: Option<String>,
+        /// Include diagnostics collection in JSON output (bounded by --limit)
+        #[arg(long)]
+        diagnostics: bool,
+        /// Include aggregate extraction facts in JSON output
+        #[arg(long)]
+        extractions_summary: bool,
+        /// Include full extraction payloads in JSON output
+        #[arg(long)]
+        full_extractions: bool,
+        /// Include full diagnostics and extraction payloads in JSON output
+        #[arg(long)]
+        full: bool,
+        /// Maximum diagnostics to include in JSON sample mode
+        #[arg(long)]
+        limit: Option<usize>,
     },
 
     /// Look up a handle by identity
@@ -212,11 +237,30 @@ EXAMPLES:
   anneal get OQ-64
   anneal get OQ-064               # Zero-padded labels normalize automatically
   anneal get formal-model/v17.md
-  anneal get --json OQ-64        # JSON with snippet, edges, and file path"
+  anneal get OQ-64 --context     # Compact agent briefing
+  anneal get OQ-64 --refs        # Bounded incoming/outgoing references
+  anneal get --json OQ-64        # Summary JSON with counts and samples
+  anneal get --json OQ-64 --trace --full
+                                 # Full adjacency in JSON"
     )]
     Get {
         /// Handle identity to look up (e.g., OQ-64, formal-model/v17.md)
         handle: String,
+        /// Include bounded incoming/outgoing reference lists
+        #[arg(long)]
+        refs: bool,
+        /// Print a compact agent-oriented briefing
+        #[arg(long)]
+        context: bool,
+        /// Include full adjacency / lineage detail
+        #[arg(long)]
+        trace: bool,
+        /// Include full edge lists without sampling
+        #[arg(long)]
+        full: bool,
+        /// Maximum edges per direction in bounded output
+        #[arg(long)]
+        limit_edges: Option<usize>,
     },
 
     /// Search handles by text
@@ -234,7 +278,10 @@ EXAMPLES:
   anneal find formal --kind=file          # Only file handles
   anneal find github --kind=external      # External URL handles
   anneal find draft --status=draft        # Handles with status 'draft'
-  anneal find OQ --namespace=OQ           # Labels in OQ namespace"
+  anneal find OQ --namespace=OQ           # Labels in OQ namespace
+  anneal find OQ --limit 25               # Bounded result sample
+  anneal find \"\" --status=current         # Broad but narrowed query
+  anneal find \"\" --full --all             # Explicitly return everything"
     )]
     Find {
         /// Text to search for in handle identities
@@ -251,6 +298,18 @@ EXAMPLES:
         /// Filter by handle kind: file, label, section, version, external
         #[arg(long)]
         kind: Option<String>,
+        /// Maximum number of matches to return (default: 25 unless --full)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Result offset after sorting by handle id
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Return the full match set
+        #[arg(long)]
+        full: bool,
+        /// Skip facet counts in JSON output
+        #[arg(long)]
+        no_facets: bool,
     },
 
     /// Generate anneal.toml from inferred structure
@@ -319,17 +378,20 @@ versions, external URLs) with edges listed separately. DOT format produces
 valid graphviz input — pipe to `dot -Tpng` for visual output.",
         after_help = "\
 EXAMPLES:
-  anneal map                                    # Full active graph (text)
-  anneal map --format=dot | dot -Tpng -o g.png  # Graphviz PNG
+  anneal map                                    # Graph summary
+  anneal map --render=text --full               # Full active graph (text)
+  anneal map --render=dot --full | dot -Tpng -o g.png
+                                                # Graphviz PNG
   anneal map --around=OQ-64 --depth=1           # 1-hop neighborhood of OQ-64
   anneal map --around=FM-17 --depth=1           # Immediate neighbors only
   anneal map --concern=formal-model             # Concern group subgraph
-  anneal map --json                             # JSON with node/edge counts"
+  anneal map --json                             # JSON graph summary
+  anneal map --json --nodes --limit-nodes 50    # Structured node sample"
     )]
     Map {
-        /// Output format: text (default) or dot (graphviz)
-        #[arg(long, value_enum, default_value = "text")]
-        format: MapFormat,
+        /// Render mode: summary (default), text, or dot
+        #[arg(long, alias = "format", value_enum)]
+        render: Option<MapRender>,
         /// Show only handles in this concern group (from anneal.toml [concerns])
         #[arg(long)]
         concern: Option<String>,
@@ -339,6 +401,21 @@ EXAMPLES:
         /// BFS depth for --around (default: 1)
         #[arg(long, default_value = "1")]
         depth: u32,
+        /// Include a structured node list in JSON output
+        #[arg(long)]
+        nodes: bool,
+        /// Include a structured edge list in JSON output
+        #[arg(long)]
+        edges: bool,
+        /// Allow full graph rendering or full node/edge lists
+        #[arg(long)]
+        full: bool,
+        /// Maximum nodes to include in JSON node lists
+        #[arg(long)]
+        limit_nodes: Option<usize>,
+        /// Maximum edges to include in JSON edge lists
+        #[arg(long)]
+        limit_edges: Option<usize>,
     },
 
     /// Orientation dashboard for arriving agents
@@ -370,12 +447,16 @@ between-sessions change.",
 EXAMPLES:
   anneal status                   # Human-readable dashboard
   anneal status --verbose         # Expand pipeline to list files per level
-  anneal status --json            # Full snapshot as JSON"
+  anneal status --json            # Full snapshot as JSON
+  anneal status --json --compact  # Compact agent session-start payload"
     )]
     Status {
         /// Expand pipeline histogram to list files per level
         #[arg(long, short)]
         verbose: bool,
+        /// Emit the compact JSON orientation payload
+        #[arg(long)]
+        compact: bool,
     },
 
     /// Show what changed since last session
@@ -436,8 +517,9 @@ EXAMPLES:
     Obligations,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum MapFormat {
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MapRender {
+    Summary,
     Text,
     Dot,
 }
@@ -481,11 +563,12 @@ fn collect_unresolved_owned(
 fn emit_output<T: Serialize>(
     output: &T,
     json: bool,
+    json_style: cli::JsonStyle,
     render_human: impl FnOnce(&mut dyn Write) -> std::io::Result<()>,
     human_context: &'static str,
 ) -> anyhow::Result<()> {
     if json {
-        cli::print_json(output)?;
+        cli::print_json(output, json_style)?;
     } else {
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
@@ -568,6 +651,11 @@ fn main() {
 
 fn run() -> anyhow::Result<()> {
     let cli_args = Cli::parse();
+    let json_style = if cli_args.pretty {
+        cli::JsonStyle::Pretty
+    } else {
+        cli::JsonStyle::Compact
+    };
 
     let cwd = Utf8PathBuf::try_from(
         std::env::current_dir().context("failed to determine current directory")?,
@@ -647,6 +735,7 @@ fn run() -> anyhow::Result<()> {
             emit_output(
                 &summary,
                 cli_args.json,
+                json_style,
                 |w| summary.print_human(w),
                 "failed to write summary",
             )?;
@@ -660,6 +749,11 @@ fn run() -> anyhow::Result<()> {
             active_only,
             include_terminal,
             file,
+            diagnostics: diagnostics_flag,
+            extractions_summary,
+            full_extractions,
+            full,
+            limit,
         }) => {
             let active_only = if include_terminal {
                 false
@@ -681,18 +775,41 @@ fn run() -> anyhow::Result<()> {
                 obligations,
                 active_only,
             };
-            let extractions = if cli_args.json {
-                result.extractions.clone()
+            let output = cli::cmd_check(diagnostics, &filters, &terminal_files);
+            let filtered_extractions = if let Some(ref file_filter) = file {
+                let normalized = file_filter.strip_prefix("./").unwrap_or(file_filter);
+                result
+                    .extractions
+                    .iter()
+                    .filter(|extraction| {
+                        extraction.file == normalized
+                            || extraction.file.ends_with(&format!("/{normalized}"))
+                    })
+                    .cloned()
+                    .collect()
             } else {
-                Vec::new()
+                result.extractions.clone()
             };
-            let output = cli::cmd_check(diagnostics, &filters, &terminal_files, extractions);
-            emit_output(
-                &output,
-                cli_args.json,
-                |w| output.print_human(w),
-                "failed to write check output",
-            )?;
+            if cli_args.json {
+                let json_output = cli::build_check_json_output(
+                    &output,
+                    &filtered_extractions,
+                    &cli::CheckJsonOptions {
+                        include_diagnostics: diagnostics_flag,
+                        diagnostics_limit: limit.unwrap_or(50),
+                        include_extractions_summary: extractions_summary,
+                        include_full_extractions: full_extractions,
+                        full,
+                    },
+                );
+                cli::print_json(&json_output, json_style)?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_human(&mut lock)
+                    .context("failed to write check output")?;
+            }
 
             // Append snapshot after output (D-04, D-20)
             snapshot::append_snapshot(&root, &state_config, &snap)?;
@@ -702,20 +819,46 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::Get { ref handle }) => {
-            if let Some(output) = cli::cmd_get(
+        Some(Command::Get {
+            ref handle,
+            refs,
+            context,
+            trace,
+            full,
+            limit_edges,
+        }) => {
+            if let Some(data) = cli::cmd_get(
                 graph,
                 &node_index,
                 &result.file_snippets,
                 &result.label_snippets,
                 handle,
             ) {
-                emit_output(
-                    &output,
-                    cli_args.json,
-                    |w| output.print_human(w),
-                    "failed to write get output",
-                )?;
+                let limit_edges = limit_edges.unwrap_or(10);
+                if cli_args.json {
+                    let output = cli::build_get_json_output(
+                        &data,
+                        &cli::GetJsonOptions {
+                            refs,
+                            context,
+                            trace,
+                            full,
+                            limit_edges,
+                        },
+                    );
+                    cli::print_json(&output, json_style)?;
+                } else {
+                    let output = cli::GetHumanOutput {
+                        data,
+                        limit_edges,
+                        context,
+                    };
+                    let stdout = std::io::stdout();
+                    let mut lock = stdout.lock();
+                    output
+                        .print_human(&mut lock)
+                        .context("failed to write get output")?;
+                }
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
@@ -728,6 +871,10 @@ fn run() -> anyhow::Result<()> {
             ref namespace,
             ref status,
             ref kind,
+            limit,
+            offset,
+            full,
+            no_facets,
         }) => {
             let output = cli::cmd_find(
                 graph,
@@ -738,11 +885,16 @@ fn run() -> anyhow::Result<()> {
                     status: status.as_deref(),
                     kind: kind.as_deref(),
                     include_all: all,
+                    limit,
+                    offset,
+                    full,
+                    no_facets,
                 },
-            );
+            )?;
             emit_output(
                 &output,
                 cli_args.json,
+                json_style,
                 |w| output.print_human(w),
                 "failed to write find output",
             )?;
@@ -756,22 +908,34 @@ fn run() -> anyhow::Result<()> {
                 &result.observed_frontmatter_keys,
                 dry_run,
             )?;
-            emit_output(
-                &output,
-                cli_args.json,
-                |w| output.print_human(w),
-                "failed to write init output",
-            )?;
+            if cli_args.json {
+                cli::print_json(
+                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+                    json_style,
+                )?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_human(&mut lock)
+                    .context("failed to write init output")?;
+            }
         }
 
         Some(Command::Impact { ref handle }) => {
             if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
-                emit_output(
-                    &output,
-                    cli_args.json,
-                    |w| output.print_human(w),
-                    "failed to write impact output",
-                )?;
+                if cli_args.json {
+                    cli::print_json(
+                        &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+                        json_style,
+                    )?;
+                } else {
+                    let stdout = std::io::stdout();
+                    let mut lock = stdout.lock();
+                    output
+                        .print_human(&mut lock)
+                        .context("failed to write impact output")?;
+                }
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
@@ -779,11 +943,30 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Map {
-            format,
+            render,
             ref concern,
             ref around,
             depth,
+            nodes,
+            edges,
+            full,
+            limit_nodes,
+            limit_edges,
         }) => {
+            let render = match (render, cli_args.json, around.is_some() || concern.is_some()) {
+                (Some(render), _, _) => render,
+                (None, false, true) => MapRender::Text,
+                _ => MapRender::Summary,
+            };
+            if matches!(render, MapRender::Text | MapRender::Dot)
+                && !full
+                && around.is_none()
+                && concern.is_none()
+            {
+                anyhow::bail!(
+                    "full graph rendering requires --full; use `anneal map --render=text --full` or focus with --around/--concern"
+                );
+            }
             let output = cli::cmd_map(&cli::MapOptions {
                 graph,
                 node_index: &node_index,
@@ -792,17 +975,23 @@ fn run() -> anyhow::Result<()> {
                 concern: concern.as_deref(),
                 around: around.as_deref(),
                 depth,
-                format,
+                render,
+                include_nodes: nodes,
+                include_edges: edges,
+                full,
+                limit_nodes: limit_nodes.unwrap_or(100),
+                limit_edges: limit_edges.unwrap_or(250),
             });
             emit_output(
                 &output,
                 cli_args.json,
+                json_style,
                 |w| output.print_human(w),
                 "failed to write map output",
             )?;
         }
 
-        Some(Command::Status { verbose }) => {
+        Some(Command::Status { verbose, compact }) => {
             let AnalysisArtifacts {
                 previous_snapshot,
                 diagnostics,
@@ -820,13 +1009,23 @@ fn run() -> anyhow::Result<()> {
 
             // Append snapshot AFTER computing convergence (D-04)
             snapshot::append_snapshot(&root, &state_config, &snap)?;
-
-            emit_output(
-                &output,
-                cli_args.json,
-                |w| output.print_human_with_options(w, verbose, graph, &lattice),
-                "failed to write status output",
-            )?;
+            if cli_args.json {
+                if compact {
+                    let compact_output = output.compact_json();
+                    cli::print_json(&compact_output, json_style)?;
+                } else {
+                    cli::print_json(
+                        &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+                        json_style,
+                    )?;
+                }
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_human_with_options(&mut lock, verbose, graph, &lattice)
+                    .context("failed to write status output")?;
+            }
         }
 
         Some(Command::Diff { days, ref git_ref }) => {
@@ -840,23 +1039,34 @@ fn run() -> anyhow::Result<()> {
                 days,
                 git_ref.as_deref(),
             )?;
-
-            emit_output(
-                &output,
-                cli_args.json,
-                |w| output.print_human(w),
-                "failed to write diff output",
-            )?;
+            if cli_args.json {
+                cli::print_json(
+                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+                    json_style,
+                )?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_human(&mut lock)
+                    .context("failed to write diff output")?;
+            }
         }
 
         Some(Command::Obligations) => {
             let output = cli::cmd_obligations(graph, &lattice, &config);
-            emit_output(
-                &output,
-                cli_args.json,
-                |w| output.print_human(w),
-                "failed to write obligations output",
-            )?;
+            if cli_args.json {
+                cli::print_json(
+                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+                    json_style,
+                )?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_human(&mut lock)
+                    .context("failed to write obligations output")?;
+            }
         }
     }
 

@@ -1030,6 +1030,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         }
         discovered_refs.extend(body_refs);
         extractions.push(FileExtraction {
+            file: relative.to_string(),
             status,
             metadata,
             refs: discovered_refs,
