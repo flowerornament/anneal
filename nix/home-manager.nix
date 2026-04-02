@@ -1,7 +1,6 @@
 { src, annealVersion }:
 { config, lib, pkgs, ... }:
 let
-  tomlFormat = pkgs.formats.toml { };
   defaultPackage = import ./package.nix {
     inherit pkgs;
     inherit src;
@@ -47,25 +46,25 @@ in
   config =
     let
       cfg = config.programs.anneal;
-      stateConfig =
-        (lib.optionalAttrs (cfg.settings.state.historyMode != null) {
-          history_mode = cfg.settings.state.historyMode;
-        })
-        // (lib.optionalAttrs (cfg.settings.state.historyDir != null) {
-          history_dir = toString cfg.settings.state.historyDir;
-        });
-
-      userConfig = lib.optionalAttrs (stateConfig != { }) {
-        state = stateConfig;
-      };
+      hasStateConfig =
+        cfg.settings.state.historyMode != null
+        || cfg.settings.state.historyDir != null;
+      userConfigText =
+        lib.concatStringsSep "\n" (
+          [ "[state]" ]
+          ++ lib.optional (cfg.settings.state.historyMode != null)
+            "history_mode = ${builtins.toJSON cfg.settings.state.historyMode}"
+          ++ lib.optional (cfg.settings.state.historyDir != null)
+            "history_dir = ${builtins.toJSON (toString cfg.settings.state.historyDir)}"
+        )
+        + "\n";
     in
-    lib.mkIf cfg.enable (
-      {
+    lib.mkMerge [
+      (lib.mkIf cfg.enable {
         home.packages = [ cfg.package ];
-      }
-      // lib.optionalAttrs (userConfig != { }) {
-        xdg.configFile."anneal/config.toml".source =
-          tomlFormat.generate "anneal-config.toml" userConfig;
-      }
-    );
+      })
+      (lib.mkIf (cfg.enable && hasStateConfig) {
+        xdg.configFile."anneal/config.toml".text = userConfigText;
+      })
+    ];
 }
