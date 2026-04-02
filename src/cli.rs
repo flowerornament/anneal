@@ -793,23 +793,24 @@ pub(crate) fn cmd_get(
     })
 }
 
+pub(crate) enum GetJsonMode {
+    Summary,
+    Refs,
+    Trace,
+    Context,
+}
+
 pub(crate) struct GetJsonOptions {
-    pub(crate) refs: bool,
-    pub(crate) context: bool,
-    pub(crate) trace: bool,
-    pub(crate) full: bool,
+    pub(crate) mode: GetJsonMode,
     pub(crate) limit_edges: usize,
 }
 
 pub(crate) fn build_get_json_output(data: &GetData, options: &GetJsonOptions) -> GetJsonOutput {
-    if options.context {
-        GetJsonOutput::context(data, options.limit_edges)
-    } else if options.trace || options.full {
-        GetJsonOutput::refs(data, options.limit_edges, true)
-    } else if options.refs {
-        GetJsonOutput::refs(data, options.limit_edges, false)
-    } else {
-        GetJsonOutput::summary(data, options.limit_edges)
+    match options.mode {
+        GetJsonMode::Context => GetJsonOutput::context(data, options.limit_edges),
+        GetJsonMode::Trace => GetJsonOutput::refs(data, options.limit_edges, true),
+        GetJsonMode::Refs => GetJsonOutput::refs(data, options.limit_edges, false),
+        GetJsonMode::Summary => GetJsonOutput::summary(data, options.limit_edges),
     }
 }
 
@@ -1079,19 +1080,17 @@ pub(crate) fn cmd_find(
     } else {
         filters.limit.unwrap_or(25)
     };
-    let returned_matches: Vec<FindMatch> = sorted_matches
-        .iter()
-        .skip(offset)
-        .take(limit)
-        .cloned()
-        .collect();
-    let returned = returned_matches.len();
-
     let facets = if filters.no_facets {
         None
     } else {
         Some(build_find_facets(&sorted_matches))
     };
+    let returned_matches: Vec<FindMatch> = sorted_matches
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect();
+    let returned = returned_matches.len();
 
     Ok(FindOutput {
         meta: OutputMeta::new(
@@ -3902,10 +3901,7 @@ mod tests {
         let json = build_get_json_output(
             &data,
             &GetJsonOptions {
-                refs: false,
-                context: false,
-                trace: false,
-                full: false,
+                mode: GetJsonMode::Summary,
                 limit_edges: 10,
             },
         );
