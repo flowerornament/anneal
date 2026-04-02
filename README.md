@@ -92,7 +92,9 @@ matter how it was installed:
 ### Nix + Home Manager
 
 For a declarative Nix-native setup, use the exported Home Manager module. It
-installs `anneal` and writes the same XDG user config that non-Nix setups use.
+installs `anneal`, writes the same XDG user config that non-Nix setups use,
+and can optionally install the bundled anneal skill into agent-managed skill
+directories.
 
 Add the flake input:
 
@@ -114,6 +116,11 @@ Then include the module in your Home Manager configuration:
   programs.anneal = {
     enable = true;
     settings.state.historyDir = config.xdg.stateHome;
+    skill.enable = true;
+    skill.targets = [
+      ".agents/skills/anneal"
+      ".codex/skills/anneal"
+    ];
   };
 }
 ```
@@ -124,9 +131,12 @@ Available module options:
 - `programs.anneal.package`
 - `programs.anneal.settings.state.historyMode`
 - `programs.anneal.settings.state.historyDir`
+- `programs.anneal.skill.enable`
+- `programs.anneal.skill.targets`
 
-This only manages machine-local anneal user config. Repo-owned corpus behavior
-still lives in `anneal.toml`.
+Repo-owned corpus behavior still lives in `anneal.toml`. Skill targets are
+home-relative symlink paths, so you can install the anneal skill anywhere your
+agent tooling expects it.
 
 If you already use Home Manager through nix-darwin, add the exported module to
 `home-manager.sharedModules` (or otherwise make it available in your shared

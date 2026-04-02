@@ -41,6 +41,25 @@ in
         };
       };
     };
+
+    skill = {
+      enable = lib.mkEnableOption "anneal skill symlink management";
+
+      targets = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ".agents/skills/anneal" ];
+        example = lib.literalExpression ''
+          [
+            ".agents/skills/anneal"
+            ".codex/skills/anneal"
+          ]
+        '';
+        description = ''
+          Home-relative paths where Home Manager should symlink anneal's
+          `skills/anneal` directory when skill installation is enabled.
+        '';
+      };
+    };
   };
 
   config =
@@ -58,13 +77,32 @@ in
             "history_dir = ${builtins.toJSON (toString cfg.settings.state.historyDir)}"
         )
         + "\n";
+      skillFiles = builtins.listToAttrs (
+        map
+          (target: {
+            name = target;
+            value.source = "${src}/skills/anneal";
+          })
+          cfg.skill.targets
+      );
     in
     lib.mkMerge [
+      {
+        assertions = [
+          {
+            assertion = !cfg.skill.enable || cfg.enable;
+            message = "programs.anneal.skill.enable requires programs.anneal.enable = true";
+          }
+        ];
+      }
       (lib.mkIf cfg.enable {
         home.packages = [ cfg.package ];
       })
       (lib.mkIf (cfg.enable && hasStateConfig) {
         xdg.configFile."anneal/config.toml".text = userConfigText;
+      })
+      (lib.mkIf (cfg.enable && cfg.skill.enable) {
+        home.file = skillFiles;
       })
     ];
 }
