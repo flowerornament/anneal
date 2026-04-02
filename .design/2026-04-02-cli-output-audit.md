@@ -1,3 +1,11 @@
+---
+status: draft
+updated: 2026-04-02
+description: >
+  Audit of anneal CLI output behavior across representative corpora, focused on
+  identifying bounded defaults and risky output shapes for agent-oriented use.
+---
+
 # anneal CLI Output Audit
 
 Date: 2026-04-02
@@ -67,11 +75,11 @@ The most important findings:
 
 The largest outputs are not accidental. They follow from a few implementation choices:
 
-- `print_json()` pretty-prints all JSON output via `serde_json::to_string_pretty(...)` in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L94).
-- `CheckOutput` always includes `extractions`, and JSON mode clones `result.extractions` before formatting in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L106) and [src/main.rs](/Users/morgan/code/anneal/src/main.rs#L684).
-- `MapOutput` serializes a full rendered graph as a `content: String` field in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L1233).
-- Human `get` output caps edge display with `EDGE_DISPLAY_LIMIT`, but JSON `get` returns the full edge lists in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L262).
-- `find` performs unrestricted substring matching across all handles and returns all matches in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L486).
+- `print_json()` pretty-prints all JSON output via `serde_json::to_string_pretty(...)` in `src/cli.rs:94`.
+- `CheckOutput` always includes `extractions`, and JSON mode clones `result.extractions` before formatting in `src/cli.rs:106` and `src/main.rs:684`.
+- `MapOutput` serializes a full rendered graph as a `content: String` field in `src/cli.rs:1233`.
+- Human `get` output caps edge display with `EDGE_DISPLAY_LIMIT`, but JSON `get` returns the full edge lists in `src/cli.rs:262`.
+- `find` performs unrestricted substring matching across all handles and returns all matches in `src/cli.rs:486`.
 
 ## Command-by-Command Audit
 
@@ -149,8 +157,8 @@ Assessment:
 
 Rationale:
 
-- `CheckOutput` always includes `extractions` in JSON-facing data structures in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L106).
-- `main.rs` unconditionally clones `result.extractions` whenever `cli_args.json` is true in [src/main.rs](/Users/morgan/code/anneal/src/main.rs#L684).
+- `CheckOutput` always includes `extractions` in JSON-facing data structures in `src/cli.rs:106`.
+- `main.rs` unconditionally clones `result.extractions` whenever `cli_args.json` is true in `src/main.rs:684`.
 
 Suggestions:
 
@@ -182,7 +190,7 @@ Assessment:
 
 Rationale:
 
-- Human mode caps displayed incoming and outgoing edges with `EDGE_DISPLAY_LIMIT` in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L262).
+- Human mode caps displayed incoming and outgoing edges with `EDGE_DISPLAY_LIMIT` in `src/cli.rs:262`.
 - JSON mode returns the full edge lists because the underlying `GetOutput` is serialized directly.
 
 Suggestions:
@@ -218,7 +226,7 @@ Assessment:
 
 Rationale:
 
-- `cmd_find()` performs unrestricted case-insensitive substring matching and returns all matches in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L486).
+- `cmd_find()` performs unrestricted case-insensitive substring matching and returns all matches in `src/cli.rs:486`.
 - There is no built-in limit, pagination, or summary mode.
 
 Suggestions:
@@ -271,7 +279,7 @@ Assessment:
 
 Rationale:
 
-- `ImpactOutput` serializes the full `direct` and `indirect` vectors in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L560).
+- `ImpactOutput` serializes the full `direct` and `indirect` vectors in `src/cli.rs:560`.
 
 Suggestions:
 
@@ -305,8 +313,8 @@ Assessment:
 
 Rationale:
 
-- `MapOutput` includes `content: String` in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L1233).
-- Neighborhood extraction expands with BFS depth in [src/cli.rs](/Users/morgan/code/anneal/src/cli.rs#L1252).
+- `MapOutput` includes `content: String` in `src/cli.rs:1233`.
+- Neighborhood extraction expands with BFS depth in `src/cli.rs:1252`.
 
 Suggestions:
 

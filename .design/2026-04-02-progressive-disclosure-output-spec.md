@@ -54,7 +54,7 @@ This distinction matters because:
 
 ### §3 Evidence
 
-The audit in [2026-04-02-cli-output-audit.md](/Users/morgan/code/anneal/.design/2026-04-02-cli-output-audit.md) shows that:
+The audit in [2026-04-02-cli-output-audit.md](2026-04-02-cli-output-audit.md) shows that:
 
 - `check --json` on the Murail corpus emitted about `3.07 MB`
 - `find "" --json` on the Murail corpus emitted about `2.08 MB`
@@ -601,7 +601,7 @@ Behavior:
 
 Current implementation:
 
-- [`print_json()`](/Users/morgan/code/anneal/src/cli.rs#L94) uses `serde_json::to_string_pretty`
+- `print_json()` in `src/cli.rs:94` uses `serde_json::to_string_pretty`
 
 Required change:
 
@@ -619,7 +619,7 @@ pub(crate) enum JsonStyle {
 pub(crate) fn print_json<T: Serialize>(output: &T, style: JsonStyle) -> anyhow::Result<()>;
 ```
 
-`emit_output()` in [main.rs](/Users/morgan/code/anneal/src/main.rs#L481) must accept the JSON style and pass it through.
+`emit_output()` in `src/main.rs:481` must accept the JSON style and pass it through.
 
 ### §14 Shared JSON Types
 
@@ -651,7 +651,7 @@ Commands that do not need truncation can omit `returned` and `total`.
 
 #### §15.1 CLI Surface
 
-Extend the `Check` subcommand in [main.rs](/Users/morgan/code/anneal/src/main.rs#L172) with:
+Extend the `Check` subcommand in `src/main.rs:172` with:
 
 - `diagnostics: bool`
 - `extractions_summary: bool`
@@ -694,7 +694,7 @@ Full `evidence` may remain available in full mode if desired.
 
 #### §15.3 Main Control Flow
 
-In [main.rs](/Users/morgan/code/anneal/src/main.rs#L655):
+In `src/main.rs:655`:
 
 - stop cloning `result.extractions` whenever `cli_args.json` is true
 - instead build the correct JSON payload based on requested detail flags
@@ -718,7 +718,7 @@ If `--full` is set:
 
 #### §16.1 CLI Surface
 
-Extend `Get` in [main.rs](/Users/morgan/code/anneal/src/main.rs#L217) with:
+Extend `Get` in `src/main.rs:217` with:
 
 - `refs: bool`
 - `context: bool`
@@ -760,7 +760,7 @@ Minimum summary fields:
 
 #### §17.1 CLI Surface
 
-Extend `Find` in [main.rs](/Users/morgan/code/anneal/src/main.rs#L239) with:
+Extend `Find` in `src/main.rs:239` with:
 
 - `limit: Option<usize>`
 - `offset: Option<usize>`
@@ -805,7 +805,7 @@ Facets should include:
 
 #### §18.1 CLI Surface
 
-Extend `Map` in [main.rs](/Users/morgan/code/anneal/src/main.rs#L329) with:
+Extend `Map` in `src/main.rs:329` with:
 
 - `render: Option<MapRender>`
 - `nodes: bool`
@@ -876,7 +876,7 @@ Required updates:
 
 ### §20 Help Text and Examples
 
-Update [main.rs](/Users/morgan/code/anneal/src/main.rs) help text:
+Update `src/main.rs` help text:
 
 - top-level OUTPUT section
 - command descriptions
@@ -891,7 +891,7 @@ Specific changes:
 
 ### §21 Spec Alignment
 
-Update [anneal-spec.md](/Users/morgan/code/anneal/.design/anneal-spec.md) after implementation is complete.
+Update [anneal-spec.md](anneal-spec.md) after implementation is complete.
 
 Required alignments:
 
