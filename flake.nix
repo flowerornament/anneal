@@ -22,6 +22,8 @@
         };
       });
 
+      homeManagerModules.default = import ./nix/home-manager.nix { inherit self; };
+
       # Source tree path for skill syncing (nix-config agent-sync.nix).
       skillsDir = "${self}/skills";
     };
