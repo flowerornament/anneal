@@ -1,24 +1,11 @@
 { src, annealVersion }:
 { config, lib, pkgs, ... }:
 let
-  cfg = config.programs.anneal;
   tomlFormat = pkgs.formats.toml { };
   defaultPackage = import ./package.nix {
     inherit pkgs;
     inherit src;
     version = annealVersion;
-  };
-
-  stateConfig =
-    (lib.optionalAttrs (cfg.settings.state.historyMode != null) {
-      history_mode = cfg.settings.state.historyMode;
-    })
-    // (lib.optionalAttrs (cfg.settings.state.historyDir != null) {
-      history_dir = toString cfg.settings.state.historyDir;
-    });
-
-  userConfig = lib.optionalAttrs (stateConfig != { }) {
-    state = stateConfig;
   };
 in
 {
@@ -57,13 +44,28 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (
-    {
-      home.packages = [ cfg.package ];
-    }
-    // lib.optionalAttrs (userConfig != { }) {
-      xdg.configFile."anneal/config.toml".source =
-        tomlFormat.generate "anneal-config.toml" userConfig;
-    }
-  );
+  config =
+    let
+      cfg = config.programs.anneal;
+      stateConfig =
+        (lib.optionalAttrs (cfg.settings.state.historyMode != null) {
+          history_mode = cfg.settings.state.historyMode;
+        })
+        // (lib.optionalAttrs (cfg.settings.state.historyDir != null) {
+          history_dir = toString cfg.settings.state.historyDir;
+        });
+
+      userConfig = lib.optionalAttrs (stateConfig != { }) {
+        state = stateConfig;
+      };
+    in
+    lib.mkIf cfg.enable (
+      {
+        home.packages = [ cfg.package ];
+      }
+      // lib.optionalAttrs (userConfig != { }) {
+        xdg.configFile."anneal/config.toml".source =
+          tomlFormat.generate "anneal-config.toml" userConfig;
+      }
+    );
 }
