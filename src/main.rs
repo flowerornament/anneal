@@ -577,6 +577,26 @@ fn emit_output<T: Serialize>(
     Ok(())
 }
 
+fn emit_full_output<T: Serialize>(
+    output: T,
+    json: bool,
+    json_style: cli::JsonStyle,
+    render_human: impl FnOnce(&T, &mut dyn Write) -> std::io::Result<()>,
+    human_context: &'static str,
+) -> anyhow::Result<()> {
+    if json {
+        cli::print_json(
+            &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
+            json_style,
+        )?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        render_human(&output, &mut lock).context(human_context)?;
+    }
+    Ok(())
+}
+
 struct AnalysisArtifacts {
     previous_snapshot: Option<snapshot::Snapshot>,
     diagnostics: Vec<checks::Diagnostic>,
@@ -627,11 +647,15 @@ fn retain_diagnostics_for_file(diagnostics: &mut Vec<checks::Diagnostic>, root: 
         .unwrap_or(normalized);
 
     diagnostics.retain(|d| {
-        d.file.as_ref().is_some_and(|diag_file| {
-            let diag_file = diag_file.strip_prefix("./").unwrap_or(diag_file);
-            diag_file == normalized || diag_file.ends_with(&format!("/{normalized}"))
-        })
+        d.file
+            .as_ref()
+            .is_some_and(|diag_file| matches_scoped_file(diag_file, normalized))
     });
+}
+
+fn matches_scoped_file(path: &str, file_filter: &str) -> bool {
+    let normalized = path.strip_prefix("./").unwrap_or(path);
+    normalized == file_filter || normalized.ends_with(&format!("/{file_filter}"))
 }
 
 fn main() {
@@ -776,21 +800,22 @@ fn run() -> anyhow::Result<()> {
                 active_only,
             };
             let output = cli::cmd_check(diagnostics, &filters, &terminal_files);
-            let filtered_extractions = if let Some(ref file_filter) = file {
-                let normalized = file_filter.strip_prefix("./").unwrap_or(file_filter);
-                result
-                    .extractions
-                    .iter()
-                    .filter(|extraction| {
-                        extraction.file == normalized
-                            || extraction.file.ends_with(&format!("/{normalized}"))
-                    })
-                    .cloned()
-                    .collect()
-            } else {
-                result.extractions.clone()
-            };
             if cli_args.json {
+                let needs_extractions = extractions_summary || full_extractions || full;
+                let filtered_extractions = if needs_extractions {
+                    result
+                        .extractions
+                        .iter()
+                        .filter(|extraction| {
+                            file.as_ref().is_none_or(|file_filter| {
+                                matches_scoped_file(&extraction.file, file_filter)
+                            })
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let json_output = cli::build_check_json_output(
                     &output,
                     &filtered_extractions,
@@ -839,10 +864,15 @@ fn run() -> anyhow::Result<()> {
                     let output = cli::build_get_json_output(
                         &data,
                         &cli::GetJsonOptions {
-                            refs,
-                            context,
-                            trace,
-                            full,
+                            mode: if context {
+                                cli::GetJsonMode::Context
+                            } else if trace || full {
+                                cli::GetJsonMode::Trace
+                            } else if refs {
+                                cli::GetJsonMode::Refs
+                            } else {
+                                cli::GetJsonMode::Summary
+                            },
                             limit_edges,
                         },
                     );
@@ -888,7 +918,7 @@ fn run() -> anyhow::Result<()> {
                     limit,
                     offset,
                     full,
-                    no_facets,
+                    no_facets: no_facets || !cli_args.json,
                 },
             )?;
             emit_output(
@@ -908,34 +938,24 @@ fn run() -> anyhow::Result<()> {
                 &result.observed_frontmatter_keys,
                 dry_run,
             )?;
-            if cli_args.json {
-                cli::print_json(
-                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
-                    json_style,
-                )?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                output
-                    .print_human(&mut lock)
-                    .context("failed to write init output")?;
-            }
+            emit_full_output(
+                output,
+                cli_args.json,
+                json_style,
+                |output, w| output.print_human(w),
+                "failed to write init output",
+            )?;
         }
 
         Some(Command::Impact { ref handle }) => {
             if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
-                if cli_args.json {
-                    cli::print_json(
-                        &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
-                        json_style,
-                    )?;
-                } else {
-                    let stdout = std::io::stdout();
-                    let mut lock = stdout.lock();
-                    output
-                        .print_human(&mut lock)
-                        .context("failed to write impact output")?;
-                }
+                emit_full_output(
+                    output,
+                    cli_args.json,
+                    json_style,
+                    |output, w| output.print_human(w),
+                    "failed to write impact output",
+                )?;
             } else {
                 eprintln!("handle not found: {handle}");
                 std::process::exit(1);
@@ -1039,34 +1059,24 @@ fn run() -> anyhow::Result<()> {
                 days,
                 git_ref.as_deref(),
             )?;
-            if cli_args.json {
-                cli::print_json(
-                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
-                    json_style,
-                )?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                output
-                    .print_human(&mut lock)
-                    .context("failed to write diff output")?;
-            }
+            emit_full_output(
+                output,
+                cli_args.json,
+                json_style,
+                |output, w| output.print_human(w),
+                "failed to write diff output",
+            )?;
         }
 
         Some(Command::Obligations) => {
             let output = cli::cmd_obligations(graph, &lattice, &config);
-            if cli_args.json {
-                cli::print_json(
-                    &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
-                    json_style,
-                )?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                output
-                    .print_human(&mut lock)
-                    .context("failed to write obligations output")?;
-            }
+            emit_full_output(
+                output,
+                cli_args.json,
+                json_style,
+                |output, w| output.print_human(w),
+                "failed to write obligations output",
+            )?;
         }
     }
 
