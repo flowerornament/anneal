@@ -46,6 +46,10 @@ lint:
 test:
     cargo test
 
+# Smoke-test the exported Home Manager module
+test-home-manager-module:
+    bash scripts/test-home-manager-module.sh
+
 # Release build
 build:
     cargo build --release

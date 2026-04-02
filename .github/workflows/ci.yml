@@ -43,3 +43,14 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+  nix-home-manager-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Home Manager module smoke test
+        run: bash scripts/test-home-manager-module.sh

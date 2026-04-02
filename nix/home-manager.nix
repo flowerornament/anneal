@@ -1,8 +1,13 @@
-{ self }:
+{ src, annealVersion }:
 { config, lib, pkgs, ... }:
 let
   cfg = config.programs.anneal;
   tomlFormat = pkgs.formats.toml { };
+  defaultPackage = import ./package.nix {
+    inherit pkgs;
+    inherit src;
+    version = annealVersion;
+  };
 
   stateConfig =
     (lib.optionalAttrs (cfg.settings.state.historyMode != null) {
@@ -22,8 +27,8 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.system}.default;
-      defaultText = lib.literalExpression "inputs.anneal.packages.${pkgs.system}.default";
+      default = defaultPackage;
+      defaultText = lib.literalExpression "anneal package from this flake";
       description = "The anneal package to install.";
     };
 
@@ -42,7 +47,7 @@ in
         historyDir = lib.mkOption {
           type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
           default = null;
-          example = lib.literalExpression ''"${config.xdg.stateHome}"'';
+          example = lib.literalExpression ''"/Users/alice/.local/state"'';
           description = ''
             Optional base directory for anneal's machine-local derived history.
             This maps to `state.history_dir` in `anneal/config.toml`.
