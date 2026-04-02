@@ -47,7 +47,7 @@ def cargo_lock_version() -> str:
 
 def flake_version() -> str:
     text = read_text(ROOT / "flake.nix")
-    match = re.search(r'pname = "anneal";\n(?P<indent>\s+)version = "([^"]+)";', text)
+    match = re.search(r'(?m)^(\s*)annealVersion = "([^"]+)";$', text)
     if match is None:
         fail("could not find anneal package version in flake.nix")
     return match.group(2)
@@ -166,8 +166,8 @@ def bump(version: str) -> None:
     flake_text = read_text(flake_nix)
     flake_text = replace_once(
         flake_text,
-        r'(pname = "anneal";\n)(?P<indent>\s+)version = "[^"]+";',
-        rf'\1\g<indent>version = "{version}";',
+        r'(?m)^(\s*)annealVersion = "[^"]+";$',
+        rf'\1annealVersion = "{version}";',
     )
     write_text(flake_nix, flake_text)
     changelog_insert_entry(version)
