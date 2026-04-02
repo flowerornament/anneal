@@ -32,9 +32,21 @@ let
   lib = flake.inputs.nixpkgs.lib;
   module = flake.outputs.homeManagerModules.default;
   stub = { lib, ... }: {
+    options.assertions = lib.mkOption {
+      type = lib.types.listOf lib.types.attrs;
+      default = [ ];
+    };
     options.home.packages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
+    };
+    options.home.file = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.source = lib.mkOption {
+          type = lib.types.path;
+        };
+      });
+      default = { };
     };
     options.xdg.configFile = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
@@ -53,6 +65,11 @@ let
         programs.anneal.enable = true;
         programs.anneal.settings.state.historyMode = \"xdg\";
         programs.anneal.settings.state.historyDir = \"/tmp/anneal-state\";
+        programs.anneal.skill.enable = true;
+        programs.anneal.skill.targets = [
+          \".agents/skills/anneal-test\"
+          \".codex/skills/anneal-test\"
+        ];
       }
     ];
     specialArgs = { inherit pkgs; };
@@ -60,6 +77,10 @@ let
 in {
   hasFile = evaluated.config.xdg.configFile ? \"anneal/config.toml\";
   text = evaluated.config.xdg.configFile.\"anneal/config.toml\".text;
+  hasAgentsSkill = evaluated.config.home.file ? \".agents/skills/anneal-test\";
+  hasCodexSkill = evaluated.config.home.file ? \".codex/skills/anneal-test\";
+  agentsSkillSource = evaluated.config.home.file.\".agents/skills/anneal-test\".source;
+  codexSkillSource = evaluated.config.home.file.\".codex/skills/anneal-test\".source;
   packageCount = builtins.length evaluated.config.home.packages;
 }
 " > "$configured_json"
@@ -71,9 +92,21 @@ let
   lib = flake.inputs.nixpkgs.lib;
   module = flake.outputs.homeManagerModules.default;
   stub = { lib, ... }: {
+    options.assertions = lib.mkOption {
+      type = lib.types.listOf lib.types.attrs;
+      default = [ ];
+    };
     options.home.packages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
+    };
+    options.home.file = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.source = lib.mkOption {
+          type = lib.types.path;
+        };
+      });
+      default = { };
     };
     options.xdg.configFile = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
@@ -96,6 +129,7 @@ let
   };
 in {
   hasFile = evaluated.config.xdg.configFile ? \"anneal/config.toml\";
+  hasAgentsSkill = evaluated.config.home.file ? \".agents/skills/anneal\";
   packageCount = builtins.length evaluated.config.home.packages;
 }
 " > "$bare_json"
@@ -113,6 +147,15 @@ if not configured.get("hasFile"):
 
 if bare.get("hasFile"):
     raise SystemExit("bare case unexpectedly emitted anneal/config.toml")
+
+if not configured.get("hasAgentsSkill"):
+    raise SystemExit("configured case did not emit the anneal skill for ~/.agents")
+
+if not configured.get("hasCodexSkill"):
+    raise SystemExit("configured case did not emit the anneal skill for ~/.codex")
+
+if bare.get("hasAgentsSkill"):
+    raise SystemExit("bare case unexpectedly emitted the anneal skill")
 
 configured_package_count = configured["packageCount"]
 if configured_package_count < 1:
@@ -133,12 +176,24 @@ for line in expected_lines:
     if line not in content:
         raise SystemExit(f"generated config missing line: {line!r}\n{content}")
 
+agents_skill_source = pathlib.Path(configured["agentsSkillSource"])
+codex_skill_source = pathlib.Path(configured["codexSkillSource"])
+
+for skill_source in (agents_skill_source, codex_skill_source):
+    if not (skill_source / "SKILL.md").is_file():
+        raise SystemExit(f"skill source missing SKILL.md: {skill_source}")
+
 print("configured_text=true")
+print(f"configured_agents_skill_source={agents_skill_source}")
+print(f"configured_codex_skill_source={codex_skill_source}")
 print("--- configured file ---")
 print(content.rstrip())
 print("--- assertions ---")
 print("configured_has_file=true")
 print("bare_has_file=false")
+print("configured_has_agents_skill=true")
+print("configured_has_codex_skill=true")
+print("bare_has_agents_skill=false")
 print(f"configured_package_count={configured_package_count}")
 print(f"bare_package_count={bare_package_count}")
 PY
