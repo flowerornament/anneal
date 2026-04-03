@@ -101,6 +101,47 @@ impl DiagnosticRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DiagnosticSelection {
+    pub(crate) existence: bool,
+    pub(crate) plausibility: bool,
+    pub(crate) staleness: bool,
+    pub(crate) confidence_gap: bool,
+    pub(crate) linearity: bool,
+    pub(crate) conventions: bool,
+    pub(crate) suggestions: bool,
+}
+
+impl DiagnosticSelection {
+    pub(crate) fn all() -> Self {
+        Self {
+            existence: true,
+            plausibility: true,
+            staleness: true,
+            confidence_gap: true,
+            linearity: true,
+            conventions: true,
+            suggestions: true,
+        }
+    }
+
+    pub(crate) fn none() -> Self {
+        Self {
+            existence: false,
+            plausibility: false,
+            staleness: false,
+            confidence_gap: false,
+            linearity: false,
+            conventions: false,
+            suggestions: false,
+        }
+    }
+
+    pub(crate) fn includes_suggestions(self) -> bool {
+        self.suggestions
+    }
+}
+
 impl Diagnostic {
     /// Print in compiler-style format per spec section 12.1:
     /// ```text
@@ -1000,20 +1041,61 @@ pub(crate) fn run_checks(
     cascade_candidates: &HashMap<String, Vec<String>>,
     previous_snapshot: Option<&crate::snapshot::Snapshot>,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    diagnostics.extend(check_existence(
+    run_checks_with_selection(
         graph,
+        lattice,
+        config,
         unresolved_edges,
         section_ref_count,
         section_ref_file,
+        implausible_refs,
         cascade_candidates,
-    ));
-    diagnostics.extend(check_plausibility(implausible_refs));
-    diagnostics.extend(check_staleness(graph, lattice));
-    diagnostics.extend(check_confidence_gap(graph, lattice));
-    diagnostics.extend(check_linearity(graph, config, lattice));
-    diagnostics.extend(check_conventions(graph));
-    diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
+        previous_snapshot,
+        DiagnosticSelection::all(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_checks_with_selection(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &AnnealConfig,
+    unresolved_edges: &[PendingEdge],
+    section_ref_count: usize,
+    section_ref_file: Option<&str>,
+    implausible_refs: &[ImplausibleRef],
+    cascade_candidates: &HashMap<String, Vec<String>>,
+    previous_snapshot: Option<&crate::snapshot::Snapshot>,
+    selection: DiagnosticSelection,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if selection.existence {
+        diagnostics.extend(check_existence(
+            graph,
+            unresolved_edges,
+            section_ref_count,
+            section_ref_file,
+            cascade_candidates,
+        ));
+    }
+    if selection.plausibility {
+        diagnostics.extend(check_plausibility(implausible_refs));
+    }
+    if selection.staleness {
+        diagnostics.extend(check_staleness(graph, lattice));
+    }
+    if selection.confidence_gap {
+        diagnostics.extend(check_confidence_gap(graph, lattice));
+    }
+    if selection.linearity {
+        diagnostics.extend(check_linearity(graph, config, lattice));
+    }
+    if selection.conventions {
+        diagnostics.extend(check_conventions(graph));
+    }
+    if selection.suggestions {
+        diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
+    }
     diagnostics.sort_by_key(|d| d.severity);
     diagnostics
 }

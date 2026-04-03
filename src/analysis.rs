@@ -59,14 +59,24 @@ pub(crate) fn collect_unresolved_owned(
 }
 
 pub(crate) fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> AnalysisArtifacts {
+    build_analysis_artifacts_with_selection(context, checks::DiagnosticSelection::all())
+}
+
+pub(crate) fn build_analysis_artifacts_with_selection(
+    context: &AnalysisContext<'_>,
+    selection: checks::DiagnosticSelection,
+) -> AnalysisArtifacts {
     let (unresolved_owned, section_ref_count, section_ref_file) = collect_unresolved_owned(
         context.result.pending_edges.as_slice(),
         context.node_index,
         context.graph,
     );
-    let previous_snapshot = snapshot::read_latest_snapshot(context.root, context.state_config);
+    let previous_snapshot = selection
+        .includes_suggestions()
+        .then(|| snapshot::read_latest_snapshot(context.root, context.state_config))
+        .flatten();
 
-    let mut diagnostics = checks::run_checks(
+    let mut diagnostics = checks::run_checks_with_selection(
         context.graph,
         context.lattice,
         context.config,
@@ -76,6 +86,7 @@ pub(crate) fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> Analysi
         context.result.implausible_refs.as_slice(),
         context.cascade_candidates,
         previous_snapshot.as_ref(),
+        selection,
     );
     checks::apply_suppressions(&mut diagnostics, &context.config.suppress);
 
