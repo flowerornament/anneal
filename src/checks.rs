@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{HandleKind, NodeId, resolved_file};
+use crate::identity::{diagnostic_id, suggestion_id};
 use crate::lattice::{self, FreshnessLevel, Lattice};
 use crate::parse::{ImplausibleRef, PendingEdge};
 
@@ -38,12 +40,23 @@ pub(crate) enum Evidence {
 }
 
 /// Severity level for diagnostics, ordered so errors sort first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
 pub(crate) enum Severity {
     Error = 0,
     Warning = 1,
     Info = 2,
     Suggestion = 3,
+}
+
+impl Severity {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+            Self::Suggestion => "suggestion",
+        }
+    }
 }
 
 /// A single diagnostic produced by a check rule (CHECK-06).
@@ -58,6 +71,34 @@ pub(crate) struct Diagnostic {
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
     pub(crate) evidence: Option<Evidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DiagnosticRecord {
+    pub(crate) diagnostic_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) suggestion_id: Option<String>,
+    pub(crate) severity: String,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) evidence: Option<Evidence>,
+}
+
+impl DiagnosticRecord {
+    pub(crate) fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
+        Self {
+            diagnostic_id: diagnostic_id(diagnostic),
+            suggestion_id: suggestion_id(diagnostic),
+            severity: diagnostic.severity.as_str().to_string(),
+            code: diagnostic.code,
+            message: diagnostic.message.clone(),
+            file: diagnostic.file.clone(),
+            line: diagnostic.line,
+            evidence: diagnostic.evidence.clone(),
+        }
+    }
 }
 
 impl Diagnostic {

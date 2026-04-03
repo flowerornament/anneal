@@ -9,11 +9,10 @@ use globset::{Glob, GlobMatcher};
 use serde::Serialize;
 
 use crate::analysis::{self, AnalysisContext};
-use crate::checks::{Diagnostic, Severity, confidence_gap_levels};
+use crate::checks::{Diagnostic, DiagnosticRecord, Severity, confidence_gap_levels};
 use crate::cli::{DetailLevel, JsonEnvelope, JsonStyle, OutputMeta};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
-use crate::identity::diagnostic_id;
 use crate::lattice::Lattice;
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
@@ -46,48 +45,6 @@ impl QueryHandleKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub(crate) enum QueryEdgeKind {
-    Cites,
-    DependsOn,
-    Supersedes,
-    Verifies,
-    Discharges,
-}
-
-impl QueryEdgeKind {
-    fn as_edge_kind(self) -> EdgeKind {
-        match self {
-            Self::Cites => EdgeKind::Cites,
-            Self::DependsOn => EdgeKind::DependsOn,
-            Self::Supersedes => EdgeKind::Supersedes,
-            Self::Verifies => EdgeKind::Verifies,
-            Self::Discharges => EdgeKind::Discharges,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum QuerySeverity {
-    Error,
-    Warning,
-    Info,
-    Suggestion,
-}
-
-impl QuerySeverity {
-    fn matches(self, severity: Severity) -> bool {
-        matches!(
-            (self, severity),
-            (Self::Error, Severity::Error)
-                | (Self::Warning, Severity::Warning)
-                | (Self::Info, Severity::Info)
-                | (Self::Suggestion, Severity::Suggestion)
-        )
-    }
-}
-
 #[derive(Args, Clone, Debug)]
 pub(crate) struct QueryPageArgs {
     /// Maximum rows to return (default: 25 unless --full)
@@ -108,7 +65,6 @@ pub(crate) struct QueryPageArgs {
 pub(crate) enum QueryCommand {
     Handles(HandleQueryArgs),
     Edges(EdgeQueryArgs),
-    #[command(hide = true)]
     Diagnostics(DiagnosticQueryArgs),
     #[command(hide = true)]
     Obligations(ObligationQueryArgs),
@@ -170,7 +126,7 @@ pub(crate) struct EdgeQueryArgs {
     pub(crate) page: QueryPageArgs,
     /// Filter by edge kind
     #[arg(long, value_enum)]
-    pub(crate) kind: Option<QueryEdgeKind>,
+    pub(crate) kind: Option<EdgeKind>,
     /// Filter by exact source handle id
     #[arg(long)]
     pub(crate) source: Option<String>,
@@ -203,7 +159,7 @@ pub(crate) struct DiagnosticQueryArgs {
     pub(crate) page: QueryPageArgs,
     /// Filter by severity
     #[arg(long, value_enum)]
-    pub(crate) severity: Option<QuerySeverity>,
+    pub(crate) severity: Option<Severity>,
     /// Filter by diagnostic code
     #[arg(long)]
     pub(crate) code: Option<String>,
@@ -287,29 +243,6 @@ pub(crate) struct EdgeRow {
     pub(crate) target_file: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DiagnosticRow {
-    pub(crate) diagnostic_id: String,
-    pub(crate) severity: String,
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) file: Option<String>,
-    pub(crate) line: Option<u32>,
-}
-
-impl DiagnosticRow {
-    fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
-        Self {
-            diagnostic_id: diagnostic_id(diagnostic),
-            severity: diagnostic_severity_name(diagnostic.severity).to_string(),
-            code: diagnostic.code,
-            message: diagnostic.message.clone(),
-            file: diagnostic.file.clone(),
-            line: diagnostic.line,
-        }
-    }
-}
-
 #[derive(Serialize)]
 struct QueryPayload<T: Serialize> {
     kind: &'static str,
@@ -318,7 +251,7 @@ struct QueryPayload<T: Serialize> {
 
 type HandleQueryOutput = JsonEnvelope<QueryPayload<HandleRow>>;
 type EdgeQueryOutput = JsonEnvelope<QueryPayload<EdgeRow>>;
-type DiagnosticQueryOutput = JsonEnvelope<QueryPayload<DiagnosticRow>>;
+type DiagnosticQueryOutput = JsonEnvelope<QueryPayload<DiagnosticRecord>>;
 
 pub(crate) fn run(
     context: &AnalysisContext<'_>,
@@ -435,9 +368,7 @@ fn build_diagnostic_query_output(
         obligations: args.obligations,
         active_only: matches!(args.page.scope, QueryScope::Active),
     };
-    let output = crate::cli::cmd_check(diagnostics, &filters, terminal_files);
-
-    let mut diagnostics = output.diagnostics;
+    let mut diagnostics = crate::cli::apply_check_filters(diagnostics, &filters, terminal_files);
     diagnostics.retain(|diagnostic| matches_diagnostic_filters(diagnostic, args));
     diagnostics.sort_by(|a, b| diagnostic_sort_key(a).cmp(&diagnostic_sort_key(b)));
 
@@ -448,7 +379,7 @@ fn build_diagnostic_query_output(
             kind: "diagnostics",
             items: items
                 .into_iter()
-                .map(|diagnostic| DiagnosticRow::from_diagnostic(&diagnostic))
+                .map(|diagnostic| DiagnosticRecord::from_diagnostic(&diagnostic))
                 .collect(),
         },
     )
@@ -627,10 +558,7 @@ fn matches_edge_filters(
 ) -> bool {
     let source_handle = graph.node(candidate.source);
     let target_handle = graph.node(candidate.target);
-    if args
-        .kind
-        .is_some_and(|kind| candidate.kind != kind.as_edge_kind())
-    {
+    if args.kind.is_some_and(|kind| candidate.kind != kind) {
         return false;
     }
     if args
@@ -707,7 +635,7 @@ fn compile_glob(pattern: Option<&str>) -> anyhow::Result<Option<GlobMatcher>> {
 fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArgs) -> bool {
     if args
         .severity
-        .is_some_and(|severity| !severity.matches(diagnostic.severity))
+        .is_some_and(|severity| severity != diagnostic.severity)
     {
         return false;
     }
@@ -959,15 +887,6 @@ fn print_diagnostic_output_human(
     Ok(())
 }
 
-fn diagnostic_severity_name(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Info => "info",
-        Severity::Suggestion => "suggestion",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,7 +1114,7 @@ mod tests {
         let terminal_files = HashSet::new();
         let mut args = diagnostic_args();
         args.page.scope = QueryScope::All;
-        args.severity = Some(QuerySeverity::Error);
+        args.severity = Some(Severity::Error);
 
         let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
 
