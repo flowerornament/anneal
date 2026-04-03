@@ -35,16 +35,35 @@ pub(crate) struct ObligationEntry {
     pub(crate) dischargers: Vec<String>,
 }
 
-pub(crate) fn collect_obligations(
+pub(crate) fn collect_obligation_summaries(
     graph: &DiGraph,
     lattice: &Lattice,
     config: &AnnealConfig,
+    include_mooted: bool,
+) -> Vec<ObligationEntry> {
+    collect_obligations_with(graph, lattice, config, include_mooted, false)
+}
+
+fn collect_obligations_with(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &AnnealConfig,
+    include_mooted: bool,
+    include_dischargers: bool,
 ) -> Vec<ObligationEntry> {
     let linear_namespaces = config.handles.linear_set();
     graph
         .nodes()
         .filter_map(|(node_id, handle)| {
-            obligation_entry(graph, lattice, &linear_namespaces, node_id, handle)
+            obligation_entry(
+                graph,
+                lattice,
+                &linear_namespaces,
+                node_id,
+                handle,
+                include_mooted,
+                include_dischargers,
+            )
         })
         .collect()
 }
@@ -62,6 +81,8 @@ pub(crate) fn lookup_obligation(
         &linear_namespaces,
         node_id,
         graph.node(node_id),
+        true,
+        true,
     )
 }
 
@@ -86,6 +107,8 @@ fn obligation_entry(
     linear_namespaces: &std::collections::HashSet<&str>,
     node_id: crate::handle::NodeId,
     handle: &crate::handle::Handle,
+    include_mooted: bool,
+    include_dischargers: bool,
 ) -> Option<ObligationEntry> {
     let HandleKind::Label { prefix, .. } = &handle.kind else {
         return None;
@@ -94,14 +117,21 @@ fn obligation_entry(
         return None;
     }
 
-    let dischargers: Vec<String> = graph
-        .incoming(node_id)
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::Discharges)
-        .map(|edge| graph.node(edge.source).id.clone())
-        .collect();
-    let discharge_count = dischargers.len();
+    let mut dischargers = Vec::new();
+    let mut discharge_count = 0;
+    for edge in graph.incoming(node_id) {
+        if edge.kind != EdgeKind::Discharges {
+            continue;
+        }
+        discharge_count += 1;
+        if include_dischargers {
+            dischargers.push(graph.node(edge.source).id.clone());
+        }
+    }
     let disposition = obligation_disposition(handle.is_terminal(lattice), discharge_count);
+    if !include_mooted && disposition == ObligationDisposition::Mooted {
+        return None;
+    }
 
     Some(ObligationEntry {
         handle: handle.id.clone(),

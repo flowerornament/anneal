@@ -14,7 +14,7 @@ use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::identity::suggestion_id;
 use crate::lattice::Lattice;
-use crate::obligations::{ObligationDisposition, collect_obligations};
+use crate::obligations::{ObligationDisposition, collect_obligation_summaries};
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
 
@@ -441,7 +441,8 @@ fn build_obligation_output(
         context.config,
         args.page.scope,
     );
-    rows.retain(|row| matches_obligation_filters(row, args));
+    let selected = selected_obligation_dispositions(args);
+    rows.retain(|row| matches_obligation_filters(row, args, selected.as_deref()));
     rows.sort_by(|a, b| {
         a.namespace
             .cmp(&b.namespace)
@@ -608,12 +609,8 @@ fn build_obligation_rows(
     config: &crate::config::AnnealConfig,
     scope: QueryScope,
 ) -> Vec<ObligationRow> {
-    collect_obligations(graph, lattice, config)
+    collect_obligation_summaries(graph, lattice, config, !matches!(scope, QueryScope::Active))
         .into_iter()
-        .filter(|entry| {
-            !(matches!(scope, QueryScope::Active)
-                && entry.disposition == ObligationDisposition::Mooted)
-        })
         .map(|entry| ObligationRow {
             handle: entry.handle,
             namespace: entry.namespace,
@@ -1011,7 +1008,11 @@ fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArg
     true
 }
 
-fn matches_obligation_filters(row: &ObligationRow, args: &ObligationQueryArgs) -> bool {
+fn matches_obligation_filters(
+    row: &ObligationRow,
+    args: &ObligationQueryArgs,
+    selected: Option<&[ObligationDisposition]>,
+) -> bool {
     if args
         .namespace
         .as_ref()
@@ -1019,8 +1020,7 @@ fn matches_obligation_filters(row: &ObligationRow, args: &ObligationQueryArgs) -
     {
         return false;
     }
-    let selected = selected_obligation_dispositions(args);
-    if !selected.is_empty() && !selected.contains(&row.disposition) {
+    if selected.is_some_and(|selected| !selected.contains(&row.disposition)) {
         return false;
     }
     true
@@ -1104,7 +1104,9 @@ fn compare_edge_candidates(
         .then_with(|| left_target.cmp(right_target))
 }
 
-fn selected_obligation_dispositions(args: &ObligationQueryArgs) -> Vec<ObligationDisposition> {
+fn selected_obligation_dispositions(
+    args: &ObligationQueryArgs,
+) -> Option<Vec<ObligationDisposition>> {
     let mut selected = Vec::new();
     if args.undischarged {
         selected.push(ObligationDisposition::Outstanding);
@@ -1118,7 +1120,7 @@ fn selected_obligation_dispositions(args: &ObligationQueryArgs) -> Vec<Obligatio
     if args.mooted {
         selected.push(ObligationDisposition::Mooted);
     }
-    selected
+    (!selected.is_empty()).then_some(selected)
 }
 
 fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (OutputMeta, Vec<T>) {
@@ -1681,7 +1683,8 @@ mod tests {
             multi_discharged: false,
             mooted: false,
         };
-        rows.retain(|row| matches_obligation_filters(row, &args));
+        let selected = selected_obligation_dispositions(&args);
+        rows.retain(|row| matches_obligation_filters(row, &args, selected.as_deref()));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].handle, "OQ-1");
         assert_eq!(rows[0].disposition, ObligationDisposition::Outstanding);

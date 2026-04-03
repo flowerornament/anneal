@@ -546,6 +546,7 @@ fn select_suggestion<'a>(
             .with_context(|| format!("no suggestion found for id {id}"));
     }
 
+    let selector = args.handle.as_deref().map(build_handle_selector);
     let mut matches: Vec<&Diagnostic> = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == crate::checks::Severity::Suggestion)
@@ -555,9 +556,9 @@ fn select_suggestion<'a>(
                 .is_none_or(|code| diagnostic.code == code.as_str())
         })
         .filter(|diagnostic| {
-            args.handle
+            selector
                 .as_ref()
-                .is_none_or(|handle| suggestion_matches_handle(diagnostic, handle))
+                .is_none_or(|selector| handle_mentions_selector(diagnostic, selector, false))
         })
         .collect();
 
@@ -573,11 +574,12 @@ fn select_suggestion<'a>(
 }
 
 fn matches_secondary_selectors(diagnostic: &Diagnostic, args: &DiagnosticExplainArgs) -> bool {
+    let selector = args.handle.as_deref().map(build_handle_selector);
     if args.id.is_none()
         && args.code.is_none()
         && args.file.is_none()
         && args.line.is_none()
-        && args.handle.is_none()
+        && selector.is_none()
     {
         return false;
     }
@@ -599,33 +601,49 @@ fn matches_secondary_selectors(diagnostic: &Diagnostic, args: &DiagnosticExplain
     if args.line.is_some_and(|line| diagnostic.line != Some(line)) {
         return false;
     }
-    if args
-        .handle
+    if selector
         .as_ref()
-        .is_some_and(|handle| !diagnostic_mentions_handle(diagnostic, handle))
+        .is_some_and(|selector| !handle_mentions_selector(diagnostic, selector, true))
     {
         return false;
     }
     true
 }
 
-fn diagnostic_mentions_handle(diagnostic: &Diagnostic, handle: &str) -> bool {
+struct HandleSelector<'a> {
+    raw: &'a str,
+    namespace: Option<&'a str>,
+}
+
+fn build_handle_selector(raw: &str) -> HandleSelector<'_> {
+    HandleSelector {
+        raw,
+        namespace: crate::resolve::split_trailing_numeric_suffix(raw)
+            .map(|(prefix, _)| prefix.trim_end_matches('-')),
+    }
+}
+
+fn handle_mentions_selector(
+    diagnostic: &Diagnostic,
+    selector: &HandleSelector<'_>,
+    allow_message_fallback: bool,
+) -> bool {
     if diagnostic
         .file
         .as_deref()
-        .is_some_and(|file| crate::analysis::matches_scoped_file(file, handle))
+        .is_some_and(|file| crate::analysis::matches_scoped_file(file, selector.raw))
     {
         return true;
     }
-    if diagnostic.message.contains(handle) {
+    if allow_message_fallback && diagnostic.message.contains(selector.raw) {
         return true;
     }
     match diagnostic.evidence.as_ref() {
         Some(Evidence::BrokenRef { target, candidates }) => {
-            target == handle || candidates.iter().any(|candidate| candidate == handle)
+            target == selector.raw || candidates.iter().any(|candidate| candidate == selector.raw)
         }
         Some(Evidence::Suggestion { suggestion }) => {
-            suggestion_matches_selector(suggestion, handle)
+            suggestion_matches_selector(suggestion, selector)
         }
         _ => false,
     }
@@ -800,30 +818,15 @@ fn add_suggestion_facts(facts: &mut Vec<ExplanationFact>, suggestion: &Suggestio
     }
 }
 
-fn suggestion_matches_handle(diagnostic: &Diagnostic, handle: &str) -> bool {
-    if diagnostic
-        .file
-        .as_deref()
-        .is_some_and(|file| crate::analysis::matches_scoped_file(file, handle))
-    {
-        return true;
-    }
-
-    match diagnostic.evidence.as_ref() {
-        Some(Evidence::Suggestion { suggestion }) => {
-            suggestion_matches_selector(suggestion, handle)
-        }
-        _ => false,
-    }
-}
-
-fn suggestion_matches_selector(suggestion: &SuggestionEvidence, selector: &str) -> bool {
-    let namespace = selector_namespace(selector);
+fn suggestion_matches_selector(
+    suggestion: &SuggestionEvidence,
+    selector: &HandleSelector<'_>,
+) -> bool {
     match suggestion {
-        SuggestionEvidence::OrphanedHandle { handle } => handle == selector,
+        SuggestionEvidence::OrphanedHandle { handle } => handle == selector.raw,
         SuggestionEvidence::CandidateNamespace { prefix, .. }
         | SuggestionEvidence::AbandonedNamespace { prefix, .. } => {
-            selector == prefix || namespace.is_some_and(|ns| ns == prefix)
+            selector.raw == prefix || selector.namespace.is_some_and(|ns| ns == prefix)
         }
         SuggestionEvidence::PipelineStall { .. } => false,
         SuggestionEvidence::ConcernGroupCandidate {
@@ -831,24 +834,13 @@ fn suggestion_matches_selector(suggestion: &SuggestionEvidence, selector: &str) 
             right_prefix,
             ..
         } => {
-            selector == left_prefix
-                || selector == right_prefix
-                || namespace.is_some_and(|ns| ns == left_prefix || ns == right_prefix)
+            selector.raw == left_prefix
+                || selector.raw == right_prefix
+                || selector
+                    .namespace
+                    .is_some_and(|ns| ns == left_prefix || ns == right_prefix)
         }
     }
-}
-
-fn selector_namespace(selector: &str) -> Option<&str> {
-    let digit_start = selector
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| !ch.is_ascii_digit())
-        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
-    let (prefix, digits) = selector.split_at(digit_start);
-    if digits.is_empty() {
-        return None;
-    }
-    Some(prefix.trim_end_matches('-'))
 }
 
 fn parse_after_prefix(message: &str, prefix: &str, before: &str) -> Option<String> {
