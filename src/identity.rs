@@ -1,6 +1,5 @@
 use crate::checks::{Diagnostic, Severity};
 
-#[allow(dead_code)]
 fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for &byte in bytes {
@@ -10,12 +9,10 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-#[allow(dead_code)]
 fn stable_id(prefix: &str, payload: &str) -> String {
     format!("{prefix}_{:016x}", fnv1a_64(payload.as_bytes()))
 }
 
-#[allow(dead_code)]
 fn canonical_diagnostic_payload(diagnostic: &Diagnostic) -> String {
     let evidence = diagnostic
         .evidence
@@ -34,12 +31,10 @@ fn canonical_diagnostic_payload(diagnostic: &Diagnostic) -> String {
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn diagnostic_id(diagnostic: &Diagnostic) -> String {
     stable_id("diag", &canonical_diagnostic_payload(diagnostic))
 }
 
-#[allow(dead_code)]
 pub(crate) fn suggestion_id(diagnostic: &Diagnostic) -> Option<String> {
     matches!(diagnostic.severity, Severity::Suggestion)
         .then(|| stable_id("sugg", &canonical_diagnostic_payload(diagnostic)))

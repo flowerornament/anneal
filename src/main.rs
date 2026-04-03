@@ -527,12 +527,10 @@ derived analysis facts.
 that are too specific for `status`, too broad for `get`, and intentionally out
 of scope for `find`, which remains an identity search.
 
-The initial surface is typed by domain:
+The current surface is typed by domain:
   handles       query handle properties and local graph counts
   edges         query typed graph edges and endpoint properties
   diagnostics   query the same freshly-derived diagnostic set used by check
-  obligations   query obligation state
-  suggestions   query structural suggestion outputs
 
 All query domains inherit anneal's bounded-output discipline: limits, offsets,
 scope controls, and explicit --full expansion.")]
@@ -550,12 +548,8 @@ obligation state, or suggestion.
 It does not search semantically. It justifies a specific derived answer in
 terms of handles, edges, statuses, rules, and snapshots.
 
-The initial surface is typed by explanation domain:
-  diagnostic    explain one diagnostic, primarily by diagnostic_id
-  impact        explain why impact included each affected handle
-  convergence   explain the current status-style convergence signal
-  obligation    explain one obligation's current disposition
-  suggestion    explain one suggestion, primarily by suggestion_id")]
+The current surface is typed by explanation domain:
+  diagnostic    explain one diagnostic, primarily by diagnostic_id")]
     Explain {
         #[command(subcommand)]
         command: explain::ExplainCommand,
@@ -1032,7 +1026,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Explain { ref command }) => {
-            explain::run(command)?;
+            explain::run(&analysis, command, cli_args.json, json_style)?;
         }
     }
 
@@ -1074,6 +1068,18 @@ mod tests {
             cli.command,
             Some(Command::Explain {
                 command: explain::ExplainCommand::Convergence(_),
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_explain_diagnostic() {
+        let cli = Cli::try_parse_from(["anneal", "explain", "diagnostic", "--id", "diag_deadbeef"])
+            .expect("parse explain diagnostic");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Explain {
+                command: explain::ExplainCommand::Diagnostic(_),
             })
         ));
     }
