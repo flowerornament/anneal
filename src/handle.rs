@@ -1,6 +1,8 @@
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
+use crate::graph::DiGraph;
+
 /// Arena index into `DiGraph::nodes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(crate) struct NodeId(u32);
@@ -69,6 +71,21 @@ impl Handle {
             .as_ref()
             .is_some_and(|s| lattice.terminal.contains(s))
     }
+}
+
+pub(crate) fn resolved_file(handle: &Handle, graph: &DiGraph) -> Option<String> {
+    handle
+        .file_path
+        .as_ref()
+        .map(ToString::to_string)
+        .or_else(|| match &handle.kind {
+            HandleKind::Version { artifact, .. } => graph
+                .node(*artifact)
+                .file_path
+                .as_ref()
+                .map(ToString::to_string),
+            _ => None,
+        })
 }
 
 /// Metadata extracted from YAML frontmatter fields.

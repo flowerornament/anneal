@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{HandleKind, NodeId};
+use crate::handle::{HandleKind, NodeId, resolved_file};
 use crate::lattice::{self, FreshnessLevel, Lattice};
 use crate::parse::{ImplausibleRef, PendingEdge};
 
@@ -91,16 +91,18 @@ impl Diagnostic {
     }
 }
 
-/// For Version handles, resolve the artifact file_path from the parent file node.
-fn artifact_file(handle: &crate::handle::Handle, graph: &DiGraph) -> Option<String> {
-    if let HandleKind::Version { artifact, .. } = &handle.kind {
-        return graph
-            .node(*artifact)
-            .file_path
-            .as_ref()
-            .map(ToString::to_string);
+pub(crate) fn confidence_gap_levels(
+    edge_kind: EdgeKind,
+    source_level: Option<usize>,
+    target_level: Option<usize>,
+) -> Option<(usize, usize)> {
+    if edge_kind != EdgeKind::DependsOn {
+        return None;
     }
-    None
+    let (Some(source_level), Some(target_level)) = (source_level, target_level) else {
+        return None;
+    };
+    (source_level > target_level).then_some((source_level, target_level))
 }
 
 // ---------------------------------------------------------------------------
@@ -295,14 +297,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             let target = graph.node(edge.target);
             if target.is_terminal(lattice) {
                 let target_status = target.status.as_deref().unwrap_or("unknown");
-                // Fall back to artifact file, target file, or target's artifact
-                let file = handle
-                    .file_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .or_else(|| artifact_file(handle, graph))
-                    .or_else(|| target.file_path.as_ref().map(ToString::to_string))
-                    .or_else(|| artifact_file(target, graph));
+                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
 
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -357,13 +352,10 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                 continue;
             };
 
-            if source_level > target_level {
-                let file = handle
-                    .file_path
-                    .as_ref()
-                    .or(target.file_path.as_ref())
-                    .map(ToString::to_string);
-
+            if let Some((source_level, target_level)) =
+                confidence_gap_levels(EdgeKind::DependsOn, Some(source_level), Some(target_level))
+            {
+                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W002",
