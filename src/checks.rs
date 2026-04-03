@@ -201,15 +201,16 @@ impl DiagnosticSelection {
     }
 
     pub(crate) fn widen_for_code(&mut self, code: &str) {
-        match code {
-            "I001" | "E001" => self.existence = true,
-            "W004" => self.plausibility = true,
-            "W001" => self.staleness = true,
-            "W002" => self.confidence_gap = true,
-            "E002" | "I002" => self.linearity = true,
-            "W003" => self.conventions = true,
-            code if code.starts_with('S') => self.suggestions = true,
-            _ => {}
+        if let Some(descriptor) = diagnostic_descriptor(code) {
+            match descriptor.family {
+                DiagnosticFamily::Existence => self.existence = true,
+                DiagnosticFamily::Plausibility => self.plausibility = true,
+                DiagnosticFamily::Staleness => self.staleness = true,
+                DiagnosticFamily::ConfidenceGap => self.confidence_gap = true,
+                DiagnosticFamily::Linearity => self.linearity = true,
+                DiagnosticFamily::Conventions => self.conventions = true,
+                DiagnosticFamily::Suggestion => self.suggestions = true,
+            }
         }
     }
 
@@ -231,28 +232,107 @@ impl DiagnosticSelection {
 }
 
 pub(crate) fn is_stale_code(code: &str) -> bool {
-    matches!(code, "W001")
+    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.stale_alias)
 }
 
 pub(crate) fn is_obligation_code(code: &str) -> bool {
-    matches!(code, "E002" | "I002")
+    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.obligation_alias)
 }
 
 pub(crate) fn diagnostic_rule_name(code: &str) -> Option<&'static str> {
-    match code {
-        "I001" | "E001" => Some("KB-R1 existence"),
-        "W004" => Some("plausibility filter"),
-        "W001" => Some("KB-R2 staleness"),
-        "W002" => Some("KB-R3 confidence gap"),
-        "E002" | "I002" => Some("KB-R4 linearity"),
-        "W003" => Some("KB-R5 convention adoption"),
-        "S001" => Some("SUGGEST-01 orphaned handles"),
-        "S002" => Some("SUGGEST-02 candidate namespaces"),
-        "S003" => Some("SUGGEST-03 pipeline stalls"),
-        "S004" => Some("SUGGEST-04 abandoned namespaces"),
-        "S005" => Some("SUGGEST-05 concern group candidates"),
-        _ => None,
-    }
+    diagnostic_descriptor(code).map(|descriptor| descriptor.rule_name)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiagnosticFamily {
+    Existence,
+    Plausibility,
+    Staleness,
+    ConfidenceGap,
+    Linearity,
+    Conventions,
+    Suggestion,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiagnosticDescriptor {
+    family: DiagnosticFamily,
+    rule_name: &'static str,
+    stale_alias: bool,
+    obligation_alias: bool,
+}
+
+fn diagnostic_descriptor(code: &str) -> Option<DiagnosticDescriptor> {
+    let descriptor = match code {
+        "I001" | "E001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Existence,
+            rule_name: "KB-R1 existence",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "W004" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Plausibility,
+            rule_name: "plausibility filter",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "W001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Staleness,
+            rule_name: "KB-R2 staleness",
+            stale_alias: true,
+            obligation_alias: false,
+        },
+        "W002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::ConfidenceGap,
+            rule_name: "KB-R3 confidence gap",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "E002" | "I002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Linearity,
+            rule_name: "KB-R4 linearity",
+            stale_alias: false,
+            obligation_alias: true,
+        },
+        "W003" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Conventions,
+            rule_name: "KB-R5 convention adoption",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-01 orphaned handles",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-02 candidate namespaces",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S003" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-03 pipeline stalls",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S004" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-04 abandoned namespaces",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S005" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-05 concern group candidates",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        _ => return None,
+    };
+    Some(descriptor)
 }
 
 impl Diagnostic {
@@ -803,10 +883,16 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
     // Count labels per prefix
-    let mut prefix_counts: HashMap<&str, usize> = HashMap::new();
+    let mut prefix_counts: HashMap<&str, (usize, Option<String>)> = HashMap::new();
     for (_, handle) in graph.nodes() {
         if let HandleKind::Label { ref prefix, .. } = handle.kind {
-            *prefix_counts.entry(prefix.as_str()).or_insert(0) += 1;
+            let entry = prefix_counts
+                .entry(prefix.as_str())
+                .or_insert((0, handle.file_path.as_ref().map(ToString::to_string)));
+            entry.0 += 1;
+            if entry.1.is_none() {
+                entry.1 = handle.file_path.as_ref().map(ToString::to_string);
+            }
         }
     }
 
@@ -814,23 +900,13 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     // Sort for deterministic output
     let mut candidates: Vec<_> = prefix_counts
         .into_iter()
-        .filter(|(prefix, count)| {
+        .filter(|(prefix, (count, _))| {
             *count >= 3 && !confirmed.contains(prefix) && !rejected.contains(prefix)
         })
         .collect();
     candidates.sort_by_key(|(prefix, _)| *prefix);
 
-    for (prefix, count) in candidates {
-        // Pick representative file: first label handle with this prefix
-        let representative_file = graph.nodes().find_map(|(_, handle)| {
-            if let HandleKind::Label { prefix: ref p, .. } = handle.kind
-                && p.as_str() == prefix
-            {
-                return handle.file_path.as_ref().map(ToString::to_string);
-            }
-            None
-        });
-
+    for (prefix, (count, representative_file)) in candidates {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S002",
@@ -1065,7 +1141,7 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
     }
 
     // For each File handle, collect label prefixes it references
-    let mut file_prefixes: Vec<HashSet<&str>> = Vec::new();
+    let mut file_prefixes: Vec<(HashSet<&str>, Option<String>)> = Vec::new();
     for (node_id, handle) in graph.nodes() {
         if !matches!(handle.kind, HandleKind::File(_)) {
             continue;
@@ -1082,59 +1158,42 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
         }
 
         if prefixes.len() >= 2 {
-            file_prefixes.push(prefixes);
+            file_prefixes.push((prefixes, handle.file_path.as_ref().map(ToString::to_string)));
         }
     }
 
     // Count co-occurrences for all prefix pairs
-    let mut pair_counts: HashMap<(&str, &str), usize> = HashMap::new();
-    for prefixes in &file_prefixes {
+    type PairCount<'a> = HashMap<(&'a str, &'a str), (usize, Option<String>)>;
+    let mut pair_counts: PairCount<'_> = HashMap::new();
+    for (prefixes, representative_file) in &file_prefixes {
         let mut sorted: Vec<&str> = prefixes.iter().copied().collect();
         sorted.sort_unstable();
         for (i, &a) in sorted.iter().enumerate() {
             for &b in &sorted[i + 1..] {
-                *pair_counts.entry((a, b)).or_insert(0) += 1;
+                let entry = pair_counts
+                    .entry((a, b))
+                    .or_insert((0, representative_file.clone()));
+                entry.0 += 1;
+                if entry.1.is_none() {
+                    entry.1.clone_from(representative_file);
+                }
             }
         }
     }
 
     // Filter to pairs with >= 3 co-occurrences, excluding existing concern groups
-    let mut candidates: Vec<((&str, &str), usize)> = pair_counts
+    type PairCandidate<'a> = Vec<((&'a str, &'a str), (usize, Option<String>))>;
+    let mut candidates: PairCandidate<'_> = pair_counts
         .into_iter()
-        .filter(|((a, b), count)| *count >= 3 && !existing_pairs.contains(&(*a, *b)))
+        .filter(|((a, b), (count, _))| *count >= 3 && !existing_pairs.contains(&(*a, *b)))
         .collect();
 
     // Sort by count descending, then by pair name for determinism
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
 
     // Limit to top 5 pairs to avoid noise
     let mut diagnostics = Vec::new();
-    for ((prefix_a, prefix_b), count) in candidates.into_iter().take(5) {
-        // Find a file that references both prefixes as representative
-        let representative_file = graph.nodes().find_map(|(node_id, handle)| {
-            if !matches!(handle.kind, HandleKind::File(_)) {
-                return None;
-            }
-            let mut has_a = false;
-            let mut has_b = false;
-            for edge in graph.outgoing(node_id) {
-                let target = graph.node(edge.target);
-                if let HandleKind::Label { ref prefix, .. } = target.kind {
-                    if prefix.as_str() == prefix_a {
-                        has_a = true;
-                    }
-                    if prefix.as_str() == prefix_b {
-                        has_b = true;
-                    }
-                }
-            }
-            if has_a && has_b {
-                handle.file_path.as_ref().map(ToString::to_string)
-            } else {
-                None
-            }
-        });
-
+    for ((prefix_a, prefix_b), (count, representative_file)) in candidates.into_iter().take(5) {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S005",
