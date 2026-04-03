@@ -7,7 +7,8 @@ use serde::Serialize;
 use crate::analysis::AnalysisContext;
 use crate::checks::{Diagnostic, Evidence};
 use crate::cli::{JsonEnvelope, JsonStyle, OutputMeta};
-use crate::identity::diagnostic_id;
+use crate::handle::{HandleKind, resolved_file};
+use crate::identity::{diagnostic_id, suggestion_id};
 use crate::impact;
 use crate::snapshot;
 
@@ -16,9 +17,7 @@ pub(crate) enum ExplainCommand {
     Diagnostic(DiagnosticExplainArgs),
     Impact(ImpactExplainArgs),
     Convergence(ConvergenceExplainArgs),
-    #[command(hide = true)]
     Obligation(ObligationExplainArgs),
-    #[command(hide = true)]
     Suggestion(SuggestionExplainArgs),
 }
 
@@ -134,6 +133,8 @@ pub(crate) struct ConvergenceSnapshotSummary {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ObligationExplanation {
     pub(crate) handle: String,
+    pub(crate) namespace: String,
+    pub(crate) disposition: String,
     pub(crate) facts: Vec<ExplanationFact>,
 }
 
@@ -142,6 +143,10 @@ pub(crate) struct ObligationExplanation {
 pub(crate) struct SuggestionExplanation {
     pub(crate) suggestion_id: String,
     pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) rule: Option<String>,
     pub(crate) facts: Vec<ExplanationFact>,
 }
 
@@ -185,11 +190,27 @@ pub(crate) fn run(
             )?;
             Ok(())
         }
-        ExplainCommand::Obligation(_) => {
-            bail!("anneal explain obligation is not implemented yet on this branch")
+        ExplainCommand::Obligation(args) => {
+            let explanation = build_obligation_explanation_output(context, args)?;
+            emit_explanation(
+                explanation,
+                json,
+                json_style,
+                print_obligation_explanation_human,
+                "failed to write explain obligation output",
+            )?;
+            Ok(())
         }
-        ExplainCommand::Suggestion(_) => {
-            bail!("anneal explain suggestion is not implemented yet on this branch")
+        ExplainCommand::Suggestion(args) => {
+            let explanation = build_suggestion_explanation_output(context, args)?;
+            emit_explanation(
+                explanation,
+                json,
+                json_style,
+                print_suggestion_explanation_human,
+                "failed to write explain suggestion output",
+            )?;
+            Ok(())
         }
     }
 }
@@ -303,6 +324,100 @@ fn impact_path(entry: impact::ImpactPathEntry, graph: &crate::graph::DiGraph) ->
             })
             .collect(),
     }
+}
+
+fn build_obligation_explanation_output(
+    context: &AnalysisContext<'_>,
+    args: &ObligationExplainArgs,
+) -> anyhow::Result<ObligationExplanation> {
+    let node_id = crate::cli::lookup_handle(context.node_index, &args.handle)
+        .with_context(|| format!("handle not found: {}", args.handle))?;
+    let handle = context.graph.node(node_id);
+    let HandleKind::Label { prefix, .. } = &handle.kind else {
+        bail!("handle is not a label obligation: {}", args.handle);
+    };
+    if !context
+        .config
+        .handles
+        .linear_set()
+        .contains(prefix.as_str())
+    {
+        bail!("handle is not in a linear namespace: {}", args.handle);
+    }
+
+    let incoming_dischargers: Vec<String> = context
+        .graph
+        .incoming(node_id)
+        .iter()
+        .filter(|edge| edge.kind == crate::graph::EdgeKind::Discharges)
+        .map(|edge| context.graph.node(edge.source).id.clone())
+        .collect();
+
+    let disposition =
+        crate::query::obligation_disposition(handle, context.lattice, incoming_dischargers.len());
+    let mut facts = vec![
+        fact("obligation", "namespace", prefix),
+        fact("obligation", "disposition", disposition.as_str()),
+        fact(
+            "count",
+            "dischargers",
+            &incoming_dischargers.len().to_string(),
+        ),
+        fact(
+            "state",
+            "terminal",
+            if handle.is_terminal(context.lattice) {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+    ];
+    if let Some(file) = resolved_file(handle, context.graph) {
+        facts.push(fact("location", "file", &file));
+    }
+    if incoming_dischargers.is_empty() {
+        facts.push(fact("discharger", "handles", "none"));
+    } else {
+        facts.push(fact(
+            "discharger",
+            "handles",
+            &incoming_dischargers.join(", "),
+        ));
+    }
+
+    Ok(ObligationExplanation {
+        handle: handle.id.clone(),
+        namespace: prefix.clone(),
+        disposition: disposition.as_str().to_string(),
+        facts,
+    })
+}
+
+fn build_suggestion_explanation_output(
+    context: &AnalysisContext<'_>,
+    args: &SuggestionExplainArgs,
+) -> anyhow::Result<SuggestionExplanation> {
+    let diagnostics = crate::analysis::build_analysis_artifacts_with_selection(
+        context,
+        crate::checks::DiagnosticSelection {
+            suggestions: true,
+            ..crate::checks::DiagnosticSelection::none()
+        },
+    )
+    .diagnostics;
+    let diagnostic = select_suggestion(&diagnostics, args)?;
+    let suggestion_id =
+        suggestion_id(diagnostic).context("selected diagnostic is not a suggestion")?;
+    Ok(SuggestionExplanation {
+        suggestion_id,
+        code: diagnostic.code.to_string(),
+        message: diagnostic.message.clone(),
+        file: diagnostic.file.clone(),
+        line: diagnostic.line,
+        rule: diagnostic_rule(diagnostic.code).map(str::to_string),
+        facts: diagnostic_facts(diagnostic),
+    })
 }
 
 fn convergence_snapshot_summary(snapshot: &snapshot::Snapshot) -> ConvergenceSnapshotSummary {
@@ -442,6 +557,43 @@ fn select_diagnostic<'a>(
         1 => Ok(matches.remove(0)),
         count => bail!(
             "{count} diagnostics matched the provided selectors; use --id from `anneal query diagnostics --json` or `anneal check --json`"
+        ),
+    }
+}
+
+fn select_suggestion<'a>(
+    diagnostics: &'a [Diagnostic],
+    args: &SuggestionExplainArgs,
+) -> anyhow::Result<&'a Diagnostic> {
+    if let Some(id) = &args.id {
+        return diagnostics
+            .iter()
+            .find(|diagnostic| suggestion_id(diagnostic).as_deref() == Some(id.as_str()))
+            .with_context(|| format!("no suggestion found for id {id}"));
+    }
+
+    let mut matches: Vec<&Diagnostic> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == crate::checks::Severity::Suggestion)
+        .filter(|diagnostic| {
+            args.code
+                .as_ref()
+                .is_none_or(|code| diagnostic.code == code.as_str())
+        })
+        .filter(|diagnostic| {
+            args.handle
+                .as_ref()
+                .is_none_or(|handle| diagnostic_mentions_handle(diagnostic, handle))
+        })
+        .collect();
+
+    match matches.len() {
+        0 => bail!(
+            "no suggestion matched the provided selectors; use --id or narrow with code/--handle"
+        ),
+        1 => Ok(matches.remove(0)),
+        count => bail!(
+            "{count} suggestions matched the provided selectors; use --id from `anneal query suggestions --json` or `anneal check --json`"
         ),
     }
 }
@@ -829,6 +981,59 @@ fn print_impact_section(
     Ok(())
 }
 
+fn print_obligation_explanation_human(
+    explanation: &ObligationExplanation,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "obligation   {}", explanation.handle)?;
+    writeln!(w, "namespace    {}", explanation.namespace)?;
+    writeln!(w, "status       {}", explanation.disposition)?;
+    if !explanation.facts.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "facts")?;
+        for fact in &explanation.facts {
+            writeln!(
+                w,
+                "  {:<10} {:<16} {}",
+                fact.fact_type, fact.key, fact.value
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn print_suggestion_explanation_human(
+    explanation: &SuggestionExplanation,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "suggestion   {}", explanation.code)?;
+    writeln!(w, "id           {}", explanation.suggestion_id)?;
+    if let Some(rule) = &explanation.rule {
+        writeln!(w, "rule         {rule}")?;
+    }
+    if let Some(file) = &explanation.file {
+        if let Some(line) = explanation.line {
+            writeln!(w, "location     {file}:{line}")?;
+        } else {
+            writeln!(w, "location     {file}")?;
+        }
+    }
+    writeln!(w)?;
+    writeln!(w, "message      {}", explanation.message)?;
+    if !explanation.facts.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "facts")?;
+        for fact in &explanation.facts {
+            writeln!(
+                w,
+                "  {:<10} {:<16} {}",
+                fact.fact_type, fact.key, fact.value
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,6 +1092,12 @@ mod tests {
             ordering: Vec::new(),
             kind: LatticeKind::Existence,
         }
+    }
+
+    fn sample_linear_config() -> AnnealConfig {
+        let mut config = AnnealConfig::default();
+        config.handles.linear = vec!["P".to_string()];
+        config
     }
 
     fn sample_diagnostic() -> Diagnostic {
@@ -1034,5 +1245,87 @@ mod tests {
         assert_eq!(explanation.indirect[0].path.len(), 2);
         assert_eq!(explanation.indirect[0].path[0].source, "a.md");
         assert_eq!(explanation.indirect[0].path[1].source, "b.md");
+    }
+
+    #[test]
+    fn obligation_explanation_reports_disposition_and_dischargers() {
+        let mut graph = DiGraph::new();
+        let label = graph.add_node(Handle::test_label("P", 3, None));
+        let discharger = graph.add_node(Handle::test_file("worker.md", None));
+        graph.add_edge(discharger, label, EdgeKind::Discharges);
+
+        let lattice = simple_lattice();
+        let config = sample_linear_config();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = crate::resolve::build_node_index(&graph);
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_obligation_explanation_output(
+            &context,
+            &ObligationExplainArgs {
+                handle: "P-3".to_string(),
+            },
+        )
+        .expect("obligation explanation");
+
+        assert_eq!(explanation.handle, "P-3");
+        assert_eq!(explanation.disposition, "discharged");
+        assert!(
+            explanation
+                .facts
+                .iter()
+                .any(|fact| fact.key == "handles" && fact.value.contains("worker.md"))
+        );
+    }
+
+    #[test]
+    fn suggestion_explanation_resolves_by_secondary_selector() {
+        let mut graph = DiGraph::new();
+        let _label = graph.add_node(Handle::test_label("LONE", 1, None));
+
+        let lattice = simple_lattice();
+        let config = AnnealConfig::default();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = crate::resolve::build_node_index(&graph);
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_suggestion_explanation_output(
+            &context,
+            &SuggestionExplainArgs {
+                id: None,
+                code: Some("S001".to_string()),
+                handle: Some("LONE-1".to_string()),
+            },
+        )
+        .expect("suggestion explanation");
+
+        assert_eq!(explanation.code, "S001");
+        assert!(explanation.suggestion_id.starts_with("sugg_"));
     }
 }

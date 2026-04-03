@@ -531,6 +531,8 @@ The current surface is typed by domain:
   handles       query handle properties and local graph counts
   edges         query typed graph edges and endpoint properties
   diagnostics   query the same freshly-derived diagnostic set used by check
+  obligations   query obligation state
+  suggestions   query structural suggestion outputs
 
 All query domains inherit anneal's bounded-output discipline: limits, offsets,
 scope controls, and explicit --full expansion.")]
@@ -551,7 +553,9 @@ terms of handles, edges, statuses, rules, and snapshots.
 The current surface is typed by explanation domain:
   diagnostic    explain one diagnostic, primarily by diagnostic_id
   impact        explain why impact included each affected handle
-  convergence   explain the current status-style convergence signal")]
+  convergence   explain the current status-style convergence signal
+  obligation    explain one obligation's current disposition
+  suggestion    explain one suggestion, primarily by suggestion_id")]
     Explain {
         #[command(subcommand)]
         command: explain::ExplainCommand,
@@ -1064,12 +1068,43 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_query_obligations() {
+        let cli = Cli::try_parse_from(["anneal", "query", "obligations", "--undischarged"])
+            .expect("parse query obligations");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Query {
+                command: query::QueryCommand::Obligations(_)
+            })
+        ));
+    }
+
+    #[test]
     fn cli_parses_explain_scaffolding() {
         let cli = Cli::try_parse_from(["anneal", "explain", "convergence"]).expect("parse explain");
         assert!(matches!(
             cli.command,
             Some(Command::Explain {
                 command: explain::ExplainCommand::Convergence(_),
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_explain_suggestion() {
+        let cli = Cli::try_parse_from([
+            "anneal",
+            "explain",
+            "suggestion",
+            "S001",
+            "--handle",
+            "OQ-64",
+        ])
+        .expect("parse explain suggestion");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Explain {
+                command: explain::ExplainCommand::Suggestion(_),
             })
         ));
     }

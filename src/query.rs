@@ -3,7 +3,6 @@ use std::{
     io::Write,
 };
 
-use anyhow::bail;
 use clap::{Args, Subcommand, ValueEnum};
 use globset::{Glob, GlobMatcher};
 use serde::Serialize;
@@ -13,6 +12,7 @@ use crate::checks::{Diagnostic, DiagnosticRecord, Severity, confidence_gap_level
 use crate::cli::{DetailLevel, JsonEnvelope, JsonStyle, OutputMeta};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
+use crate::identity::suggestion_id;
 use crate::lattice::Lattice;
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
@@ -66,9 +66,7 @@ pub(crate) enum QueryCommand {
     Handles(HandleQueryArgs),
     Edges(EdgeQueryArgs),
     Diagnostics(DiagnosticQueryArgs),
-    #[command(hide = true)]
     Obligations(ObligationQueryArgs),
-    #[command(hide = true)]
     Suggestions(SuggestionQueryArgs),
 }
 
@@ -187,12 +185,24 @@ pub(crate) struct DiagnosticQueryArgs {
 pub(crate) struct ObligationQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+    #[arg(long)]
+    pub(crate) namespace: Option<String>,
+    #[arg(long)]
+    pub(crate) undischarged: bool,
+    #[arg(long)]
+    pub(crate) discharged: bool,
+    #[arg(long)]
+    pub(crate) multi_discharged: bool,
+    #[arg(long)]
+    pub(crate) mooted: bool,
 }
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct SuggestionQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+    #[arg(long)]
+    pub(crate) code: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -215,6 +225,25 @@ struct EdgeCandidate {
     source: NodeId,
     target: NodeId,
     kind: EdgeKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObligationDisposition {
+    Outstanding,
+    Discharged,
+    MultiDischarged,
+    Mooted,
+}
+
+impl ObligationDisposition {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Outstanding => "outstanding",
+            Self::Discharged => "discharged",
+            Self::MultiDischarged => "multi_discharged",
+            Self::Mooted => "mooted",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -243,6 +272,36 @@ pub(crate) struct EdgeRow {
     pub(crate) target_file: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ObligationRow {
+    pub(crate) handle: String,
+    pub(crate) namespace: String,
+    pub(crate) disposition: String,
+    pub(crate) discharge_count: usize,
+    pub(crate) file: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SuggestionRow {
+    pub(crate) suggestion_id: String,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+}
+
+impl SuggestionRow {
+    fn from_diagnostic(diagnostic: &Diagnostic) -> Option<Self> {
+        suggestion_id(diagnostic).map(|id| Self {
+            suggestion_id: id,
+            code: diagnostic.code,
+            message: diagnostic.message.clone(),
+            file: diagnostic.file.clone(),
+            line: diagnostic.line,
+        })
+    }
+}
+
 #[derive(Serialize)]
 struct QueryPayload<T: Serialize> {
     kind: &'static str,
@@ -252,6 +311,8 @@ struct QueryPayload<T: Serialize> {
 type HandleQueryOutput = JsonEnvelope<QueryPayload<HandleRow>>;
 type EdgeQueryOutput = JsonEnvelope<QueryPayload<EdgeRow>>;
 type DiagnosticQueryOutput = JsonEnvelope<QueryPayload<DiagnosticRecord>>;
+type ObligationQueryOutput = JsonEnvelope<QueryPayload<ObligationRow>>;
+type SuggestionQueryOutput = JsonEnvelope<QueryPayload<SuggestionRow>>;
 
 pub(crate) fn run(
     context: &AnalysisContext<'_>,
@@ -294,11 +355,27 @@ pub(crate) fn run(
             }
             Ok(())
         }
-        QueryCommand::Obligations(_) => {
-            bail!("anneal query obligations is not implemented yet on this branch")
+        QueryCommand::Obligations(args) => {
+            let output = build_obligation_output(context, args);
+            if json {
+                crate::cli::print_json(&output, json_style)?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                print_obligation_output_human(&output, &mut lock)?;
+            }
+            Ok(())
         }
-        QueryCommand::Suggestions(_) => {
-            bail!("anneal query suggestions is not implemented yet on this branch")
+        QueryCommand::Suggestions(args) => {
+            let output = build_suggestion_output(context, args);
+            if json {
+                crate::cli::print_json(&output, json_style)?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                print_suggestion_output_human(&output, &mut lock)?;
+            }
+            Ok(())
         }
     }
 }
@@ -372,6 +449,48 @@ fn build_diagnostic_output(
     build_diagnostic_query_output(diagnostics, &terminal_files, args)
 }
 
+fn build_obligation_output(
+    context: &AnalysisContext<'_>,
+    args: &ObligationQueryArgs,
+) -> ObligationQueryOutput {
+    let mut rows = build_obligation_rows(
+        context.graph,
+        context.lattice,
+        context.config,
+        args.page.scope,
+    );
+    rows.retain(|row| matches_obligation_filters(row, args));
+    rows.sort_by(|a, b| {
+        a.namespace
+            .cmp(&b.namespace)
+            .then_with(|| a.handle.cmp(&b.handle))
+    });
+    let (meta, items) = paginate(rows, &args.page);
+    JsonEnvelope::new(
+        meta,
+        QueryPayload {
+            kind: "obligations",
+            items,
+        },
+    )
+}
+
+fn build_suggestion_output(
+    context: &AnalysisContext<'_>,
+    args: &SuggestionQueryArgs,
+) -> SuggestionQueryOutput {
+    let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
+    let diagnostics = analysis::build_analysis_artifacts_with_selection(
+        context,
+        crate::checks::DiagnosticSelection {
+            suggestions: true,
+            ..crate::checks::DiagnosticSelection::none()
+        },
+    )
+    .diagnostics;
+    build_suggestion_query_output(diagnostics, &terminal_files, args)
+}
+
 fn diagnostic_selection(args: &DiagnosticQueryArgs) -> crate::checks::DiagnosticSelection {
     let mut selection = crate::checks::DiagnosticSelection::none();
     let mut narrowed = false;
@@ -438,6 +557,83 @@ fn build_diagnostic_query_output(
                 .collect(),
         },
     )
+}
+
+fn build_suggestion_query_output(
+    diagnostics: Vec<Diagnostic>,
+    terminal_files: &HashSet<String>,
+    args: &SuggestionQueryArgs,
+) -> SuggestionQueryOutput {
+    let filters = crate::cli::CheckFilters {
+        errors_only: false,
+        suggest: true,
+        stale: false,
+        obligations: false,
+        active_only: matches!(args.page.scope, QueryScope::Active),
+    };
+    let mut suggestions = crate::cli::apply_check_filters(diagnostics, &filters, terminal_files);
+    suggestions.retain(|diagnostic| matches_suggestion_filters(diagnostic, args));
+    suggestions.sort_by(|a, b| {
+        a.code
+            .cmp(b.code)
+            .then_with(|| {
+                a.file
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.file.as_deref().unwrap_or(""))
+            })
+            .then_with(|| a.message.cmp(&b.message))
+    });
+    let (meta, items) = paginate(suggestions, &args.page);
+    JsonEnvelope::new(
+        meta,
+        QueryPayload {
+            kind: "suggestions",
+            items: items
+                .into_iter()
+                .filter_map(|diagnostic| SuggestionRow::from_diagnostic(&diagnostic))
+                .collect(),
+        },
+    )
+}
+
+fn build_obligation_rows(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &crate::config::AnnealConfig,
+    scope: QueryScope,
+) -> Vec<ObligationRow> {
+    let linear_namespaces = config.handles.linear_set();
+    let mut rows = Vec::new();
+
+    for (node_id, handle) in graph.nodes() {
+        let HandleKind::Label { prefix, .. } = &handle.kind else {
+            continue;
+        };
+        if !linear_namespaces.contains(prefix.as_str()) {
+            continue;
+        }
+
+        let discharge_count = graph
+            .incoming(node_id)
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Discharges)
+            .count();
+        let disposition = obligation_disposition(handle, lattice, discharge_count);
+        if matches!(scope, QueryScope::Active) && disposition == ObligationDisposition::Mooted {
+            continue;
+        }
+
+        rows.push(ObligationRow {
+            handle: handle.id.clone(),
+            namespace: prefix.clone(),
+            disposition: disposition.as_str().to_string(),
+            discharge_count,
+            file: resolved_file(handle, graph),
+        });
+    }
+
+    rows
 }
 
 fn build_handle_candidates<'a>(
@@ -827,6 +1023,59 @@ fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArg
     true
 }
 
+fn matches_obligation_filters(row: &ObligationRow, args: &ObligationQueryArgs) -> bool {
+    if args
+        .namespace
+        .as_ref()
+        .is_some_and(|namespace| row.namespace != *namespace)
+    {
+        return false;
+    }
+    if args.undischarged && row.disposition != ObligationDisposition::Outstanding.as_str() {
+        return false;
+    }
+    if args.discharged && row.disposition != ObligationDisposition::Discharged.as_str() {
+        return false;
+    }
+    if args.multi_discharged && row.disposition != ObligationDisposition::MultiDischarged.as_str() {
+        return false;
+    }
+    if args.mooted && row.disposition != ObligationDisposition::Mooted.as_str() {
+        return false;
+    }
+    true
+}
+
+fn matches_suggestion_filters(diagnostic: &Diagnostic, args: &SuggestionQueryArgs) -> bool {
+    if diagnostic.severity != Severity::Suggestion {
+        return false;
+    }
+    if args
+        .code
+        .as_ref()
+        .is_some_and(|code| diagnostic.code != code.as_str())
+    {
+        return false;
+    }
+    true
+}
+
+pub(crate) fn obligation_disposition(
+    handle: &Handle,
+    lattice: &Lattice,
+    discharge_count: usize,
+) -> ObligationDisposition {
+    if handle.is_terminal(lattice) {
+        ObligationDisposition::Mooted
+    } else if discharge_count == 0 {
+        ObligationDisposition::Outstanding
+    } else if discharge_count == 1 {
+        ObligationDisposition::Discharged
+    } else {
+        ObligationDisposition::MultiDischarged
+    }
+}
+
 fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, &str, &str, u32, &str) {
     (
         diagnostic.severity as u8,
@@ -1062,12 +1311,77 @@ fn print_diagnostic_output_human(
     Ok(())
 }
 
+fn print_obligation_output_human(
+    output: &ObligationQueryOutput,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(
+        w,
+        "matches    {} of {} obligations",
+        output.meta.returned.unwrap_or(0),
+        output.meta.total.unwrap_or(0)
+    )?;
+    if output.data.items.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(
+        w,
+        "{:<10}  {:<16}  {:>10}  handle",
+        "namespace", "disposition", "discharges"
+    )?;
+    for row in &output.data.items {
+        writeln!(
+            w,
+            "{:<10}  {:<16}  {:>10}  {}",
+            row.namespace, row.disposition, row.discharge_count, row.handle
+        )?;
+    }
+    if !output.meta.expand.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
+    }
+    Ok(())
+}
+
+fn print_suggestion_output_human(
+    output: &SuggestionQueryOutput,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(
+        w,
+        "matches    {} of {} suggestions",
+        output.meta.returned.unwrap_or(0),
+        output.meta.total.unwrap_or(0)
+    )?;
+    if output.data.items.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    for row in &output.data.items {
+        write!(w, "suggestion[{}]: {}", row.code, row.message)?;
+        if let Some(file) = &row.file {
+            write!(w, "\n  -> {file}")?;
+            if let Some(line) = row.line {
+                write!(w, ":{line}")?;
+            }
+        }
+        writeln!(w)?;
+    }
+    if !output.meta.expand.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
 
     use crate::checks::{Diagnostic, Severity};
+    use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
     use crate::handle::Handle;
     use crate::lattice::{Lattice, LatticeKind};
@@ -1102,6 +1416,12 @@ mod tests {
                 &["provisional", "formal", "verified"],
             ),
         )
+    }
+
+    fn sample_config() -> AnnealConfig {
+        let mut config = AnnealConfig::default();
+        config.handles.linear = vec!["OQ".to_string()];
+        config
     }
 
     fn diagnostic_args() -> DiagnosticQueryArgs {
@@ -1357,5 +1677,48 @@ mod tests {
         assert_eq!(output.data.items.len(), 1);
         assert_eq!(output.data.items[0].target, "OQ-1");
         assert_eq!(output.data.items[0].edge_kind, "Cites");
+    }
+
+    #[test]
+    fn obligation_query_filters_linear_labels() {
+        let (graph, lattice) = sample_graph();
+        let config = sample_config();
+        let mut rows = build_obligation_rows(&graph, &lattice, &config, QueryScope::All);
+        let args = ObligationQueryArgs {
+            page: QueryPageArgs {
+                limit: None,
+                offset: 0,
+                full: false,
+                scope: QueryScope::All,
+            },
+            namespace: Some("OQ".to_string()),
+            undischarged: true,
+            discharged: false,
+            multi_discharged: false,
+            mooted: false,
+        };
+        rows.retain(|row| matches_obligation_filters(row, &args));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].handle, "OQ-1");
+        assert_eq!(rows[0].disposition, "outstanding");
+    }
+
+    #[test]
+    fn suggestion_query_filters_by_code() {
+        let output = build_suggestion_query_output(
+            sample_diagnostics(),
+            &HashSet::new(),
+            &SuggestionQueryArgs {
+                page: QueryPageArgs {
+                    limit: None,
+                    offset: 0,
+                    full: false,
+                    scope: QueryScope::All,
+                },
+                code: Some("S001".to_string()),
+            },
+        );
+        assert_eq!(output.data.items.len(), 1);
+        assert_eq!(output.data.items[0].code, "S001");
     }
 }
