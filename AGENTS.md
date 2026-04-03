@@ -61,6 +61,10 @@ The shipped surfaces are the CLI binary, the tag-driven GitHub release assets, a
 
 Release automation is local-first and tag-driven:
 
+- day-to-day work lands on `dev`
+- merge `dev` into `master` for release prep
+- cut and push release tags from `master`
+
 ```bash
 just release-bump 0.2.1
 just release-verify
