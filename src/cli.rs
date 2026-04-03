@@ -3068,7 +3068,7 @@ fn build_graph_at_git_ref(
         );
         let node_index = crate::resolve::build_node_index(&build_result.graph);
         let (unresolved_owned, section_ref_count, section_ref_file) =
-            super::collect_unresolved_owned(
+            crate::analysis::collect_unresolved_owned(
                 &build_result.pending_edges,
                 &node_index,
                 &build_result.graph,

@@ -6,6 +6,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+mod analysis;
 mod checks;
 mod cli;
 mod config;
@@ -21,8 +22,6 @@ mod query;
 mod resolve;
 mod snapshot;
 mod style;
-
-use crate::handle::NodeId;
 
 /// Convergence assistant for knowledge corpora.
 #[derive(Parser)]
@@ -570,42 +569,6 @@ enum MapRender {
     Dot,
 }
 
-/// Collect unresolved pending edges and clone them into an owned vec.
-///
-/// Returns `(owned_unresolved_edges, section_ref_count, section_ref_file)`.
-/// Section refs are counted separately for the I001 summary diagnostic.
-/// `section_ref_file` is the file path of the first section-ref source, used
-/// as a representative location for the I001 diagnostic.
-fn collect_unresolved_owned(
-    pending: &[parse::PendingEdge],
-    node_index: &HashMap<String, NodeId>,
-    graph: &crate::graph::DiGraph,
-) -> (Vec<parse::PendingEdge>, usize, Option<String>) {
-    let mut unresolved = Vec::new();
-    let mut section_ref_count: usize = 0;
-    let mut section_ref_file: Option<String> = None;
-
-    for edge in pending {
-        if node_index.contains_key(&edge.target_identity) {
-            continue;
-        }
-        if edge.target_identity.starts_with("section:") {
-            section_ref_count += 1;
-            if section_ref_file.is_none() {
-                section_ref_file = graph
-                    .node(edge.source)
-                    .file_path
-                    .as_ref()
-                    .map(ToString::to_string);
-            }
-        } else {
-            unresolved.push(edge.clone());
-        }
-    }
-
-    (unresolved, section_ref_count, section_ref_file)
-}
-
 fn emit_output<T: Serialize>(
     output: &T,
     json: bool,
@@ -641,67 +604,6 @@ fn emit_full_output<T: Serialize>(
         render_human(&output, &mut lock).context(human_context)?;
     }
     Ok(())
-}
-
-struct AnalysisArtifacts {
-    previous_snapshot: Option<snapshot::Snapshot>,
-    diagnostics: Vec<checks::Diagnostic>,
-}
-
-struct AnalysisContext<'a> {
-    root: &'a camino::Utf8Path,
-    graph: &'a crate::graph::DiGraph,
-    lattice: &'a lattice::Lattice,
-    config: &'a config::AnnealConfig,
-    state_config: &'a config::ResolvedStateConfig,
-    result: &'a parse::BuildResult,
-    node_index: &'a HashMap<String, NodeId>,
-    cascade_candidates: &'a HashMap<String, Vec<String>>,
-}
-
-fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> AnalysisArtifacts {
-    let (unresolved_owned, section_ref_count, section_ref_file) = collect_unresolved_owned(
-        context.result.pending_edges.as_slice(),
-        context.node_index,
-        context.graph,
-    );
-    let previous_snapshot = snapshot::read_latest_snapshot(context.root, context.state_config);
-
-    let mut diagnostics = checks::run_checks(
-        context.graph,
-        context.lattice,
-        context.config,
-        &unresolved_owned,
-        section_ref_count,
-        section_ref_file.as_deref(),
-        context.result.implausible_refs.as_slice(),
-        context.cascade_candidates,
-        previous_snapshot.as_ref(),
-    );
-    checks::apply_suppressions(&mut diagnostics, &context.config.suppress);
-
-    AnalysisArtifacts {
-        previous_snapshot,
-        diagnostics,
-    }
-}
-
-fn retain_diagnostics_for_file(diagnostics: &mut Vec<checks::Diagnostic>, root: &str, file: &str) {
-    let normalized = file.strip_prefix("./").unwrap_or(file);
-    let normalized = normalized
-        .strip_prefix(&format!("{root}/"))
-        .unwrap_or(normalized);
-
-    diagnostics.retain(|d| {
-        d.file
-            .as_ref()
-            .is_some_and(|diag_file| matches_scoped_file(diag_file, normalized))
-    });
-}
-
-fn matches_scoped_file(path: &str, file_filter: &str) -> bool {
-    let normalized = path.strip_prefix("./").unwrap_or(path);
-    normalized == file_filter || normalized.ends_with(&format!("/{file_filter}"))
 }
 
 fn main() {
@@ -787,7 +689,7 @@ fn run() -> anyhow::Result<()> {
 
     // Rebuild node index after cascade may have added edges via root-prefix resolution
     let node_index = resolve::build_node_index(graph);
-    let analysis = AnalysisContext {
+    let analysis = analysis::AnalysisContext {
         root: &root,
         graph,
         lattice: &lattice,
@@ -831,9 +733,9 @@ fn run() -> anyhow::Result<()> {
                 active_only || config.check.default_filter.as_deref() == Some("active-only")
             };
 
-            let mut diagnostics = build_analysis_artifacts(&analysis).diagnostics;
+            let mut diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
             if let Some(ref file_filter) = file {
-                retain_diagnostics_for_file(&mut diagnostics, &root_str, file_filter);
+                analysis::retain_diagnostics_for_file(&mut diagnostics, &root_str, file_filter);
             }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
@@ -854,7 +756,7 @@ fn run() -> anyhow::Result<()> {
                         .iter()
                         .filter(|extraction| {
                             file.as_ref().is_none_or(|file_filter| {
-                                matches_scoped_file(&extraction.file, file_filter)
+                                analysis::matches_scoped_file(&extraction.file, file_filter)
                             })
                         })
                         .cloned()
@@ -1058,10 +960,10 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Status { verbose, compact }) => {
-            let AnalysisArtifacts {
+            let analysis::AnalysisArtifacts {
                 previous_snapshot,
                 diagnostics,
-            } = build_analysis_artifacts(&analysis);
+            } = analysis::build_analysis_artifacts(&analysis);
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
             let output = cli::cmd_status(graph, &lattice, &snap, &diagnostics);
 
@@ -1095,7 +997,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Diff { days, ref git_ref }) => {
-            let diagnostics = build_analysis_artifacts(&analysis).diagnostics;
+            let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
 
             let output = cli::cmd_diff(
@@ -1126,7 +1028,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Query { ref command }) => {
-            query::run(graph, &lattice, command, cli_args.json, json_style)?;
+            query::run(&analysis, command, cli_args.json, json_style)?;
         }
 
         Some(Command::Explain { ref command }) => {
@@ -1149,6 +1051,18 @@ mod tests {
             cli.command,
             Some(Command::Query {
                 command: query::QueryCommand::Handles(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_query_diagnostics() {
+        let cli = Cli::try_parse_from(["anneal", "query", "diagnostics", "--severity", "warning"])
+            .expect("parse query diagnostics");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Query {
+                command: query::QueryCommand::Diagnostics(_)
             })
         ));
     }

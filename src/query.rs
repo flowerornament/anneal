@@ -1,15 +1,20 @@
-use std::io::Write;
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+};
 
 use anyhow::bail;
 use clap::{Args, Subcommand, ValueEnum};
 use globset::{Glob, GlobMatcher};
 use serde::Serialize;
 
-use crate::checks::{Diagnostic, Severity};
+use crate::analysis::{self, AnalysisContext};
+use crate::checks::{Diagnostic, Severity, confidence_gap_levels};
+use crate::cli::{DetailLevel, JsonEnvelope, JsonStyle, OutputMeta};
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind};
-use crate::identity::{diagnostic_id, suggestion_id};
-use crate::lattice::{Lattice, state_level};
+use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
+use crate::identity::diagnostic_id;
+use crate::lattice::Lattice;
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
 
@@ -30,13 +35,13 @@ pub(crate) enum QueryHandleKind {
 }
 
 impl QueryHandleKind {
-    fn as_str(self) -> &'static str {
+    fn matches(self, handle_kind: &HandleKind) -> bool {
         match self {
-            Self::File => "file",
-            Self::Section => "section",
-            Self::Label => "label",
-            Self::Version => "version",
-            Self::External => "external",
+            Self::File => matches!(handle_kind, HandleKind::File(_)),
+            Self::Section => matches!(handle_kind, HandleKind::Section { .. }),
+            Self::Label => matches!(handle_kind, HandleKind::Label { .. }),
+            Self::Version => matches!(handle_kind, HandleKind::Version { .. }),
+            Self::External => matches!(handle_kind, HandleKind::External { .. }),
         }
     }
 }
@@ -62,6 +67,27 @@ impl QueryEdgeKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum QuerySeverity {
+    Error,
+    Warning,
+    Info,
+    Suggestion,
+}
+
+impl QuerySeverity {
+    fn matches(self, severity: Severity) -> bool {
+        matches!(
+            (self, severity),
+            (Self::Error, Severity::Error)
+                | (Self::Warning, Severity::Warning)
+                | (Self::Info, Severity::Info)
+                | (Self::Suggestion, Severity::Suggestion)
+        )
+    }
+}
+
 #[derive(Args, Clone, Debug)]
 pub(crate) struct QueryPageArgs {
     /// Maximum rows to return (default: 25 unless --full)
@@ -82,8 +108,11 @@ pub(crate) struct QueryPageArgs {
 pub(crate) enum QueryCommand {
     Handles(HandleQueryArgs),
     Edges(EdgeQueryArgs),
+    #[command(hide = true)]
     Diagnostics(DiagnosticQueryArgs),
+    #[command(hide = true)]
     Obligations(ObligationQueryArgs),
+    #[command(hide = true)]
     Suggestions(SuggestionQueryArgs),
 }
 
@@ -172,6 +201,30 @@ pub(crate) struct EdgeQueryArgs {
 pub(crate) struct DiagnosticQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+    /// Filter by severity
+    #[arg(long, value_enum)]
+    pub(crate) severity: Option<QuerySeverity>,
+    /// Filter by diagnostic code
+    #[arg(long)]
+    pub(crate) code: Option<String>,
+    /// Scope diagnostics to a single file path
+    #[arg(long)]
+    pub(crate) file: Option<String>,
+    /// Filter by exact line number
+    #[arg(long)]
+    pub(crate) line: Option<u32>,
+    /// Convenience alias for --severity error
+    #[arg(long)]
+    pub(crate) errors_only: bool,
+    /// Convenience alias for --code W001
+    #[arg(long)]
+    pub(crate) stale: bool,
+    /// Convenience alias for --code E002|I002
+    #[arg(long)]
+    pub(crate) obligations: bool,
+    /// Convenience alias for --severity suggestion
+    #[arg(long)]
+    pub(crate) suggest: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -184,6 +237,28 @@ pub(crate) struct ObligationQueryArgs {
 pub(crate) struct SuggestionQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+}
+
+#[derive(Clone, Copy)]
+struct CountFilter {
+    min: Option<usize>,
+    max: Option<usize>,
+    eq: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct HandleCandidate<'a> {
+    handle: &'a Handle,
+    terminal: bool,
+    incoming_count: usize,
+    outgoing_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct EdgeCandidate {
+    source: NodeId,
+    target: NodeId,
+    kind: EdgeKind,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -222,21 +297,11 @@ pub(crate) struct DiagnosticRow {
     pub(crate) line: Option<u32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct SuggestionRow {
-    pub(crate) suggestion_id: String,
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) file: Option<String>,
-    pub(crate) line: Option<u32>,
-}
-
 impl DiagnosticRow {
-    #[allow(dead_code)]
-    pub(crate) fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
+    fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
         Self {
             diagnostic_id: diagnostic_id(diagnostic),
-            severity: severity_name(diagnostic.severity).to_string(),
+            severity: diagnostic_severity_name(diagnostic.severity).to_string(),
             code: diagnostic.code,
             message: diagnostic.message.clone(),
             file: diagnostic.file.clone(),
@@ -245,55 +310,25 @@ impl DiagnosticRow {
     }
 }
 
-impl SuggestionRow {
-    #[allow(dead_code)]
-    pub(crate) fn from_diagnostic(diagnostic: &Diagnostic) -> Option<Self> {
-        suggestion_id(diagnostic).map(|id| Self {
-            suggestion_id: id,
-            code: diagnostic.code,
-            message: diagnostic.message.clone(),
-            file: diagnostic.file.clone(),
-            line: diagnostic.line,
-        })
-    }
-}
-
 #[derive(Serialize)]
-struct QueryMeta {
-    schema_version: u32,
-    detail: &'static str,
-    truncated: bool,
-    returned: usize,
-    total: usize,
-    expand: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct HandleQueryOutput {
-    #[serde(rename = "_meta")]
-    meta: QueryMeta,
+struct QueryPayload<T: Serialize> {
     kind: &'static str,
-    items: Vec<HandleRow>,
+    items: Vec<T>,
 }
 
-#[derive(Serialize)]
-struct EdgeQueryOutput {
-    #[serde(rename = "_meta")]
-    meta: QueryMeta,
-    kind: &'static str,
-    items: Vec<EdgeRow>,
-}
+type HandleQueryOutput = JsonEnvelope<QueryPayload<HandleRow>>;
+type EdgeQueryOutput = JsonEnvelope<QueryPayload<EdgeRow>>;
+type DiagnosticQueryOutput = JsonEnvelope<QueryPayload<DiagnosticRow>>;
 
 pub(crate) fn run(
-    graph: &DiGraph,
-    lattice: &Lattice,
+    context: &AnalysisContext<'_>,
     command: &QueryCommand,
     json: bool,
-    json_style: crate::cli::JsonStyle,
+    json_style: JsonStyle,
 ) -> anyhow::Result<()> {
     match command {
         QueryCommand::Handles(args) => {
-            let output = build_handle_output(graph, lattice, args)?;
+            let output = build_handle_output(context.graph, context.lattice, args)?;
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -304,7 +339,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Edges(args) => {
-            let output = build_edge_output(graph, lattice, args);
+            let output = build_edge_output(context.graph, context.lattice, args);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -314,8 +349,16 @@ pub(crate) fn run(
             }
             Ok(())
         }
-        QueryCommand::Diagnostics(_) => {
-            bail!("anneal query diagnostics is not implemented yet on this branch")
+        QueryCommand::Diagnostics(args) => {
+            let output = build_diagnostic_output(context, args);
+            if json {
+                crate::cli::print_json(&output, json_style)?;
+            } else {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                print_diagnostic_output_human(&output, &mut lock)?;
+            }
+            Ok(())
         }
         QueryCommand::Obligations(_) => {
             bail!("anneal query obligations is not implemented yet on this branch")
@@ -332,35 +375,90 @@ fn build_handle_output(
     args: &HandleQueryArgs,
 ) -> anyhow::Result<HandleQueryOutput> {
     let file_matcher = compile_glob(args.file_pattern.as_deref())?;
-    let mut rows = build_handle_rows(graph, lattice, args.page.scope);
-    rows.retain(|row| matches_handle_filters(row, args, file_matcher.as_ref()));
-    rows.sort_by(|a, b| a.id.cmp(&b.id));
-    let (meta, items) = paginate(rows, &args.page);
-    Ok(HandleQueryOutput {
+    let mut candidates = build_handle_candidates(graph, lattice, args.page.scope);
+    candidates
+        .retain(|candidate| matches_handle_filters(graph, candidate, args, file_matcher.as_ref()));
+    candidates.sort_by(|a, b| a.handle.id.cmp(&b.handle.id));
+    let (meta, items) = paginate(candidates, &args.page);
+    Ok(JsonEnvelope::new(
         meta,
-        kind: "handles",
-        items,
-    })
+        QueryPayload {
+            kind: "handles",
+            items: items
+                .into_iter()
+                .map(|candidate| handle_row(graph, candidate))
+                .collect(),
+        },
+    ))
 }
 
 fn build_edge_output(graph: &DiGraph, lattice: &Lattice, args: &EdgeQueryArgs) -> EdgeQueryOutput {
-    let mut rows = build_edge_rows(graph, lattice, args.page.scope);
-    rows.retain(|row| matches_edge_filters(row, lattice, args));
-    rows.sort_by(|a, b| {
-        a.source
-            .cmp(&b.source)
-            .then_with(|| a.edge_kind.cmp(&b.edge_kind))
-            .then_with(|| a.target.cmp(&b.target))
-    });
-    let (meta, items) = paginate(rows, &args.page);
-    EdgeQueryOutput {
+    let state_levels = args.confidence_gap.then(|| build_state_levels(lattice));
+    let mut candidates =
+        build_edge_candidates(graph, lattice, args.page.scope, args, state_levels.as_ref());
+    candidates.sort_by(|a, b| compare_edge_candidates(graph, *a, *b));
+    let (meta, items) = paginate(candidates, &args.page);
+    JsonEnvelope::new(
         meta,
-        kind: "edges",
-        items,
-    }
+        QueryPayload {
+            kind: "edges",
+            items: items
+                .into_iter()
+                .map(|candidate| edge_row(graph, candidate))
+                .collect(),
+        },
+    )
 }
 
-fn build_handle_rows(graph: &DiGraph, lattice: &Lattice, scope: QueryScope) -> Vec<HandleRow> {
+fn build_diagnostic_output(
+    context: &AnalysisContext<'_>,
+    args: &DiagnosticQueryArgs,
+) -> DiagnosticQueryOutput {
+    let mut diagnostics = analysis::build_analysis_artifacts(context).diagnostics;
+    if let Some(file_filter) = &args.file {
+        analysis::retain_diagnostics_for_file(&mut diagnostics, context.root.as_str(), file_filter);
+    }
+
+    let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
+    build_diagnostic_query_output(diagnostics, &terminal_files, args)
+}
+
+fn build_diagnostic_query_output(
+    diagnostics: Vec<Diagnostic>,
+    terminal_files: &HashSet<String>,
+    args: &DiagnosticQueryArgs,
+) -> DiagnosticQueryOutput {
+    let filters = crate::cli::CheckFilters {
+        errors_only: args.errors_only,
+        suggest: args.suggest,
+        stale: args.stale,
+        obligations: args.obligations,
+        active_only: matches!(args.page.scope, QueryScope::Active),
+    };
+    let output = crate::cli::cmd_check(diagnostics, &filters, terminal_files);
+
+    let mut diagnostics = output.diagnostics;
+    diagnostics.retain(|diagnostic| matches_diagnostic_filters(diagnostic, args));
+    diagnostics.sort_by(|a, b| diagnostic_sort_key(a).cmp(&diagnostic_sort_key(b)));
+
+    let (meta, items) = paginate(diagnostics, &args.page);
+    JsonEnvelope::new(
+        meta,
+        QueryPayload {
+            kind: "diagnostics",
+            items: items
+                .into_iter()
+                .map(|diagnostic| DiagnosticRow::from_diagnostic(&diagnostic))
+                .collect(),
+        },
+    )
+}
+
+fn build_handle_candidates<'a>(
+    graph: &'a DiGraph,
+    lattice: &Lattice,
+    scope: QueryScope,
+) -> Vec<HandleCandidate<'a>> {
     graph
         .nodes()
         .filter_map(|(node_id, handle)| {
@@ -368,12 +466,23 @@ fn build_handle_rows(graph: &DiGraph, lattice: &Lattice, scope: QueryScope) -> V
             if matches!(scope, QueryScope::Active) && terminal {
                 return None;
             }
-            Some(handle_row(graph, node_id, handle, terminal))
+            Some(HandleCandidate {
+                handle,
+                terminal,
+                incoming_count: graph.incoming(node_id).len(),
+                outgoing_count: graph.outgoing(node_id).len(),
+            })
         })
         .collect()
 }
 
-fn build_edge_rows(graph: &DiGraph, lattice: &Lattice, scope: QueryScope) -> Vec<EdgeRow> {
+fn build_edge_candidates(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    scope: QueryScope,
+    args: &EdgeQueryArgs,
+    state_levels: Option<&HashMap<&str, usize>>,
+) -> Vec<EdgeCandidate> {
     let mut rows = Vec::new();
     for (node_id, source_handle) in graph.nodes() {
         if matches!(scope, QueryScope::Active) && source_handle.is_terminal(lattice) {
@@ -384,212 +493,207 @@ fn build_edge_rows(graph: &DiGraph, lattice: &Lattice, scope: QueryScope) -> Vec
             if matches!(scope, QueryScope::Active) && target_handle.is_terminal(lattice) {
                 continue;
             }
-            rows.push(EdgeRow {
-                source: source_handle.id.clone(),
-                target: target_handle.id.clone(),
-                edge_kind: edge.kind.as_str().to_string(),
-                source_kind: source_handle.kind.as_str().to_string(),
-                target_kind: target_handle.kind.as_str().to_string(),
-                source_status: source_handle.status.clone(),
-                target_status: target_handle.status.clone(),
-                source_file: display_file(source_handle),
-                target_file: display_file(target_handle),
-            });
+            let candidate = EdgeCandidate {
+                source: node_id,
+                target: edge.target,
+                kind: edge.kind,
+            };
+            if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
+                rows.push(candidate);
+            }
         }
     }
     rows
 }
 
-fn handle_row(
-    graph: &DiGraph,
-    node_id: crate::handle::NodeId,
-    handle: &Handle,
-    terminal: bool,
-) -> HandleRow {
-    let namespace = match &handle.kind {
+fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
+    let namespace = match &candidate.handle.kind {
         HandleKind::Label { prefix, .. } => Some(prefix.clone()),
         _ => None,
     };
     HandleRow {
-        id: handle.id.clone(),
-        handle_kind: handle.kind.as_str().to_string(),
-        status: handle.status.clone(),
-        file: display_file(handle),
+        id: candidate.handle.id.clone(),
+        handle_kind: candidate.handle.kind.as_str().to_string(),
+        status: candidate.handle.status.clone(),
+        file: resolved_file(candidate.handle, graph),
         namespace,
-        terminal,
-        incoming_count: graph.incoming(node_id).len(),
-        outgoing_count: graph.outgoing(node_id).len(),
-        updated: handle.metadata.updated,
+        terminal: candidate.terminal,
+        incoming_count: candidate.incoming_count,
+        outgoing_count: candidate.outgoing_count,
+        updated: candidate.handle.metadata.updated,
     }
 }
 
-fn display_file(handle: &Handle) -> Option<String> {
-    handle.file_path.as_ref().map(ToString::to_string)
+fn edge_row(graph: &DiGraph, candidate: EdgeCandidate) -> EdgeRow {
+    let source_handle = graph.node(candidate.source);
+    let target_handle = graph.node(candidate.target);
+    EdgeRow {
+        source: source_handle.id.clone(),
+        target: target_handle.id.clone(),
+        edge_kind: candidate.kind.as_str().to_string(),
+        source_kind: source_handle.kind.as_str().to_string(),
+        target_kind: target_handle.kind.as_str().to_string(),
+        source_status: source_handle.status.clone(),
+        target_status: target_handle.status.clone(),
+        source_file: resolved_file(source_handle, graph),
+        target_file: resolved_file(target_handle, graph),
+    }
 }
 
 fn matches_handle_filters(
-    row: &HandleRow,
+    graph: &DiGraph,
+    candidate: &HandleCandidate<'_>,
     args: &HandleQueryArgs,
     file_matcher: Option<&GlobMatcher>,
 ) -> bool {
     if args
         .kind
-        .is_some_and(|kind| row.handle_kind != kind.as_str())
+        .is_some_and(|kind| !kind.matches(&candidate.handle.kind))
     {
         return false;
     }
     if args
         .status
         .as_ref()
-        .is_some_and(|status| row.status.as_deref() != Some(status.as_str()))
+        .is_some_and(|status| candidate.handle.status.as_deref() != Some(status.as_str()))
     {
         return false;
     }
-    if args
-        .namespace
-        .as_ref()
-        .is_some_and(|namespace| row.namespace.as_deref() != Some(namespace.as_str()))
-    {
+    if args.namespace.as_ref().is_some_and(|namespace| {
+        label_namespace(candidate.handle).is_none_or(|prefix| prefix != namespace.as_str())
+    }) {
         return false;
     }
     if args
         .terminal
-        .is_some_and(|terminal| row.terminal != terminal)
+        .is_some_and(|terminal| candidate.terminal != terminal)
     {
         return false;
     }
-    if file_matcher
-        .is_some_and(|matcher| row.file.as_ref().is_none_or(|path| !matcher.is_match(path)))
-    {
+    if file_matcher.is_some_and(|matcher| {
+        resolved_file(candidate.handle, graph).is_none_or(|path| !matcher.is_match(&path))
+    }) {
         return false;
     }
-    if args
-        .incoming_min
-        .is_some_and(|minimum| row.incoming_count < minimum)
-    {
+    if !matches_count_filter(
+        candidate.incoming_count,
+        CountFilter {
+            min: args.incoming_min,
+            max: args.incoming_max,
+            eq: args.incoming_eq,
+        },
+    ) || !matches_count_filter(
+        candidate.outgoing_count,
+        CountFilter {
+            min: args.outgoing_min,
+            max: args.outgoing_max,
+            eq: args.outgoing_eq,
+        },
+    ) {
         return false;
     }
-    if args
-        .incoming_max
-        .is_some_and(|maximum| row.incoming_count > maximum)
-    {
+    if args.updated_before.is_some_and(|date| {
+        candidate
+            .handle
+            .metadata
+            .updated
+            .is_none_or(|updated| updated >= date)
+    }) {
         return false;
     }
-    if args
-        .incoming_eq
-        .is_some_and(|exact| row.incoming_count != exact)
-    {
+    if args.updated_after.is_some_and(|date| {
+        candidate
+            .handle
+            .metadata
+            .updated
+            .is_none_or(|updated| updated <= date)
+    }) {
         return false;
     }
-    if args
-        .outgoing_min
-        .is_some_and(|minimum| row.outgoing_count < minimum)
+    if args.orphaned
+        && (matches!(candidate.handle.kind, HandleKind::File(_)) || candidate.incoming_count != 0)
     {
-        return false;
-    }
-    if args
-        .outgoing_max
-        .is_some_and(|maximum| row.outgoing_count > maximum)
-    {
-        return false;
-    }
-    if args
-        .outgoing_eq
-        .is_some_and(|exact| row.outgoing_count != exact)
-    {
-        return false;
-    }
-    if args
-        .updated_before
-        .is_some_and(|date| row.updated.is_none_or(|updated| updated >= date))
-    {
-        return false;
-    }
-    if args
-        .updated_after
-        .is_some_and(|date| row.updated.is_none_or(|updated| updated <= date))
-    {
-        return false;
-    }
-    if args.orphaned && !(row.handle_kind != "file" && row.incoming_count == 0) {
         return false;
     }
     true
 }
 
-fn matches_edge_filters(row: &EdgeRow, lattice: &Lattice, args: &EdgeQueryArgs) -> bool {
+fn matches_edge_filters(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    args: &EdgeQueryArgs,
+    candidate: EdgeCandidate,
+    state_levels: Option<&HashMap<&str, usize>>,
+) -> bool {
+    let source_handle = graph.node(candidate.source);
+    let target_handle = graph.node(candidate.target);
     if args
         .kind
-        .is_some_and(|kind| row.edge_kind != kind.as_edge_kind().as_str())
+        .is_some_and(|kind| candidate.kind != kind.as_edge_kind())
     {
         return false;
     }
     if args
         .source
         .as_ref()
-        .is_some_and(|source| row.source != *source)
+        .is_some_and(|source| source_handle.id != *source)
     {
         return false;
     }
     if args
         .target
         .as_ref()
-        .is_some_and(|target| row.target != *target)
+        .is_some_and(|target| target_handle.id != *target)
     {
         return false;
     }
     if args
         .source_kind
-        .is_some_and(|kind| row.source_kind != kind.as_str())
+        .is_some_and(|kind| !kind.matches(&source_handle.kind))
     {
         return false;
     }
     if args
         .target_kind
-        .is_some_and(|kind| row.target_kind != kind.as_str())
+        .is_some_and(|kind| !kind.matches(&target_handle.kind))
     {
         return false;
     }
     if args
         .source_status
         .as_ref()
-        .is_some_and(|status| row.source_status.as_deref() != Some(status.as_str()))
+        .is_some_and(|status| source_handle.status.as_deref() != Some(status.as_str()))
     {
         return false;
     }
     if args
         .target_status
         .as_ref()
-        .is_some_and(|status| row.target_status.as_deref() != Some(status.as_str()))
+        .is_some_and(|status| target_handle.status.as_deref() != Some(status.as_str()))
     {
         return false;
     }
-    if args.cross_file && row.source_file == row.target_file {
+    if args.cross_file && resolved_file(source_handle, graph) == resolved_file(target_handle, graph)
+    {
         return false;
     }
-    if args.confidence_gap && !is_confidence_gap(row, lattice) {
+    if args.confidence_gap
+        && confidence_gap_levels(
+            candidate.kind,
+            source_handle
+                .status
+                .as_deref()
+                .and_then(|status| state_level(status, lattice, state_levels)),
+            target_handle
+                .status
+                .as_deref()
+                .and_then(|status| state_level(status, lattice, state_levels)),
+        )
+        .is_none()
+    {
         return false;
     }
     true
-}
-
-fn is_confidence_gap(row: &EdgeRow, lattice: &Lattice) -> bool {
-    if row.edge_kind != EdgeKind::DependsOn.as_str() {
-        return false;
-    }
-    let Some(source_status) = row.source_status.as_deref() else {
-        return false;
-    };
-    let Some(target_status) = row.target_status.as_deref() else {
-        return false;
-    };
-    match (
-        state_level(source_status, lattice),
-        state_level(target_status, lattice),
-    ) {
-        (Some(source), Some(target)) => source > target,
-        _ => false,
-    }
 }
 
 fn compile_glob(pattern: Option<&str>) -> anyhow::Result<Option<GlobMatcher>> {
@@ -600,11 +704,94 @@ fn compile_glob(pattern: Option<&str>) -> anyhow::Result<Option<GlobMatcher>> {
     Ok(Some(matcher))
 }
 
-fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (QueryMeta, Vec<T>) {
+fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArgs) -> bool {
+    if args
+        .severity
+        .is_some_and(|severity| !severity.matches(diagnostic.severity))
+    {
+        return false;
+    }
+    if args
+        .code
+        .as_ref()
+        .is_some_and(|code| diagnostic.code != code.as_str())
+    {
+        return false;
+    }
+    if args.line.is_some_and(|line| diagnostic.line != Some(line)) {
+        return false;
+    }
+    true
+}
+
+fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, &str, &str, u32, &str) {
+    (
+        diagnostic.severity as u8,
+        diagnostic.code,
+        diagnostic.file.as_deref().unwrap_or(""),
+        diagnostic.line.unwrap_or(0),
+        diagnostic.message.as_str(),
+    )
+}
+
+fn build_state_levels(lattice: &Lattice) -> HashMap<&str, usize> {
+    lattice
+        .ordering
+        .iter()
+        .enumerate()
+        .map(|(index, status)| (status.as_str(), index))
+        .collect()
+}
+
+fn state_level(
+    status: &str,
+    lattice: &Lattice,
+    state_levels: Option<&HashMap<&str, usize>>,
+) -> Option<usize> {
+    state_levels
+        .and_then(|levels| levels.get(status).copied())
+        .or_else(|| crate::lattice::state_level(status, lattice))
+}
+
+fn label_namespace(handle: &Handle) -> Option<&str> {
+    match &handle.kind {
+        HandleKind::Label { prefix, .. } => Some(prefix.as_str()),
+        _ => None,
+    }
+}
+
+fn matches_count_filter(value: usize, filter: CountFilter) -> bool {
+    if filter.eq.is_some_and(|exact| value != exact) {
+        return false;
+    }
+    if filter.min.is_some_and(|minimum| value < minimum) {
+        return false;
+    }
+    if filter.max.is_some_and(|maximum| value > maximum) {
+        return false;
+    }
+    true
+}
+
+fn compare_edge_candidates(
+    graph: &DiGraph,
+    left: EdgeCandidate,
+    right: EdgeCandidate,
+) -> std::cmp::Ordering {
+    let left_source = &graph.node(left.source).id;
+    let right_source = &graph.node(right.source).id;
+    let left_target = &graph.node(left.target).id;
+    let right_target = &graph.node(right.target).id;
+    left_source
+        .cmp(right_source)
+        .then_with(|| left.kind.as_str().cmp(right.kind.as_str()))
+        .then_with(|| left_target.cmp(right_target))
+}
+
+fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (OutputMeta, Vec<T>) {
     let total = items.len();
     let offset = page.offset.min(total);
     let limit = page.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
-    let detail = if page.full { "full" } else { "sample" };
     let paged = if page.full {
         items.drain(offset..).collect::<Vec<_>>()
     } else {
@@ -626,14 +813,17 @@ fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (QueryMeta, Vec<T>) {
         expand.push("--full".to_string());
     }
     (
-        QueryMeta {
-            schema_version: 2,
-            detail,
+        OutputMeta::new(
+            if page.full {
+                DetailLevel::Full
+            } else {
+                DetailLevel::Sample
+            },
             truncated,
-            returned,
-            total,
+            Some(returned),
+            Some(total),
             expand,
-        },
+        ),
         paged,
     )
 }
@@ -642,13 +832,15 @@ fn print_handle_output_human(output: &HandleQueryOutput, w: &mut dyn Write) -> s
     writeln!(
         w,
         "matches    {} of {} handles",
-        output.meta.returned, output.meta.total
+        output.meta.returned.unwrap_or(0),
+        output.meta.total.unwrap_or(0)
     )?;
-    if output.items.is_empty() {
+    if output.data.items.is_empty() {
         return Ok(());
     }
     writeln!(w)?;
     let kind_width = output
+        .data
         .items
         .iter()
         .map(|row| row.handle_kind.len())
@@ -656,6 +848,7 @@ fn print_handle_output_human(output: &HandleQueryOutput, w: &mut dyn Write) -> s
         .unwrap_or(4)
         .max(4);
     let status_width = output
+        .data
         .items
         .iter()
         .map(|row| row.status.as_deref().unwrap_or("-").len())
@@ -672,7 +865,7 @@ fn print_handle_output_human(output: &HandleQueryOutput, w: &mut dyn Write) -> s
         kind_width = kind_width,
         status_width = status_width,
     )?;
-    for row in &output.items {
+    for row in &output.data.items {
         writeln!(
             w,
             "{:<kind_width$}  {:<status_width$}  {:>8}  {:>8}  {}",
@@ -696,13 +889,15 @@ fn print_edge_output_human(output: &EdgeQueryOutput, w: &mut dyn Write) -> std::
     writeln!(
         w,
         "matches    {} of {} edges",
-        output.meta.returned, output.meta.total
+        output.meta.returned.unwrap_or(0),
+        output.meta.total.unwrap_or(0)
     )?;
-    if output.items.is_empty() {
+    if output.data.items.is_empty() {
         return Ok(());
     }
     writeln!(w)?;
     let kind_width = output
+        .data
         .items
         .iter()
         .map(|row| row.edge_kind.len())
@@ -716,7 +911,7 @@ fn print_edge_output_human(output: &EdgeQueryOutput, w: &mut dyn Write) -> std::
         "source",
         kind_width = kind_width,
     )?;
-    for row in &output.items {
+    for row in &output.data.items {
         writeln!(
             w,
             "{:<kind_width$}  {:<32}  {}",
@@ -733,7 +928,38 @@ fn print_edge_output_human(output: &EdgeQueryOutput, w: &mut dyn Write) -> std::
     Ok(())
 }
 
-fn severity_name(severity: Severity) -> &'static str {
+fn print_diagnostic_output_human(
+    output: &DiagnosticQueryOutput,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(
+        w,
+        "matches    {} of {} diagnostics",
+        output.meta.returned.unwrap_or(0),
+        output.meta.total.unwrap_or(0)
+    )?;
+    if output.data.items.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    for row in &output.data.items {
+        write!(w, "{}[{}]: {}", row.severity, row.code, row.message)?;
+        if let Some(file) = &row.file {
+            write!(w, "\n  -> {file}")?;
+            if let Some(line) = row.line {
+                write!(w, ":{line}")?;
+            }
+        }
+        writeln!(w)?;
+    }
+    if !output.meta.expand.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
+    }
+    Ok(())
+}
+
+fn diagnostic_severity_name(severity: Severity) -> &'static str {
     match severity {
         Severity::Error => "error",
         Severity::Warning => "warning",
@@ -745,6 +971,9 @@ fn severity_name(severity: Severity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    use crate::checks::{Diagnostic, Severity};
     use crate::graph::DiGraph;
     use crate::handle::Handle;
     use crate::lattice::{Lattice, LatticeKind};
@@ -781,6 +1010,54 @@ mod tests {
         )
     }
 
+    fn diagnostic_args() -> DiagnosticQueryArgs {
+        DiagnosticQueryArgs {
+            page: QueryPageArgs {
+                limit: None,
+                offset: 0,
+                full: false,
+                scope: QueryScope::Active,
+            },
+            severity: None,
+            code: None,
+            file: None,
+            line: None,
+            errors_only: false,
+            stale: false,
+            obligations: false,
+            suggest: false,
+        }
+    }
+
+    fn sample_diagnostics() -> Vec<Diagnostic> {
+        vec![
+            Diagnostic {
+                severity: Severity::Error,
+                code: "E001",
+                message: "broken reference".to_string(),
+                file: Some("active.md".to_string()),
+                line: Some(7),
+                evidence: None,
+            },
+            Diagnostic {
+                severity: Severity::Suggestion,
+                code: "S001",
+                message: "orphaned handle".to_string(),
+                file: Some("active.md".to_string()),
+                line: Some(9),
+                evidence: None,
+            },
+            Diagnostic {
+                severity: Severity::Warning,
+                code: "W001",
+                message: "stale reference".to_string(),
+                file: Some("done.md".to_string()),
+                line: Some(3),
+                evidence: None,
+            },
+        ]
+    }
+
     #[test]
     fn handle_query_filters_by_namespace() {
         let (graph, lattice) = sample_graph();
@@ -811,8 +1088,8 @@ mod tests {
             },
         )
         .expect("output");
-        assert_eq!(output.items.len(), 1);
-        assert_eq!(output.items[0].id, "OQ-1");
+        assert_eq!(output.data.items.len(), 1);
+        assert_eq!(output.data.items[0].id, "OQ-1");
     }
 
     #[test]
@@ -845,7 +1122,7 @@ mod tests {
             },
         )
         .expect("output");
-        assert!(output.items.is_empty());
+        assert!(output.data.items.is_empty());
     }
 
     #[test]
@@ -872,8 +1149,8 @@ mod tests {
                 confidence_gap: true,
             },
         );
-        assert_eq!(output.items.len(), 1);
-        assert_eq!(output.items[0].edge_kind, "DependsOn");
+        assert_eq!(output.data.items.len(), 1);
+        assert_eq!(output.data.items[0].edge_kind, "DependsOn");
     }
 
     #[test]
@@ -888,9 +1165,55 @@ mod tests {
                 scope: QueryScope::Active,
             },
         );
-        assert_eq!(meta.returned, 2);
-        assert_eq!(meta.total, 4);
+        assert_eq!(meta.returned, Some(2));
+        assert_eq!(meta.total, Some(4));
         assert!(meta.truncated);
         assert_eq!(items, vec![2, 3]);
+    }
+
+    #[test]
+    fn diagnostic_query_active_scope_excludes_terminal_files() {
+        let terminal_files = HashSet::from([String::from("done.md")]);
+        let output = build_diagnostic_query_output(
+            sample_diagnostics(),
+            &terminal_files,
+            &diagnostic_args(),
+        );
+
+        assert_eq!(output.data.items.len(), 2);
+        assert!(
+            output
+                .data
+                .items
+                .iter()
+                .all(|row| row.file.as_deref() != Some("done.md"))
+        );
+    }
+
+    #[test]
+    fn diagnostic_query_filters_by_severity() {
+        let terminal_files = HashSet::new();
+        let mut args = diagnostic_args();
+        args.page.scope = QueryScope::All;
+        args.severity = Some(QuerySeverity::Error);
+
+        let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
+
+        assert_eq!(output.data.items.len(), 1);
+        assert_eq!(output.data.items[0].code, "E001");
+        assert_eq!(output.data.items[0].severity, "error");
+    }
+
+    #[test]
+    fn diagnostic_query_suggest_alias_matches_suggestions() {
+        let terminal_files = HashSet::new();
+        let mut args = diagnostic_args();
+        args.page.scope = QueryScope::All;
+        args.suggest = true;
+
+        let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
+
+        assert_eq!(output.data.items.len(), 1);
+        assert_eq!(output.data.items[0].code, "S001");
     }
 }
