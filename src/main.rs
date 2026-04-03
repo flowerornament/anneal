@@ -549,7 +549,9 @@ It does not search semantically. It justifies a specific derived answer in
 terms of handles, edges, statuses, rules, and snapshots.
 
 The current surface is typed by explanation domain:
-  diagnostic    explain one diagnostic, primarily by diagnostic_id")]
+  diagnostic    explain one diagnostic, primarily by diagnostic_id
+  impact        explain why impact included each affected handle
+  convergence   explain the current status-style convergence signal")]
     Explain {
         #[command(subcommand)]
         command: explain::ExplainCommand,

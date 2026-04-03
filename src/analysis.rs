@@ -66,11 +66,15 @@ pub(crate) fn build_analysis_artifacts_with_selection(
     context: &AnalysisContext<'_>,
     selection: checks::DiagnosticSelection,
 ) -> AnalysisArtifacts {
-    let (unresolved_owned, section_ref_count, section_ref_file) = collect_unresolved_owned(
-        context.result.pending_edges.as_slice(),
-        context.node_index,
-        context.graph,
-    );
+    let (unresolved_owned, section_ref_count, section_ref_file) = if selection.existence {
+        collect_unresolved_owned(
+            context.result.pending_edges.as_slice(),
+            context.node_index,
+            context.graph,
+        )
+    } else {
+        (Vec::new(), 0, None)
+    };
     let previous_snapshot = selection
         .includes_suggestions()
         .then(|| snapshot::read_latest_snapshot(context.root, context.state_config))
