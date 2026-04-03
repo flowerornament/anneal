@@ -5,11 +5,12 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::analysis::AnalysisContext;
-use crate::checks::{Diagnostic, Evidence};
+use crate::checks::{Diagnostic, Evidence, SuggestionEvidence};
 use crate::cli::{JsonEnvelope, JsonStyle, OutputMeta};
-use crate::handle::{HandleKind, resolved_file};
+use crate::handle::HandleKind;
 use crate::identity::{diagnostic_id, suggestion_id};
 use crate::impact;
+use crate::obligations::lookup_obligation;
 use crate::snapshot;
 
 #[derive(Subcommand, Clone, Debug)]
@@ -248,7 +249,7 @@ fn build_diagnostic_explanation_output(
         message: diagnostic.message.clone(),
         file: diagnostic.file.clone(),
         line: diagnostic.line,
-        rule: diagnostic_rule(diagnostic.code).map(str::to_string),
+        rule: crate::checks::diagnostic_rule_name(diagnostic.code).map(str::to_string),
         facts: diagnostic_facts(diagnostic),
     })
 }
@@ -333,63 +334,39 @@ fn build_obligation_explanation_output(
     let node_id = crate::cli::lookup_handle(context.node_index, &args.handle)
         .with_context(|| format!("handle not found: {}", args.handle))?;
     let handle = context.graph.node(node_id);
-    let HandleKind::Label { prefix, .. } = &handle.kind else {
+    let HandleKind::Label { .. } = &handle.kind else {
         bail!("handle is not a label obligation: {}", args.handle);
     };
-    if !context
-        .config
-        .handles
-        .linear_set()
-        .contains(prefix.as_str())
-    {
-        bail!("handle is not in a linear namespace: {}", args.handle);
-    }
+    let entry = lookup_obligation(context.graph, context.lattice, context.config, node_id)
+        .with_context(|| format!("handle is not in a linear namespace: {}", args.handle))?;
 
-    let incoming_dischargers: Vec<String> = context
-        .graph
-        .incoming(node_id)
-        .iter()
-        .filter(|edge| edge.kind == crate::graph::EdgeKind::Discharges)
-        .map(|edge| context.graph.node(edge.source).id.clone())
-        .collect();
-
-    let disposition =
-        crate::query::obligation_disposition(handle, context.lattice, incoming_dischargers.len());
     let mut facts = vec![
-        fact("obligation", "namespace", prefix),
-        fact("obligation", "disposition", disposition.as_str()),
-        fact(
-            "count",
-            "dischargers",
-            &incoming_dischargers.len().to_string(),
-        ),
+        fact("obligation", "namespace", &entry.namespace),
+        fact("obligation", "disposition", entry.disposition.as_str()),
+        fact("count", "dischargers", &entry.discharge_count.to_string()),
         fact(
             "state",
             "terminal",
-            if handle.is_terminal(context.lattice) {
+            if entry.disposition == crate::obligations::ObligationDisposition::Mooted {
                 "true"
             } else {
                 "false"
             },
         ),
     ];
-    if let Some(file) = resolved_file(handle, context.graph) {
-        facts.push(fact("location", "file", &file));
+    if let Some(file) = &entry.file {
+        facts.push(fact("location", "file", file));
     }
-    if incoming_dischargers.is_empty() {
+    if entry.dischargers.is_empty() {
         facts.push(fact("discharger", "handles", "none"));
     } else {
-        facts.push(fact(
-            "discharger",
-            "handles",
-            &incoming_dischargers.join(", "),
-        ));
+        facts.push(fact("discharger", "handles", &entry.dischargers.join(", ")));
     }
 
     Ok(ObligationExplanation {
-        handle: handle.id.clone(),
-        namespace: prefix.clone(),
-        disposition: disposition.as_str().to_string(),
+        handle: entry.handle,
+        namespace: entry.namespace,
+        disposition: entry.disposition.as_str().to_string(),
         facts,
     })
 }
@@ -400,10 +377,7 @@ fn build_suggestion_explanation_output(
 ) -> anyhow::Result<SuggestionExplanation> {
     let diagnostics = crate::analysis::build_analysis_artifacts_with_selection(
         context,
-        crate::checks::DiagnosticSelection {
-            suggestions: true,
-            ..crate::checks::DiagnosticSelection::none()
-        },
+        crate::query::suggestion_diagnostic_selection(args.code.as_deref()),
     )
     .diagnostics;
     let diagnostic = select_suggestion(&diagnostics, args)?;
@@ -415,7 +389,7 @@ fn build_suggestion_explanation_output(
         message: diagnostic.message.clone(),
         file: diagnostic.file.clone(),
         line: diagnostic.line,
-        rule: diagnostic_rule(diagnostic.code).map(str::to_string),
+        rule: crate::checks::diagnostic_rule_name(diagnostic.code).map(str::to_string),
         facts: diagnostic_facts(diagnostic),
     })
 }
@@ -583,7 +557,7 @@ fn select_suggestion<'a>(
         .filter(|diagnostic| {
             args.handle
                 .as_ref()
-                .is_none_or(|handle| diagnostic_mentions_handle(diagnostic, handle))
+                .is_none_or(|handle| suggestion_matches_handle(diagnostic, handle))
         })
         .collect();
 
@@ -650,24 +624,10 @@ fn diagnostic_mentions_handle(diagnostic: &Diagnostic, handle: &str) -> bool {
         Some(Evidence::BrokenRef { target, candidates }) => {
             target == handle || candidates.iter().any(|candidate| candidate == handle)
         }
+        Some(Evidence::Suggestion { suggestion }) => {
+            suggestion_matches_selector(suggestion, handle)
+        }
         _ => false,
-    }
-}
-
-fn diagnostic_rule(code: &str) -> Option<&'static str> {
-    match code {
-        "I001" | "E001" => Some("KB-R1 existence"),
-        "W004" => Some("plausibility filter"),
-        "W001" => Some("KB-R2 staleness"),
-        "W002" => Some("KB-R3 confidence gap"),
-        "E002" | "I002" => Some("KB-R4 linearity"),
-        "W003" => Some("KB-R5 convention adoption"),
-        "S001" => Some("SUGGEST-01 orphaned handles"),
-        "S002" => Some("SUGGEST-02 candidate namespaces"),
-        "S003" => Some("SUGGEST-03 pipeline stalls"),
-        "S004" => Some("SUGGEST-04 abandoned namespaces"),
-        "S005" => Some("SUGGEST-05 concern group candidates"),
-        _ => None,
     }
 }
 
@@ -733,6 +693,9 @@ fn diagnostic_facts(diagnostic: &Diagnostic) -> Vec<ExplanationFact> {
             facts.push(fact("value", "raw", value));
             facts.push(fact("value", "reason", reason));
         }
+        Some(Evidence::Suggestion { suggestion }) => {
+            add_suggestion_facts(&mut facts, suggestion);
+        }
         None => add_message_derived_facts(&mut facts, diagnostic),
     }
 
@@ -779,58 +742,113 @@ fn add_message_derived_facts(facts: &mut Vec<ExplanationFact>, diagnostic: &Diag
                 facts.push(fact("handle", "file", &handle));
             }
         }
-        "S001" => {
-            if let Some(handle) =
-                parse_after_prefix(&diagnostic.message, "orphaned handle: ", " has ")
-            {
-                facts.push(fact("handle", "orphan", &handle));
-            }
-            facts.push(fact("count", "incoming_edges", "0"));
-        }
-        "S002" => {
-            if let Some((prefix, count)) = parse_before_and_between(
-                &diagnostic.message,
-                "candidate namespace: ",
-                " (",
-                " labels found",
-            ) {
-                facts.push(fact("namespace", "prefix", &prefix));
-                facts.push(fact("count", "labels", &count));
-            }
-        }
-        "S003" => {
-            if let Some(status) = diagnostic
-                .message
-                .split('\'')
-                .nth(1)
-                .filter(|status| !status.is_empty())
-            {
-                facts.push(fact("state", "status", status));
-            }
-        }
-        "S004" => {
-            if let Some((count, prefix)) = parse_before_and_between(
-                &diagnostic.message,
-                "abandoned namespace: all ",
-                " members of ",
-                " are",
-            ) {
-                facts.push(fact("count", "members", &count));
-                facts.push(fact("namespace", "prefix", &prefix));
-            }
-        }
-        "S005" => {
-            if let Some(rest) = diagnostic.message.strip_prefix("concern group candidate: ")
-                && let Some((pair, count)) = rest.split_once(" co-occur in ")
-                && let Some((left, right)) = pair.split_once(" and ")
-            {
-                facts.push(fact("namespace", "left", left));
-                facts.push(fact("namespace", "right", right));
-                facts.push(fact("count", "files", count.trim_end_matches(" files")));
-            }
-        }
         _ => {}
     }
+}
+
+fn add_suggestion_facts(facts: &mut Vec<ExplanationFact>, suggestion: &SuggestionEvidence) {
+    match suggestion {
+        SuggestionEvidence::OrphanedHandle { handle } => {
+            facts.push(fact("handle", "orphan", handle));
+            facts.push(fact("count", "incoming_edges", "0"));
+        }
+        SuggestionEvidence::CandidateNamespace { prefix, count } => {
+            facts.push(fact("namespace", "prefix", prefix));
+            facts.push(fact("count", "labels", &count.to_string()));
+        }
+        SuggestionEvidence::PipelineStall {
+            status,
+            count,
+            next_status,
+            based_on_history,
+        } => {
+            facts.push(fact("state", "status", status));
+            facts.push(fact("count", "handles", &count.to_string()));
+            if let Some(next_status) = next_status {
+                facts.push(fact("state", "next_status", next_status));
+            }
+            facts.push(fact(
+                "signal",
+                "based_on_history",
+                if *based_on_history { "true" } else { "false" },
+            ));
+        }
+        SuggestionEvidence::AbandonedNamespace {
+            prefix,
+            member_count,
+            terminal_members,
+            stale_members,
+        } => {
+            facts.push(fact("namespace", "prefix", prefix));
+            facts.push(fact("count", "members", &member_count.to_string()));
+            facts.push(fact(
+                "count",
+                "terminal_members",
+                &terminal_members.to_string(),
+            ));
+            facts.push(fact("count", "stale_members", &stale_members.to_string()));
+        }
+        SuggestionEvidence::ConcernGroupCandidate {
+            left_prefix,
+            right_prefix,
+            file_count,
+        } => {
+            facts.push(fact("namespace", "left", left_prefix));
+            facts.push(fact("namespace", "right", right_prefix));
+            facts.push(fact("count", "files", &file_count.to_string()));
+        }
+    }
+}
+
+fn suggestion_matches_handle(diagnostic: &Diagnostic, handle: &str) -> bool {
+    if diagnostic
+        .file
+        .as_deref()
+        .is_some_and(|file| crate::analysis::matches_scoped_file(file, handle))
+    {
+        return true;
+    }
+
+    match diagnostic.evidence.as_ref() {
+        Some(Evidence::Suggestion { suggestion }) => {
+            suggestion_matches_selector(suggestion, handle)
+        }
+        _ => false,
+    }
+}
+
+fn suggestion_matches_selector(suggestion: &SuggestionEvidence, selector: &str) -> bool {
+    let namespace = selector_namespace(selector);
+    match suggestion {
+        SuggestionEvidence::OrphanedHandle { handle } => handle == selector,
+        SuggestionEvidence::CandidateNamespace { prefix, .. }
+        | SuggestionEvidence::AbandonedNamespace { prefix, .. } => {
+            selector == prefix || namespace.is_some_and(|ns| ns == prefix)
+        }
+        SuggestionEvidence::PipelineStall { .. } => false,
+        SuggestionEvidence::ConcernGroupCandidate {
+            left_prefix,
+            right_prefix,
+            ..
+        } => {
+            selector == left_prefix
+                || selector == right_prefix
+                || namespace.is_some_and(|ns| ns == left_prefix || ns == right_prefix)
+        }
+    }
+}
+
+fn selector_namespace(selector: &str) -> Option<&str> {
+    let digit_start = selector
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_ascii_digit())
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let (prefix, digits) = selector.split_at(digit_start);
+    if digits.is_empty() {
+        return None;
+    }
+    Some(prefix.trim_end_matches('-'))
 }
 
 fn parse_after_prefix(message: &str, prefix: &str, before: &str) -> Option<String> {
@@ -1116,6 +1134,23 @@ mod tests {
         }
     }
 
+    fn sample_suggestion(
+        code: &'static str,
+        message: &str,
+        evidence: SuggestionEvidence,
+    ) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Suggestion,
+            code,
+            message: message.to_string(),
+            file: Some("labels.md".to_string()),
+            line: Some(1),
+            evidence: Some(Evidence::Suggestion {
+                suggestion: evidence,
+            }),
+        }
+    }
+
     #[test]
     fn select_diagnostic_by_id_prefers_stable_identity() {
         let diagnostic = sample_diagnostic();
@@ -1327,5 +1362,54 @@ mod tests {
 
         assert_eq!(explanation.code, "S001");
         assert!(explanation.suggestion_id.starts_with("sugg_"));
+    }
+
+    #[test]
+    fn select_suggestion_matches_namespace_from_structured_evidence() {
+        let suggestion = sample_suggestion(
+            "S002",
+            "candidate namespace available",
+            SuggestionEvidence::CandidateNamespace {
+                prefix: "OQ".to_string(),
+                count: 4,
+            },
+        );
+
+        let selected = select_suggestion(
+            std::slice::from_ref(&suggestion),
+            &SuggestionExplainArgs {
+                id: None,
+                code: Some("S002".to_string()),
+                handle: Some("OQ-17".to_string()),
+            },
+        )
+        .expect("selected suggestion");
+
+        assert_eq!(selected.code, "S002");
+    }
+
+    #[test]
+    fn diagnostic_facts_use_structured_suggestion_evidence() {
+        let suggestion = sample_suggestion(
+            "S005",
+            "message text should not matter here",
+            SuggestionEvidence::ConcernGroupCandidate {
+                left_prefix: "FM".to_string(),
+                right_prefix: "OQ".to_string(),
+                file_count: 3,
+            },
+        );
+
+        let facts = diagnostic_facts(&suggestion);
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.key == "left" && fact.value == "FM")
+        );
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.key == "files" && fact.value == "3")
+        );
     }
 }
