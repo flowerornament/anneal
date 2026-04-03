@@ -17,6 +17,7 @@ mod handle;
 mod identity;
 mod impact;
 mod lattice;
+mod obligations;
 mod parse;
 mod query;
 mod resolve;

@@ -14,6 +14,7 @@ use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::identity::suggestion_id;
 use crate::lattice::Lattice;
+use crate::obligations::{ObligationDisposition, collect_obligations};
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
 
@@ -227,25 +228,6 @@ struct EdgeCandidate {
     kind: EdgeKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ObligationDisposition {
-    Outstanding,
-    Discharged,
-    MultiDischarged,
-    Mooted,
-}
-
-impl ObligationDisposition {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Outstanding => "outstanding",
-            Self::Discharged => "discharged",
-            Self::MultiDischarged => "multi_discharged",
-            Self::Mooted => "mooted",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct HandleRow {
     pub(crate) id: String,
@@ -276,7 +258,7 @@ pub(crate) struct EdgeRow {
 pub(crate) struct ObligationRow {
     pub(crate) handle: String,
     pub(crate) namespace: String,
-    pub(crate) disposition: String,
+    pub(crate) disposition: ObligationDisposition,
     pub(crate) discharge_count: usize,
     pub(crate) file: Option<String>,
 }
@@ -482,10 +464,7 @@ fn build_suggestion_output(
     let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
     let diagnostics = analysis::build_analysis_artifacts_with_selection(
         context,
-        crate::checks::DiagnosticSelection {
-            suggestions: true,
-            ..crate::checks::DiagnosticSelection::none()
-        },
+        suggestion_diagnostic_selection(args.code.as_deref()),
     )
     .diagnostics;
     build_suggestion_query_output(diagnostics, &terminal_files, args)
@@ -511,12 +490,11 @@ fn diagnostic_selection(args: &DiagnosticQueryArgs) -> crate::checks::Diagnostic
     }
     if args.stale {
         narrowed = true;
-        selection.widen_for_code("W001");
+        selection.widen_for_stale_alias();
     }
     if args.obligations {
         narrowed = true;
-        selection.widen_for_code("E002");
-        selection.widen_for_code("I002");
+        selection.widen_for_obligation_alias();
     }
     if args.suggest {
         narrowed = true;
@@ -542,9 +520,13 @@ fn build_diagnostic_query_output(
         obligations: args.obligations,
         active_only: matches!(args.page.scope, QueryScope::Active),
     };
-    let mut diagnostics = crate::cli::apply_check_filters(diagnostics, &filters, terminal_files);
-    diagnostics.retain(|diagnostic| matches_diagnostic_filters(diagnostic, args));
-    diagnostics.sort_by(|a, b| diagnostic_sort_key(a).cmp(&diagnostic_sort_key(b)));
+    let diagnostics = filtered_diagnostics(
+        diagnostics,
+        terminal_files,
+        &filters,
+        |diagnostic| matches_diagnostic_filters(diagnostic, args),
+        |a, b| diagnostic_sort_key(a).cmp(&diagnostic_sort_key(b)),
+    );
 
     let (meta, items) = paginate(diagnostics, &args.page);
     JsonEnvelope::new(
@@ -559,6 +541,25 @@ fn build_diagnostic_query_output(
     )
 }
 
+fn filtered_diagnostics(
+    diagnostics: Vec<Diagnostic>,
+    terminal_files: &HashSet<String>,
+    filters: &crate::cli::CheckFilters,
+    predicate: impl Fn(&Diagnostic) -> bool,
+    mut sort: impl FnMut(&Diagnostic, &Diagnostic) -> std::cmp::Ordering,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = crate::cli::apply_check_filters(diagnostics, filters, terminal_files);
+    diagnostics.retain(|diagnostic| predicate(diagnostic));
+    diagnostics.sort_by(|left, right| sort(left, right));
+    diagnostics
+}
+
+pub(crate) fn suggestion_diagnostic_selection(
+    code: Option<&str>,
+) -> crate::checks::DiagnosticSelection {
+    crate::checks::DiagnosticSelection::suggestions_only(code)
+}
+
 fn build_suggestion_query_output(
     diagnostics: Vec<Diagnostic>,
     terminal_files: &HashSet<String>,
@@ -571,19 +572,23 @@ fn build_suggestion_query_output(
         obligations: false,
         active_only: matches!(args.page.scope, QueryScope::Active),
     };
-    let mut suggestions = crate::cli::apply_check_filters(diagnostics, &filters, terminal_files);
-    suggestions.retain(|diagnostic| matches_suggestion_filters(diagnostic, args));
-    suggestions.sort_by(|a, b| {
-        a.code
-            .cmp(b.code)
-            .then_with(|| {
-                a.file
-                    .as_deref()
-                    .unwrap_or("")
-                    .cmp(b.file.as_deref().unwrap_or(""))
-            })
-            .then_with(|| a.message.cmp(&b.message))
-    });
+    let suggestions = filtered_diagnostics(
+        diagnostics,
+        terminal_files,
+        &filters,
+        |diagnostic| matches_suggestion_filters(diagnostic, args),
+        |a, b| {
+            a.code
+                .cmp(b.code)
+                .then_with(|| {
+                    a.file
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.file.as_deref().unwrap_or(""))
+                })
+                .then_with(|| a.message.cmp(&b.message))
+        },
+    );
     let (meta, items) = paginate(suggestions, &args.page);
     JsonEnvelope::new(
         meta,
@@ -603,37 +608,20 @@ fn build_obligation_rows(
     config: &crate::config::AnnealConfig,
     scope: QueryScope,
 ) -> Vec<ObligationRow> {
-    let linear_namespaces = config.handles.linear_set();
-    let mut rows = Vec::new();
-
-    for (node_id, handle) in graph.nodes() {
-        let HandleKind::Label { prefix, .. } = &handle.kind else {
-            continue;
-        };
-        if !linear_namespaces.contains(prefix.as_str()) {
-            continue;
-        }
-
-        let discharge_count = graph
-            .incoming(node_id)
-            .iter()
-            .filter(|edge| edge.kind == EdgeKind::Discharges)
-            .count();
-        let disposition = obligation_disposition(handle, lattice, discharge_count);
-        if matches!(scope, QueryScope::Active) && disposition == ObligationDisposition::Mooted {
-            continue;
-        }
-
-        rows.push(ObligationRow {
-            handle: handle.id.clone(),
-            namespace: prefix.clone(),
-            disposition: disposition.as_str().to_string(),
-            discharge_count,
-            file: resolved_file(handle, graph),
-        });
-    }
-
-    rows
+    collect_obligations(graph, lattice, config)
+        .into_iter()
+        .filter(|entry| {
+            !(matches!(scope, QueryScope::Active)
+                && entry.disposition == ObligationDisposition::Mooted)
+        })
+        .map(|entry| ObligationRow {
+            handle: entry.handle,
+            namespace: entry.namespace,
+            disposition: entry.disposition,
+            discharge_count: entry.discharge_count,
+            file: entry.file,
+        })
+        .collect()
 }
 
 fn build_handle_candidates<'a>(
@@ -1031,16 +1019,8 @@ fn matches_obligation_filters(row: &ObligationRow, args: &ObligationQueryArgs) -
     {
         return false;
     }
-    if args.undischarged && row.disposition != ObligationDisposition::Outstanding.as_str() {
-        return false;
-    }
-    if args.discharged && row.disposition != ObligationDisposition::Discharged.as_str() {
-        return false;
-    }
-    if args.multi_discharged && row.disposition != ObligationDisposition::MultiDischarged.as_str() {
-        return false;
-    }
-    if args.mooted && row.disposition != ObligationDisposition::Mooted.as_str() {
+    let selected = selected_obligation_dispositions(args);
+    if !selected.is_empty() && !selected.contains(&row.disposition) {
         return false;
     }
     true
@@ -1058,22 +1038,6 @@ fn matches_suggestion_filters(diagnostic: &Diagnostic, args: &SuggestionQueryArg
         return false;
     }
     true
-}
-
-pub(crate) fn obligation_disposition(
-    handle: &Handle,
-    lattice: &Lattice,
-    discharge_count: usize,
-) -> ObligationDisposition {
-    if handle.is_terminal(lattice) {
-        ObligationDisposition::Mooted
-    } else if discharge_count == 0 {
-        ObligationDisposition::Outstanding
-    } else if discharge_count == 1 {
-        ObligationDisposition::Discharged
-    } else {
-        ObligationDisposition::MultiDischarged
-    }
 }
 
 fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, &str, &str, u32, &str) {
@@ -1138,6 +1102,23 @@ fn compare_edge_candidates(
         .cmp(right_source)
         .then_with(|| left.kind.as_str().cmp(right.kind.as_str()))
         .then_with(|| left_target.cmp(right_target))
+}
+
+fn selected_obligation_dispositions(args: &ObligationQueryArgs) -> Vec<ObligationDisposition> {
+    let mut selected = Vec::new();
+    if args.undischarged {
+        selected.push(ObligationDisposition::Outstanding);
+    }
+    if args.discharged {
+        selected.push(ObligationDisposition::Discharged);
+    }
+    if args.multi_discharged {
+        selected.push(ObligationDisposition::MultiDischarged);
+    }
+    if args.mooted {
+        selected.push(ObligationDisposition::Mooted);
+    }
+    selected
 }
 
 fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (OutputMeta, Vec<T>) {
@@ -1334,7 +1315,10 @@ fn print_obligation_output_human(
         writeln!(
             w,
             "{:<10}  {:<16}  {:>10}  {}",
-            row.namespace, row.disposition, row.discharge_count, row.handle
+            row.namespace,
+            row.disposition.as_str(),
+            row.discharge_count,
+            row.handle
         )?;
     }
     if !output.meta.expand.is_empty() {
@@ -1700,7 +1684,7 @@ mod tests {
         rows.retain(|row| matches_obligation_filters(row, &args));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].handle, "OQ-1");
-        assert_eq!(rows[0].disposition, "outstanding");
+        assert_eq!(rows[0].disposition, ObligationDisposition::Outstanding);
     }
 
     #[test]

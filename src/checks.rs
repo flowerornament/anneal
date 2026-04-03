@@ -37,6 +37,40 @@ pub(crate) enum Evidence {
     },
     /// W004: implausible frontmatter value.
     Implausible { value: String, reason: String },
+    /// S001-S005: structured evidence for suggestions.
+    Suggestion {
+        #[serde(flatten)]
+        suggestion: SuggestionEvidence,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SuggestionEvidence {
+    OrphanedHandle {
+        handle: String,
+    },
+    CandidateNamespace {
+        prefix: String,
+        count: usize,
+    },
+    PipelineStall {
+        status: String,
+        count: usize,
+        next_status: Option<String>,
+        based_on_history: bool,
+    },
+    AbandonedNamespace {
+        prefix: String,
+        member_count: usize,
+        terminal_members: usize,
+        stale_members: usize,
+    },
+    ConcernGroupCandidate {
+        left_prefix: String,
+        right_prefix: String,
+        file_count: usize,
+    },
 }
 
 /// Severity level for diagnostics, ordered so errors sort first.
@@ -141,6 +175,31 @@ impl DiagnosticSelection {
         self.suggestions
     }
 
+    pub(crate) fn widen_for_stale_alias(&mut self) {
+        self.staleness = true;
+    }
+
+    pub(crate) fn widen_for_obligation_alias(&mut self) {
+        self.linearity = true;
+    }
+
+    pub(crate) fn suggestions_only(code: Option<&str>) -> Self {
+        let mut selection = Self::none();
+        if let Some(code) = code {
+            selection.widen_for_code(code);
+            if selection.includes_suggestions() {
+                selection
+            } else {
+                Self::none()
+            }
+        } else {
+            Self {
+                suggestions: true,
+                ..Self::none()
+            }
+        }
+    }
+
     pub(crate) fn widen_for_code(&mut self, code: &str) {
         match code {
             "I001" | "E001" => self.existence = true,
@@ -177,6 +236,23 @@ pub(crate) fn is_stale_code(code: &str) -> bool {
 
 pub(crate) fn is_obligation_code(code: &str) -> bool {
     matches!(code, "E002" | "I002")
+}
+
+pub(crate) fn diagnostic_rule_name(code: &str) -> Option<&'static str> {
+    match code {
+        "I001" | "E001" => Some("KB-R1 existence"),
+        "W004" => Some("plausibility filter"),
+        "W001" => Some("KB-R2 staleness"),
+        "W002" => Some("KB-R3 confidence gap"),
+        "E002" | "I002" => Some("KB-R4 linearity"),
+        "W003" => Some("KB-R5 convention adoption"),
+        "S001" => Some("SUGGEST-01 orphaned handles"),
+        "S002" => Some("SUGGEST-02 candidate namespaces"),
+        "S003" => Some("SUGGEST-03 pipeline stalls"),
+        "S004" => Some("SUGGEST-04 abandoned namespaces"),
+        "S005" => Some("SUGGEST-05 concern group candidates"),
+        _ => None,
+    }
 }
 
 impl Diagnostic {
@@ -702,7 +778,11 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::OrphanedHandle {
+                        handle: handle.id.clone(),
+                    },
+                }),
             });
         }
     }
@@ -759,7 +839,12 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
             ),
             file: representative_file,
             line: Some(1),
-            evidence: None,
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace {
+                    prefix: prefix.to_string(),
+                    count,
+                },
+            }),
         });
     }
 
@@ -850,7 +935,16 @@ fn suggest_pipeline_stalls(
                 message,
                 file: representative,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::PipelineStall {
+                        status: status_name.clone(),
+                        count: handles_at_level.len(),
+                        next_status: previous_snapshot
+                            .is_none()
+                            .then(|| lattice.ordering[level_idx + 1].clone()),
+                        based_on_history: previous_snapshot.is_some(),
+                    },
+                }),
             });
         }
     }
@@ -894,9 +988,12 @@ fn suggest_abandoned_namespaces(
             continue;
         }
 
+        let mut terminal_members = 0;
+        let mut stale_members = 0;
         let all_abandoned = members.iter().all(|(_, handle)| {
             // Terminal status -> abandoned
             if handle.is_terminal(lattice) {
+                terminal_members += 1;
                 return true;
             }
 
@@ -905,6 +1002,7 @@ fn suggest_abandoned_namespaces(
             let freshness =
                 lattice::compute_freshness(handle.metadata.updated, None, &config.freshness);
             if freshness.level == FreshnessLevel::Stale {
+                stale_members += 1;
                 return true;
             }
 
@@ -926,7 +1024,14 @@ fn suggest_abandoned_namespaces(
                 ),
                 file: representative,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::AbandonedNamespace {
+                        prefix: (*prefix).to_string(),
+                        member_count: members.len(),
+                        terminal_members,
+                        stale_members,
+                    },
+                }),
             });
         }
     }
@@ -1038,7 +1143,13 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
             ),
             file: representative_file,
             line: Some(1),
-            evidence: None,
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::ConcernGroupCandidate {
+                    left_prefix: prefix_a.to_string(),
+                    right_prefix: prefix_b.to_string(),
+                    file_count: count,
+                },
+            }),
         });
     }
 
@@ -1444,6 +1555,12 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S001");
         assert!(diags[0].message.contains("OQ-1"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::OrphanedHandle { handle },
+            }) => assert_eq!(handle, "OQ-1"),
+            other => panic!("Expected orphaned-handle evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1496,6 +1613,15 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S002");
         assert!(diags[0].message.contains("NEW"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace { prefix, count },
+            }) => {
+                assert_eq!(prefix, "NEW");
+                assert_eq!(*count, 3);
+            }
+            other => panic!("Expected candidate-namespace evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1545,6 +1671,23 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S003");
         assert!(diags[0].message.contains("draft"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::PipelineStall {
+                        status,
+                        count,
+                        next_status,
+                        based_on_history,
+                    },
+            }) => {
+                assert_eq!(status, "draft");
+                assert_eq!(*count, 3);
+                assert_eq!(next_status.as_deref(), Some("review"));
+                assert!(!based_on_history);
+            }
+            other => panic!("Expected pipeline-stall evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1667,6 +1810,23 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S004");
         assert!(diags[0].message.contains("OLD"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::AbandonedNamespace {
+                        prefix,
+                        member_count,
+                        terminal_members,
+                        stale_members,
+                    },
+            }) => {
+                assert_eq!(prefix, "OLD");
+                assert_eq!(*member_count, 2);
+                assert_eq!(*terminal_members, 2);
+                assert_eq!(*stale_members, 0);
+            }
+            other => panic!("Expected abandoned-namespace evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1757,6 +1917,21 @@ mod tests {
             diags[0].message.contains("OQ") && diags[0].message.contains("FM"),
             "S005 message should mention both co-occurring prefixes"
         );
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::ConcernGroupCandidate {
+                        left_prefix,
+                        right_prefix,
+                        file_count,
+                    },
+            }) => {
+                assert_eq!(left_prefix, "FM");
+                assert_eq!(right_prefix, "OQ");
+                assert_eq!(*file_count, 3);
+            }
+            other => panic!("Expected concern-group evidence, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1846,6 +2021,29 @@ mod tests {
         assert_eq!(json["code"], "E001");
         assert_eq!(json["file"], "doc.md");
         assert_eq!(json["line"], 10);
+    }
+
+    #[test]
+    fn evidence_suggestion_serializes_with_nested_kind() {
+        let diag = Diagnostic {
+            severity: Severity::Suggestion,
+            code: "S002",
+            message: "candidate namespace".to_string(),
+            file: Some("labels.md".to_string()),
+            line: Some(1),
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace {
+                    prefix: "NEW".to_string(),
+                    count: 3,
+                },
+            }),
+        };
+        let json = serde_json::to_value(&diag).expect("serialize");
+        let ev = &json["evidence"];
+        assert_eq!(ev["type"], "Suggestion");
+        assert_eq!(ev["kind"], "candidate_namespace");
+        assert_eq!(ev["prefix"], "NEW");
+        assert_eq!(ev["count"], 3);
     }
 
     #[test]
