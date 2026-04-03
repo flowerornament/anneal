@@ -1126,7 +1126,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Query { ref command }) => {
-            query::run(command)?;
+            query::run(graph, &lattice, command, cli_args.json, json_style)?;
         }
 
         Some(Command::Explain { ref command }) => {
