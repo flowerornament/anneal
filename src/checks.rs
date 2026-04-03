@@ -140,6 +140,43 @@ impl DiagnosticSelection {
     pub(crate) fn includes_suggestions(self) -> bool {
         self.suggestions
     }
+
+    pub(crate) fn widen_for_code(&mut self, code: &str) {
+        match code {
+            "I001" | "E001" => self.existence = true,
+            "W004" => self.plausibility = true,
+            "W001" => self.staleness = true,
+            "W002" => self.confidence_gap = true,
+            "E002" | "I002" => self.linearity = true,
+            "W003" => self.conventions = true,
+            code if code.starts_with('S') => self.suggestions = true,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn widen_for_severity(&mut self, severity: Severity) {
+        match severity {
+            Severity::Error | Severity::Info => {
+                self.existence = true;
+                self.linearity = true;
+            }
+            Severity::Warning => {
+                self.plausibility = true;
+                self.staleness = true;
+                self.confidence_gap = true;
+                self.conventions = true;
+            }
+            Severity::Suggestion => self.suggestions = true,
+        }
+    }
+}
+
+pub(crate) fn is_stale_code(code: &str) -> bool {
+    matches!(code, "W001")
+}
+
+pub(crate) fn is_obligation_code(code: &str) -> bool {
+    matches!(code, "E002" | "I002")
 }
 
 impl Diagnostic {
@@ -204,7 +241,7 @@ fn check_existence(
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let bare_filename_index = build_bare_filename_index(graph);
+    let mut bare_filename_index: Option<HashMap<String, Vec<String>>> = None;
 
     if section_ref_count > 0 {
         diagnostics.push(Diagnostic {
@@ -230,12 +267,19 @@ fn check_existence(
             .as_ref()
             .map(ToString::to_string);
 
+        let bare_filename_candidates = if edge.target_identity.contains('/') {
+            Vec::new()
+        } else {
+            let index = bare_filename_index.get_or_insert_with(|| build_bare_filename_index(graph));
+            bare_filename_candidates(index, &edge.target_identity)
+        };
+
         let candidates = merge_candidates(
             cascade_candidates
                 .get(&edge.target_identity)
                 .cloned()
                 .unwrap_or_default(),
-            bare_filename_candidates(&bare_filename_index, &edge.target_identity),
+            bare_filename_candidates,
         );
 
         let candidate_msg = if candidates.is_empty() {

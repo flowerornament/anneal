@@ -8,13 +8,13 @@ use crate::analysis::AnalysisContext;
 use crate::checks::{Diagnostic, Evidence};
 use crate::cli::{JsonEnvelope, JsonStyle, OutputMeta};
 use crate::identity::diagnostic_id;
+use crate::impact;
+use crate::snapshot;
 
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum ExplainCommand {
     Diagnostic(DiagnosticExplainArgs),
-    #[command(hide = true)]
     Impact(ImpactExplainArgs),
-    #[command(hide = true)]
     Convergence(ConvergenceExplainArgs),
     #[command(hide = true)]
     Obligation(ObligationExplainArgs),
@@ -117,7 +117,17 @@ pub(crate) struct ImpactHop {
 pub(crate) struct ConvergenceExplanation {
     pub(crate) signal: String,
     pub(crate) detail: String,
+    pub(crate) current: ConvergenceSnapshotSummary,
+    pub(crate) previous: Option<ConvergenceSnapshotSummary>,
     pub(crate) facts: Vec<ExplanationFact>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ConvergenceSnapshotSummary {
+    pub(crate) handles_total: usize,
+    pub(crate) handles_active: usize,
+    pub(crate) handles_frozen: usize,
+    pub(crate) obligations_outstanding: usize,
 }
 
 #[allow(dead_code)]
@@ -144,24 +154,36 @@ pub(crate) fn run(
     match command {
         ExplainCommand::Diagnostic(args) => {
             let explanation = build_diagnostic_explanation_output(context, args)?;
-            if json {
-                crate::cli::print_json(
-                    &JsonEnvelope::new(OutputMeta::full(), explanation),
-                    json_style,
-                )?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_diagnostic_explanation_human(&explanation, &mut lock)
-                    .context("failed to write explain diagnostic output")?;
-            }
+            emit_explanation(
+                explanation,
+                json,
+                json_style,
+                print_diagnostic_explanation_human,
+                "failed to write explain diagnostic output",
+            )?;
             Ok(())
         }
-        ExplainCommand::Impact(_) => {
-            bail!("anneal explain impact is not implemented yet on this branch")
+        ExplainCommand::Impact(args) => {
+            let explanation = build_impact_explanation_output(context, args)?;
+            emit_explanation(
+                explanation,
+                json,
+                json_style,
+                print_impact_explanation_human,
+                "failed to write explain impact output",
+            )?;
+            Ok(())
         }
         ExplainCommand::Convergence(_) => {
-            bail!("anneal explain convergence is not implemented yet on this branch")
+            let explanation = build_convergence_explanation_output(context);
+            emit_explanation(
+                explanation,
+                json,
+                json_style,
+                print_convergence_explanation_human,
+                "failed to write explain convergence output",
+            )?;
+            Ok(())
         }
         ExplainCommand::Obligation(_) => {
             bail!("anneal explain obligation is not implemented yet on this branch")
@@ -170,6 +192,26 @@ pub(crate) fn run(
             bail!("anneal explain suggestion is not implemented yet on this branch")
         }
     }
+}
+
+fn emit_explanation<T: Serialize>(
+    explanation: T,
+    json: bool,
+    json_style: JsonStyle,
+    render_human: impl FnOnce(&T, &mut dyn Write) -> std::io::Result<()>,
+    human_context: &'static str,
+) -> anyhow::Result<()> {
+    if json {
+        crate::cli::print_json(
+            &JsonEnvelope::new(OutputMeta::full(), explanation),
+            json_style,
+        )?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        render_human(&explanation, &mut lock).context(human_context)?;
+    }
+    Ok(())
 }
 
 fn build_diagnostic_explanation_output(
@@ -188,6 +230,193 @@ fn build_diagnostic_explanation_output(
         rule: diagnostic_rule(diagnostic.code).map(str::to_string),
         facts: diagnostic_facts(diagnostic),
     })
+}
+
+fn build_convergence_explanation_output(context: &AnalysisContext<'_>) -> ConvergenceExplanation {
+    let analysis = crate::analysis::build_analysis_artifacts(context);
+    let current = snapshot::build_snapshot(
+        context.graph,
+        context.lattice,
+        context.config,
+        &analysis.diagnostics,
+    );
+    let current_summary = convergence_snapshot_summary(&current);
+
+    if let Some(previous) = analysis.previous_snapshot.as_ref() {
+        let convergence = snapshot::analyze_convergence(&current, previous);
+        let detail = convergence.detail.clone();
+        ConvergenceExplanation {
+            signal: convergence.signal.to_string(),
+            detail,
+            current: current_summary,
+            previous: Some(convergence_snapshot_summary(previous)),
+            facts: convergence_facts(&current, previous, &convergence),
+        }
+    } else {
+        ConvergenceExplanation {
+            signal: "no_history".to_string(),
+            detail: "no previous snapshot available; run `anneal status` or `anneal check` again after this snapshot is stored".to_string(),
+            current: current_summary,
+            previous: None,
+            facts: vec![
+                fact("history", "previous_snapshot", "missing"),
+                fact("history", "status_behavior", "status shows no convergence signal on first run"),
+            ],
+        }
+    }
+}
+
+fn build_impact_explanation_output(
+    context: &AnalysisContext<'_>,
+    args: &ImpactExplainArgs,
+) -> anyhow::Result<ImpactExplanation> {
+    let node_id = crate::cli::lookup_handle(context.node_index, &args.handle)
+        .with_context(|| format!("handle not found: {}", args.handle))?;
+    let root = context.graph.node(node_id).id.clone();
+    let paths = impact::compute_impact_paths(context.graph, node_id);
+
+    Ok(ImpactExplanation {
+        root,
+        direct: paths
+            .direct
+            .into_iter()
+            .map(|entry| impact_path(entry, context.graph))
+            .collect(),
+        indirect: paths
+            .indirect
+            .into_iter()
+            .map(|entry| impact_path(entry, context.graph))
+            .collect(),
+    })
+}
+
+fn impact_path(entry: impact::ImpactPathEntry, graph: &crate::graph::DiGraph) -> ImpactPath {
+    ImpactPath {
+        target: graph.node(entry.target).id.clone(),
+        path: entry
+            .path
+            .into_iter()
+            .map(|hop| ImpactHop {
+                source: graph.node(hop.source).id.clone(),
+                edge_kind: hop.edge_kind.as_str().to_string(),
+                target: graph.node(hop.target).id.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn convergence_snapshot_summary(snapshot: &snapshot::Snapshot) -> ConvergenceSnapshotSummary {
+    ConvergenceSnapshotSummary {
+        handles_total: snapshot.handles.total,
+        handles_active: snapshot.handles.active,
+        handles_frozen: snapshot.handles.frozen,
+        obligations_outstanding: snapshot.obligations.outstanding,
+    }
+}
+
+fn convergence_facts(
+    current: &snapshot::Snapshot,
+    previous: &snapshot::Snapshot,
+    analysis: &snapshot::ConvergenceAnalysis,
+) -> Vec<ExplanationFact> {
+    let mut facts = vec![
+        fact(
+            "delta",
+            "resolution_gain",
+            &analysis.resolution_gain.to_string(),
+        ),
+        fact(
+            "delta",
+            "creation_gain",
+            &analysis.creation_gain.to_string(),
+        ),
+        fact(
+            "delta",
+            "obligations_delta",
+            &analysis.obligations_delta.to_string(),
+        ),
+        fact(
+            "current",
+            "handles_frozen",
+            &current.handles.frozen.to_string(),
+        ),
+        fact(
+            "previous",
+            "handles_frozen",
+            &previous.handles.frozen.to_string(),
+        ),
+        fact(
+            "current",
+            "handles_total",
+            &current.handles.total.to_string(),
+        ),
+        fact(
+            "previous",
+            "handles_total",
+            &previous.handles.total.to_string(),
+        ),
+        fact(
+            "current",
+            "obligations_outstanding",
+            &current.obligations.outstanding.to_string(),
+        ),
+        fact(
+            "previous",
+            "obligations_outstanding",
+            &previous.obligations.outstanding.to_string(),
+        ),
+    ];
+
+    match analysis.signal {
+        snapshot::ConvergenceSignal::Advancing => {
+            facts.push(fact(
+                "rule",
+                "selected_branch",
+                "resolution_gain > creation_gain && obligations_delta <= 0",
+            ));
+            facts.push(fact(
+                "rule",
+                "why_not_drifting",
+                "creation did not exceed resolution and obligations did not increase",
+            ));
+        }
+        snapshot::ConvergenceSignal::Drifting => {
+            facts.push(fact(
+                "rule",
+                "selected_branch",
+                "creation_gain > resolution_gain || obligations_delta > 0",
+            ));
+            if analysis.creation_gain > analysis.resolution_gain {
+                facts.push(fact("rule", "drift_driver", "creation exceeded resolution"));
+            }
+            if analysis.obligations_delta > 0 {
+                facts.push(fact(
+                    "rule",
+                    "drift_driver",
+                    "outstanding obligations increased",
+                ));
+            }
+        }
+        snapshot::ConvergenceSignal::Holding => {
+            facts.push(fact(
+                "rule",
+                "selected_branch",
+                "neither advancing nor drifting conditions applied",
+            ));
+            facts.push(fact(
+                "rule",
+                "why_not_advancing",
+                "resolution did not exceed creation enough to outpace it",
+            ));
+            facts.push(fact(
+                "rule",
+                "why_not_drifting",
+                "creation did not exceed resolution and obligations did not increase",
+            ));
+        }
+    }
+
+    facts
 }
 
 fn select_diagnostic<'a>(
@@ -529,10 +758,136 @@ fn print_diagnostic_explanation_human(
     Ok(())
 }
 
+fn print_convergence_explanation_human(
+    explanation: &ConvergenceExplanation,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "convergence  {}", explanation.signal)?;
+    writeln!(w, "detail       {}", explanation.detail)?;
+    writeln!(
+        w,
+        "current      handles {}  active {}  frozen {}  obligations {}",
+        explanation.current.handles_total,
+        explanation.current.handles_active,
+        explanation.current.handles_frozen,
+        explanation.current.obligations_outstanding,
+    )?;
+    if let Some(previous) = &explanation.previous {
+        writeln!(
+            w,
+            "previous     handles {}  active {}  frozen {}  obligations {}",
+            previous.handles_total,
+            previous.handles_active,
+            previous.handles_frozen,
+            previous.obligations_outstanding,
+        )?;
+    } else {
+        writeln!(w, "previous     (none)")?;
+    }
+    if !explanation.facts.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "facts")?;
+        for fact in &explanation.facts {
+            writeln!(
+                w,
+                "  {:<10} {:<20} {}",
+                fact.fact_type, fact.key, fact.value
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn print_impact_explanation_human(
+    explanation: &ImpactExplanation,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "impact       {}", explanation.root)?;
+    writeln!(w)?;
+    print_impact_section("direct", &explanation.direct, w)?;
+    writeln!(w)?;
+    print_impact_section("indirect", &explanation.indirect, w)?;
+    Ok(())
+}
+
+fn print_impact_section(
+    label: &str,
+    paths: &[ImpactPath],
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(w, "{label}")?;
+    if paths.is_empty() {
+        writeln!(w, "  (none)")?;
+        return Ok(());
+    }
+    for path in paths {
+        writeln!(w, "  {}", path.target)?;
+        for hop in &path.path {
+            writeln!(w, "    {} {} {}", hop.source, hop.edge_kind, hop.target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::checks::Severity;
+    use crate::config::{AnnealConfig, HistoryMode, ResolvedStateConfig};
+    use crate::graph::{DiGraph, EdgeKind};
+    use crate::handle::Handle;
+    use crate::lattice::{Lattice, LatticeKind};
+    use crate::parse::BuildResult;
+    use camino::Utf8Path;
+    use std::collections::{HashMap, HashSet};
+
+    fn sample_analysis_context<'a>(
+        graph: &'a DiGraph,
+        lattice: &'a Lattice,
+        config: &'a AnnealConfig,
+        state_config: &'a ResolvedStateConfig,
+        result: &'a BuildResult,
+        node_index: &'a HashMap<String, crate::handle::NodeId>,
+        cascade_candidates: &'a HashMap<String, Vec<String>>,
+    ) -> AnalysisContext<'a> {
+        AnalysisContext {
+            root: Utf8Path::new("."),
+            graph,
+            lattice,
+            config,
+            state_config,
+            result,
+            node_index,
+            cascade_candidates,
+        }
+    }
+
+    fn empty_result() -> BuildResult {
+        BuildResult {
+            graph: DiGraph::new(),
+            label_candidates: Vec::new(),
+            pending_edges: Vec::new(),
+            observed_statuses: HashSet::new(),
+            terminal_by_directory: HashSet::new(),
+            observed_frontmatter_keys: HashMap::new(),
+            filename_index: HashMap::new(),
+            implausible_refs: Vec::new(),
+            external_refs: Vec::new(),
+            extractions: Vec::new(),
+            file_snippets: HashMap::new(),
+            label_snippets: HashMap::new(),
+        }
+    }
+
+    fn simple_lattice() -> Lattice {
+        Lattice {
+            observed_statuses: HashSet::new(),
+            active: HashSet::new(),
+            terminal: HashSet::new(),
+            ordering: Vec::new(),
+            kind: LatticeKind::Existence,
+        }
+    }
 
     fn sample_diagnostic() -> Diagnostic {
         Diagnostic {
@@ -603,5 +958,81 @@ mod tests {
                 .iter()
                 .any(|fact| fact.key == "kind" && fact.value == "DependsOn")
         );
+    }
+
+    #[test]
+    fn convergence_explanation_reports_no_history_when_none_exists() {
+        let graph = DiGraph::new();
+        let lattice = simple_lattice();
+        let config = AnnealConfig::default();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = HashMap::new();
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_convergence_explanation_output(&context);
+        assert_eq!(explanation.signal, "no_history");
+        assert!(explanation.previous.is_none());
+    }
+
+    #[test]
+    fn impact_explanation_returns_canonical_path_chain() {
+        let mut graph = DiGraph::new();
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
+        let c = graph.add_node(Handle::test_file("c.md", None));
+        graph.add_edge(a, b, EdgeKind::DependsOn);
+        graph.add_edge(b, c, EdgeKind::DependsOn);
+
+        let lattice = simple_lattice();
+        let config = AnnealConfig::default();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = crate::resolve::build_node_index(&graph);
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_impact_explanation_output(
+            &context,
+            &ImpactExplainArgs {
+                handle: "c.md".to_string(),
+                full: false,
+            },
+        )
+        .expect("impact explanation");
+
+        assert_eq!(explanation.root, "c.md");
+        assert_eq!(explanation.direct.len(), 1);
+        assert_eq!(explanation.direct[0].target, "b.md");
+        assert_eq!(explanation.direct[0].path[0].source, "b.md");
+        assert_eq!(explanation.direct[0].path[0].target, "c.md");
+        assert_eq!(explanation.indirect.len(), 1);
+        assert_eq!(explanation.indirect[0].target, "a.md");
+        assert_eq!(explanation.indirect[0].path.len(), 2);
+        assert_eq!(explanation.indirect[0].path[0].source, "a.md");
+        assert_eq!(explanation.indirect[0].path[1].source, "b.md");
     }
 }

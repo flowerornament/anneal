@@ -35,7 +35,7 @@ pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<S
 }
 
 /// Look up a handle by exact match, falling back to case-insensitive search.
-fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
+pub(crate) fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
     node_index
         .get(handle)
         .copied()
@@ -297,8 +297,8 @@ pub(crate) fn apply_check_filters(
         diagnostics.retain(|d| {
             (filters.errors_only && d.severity == Severity::Error)
                 || (filters.suggest && d.severity == Severity::Suggestion)
-                || (filters.stale && d.code == "W001")
-                || (filters.obligations && matches!(d.code, "E002" | "I002"))
+                || (filters.stale && checks::is_stale_code(d.code))
+                || (filters.obligations && checks::is_obligation_code(d.code))
         });
     }
     diagnostics

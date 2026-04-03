@@ -272,7 +272,8 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Edges(args) => {
-            let output = build_edge_output(context, args);
+            let output =
+                build_edge_output(context.graph, context.lattice, context.node_index, args);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -325,13 +326,22 @@ fn build_handle_output(
     ))
 }
 
-fn build_edge_output(context: &AnalysisContext<'_>, args: &EdgeQueryArgs) -> EdgeQueryOutput {
-    let state_levels = args
-        .confidence_gap
-        .then(|| build_state_levels(context.lattice));
-    let mut candidates =
-        build_edge_candidates(context, args.page.scope, args, state_levels.as_ref());
-    candidates.sort_by(|a, b| compare_edge_candidates(context.graph, *a, *b));
+fn build_edge_output(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    node_index: &HashMap<String, NodeId>,
+    args: &EdgeQueryArgs,
+) -> EdgeQueryOutput {
+    let state_levels = args.confidence_gap.then(|| build_state_levels(lattice));
+    let mut candidates = build_edge_candidates(
+        graph,
+        lattice,
+        node_index,
+        args.page.scope,
+        args,
+        state_levels.as_ref(),
+    );
+    candidates.sort_by(|a, b| compare_edge_candidates(graph, *a, *b));
     let (meta, items) = paginate(candidates, &args.page);
     JsonEnvelope::new(
         meta,
@@ -339,7 +349,7 @@ fn build_edge_output(context: &AnalysisContext<'_>, args: &EdgeQueryArgs) -> Edg
             kind: "edges",
             items: items
                 .into_iter()
-                .map(|candidate| edge_row(context.graph, candidate))
+                .map(|candidate| edge_row(graph, candidate))
                 .collect(),
         },
     )
@@ -356,7 +366,9 @@ fn build_diagnostic_output(
         analysis::retain_diagnostics_for_file(&mut diagnostics, context.root.as_str(), file_filter);
     }
 
-    let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
+    let terminal_files = matches!(args.page.scope, QueryScope::Active)
+        .then(|| crate::cli::terminal_file_set(context.graph, context.lattice))
+        .unwrap_or_default();
     build_diagnostic_query_output(diagnostics, &terminal_files, args)
 }
 
@@ -366,51 +378,30 @@ fn diagnostic_selection(args: &DiagnosticQueryArgs) -> crate::checks::Diagnostic
 
     if let Some(code) = args.code.as_deref() {
         narrowed = true;
-        match code {
-            "I001" | "E001" => selection.existence = true,
-            "W004" => selection.plausibility = true,
-            "W001" => selection.staleness = true,
-            "W002" => selection.confidence_gap = true,
-            "E002" | "I002" => selection.linearity = true,
-            "W003" => selection.conventions = true,
-            code if code.starts_with('S') => selection.suggestions = true,
-            _ => {}
-        }
+        selection.widen_for_code(code);
     }
 
     if let Some(severity) = args.severity {
         narrowed = true;
-        match severity {
-            Severity::Error | Severity::Info => {
-                selection.existence = true;
-                selection.linearity = true;
-            }
-            Severity::Warning => {
-                selection.plausibility = true;
-                selection.staleness = true;
-                selection.confidence_gap = true;
-                selection.conventions = true;
-            }
-            Severity::Suggestion => selection.suggestions = true,
-        }
+        selection.widen_for_severity(severity);
     }
 
     if args.errors_only {
         narrowed = true;
-        selection.existence = true;
-        selection.linearity = true;
+        selection.widen_for_severity(Severity::Error);
     }
     if args.stale {
         narrowed = true;
-        selection.staleness = true;
+        selection.widen_for_code("W001");
     }
     if args.obligations {
         narrowed = true;
-        selection.linearity = true;
+        selection.widen_for_code("E002");
+        selection.widen_for_code("I002");
     }
     if args.suggest {
         narrowed = true;
-        selection.suggestions = true;
+        selection.widen_for_severity(Severity::Suggestion);
     }
 
     if narrowed {
@@ -472,40 +463,82 @@ fn build_handle_candidates<'a>(
 }
 
 fn build_edge_candidates(
-    context: &AnalysisContext<'_>,
+    graph: &DiGraph,
+    lattice: &Lattice,
+    node_index: &HashMap<String, NodeId>,
     scope: QueryScope,
     args: &EdgeQueryArgs,
     state_levels: Option<&HashMap<&str, usize>>,
 ) -> Vec<EdgeCandidate> {
-    let graph = context.graph;
-    let lattice = context.lattice;
-    let source_id = exact_node_id(context.node_index, args.source.as_deref());
+    let source_id = exact_node_id(node_index, args.source.as_deref());
     if args.source.is_some() && source_id.is_none() {
         return Vec::new();
     }
-    let target_id = exact_node_id(context.node_index, args.target.as_deref());
+    let target_id = exact_node_id(node_index, args.target.as_deref());
     if args.target.is_some() && target_id.is_none() {
         return Vec::new();
     }
 
     let mut rows = Vec::new();
-    if let Some(source) = source_id {
+    if let (Some(source), Some(target)) = (source_id, target_id) {
         let source_handle = graph.node(source);
-        if !matches!(scope, QueryScope::Active) || !source_handle.is_terminal(lattice) {
-            for edge in graph.outgoing(source) {
-                let target_handle = graph.node(edge.target);
-                if matches!(scope, QueryScope::Active) && target_handle.is_terminal(lattice) {
-                    continue;
-                }
-                let candidate = EdgeCandidate {
+        let target_handle = graph.node(target);
+        if matches!(scope, QueryScope::Active)
+            && (source_handle.is_terminal(lattice) || target_handle.is_terminal(lattice))
+        {
+            return Vec::new();
+        }
+
+        let source_edges = graph.outgoing(source).len();
+        let target_edges = graph.incoming(target).len();
+        if source_edges <= target_edges {
+            collect_edge_candidates(
+                graph,
+                lattice,
+                scope,
+                args,
+                state_levels,
+                graph.outgoing(source).iter().map(|edge| EdgeCandidate {
                     source,
                     target: edge.target,
                     kind: edge.kind,
-                };
-                if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
-                    rows.push(candidate);
-                }
-            }
+                }),
+                &mut rows,
+            );
+        } else {
+            collect_edge_candidates(
+                graph,
+                lattice,
+                scope,
+                args,
+                state_levels,
+                graph.incoming(target).iter().map(|edge| EdgeCandidate {
+                    source: edge.source,
+                    target,
+                    kind: edge.kind,
+                }),
+                &mut rows,
+            );
+        }
+        return rows;
+    }
+
+    if let Some(source) = source_id {
+        let source_handle = graph.node(source);
+        if !matches!(scope, QueryScope::Active) || !source_handle.is_terminal(lattice) {
+            collect_edge_candidates(
+                graph,
+                lattice,
+                scope,
+                args,
+                state_levels,
+                graph.outgoing(source).iter().map(|edge| EdgeCandidate {
+                    source,
+                    target: edge.target,
+                    kind: edge.kind,
+                }),
+                &mut rows,
+            );
         }
         return rows;
     }
@@ -515,20 +548,19 @@ fn build_edge_candidates(
         if matches!(scope, QueryScope::Active) && target_handle.is_terminal(lattice) {
             return Vec::new();
         }
-        for edge in graph.incoming(target) {
-            let source_handle = graph.node(edge.source);
-            if matches!(scope, QueryScope::Active) && source_handle.is_terminal(lattice) {
-                continue;
-            }
-            let candidate = EdgeCandidate {
+        collect_edge_candidates(
+            graph,
+            lattice,
+            scope,
+            args,
+            state_levels,
+            graph.incoming(target).iter().map(|edge| EdgeCandidate {
                 source: edge.source,
                 target,
                 kind: edge.kind,
-            };
-            if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
-                rows.push(candidate);
-            }
-        }
+            }),
+            &mut rows,
+        );
         return rows;
     }
 
@@ -536,22 +568,44 @@ fn build_edge_candidates(
         if matches!(scope, QueryScope::Active) && source_handle.is_terminal(lattice) {
             continue;
         }
-        for edge in graph.outgoing(node_id) {
-            let target_handle = graph.node(edge.target);
-            if matches!(scope, QueryScope::Active) && target_handle.is_terminal(lattice) {
-                continue;
-            }
-            let candidate = EdgeCandidate {
+        collect_edge_candidates(
+            graph,
+            lattice,
+            scope,
+            args,
+            state_levels,
+            graph.outgoing(node_id).iter().map(|edge| EdgeCandidate {
                 source: node_id,
                 target: edge.target,
                 kind: edge.kind,
-            };
-            if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
-                rows.push(candidate);
-            }
-        }
+            }),
+            &mut rows,
+        );
     }
     rows
+}
+
+fn collect_edge_candidates(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    scope: QueryScope,
+    args: &EdgeQueryArgs,
+    state_levels: Option<&HashMap<&str, usize>>,
+    candidates: impl Iterator<Item = EdgeCandidate>,
+    rows: &mut Vec<EdgeCandidate>,
+) {
+    for candidate in candidates {
+        let source_handle = graph.node(candidate.source);
+        let target_handle = graph.node(candidate.target);
+        if matches!(scope, QueryScope::Active)
+            && (source_handle.is_terminal(lattice) || target_handle.is_terminal(lattice))
+        {
+            continue;
+        }
+        if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
+            rows.push(candidate);
+        }
+    }
 }
 
 fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
@@ -1011,16 +1065,12 @@ fn print_diagnostic_output_human(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camino::Utf8Path;
     use std::collections::HashSet;
 
-    use crate::analysis::AnalysisContext;
     use crate::checks::{Diagnostic, Severity};
-    use crate::config::{AnnealConfig, HistoryMode, ResolvedStateConfig};
     use crate::graph::DiGraph;
     use crate::handle::Handle;
     use crate::lattice::{Lattice, LatticeKind};
-    use crate::parse::BuildResult;
 
     fn make_lattice(active: &[&str], terminal: &[&str], ordering: &[&str]) -> Lattice {
         Lattice {
@@ -1052,27 +1102,6 @@ mod tests {
                 &["provisional", "formal", "verified"],
             ),
         )
-    }
-
-    fn sample_analysis_context<'a>(
-        graph: &'a DiGraph,
-        lattice: &'a Lattice,
-        node_index: &'a HashMap<String, NodeId>,
-        config: &'a AnnealConfig,
-        state_config: &'a ResolvedStateConfig,
-        result: &'a BuildResult,
-        cascade_candidates: &'a HashMap<String, Vec<String>>,
-    ) -> AnalysisContext<'a> {
-        AnalysisContext {
-            root: Utf8Path::new("."),
-            graph,
-            lattice,
-            config,
-            state_config,
-            result,
-            node_index,
-            cascade_candidates,
-        }
     }
 
     fn diagnostic_args() -> DiagnosticQueryArgs {
@@ -1193,38 +1222,11 @@ mod tests {
     #[test]
     fn edge_query_confidence_gap_filters_depends_on() {
         let (graph, lattice) = sample_graph();
-        let config = AnnealConfig::default();
-        let state_config = ResolvedStateConfig {
-            history_mode: HistoryMode::Off,
-            history_dir: None,
-        };
-        let result = BuildResult {
-            graph: DiGraph::new(),
-            label_candidates: Vec::new(),
-            pending_edges: Vec::new(),
-            observed_statuses: std::collections::HashSet::new(),
-            terminal_by_directory: std::collections::HashSet::new(),
-            observed_frontmatter_keys: HashMap::new(),
-            filename_index: HashMap::new(),
-            implausible_refs: Vec::new(),
-            external_refs: Vec::new(),
-            extractions: Vec::new(),
-            file_snippets: HashMap::new(),
-            label_snippets: HashMap::new(),
-        };
         let node_index = crate::resolve::build_node_index(&graph);
-        let cascade_candidates = HashMap::new();
-        let context = sample_analysis_context(
+        let output = build_edge_output(
             &graph,
             &lattice,
             &node_index,
-            &config,
-            &state_config,
-            &result,
-            &cascade_candidates,
-        );
-        let output = build_edge_output(
-            &context,
             &EdgeQueryArgs {
                 page: QueryPageArgs {
                     limit: None,
@@ -1328,39 +1330,11 @@ mod tests {
     #[test]
     fn edge_query_exact_target_filters_from_reverse_adjacency() {
         let (graph, lattice) = sample_graph();
-        let config = AnnealConfig::default();
-        let state_config = ResolvedStateConfig {
-            history_mode: HistoryMode::Off,
-            history_dir: None,
-        };
-        let result = BuildResult {
-            graph: DiGraph::new(),
-            label_candidates: Vec::new(),
-            pending_edges: Vec::new(),
-            observed_statuses: std::collections::HashSet::new(),
-            terminal_by_directory: std::collections::HashSet::new(),
-            observed_frontmatter_keys: HashMap::new(),
-            filename_index: HashMap::new(),
-            implausible_refs: Vec::new(),
-            external_refs: Vec::new(),
-            extractions: Vec::new(),
-            file_snippets: HashMap::new(),
-            label_snippets: HashMap::new(),
-        };
         let node_index = crate::resolve::build_node_index(&graph);
-        let cascade_candidates = HashMap::new();
-        let context = sample_analysis_context(
+        let output = build_edge_output(
             &graph,
             &lattice,
             &node_index,
-            &config,
-            &state_config,
-            &result,
-            &cascade_candidates,
-        );
-
-        let output = build_edge_output(
-            &context,
             &EdgeQueryArgs {
                 page: QueryPageArgs {
                     limit: None,
