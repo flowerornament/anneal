@@ -9,12 +9,15 @@ use serde::Serialize;
 mod checks;
 mod cli;
 mod config;
+mod explain;
 mod extraction;
 mod graph;
 mod handle;
+mod identity;
 mod impact;
 mod lattice;
 mod parse;
+mod query;
 mod resolve;
 mod snapshot;
 mod style;
@@ -515,6 +518,49 @@ EXAMPLES:
   anneal obligations --json       # Machine-readable output"
     )]
     Obligations,
+
+    /// Query structural facts derived from the current corpus
+    #[command(long_about = "\
+Run bounded structural queries over anneal's current in-memory graph and
+derived analysis facts.
+
+`query` is the ad hoc structural selector. It answers graph-shaped questions
+that are too specific for `status`, too broad for `get`, and intentionally out
+of scope for `find`, which remains an identity search.
+
+The initial surface is typed by domain:
+  handles       query handle properties and local graph counts
+  edges         query typed graph edges and endpoint properties
+  diagnostics   query the same freshly-derived diagnostic set used by check
+  obligations   query obligation state
+  suggestions   query structural suggestion outputs
+
+All query domains inherit anneal's bounded-output discipline: limits, offsets,
+scope controls, and explicit --full expansion.")]
+    Query {
+        #[command(subcommand)]
+        command: query::QueryCommand,
+    },
+
+    /// Explain why anneal produced a derived result
+    #[command(long_about = "\
+Explain why anneal produced a diagnostic, impact set, convergence signal,
+obligation state, or suggestion.
+
+`explain` is the provenance-oriented companion to anneal's structural outputs.
+It does not search semantically. It justifies a specific derived answer in
+terms of handles, edges, statuses, rules, and snapshots.
+
+The initial surface is typed by explanation domain:
+  diagnostic    explain one diagnostic, primarily by diagnostic_id
+  impact        explain why impact included each affected handle
+  convergence   explain the current status-style convergence signal
+  obligation    explain one obligation's current disposition
+  suggestion    explain one suggestion, primarily by suggestion_id")]
+    Explain {
+        #[command(subcommand)]
+        command: explain::ExplainCommand,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1078,6 +1124,14 @@ fn run() -> anyhow::Result<()> {
                 "failed to write obligations output",
             )?;
         }
+
+        Some(Command::Query { ref command }) => {
+            query::run(command)?;
+        }
+
+        Some(Command::Explain { ref command }) => {
+            explain::run(command)?;
+        }
     }
 
     Ok(())
@@ -1087,6 +1141,28 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn cli_parses_query_scaffolding() {
+        let cli = Cli::try_parse_from(["anneal", "query", "handles"]).expect("parse query");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Query {
+                command: query::QueryCommand::Handles(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_explain_scaffolding() {
+        let cli = Cli::try_parse_from(["anneal", "explain", "convergence"]).expect("parse explain");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Explain {
+                command: explain::ExplainCommand::Convergence(_),
+            })
+        ));
+    }
 
     #[test]
     fn test_murail_corpus() {
