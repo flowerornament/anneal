@@ -440,7 +440,7 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ### §12 Commands
 
-Ten commands. Each supports `--json` for agent consumption [KB-P8].
+Eleven commands. Each supports `--json` for agent consumption [KB-P8].
 
 #### §12.1 `anneal check` [KB-C1]
 
@@ -570,7 +570,18 @@ anneal impact formal-model/v17.md
 
 Computed by reverse graph traversal over DependsOn, Supersedes, and Verifies edges.
 
-#### §12.8 `anneal diff [ref]` [KB-C8]
+#### §12.8 `anneal obligations` [KB-C8]
+
+Summarize outstanding, discharged, and mooted obligations for configured linear namespaces.
+
+```
+anneal obligations
+anneal obligations --json
+```
+
+Human output emphasizes per-namespace buckets. JSON exposes totals and per-namespace disposition lists. This command is the direct obligation summary surface; `query obligations` is the ad hoc selector companion, and `explain obligation` is the provenance companion.
+
+#### §12.9 `anneal diff [ref]` [KB-C9]
 
 Graph-level changes since a reference point [KB-D19]. Default: since last snapshot.
 
@@ -589,7 +600,7 @@ Since last session:
   Stale: compiler/README.md now references superseded content
 ```
 
-#### §12.9 `anneal query <domain>` [KB-C9]
+#### §12.10 `anneal query <domain>` [KB-C10]
 
 Bounded structural selectors over the current graph and freshly derived analysis facts.
 
@@ -611,7 +622,7 @@ anneal query suggestions --code S001
 
 All query domains inherit anneal's bounded-output discipline: `--limit`, `--offset`, `--scope`, and explicit `--full`.
 
-#### §12.10 `anneal explain <domain>` [KB-C10]
+#### §12.11 `anneal explain <domain>` [KB-C11]
 
 Provenance-oriented explanation for derived anneal results.
 
@@ -703,7 +714,7 @@ error = 90
 
 ```
                      ┌───────────────────────┐
-                     │   CLI (10 commands)    │  §12
+                     │   CLI (11 commands)    │  §12
                      └───────────┬───────────┘
                                  │ query / explain
                      ┌───────────┴───────────┐
@@ -835,7 +846,7 @@ trait CommandOutput: Serialize {
 
 **[KB-OQ3] Semantic search.** `anneal find` uses identity-substring matching in v1. A future semantic or vector backend (for example, local GGUF following QMD's approach) could broaden discovery without changing the command surface.
 
-**[KB-OQ4] MCP server.** Wrapping the ten commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
+**[KB-OQ4] MCP server.** Wrapping the eleven commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
 
 **[KB-OQ5] Non-markdown corpora.** Source code comments, TOML/YAML config, structured data could contain handles. Current decision: markdown primary, with optional comment scanning for configured patterns.
 
