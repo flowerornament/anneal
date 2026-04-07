@@ -27,7 +27,9 @@ Use this orientation loop when the request is broad:
 1. `anneal status --json --compact`
 2. `anneal check --active-only`
 3. `anneal get <handle> --context` or `anneal find <text> --limit 25` for the item the user cares about
-4. `anneal impact <file-or-handle>` before editing corpus files
+4. `anneal query ...` when the question is structural rather than identity-based
+5. `anneal explain ...` when you need to justify a warning, suggestion, impact set, convergence signal, or obligation state
+6. `anneal impact <file-or-handle>` before editing corpus files
 
 For a single concrete question, run the matching command directly.
 
@@ -53,6 +55,30 @@ anneal map --around=anneal-spec.md
 ```
 
 Use `get` for one known handle, `find` for discovery, and `map --around` when relationship shape matters more than raw text.
+
+### Ask A Structural Question
+
+```bash
+anneal query handles --kind label --namespace OQ
+anneal query edges --kind DependsOn --confidence-gap
+anneal query diagnostics --severity warning
+anneal query obligations --undischarged
+anneal query suggestions --code S001
+```
+
+Use `query` for graph-shaped questions that are too specific for `status`, too broad for `get`, and outside `find`'s identity-search role.
+
+### Justify A Derived Result
+
+```bash
+anneal explain diagnostic --id diag_deadbeef
+anneal explain impact anneal-spec.md
+anneal explain convergence
+anneal explain obligation REQ-12
+anneal explain suggestion --id sugg_deadbeef
+```
+
+Use `explain` when the question is “why did anneal say this?” rather than “what exists?”.
 
 ### Understand Change Or Blast Radius
 
@@ -85,9 +111,11 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 
 ## Agent Rules
 
-- Use `anneal status --json --compact` for orientation. Use plain-text output for routine `check`, `get`, `find`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
+- Use `anneal status --json --compact` for orientation. Use plain-text output for routine `check`, `get`, `find`, `query`, `explain`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
 - Use plain-text `anneal check --active-only` for default orientation and health checks.
-- Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, and `anneal map --around=<handle>`.
+- Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, `anneal query ...`, and `anneal map --around=<handle>`.
+- Reach for `anneal query ...` when the user is asking an ad hoc structural question across many handles or edges.
+- Reach for `anneal explain ...` when the user wants provenance for a diagnostic, suggestion, obligation state, impact set, or convergence signal.
 - Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
 - Before editing knowledge files, run `anneal impact <file-or-handle>`.
 - After editing knowledge files, run `anneal check --active-only`.
