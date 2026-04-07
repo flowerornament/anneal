@@ -2,6 +2,21 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.5.0 - 2026-04-07
+
+### Added
+
+- Added the `anneal query` command family for bounded structural selection across handles, edges, diagnostics, obligations, and suggestions.
+- Added the `anneal explain` command family for provenance-oriented explanations of diagnostics, impact results, convergence signals, obligations, and suggestions.
+- Added stable diagnostic and suggestion identities so `check`, `query`, and `explain` compose through explicit IDs.
+- Added structured suggestion evidence for `S001` through `S005`, enabling typed suggestion explanation and selector matching instead of message-text heuristics.
+
+### Changed
+
+- Simplified the internal query/explain analysis pipeline by factoring shared analysis, obligation, identity, and selector logic into dedicated modules.
+- Tightened query/explain defaults around bounded output, active-scope filtering, and check-compatible diagnostic derivation.
+- Updated the README, canonical spec, CLI help, and bundled anneal skill so the new query/explain workflows are documented consistently.
+
 ## 0.4.3 - 2026-04-02
 
 ### Changed
