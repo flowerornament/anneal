@@ -440,7 +440,7 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ### §12 Commands
 
-Eight commands. Each supports `--json` for agent consumption [KB-P8].
+Eleven commands. Each supports `--json` for agent consumption [KB-P8].
 
 #### §12.1 `anneal check` [KB-C1]
 
@@ -570,7 +570,18 @@ anneal impact formal-model/v17.md
 
 Computed by reverse graph traversal over DependsOn, Supersedes, and Verifies edges.
 
-#### §12.8 `anneal diff [ref]` [KB-C8]
+#### §12.8 `anneal obligations` [KB-C8]
+
+Summarize outstanding, discharged, and mooted obligations for configured linear namespaces.
+
+```
+anneal obligations
+anneal obligations --json
+```
+
+Human output emphasizes per-namespace buckets. JSON exposes totals and per-namespace disposition lists. This command is the direct obligation summary surface; `query obligations` is the ad hoc selector companion, and `explain obligation` is the provenance companion.
+
+#### §12.9 `anneal diff [ref]` [KB-C9]
 
 Graph-level changes since a reference point [KB-D19]. Default: since last snapshot.
 
@@ -588,6 +599,48 @@ Since last session:
   New edges: 6 from formal-model/v17.md
   Stale: compiler/README.md now references superseded content
 ```
+
+#### §12.10 `anneal query <domain>` [KB-C10]
+
+Bounded structural selectors over the current graph and freshly derived analysis facts.
+
+```
+anneal query handles --kind label --namespace OQ
+anneal query edges --kind DependsOn --confidence-gap
+anneal query diagnostics --severity warning
+anneal query obligations --undischarged
+anneal query suggestions --code S001
+```
+
+`query` is for ad hoc graph-shaped questions that are too specific for `status`, too broad for `get`, and outside `find`'s identity-search role. The surface is typed by domain:
+
+- `handles` — handle properties and local graph counts
+- `edges` — typed graph edges and endpoint properties
+- `diagnostics` — the same freshly derived diagnostic set used by `check`
+- `obligations` — obligation state over linear namespaces
+- `suggestions` — structural suggestion outputs
+
+All query domains inherit anneal's bounded-output discipline: `--limit`, `--offset`, `--scope`, and explicit `--full`.
+
+#### §12.11 `anneal explain <domain>` [KB-C11]
+
+Provenance-oriented explanation for derived anneal results.
+
+```
+anneal explain diagnostic --id diag_deadbeef
+anneal explain impact formal-model/v17.md
+anneal explain convergence
+anneal explain obligation P-3
+anneal explain suggestion --id sugg_deadbeef
+```
+
+`explain` does not search semantically. It justifies a specific derived answer in terms of handles, edges, statuses, rules, and snapshots. The surface is typed by explanation domain:
+
+- `diagnostic` — explain one diagnostic, primarily by `diagnostic_id`
+- `impact` — explain why impact included each affected handle
+- `convergence` — explain the current status-style convergence signal
+- `obligation` — explain one obligation's current disposition
+- `suggestion` — explain one suggestion, primarily by `suggestion_id`
 
 ---
 
@@ -661,9 +714,9 @@ error = 90
 
 ```
                      ┌───────────────────────┐
-                     │    CLI (8 commands)    │  §12
+                     │   CLI (11 commands)    │  §12
                      └───────────┬───────────┘
-                                 │ queries
+                                 │ query / explain
                      ┌───────────┴───────────┐
                      │    Checked Graph       │  §5 + §7
                      └───────────┬───────────┘
@@ -697,7 +750,7 @@ error = 90
                      └───────────────────────┘
 ```
 
-Data flow: Filesystem → (scan + parse + infer) → Raw Graph → (resolve + check + impact + snapshot) → Checked Graph → (query) → CLI output.
+Data flow: Filesystem → (scan + parse + infer) → Raw Graph → (resolve + check + impact + snapshot) → Checked Graph → (query + explain) → CLI output.
 
 ### §15 Rust Crate Structure
 
@@ -708,13 +761,17 @@ anneal/
     graph.rs        # Graph, Edge, EdgeKind, construction   §5
     lattice.rs      # Lattice trait, convergence states     §6
     checks.rs       # Five local check rules                §7
-    linear.rs       # Obligation lifecycle                  §8
+    obligations.rs  # Obligation lifecycle + summaries      §8
     impact.rs       # Reverse graph traversal               §9
     snapshot.rs     # History, convergence summary, diff    §10
     parse.rs        # Frontmatter + regex scanning          §5.1
     resolve.rs      # Handle resolution                     §4.2
     config.rs       # anneal.toml parsing + inference       §13
-    cli.rs          # Eight commands + --json               §12
+    analysis.rs     # Shared analysis context / derivation  §14
+    query.rs        # Structural query surface              §12.9
+    explain.rs      # Provenance explanation surface        §12.10
+    identity.rs     # Stable diagnostic / suggestion IDs    §12.9
+    cli.rs          # Human + JSON output helpers           §12
     main.rs         # Entry point
   Cargo.toml
   .design/
@@ -789,7 +846,7 @@ trait CommandOutput: Serialize {
 
 **[KB-OQ3] Semantic search.** `anneal find` uses identity-substring matching in v1. A future semantic or vector backend (for example, local GGUF following QMD's approach) could broaden discovery without changing the command surface.
 
-**[KB-OQ4] MCP server.** Wrapping the eight commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
+**[KB-OQ4] MCP server.** Wrapping the eleven commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
 
 **[KB-OQ5] Non-markdown corpora.** Source code comments, TOML/YAML config, structured data could contain handles. Current decision: markdown primary, with optional comment scanning for configured patterns.
 

@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{HandleKind, NodeId};
+use crate::handle::{HandleKind, NodeId, resolved_file};
+use crate::identity::{diagnostic_id, suggestion_id};
 use crate::lattice::{self, FreshnessLevel, Lattice};
 use crate::parse::{ImplausibleRef, PendingEdge};
 
@@ -35,15 +37,60 @@ pub(crate) enum Evidence {
     },
     /// W004: implausible frontmatter value.
     Implausible { value: String, reason: String },
+    /// S001-S005: structured evidence for suggestions.
+    Suggestion {
+        #[serde(flatten)]
+        suggestion: SuggestionEvidence,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SuggestionEvidence {
+    OrphanedHandle {
+        handle: String,
+    },
+    CandidateNamespace {
+        prefix: String,
+        count: usize,
+    },
+    PipelineStall {
+        status: String,
+        count: usize,
+        next_status: Option<String>,
+        based_on_history: bool,
+    },
+    AbandonedNamespace {
+        prefix: String,
+        member_count: usize,
+        terminal_members: usize,
+        stale_members: usize,
+    },
+    ConcernGroupCandidate {
+        left_prefix: String,
+        right_prefix: String,
+        file_count: usize,
+    },
 }
 
 /// Severity level for diagnostics, ordered so errors sort first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
 pub(crate) enum Severity {
     Error = 0,
     Warning = 1,
     Info = 2,
     Suggestion = 3,
+}
+
+impl Severity {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+            Self::Suggestion => "suggestion",
+        }
+    }
 }
 
 /// A single diagnostic produced by a check rule (CHECK-06).
@@ -58,6 +105,234 @@ pub(crate) struct Diagnostic {
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
     pub(crate) evidence: Option<Evidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DiagnosticRecord {
+    pub(crate) diagnostic_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) suggestion_id: Option<String>,
+    pub(crate) severity: String,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) evidence: Option<Evidence>,
+}
+
+impl DiagnosticRecord {
+    pub(crate) fn from_diagnostic(diagnostic: &Diagnostic) -> Self {
+        Self {
+            diagnostic_id: diagnostic_id(diagnostic),
+            suggestion_id: suggestion_id(diagnostic),
+            severity: diagnostic.severity.as_str().to_string(),
+            code: diagnostic.code,
+            message: diagnostic.message.clone(),
+            file: diagnostic.file.clone(),
+            line: diagnostic.line,
+            evidence: diagnostic.evidence.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DiagnosticSelection {
+    pub(crate) existence: bool,
+    pub(crate) plausibility: bool,
+    pub(crate) staleness: bool,
+    pub(crate) confidence_gap: bool,
+    pub(crate) linearity: bool,
+    pub(crate) conventions: bool,
+    pub(crate) suggestions: bool,
+}
+
+impl DiagnosticSelection {
+    pub(crate) fn all() -> Self {
+        Self {
+            existence: true,
+            plausibility: true,
+            staleness: true,
+            confidence_gap: true,
+            linearity: true,
+            conventions: true,
+            suggestions: true,
+        }
+    }
+
+    pub(crate) fn none() -> Self {
+        Self {
+            existence: false,
+            plausibility: false,
+            staleness: false,
+            confidence_gap: false,
+            linearity: false,
+            conventions: false,
+            suggestions: false,
+        }
+    }
+
+    pub(crate) fn includes_suggestions(self) -> bool {
+        self.suggestions
+    }
+
+    pub(crate) fn widen_for_stale_alias(&mut self) {
+        self.staleness = true;
+    }
+
+    pub(crate) fn widen_for_obligation_alias(&mut self) {
+        self.linearity = true;
+    }
+
+    pub(crate) fn suggestions_only(code: Option<&str>) -> Self {
+        let mut selection = Self::none();
+        if let Some(code) = code {
+            selection.widen_for_code(code);
+            if selection.includes_suggestions() {
+                selection
+            } else {
+                Self::none()
+            }
+        } else {
+            Self {
+                suggestions: true,
+                ..Self::none()
+            }
+        }
+    }
+
+    pub(crate) fn widen_for_code(&mut self, code: &str) {
+        if let Some(descriptor) = diagnostic_descriptor(code) {
+            match descriptor.family {
+                DiagnosticFamily::Existence => self.existence = true,
+                DiagnosticFamily::Plausibility => self.plausibility = true,
+                DiagnosticFamily::Staleness => self.staleness = true,
+                DiagnosticFamily::ConfidenceGap => self.confidence_gap = true,
+                DiagnosticFamily::Linearity => self.linearity = true,
+                DiagnosticFamily::Conventions => self.conventions = true,
+                DiagnosticFamily::Suggestion => self.suggestions = true,
+            }
+        }
+    }
+
+    pub(crate) fn widen_for_severity(&mut self, severity: Severity) {
+        match severity {
+            Severity::Error | Severity::Info => {
+                self.existence = true;
+                self.linearity = true;
+            }
+            Severity::Warning => {
+                self.plausibility = true;
+                self.staleness = true;
+                self.confidence_gap = true;
+                self.conventions = true;
+            }
+            Severity::Suggestion => self.suggestions = true,
+        }
+    }
+}
+
+pub(crate) fn is_stale_code(code: &str) -> bool {
+    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.stale_alias)
+}
+
+pub(crate) fn is_obligation_code(code: &str) -> bool {
+    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.obligation_alias)
+}
+
+pub(crate) fn diagnostic_rule_name(code: &str) -> Option<&'static str> {
+    diagnostic_descriptor(code).map(|descriptor| descriptor.rule_name)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiagnosticFamily {
+    Existence,
+    Plausibility,
+    Staleness,
+    ConfidenceGap,
+    Linearity,
+    Conventions,
+    Suggestion,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiagnosticDescriptor {
+    family: DiagnosticFamily,
+    rule_name: &'static str,
+    stale_alias: bool,
+    obligation_alias: bool,
+}
+
+fn diagnostic_descriptor(code: &str) -> Option<DiagnosticDescriptor> {
+    let descriptor = match code {
+        "I001" | "E001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Existence,
+            rule_name: "KB-R1 existence",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "W004" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Plausibility,
+            rule_name: "plausibility filter",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "W001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Staleness,
+            rule_name: "KB-R2 staleness",
+            stale_alias: true,
+            obligation_alias: false,
+        },
+        "W002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::ConfidenceGap,
+            rule_name: "KB-R3 confidence gap",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "E002" | "I002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Linearity,
+            rule_name: "KB-R4 linearity",
+            stale_alias: false,
+            obligation_alias: true,
+        },
+        "W003" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Conventions,
+            rule_name: "KB-R5 convention adoption",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S001" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-01 orphaned handles",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S002" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-02 candidate namespaces",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S003" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-03 pipeline stalls",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S004" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-04 abandoned namespaces",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        "S005" => DiagnosticDescriptor {
+            family: DiagnosticFamily::Suggestion,
+            rule_name: "SUGGEST-05 concern group candidates",
+            stale_alias: false,
+            obligation_alias: false,
+        },
+        _ => return None,
+    };
+    Some(descriptor)
 }
 
 impl Diagnostic {
@@ -91,16 +366,18 @@ impl Diagnostic {
     }
 }
 
-/// For Version handles, resolve the artifact file_path from the parent file node.
-fn artifact_file(handle: &crate::handle::Handle, graph: &DiGraph) -> Option<String> {
-    if let HandleKind::Version { artifact, .. } = &handle.kind {
-        return graph
-            .node(*artifact)
-            .file_path
-            .as_ref()
-            .map(ToString::to_string);
+pub(crate) fn confidence_gap_levels(
+    edge_kind: EdgeKind,
+    source_level: Option<usize>,
+    target_level: Option<usize>,
+) -> Option<(usize, usize)> {
+    if edge_kind != EdgeKind::DependsOn {
+        return None;
     }
-    None
+    let (Some(source_level), Some(target_level)) = (source_level, target_level) else {
+        return None;
+    };
+    (source_level > target_level).then_some((source_level, target_level))
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +397,7 @@ fn check_existence(
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let bare_filename_index = build_bare_filename_index(graph);
+    let mut bare_filename_index: Option<HashMap<String, Vec<String>>> = None;
 
     if section_ref_count > 0 {
         diagnostics.push(Diagnostic {
@@ -146,12 +423,19 @@ fn check_existence(
             .as_ref()
             .map(ToString::to_string);
 
+        let bare_filename_candidates = if edge.target_identity.contains('/') {
+            Vec::new()
+        } else {
+            let index = bare_filename_index.get_or_insert_with(|| build_bare_filename_index(graph));
+            bare_filename_candidates(index, &edge.target_identity)
+        };
+
         let candidates = merge_candidates(
             cascade_candidates
                 .get(&edge.target_identity)
                 .cloned()
                 .unwrap_or_default(),
-            bare_filename_candidates(&bare_filename_index, &edge.target_identity),
+            bare_filename_candidates,
         );
 
         let candidate_msg = if candidates.is_empty() {
@@ -295,14 +579,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             let target = graph.node(edge.target);
             if target.is_terminal(lattice) {
                 let target_status = target.status.as_deref().unwrap_or("unknown");
-                // Fall back to artifact file, target file, or target's artifact
-                let file = handle
-                    .file_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .or_else(|| artifact_file(handle, graph))
-                    .or_else(|| target.file_path.as_ref().map(ToString::to_string))
-                    .or_else(|| artifact_file(target, graph));
+                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
 
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -357,13 +634,10 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                 continue;
             };
 
-            if source_level > target_level {
-                let file = handle
-                    .file_path
-                    .as_ref()
-                    .or(target.file_path.as_ref())
-                    .map(ToString::to_string);
-
+            if let Some((source_level, target_level)) =
+                confidence_gap_levels(EdgeKind::DependsOn, Some(source_level), Some(target_level))
+            {
+                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W002",
@@ -584,7 +858,11 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::OrphanedHandle {
+                        handle: handle.id.clone(),
+                    },
+                }),
             });
         }
     }
@@ -605,10 +883,16 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
     // Count labels per prefix
-    let mut prefix_counts: HashMap<&str, usize> = HashMap::new();
+    let mut prefix_counts: HashMap<&str, (usize, Option<String>)> = HashMap::new();
     for (_, handle) in graph.nodes() {
         if let HandleKind::Label { ref prefix, .. } = handle.kind {
-            *prefix_counts.entry(prefix.as_str()).or_insert(0) += 1;
+            let entry = prefix_counts
+                .entry(prefix.as_str())
+                .or_insert((0, handle.file_path.as_ref().map(ToString::to_string)));
+            entry.0 += 1;
+            if entry.1.is_none() {
+                entry.1 = handle.file_path.as_ref().map(ToString::to_string);
+            }
         }
     }
 
@@ -616,23 +900,13 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     // Sort for deterministic output
     let mut candidates: Vec<_> = prefix_counts
         .into_iter()
-        .filter(|(prefix, count)| {
+        .filter(|(prefix, (count, _))| {
             *count >= 3 && !confirmed.contains(prefix) && !rejected.contains(prefix)
         })
         .collect();
     candidates.sort_by_key(|(prefix, _)| *prefix);
 
-    for (prefix, count) in candidates {
-        // Pick representative file: first label handle with this prefix
-        let representative_file = graph.nodes().find_map(|(_, handle)| {
-            if let HandleKind::Label { prefix: ref p, .. } = handle.kind
-                && p.as_str() == prefix
-            {
-                return handle.file_path.as_ref().map(ToString::to_string);
-            }
-            None
-        });
-
+    for (prefix, (count, representative_file)) in candidates {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S002",
@@ -641,7 +915,12 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
             ),
             file: representative_file,
             line: Some(1),
-            evidence: None,
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace {
+                    prefix: prefix.to_string(),
+                    count,
+                },
+            }),
         });
     }
 
@@ -732,7 +1011,16 @@ fn suggest_pipeline_stalls(
                 message,
                 file: representative,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::PipelineStall {
+                        status: status_name.clone(),
+                        count: handles_at_level.len(),
+                        next_status: previous_snapshot
+                            .is_none()
+                            .then(|| lattice.ordering[level_idx + 1].clone()),
+                        based_on_history: previous_snapshot.is_some(),
+                    },
+                }),
             });
         }
     }
@@ -776,9 +1064,12 @@ fn suggest_abandoned_namespaces(
             continue;
         }
 
+        let mut terminal_members = 0;
+        let mut stale_members = 0;
         let all_abandoned = members.iter().all(|(_, handle)| {
             // Terminal status -> abandoned
             if handle.is_terminal(lattice) {
+                terminal_members += 1;
                 return true;
             }
 
@@ -787,6 +1078,7 @@ fn suggest_abandoned_namespaces(
             let freshness =
                 lattice::compute_freshness(handle.metadata.updated, None, &config.freshness);
             if freshness.level == FreshnessLevel::Stale {
+                stale_members += 1;
                 return true;
             }
 
@@ -808,7 +1100,14 @@ fn suggest_abandoned_namespaces(
                 ),
                 file: representative,
                 line: Some(1),
-                evidence: None,
+                evidence: Some(Evidence::Suggestion {
+                    suggestion: SuggestionEvidence::AbandonedNamespace {
+                        prefix: (*prefix).to_string(),
+                        member_count: members.len(),
+                        terminal_members,
+                        stale_members,
+                    },
+                }),
             });
         }
     }
@@ -842,7 +1141,7 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
     }
 
     // For each File handle, collect label prefixes it references
-    let mut file_prefixes: Vec<HashSet<&str>> = Vec::new();
+    let mut file_prefixes: Vec<(HashSet<&str>, Option<String>)> = Vec::new();
     for (node_id, handle) in graph.nodes() {
         if !matches!(handle.kind, HandleKind::File(_)) {
             continue;
@@ -859,59 +1158,42 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
         }
 
         if prefixes.len() >= 2 {
-            file_prefixes.push(prefixes);
+            file_prefixes.push((prefixes, handle.file_path.as_ref().map(ToString::to_string)));
         }
     }
 
     // Count co-occurrences for all prefix pairs
-    let mut pair_counts: HashMap<(&str, &str), usize> = HashMap::new();
-    for prefixes in &file_prefixes {
+    type PairCount<'a> = HashMap<(&'a str, &'a str), (usize, Option<String>)>;
+    let mut pair_counts: PairCount<'_> = HashMap::new();
+    for (prefixes, representative_file) in &file_prefixes {
         let mut sorted: Vec<&str> = prefixes.iter().copied().collect();
         sorted.sort_unstable();
         for (i, &a) in sorted.iter().enumerate() {
             for &b in &sorted[i + 1..] {
-                *pair_counts.entry((a, b)).or_insert(0) += 1;
+                let entry = pair_counts
+                    .entry((a, b))
+                    .or_insert((0, representative_file.clone()));
+                entry.0 += 1;
+                if entry.1.is_none() {
+                    entry.1.clone_from(representative_file);
+                }
             }
         }
     }
 
     // Filter to pairs with >= 3 co-occurrences, excluding existing concern groups
-    let mut candidates: Vec<((&str, &str), usize)> = pair_counts
+    type PairCandidate<'a> = Vec<((&'a str, &'a str), (usize, Option<String>))>;
+    let mut candidates: PairCandidate<'_> = pair_counts
         .into_iter()
-        .filter(|((a, b), count)| *count >= 3 && !existing_pairs.contains(&(*a, *b)))
+        .filter(|((a, b), (count, _))| *count >= 3 && !existing_pairs.contains(&(*a, *b)))
         .collect();
 
     // Sort by count descending, then by pair name for determinism
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    candidates.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
 
     // Limit to top 5 pairs to avoid noise
     let mut diagnostics = Vec::new();
-    for ((prefix_a, prefix_b), count) in candidates.into_iter().take(5) {
-        // Find a file that references both prefixes as representative
-        let representative_file = graph.nodes().find_map(|(node_id, handle)| {
-            if !matches!(handle.kind, HandleKind::File(_)) {
-                return None;
-            }
-            let mut has_a = false;
-            let mut has_b = false;
-            for edge in graph.outgoing(node_id) {
-                let target = graph.node(edge.target);
-                if let HandleKind::Label { ref prefix, .. } = target.kind {
-                    if prefix.as_str() == prefix_a {
-                        has_a = true;
-                    }
-                    if prefix.as_str() == prefix_b {
-                        has_b = true;
-                    }
-                }
-            }
-            if has_a && has_b {
-                handle.file_path.as_ref().map(ToString::to_string)
-            } else {
-                None
-            }
-        });
-
+    for ((prefix_a, prefix_b), (count, representative_file)) in candidates.into_iter().take(5) {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
             code: "S005",
@@ -920,7 +1202,13 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
             ),
             file: representative_file,
             line: Some(1),
-            evidence: None,
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::ConcernGroupCandidate {
+                    left_prefix: prefix_a.to_string(),
+                    right_prefix: prefix_b.to_string(),
+                    file_count: count,
+                },
+            }),
         });
     }
 
@@ -967,20 +1255,61 @@ pub(crate) fn run_checks(
     cascade_candidates: &HashMap<String, Vec<String>>,
     previous_snapshot: Option<&crate::snapshot::Snapshot>,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    diagnostics.extend(check_existence(
+    run_checks_with_selection(
         graph,
+        lattice,
+        config,
         unresolved_edges,
         section_ref_count,
         section_ref_file,
+        implausible_refs,
         cascade_candidates,
-    ));
-    diagnostics.extend(check_plausibility(implausible_refs));
-    diagnostics.extend(check_staleness(graph, lattice));
-    diagnostics.extend(check_confidence_gap(graph, lattice));
-    diagnostics.extend(check_linearity(graph, config, lattice));
-    diagnostics.extend(check_conventions(graph));
-    diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
+        previous_snapshot,
+        DiagnosticSelection::all(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_checks_with_selection(
+    graph: &DiGraph,
+    lattice: &Lattice,
+    config: &AnnealConfig,
+    unresolved_edges: &[PendingEdge],
+    section_ref_count: usize,
+    section_ref_file: Option<&str>,
+    implausible_refs: &[ImplausibleRef],
+    cascade_candidates: &HashMap<String, Vec<String>>,
+    previous_snapshot: Option<&crate::snapshot::Snapshot>,
+    selection: DiagnosticSelection,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if selection.existence {
+        diagnostics.extend(check_existence(
+            graph,
+            unresolved_edges,
+            section_ref_count,
+            section_ref_file,
+            cascade_candidates,
+        ));
+    }
+    if selection.plausibility {
+        diagnostics.extend(check_plausibility(implausible_refs));
+    }
+    if selection.staleness {
+        diagnostics.extend(check_staleness(graph, lattice));
+    }
+    if selection.confidence_gap {
+        diagnostics.extend(check_confidence_gap(graph, lattice));
+    }
+    if selection.linearity {
+        diagnostics.extend(check_linearity(graph, config, lattice));
+    }
+    if selection.conventions {
+        diagnostics.extend(check_conventions(graph));
+    }
+    if selection.suggestions {
+        diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
+    }
     diagnostics.sort_by_key(|d| d.severity);
     diagnostics
 }
@@ -1285,6 +1614,12 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S001");
         assert!(diags[0].message.contains("OQ-1"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::OrphanedHandle { handle },
+            }) => assert_eq!(handle, "OQ-1"),
+            other => panic!("Expected orphaned-handle evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1337,6 +1672,15 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S002");
         assert!(diags[0].message.contains("NEW"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace { prefix, count },
+            }) => {
+                assert_eq!(prefix, "NEW");
+                assert_eq!(*count, 3);
+            }
+            other => panic!("Expected candidate-namespace evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1386,6 +1730,23 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S003");
         assert!(diags[0].message.contains("draft"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::PipelineStall {
+                        status,
+                        count,
+                        next_status,
+                        based_on_history,
+                    },
+            }) => {
+                assert_eq!(status, "draft");
+                assert_eq!(*count, 3);
+                assert_eq!(next_status.as_deref(), Some("review"));
+                assert!(!based_on_history);
+            }
+            other => panic!("Expected pipeline-stall evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1508,6 +1869,23 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Suggestion);
         assert_eq!(diags[0].code, "S004");
         assert!(diags[0].message.contains("OLD"));
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::AbandonedNamespace {
+                        prefix,
+                        member_count,
+                        terminal_members,
+                        stale_members,
+                    },
+            }) => {
+                assert_eq!(prefix, "OLD");
+                assert_eq!(*member_count, 2);
+                assert_eq!(*terminal_members, 2);
+                assert_eq!(*stale_members, 0);
+            }
+            other => panic!("Expected abandoned-namespace evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1598,6 +1976,21 @@ mod tests {
             diags[0].message.contains("OQ") && diags[0].message.contains("FM"),
             "S005 message should mention both co-occurring prefixes"
         );
+        match &diags[0].evidence {
+            Some(Evidence::Suggestion {
+                suggestion:
+                    SuggestionEvidence::ConcernGroupCandidate {
+                        left_prefix,
+                        right_prefix,
+                        file_count,
+                    },
+            }) => {
+                assert_eq!(left_prefix, "FM");
+                assert_eq!(right_prefix, "OQ");
+                assert_eq!(*file_count, 3);
+            }
+            other => panic!("Expected concern-group evidence, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1687,6 +2080,29 @@ mod tests {
         assert_eq!(json["code"], "E001");
         assert_eq!(json["file"], "doc.md");
         assert_eq!(json["line"], 10);
+    }
+
+    #[test]
+    fn evidence_suggestion_serializes_with_nested_kind() {
+        let diag = Diagnostic {
+            severity: Severity::Suggestion,
+            code: "S002",
+            message: "candidate namespace".to_string(),
+            file: Some("labels.md".to_string()),
+            line: Some(1),
+            evidence: Some(Evidence::Suggestion {
+                suggestion: SuggestionEvidence::CandidateNamespace {
+                    prefix: "NEW".to_string(),
+                    count: 3,
+                },
+            }),
+        };
+        let json = serde_json::to_value(&diag).expect("serialize");
+        let ev = &json["evidence"];
+        assert_eq!(ev["type"], "Suggestion");
+        assert_eq!(ev["kind"], "candidate_namespace");
+        assert_eq!(ev["prefix"], "NEW");
+        assert_eq!(ev["count"], 3);
     }
 
     #[test]

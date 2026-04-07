@@ -35,7 +35,7 @@ pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<S
 }
 
 /// Look up a handle by exact match, falling back to case-insensitive search.
-fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
+pub(crate) fn lookup_handle(node_index: &HashMap<String, NodeId>, handle: &str) -> Option<NodeId> {
     node_index
         .get(handle)
         .copied()
@@ -216,9 +216,9 @@ pub(crate) struct CheckJsonOutput {
     pub(crate) meta: OutputMeta,
     pub(crate) summary: CheckSummary,
     pub(crate) by_code: Vec<CodeCount>,
-    pub(crate) sample_diagnostics: Vec<Diagnostic>,
+    pub(crate) sample_diagnostics: Vec<checks::DiagnosticRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) diagnostics: Option<Vec<Diagnostic>>,
+    pub(crate) diagnostics: Option<Vec<checks::DiagnosticRecord>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) extractions_summary: Option<ExtractionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,15 +285,11 @@ impl CheckFilters {
     }
 }
 
-/// Produce check output from pre-computed diagnostics with optional filter flags (D-19).
-///
-/// `terminal_files` is the set of file paths with terminal status — used to split
-/// the error count into active vs terminal, and to filter with `--active-only`.
-pub(crate) fn cmd_check(
+pub(crate) fn apply_check_filters(
     mut diagnostics: Vec<checks::Diagnostic>,
     filters: &CheckFilters,
     terminal_files: &HashSet<String>,
-) -> CheckOutput {
+) -> Vec<checks::Diagnostic> {
     if filters.active_only {
         diagnostics.retain(|d| d.file.as_ref().is_none_or(|f| !terminal_files.contains(f)));
     }
@@ -301,10 +297,23 @@ pub(crate) fn cmd_check(
         diagnostics.retain(|d| {
             (filters.errors_only && d.severity == Severity::Error)
                 || (filters.suggest && d.severity == Severity::Suggestion)
-                || (filters.stale && d.code == "W001")
-                || (filters.obligations && matches!(d.code, "E002" | "I002"))
+                || (filters.stale && checks::is_stale_code(d.code))
+                || (filters.obligations && checks::is_obligation_code(d.code))
         });
     }
+    diagnostics
+}
+
+/// Produce check output from pre-computed diagnostics with optional filter flags (D-19).
+///
+/// `terminal_files` is the set of file paths with terminal status — used to split
+/// the error count into active vs terminal, and to filter with `--active-only`.
+pub(crate) fn cmd_check(
+    diagnostics: Vec<checks::Diagnostic>,
+    filters: &CheckFilters,
+    terminal_files: &HashSet<String>,
+) -> CheckOutput {
+    let diagnostics = apply_check_filters(diagnostics, filters, terminal_files);
 
     let (mut errors, mut warnings, mut info, mut suggestions, mut terminal_errors) =
         (0, 0, 0, 0, 0);
@@ -398,18 +407,24 @@ pub(crate) fn build_check_json_output(
         .diagnostics
         .iter()
         .take(sample_limit)
-        .cloned()
+        .map(checks::DiagnosticRecord::from_diagnostic)
         .collect();
 
-    let diagnostics = if options.full {
-        Some(output.diagnostics.clone())
+    let diagnostics: Option<Vec<checks::DiagnosticRecord>> = if options.full {
+        Some(
+            output
+                .diagnostics
+                .iter()
+                .map(checks::DiagnosticRecord::from_diagnostic)
+                .collect(),
+        )
     } else if options.include_diagnostics {
         Some(
             output
                 .diagnostics
                 .iter()
                 .take(options.diagnostics_limit)
-                .cloned()
+                .map(checks::DiagnosticRecord::from_diagnostic)
                 .collect(),
         )
     } else {
@@ -3068,7 +3083,7 @@ fn build_graph_at_git_ref(
         );
         let node_index = crate::resolve::build_node_index(&build_result.graph);
         let (unresolved_owned, section_ref_count, section_ref_file) =
-            super::collect_unresolved_owned(
+            crate::analysis::collect_unresolved_owned(
                 &build_result.pending_edges,
                 &node_index,
                 &build_result.graph,
@@ -4183,6 +4198,11 @@ mod tests {
         assert!(json.extractions.is_none());
         assert_eq!(json.summary.total_diagnostics, 3);
         assert_eq!(json.by_code.len(), 2);
+        assert!(
+            json.sample_diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.diagnostic_id.starts_with("diag_"))
+        );
     }
 
     #[test]
