@@ -568,14 +568,19 @@ fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<S
 ///
 /// Preserves the separator style used by the query first, then tries the
 /// alternate form so both `OQ-01`/`OQ-1` and `KB-D01`/`KB-D-01` can resolve.
-pub(crate) fn zero_padded_label_candidates(target: &str) -> Option<[String; 2]> {
+pub(crate) fn split_trailing_numeric_suffix(target: &str) -> Option<(&str, &str)> {
     let digit_start = target
         .char_indices()
         .rev()
         .find(|(_, ch)| !ch.is_ascii_digit())
         .map_or(0, |(idx, ch)| idx + ch.len_utf8());
     let (prefix, digits) = target.split_at(digit_start);
-    if digits.is_empty() || !digits.starts_with('0') || !COMPOUND_LABEL_RE.is_match(prefix) {
+    (!digits.is_empty()).then_some((prefix, digits))
+}
+
+pub(crate) fn zero_padded_label_candidates(target: &str) -> Option<[String; 2]> {
+    let (prefix, digits) = split_trailing_numeric_suffix(target)?;
+    if !digits.starts_with('0') || !COMPOUND_LABEL_RE.is_match(prefix) {
         return None;
     }
 

@@ -170,6 +170,14 @@ anneal get REQ-12 --context
 # Search handle identities
 anneal find ADR --limit 25
 
+# Ask an ad hoc structural question
+anneal query diagnostics --severity error
+anneal query edges --kind DependsOn --confidence-gap
+
+# Explain a derived result
+anneal explain convergence
+anneal explain diagnostic --id diag_deadbeef
+
 # Reverse dependencies for a file or handle
 anneal impact spec/api-v3.md
 
@@ -192,10 +200,11 @@ anneal init
 `anneal` supports a practical loop for corpus work:
 
 1. Orient: run `anneal status` or `anneal status --json --compact`, then `anneal check`, to understand the corpus shape and the actionable problems.
-2. Locate context: use `anneal get --context`, bounded `anneal find --limit ...`, and `anneal map --around=...` to understand the specific files, labels, or versions involved in the task.
-3. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
-4. Verify: run `anneal check --file=...` for a local pass or `anneal check` for a broader pass after editing.
-5. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
+2. Locate context: use `anneal get --context`, bounded `anneal find --limit ...`, `anneal query ...`, and `anneal map --around=...` to understand the specific files, labels, or structural patterns involved in the task.
+3. Justify the current signal: use `anneal explain ...` when you need to know why a warning, suggestion, impact set, convergence signal, or obligation state exists.
+4. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
+5. Verify: run `anneal check --file=...` for a local pass or `anneal check` for a broader pass after editing.
+6. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
 
 This is what the tool buys you in practice: quick context recovery, structural inspection, and safer edits in a corpus that outlives any one session.
 
@@ -386,6 +395,34 @@ anneal find "" --status=draft --json
 ```
 
 `find` is bounded by default. Use `--offset` to page through results or `--full` when you intentionally want the full match set.
+
+### `anneal query`
+
+Run bounded structural selectors over the current graph and freshly derived diagnostics:
+
+```bash
+anneal query handles --kind label --namespace REQ
+anneal query edges --kind DependsOn --confidence-gap
+anneal query diagnostics --severity warning
+anneal query obligations --undischarged
+anneal query suggestions --code S001
+```
+
+`query` is for graph-shaped questions that are too specific for `status`, too broad for `get`, and outside `find`'s identity-search role. All query domains inherit anneal's bounded-output defaults: `--limit`, `--offset`, `--scope`, and explicit `--full`.
+
+### `anneal explain`
+
+Explain why anneal produced a derived result:
+
+```bash
+anneal explain diagnostic --id diag_deadbeef
+anneal explain impact spec/api-v3.md
+anneal explain convergence
+anneal explain obligation REQ-12
+anneal explain suggestion --id sugg_deadbeef
+```
+
+`explain` is the provenance companion to anneal's structural outputs. It does not search semantically; it shows the handles, edges, states, rules, and snapshots behind a specific result.
 
 ### `anneal init`
 

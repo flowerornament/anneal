@@ -88,6 +88,15 @@ pub(crate) struct ConvergenceSummary {
     pub(crate) detail: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ConvergenceAnalysis {
+    pub(crate) signal: ConvergenceSignal,
+    pub(crate) detail: String,
+    pub(crate) resolution_gain: i64,
+    pub(crate) creation_gain: i64,
+    pub(crate) obligations_delta: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Build snapshot from graph state
 // ---------------------------------------------------------------------------
@@ -434,10 +443,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 ///
 /// Compares frozen handle counts (resolution), total handles (creation),
 /// and outstanding obligations to determine signal.
-pub(crate) fn compute_convergence_summary(
-    current: &Snapshot,
-    previous: &Snapshot,
-) -> ConvergenceSummary {
+pub(crate) fn analyze_convergence(current: &Snapshot, previous: &Snapshot) -> ConvergenceAnalysis {
     #[allow(clippy::cast_possible_wrap)]
     let resolution_gain = current.handles.frozen as i64 - previous.handles.frozen as i64;
     #[allow(clippy::cast_possible_wrap)]
@@ -447,26 +453,46 @@ pub(crate) fn compute_convergence_summary(
         current.obligations.outstanding as i64 - previous.obligations.outstanding as i64;
 
     if resolution_gain > creation_gain && obligations_delta <= 0 {
-        ConvergenceSummary {
+        ConvergenceAnalysis {
             signal: ConvergenceSignal::Advancing,
             detail: format!(
                 "resolution +{resolution_gain}, creation +{creation_gain}, obligations {obligations_delta}"
             ),
+            resolution_gain,
+            creation_gain,
+            obligations_delta,
         }
     } else if creation_gain > resolution_gain || obligations_delta > 0 {
-        ConvergenceSummary {
+        ConvergenceAnalysis {
             signal: ConvergenceSignal::Drifting,
             detail: format!(
                 "resolution +{resolution_gain}, creation +{creation_gain}, obligations +{obligations_delta}"
             ),
+            resolution_gain,
+            creation_gain,
+            obligations_delta,
         }
     } else {
-        ConvergenceSummary {
+        ConvergenceAnalysis {
             signal: ConvergenceSignal::Holding,
             detail: format!(
                 "resolution +{resolution_gain}, creation +{creation_gain}, obligations {obligations_delta}"
             ),
+            resolution_gain,
+            creation_gain,
+            obligations_delta,
         }
+    }
+}
+
+pub(crate) fn compute_convergence_summary(
+    current: &Snapshot,
+    previous: &Snapshot,
+) -> ConvergenceSummary {
+    let analysis = analyze_convergence(current, previous);
+    ConvergenceSummary {
+        signal: analysis.signal,
+        detail: analysis.detail,
     }
 }
 

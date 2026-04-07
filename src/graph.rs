@@ -1,5 +1,6 @@
 use std::fmt;
 
+use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::handle::{Handle, NodeId};
@@ -7,7 +8,7 @@ use crate::handle::{Handle, NodeId};
 /// The five kinds of directed edge per KB-D5.
 ///
 /// Edge kind determines what consistency checks apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ValueEnum)]
 pub(crate) enum EdgeKind {
     /// Source mentions target (informational; no consistency check).
     Cites,
