@@ -764,9 +764,10 @@ pub(crate) struct ImplausibleRef {
 }
 
 /// An external URL found in frontmatter.
-#[allow(dead_code)] // Fields consumed when external URL handling is wired
 pub(crate) struct ExternalRef {
+    #[allow(dead_code)]
     pub(crate) file: String,
+    #[allow(dead_code)]
     pub(crate) url: String,
 }
 
@@ -897,11 +898,13 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             file_snippets.insert(relative.to_string(), snippet);
         }
 
-        // Compute frontmatter line count for LineIndex offset calculation
+        // Compute frontmatter line count for LineIndex offset calculation.
+        // LineIndex::from_content expects the opening --- plus yaml content lines;
+        // it adds the closing --- itself via +1 in base_line.
         #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
         let frontmatter_line_count = frontmatter_yaml.map_or(0, |yaml| {
-            // +2 for the opening and closing --- lines
-            yaml.lines().count() as u32 + 2
+            // +1 for the opening --- line only (closing --- handled by LineIndex)
+            yaml.lines().count() as u32 + 1
         });
 
         // D-05: table-driven frontmatter parsing with extensible field mapping
@@ -970,7 +973,10 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             file_path: Some(relative.clone()),
             metadata: metadata.clone(),
         });
-        debug_assert_eq!(file_node, file_node_placeholder);
+        assert_eq!(
+            file_node, file_node_placeholder,
+            "node insertion order changed between placeholder computation and add_node"
+        );
 
         for target in file_external_targets {
             let external_node = if let Some(existing) = external_nodes.get(&target).copied() {

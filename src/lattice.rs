@@ -4,22 +4,6 @@ use serde::Serialize;
 
 use crate::config::{AnnealConfig, FreshnessConfig};
 
-/// The convergence state of a single handle (KB-D7, KB-D8).
-///
-/// Two lattice levels:
-/// - **Existence lattice** (zero-config): only `Exists` and `Missing`.
-/// - **Confidence lattice** (when status values are present): `Active(status)`
-///   and `Terminal(status)` classify handles by their refinement stage.
-// Phase 2: CHECK rules classify handles via this enum
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) enum ConvergenceState {
-    Exists,
-    Missing,
-    Active(String),
-    Terminal(String),
-}
-
 /// Whether the corpus uses simple existence checking or full confidence lattice.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum LatticeKind {
@@ -98,20 +82,7 @@ pub(crate) fn infer_lattice(
     }
 }
 
-/// Classify a status value using the inferred lattice (LATTICE-03).
-// Phase 2: CHECK-03 confidence gap
-#[allow(dead_code)]
-pub(crate) fn classify_status(status: &str, lattice: &Lattice) -> ConvergenceState {
-    if lattice.terminal.contains(status) {
-        ConvergenceState::Terminal(status.to_string())
-    } else {
-        ConvergenceState::Active(status.to_string())
-    }
-}
-
 /// Freshness level based on age thresholds.
-// Phase 2: CHECK-02 staleness
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum FreshnessLevel {
     Fresh,
@@ -120,8 +91,6 @@ pub(crate) enum FreshnessLevel {
 }
 
 /// Freshness computation result for a handle (LATTICE-04, KB-D11).
-// Phase 2: CHECK-02 staleness
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Freshness {
     pub(crate) days: i64,
@@ -132,8 +101,6 @@ pub(crate) struct Freshness {
 ///
 /// Prefers `updated` if present, falls back to `mtime`. If neither is available,
 /// returns `Fresh` with 0 days.
-// Phase 2: CHECK-02 staleness
-#[allow(dead_code)]
 pub(crate) fn compute_freshness(
     updated: Option<chrono::NaiveDate>,
     mtime: Option<chrono::NaiveDate>,
@@ -174,7 +141,7 @@ pub(crate) fn state_level(status: &str, lattice: &Lattice) -> Option<usize> {
 
 /// Fraction of files that have frontmatter (KB-D12).
 ///
-/// Phase 2 uses this for CHECK-05: warn about missing frontmatter only
+/// Used by CHECK-05 (W003): warn about missing frontmatter only
 /// when >50% of siblings have it.
 pub(crate) fn frontmatter_adoption_rate(total_files: usize, files_with_frontmatter: usize) -> f64 {
     if total_files == 0 {

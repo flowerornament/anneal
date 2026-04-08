@@ -10,6 +10,7 @@ use crate::checks::{Diagnostic, Severity};
 use crate::config::{AnnealConfig, HistoryMode, ResolvedStateConfig};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::HandleKind;
+use crate::identity::fnv1a_64;
 use crate::lattice::Lattice;
 
 // ---------------------------------------------------------------------------
@@ -405,7 +406,7 @@ fn default_state_dir() -> Option<Utf8PathBuf> {
 
 fn root_history_key(root: &Utf8Path) -> String {
     let identity = canonical_root_identity(root);
-    format!("{:016x}", fnv1a64(identity.as_bytes()))
+    format!("{:016x}", fnv1a_64(identity.as_bytes()))
 }
 
 fn canonical_root_identity(root: &Utf8Path) -> String {
@@ -424,15 +425,6 @@ fn canonical_root_identity(root: &Utf8Path) -> String {
             },
             |path| path.to_string(),
         )
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3_u64);
-    }
-    hash
 }
 
 // ---------------------------------------------------------------------------

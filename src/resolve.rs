@@ -4,8 +4,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use regex::Regex;
 use std::sync::LazyLock;
 
-use serde::Serialize;
-
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
@@ -57,20 +55,6 @@ pub(crate) struct ResolveStats {
     pub(crate) versions_resolved: usize,
     pub(crate) pending_edges_resolved: usize,
     pub(crate) pending_edges_unresolved: usize,
-}
-
-/// Resolution outcome for a discovered reference.
-/// Phase 4: type definition only.
-/// Phase 6: populated by resolution cascade (RESOLVE-02..06).
-#[derive(Clone, Debug, Serialize)]
-#[allow(dead_code)] // Variants used by Phase 6 resolution cascade
-pub(crate) enum Resolution {
-    /// Exact match to a known handle.
-    Exact(NodeId),
-    /// Match via structural transform with candidate list (Phase 6).
-    Fuzzy { candidates: Vec<NodeId> },
-    /// No match found.
-    Unresolved,
 }
 
 // ---------------------------------------------------------------------------
