@@ -102,6 +102,32 @@ pub(crate) struct SuppressRule {
 ///
 /// An absent `anneal.toml` is a valid coloring (zero-config case, KB-P3).
 /// `deny_unknown_fields` catches config typos early.
+/// Impact analysis configuration.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ImpactConfig {
+    /// Edge kinds to traverse during impact analysis. When empty (default),
+    /// falls back to the built-in set (DependsOn, Supersedes, Verifies).
+    /// Values are parsed through `EdgeKind::from_name` (case-insensitive for
+    /// well-known kinds).
+    pub(crate) traverse: Vec<String>,
+}
+
+impl ImpactConfig {
+    /// Resolve the configured traversal set to `EdgeKind` values.
+    /// Returns the default set if `traverse` is empty.
+    pub(crate) fn resolve_traverse_set(&self) -> Vec<crate::graph::EdgeKind> {
+        if self.traverse.is_empty() {
+            crate::impact::DEFAULT_TRAVERSE.to_vec()
+        } else {
+            self.traverse
+                .iter()
+                .map(|s| crate::graph::EdgeKind::from_name(s))
+                .collect()
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AnnealConfig {
@@ -126,6 +152,8 @@ pub(crate) struct AnnealConfig {
     /// Concern groups mapping name -> list of handle patterns.
     #[serde(default)]
     pub(crate) concerns: HashMap<String, Vec<String>>,
+    /// Impact analysis configuration.
+    pub(crate) impact: ImpactConfig,
 }
 
 /// Where derived history should be stored.

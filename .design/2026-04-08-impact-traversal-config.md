@@ -1,23 +1,53 @@
 ---
 status: draft
 date: 2026-04-08
+depends-on: anneal-spec.md
 ---
 
 # Impact Traversal Configuration
 
-## Problem
+## Motivation
 
-`anneal impact` currently hardcodes its traversal set: DependsOn, Supersedes,
-and Verifies (in reverse). After edge semantic refinement (anneal 0.6.0), many
-structurally meaningful edges are typed as custom kinds (Synthesizes,
-Implements, Reconciles) rather than DependsOn — because they shouldn't fire
-W001 (it's valid for a synthesis to reference terminal material). But they
-ARE structurally meaningful: if the target changes, the source needs review.
+`anneal impact` is the "measure twice" command — you run it before editing a
+key file to understand what will need review. It's central to the editorial
+workflow: edit a theory document, and impact tells you which architecture and
+implementation docs inherit from it. This makes it safe to change foundational
+material without accidentally leaving downstream docs stale.
 
-This means `anneal impact` now underrepresents actual blast radius. A document
-with 15 incoming Cites and Synthesizes edges shows 1 dependent.
+The problem is that impact's usefulness depends on it seeing the real
+dependency graph, and right now it sees a fraction of it.
+
+### What happened
+
+Anneal 0.6.0 introduced custom edge kinds and scoped W001 to DependsOn only.
+This was the right fix — a synthesis document citing terminal research
+shouldn't fire stale-reference warnings. But it created a side effect:
+edges that were previously DependsOn (and visible to impact) got reclassified
+to Cites, Synthesizes, Implements, etc. (and became invisible to impact).
+
+In Herald's corpus, `system-theory.md` has 15 incoming edges from other
+documents. `anneal impact system-theory.md` reports 1 dependent. The other
+14 connections are Cites and Synthesizes edges that impact doesn't traverse.
+An agent running impact before editing system-theory would conclude the blast
+radius is minimal — when it's actually the most connected document in the
+corpus.
+
+### The underlying design tension
+
+Before 0.6.0, two concerns were conflated in the DependsOn edge kind:
+
+1. **W001 scope** — "warn me if I reference something stale"
+2. **Impact scope** — "tell me what needs review if I change this"
+
+0.6.0 correctly separated #1 (W001 fires on DependsOn only). But it didn't
+separate #2 — impact still hardcodes the same traversal set. The result is
+that corpora which use custom edge kinds for structural relationships (as
+the feature was designed to enable) get degraded impact analysis.
 
 ## Solution
+
+Complete the separation that 0.6.0 started: make impact's traversal set
+independently configurable from W001's scope.
 
 Add a configurable `[impact]` section to `anneal.toml`:
 

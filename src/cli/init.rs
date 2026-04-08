@@ -137,6 +137,7 @@ pub(crate) fn cmd_init(
         suppress: SuppressConfig::default(),
         state: crate::config::StateConfig::default(),
         concerns: HashMap::new(),
+        impact: crate::config::ImpactConfig::default(),
     };
 
     let config_path = root.join("anneal.toml");
