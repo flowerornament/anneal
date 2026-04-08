@@ -89,6 +89,8 @@ anneal impact anneal-spec.md
 anneal impact <file-or-handle>
 ```
 
+Impact traverses edge kinds listed in `[impact] traverse` in `anneal.toml` (defaults to DependsOn, Supersedes, Verifies). Corpora with custom edge kinds like Synthesizes or Implements should configure this for accurate blast radius.
+
 Use `anneal diff` when the question is about structural corpus changes rather than line edits.
 
 ### Initialize Or Adjust Config

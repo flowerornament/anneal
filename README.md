@@ -488,13 +488,18 @@ direction = "inverse"
 [concerns]
 api = ["REQ", "ADR"]
 
+[impact]
+traverse = ["DependsOn", "Supersedes", "Verifies", "Synthesizes", "Implements"]
+
 [state]
 history_mode = "xdg"  # optional: xdg | repo | off
 ```
 
-`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, and the history backend mode (`xdg`, `repo`, or `off`).
+`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, impact traversal, and the history backend mode (`xdg`, `repo`, or `off`).
 
 Five edge kinds have built-in diagnostic behavior: `Cites`, `DependsOn`, `Supersedes`, `Verifies`, `Discharges`. Any other `edge_kind` string (e.g. `Synthesizes`, `Flags`, `Implements`) is accepted as a custom kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in checks. W001 (stale dependency) fires only on `DependsOn` edges.
+
+The `[impact] traverse` list controls which edge kinds `anneal impact` follows when computing affected handles. When absent, falls back to the built-in default (`DependsOn`, `Supersedes`, `Verifies`). Corpora using custom edge kinds for structural relationships should configure this to get accurate impact analysis.
 
 If you want repo-local snapshots, set:
 

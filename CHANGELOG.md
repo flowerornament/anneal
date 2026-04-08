@@ -2,6 +2,12 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.0 - 2026-04-08
+
+### Added
+
+- Configurable impact traversal: `[impact] traverse` in `anneal.toml` controls which edge kinds `anneal impact` follows. Corpora using custom edge kinds (Synthesizes, Implements, Reconciles) now get accurate blast radius analysis. Defaults to the previous behavior (DependsOn, Supersedes, Verifies) when absent.
+
 ## 0.6.1 - 2026-04-08
 
 ### Fixed
