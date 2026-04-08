@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -9,7 +10,7 @@ use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extraction::{
-    DiscoveredRef, FileExtraction, LineIndex, RefHint, RefSource, SourceSpan,
+    DiscoveredRef, FileExtraction, ImplausibleReason, LineIndex, RefHint, RefSource, SourceSpan,
     classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
 };
 use crate::graph::{DiGraph, EdgeKind};
@@ -34,22 +35,6 @@ static DEPENDS_ON_KEYWORDS: &[&str] = &["incorporates", "builds on", "extends", 
 
 /// Body-text keywords that explicitly confirm a Cites edge (D-01).
 static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
-
-/// Status names that heuristically indicate terminal state (UX-03).
-pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
-    "superseded",
-    "archived",
-    "retired",
-    "deprecated",
-    "obsolete",
-    "withdrawn",
-    "cancelled",
-    "canceled",
-    "closed",
-    "resolved",
-    "done",
-    "completed",
-];
 
 // ---------------------------------------------------------------------------
 // Regex patterns
@@ -102,34 +87,38 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Check if a status name matches terminal heuristics (case-insensitive substring match).
-pub(crate) fn is_terminal_by_heuristic(status: &str) -> bool {
-    let lower = status.to_lowercase();
-    TERMINAL_STATUS_HEURISTICS
-        .iter()
-        .any(|heuristic| lower.contains(heuristic))
+/// Parsed frontmatter result: status, metadata, field edges, all keys, and parse
+/// success (D-05, D-07).
+#[derive(Default)]
+pub(crate) struct FrontmatterParseResult {
+    pub(crate) status: Option<String>,
+    pub(crate) metadata: HandleMetadata,
+    pub(crate) field_edges: Vec<FrontmatterEdge>,
+    /// All frontmatter keys, for init auto-detection (D-07).
+    pub(crate) all_keys: Vec<String>,
+    /// `true` when YAML deserialization failed (section 7.2 silent-failure tracking).
+    pub(crate) yaml_failed: bool,
 }
 
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
 ///
 /// Deserializes as `serde_yaml_ng::Value` to handle arbitrary fields and
-/// YAML type coercion. On parse failure, returns defaults (never errors).
+/// YAML type coercion. On parse failure, returns defaults with `yaml_failed`
+/// set to `true` so callers can track files with malformed YAML.
 /// The `config` parameter drives which frontmatter keys produce edges.
-pub(crate) fn parse_frontmatter(
-    yaml: &str,
-    config: &FrontmatterConfig,
-) -> (
-    Option<String>,
-    HandleMetadata,
-    Vec<FrontmatterEdge>,
-    Vec<String>,
-) {
+pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> FrontmatterParseResult {
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
+        return FrontmatterParseResult {
+            yaml_failed: true,
+            ..FrontmatterParseResult::default()
+        };
     };
 
     let Some(mapping) = value.as_mapping() else {
-        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
+        return FrontmatterParseResult {
+            yaml_failed: true,
+            ..FrontmatterParseResult::default()
+        };
     };
 
     // Collect all frontmatter keys for init auto-detection (D-07)
@@ -196,7 +185,13 @@ pub(crate) fn parse_frontmatter(
         verifies,
     };
 
-    (status, metadata, field_edges, all_keys)
+    FrontmatterParseResult {
+        status,
+        metadata,
+        field_edges,
+        all_keys,
+        yaml_failed: false,
+    }
 }
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
@@ -759,8 +754,8 @@ pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
 pub(crate) struct ImplausibleRef {
     pub(crate) file: String,
     pub(crate) raw_value: String,
-    pub(crate) reason: String,
-    pub(crate) line: u32,
+    pub(crate) reason: ImplausibleReason,
+    pub(crate) line: Option<u32>,
 }
 
 /// An external URL found in frontmatter.
@@ -796,6 +791,12 @@ pub(crate) struct BuildResult {
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
     pub(crate) label_snippets: HashMap<String, String>,
+    /// Files whose YAML frontmatter failed to deserialize (§7.2 silent-failure tracking).
+    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
+    pub(crate) malformed_frontmatter: Vec<String>,
+    /// Count of directory entries skipped because their filename was not valid UTF-8 (§7.3).
+    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
+    pub(crate) skipped_non_utf8: usize,
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -840,6 +841,11 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     let mut extractions: Vec<FileExtraction> = Vec::new();
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
+    let mut malformed_frontmatter: Vec<String> = Vec::new();
+
+    // §7.3: Track non-UTF-8 filenames silently skipped by the walker filter.
+    // Uses Cell so the FnMut closure can increment without &mut self conflicts.
+    let skipped_non_utf8: Cell<usize> = Cell::new(0);
 
     let extra_exclusions = &config.exclude;
 
@@ -847,6 +853,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         .into_iter()
         .filter_entry(|e| {
             let Some(name) = e.file_name().to_str() else {
+                skipped_non_utf8.set(skipped_non_utf8.get() + 1);
                 return false;
             };
             if e.file_type().is_dir() {
@@ -909,9 +916,22 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
 
         // D-05: table-driven frontmatter parsing with extensible field mapping
         // D-07: all_keys returned here to avoid double-parsing YAML
-        let (status, metadata, field_edges, all_keys) = frontmatter_yaml
+        let fm = frontmatter_yaml
             .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
             .unwrap_or_default();
+
+        let FrontmatterParseResult {
+            status,
+            metadata,
+            field_edges,
+            all_keys,
+            yaml_failed,
+        } = fm;
+
+        // §7.2: Track files whose YAML frontmatter was present but malformed.
+        if yaml_failed {
+            malformed_frontmatter.push(relative.to_string());
+        }
 
         for key in &all_keys {
             *observed_frontmatter_keys.entry(key.clone()).or_insert(0) += 1;
@@ -934,9 +954,19 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             NodeId::new(u32::try_from(graph.node_count()).expect("graph exceeds u32::MAX nodes"));
         let mut file_external_targets: Vec<String> = Vec::new();
 
+        // Cache classify_frontmatter_value results so the second loop can reuse them.
+        let mut hint_cache: HashMap<&str, RefHint> = HashMap::new();
         for fe in &field_edges {
             for target in &fe.targets {
-                let hint = classify_frontmatter_value(target);
+                hint_cache
+                    .entry(target.as_str())
+                    .or_insert_with(|| classify_frontmatter_value(target));
+            }
+        }
+
+        for fe in &field_edges {
+            for target in &fe.targets {
+                let hint = &hint_cache[target.as_str()];
                 match hint {
                     RefHint::External => {
                         external_refs.push(ExternalRef {
@@ -949,8 +979,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                         implausible_refs.push(ImplausibleRef {
                             file: relative.to_string(),
                             raw_value: target.clone(),
-                            reason,
-                            line: 1,
+                            reason: *reason,
+                            line: None,
                         });
                     }
                     RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
@@ -1019,7 +1049,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let mut discovered_refs = Vec::new();
         for fe in &field_edges {
             for target in &fe.targets {
-                let hint = classify_frontmatter_value(target);
+                let hint = hint_cache[target.as_str()].clone();
                 discovered_refs.push(DiscoveredRef {
                     raw: target.clone(),
                     hint,
@@ -1083,6 +1113,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         extractions,
         file_snippets,
         label_snippets,
+        malformed_frontmatter,
+        skipped_non_utf8: skipped_non_utf8.get(),
     })
 }
 
@@ -1182,7 +1214,7 @@ mod tests {
                 .implausible_refs
                 .iter()
                 .any(|r| r.raw_value == "claude-desktop session"
-                    && r.reason.contains("freeform prose")),
+                    && r.reason == ImplausibleReason::FreeformProse),
             "prose should be in implausible_refs with 'freeform prose' reason, got {} entries",
             result.implausible_refs.len()
         );
@@ -1252,7 +1284,8 @@ mod tests {
             result
                 .implausible_refs
                 .iter()
-                .any(|r| r.raw_value == "/absolute/path.md" && r.reason.contains("absolute path")),
+                .any(|r| r.raw_value == "/absolute/path.md"
+                    && r.reason == ImplausibleReason::AbsolutePath),
             "absolute path should be in implausible_refs"
         );
 
@@ -1284,7 +1317,7 @@ mod tests {
             result
                 .implausible_refs
                 .iter()
-                .any(|r| r.raw_value == "*.md" && r.reason.contains("wildcard pattern")),
+                .any(|r| r.raw_value == "*.md" && r.reason == ImplausibleReason::WildcardPattern),
             "wildcard should be in implausible_refs"
         );
 

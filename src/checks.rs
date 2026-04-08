@@ -409,7 +409,7 @@ fn check_existence(
                  not resolvable to heading slugs"
             ),
             file: section_ref_file.map(ToString::to_string),
-            line: Some(1),
+            line: None,
             evidence: None,
         });
     }
@@ -548,10 +548,10 @@ fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
                 r.raw_value, r.reason
             ),
             file: Some(r.file.clone()),
-            line: Some(r.line),
+            line: r.line,
             evidence: Some(Evidence::Implausible {
                 value: r.raw_value.clone(),
-                reason: r.reason.clone(),
+                reason: r.reason.to_string(),
             }),
         })
         .collect()
@@ -595,7 +595,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         handle.id, target.id, target_status
                     ),
                     file,
-                    line: Some(1),
+                    line: None,
                     evidence: Some(Evidence::StaleRef {
                         source_status: source_status.clone(),
                         target_status: target_status.to_string(),
@@ -623,11 +623,19 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
         return diagnostics;
     }
 
+    // Build state-level lookup once to avoid repeated linear scans.
+    let state_levels: HashMap<&str, usize> = lattice
+        .ordering
+        .iter()
+        .enumerate()
+        .map(|(index, status)| (status.as_str(), index))
+        .collect();
+
     for (node_id, handle) in graph.nodes() {
         let Some(ref source_status) = handle.status else {
             continue;
         };
-        let Some(source_level) = lattice::state_level(source_status, lattice) else {
+        let Some(&source_level) = state_levels.get(source_status.as_str()) else {
             continue;
         };
 
@@ -636,7 +644,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             let Some(ref target_status) = target.status else {
                 continue;
             };
-            let Some(target_level) = lattice::state_level(target_status, lattice) else {
+            let Some(&target_level) = state_levels.get(target_status.as_str()) else {
                 continue;
             };
 
@@ -654,7 +662,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                         handle.id, source_status, target.id, target_status
                     ),
                     file,
-                    line: Some(1),
+                    line: None,
                     evidence: Some(Evidence::ConfidenceGap {
                         source_status: source_status.clone(),
                         source_level,
@@ -731,7 +739,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                     handle.id
                 ),
                 file: file.clone(),
-                line: Some(1),
+                line: None,
                 evidence: None,
             });
         } else if discharge_count >= 2 {
@@ -743,7 +751,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
                     handle.id
                 ),
                 file,
-                line: Some(1),
+                line: None,
                 evidence: None,
             });
         }
@@ -804,7 +812,7 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
                     handle.id
                 ),
                 file: handle.file_path.as_ref().map(ToString::to_string),
-                line: Some(1),
+                line: None,
                 evidence: None,
             });
         }
@@ -865,7 +873,7 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
                 code: "S001",
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file,
-                line: Some(1),
+                line: None,
                 evidence: Some(Evidence::Suggestion {
                     suggestion: SuggestionEvidence::OrphanedHandle {
                         handle: handle.id.clone(),
@@ -922,7 +930,7 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
                 "candidate namespace: {prefix} ({count} labels found, not in confirmed namespaces)"
             ),
             file: representative_file,
-            line: Some(1),
+            line: None,
             evidence: Some(Evidence::Suggestion {
                 suggestion: SuggestionEvidence::CandidateNamespace {
                     prefix: prefix.to_string(),
@@ -1018,7 +1026,7 @@ fn suggest_pipeline_stalls(
                 code: "S003",
                 message,
                 file: representative,
-                line: Some(1),
+                line: None,
                 evidence: Some(Evidence::Suggestion {
                     suggestion: SuggestionEvidence::PipelineStall {
                         status: status_name.clone(),
@@ -1107,7 +1115,7 @@ fn suggest_abandoned_namespaces(
                     members.len()
                 ),
                 file: representative,
-                line: Some(1),
+                line: None,
                 evidence: Some(Evidence::Suggestion {
                     suggestion: SuggestionEvidence::AbandonedNamespace {
                         prefix: (*prefix).to_string(),
@@ -1209,7 +1217,7 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
                 "concern group candidate: {prefix_a} and {prefix_b} co-occur in {count} files"
             ),
             file: representative_file,
-            line: Some(1),
+            line: None,
             evidence: Some(Evidence::Suggestion {
                 suggestion: SuggestionEvidence::ConcernGroupCandidate {
                     left_prefix: prefix_a.to_string(),
@@ -1416,7 +1424,10 @@ mod tests {
             Some("doc.md".to_string()),
             "I001 should carry representative file"
         );
-        assert_eq!(diags[0].line, Some(1), "I001 should carry line 1");
+        assert_eq!(
+            diags[0].line, None,
+            "I001 line should be None (corpus-level)"
+        );
         assert!(diags[0].message.contains("42"));
     }
 
@@ -2111,7 +2122,7 @@ mod tests {
             code: "S002",
             message: "candidate namespace".to_string(),
             file: Some("labels.md".to_string()),
-            line: Some(1),
+            line: None,
             evidence: Some(Evidence::Suggestion {
                 suggestion: SuggestionEvidence::CandidateNamespace {
                     prefix: "NEW".to_string(),
@@ -2298,7 +2309,7 @@ mod tests {
                 code: "I001",
                 message: "section refs".to_string(),
                 file: Some("doc.md".to_string()),
-                line: Some(1),
+                line: None,
                 evidence: None,
             },
             Diagnostic {
@@ -2366,7 +2377,7 @@ mod tests {
             code: "W001",
             message: "stale reference: doc.md references archived.md".to_string(),
             file: Some("doc.md".to_string()),
-            line: Some(1),
+            line: None,
             evidence: None,
         };
         let mut diagnostics = vec![original.clone()];

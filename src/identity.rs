@@ -17,7 +17,7 @@ fn canonical_diagnostic_payload(diagnostic: &Diagnostic) -> String {
     let evidence = diagnostic
         .evidence
         .as_ref()
-        .map(|value| serde_json::to_string(value).expect("evidence serializes"))
+        .and_then(|value| serde_json::to_string(value).ok())
         .unwrap_or_default();
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",

@@ -1075,6 +1075,8 @@ mod tests {
             extractions: Vec::new(),
             file_snippets: HashMap::new(),
             label_snippets: HashMap::new(),
+            malformed_frontmatter: Vec::new(),
+            skipped_non_utf8: 0,
         }
     }
 

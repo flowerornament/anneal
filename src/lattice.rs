@@ -4,6 +4,30 @@ use serde::Serialize;
 
 use crate::config::{AnnealConfig, FreshnessConfig};
 
+/// Status names that heuristically indicate terminal state (UX-03).
+pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
+    "superseded",
+    "archived",
+    "retired",
+    "deprecated",
+    "obsolete",
+    "withdrawn",
+    "cancelled",
+    "canceled",
+    "closed",
+    "resolved",
+    "done",
+    "completed",
+];
+
+/// Check if a status name matches terminal heuristics (case-insensitive substring match).
+pub(crate) fn is_terminal_by_heuristic(status: &str) -> bool {
+    let lower = status.to_lowercase();
+    TERMINAL_STATUS_HEURISTICS
+        .iter()
+        .any(|heuristic| lower.contains(heuristic))
+}
+
 /// Whether the corpus uses simple existence checking or full confidence lattice.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum LatticeKind {
@@ -65,8 +89,7 @@ pub(crate) fn infer_lattice(
         if active.contains(status) || terminal.contains(status) {
             continue;
         }
-        if terminal_by_directory.contains(status) || crate::parse::is_terminal_by_heuristic(status)
-        {
+        if terminal_by_directory.contains(status) || is_terminal_by_heuristic(status) {
             terminal.insert(status.clone());
         } else {
             active.insert(status.clone());
