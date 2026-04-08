@@ -123,9 +123,9 @@ pub(crate) struct HandleQueryArgs {
 pub(crate) struct EdgeQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
-    /// Filter by edge kind
-    #[arg(long, value_enum)]
-    pub(crate) kind: Option<EdgeKind>,
+    /// Filter by edge kind (e.g. DependsOn, Cites, Synthesizes)
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
     /// Filter by exact source handle id
     #[arg(long)]
     pub(crate) source: Option<String>,
@@ -221,7 +221,7 @@ struct HandleCandidate<'a> {
     outgoing_count: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EdgeCandidate {
     source: NodeId,
     target: NodeId,
@@ -400,7 +400,7 @@ fn build_edge_output(
         args,
         state_levels.as_ref(),
     );
-    candidates.sort_by(|a, b| compare_edge_candidates(graph, *a, *b));
+    candidates.sort_by(|a, b| compare_edge_candidates(graph, a, b));
     let (meta, items) = paginate(candidates, &args.page);
     JsonEnvelope::new(
         meta,
@@ -408,7 +408,7 @@ fn build_edge_output(
             kind: "edges",
             items: items
                 .into_iter()
-                .map(|candidate| edge_row(graph, candidate))
+                .map(|candidate| edge_row(graph, &candidate))
                 .collect(),
         },
     )
@@ -682,7 +682,7 @@ fn build_edge_candidates(
                 graph.outgoing(source).iter().map(|edge| EdgeCandidate {
                     source,
                     target: edge.target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -696,7 +696,7 @@ fn build_edge_candidates(
                 graph.incoming(target).iter().map(|edge| EdgeCandidate {
                     source: edge.source,
                     target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -716,7 +716,7 @@ fn build_edge_candidates(
                 graph.outgoing(source).iter().map(|edge| EdgeCandidate {
                     source,
                     target: edge.target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -738,7 +738,7 @@ fn build_edge_candidates(
             graph.incoming(target).iter().map(|edge| EdgeCandidate {
                 source: edge.source,
                 target,
-                kind: edge.kind,
+                kind: edge.kind.clone(),
             }),
             &mut rows,
         );
@@ -758,7 +758,7 @@ fn build_edge_candidates(
             graph.outgoing(node_id).iter().map(|edge| EdgeCandidate {
                 source: node_id,
                 target: edge.target,
-                kind: edge.kind,
+                kind: edge.kind.clone(),
             }),
             &mut rows,
         );
@@ -783,7 +783,7 @@ fn collect_edge_candidates(
         {
             continue;
         }
-        if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
+        if matches_edge_filters(graph, lattice, args, &candidate, state_levels) {
             rows.push(candidate);
         }
     }
@@ -807,7 +807,7 @@ fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
     }
 }
 
-fn edge_row(graph: &DiGraph, candidate: EdgeCandidate) -> EdgeRow {
+fn edge_row(graph: &DiGraph, candidate: &EdgeCandidate) -> EdgeRow {
     let source_handle = graph.node(candidate.source);
     let target_handle = graph.node(candidate.target);
     EdgeRow {
@@ -905,12 +905,16 @@ fn matches_edge_filters(
     graph: &DiGraph,
     lattice: &Lattice,
     args: &EdgeQueryArgs,
-    candidate: EdgeCandidate,
+    candidate: &EdgeCandidate,
     state_levels: Option<&HashMap<&str, usize>>,
 ) -> bool {
     let source_handle = graph.node(candidate.source);
     let target_handle = graph.node(candidate.target);
-    if args.kind.is_some_and(|kind| candidate.kind != kind) {
+    if args
+        .kind
+        .as_ref()
+        .is_some_and(|k| k != candidate.kind.as_str())
+    {
         return false;
     }
     if args
@@ -959,7 +963,7 @@ fn matches_edge_filters(
     }
     if args.confidence_gap
         && confidence_gap_levels(
-            candidate.kind,
+            &candidate.kind,
             source_handle
                 .status
                 .as_deref()
@@ -1091,8 +1095,8 @@ fn matches_count_filter(value: usize, filter: CountFilter) -> bool {
 
 fn compare_edge_candidates(
     graph: &DiGraph,
-    left: EdgeCandidate,
-    right: EdgeCandidate,
+    left: &EdgeCandidate,
+    right: &EdgeCandidate,
 ) -> std::cmp::Ordering {
     let left_source = &graph.node(left.source).id;
     let right_source = &graph.node(right.source).id;

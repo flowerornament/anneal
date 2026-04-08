@@ -1,14 +1,13 @@
 use std::fmt;
 
-use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::handle::{Handle, NodeId};
 
-/// The five kinds of directed edge per KB-D5.
-///
-/// Edge kind determines what consistency checks apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ValueEnum)]
+/// Directed edge kinds. The five well-known kinds carry built-in diagnostic
+/// semantics; `Custom` accepts any user-defined string (indexed in the graph,
+/// queryable, but no built-in checks).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EdgeKind {
     /// Source mentions target (informational; no consistency check).
     Cites,
@@ -20,29 +19,40 @@ pub(crate) enum EdgeKind {
     Verifies,
     /// Source consumes target (for linear handles).
     Discharges,
+    /// User-defined edge kind with no built-in diagnostic behavior.
+    Custom(String),
 }
 
 impl EdgeKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Cites => "Cites",
             Self::DependsOn => "DependsOn",
             Self::Supersedes => "Supersedes",
             Self::Verifies => "Verifies",
             Self::Discharges => "Discharges",
+            Self::Custom(s) => s,
         }
     }
 
-    /// Parse an edge kind from its string name (case-insensitive match on variant names).
-    pub(crate) fn from_name(s: &str) -> Option<Self> {
+    /// Parse an edge kind from its string name. Well-known names resolve to
+    /// their variant (case-insensitive on the two common forms); everything
+    /// else becomes `Custom`.
+    pub(crate) fn from_name(s: &str) -> Self {
         match s {
-            "Cites" | "cites" => Some(Self::Cites),
-            "DependsOn" | "depends_on" => Some(Self::DependsOn),
-            "Supersedes" | "supersedes" => Some(Self::Supersedes),
-            "Verifies" | "verifies" => Some(Self::Verifies),
-            "Discharges" | "discharges" => Some(Self::Discharges),
-            _ => None,
+            "Cites" | "cites" => Self::Cites,
+            "DependsOn" | "depends_on" => Self::DependsOn,
+            "Supersedes" | "supersedes" => Self::Supersedes,
+            "Verifies" | "verifies" => Self::Verifies,
+            "Discharges" | "discharges" => Self::Discharges,
+            _ => Self::Custom(s.to_string()),
         }
+    }
+}
+
+impl Serialize for EdgeKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -52,7 +62,7 @@ impl fmt::Display for EdgeKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct Edge {
     pub(crate) source: NodeId,
     pub(crate) target: NodeId,
@@ -98,8 +108,8 @@ impl DiGraph {
             target,
             kind,
         };
+        self.rev[target.index()].push(edge.clone());
         self.fwd[source.index()].push(edge);
-        self.rev[target.index()].push(edge);
     }
 
     pub(crate) fn node(&self, id: NodeId) -> &Handle {

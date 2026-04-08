@@ -191,7 +191,7 @@ fn resolve_labels(
 
         let file_id = candidate.file_path.to_string();
         if let Some(&source_node) = node_index.get(&file_id) {
-            graph.add_edge(source_node, label_node, candidate.edge_kind);
+            graph.add_edge(source_node, label_node, candidate.edge_kind.clone());
         }
     }
 
@@ -326,9 +326,9 @@ pub(crate) fn resolve_pending_edges(
         if let Some(target_id) = resolved_target {
             // Handle inverse direction: swap source and target for inverse edges
             if edge.inverse {
-                graph.add_edge(target_id, edge.source, edge.kind);
+                graph.add_edge(target_id, edge.source, edge.kind.clone());
             } else {
-                graph.add_edge(edge.source, target_id, edge.kind);
+                graph.add_edge(edge.source, target_id, edge.kind.clone());
             }
             resolved += 1;
         }
@@ -651,9 +651,9 @@ pub(crate) fn cascade_unresolved(
         if let Some(node_id) = rp_resolved {
             // Unambiguous root-prefix match: create graph edge
             if edge.inverse {
-                graph.add_edge(node_id, edge.source, edge.kind);
+                graph.add_edge(node_id, edge.source, edge.kind.clone());
             } else {
-                graph.add_edge(edge.source, node_id, edge.kind);
+                graph.add_edge(edge.source, node_id, edge.kind.clone());
             }
         }
         candidates.extend(rp_candidates);
