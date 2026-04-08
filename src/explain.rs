@@ -279,7 +279,8 @@ fn build_impact_explanation_output(
     let node_id = crate::cli::lookup_handle(context.node_index, &args.handle)
         .with_context(|| format!("handle not found: {}", args.handle))?;
     let root = context.graph.node(node_id).id.clone();
-    let paths = impact::compute_impact_paths(context.graph, node_id);
+    let traverse_set = context.config.impact.resolve_traverse_set();
+    let paths = impact::compute_impact_paths(context.graph, node_id, &traverse_set);
 
     Ok(ImpactExplanation {
         root,

@@ -897,7 +897,8 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Impact { ref handle }) => {
-            if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
+            let traverse_set = config.impact.resolve_traverse_set();
+            if let Some(output) = cli::cmd_impact(graph, &node_index, handle, &traverse_set) {
                 emit_full_output(
                     output,
                     cli_args.json,

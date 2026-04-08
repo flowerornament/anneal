@@ -3,7 +3,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use crate::graph::DiGraph;
+use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::NodeId;
 
 use super::lookup_handle;
@@ -49,10 +49,11 @@ pub(crate) fn cmd_impact(
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
     handle: &str,
+    traverse_set: &[EdgeKind],
 ) -> Option<ImpactOutput> {
     let node_id = lookup_handle(node_index, handle)?;
 
-    let result = crate::impact::compute_impact(graph, node_id);
+    let result = crate::impact::compute_impact(graph, node_id, traverse_set);
 
     let direct: Vec<String> = result
         .direct
