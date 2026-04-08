@@ -2,6 +2,17 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.6.0 - 2026-04-08
+
+### Added
+
+- Custom edge kinds: any `edge_kind` string in `anneal.toml` that doesn't match a well-known kind (Cites, DependsOn, Supersedes, Verifies, Discharges) is now accepted as a `Custom` edge kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, with no built-in diagnostic behavior.
+- The `--kind` filter on `anneal query edges` now accepts any string, not just the five well-known kinds.
+
+### Changed
+
+- W001 (stale reference) now fires only on `DependsOn` edges. Cites and custom edges from active to terminal handles no longer trigger staleness warnings.
+
 ## 0.5.0 - 2026-04-07
 
 ### Added
