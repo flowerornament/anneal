@@ -340,9 +340,11 @@ Checked by rule KB-R4.
 
 ### §9 Impact Analysis [KB-D16]
 
-**Definition KB-D16 (Impact).** Given a handle h, the **impact set** is the set of handles reachable by traversing reverse DependsOn, Supersedes, and Verifies edges from h.
+**Definition KB-D16 (Impact).** Given a handle h and a set of edge kinds T, the **impact set** is the set of handles reachable by traversing reverse edges of kinds in T from h.
 
 Impact analysis answers: "if I change this handle, what else might need attention?" This is the question the arriving agent needs most — not "what's the global state" but "given what just changed, where should I look next?"
+
+The traversal set T is configurable via `[impact] traverse` in `anneal.toml`. When absent, T defaults to {DependsOn, Supersedes, Verifies}. Corpora using custom edge kinds for structural relationships (e.g. Synthesizes, Implements, Reconciles) should configure the traversal set to include them for accurate impact analysis.
 
 Impact is computed by reverse graph traversal. Supersedes chains are acyclic by definition. DependsOn and Verifies edges can form cycles in principle (A depends on B, B verifies A) — the traversal uses standard cycle detection (visited set) to terminate.
 
