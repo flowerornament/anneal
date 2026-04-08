@@ -145,7 +145,7 @@ knowledge graph. Produces compiler-style diagnostics with error codes.
 CHECK RULES:
   E001  Broken reference — a handle references something that doesn't exist
   E002  Undischarged obligation — a linear handle has no Discharges edge
-  W001  Stale reference — an active handle references a terminal one
+  W001  Stale dependency — an active handle has a DependsOn edge to a terminal one
   W002  Confidence gap — a handle at a higher pipeline level depends on a lower one
   W003  Missing frontmatter — files without status: field (above threshold)
   I001  Section references — summary of unresolved section cross-references
@@ -189,7 +189,7 @@ EXAMPLES:
         /// Show only suggestions (structural improvement hints: S001-S005)
         #[arg(long)]
         suggest: bool,
-        /// Show only staleness diagnostics (W001: active referencing terminal)
+        /// Show only staleness diagnostics (W001: active DependsOn to terminal)
         #[arg(long)]
         stale: bool,
         /// Show only obligation diagnostics (E002 undischarged, I002 multi-discharge)

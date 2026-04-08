@@ -481,6 +481,10 @@ direction = "forward"
 edge_kind = "Supersedes"
 direction = "forward"
 
+[frontmatter.fields.synthesizes]
+edge_kind = "Synthesizes"  # custom edge kinds are accepted — any string works
+direction = "inverse"
+
 [concerns]
 api = ["REQ", "ADR"]
 
@@ -489,6 +493,8 @@ history_mode = "xdg"  # optional: xdg | repo | off
 ```
 
 `anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, and the history backend mode (`xdg`, `repo`, or `off`).
+
+Five edge kinds have built-in diagnostic behavior: `Cites`, `DependsOn`, `Supersedes`, `Verifies`, `Discharges`. Any other `edge_kind` string (e.g. `Synthesizes`, `Flags`, `Implements`) is accepted as a custom kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in checks. W001 (stale dependency) fires only on `DependsOn` edges.
 
 If you want repo-local snapshots, set:
 
@@ -518,7 +524,7 @@ runtime mode.
 | ---- | -------- | --------------------------------------------------------------- |
 | E001 | Error    | Broken reference — handle not found                             |
 | E002 | Error    | Undischarged obligation — linear handle without Discharges edge |
-| W001 | Warning  | Stale reference — active handle references terminal one         |
+| W001 | Warning  | Stale dependency — active handle has DependsOn edge to terminal |
 | W002 | Warning  | Confidence gap — higher pipeline level depends on lower         |
 | W003 | Warning  | Missing frontmatter — file without `status:` field              |
 | I001 | Info     | Section reference summary                                       |
