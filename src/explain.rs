@@ -60,16 +60,6 @@ pub(crate) struct SuggestionExplainArgs {
     pub(crate) handle: Option<String>,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug, Serialize)]
-pub(crate) enum Explanation {
-    Diagnostic(DiagnosticExplanation),
-    Impact(ImpactExplanation),
-    Convergence(ConvergenceExplanation),
-    Obligation(ObligationExplanation),
-    Suggestion(SuggestionExplanation),
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExplanationFact {
     pub(crate) fact_type: String,
@@ -89,7 +79,6 @@ pub(crate) struct DiagnosticExplanation {
     pub(crate) facts: Vec<ExplanationFact>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ImpactExplanation {
     pub(crate) root: String,
@@ -97,14 +86,12 @@ pub(crate) struct ImpactExplanation {
     pub(crate) indirect: Vec<ImpactPath>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ImpactPath {
     pub(crate) target: String,
     pub(crate) path: Vec<ImpactHop>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ImpactHop {
     pub(crate) source: String,
@@ -112,7 +99,6 @@ pub(crate) struct ImpactHop {
     pub(crate) target: String,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConvergenceExplanation {
     pub(crate) signal: String,
@@ -130,7 +116,6 @@ pub(crate) struct ConvergenceSnapshotSummary {
     pub(crate) obligations_outstanding: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ObligationExplanation {
     pub(crate) handle: String,
@@ -139,7 +124,6 @@ pub(crate) struct ObligationExplanation {
     pub(crate) facts: Vec<ExplanationFact>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SuggestionExplanation {
     pub(crate) suggestion_id: String,

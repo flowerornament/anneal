@@ -116,12 +116,6 @@ impl DiGraph {
         &self.nodes[id.index()]
     }
 
-    // Phase 2: used by check mutations and future handle updates
-    #[allow(dead_code)]
-    pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut Handle {
-        &mut self.nodes[id.index()]
-    }
-
     pub(crate) fn node_count(&self) -> usize {
         self.nodes.len()
     }

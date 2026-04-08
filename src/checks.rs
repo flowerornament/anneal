@@ -75,6 +75,7 @@ pub(crate) enum SuggestionEvidence {
 
 /// Severity level for diagnostics, ordered so errors sort first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Severity {
     Error = 0,
     Warning = 1,
@@ -2105,7 +2106,7 @@ mod tests {
         assert_eq!(ev["target"], "OQ-99");
         assert_eq!(ev["candidates"][0], "OQ-9");
         // Existing fields unchanged
-        assert_eq!(json["severity"], "Error");
+        assert_eq!(json["severity"], "error");
         assert_eq!(json["code"], "E001");
         assert_eq!(json["file"], "doc.md");
         assert_eq!(json["line"], 10);
