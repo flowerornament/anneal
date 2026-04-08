@@ -1907,4 +1907,68 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME must be set");
         corpus_smoke_test(&format!("{home}/code/herald/.design/"), "Herald");
     }
+
+    // -------------------------------------------------------------------
+    // split_frontmatter
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn split_frontmatter_standard() {
+        let input = "---\nstatus: draft\ntitle: Hello\n---\nBody text here.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some("status: draft\ntitle: Hello"));
+        assert_eq!(body, "Body text here.\n");
+    }
+
+    #[test]
+    fn split_frontmatter_crlf_line_endings() {
+        let input = "---\r\nstatus: draft\r\n---\r\nBody text.\r\n";
+        let (fm, body) = split_frontmatter(input);
+
+        // The \r before the closing \n---\r\n is part of the yaml slice.
+        assert_eq!(fm, Some("status: draft\r"));
+        assert_eq!(body, "Body text.\r\n");
+    }
+
+    #[test]
+    fn split_frontmatter_no_frontmatter() {
+        let input = "# Just a heading\n\nSome body text.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn split_frontmatter_empty_yaml() {
+        // With no content between fences, the closing `---` lacks the
+        // preceding `\n` the parser requires, so this is treated as no
+        // valid frontmatter.
+        let input = "---\n---\nBody after empty frontmatter.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn split_frontmatter_minimal_yaml() {
+        // A single newline between fences provides the `\n---\n` the
+        // parser needs to detect the closing fence.
+        let input = "---\n\n---\nBody after minimal frontmatter.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some(""));
+        assert_eq!(body, "Body after minimal frontmatter.\n");
+    }
+
+    #[test]
+    fn split_frontmatter_eof_without_trailing_newline() {
+        let input = "---\nstatus: final\n---";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some("status: final"));
+        assert_eq!(body, "");
+    }
 }

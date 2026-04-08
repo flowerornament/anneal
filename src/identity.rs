@@ -43,12 +43,12 @@ pub(crate) fn suggestion_id(diagnostic: &Diagnostic) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checks::Evidence;
+    use crate::checks::{DiagnosticCode, Evidence};
 
     fn sample_diagnostic() -> Diagnostic {
         Diagnostic {
             severity: Severity::Warning,
-            code: "W002",
+            code: DiagnosticCode::W002,
             message: "confidence gap".to_string(),
             file: Some("formal-model/v17.md".to_string()),
             line: Some(42),
@@ -84,7 +84,7 @@ mod tests {
 
         let suggestion = Diagnostic {
             severity: Severity::Suggestion,
-            code: "S001",
+            code: DiagnosticCode::S001,
             message: "orphaned handle".to_string(),
             file: Some("OPEN-QUESTIONS.md".to_string()),
             line: Some(8),

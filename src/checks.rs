@@ -73,6 +73,78 @@ pub(crate) enum SuggestionEvidence {
     },
 }
 
+/// Typed diagnostic code for exhaustive handling.
+///
+/// Each variant corresponds to a diagnostic code string (e.g. `E001`).  The
+/// enum is `Copy` and serialises as the string form so JSON output is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum DiagnosticCode {
+    E001,
+    E002,
+    W001,
+    W002,
+    W003,
+    W004,
+    I001,
+    I002,
+    S001,
+    S002,
+    S003,
+    S004,
+    S005,
+}
+
+impl DiagnosticCode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::E001 => "E001",
+            Self::E002 => "E002",
+            Self::W001 => "W001",
+            Self::W002 => "W002",
+            Self::W003 => "W003",
+            Self::W004 => "W004",
+            Self::I001 => "I001",
+            Self::I002 => "I002",
+            Self::S001 => "S001",
+            Self::S002 => "S002",
+            Self::S003 => "S003",
+            Self::S004 => "S004",
+            Self::S005 => "S005",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        match s {
+            "E001" => Some(Self::E001),
+            "E002" => Some(Self::E002),
+            "W001" => Some(Self::W001),
+            "W002" => Some(Self::W002),
+            "W003" => Some(Self::W003),
+            "W004" => Some(Self::W004),
+            "I001" => Some(Self::I001),
+            "I002" => Some(Self::I002),
+            "S001" => Some(Self::S001),
+            "S002" => Some(Self::S002),
+            "S003" => Some(Self::S003),
+            "S004" => Some(Self::S004),
+            "S005" => Some(Self::S005),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for DiagnosticCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for DiagnosticCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// Severity level for diagnostics, ordered so errors sort first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -101,7 +173,7 @@ impl Severity {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Diagnostic {
     pub(crate) severity: Severity,
-    pub(crate) code: &'static str,
+    pub(crate) code: DiagnosticCode,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -114,7 +186,7 @@ pub(crate) struct DiagnosticRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) suggestion_id: Option<String>,
     pub(crate) severity: String,
-    pub(crate) code: &'static str,
+    pub(crate) code: DiagnosticCode,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -202,8 +274,8 @@ impl DiagnosticSelection {
     }
 
     pub(crate) fn widen_for_code(&mut self, code: &str) {
-        if let Some(descriptor) = diagnostic_descriptor(code) {
-            match descriptor.family {
+        if let Some(parsed) = DiagnosticCode::parse(code) {
+            match diagnostic_descriptor(parsed).family {
                 DiagnosticFamily::Existence => self.existence = true,
                 DiagnosticFamily::Plausibility => self.plausibility = true,
                 DiagnosticFamily::Staleness => self.staleness = true,
@@ -232,16 +304,16 @@ impl DiagnosticSelection {
     }
 }
 
-pub(crate) fn is_stale_code(code: &str) -> bool {
-    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.stale_alias)
+pub(crate) fn is_stale_code(code: DiagnosticCode) -> bool {
+    diagnostic_descriptor(code).stale_alias
 }
 
-pub(crate) fn is_obligation_code(code: &str) -> bool {
-    diagnostic_descriptor(code).is_some_and(|descriptor| descriptor.obligation_alias)
+pub(crate) fn is_obligation_code(code: DiagnosticCode) -> bool {
+    diagnostic_descriptor(code).obligation_alias
 }
 
-pub(crate) fn diagnostic_rule_name(code: &str) -> Option<&'static str> {
-    diagnostic_descriptor(code).map(|descriptor| descriptor.rule_name)
+pub(crate) fn diagnostic_rule_name(code: DiagnosticCode) -> &'static str {
+    diagnostic_descriptor(code).rule_name
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -263,77 +335,75 @@ struct DiagnosticDescriptor {
     obligation_alias: bool,
 }
 
-fn diagnostic_descriptor(code: &str) -> Option<DiagnosticDescriptor> {
-    let descriptor = match code {
-        "I001" | "E001" => DiagnosticDescriptor {
+fn diagnostic_descriptor(code: DiagnosticCode) -> DiagnosticDescriptor {
+    match code {
+        DiagnosticCode::I001 | DiagnosticCode::E001 => DiagnosticDescriptor {
             family: DiagnosticFamily::Existence,
             rule_name: "KB-R1 existence",
             stale_alias: false,
             obligation_alias: false,
         },
-        "W004" => DiagnosticDescriptor {
+        DiagnosticCode::W004 => DiagnosticDescriptor {
             family: DiagnosticFamily::Plausibility,
             rule_name: "plausibility filter",
             stale_alias: false,
             obligation_alias: false,
         },
-        "W001" => DiagnosticDescriptor {
+        DiagnosticCode::W001 => DiagnosticDescriptor {
             family: DiagnosticFamily::Staleness,
             rule_name: "KB-R2 staleness",
             stale_alias: true,
             obligation_alias: false,
         },
-        "W002" => DiagnosticDescriptor {
+        DiagnosticCode::W002 => DiagnosticDescriptor {
             family: DiagnosticFamily::ConfidenceGap,
             rule_name: "KB-R3 confidence gap",
             stale_alias: false,
             obligation_alias: false,
         },
-        "E002" | "I002" => DiagnosticDescriptor {
+        DiagnosticCode::E002 | DiagnosticCode::I002 => DiagnosticDescriptor {
             family: DiagnosticFamily::Linearity,
             rule_name: "KB-R4 linearity",
             stale_alias: false,
             obligation_alias: true,
         },
-        "W003" => DiagnosticDescriptor {
+        DiagnosticCode::W003 => DiagnosticDescriptor {
             family: DiagnosticFamily::Conventions,
             rule_name: "KB-R5 convention adoption",
             stale_alias: false,
             obligation_alias: false,
         },
-        "S001" => DiagnosticDescriptor {
+        DiagnosticCode::S001 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
             rule_name: "SUGGEST-01 orphaned handles",
             stale_alias: false,
             obligation_alias: false,
         },
-        "S002" => DiagnosticDescriptor {
+        DiagnosticCode::S002 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
             rule_name: "SUGGEST-02 candidate namespaces",
             stale_alias: false,
             obligation_alias: false,
         },
-        "S003" => DiagnosticDescriptor {
+        DiagnosticCode::S003 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
             rule_name: "SUGGEST-03 pipeline stalls",
             stale_alias: false,
             obligation_alias: false,
         },
-        "S004" => DiagnosticDescriptor {
+        DiagnosticCode::S004 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
             rule_name: "SUGGEST-04 abandoned namespaces",
             stale_alias: false,
             obligation_alias: false,
         },
-        "S005" => DiagnosticDescriptor {
+        DiagnosticCode::S005 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
             rule_name: "SUGGEST-05 concern group candidates",
             stale_alias: false,
             obligation_alias: false,
         },
-        _ => return None,
-    };
-    Some(descriptor)
+    }
 }
 
 impl Diagnostic {
@@ -403,7 +473,7 @@ fn check_existence(
     if section_ref_count > 0 {
         diagnostics.push(Diagnostic {
             severity: Severity::Info,
-            code: "I001",
+            code: DiagnosticCode::I001,
             message: format!(
                 "{section_ref_count} section references use section notation, \
                  not resolvable to heading slugs"
@@ -450,7 +520,7 @@ fn check_existence(
 
         diagnostics.push(Diagnostic {
             severity: Severity::Error,
-            code: "E001",
+            code: DiagnosticCode::E001,
             message: format!(
                 "broken reference: {} not found{}",
                 edge.target_identity, candidate_msg
@@ -542,7 +612,7 @@ fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
         .iter()
         .map(|r| Diagnostic {
             severity: Severity::Warning,
-            code: "W004",
+            code: DiagnosticCode::W004,
             message: format!(
                 "implausible frontmatter value {:?} ({})",
                 r.raw_value, r.reason
@@ -589,7 +659,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
 
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
-                    code: "W001",
+                    code: DiagnosticCode::W001,
                     message: format!(
                         "stale reference: {} (active) references {} ({}, terminal)",
                         handle.id, target.id, target_status
@@ -656,7 +726,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                     .map(ToString::to_string);
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
-                    code: "W002",
+                    code: DiagnosticCode::W002,
                     message: format!(
                         "confidence gap: {} ({}) depends on {} ({})",
                         handle.id, source_status, target.id, target_status
@@ -733,7 +803,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
         if discharge_count == 0 {
             diagnostics.push(Diagnostic {
                 severity: Severity::Error,
-                code: "E002",
+                code: DiagnosticCode::E002,
                 message: format!(
                     "undischarged obligation: {} has no Discharges edge",
                     handle.id
@@ -745,7 +815,7 @@ fn check_linearity(graph: &DiGraph, config: &AnnealConfig, lattice: &Lattice) ->
         } else if discharge_count >= 2 {
             diagnostics.push(Diagnostic {
                 severity: Severity::Info,
-                code: "I002",
+                code: DiagnosticCode::I002,
                 message: format!(
                     "multiple discharges: {} discharged {discharge_count} times (affine)",
                     handle.id
@@ -806,7 +876,7 @@ fn check_conventions(graph: &DiGraph) -> Vec<Diagnostic> {
             let handle = graph.node(node_id);
             diagnostics.push(Diagnostic {
                 severity: Severity::Warning,
-                code: "W003",
+                code: DiagnosticCode::W003,
                 message: format!(
                     "missing frontmatter: {} has no status field ({with_fm}/{total} siblings have frontmatter)",
                     handle.id
@@ -870,7 +940,7 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
 
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
-                code: "S001",
+                code: DiagnosticCode::S001,
                 message: format!("orphaned handle: {} has no incoming edges", handle.id),
                 file,
                 line: None,
@@ -925,7 +995,7 @@ fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<D
     for (prefix, (count, representative_file)) in candidates {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
-            code: "S002",
+            code: DiagnosticCode::S002,
             message: format!(
                 "candidate namespace: {prefix} ({count} labels found, not in confirmed namespaces)"
             ),
@@ -1023,7 +1093,7 @@ fn suggest_pipeline_stalls(
 
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
-                code: "S003",
+                code: DiagnosticCode::S003,
                 message,
                 file: representative,
                 line: None,
@@ -1109,7 +1179,7 @@ fn suggest_abandoned_namespaces(
 
             diagnostics.push(Diagnostic {
                 severity: Severity::Suggestion,
-                code: "S004",
+                code: DiagnosticCode::S004,
                 message: format!(
                     "abandoned namespace: all {} members of {prefix} are terminal or stale",
                     members.len()
@@ -1212,7 +1282,7 @@ fn suggest_concern_groups(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnos
     for ((prefix_a, prefix_b), (count, representative_file)) in candidates.into_iter().take(5) {
         diagnostics.push(Diagnostic {
             severity: Severity::Suggestion,
-            code: "S005",
+            code: DiagnosticCode::S005,
             message: format!(
                 "concern group candidate: {prefix_a} and {prefix_b} co-occur in {count} files"
             ),
@@ -1326,12 +1396,18 @@ pub(crate) fn apply_suppressions(
     }
 
     diagnostics.retain(|diagnostic| {
-        if suppress.codes.iter().any(|code| code == diagnostic.code) {
+        if suppress
+            .codes
+            .iter()
+            .any(|code| code == diagnostic.code.as_str())
+        {
             return false;
         }
 
         for rule in &suppress.rules {
-            if diagnostic.code == rule.code.as_str() && diagnostic.message.contains(&rule.target) {
+            if diagnostic.code.as_str() == rule.code.as_str()
+                && diagnostic.message.contains(&rule.target)
+            {
                 return false;
             }
         }
@@ -1400,7 +1476,7 @@ mod tests {
         let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
-        assert_eq!(diags[0].code, "E001");
+        assert_eq!(diags[0].code, DiagnosticCode::E001);
         assert!(diags[0].message.contains("OQ-99"));
         assert_eq!(
             diags[0].line,
@@ -1418,7 +1494,7 @@ mod tests {
         let diags = check_existence(&graph, &unresolved, 42, Some("doc.md"), &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Info);
-        assert_eq!(diags[0].code, "I001");
+        assert_eq!(diags[0].code, DiagnosticCode::I001);
         assert_eq!(
             diags[0].file,
             Some("doc.md".to_string()),
@@ -1447,7 +1523,7 @@ mod tests {
         let diags = check_staleness(&graph, &lattice);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
-        assert_eq!(diags[0].code, "W001");
+        assert_eq!(diags[0].code, DiagnosticCode::W001);
         assert!(diags[0].message.contains("active.md"));
         assert!(diags[0].message.contains("terminal.md"));
     }
@@ -1499,7 +1575,7 @@ mod tests {
         let diags = check_confidence_gap(&graph, &lattice);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
-        assert_eq!(diags[0].code, "W002");
+        assert_eq!(diags[0].code, DiagnosticCode::W002);
         assert!(diags[0].message.contains("formal.md"));
         assert!(diags[0].message.contains("provisional.md"));
     }
@@ -1542,7 +1618,7 @@ mod tests {
         let diags = check_linearity(&graph, &config, &lattice);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
-        assert_eq!(diags[0].code, "E002");
+        assert_eq!(diags[0].code, DiagnosticCode::E002);
         assert!(diags[0].message.contains("OBL-1"));
     }
 
@@ -1588,7 +1664,7 @@ mod tests {
         let diags = check_linearity(&graph, &config, &lattice);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Info);
-        assert_eq!(diags[0].code, "I002");
+        assert_eq!(diags[0].code, DiagnosticCode::I002);
         assert!(diags[0].message.contains("OBL-1"));
         assert!(diags[0].message.contains("2 times"));
     }
@@ -1608,7 +1684,7 @@ mod tests {
         let diags = check_conventions(&graph);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
-        assert_eq!(diags[0].code, "W003");
+        assert_eq!(diags[0].code, DiagnosticCode::W003);
         assert!(diags[0].message.contains("dir/c.md"));
     }
 
@@ -1644,7 +1720,7 @@ mod tests {
             "Expected 1 S001 diagnostic for orphaned label"
         );
         assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, "S001");
+        assert_eq!(diags[0].code, DiagnosticCode::S001);
         assert!(diags[0].message.contains("OQ-1"));
         match &diags[0].evidence {
             Some(Evidence::Suggestion {
@@ -1702,7 +1778,7 @@ mod tests {
             "Expected 1 S002 diagnostic for candidate namespace"
         );
         assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, "S002");
+        assert_eq!(diags[0].code, DiagnosticCode::S002);
         assert!(diags[0].message.contains("NEW"));
         match &diags[0].evidence {
             Some(Evidence::Suggestion {
@@ -1760,7 +1836,7 @@ mod tests {
             "Expected 1 S003 diagnostic for pipeline stall"
         );
         assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, "S003");
+        assert_eq!(diags[0].code, DiagnosticCode::S003);
         assert!(diags[0].message.contains("draft"));
         match &diags[0].evidence {
             Some(Evidence::Suggestion {
@@ -1899,7 +1975,7 @@ mod tests {
             "Expected 1 S004 diagnostic for abandoned namespace"
         );
         assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, "S004");
+        assert_eq!(diags[0].code, DiagnosticCode::S004);
         assert!(diags[0].message.contains("OLD"));
         match &diags[0].evidence {
             Some(Evidence::Suggestion {
@@ -1948,7 +2024,7 @@ mod tests {
             1,
             "Expected 1 S004 diagnostic for stale namespace (all members beyond freshness threshold)"
         );
-        assert_eq!(diags[0].code, "S004");
+        assert_eq!(diags[0].code, DiagnosticCode::S004);
     }
 
     #[test]
@@ -2003,7 +2079,7 @@ mod tests {
             "Expected 1 S005 diagnostic for co-occurring prefixes"
         );
         assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, "S005");
+        assert_eq!(diags[0].code, DiagnosticCode::S005);
         assert!(
             diags[0].message.contains("OQ") && diags[0].message.contains("FM"),
             "S005 message should mention both co-occurring prefixes"
@@ -2074,7 +2150,7 @@ mod tests {
     fn evidence_none_serializes_as_null() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: "E001",
+            code: DiagnosticCode::E001,
             message: "test".to_string(),
             file: None,
             line: None,
@@ -2094,7 +2170,7 @@ mod tests {
     fn evidence_broken_ref_serializes_with_type_tag() {
         let diag = Diagnostic {
             severity: Severity::Error,
-            code: "E001",
+            code: DiagnosticCode::E001,
             message: "test".to_string(),
             file: Some("doc.md".to_string()),
             line: Some(10),
@@ -2119,7 +2195,7 @@ mod tests {
     fn evidence_suggestion_serializes_with_nested_kind() {
         let diag = Diagnostic {
             severity: Severity::Suggestion,
-            code: "S002",
+            code: DiagnosticCode::S002,
             message: "candidate namespace".to_string(),
             file: Some("labels.md".to_string()),
             line: None,
@@ -2306,7 +2382,7 @@ mod tests {
         let mut diagnostics = vec![
             Diagnostic {
                 severity: Severity::Info,
-                code: "I001",
+                code: DiagnosticCode::I001,
                 message: "section refs".to_string(),
                 file: Some("doc.md".to_string()),
                 line: None,
@@ -2314,7 +2390,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "broken reference: target.md not found".to_string(),
                 file: Some("doc.md".to_string()),
                 line: Some(1),
@@ -2331,7 +2407,7 @@ mod tests {
         );
 
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "E001");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E001);
     }
 
     #[test]
@@ -2339,7 +2415,7 @@ mod tests {
         let mut diagnostics = vec![
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "broken reference: synthesis/v17.md not found".to_string(),
                 file: Some("anneal-spec.md".to_string()),
                 line: Some(1),
@@ -2347,7 +2423,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "broken reference: spec.md not found".to_string(),
                 file: Some("anneal-spec.md".to_string()),
                 line: Some(1),
@@ -2374,7 +2450,7 @@ mod tests {
     fn apply_suppressions_keeps_non_matching_diagnostics() {
         let original = Diagnostic {
             severity: Severity::Warning,
-            code: "W001",
+            code: DiagnosticCode::W001,
             message: "stale reference: doc.md references archived.md".to_string(),
             file: Some("doc.md".to_string()),
             line: None,

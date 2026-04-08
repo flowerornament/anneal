@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use crate::analysis::AnalysisContext;
-use crate::checks::{Diagnostic, Evidence, SuggestionEvidence};
+use crate::checks::{Diagnostic, DiagnosticCode, Evidence, SuggestionEvidence};
 use crate::cli::{JsonEnvelope, JsonStyle, OutputMeta};
 use crate::handle::HandleKind;
 use crate::identity::{diagnostic_id, suggestion_id};
@@ -233,7 +233,7 @@ fn build_diagnostic_explanation_output(
         message: diagnostic.message.clone(),
         file: diagnostic.file.clone(),
         line: diagnostic.line,
-        rule: crate::checks::diagnostic_rule_name(diagnostic.code).map(str::to_string),
+        rule: Some(crate::checks::diagnostic_rule_name(diagnostic.code).to_string()),
         facts: diagnostic_facts(diagnostic),
     })
 }
@@ -373,7 +373,7 @@ fn build_suggestion_explanation_output(
         message: diagnostic.message.clone(),
         file: diagnostic.file.clone(),
         line: diagnostic.line,
-        rule: crate::checks::diagnostic_rule_name(diagnostic.code).map(str::to_string),
+        rule: Some(crate::checks::diagnostic_rule_name(diagnostic.code).to_string()),
         facts: diagnostic_facts(diagnostic),
     })
 }
@@ -537,7 +537,7 @@ fn select_suggestion<'a>(
         .filter(|diagnostic| {
             args.code
                 .as_ref()
-                .is_none_or(|code| diagnostic.code == code.as_str())
+                .is_none_or(|code| diagnostic.code.as_str() == code.as_str())
         })
         .filter(|diagnostic| {
             selector
@@ -570,7 +570,7 @@ fn matches_secondary_selectors(diagnostic: &Diagnostic, args: &DiagnosticExplain
     if args
         .code
         .as_ref()
-        .is_some_and(|code| diagnostic.code != code.as_str())
+        .is_some_and(|code| diagnostic.code.as_str() != code.as_str())
     {
         return false;
     }
@@ -636,7 +636,7 @@ fn handle_mentions_selector(
 fn diagnostic_facts(diagnostic: &Diagnostic) -> Vec<ExplanationFact> {
     let mut facts = Vec::new();
     facts.push(fact("diagnostic", "severity", diagnostic.severity.as_str()));
-    facts.push(fact("diagnostic", "code", diagnostic.code));
+    facts.push(fact("diagnostic", "code", diagnostic.code.as_str()));
     if let Some(file) = &diagnostic.file {
         facts.push(fact("location", "file", file));
     }
@@ -706,7 +706,7 @@ fn diagnostic_facts(diagnostic: &Diagnostic) -> Vec<ExplanationFact> {
 
 fn add_message_derived_facts(facts: &mut Vec<ExplanationFact>, diagnostic: &Diagnostic) {
     match diagnostic.code {
-        "I001" => {
+        DiagnosticCode::I001 => {
             if let Some(count) = diagnostic.message.split_whitespace().next() {
                 facts.push(fact("count", "section_references", count));
             }
@@ -716,7 +716,7 @@ fn add_message_derived_facts(facts: &mut Vec<ExplanationFact>, diagnostic: &Diag
                 "not resolvable to heading slugs",
             ));
         }
-        "E002" => {
+        DiagnosticCode::E002 => {
             if let Some(handle) =
                 parse_after_prefix(&diagnostic.message, "undischarged obligation: ", " has ")
             {
@@ -725,7 +725,7 @@ fn add_message_derived_facts(facts: &mut Vec<ExplanationFact>, diagnostic: &Diag
             facts.push(fact("edge", "kind", "Discharges"));
             facts.push(fact("status", "disposition", "outstanding"));
         }
-        "I002" => {
+        DiagnosticCode::I002 => {
             if let Some((handle, count)) = parse_before_and_between(
                 &diagnostic.message,
                 "multiple discharges: ",
@@ -737,7 +737,7 @@ fn add_message_derived_facts(facts: &mut Vec<ExplanationFact>, diagnostic: &Diag
             }
             facts.push(fact("status", "disposition", "multiple_discharges"));
         }
-        "W003" => {
+        DiagnosticCode::W003 => {
             if let Some(handle) =
                 parse_after_prefix(&diagnostic.message, "missing frontmatter: ", " has ")
             {
@@ -1099,7 +1099,7 @@ mod tests {
     fn sample_diagnostic() -> Diagnostic {
         Diagnostic {
             severity: Severity::Warning,
-            code: "W002",
+            code: DiagnosticCode::W002,
             message: "confidence gap: formal-model/v17.md (formal) depends on synthesis/v17.md (provisional)".to_string(),
             file: Some("formal-model/v17.md".to_string()),
             line: Some(42),
@@ -1113,7 +1113,7 @@ mod tests {
     }
 
     fn sample_suggestion(
-        code: &'static str,
+        code: DiagnosticCode,
         message: &str,
         evidence: SuggestionEvidence,
     ) -> Diagnostic {
@@ -1142,18 +1142,18 @@ mod tests {
 
         let selected =
             select_diagnostic(std::slice::from_ref(&diagnostic), &args).expect("selected");
-        assert_eq!(selected.code, "W002");
+        assert_eq!(selected.code, DiagnosticCode::W002);
     }
 
     #[test]
     fn select_diagnostic_requires_unambiguous_secondary_selectors() {
         let first = Diagnostic {
-            code: "E001",
+            code: DiagnosticCode::E001,
             file: Some("spec.md".to_string()),
             ..sample_diagnostic()
         };
         let second = Diagnostic {
-            code: "E001",
+            code: DiagnosticCode::E001,
             file: Some("other.md".to_string()),
             ..sample_diagnostic()
         };
@@ -1345,7 +1345,7 @@ mod tests {
     #[test]
     fn select_suggestion_matches_namespace_from_structured_evidence() {
         let suggestion = sample_suggestion(
-            "S002",
+            DiagnosticCode::S002,
             "candidate namespace available",
             SuggestionEvidence::CandidateNamespace {
                 prefix: "OQ".to_string(),
@@ -1363,13 +1363,13 @@ mod tests {
         )
         .expect("selected suggestion");
 
-        assert_eq!(selected.code, "S002");
+        assert_eq!(selected.code, DiagnosticCode::S002);
     }
 
     #[test]
     fn diagnostic_facts_use_structured_suggestion_evidence() {
         let suggestion = sample_suggestion(
-            "S005",
+            DiagnosticCode::S005,
             "message text should not matter here",
             SuggestionEvidence::ConcernGroupCandidate {
                 left_prefix: "FM".to_string(),
