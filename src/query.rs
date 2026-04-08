@@ -798,7 +798,7 @@ fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
         id: candidate.handle.id.clone(),
         handle_kind: candidate.handle.kind.as_str().to_string(),
         status: candidate.handle.status.clone(),
-        file: resolved_file(candidate.handle, graph),
+        file: resolved_file(candidate.handle, graph).map(ToString::to_string),
         namespace,
         terminal: candidate.terminal,
         incoming_count: candidate.incoming_count,
@@ -818,8 +818,8 @@ fn edge_row(graph: &DiGraph, candidate: &EdgeCandidate) -> EdgeRow {
         target_kind: target_handle.kind.as_str().to_string(),
         source_status: source_handle.status.clone(),
         target_status: target_handle.status.clone(),
-        source_file: resolved_file(source_handle, graph),
-        target_file: resolved_file(target_handle, graph),
+        source_file: resolved_file(source_handle, graph).map(ToString::to_string),
+        target_file: resolved_file(target_handle, graph).map(ToString::to_string),
     }
 }
 
@@ -854,7 +854,7 @@ fn matches_handle_filters(
         return false;
     }
     if file_matcher.is_some_and(|matcher| {
-        resolved_file(candidate.handle, graph).is_none_or(|path| !matcher.is_match(&path))
+        resolved_file(candidate.handle, graph).is_none_or(|path| !matcher.is_match(path))
     }) {
         return false;
     }

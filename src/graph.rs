@@ -36,16 +36,20 @@ impl EdgeKind {
     }
 
     /// Parse an edge kind from its string name. Well-known names resolve to
-    /// their variant (case-insensitive on the two common forms); everything
-    /// else becomes `Custom`.
+    /// their variant (case-insensitive); everything else becomes `Custom`.
     pub(crate) fn from_name(s: &str) -> Self {
-        match s {
-            "Cites" | "cites" => Self::Cites,
-            "DependsOn" | "depends_on" => Self::DependsOn,
-            "Supersedes" | "supersedes" => Self::Supersedes,
-            "Verifies" | "verifies" => Self::Verifies,
-            "Discharges" | "discharges" => Self::Discharges,
-            _ => Self::Custom(s.to_string()),
+        if s.eq_ignore_ascii_case("cites") {
+            Self::Cites
+        } else if s.eq_ignore_ascii_case("dependson") || s.eq_ignore_ascii_case("depends_on") {
+            Self::DependsOn
+        } else if s.eq_ignore_ascii_case("supersedes") {
+            Self::Supersedes
+        } else if s.eq_ignore_ascii_case("verifies") {
+            Self::Verifies
+        } else if s.eq_ignore_ascii_case("discharges") {
+            Self::Discharges
+        } else {
+            Self::Custom(s.to_string())
         }
     }
 }

@@ -583,7 +583,9 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             let target = graph.node(edge.target);
             if target.is_terminal(lattice) {
                 let target_status = target.status.as_deref().unwrap_or("unknown");
-                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
+                let file = resolved_file(handle, graph)
+                    .or_else(|| resolved_file(target, graph))
+                    .map(ToString::to_string);
 
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
@@ -641,7 +643,9 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             if let Some((source_level, target_level)) =
                 confidence_gap_levels(&EdgeKind::DependsOn, Some(source_level), Some(target_level))
             {
-                let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
+                let file = resolved_file(handle, graph)
+                    .or_else(|| resolved_file(target, graph))
+                    .map(ToString::to_string);
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     code: "W002",
@@ -1243,76 +1247,63 @@ pub(crate) fn run_suggestions(
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Bundled inputs for [`run_checks`] and [`run_checks_with_selection`].
+pub(crate) struct CheckInput<'a> {
+    pub(crate) graph: &'a DiGraph,
+    pub(crate) lattice: &'a Lattice,
+    pub(crate) config: &'a AnnealConfig,
+    pub(crate) unresolved_edges: &'a [PendingEdge],
+    pub(crate) section_ref_count: usize,
+    pub(crate) section_ref_file: Option<&'a str>,
+    pub(crate) implausible_refs: &'a [ImplausibleRef],
+    pub(crate) cascade_candidates: &'a HashMap<String, Vec<String>>,
+    pub(crate) previous_snapshot: Option<&'a crate::snapshot::Snapshot>,
+}
+
 /// Run all five check rules plus suggestions and return sorted diagnostics.
 ///
 /// Diagnostics are sorted by severity: errors first, then warnings, then info,
 /// then suggestions.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_checks(
-    graph: &DiGraph,
-    lattice: &Lattice,
-    config: &AnnealConfig,
-    unresolved_edges: &[PendingEdge],
-    section_ref_count: usize,
-    section_ref_file: Option<&str>,
-    implausible_refs: &[ImplausibleRef],
-    cascade_candidates: &HashMap<String, Vec<String>>,
-    previous_snapshot: Option<&crate::snapshot::Snapshot>,
-) -> Vec<Diagnostic> {
-    run_checks_with_selection(
-        graph,
-        lattice,
-        config,
-        unresolved_edges,
-        section_ref_count,
-        section_ref_file,
-        implausible_refs,
-        cascade_candidates,
-        previous_snapshot,
-        DiagnosticSelection::all(),
-    )
+pub(crate) fn run_checks(input: &CheckInput<'_>) -> Vec<Diagnostic> {
+    run_checks_with_selection(input, DiagnosticSelection::all())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_checks_with_selection(
-    graph: &DiGraph,
-    lattice: &Lattice,
-    config: &AnnealConfig,
-    unresolved_edges: &[PendingEdge],
-    section_ref_count: usize,
-    section_ref_file: Option<&str>,
-    implausible_refs: &[ImplausibleRef],
-    cascade_candidates: &HashMap<String, Vec<String>>,
-    previous_snapshot: Option<&crate::snapshot::Snapshot>,
+    input: &CheckInput<'_>,
     selection: DiagnosticSelection,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     if selection.existence {
         diagnostics.extend(check_existence(
-            graph,
-            unresolved_edges,
-            section_ref_count,
-            section_ref_file,
-            cascade_candidates,
+            input.graph,
+            input.unresolved_edges,
+            input.section_ref_count,
+            input.section_ref_file,
+            input.cascade_candidates,
         ));
     }
     if selection.plausibility {
-        diagnostics.extend(check_plausibility(implausible_refs));
+        diagnostics.extend(check_plausibility(input.implausible_refs));
     }
     if selection.staleness {
-        diagnostics.extend(check_staleness(graph, lattice));
+        diagnostics.extend(check_staleness(input.graph, input.lattice));
     }
     if selection.confidence_gap {
-        diagnostics.extend(check_confidence_gap(graph, lattice));
+        diagnostics.extend(check_confidence_gap(input.graph, input.lattice));
     }
     if selection.linearity {
-        diagnostics.extend(check_linearity(graph, config, lattice));
+        diagnostics.extend(check_linearity(input.graph, input.config, input.lattice));
     }
     if selection.conventions {
-        diagnostics.extend(check_conventions(graph));
+        diagnostics.extend(check_conventions(input.graph));
     }
     if selection.suggestions {
-        diagnostics.extend(run_suggestions(graph, lattice, config, previous_snapshot));
+        diagnostics.extend(run_suggestions(
+            input.graph,
+            input.lattice,
+            input.config,
+            input.previous_snapshot,
+        ));
     }
     diagnostics.sort_by_key(|d| d.severity);
     diagnostics
@@ -2038,17 +2029,18 @@ mod tests {
         let unresolved: Vec<PendingEdge> = Vec::new();
 
         let cascade = HashMap::new();
-        let diags = run_checks(
-            &graph,
-            &lattice,
-            &config,
-            &unresolved,
-            0,
-            None,
-            &[],
-            &cascade,
-            None,
-        );
+        let input = CheckInput {
+            graph: &graph,
+            lattice: &lattice,
+            config: &config,
+            unresolved_edges: &unresolved,
+            section_ref_count: 0,
+            section_ref_file: None,
+            implausible_refs: &[],
+            cascade_candidates: &cascade,
+            previous_snapshot: None,
+        };
+        let diags = run_checks(&input);
         let suggestion_count = diags
             .iter()
             .filter(|d| d.severity == Severity::Suggestion)
@@ -2265,17 +2257,18 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = run_checks(
-            &graph,
-            &lattice,
-            &config,
-            &unresolved,
-            5,
-            None,
-            &[],
-            &cascade,
-            None,
-        );
+        let input = CheckInput {
+            graph: &graph,
+            lattice: &lattice,
+            config: &config,
+            unresolved_edges: &unresolved,
+            section_ref_count: 5,
+            section_ref_file: None,
+            implausible_refs: &[],
+            cascade_candidates: &cascade,
+            previous_snapshot: None,
+        };
+        let diags = run_checks(&input);
 
         // Should have: E001 (error), W001 (warning), I001 (info)
         assert!(

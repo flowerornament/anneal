@@ -138,7 +138,7 @@ fn obligation_entry(
         namespace: prefix.clone(),
         disposition,
         discharge_count,
-        file: resolved_file(handle, graph),
+        file: resolved_file(handle, graph).map(ToString::to_string),
         dischargers,
     })
 }

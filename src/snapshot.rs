@@ -311,23 +311,14 @@ pub(crate) fn read_latest_snapshot(
 ) -> Option<Snapshot> {
     let history_path = read_history_path(root, state)?;
 
-    let Ok(file) = fs::File::open(history_path.as_std_path()) else {
+    let Ok(contents) = fs::read_to_string(history_path.as_std_path()) else {
         return None;
     };
 
-    let reader = BufReader::new(file);
-    let mut latest = None;
-
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            continue;
-        };
-        if let Some(snapshot) = parse_snapshot_line(&line) {
-            latest = Some(snapshot);
-        }
-    }
-
-    latest
+    contents
+        .rsplit('\n')
+        .find(|line| !line.trim().is_empty())
+        .and_then(parse_snapshot_line)
 }
 
 fn repo_history_path(root: &Utf8Path) -> Utf8PathBuf {
