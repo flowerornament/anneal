@@ -132,7 +132,7 @@ anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5
 
 - `E001`: broken reference
 - `E002`: undischarged obligation
-- `W001`: stale reference from active work to terminal material
+- `W001`: stale dependency — active handle has DependsOn edge to terminal (Cites and custom edges don't trigger W001)
 - `W002`: confidence gap where higher-level work depends on lower-level work
 
 For the full diagnostic set, use `anneal help check`.

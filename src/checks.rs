@@ -23,7 +23,7 @@ pub(crate) enum Evidence {
         target: String,
         candidates: Vec<String>,
     },
-    /// W001: stale reference (active -> terminal).
+    /// W001: stale dependency (active DependsOn -> terminal).
     StaleRef {
         source_status: String,
         target_status: String,
@@ -631,9 +631,9 @@ fn check_plausibility(implausible_refs: &[ImplausibleRef]) -> Vec<Diagnostic> {
 // CHECK-02: Staleness (KB-R2)
 // ---------------------------------------------------------------------------
 
-/// Check staleness: active handle referencing terminal handle.
+/// Check staleness: active handle with DependsOn edge to terminal handle.
 ///
-/// For each outgoing edge, if source has an active status and target has a
+/// For each outgoing DependsOn edge, if source has an active status and target has a
 /// terminal status, emit W001.
 fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -661,7 +661,7 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
                     severity: Severity::Warning,
                     code: DiagnosticCode::W001,
                     message: format!(
-                        "stale reference: {} (active) references {} ({}, terminal)",
+                        "stale dependency: {} (active) depends on {} ({}, terminal)",
                         handle.id, target.id, target_status
                     ),
                     file,
@@ -2328,7 +2328,7 @@ mod tests {
         // Create a scenario producing all three severities:
         // E001 from unresolved edge
         let source = graph.add_node(make_file_handle("doc.md", Some("draft")));
-        // W001 from stale reference (DependsOn triggers staleness check)
+        // W001 from stale dependency (DependsOn triggers staleness check)
         let terminal = graph.add_node(make_file_handle("old.md", Some("archived")));
         graph.add_edge(source, terminal, EdgeKind::DependsOn);
 
@@ -2451,7 +2451,7 @@ mod tests {
         let original = Diagnostic {
             severity: Severity::Warning,
             code: DiagnosticCode::W001,
-            message: "stale reference: doc.md references archived.md".to_string(),
+            message: "stale dependency: doc.md depends on archived.md".to_string(),
             file: Some("doc.md".to_string()),
             line: None,
             evidence: None,
