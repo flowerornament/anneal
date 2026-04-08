@@ -2,6 +2,43 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.6.1 - 2026-04-08
+
+### Fixed
+
+- Off-by-one in frontmatter line count: body-text line numbers in diagnostics were reported 1 too high for files with frontmatter.
+- `Severity` serialization now consistently produces lowercase (`"error"`, `"warning"`) instead of PascalCase in JSON.
+- Diagnostics with unknown line numbers now report `line: null` instead of the misleading sentinel `line: 1`.
+- Evidence serialization in identity computation uses graceful fallback instead of `expect()`.
+
+### Changed
+
+- `resolved_file` returns `Option<&Utf8Path>` instead of allocating `Option<String>` on every call.
+- `run_checks` takes a `CheckInput` struct instead of 9 positional parameters.
+- `read_latest_snapshot` reads the history file backwards, parsing only the last line instead of all lines.
+- `try_version_stem` uses a pre-built `VersionStemIndex` for O(1) lookup instead of scanning all node keys.
+- `classify_frontmatter_value` results are cached across frontmatter processing loops.
+- `check_confidence_gap` builds a `HashMap` for state level lookups instead of linear scanning.
+- `is_terminal_by_heuristic` moved from `parse.rs` to `lattice.rs` (fixes layering inversion).
+- `parse_frontmatter` returns a `FrontmatterParseResult` struct instead of a 4-tuple.
+- `EdgeKind::from_name` uses case-insensitive matching for well-known kinds.
+- `EdgeKind::Custom` uses `Box<str>` instead of `String` (8 bytes smaller per edge).
+- Diagnostic codes promoted from `&'static str` to `DiagnosticCode` enum for exhaustive matching.
+- `ImplausibleReason` promoted from `String` to a four-variant enum.
+- `HashMap<String, usize>` in `summarize_extractions` changed to `HashMap<&'static str, usize>`.
+- `cli.rs` (4459 lines) split into `src/cli/` module directory with 11 focused submodules.
+- Malformed YAML frontmatter and non-UTF-8 filenames are now tracked in `BuildResult` for future reporting.
+
+### Removed
+
+- Dead code: `ConvergenceState`, `classify_status`, `Resolution` enum, `node_mut`, `Explanation` wrapper enum.
+- Stale Phase 2 comments and unjustified `#[allow(dead_code)]` annotations.
+- Duplicate `fnv1a_64` implementation in `snapshot.rs` (now imports from `identity.rs`).
+
+### Added
+
+- 34 new tests for `lattice.rs` (12), `graph.rs` (8), `obligations.rs` (8), and `split_frontmatter` (6) — covering all four previously untested modules.
+
 ## 0.6.0 - 2026-04-08
 
 ### Added
