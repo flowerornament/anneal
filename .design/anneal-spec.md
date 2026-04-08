@@ -191,7 +191,10 @@ EdgeKind =
   | Supersedes     — source replaces target (target becomes terminal)
   | Verifies       — source proves or checks target
   | Discharges     — source consumes target (for linear handles)
+  | Custom(String) — user-defined edge kind (indexed, queryable, no built-in checks)
 ```
+
+The five well-known kinds carry built-in diagnostic semantics. Any `edge_kind` string in `anneal.toml` that doesn't match a well-known kind becomes `Custom` — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in diagnostic behavior.
 
 Edge kind determines **what checks apply** [KB-P7]:
 
@@ -304,7 +307,7 @@ This prevents overwhelming a project that has just started adopting conventions.
 
 **[KB-R1] Existence.** For every edge (source, target, _): target must resolve [KB-D3]. Failure is an error.
 
-**[KB-R2] Staleness.** For every edge (source, target, _) where source is active and target is terminal [KB-D10]: warn that source references a superseded or archived handle.
+**[KB-R2] Staleness.** For every DependsOn edge (source, target) where source is active and target is terminal [KB-D10]: warn that source depends on a superseded or archived handle. Only `DependsOn` edges trigger staleness — `Cites` edges from active to terminal are normal (historical evidence, not structural dependency), and custom edges carry no built-in diagnostic behavior.
 
 **[KB-R3] Confidence gap.** For every DependsOn edge (source, target): if source's declared state is above target's declared state in the convergence lattice [KB-D9], warn. ("Your `formal` document depends on a `provisional` source.")
 
@@ -408,7 +411,7 @@ The following capabilities emerge from the primitives (Handle, Graph, Lattice, L
 
 **[KB-E1] Reference checking** = rule KB-R1 applied over the existence lattice [KB-D8]. The zero-config baseline.
 
-**[KB-E2] Staleness detection** = rule KB-R2. Active handles referencing terminal handles are flagged.
+**[KB-E2] Staleness detection** = rule KB-R2. Active handles with DependsOn edges to terminal handles are flagged.
 
 **[KB-E3] Dependency consistency** = rule KB-R3. A handle declaring high convergence state while depending on a lower-state source is flagged.
 
