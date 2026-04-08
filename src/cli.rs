@@ -206,7 +206,7 @@ pub(crate) struct ExtractionSummary {
 
 #[derive(Serialize)]
 pub(crate) struct HintCount {
-    pub(crate) hint: String,
+    pub(crate) hint: &'static str,
     pub(crate) count: usize,
 }
 
@@ -359,7 +359,7 @@ fn summarize_diagnostic_codes(diagnostics: &[Diagnostic]) -> Vec<CodeCount> {
 }
 
 fn summarize_extractions(extractions: &[crate::extraction::FileExtraction]) -> ExtractionSummary {
-    let mut by_hint: HashMap<String, usize> = HashMap::new();
+    let mut by_hint: HashMap<&'static str, usize> = HashMap::new();
     let mut frontmatter_refs = 0usize;
     let mut body_refs = 0usize;
 
@@ -367,11 +367,11 @@ fn summarize_extractions(extractions: &[crate::extraction::FileExtraction]) -> E
         for discovered in &extraction.refs {
             *by_hint
                 .entry(match &discovered.hint {
-                    crate::extraction::RefHint::Label { .. } => "label".to_string(),
-                    crate::extraction::RefHint::FilePath => "file_path".to_string(),
-                    crate::extraction::RefHint::SectionRef => "section_ref".to_string(),
-                    crate::extraction::RefHint::External => "external".to_string(),
-                    crate::extraction::RefHint::Implausible { .. } => "implausible".to_string(),
+                    crate::extraction::RefHint::Label { .. } => "label",
+                    crate::extraction::RefHint::FilePath => "file_path",
+                    crate::extraction::RefHint::SectionRef => "section_ref",
+                    crate::extraction::RefHint::External => "external",
+                    crate::extraction::RefHint::Implausible { .. } => "implausible",
                 })
                 .or_insert(0) += 1;
 
@@ -386,7 +386,7 @@ fn summarize_extractions(extractions: &[crate::extraction::FileExtraction]) -> E
         .into_iter()
         .map(|(hint, count)| HintCount { hint, count })
         .collect();
-    by_hint.sort_by(|a, b| a.hint.cmp(&b.hint));
+    by_hint.sort_by(|a, b| a.hint.cmp(b.hint));
 
     ExtractionSummary {
         files: extractions.len(),
@@ -3089,17 +3089,18 @@ fn build_graph_at_git_ref(
                 &build_result.graph,
             );
         let cascade_candidates = std::collections::HashMap::new();
-        let all_diagnostics = crate::checks::run_checks(
-            &build_result.graph,
-            &lattice,
-            &cfg,
-            &unresolved_owned,
+        let check_input = crate::checks::CheckInput {
+            graph: &build_result.graph,
+            lattice: &lattice,
+            config: &cfg,
+            unresolved_edges: &unresolved_owned,
             section_ref_count,
-            section_ref_file.as_deref(),
-            &build_result.implausible_refs,
-            &cascade_candidates,
-            None,
-        );
+            section_ref_file: section_ref_file.as_deref(),
+            implausible_refs: &build_result.implausible_refs,
+            cascade_candidates: &cascade_candidates,
+            previous_snapshot: None,
+        };
+        let all_diagnostics = crate::checks::run_checks(&check_input);
         Ok(crate::snapshot::build_snapshot(
             &build_result.graph,
             &lattice,

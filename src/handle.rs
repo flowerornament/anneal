@@ -1,4 +1,4 @@
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
 use crate::graph::DiGraph;
@@ -73,19 +73,11 @@ impl Handle {
     }
 }
 
-pub(crate) fn resolved_file(handle: &Handle, graph: &DiGraph) -> Option<String> {
-    handle
-        .file_path
-        .as_ref()
-        .map(ToString::to_string)
-        .or_else(|| match &handle.kind {
-            HandleKind::Version { artifact, .. } => graph
-                .node(*artifact)
-                .file_path
-                .as_ref()
-                .map(ToString::to_string),
-            _ => None,
-        })
+pub(crate) fn resolved_file<'a>(handle: &'a Handle, graph: &'a DiGraph) -> Option<&'a Utf8Path> {
+    handle.file_path.as_deref().or_else(|| match &handle.kind {
+        HandleKind::Version { artifact, .. } => graph.node(*artifact).file_path.as_deref(),
+        _ => None,
+    })
 }
 
 /// Metadata extracted from YAML frontmatter fields.
