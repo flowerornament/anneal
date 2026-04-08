@@ -496,6 +496,7 @@ pub(crate) fn summary_from_previous(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::DiagnosticCode;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
     use crate::handle::{Handle, HandleKind, HandleMetadata};
@@ -855,7 +856,7 @@ mod tests {
         let diags = vec![
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "test error".to_string(),
                 file: None,
                 line: None,
@@ -863,7 +864,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Warning,
-                code: "W001",
+                code: DiagnosticCode::W001,
                 message: "test warning".to_string(),
                 file: None,
                 line: None,

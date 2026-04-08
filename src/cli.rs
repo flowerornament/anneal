@@ -5,7 +5,7 @@ use anyhow::Context;
 use camino::Utf8Path;
 use serde::Serialize;
 
-use crate::checks::{self, Diagnostic, Severity};
+use crate::checks::{self, Diagnostic, DiagnosticCode, Severity};
 use crate::config::{
     AnnealConfig, CheckConfig, ConvergenceConfig, Direction, FreshnessConfig, FrontmatterConfig,
     FrontmatterFieldMapping, HandlesConfig, SuppressConfig,
@@ -342,7 +342,7 @@ pub(crate) fn cmd_check(
 }
 
 fn summarize_diagnostic_codes(diagnostics: &[Diagnostic]) -> Vec<CodeCount> {
-    let mut by_code: HashMap<&'static str, usize> = HashMap::new();
+    let mut by_code: HashMap<DiagnosticCode, usize> = HashMap::new();
     for diagnostic in diagnostics {
         *by_code.entry(diagnostic.code).or_insert(0) += 1;
     }
@@ -1910,7 +1910,7 @@ pub(crate) fn cmd_status(
     };
 
     // Suggestion breakdown by code
-    let mut code_counts: HashMap<&str, usize> = HashMap::new();
+    let mut code_counts: HashMap<DiagnosticCode, usize> = HashMap::new();
     for d in diagnostics_list {
         if d.severity == Severity::Suggestion {
             *code_counts.entry(d.code).or_insert(0) += 1;
@@ -1918,19 +1918,19 @@ pub(crate) fn cmd_status(
     }
     let suggestion_total: usize = code_counts.values().sum();
 
-    let suggestion_labels: &[(&str, &str)] = &[
-        ("S001", "orphaned handles"),
-        ("S002", "candidate namespaces"),
-        ("S003", "pipeline stalls"),
-        ("S004", "abandoned namespaces"),
-        ("S005", "concern group candidates"),
+    let suggestion_labels: &[(DiagnosticCode, &str)] = &[
+        (DiagnosticCode::S001, "orphaned handles"),
+        (DiagnosticCode::S002, "candidate namespaces"),
+        (DiagnosticCode::S003, "pipeline stalls"),
+        (DiagnosticCode::S004, "abandoned namespaces"),
+        (DiagnosticCode::S005, "concern group candidates"),
     ];
     let suggestion_breakdown: Vec<SuggestionCount> = suggestion_labels
         .iter()
         .map(|&(code, label)| SuggestionCount {
             code: code.to_string(),
             label: label.to_string(),
-            count: code_counts.get(code).copied().unwrap_or(0),
+            count: code_counts.get(&code).copied().unwrap_or(0),
         })
         .collect();
 
@@ -3215,7 +3215,7 @@ mod tests {
         crate::resolve::build_node_index(graph)
     }
 
-    fn test_diag(code: &'static str, file: &str) -> Diagnostic {
+    fn test_diag(code: DiagnosticCode, file: &str) -> Diagnostic {
         Diagnostic {
             severity: Severity::Error,
             code,
@@ -3255,7 +3255,10 @@ mod tests {
 
     #[test]
     fn cmd_check_filters_terminal_files_when_active_only() {
-        let diagnostics = vec![test_diag("E001", "active.md"), test_diag("E001", "done.md")];
+        let diagnostics = vec![
+            test_diag(DiagnosticCode::E001, "active.md"),
+            test_diag(DiagnosticCode::E001, "done.md"),
+        ];
         let terminal_files = HashSet::from([String::from("done.md")]);
 
         let output = cmd_check(
@@ -3274,7 +3277,10 @@ mod tests {
 
     #[test]
     fn cmd_check_keeps_terminal_files_when_not_active_only() {
-        let diagnostics = vec![test_diag("E001", "active.md"), test_diag("E001", "done.md")];
+        let diagnostics = vec![
+            test_diag(DiagnosticCode::E001, "active.md"),
+            test_diag(DiagnosticCode::E001, "done.md"),
+        ];
         let terminal_files = HashSet::from([String::from("done.md")]);
 
         let output = cmd_check(diagnostics, &CheckFilters::default(), &terminal_files);
@@ -4168,9 +4174,9 @@ mod tests {
     #[test]
     fn check_json_default_is_summary_first() {
         let diagnostics = vec![
-            test_diag("E001", "active.md"),
-            test_diag("E002", "active.md"),
-            test_diag("E002", "active.md"),
+            test_diag(DiagnosticCode::E001, "active.md"),
+            test_diag(DiagnosticCode::E002, "active.md"),
+            test_diag(DiagnosticCode::E002, "active.md"),
         ];
         let terminal_files = HashSet::new();
         let output = cmd_check(diagnostics, &CheckFilters::default(), &terminal_files);

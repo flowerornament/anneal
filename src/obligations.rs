@@ -142,3 +142,160 @@ fn obligation_entry(
         dischargers,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AnnealConfig;
+    use crate::graph::{DiGraph, EdgeKind};
+    use crate::handle::Handle;
+    use crate::lattice::{Lattice, LatticeKind};
+    fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
+        Lattice {
+            observed_statuses: active
+                .iter()
+                .chain(terminal.iter())
+                .copied()
+                .map(String::from)
+                .collect(),
+            active: active.iter().copied().map(String::from).collect(),
+            terminal: terminal.iter().copied().map(String::from).collect(),
+            ordering: Vec::new(),
+            kind: LatticeKind::Confidence,
+        }
+    }
+
+    fn make_config_with_linear(ns: &[&str]) -> AnnealConfig {
+        let mut config = AnnealConfig::default();
+        config.handles.linear = ns.iter().map(|s| (*s).to_string()).collect();
+        config
+    }
+
+    // -------------------------------------------------------------------
+    // Mooted: terminal creator means obligation is mooted
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn mooted_when_creator_is_terminal() {
+        let mut graph = DiGraph::new();
+        // OQ-1 with terminal status
+        let _oq = graph.add_node(Handle::test_label("OQ", 1, Some("archived")));
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].handle, "OQ-1");
+        assert_eq!(entries[0].disposition, ObligationDisposition::Mooted);
+    }
+
+    #[test]
+    fn mooted_excluded_when_include_mooted_false() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_label("OQ", 1, Some("archived")));
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, false);
+
+        assert!(
+            entries.is_empty(),
+            "mooted obligations should be excluded when include_mooted=false"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Outstanding: no discharges
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn outstanding_when_no_discharges() {
+        let mut graph = DiGraph::new();
+        let _oq = graph.add_node(Handle::test_label("OQ", 1, Some("draft")));
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].handle, "OQ-1");
+        assert_eq!(entries[0].disposition, ObligationDisposition::Outstanding);
+        assert_eq!(entries[0].discharge_count, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // Discharged: exactly one Discharges edge
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn discharged_with_single_discharge_edge() {
+        let mut graph = DiGraph::new();
+        let oq = graph.add_node(Handle::test_label("OQ", 1, Some("draft")));
+        let discharger = graph.add_node(Handle::test_file("proof.md", Some("draft")));
+
+        graph.add_edge(discharger, oq, EdgeKind::Discharges);
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].handle, "OQ-1");
+        assert_eq!(entries[0].disposition, ObligationDisposition::Discharged);
+        assert_eq!(entries[0].discharge_count, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // Multi-discharged: affine violation
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn multi_discharged_with_two_discharge_edges() {
+        let mut graph = DiGraph::new();
+        let oq = graph.add_node(Handle::test_label("OQ", 1, Some("draft")));
+        let d1 = graph.add_node(Handle::test_file("proof1.md", Some("draft")));
+        let d2 = graph.add_node(Handle::test_file("proof2.md", Some("draft")));
+
+        graph.add_edge(d1, oq, EdgeKind::Discharges);
+        graph.add_edge(d2, oq, EdgeKind::Discharges);
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].handle, "OQ-1");
+        assert_eq!(
+            entries[0].disposition,
+            ObligationDisposition::MultiDischarged
+        );
+        assert_eq!(entries[0].discharge_count, 2);
+    }
+
+    // -------------------------------------------------------------------
+    // Non-linear namespaces are excluded
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn non_linear_namespace_not_returned() {
+        let mut graph = DiGraph::new();
+        let _label = graph.add_node(Handle::test_label("REF", 1, Some("draft")));
+
+        let lattice = make_lattice(&["draft"], &["archived"]);
+        // Only "OQ" is linear, "REF" is not.
+        let config = make_config_with_linear(&["OQ"]);
+
+        let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
+
+        assert!(
+            entries.is_empty(),
+            "labels outside linear namespaces should not appear"
+        );
+    }
+}

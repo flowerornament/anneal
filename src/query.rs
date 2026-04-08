@@ -8,7 +8,9 @@ use globset::{Glob, GlobMatcher};
 use serde::Serialize;
 
 use crate::analysis::{self, AnalysisContext};
-use crate::checks::{Diagnostic, DiagnosticRecord, Severity, confidence_gap_levels};
+use crate::checks::{
+    Diagnostic, DiagnosticCode, DiagnosticRecord, Severity, confidence_gap_levels,
+};
 use crate::cli::{DetailLevel, JsonEnvelope, JsonStyle, OutputMeta};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
@@ -266,7 +268,7 @@ pub(crate) struct ObligationRow {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SuggestionRow {
     pub(crate) suggestion_id: String,
-    pub(crate) code: &'static str,
+    pub(crate) code: DiagnosticCode,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -580,7 +582,7 @@ fn build_suggestion_query_output(
         |diagnostic| matches_suggestion_filters(diagnostic, args),
         |a, b| {
             a.code
-                .cmp(b.code)
+                .cmp(&b.code)
                 .then_with(|| {
                     a.file
                         .as_deref()
@@ -1002,7 +1004,7 @@ fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArg
     if args
         .code
         .as_ref()
-        .is_some_and(|code| diagnostic.code != code.as_str())
+        .is_some_and(|code| diagnostic.code.as_str() != code.as_str())
     {
         return false;
     }
@@ -1037,14 +1039,14 @@ fn matches_suggestion_filters(diagnostic: &Diagnostic, args: &SuggestionQueryArg
     if args
         .code
         .as_ref()
-        .is_some_and(|code| diagnostic.code != code.as_str())
+        .is_some_and(|code| diagnostic.code.as_str() != code.as_str())
     {
         return false;
     }
     true
 }
 
-fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, &str, &str, u32, &str) {
+fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, DiagnosticCode, &str, u32, &str) {
     (
         diagnostic.severity as u8,
         diagnostic.code,
@@ -1437,7 +1439,7 @@ mod tests {
         vec![
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "broken reference".to_string(),
                 file: Some("active.md".to_string()),
                 line: Some(7),
@@ -1445,7 +1447,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Suggestion,
-                code: "S001",
+                code: DiagnosticCode::S001,
                 message: "orphaned handle".to_string(),
                 file: Some("active.md".to_string()),
                 line: Some(9),
@@ -1453,7 +1455,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Warning,
-                code: "W001",
+                code: DiagnosticCode::W001,
                 message: "stale reference".to_string(),
                 file: Some("done.md".to_string()),
                 line: Some(3),
@@ -1606,7 +1608,7 @@ mod tests {
         let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
 
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "E001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::E001);
         assert_eq!(output.data.items[0].severity, "error");
     }
 
@@ -1620,7 +1622,7 @@ mod tests {
         let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
 
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "S001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::S001);
     }
 
     #[test]
@@ -1710,6 +1712,6 @@ mod tests {
             },
         );
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "S001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::S001);
     }
 }
