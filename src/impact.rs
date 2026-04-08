@@ -26,7 +26,7 @@ pub(crate) struct ImpactPathEntry {
     pub(crate) path: Vec<ImpactPathHop>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct ImpactPathHop {
     pub(crate) source: NodeId,
     pub(crate) edge_kind: EdgeKind,
@@ -93,7 +93,7 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
             })
             .map(|edge| ImpactPathHop {
                 source: edge.source,
-                edge_kind: edge.kind,
+                edge_kind: edge.kind.clone(),
                 target: current,
             })
             .collect();
@@ -110,8 +110,9 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
         for hop in incoming {
             if visited.insert(hop.source) {
                 depths.insert(hop.source, depth + 1);
-                predecessor.insert(hop.source, hop);
-                queue.push_back(hop.source);
+                let source = hop.source;
+                predecessor.insert(source, hop);
+                queue.push_back(source);
             }
         }
     }
@@ -131,9 +132,9 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
     for (node_id, depth) in nodes {
         let mut path = Vec::new();
         let mut current = node_id;
-        while let Some(hop) = predecessor.get(&current).copied() {
-            path.push(hop);
+        while let Some(hop) = predecessor.get(&current).cloned() {
             current = hop.target;
+            path.push(hop);
         }
         let entry = ImpactPathEntry {
             target: node_id,

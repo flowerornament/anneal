@@ -163,9 +163,7 @@ pub(crate) fn parse_frontmatter(
         }
 
         if let Some(field_mapping) = config.fields.get(key_str) {
-            let Some(edge_kind) = EdgeKind::from_name(&field_mapping.edge_kind) else {
-                continue;
-            };
+            let edge_kind = EdgeKind::from_name(&field_mapping.edge_kind);
             let targets = yaml_value_to_string_vec(val);
             if targets.is_empty() {
                 continue;
@@ -314,20 +312,20 @@ struct BodyRefRecorder<'a> {
 }
 
 impl BodyRefRecorder<'_> {
-    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: EdgeKind) {
+    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: &EdgeKind) {
         let discovered_edge_kind = match &hint {
             RefHint::Label { prefix, number } => {
                 self.result.label_candidates.push(LabelCandidate {
                     prefix: prefix.clone(),
                     number: *number,
                     file_path: self.file_path.to_path_buf(),
-                    edge_kind,
+                    edge_kind: edge_kind.clone(),
                 });
-                edge_kind
+                edge_kind.clone()
             }
             RefHint::FilePath => {
                 self.result.file_refs.push((raw.to_string(), self.line));
-                edge_kind
+                edge_kind.clone()
             }
             RefHint::SectionRef => {
                 let section_num = raw
@@ -489,7 +487,7 @@ pub(crate) fn scan_file_cmark(
                             .record(
                                 dest,
                                 classify_body_ref(dest),
-                                EdgeKind::Cites,
+                                &EdgeKind::Cites,
                             );
                         }
                     }
@@ -518,7 +516,7 @@ pub(crate) fn scan_file_cmark(
                                 .record(
                                     clean_dest,
                                     classify_body_ref(clean_dest),
-                                    EdgeKind::Cites,
+                                    &EdgeKind::Cites,
                                 );
                             }
                         }
@@ -693,7 +691,7 @@ fn scan_text_for_refs(
             recorder.record(
                 &format!("{prefix}-{number}"),
                 RefHint::Label { prefix, number },
-                edge_kind,
+                &edge_kind,
             );
         }
     }
@@ -706,7 +704,7 @@ fn scan_text_for_refs(
             .as_str()
             .to_string();
         if !section_num.is_empty() {
-            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, edge_kind);
+            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
         }
     }
 
@@ -726,7 +724,7 @@ fn scan_text_for_refs(
         if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
             continue;
         }
-        recorder.record(path, RefHint::FilePath, edge_kind);
+        recorder.record(path, RefHint::FilePath, &edge_kind);
     }
 }
 
@@ -956,7 +954,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                         pending_edges.push(PendingEdge {
                             source: file_node_placeholder,
                             target_identity: target.clone(),
-                            kind: fe.edge_kind,
+                            kind: fe.edge_kind.clone(),
                             inverse: fe.inverse,
                             line: Some(1),
                         });
@@ -1022,7 +1020,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                     source: RefSource::Frontmatter {
                         field: fe.edge_kind.as_str().to_string(),
                     },
-                    edge_kind: fe.edge_kind,
+                    edge_kind: fe.edge_kind.clone(),
                     inverse: fe.inverse,
                     span: None,
                 });

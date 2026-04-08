@@ -367,11 +367,11 @@ impl Diagnostic {
 }
 
 pub(crate) fn confidence_gap_levels(
-    edge_kind: EdgeKind,
+    edge_kind: &EdgeKind,
     source_level: Option<usize>,
     target_level: Option<usize>,
 ) -> Option<(usize, usize)> {
-    if edge_kind != EdgeKind::DependsOn {
+    if *edge_kind != EdgeKind::DependsOn {
         return None;
     }
     let (Some(source_level), Some(target_level)) = (source_level, target_level) else {
@@ -576,6 +576,9 @@ fn check_staleness(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
         }
 
         for edge in graph.outgoing(node_id) {
+            if edge.kind != EdgeKind::DependsOn {
+                continue;
+            }
             let target = graph.node(edge.target);
             if target.is_terminal(lattice) {
                 let target_status = target.status.as_deref().unwrap_or("unknown");
@@ -635,7 +638,7 @@ fn check_confidence_gap(graph: &DiGraph, lattice: &Lattice) -> Vec<Diagnostic> {
             };
 
             if let Some((source_level, target_level)) =
-                confidence_gap_levels(EdgeKind::DependsOn, Some(source_level), Some(target_level))
+                confidence_gap_levels(&EdgeKind::DependsOn, Some(source_level), Some(target_level))
             {
                 let file = resolved_file(handle, graph).or_else(|| resolved_file(target, graph));
                 diagnostics.push(Diagnostic {
@@ -1430,11 +1433,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn w001_active_references_terminal() {
+    fn w001_active_depends_on_terminal() {
         let mut graph = DiGraph::new();
         let a = graph.add_node(make_file_handle("active.md", Some("draft")));
         let b = graph.add_node(make_file_handle("terminal.md", Some("archived")));
-        graph.add_edge(a, b, EdgeKind::Cites);
+        graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);
 
@@ -1444,6 +1447,32 @@ mod tests {
         assert_eq!(diags[0].code, "W001");
         assert!(diags[0].message.contains("active.md"));
         assert!(diags[0].message.contains("terminal.md"));
+    }
+
+    #[test]
+    fn w001_not_emitted_for_cites_edge() {
+        let mut graph = DiGraph::new();
+        let a = graph.add_node(make_file_handle("synthesis.md", Some("draft")));
+        let b = graph.add_node(make_file_handle("research.md", Some("archived")));
+        graph.add_edge(a, b, EdgeKind::Cites);
+
+        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+
+        let diags = check_staleness(&graph, &lattice);
+        assert_eq!(diags.len(), 0);
+    }
+
+    #[test]
+    fn w001_not_emitted_for_custom_edge() {
+        let mut graph = DiGraph::new();
+        let a = graph.add_node(make_file_handle("active.md", Some("draft")));
+        let b = graph.add_node(make_file_handle("terminal.md", Some("archived")));
+        graph.add_edge(a, b, EdgeKind::Custom("Synthesizes".to_string()));
+
+        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+
+        let diags = check_staleness(&graph, &lattice);
+        assert_eq!(diags.len(), 0);
     }
 
     // -----------------------------------------------------------------------
@@ -2219,9 +2248,9 @@ mod tests {
         // Create a scenario producing all three severities:
         // E001 from unresolved edge
         let source = graph.add_node(make_file_handle("doc.md", Some("draft")));
-        // W001 from stale reference
+        // W001 from stale reference (DependsOn triggers staleness check)
         let terminal = graph.add_node(make_file_handle("old.md", Some("archived")));
-        graph.add_edge(source, terminal, EdgeKind::Cites);
+        graph.add_edge(source, terminal, EdgeKind::DependsOn);
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);
         let config = AnnealConfig::default();
