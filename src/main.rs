@@ -351,9 +351,12 @@ EXAMPLES:
     #[command(
         long_about = "\
 Reverse graph traversal from a handle. Shows which other handles depend on it,
-directly and transitively. Traverses DependsOn, Supersedes, and Verifies edges
-in reverse. Does NOT traverse Cites (citations are not dependencies) or
-Discharges (obligation links are not structural dependencies).
+directly and transitively. Traverses edge kinds configured in [impact] traverse
+in anneal.toml (defaults to DependsOn, Supersedes, Verifies when absent).
+
+Corpora with custom edge kinds for structural relationships (Synthesizes,
+Implements, Reconciles) should configure the traversal set for accurate
+blast radius. Cites and Discharges are excluded by default.
 
 Use this before editing a key file to understand blast radius.",
         after_help = "\

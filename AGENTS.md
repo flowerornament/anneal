@@ -28,17 +28,35 @@ For low-context corpus orientation, prefer:
 
 Avoid broad default dumps like raw `check --json`, empty-query `find --json`, or full-graph renders unless you are intentionally expanding with flags like `--diagnostics`, `--refs`, `--nodes`, or `--full`.
 
-## Task Tracking
-
-This project uses beads for issue tracking:
+## Task Tracking (bd)
 
 ```bash
-bd ready
-bd show <id>
+# orient
+bd show --current --short
+bd query "status=in_progress"
+bd ready --explain
+
+# work
 bd update <id> --claim
-bd close <id>
-bd dolt push
+bd note <id> "context"
+bd close <id> --suggest-next
+
+# capture
+bd todo add "quick thought"
+bd create --title="..." --type=task --priority=2
+
+# query
+bd query "type=bug AND priority<=1 AND updated>7d"
+bd search "keyword"
+bd count "status=open"
+bd graph --compact <id>
+
+# state
+bd kv set/get key [value]
+bd find-duplicates
 ```
+
+Full ref: `bd prime`
 
 Keep machine-specific federation settings out of the repo. For anneal, the local remote should come from your shell environment rather than tracked `.beads/config.yaml`.
 
@@ -97,6 +115,11 @@ Primary real-world corpus: `~/code/murail/.design/`
 - useful for smoke-checking `status`, `get`, `check --file`, `map`, `impact`, and `obligations`
 - integration tests may skip if the external corpus is unavailable
 
-## Session Completion
+## Completion
 
-Work is not complete until both `bd dolt push` and `git push` succeed.
+Before ending a session:
+1. Run `just check` if code changed.
+2. Commit with a clear message.
+3. `bd dolt push && git push`
+
+Work is not complete until `git push` succeeds.
