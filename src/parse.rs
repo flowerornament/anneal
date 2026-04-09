@@ -1702,7 +1702,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn cmark_table_cell_labels_extracted() {
         // Simple labels in table cells
         let body = "| Label | Desc |\n|---|---|\n| OQ-1 | question |\n| OQ-2 | another |\n";
