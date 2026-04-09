@@ -452,6 +452,8 @@ Infers active/terminal partition, label namespaces, and frontmatter field mappin
 This keeps automatic convergence tracking and `anneal diff` useful without dirtying the git worktree during normal use.
 
 ```toml
+exclude = ["**/README.md"]  # glob patterns and directory names to skip
+
 [convergence]
 active = ["draft", "review", "approved"]
 terminal = ["published", "archived", "superseded"]
@@ -495,7 +497,7 @@ traverse = ["DependsOn", "Supersedes", "Verifies", "Synthesizes", "Implements"]
 history_mode = "xdg"  # optional: xdg | repo | off
 ```
 
-`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, impact traversal, and the history backend mode (`xdg`, `repo`, or `off`).
+`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, impact traversal, file exclusions, and the history backend mode (`xdg`, `repo`, or `off`). The `exclude` list accepts both plain directory names (e.g. `"vendor"`) and glob patterns (e.g. `"**/README.md"`) — glob entries are matched against paths relative to root and prevent matched files from entering the graph entirely.
 
 Five edge kinds have built-in diagnostic behavior: `Cites`, `DependsOn`, `Supersedes`, `Verifies`, `Discharges`. Any other `edge_kind` string (e.g. `Synthesizes`, `Flags`, `Implements`) is accepted as a custom kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in checks. W001 (stale dependency) fires only on `DependsOn` edges.
 

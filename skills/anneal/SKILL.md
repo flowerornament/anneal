@@ -102,6 +102,8 @@ anneal init
 
 Use this when the corpus lacks `anneal.toml` or when the user is formalizing status pipelines and handle namespaces.
 
+The top-level `exclude` list in `anneal.toml` accepts directory names (e.g. `"vendor"`) and glob patterns (e.g. `"**/README.md"`). Glob patterns prevent matched files from entering the graph — useful for structural index files that should not trigger W003 or S003.
+
 ## Minimal Mental Model
 
 - `handle`: a file, section, label, version, or external URL

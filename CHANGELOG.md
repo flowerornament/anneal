@@ -2,6 +2,16 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.3 - 2026-04-08
+
+### Added
+
+- File glob patterns in `exclude` config: entries like `**/README.md` now prevent matched files from entering the graph entirely. Plain directory names continue to work as before. Useful for structural index files that should not trigger W003 or S003 diagnostics.
+
+### Fixed
+
+- Heading-defined labels now take ownership priority over table cell and inline references. Fixes incorrect `file` attribution when the same label appears in both a heading definition and a reference table elsewhere in the corpus.
+
 ## 0.7.2 - 2026-04-08
 
 ### Fixed

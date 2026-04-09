@@ -228,7 +228,7 @@ Edge kind is **inferred from context** where possible (a file in `synthesis/` ci
 - `target/`, `node_modules/`, `.build/` — build artifacts
 - Any directory starting with `.` that isn't the root itself
 
-Additional exclusions can be configured via `exclude` in `anneal.toml`.
+Additional exclusions can be configured via `exclude` in `anneal.toml`. Entries without glob metacharacters (`*`, `?`, `[`, `/`) are matched as directory names (backward-compatible behavior). Entries containing glob metacharacters are compiled into glob patterns and matched against paths relative to root, allowing file-level exclusions like `**/README.md`.
 
 **Scoping model**: anneal operates on the directory you point it at. A repo can contain multiple knowledge corpora (e.g., `.design/` for the project, `tools/anneal/.design/` for a sub-project). Each corpus has its own `anneal.toml` and is scanned independently. Run anneal from the directory containing the corpus, or set `root` explicitly.
 
@@ -669,7 +669,7 @@ The coloring is expressed in `anneal.toml`. All fields are optional [KB-P3]. An 
 # anneal.toml — entirely optional
 
 root = ".design"
-exclude = ["archive/research"]  # additional dirs to skip (beyond defaults)
+exclude = ["archive/research", "**/README.md"]  # dirs and file glob patterns to skip
 
 [convergence]
 active = ["raw", "digested", "decided", "formal", "verified",

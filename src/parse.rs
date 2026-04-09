@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use walkdir::WalkDir;
@@ -832,6 +833,38 @@ pub(crate) struct BuildResult {
     pub(crate) skipped_non_utf8: usize,
 }
 
+/// Split `exclude` entries into plain directory names and glob patterns.
+///
+/// An entry is treated as a glob pattern if it contains `*`, `?`, `[`, or `/`.
+/// Plain entries continue to work as directory-name exclusions (backward compatible).
+/// Glob patterns are compiled into a `GlobSet` matched against relative paths,
+/// allowing file-level exclusions like `**/README.md`.
+fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobSet>) {
+    let mut dir_names = Vec::new();
+    let mut builder = GlobSetBuilder::new();
+    let mut has_globs = false;
+
+    for entry in exclude {
+        if entry.contains('*') || entry.contains('?') || entry.contains('[') || entry.contains('/')
+        {
+            if let Ok(glob) = GlobBuilder::new(entry).literal_separator(false).build() {
+                builder.add(glob);
+                has_globs = true;
+            }
+        } else {
+            dir_names.push(entry.as_str());
+        }
+    }
+
+    let glob_set = if has_globs {
+        builder.build().ok()
+    } else {
+        None
+    };
+
+    (dir_names, glob_set)
+}
+
 /// Build the knowledge graph from a directory of markdown files.
 ///
 /// Walks the directory tree, creates File handles, scans content with
@@ -880,7 +913,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     // Uses Cell so the FnMut closure can increment without &mut self conflicts.
     let skipped_non_utf8: Cell<usize> = Cell::new(0);
 
-    let extra_exclusions = &config.exclude;
+    let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
 
     let walker = WalkDir::new(root.as_std_path())
         .into_iter()
@@ -896,9 +929,16 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                 if name.starts_with('.') && name != ".design" {
                     return false;
                 }
-                if extra_exclusions.iter().any(|ex| ex == name) {
+                if dir_exclusions.contains(&name) {
                     return false;
                 }
+            }
+            // Glob-based file exclusion: match against path relative to root.
+            if let Some(ref gs) = file_glob_set
+                && let Ok(rel) = e.path().strip_prefix(root.as_std_path())
+                && gs.is_match(rel)
+            {
+                return false;
             }
             true
         });
@@ -2045,5 +2085,71 @@ mod tests {
 
         assert_eq!(fm, Some("status: final"));
         assert_eq!(body, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_exclude_sets
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn exclude_plain_entries_become_dir_names() {
+        let entries = vec!["vendor".to_string(), "dist".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert_eq!(dirs, vec!["vendor", "dist"]);
+        assert!(globs.is_none());
+    }
+
+    #[test]
+    fn exclude_glob_patterns_build_glob_set() {
+        let entries = vec!["**/README.md".to_string(), "docs/*.txt".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert!(dirs.is_empty());
+        let gs = globs.expect("should produce a GlobSet");
+        assert!(gs.is_match("README.md"));
+        assert!(gs.is_match("sub/README.md"));
+        assert!(gs.is_match("docs/notes.txt"));
+        assert!(!gs.is_match("docs/notes.md"));
+    }
+
+    #[test]
+    fn exclude_mixed_entries_split_correctly() {
+        let entries = vec!["node_modules".to_string(), "**/README.md".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert_eq!(dirs, vec!["node_modules"]);
+        assert!(globs.is_some());
+    }
+
+    #[test]
+    fn exclude_glob_filters_files_from_graph() {
+        let tmp = std::env::temp_dir().join("anneal_test_exclude_glob");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "README.md", "---\nstatus: current\n---\nIndex file\n");
+        write_md_file(&tmp, "design.md", "---\nstatus: draft\n---\nReal doc\n");
+
+        let config = AnnealConfig {
+            exclude: vec!["**/README.md".to_string()],
+            ..AnnealConfig::default()
+        };
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        let file_ids: Vec<&str> = result
+            .graph
+            .nodes()
+            .filter_map(|(_, h)| match &h.kind {
+                HandleKind::File(_) => Some(h.id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !file_ids.iter().any(|id| id.contains("README")),
+            "README.md should be excluded from graph, got: {file_ids:?}"
+        );
+        assert!(
+            file_ids.iter().any(|id| id.contains("design")),
+            "design.md should be in graph, got: {file_ids:?}"
+        );
     }
 }
