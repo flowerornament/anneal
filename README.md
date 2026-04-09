@@ -331,7 +331,7 @@ Indirectly affected (depend on the above):
   archive/api-draft.md
 ```
 
-Traverses DependsOn, Supersedes, and Verifies edges in reverse. Does not traverse Cites (citations are not dependencies).
+Traverses the edge kinds configured in `[impact] traverse` in `anneal.toml` (defaults to DependsOn, Supersedes, Verifies). Does not traverse Cites by default (citations are not dependencies).
 
 ### `anneal map`
 

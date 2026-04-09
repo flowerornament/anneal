@@ -573,7 +573,7 @@ anneal impact formal-model/v17.md
     (none — all leaf documents)
 ```
 
-Computed by reverse graph traversal over DependsOn, Supersedes, and Verifies edges.
+Computed by reverse graph traversal over the edge kinds in `[impact] traverse` [KB-D16] (defaults to DependsOn, Supersedes, Verifies when absent).
 
 #### §12.8 `anneal obligations` [KB-C8]
 
