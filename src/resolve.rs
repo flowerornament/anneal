@@ -138,6 +138,10 @@ fn has_sequential_run(numbers: &BTreeSet<u32>) -> bool {
 /// - Create an edge from the file node to the label node with the candidate's edge kind
 ///
 /// Candidates with unconfirmed prefixes are skipped silently (HANDLE-06).
+///
+/// Heading-defined labels take ownership priority over table cell or inline
+/// references. Processed in two passes: heading candidates first, then
+/// non-heading candidates. Within each pass, first-file-wins.
 fn resolve_labels(
     graph: &mut DiGraph,
     candidates: &[LabelCandidate],
@@ -147,7 +151,14 @@ fn resolve_labels(
     let mut labels_resolved: usize = 0;
     let mut labels_skipped: usize = 0;
 
-    for candidate in candidates {
+    // Two passes: heading candidates first (definitions), then non-heading (references).
+    // This ensures heading-defined labels always own the file_path.
+    let heading_first = candidates
+        .iter()
+        .filter(|c| c.is_heading)
+        .chain(candidates.iter().filter(|c| !c.is_heading));
+
+    for candidate in heading_first {
         if !namespaces.contains(&candidate.prefix) {
             labels_skipped += 1;
             continue;

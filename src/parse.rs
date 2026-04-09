@@ -237,6 +237,8 @@ pub(crate) struct LabelCandidate {
     pub(crate) number: u32,
     pub(crate) file_path: Utf8PathBuf,
     pub(crate) edge_kind: EdgeKind,
+    /// Whether this label was found inside a section heading (definition site).
+    pub(crate) is_heading: bool,
 }
 
 /// An edge whose target is identified by string (not yet resolved to a `NodeId`).
@@ -304,6 +306,7 @@ struct BodyRefRecorder<'a> {
     file_path: &'a Utf8Path,
     file_path_str: &'a str,
     line: u32,
+    is_heading: bool,
     result: &'a mut ScanResult,
     discovered_refs: &'a mut Vec<DiscoveredRef>,
 }
@@ -317,6 +320,7 @@ impl BodyRefRecorder<'_> {
                     number: *number,
                     file_path: self.file_path.to_path_buf(),
                     edge_kind: edge_kind.clone(),
+                    is_heading: self.is_heading,
                 });
                 edge_kind.clone()
             }
@@ -427,6 +431,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -442,6 +447,17 @@ pub(crate) fn scan_file_cmark(
                 if let Some(heading) = heading_text.take() {
                     let heading = heading.trim().to_string();
                     if !heading.is_empty() {
+                        // Scan heading text for label definitions (is_heading = true)
+                        scan_text_for_refs(
+                            &heading,
+                            block_start_offset,
+                            file_path,
+                            file_path_str,
+                            line_index,
+                            true,
+                            &mut result,
+                            &mut discovered_refs,
+                        );
                         let section_id =
                             format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-"));
                         graph.add_node(Handle {
@@ -456,6 +472,9 @@ pub(crate) fn scan_file_cmark(
                         });
                     }
                 }
+                // Clear text_accumulator so heading labels aren't double-counted
+                // when the next block element flushes
+                text_accumulator.clear();
             }
 
             // -- Links (markdown and wiki-links) --
@@ -479,6 +498,7 @@ pub(crate) fn scan_file_cmark(
                                 file_path,
                                 file_path_str,
                                 line,
+                                is_heading: false,
                                 result: &mut result,
                                 discovered_refs: &mut discovered_refs,
                             }
@@ -508,6 +528,7 @@ pub(crate) fn scan_file_cmark(
                                     file_path,
                                     file_path_str,
                                     line,
+                                    is_heading: false,
                                     result: &mut result,
                                     discovered_refs: &mut discovered_refs,
                                 }
@@ -539,6 +560,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -572,6 +594,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -586,6 +609,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -612,6 +636,7 @@ pub(crate) fn scan_file_cmark(
             file_path,
             file_path_str,
             line_index,
+            false,
             &mut result,
             &mut discovered_refs,
         );
@@ -652,6 +677,7 @@ fn classify_body_ref(value: &str) -> RefHint {
     RefHint::FilePath
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Scan accumulated text for labels, section refs, file paths using the same
 /// regex patterns as the old scanner. Creates both `LabelCandidate`/ScanResult
 /// entries and `DiscoveredRef` entries.
@@ -661,6 +687,7 @@ fn scan_text_for_refs(
     file_path: &Utf8Path,
     file_path_str: &str,
     line_index: &LineIndex,
+    is_heading: bool,
     result: &mut ScanResult,
     discovered_refs: &mut Vec<DiscoveredRef>,
 ) {
@@ -669,6 +696,7 @@ fn scan_text_for_refs(
         file_path,
         file_path_str,
         line,
+        is_heading,
         result,
         discovered_refs,
     };
