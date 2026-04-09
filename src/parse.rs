@@ -41,8 +41,10 @@ static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
 // ---------------------------------------------------------------------------
 
 /// Capture regex for label references: prefix and number.
-static LABEL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([A-Z][A-Z_]*)-(\d+)").expect("label regex must compile"));
+static LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Captures compound prefixes like ST-OQ from ST-OQ-1, as well as simple OQ from OQ-1.
+    Regex::new(r"([A-Z][A-Z_]*(?:-[A-Z][A-Z_]*)*)-(\d+)").expect("label regex must compile")
+});
 
 /// Capture regex for section cross-references (paragraph sign).
 static SECTION_REF_RE: LazyLock<Regex> =
@@ -379,6 +381,7 @@ pub(crate) fn scan_file_cmark(
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     opts.insert(Options::ENABLE_WIKILINKS);
+    opts.insert(Options::ENABLE_TABLES);
 
     let parser = Parser::new_ext(body, opts);
 
@@ -520,13 +523,15 @@ pub(crate) fn scan_file_cmark(
             }
 
             // -- Block element boundaries --
-            Event::Start(Tag::Paragraph | Tag::Item | Tag::BlockQuote(_)) => {
+            Event::Start(Tag::Paragraph | Tag::Item | Tag::BlockQuote(_) | Tag::TableCell) => {
                 if !in_code_block {
                     text_accumulator.clear();
                     block_start_offset = range.start;
                 }
             }
-            Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_)) => {
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_) | TagEnd::TableCell,
+            ) => {
                 if !in_code_block && !text_accumulator.is_empty() {
                     scan_text_for_refs(
                         &text_accumulator,
@@ -1694,6 +1699,49 @@ mod tests {
         let span = oq_ref.span.as_ref().expect("span present");
         assert_eq!(span.file, "test.md", "span file should be test.md");
         assert!(span.line >= 1, "span line should be >= 1");
+    }
+
+    #[test]
+    #[test]
+    fn cmark_table_cell_labels_extracted() {
+        // Simple labels in table cells
+        let body = "| Label | Desc |\n|---|---|\n| OQ-1 | question |\n| OQ-2 | another |\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            refs.iter().any(|r| r.raw == "OQ-1"),
+            "should extract OQ-1 from table cell, got refs: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+        assert!(
+            refs.iter().any(|r| r.raw == "OQ-2"),
+            "should extract OQ-2 from table cell"
+        );
+        assert!(
+            result
+                .label_candidates
+                .iter()
+                .any(|c| c.prefix == "OQ" && c.number == 1),
+            "should have label candidate OQ-1"
+        );
+    }
+
+    #[test]
+    fn cmark_table_cell_compound_labels_extracted() {
+        // Compound prefix labels — regex now captures full compound prefix
+        let body = "| Label | Desc |\n|---|---|\n| ST-OQ-1 | question |\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            refs.iter().any(|r| r.raw == "ST-OQ-1"),
+            "should extract ST-OQ-1 from table cell, got refs: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+        assert!(
+            result
+                .label_candidates
+                .iter()
+                .any(|c| c.prefix == "ST-OQ" && c.number == 1),
+            "should have label candidate with compound prefix ST-OQ"
+        );
     }
 
     #[test]
