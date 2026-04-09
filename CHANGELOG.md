@@ -2,6 +2,13 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.1 - 2026-04-08
+
+### Fixed
+
+- CLI help text for `anneal impact` now documents `[impact] traverse` config instead of describing a hardcoded traversal set.
+- Spec §12.7 and README impact section updated to match.
+
 ## 0.7.0 - 2026-04-08
 
 ### Added
