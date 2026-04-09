@@ -2,6 +2,13 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.2 - 2026-04-08
+
+### Fixed
+
+- Labels defined in markdown table cells are now extracted (requires `ENABLE_TABLES` in the cmark parser). Fixes false-positive E001 broken references for corpora that define labels in tables.
+- Compound hyphenated prefixes (e.g. `ST-OQ` from `ST-OQ-1`) are now captured as a single prefix instead of only the last segment (`OQ`). Fixes resolution failures for namespaces with compound prefixes.
+
 ## 0.7.1 - 2026-04-08
 
 ### Fixed

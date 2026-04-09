@@ -151,7 +151,7 @@ HandleKind =
 The kind is **inferred from syntax** [KB-P3]:
 - Paths ending in `.md` → File
 - `§` followed by digits → Section
-- `[A-Z][A-Z_]*-\d+` → Label (candidate; confirmed by namespace recognition)
+- `[A-Z][A-Z_]*(-[A-Z][A-Z_]*)*-\d+` → Label (candidate; confirmed by namespace recognition). Compound hyphenated prefixes like `ST-OQ-1` are captured as prefix `ST-OQ`, number `1`.
 - `v\d+` in versioned context → Version
 
 #### §4.2 Handle Resolution [KB-D3]
@@ -239,12 +239,12 @@ Additional exclusions can be configured via `exclude` in `anneal.toml`.
 | Pattern | Discovers | Creates |
 |---|---|---|
 | `^#{1,6}\s` | Section boundaries | Section handles |
-| `[A-Z][A-Z_]*-\d+` | Label references (in confirmed namespaces only) | Label handles + edges |
+| `[A-Z][A-Z_]*(-[A-Z][A-Z_]*)*-\d+` | Label references (in confirmed namespaces only) | Label handles + edges |
 | `§\d+(\.\d+)*` | Section cross-references | Edges |
 | Relative `.md` paths | File cross-references | Edges |
 | `v\d+` in versioned context | Version references | Version handles + edges |
 
-No markdown AST parsing. No NLP. Five regexes and a YAML parser.
+Content scanning uses pulldown-cmark for structural parsing (headings, paragraphs, list items, table cells, code block skipping) combined with regex extraction. No NLP.
 
 ### §6 Convergence Lattice [KB-D7]
 
