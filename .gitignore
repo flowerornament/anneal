@@ -1,5 +1,8 @@
 /target
 .anneal/
+.desloppify/
+scorecard.png
+.agents/skills/desloppify/
 
 # anneal local derived state
 .design/.anneal/
