@@ -89,6 +89,8 @@ anneal impact anneal-spec.md
 anneal impact <file-or-handle>
 ```
 
+Impact traverses edge kinds listed in `[impact] traverse` in `anneal.toml` (defaults to DependsOn, Supersedes, Verifies). Corpora with custom edge kinds like Synthesizes or Implements should configure this for accurate blast radius.
+
 Use `anneal diff` when the question is about structural corpus changes rather than line edits.
 
 ### Initialize Or Adjust Config
@@ -99,6 +101,8 @@ anneal init
 ```
 
 Use this when the corpus lacks `anneal.toml` or when the user is formalizing status pipelines and handle namespaces.
+
+The top-level `exclude` list in `anneal.toml` accepts directory names (e.g. `"vendor"`) and glob patterns (e.g. `"**/README.md"`). Glob patterns prevent matched files from entering the graph — useful for structural index files that should not trigger W003 or S003.
 
 ## Minimal Mental Model
 
@@ -132,7 +136,7 @@ anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5
 
 - `E001`: broken reference
 - `E002`: undischarged obligation
-- `W001`: stale reference from active work to terminal material
+- `W001`: stale dependency — active handle has DependsOn edge to terminal (Cites and custom edges don't trigger W001)
 - `W002`: confidence gap where higher-level work depends on lower-level work
 
 For the full diagnostic set, use `anneal help check`.

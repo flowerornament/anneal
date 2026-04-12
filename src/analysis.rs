@@ -80,18 +80,18 @@ pub(crate) fn build_analysis_artifacts_with_selection(
         .then(|| snapshot::read_latest_snapshot(context.root, context.state_config))
         .flatten();
 
-    let mut diagnostics = checks::run_checks_with_selection(
-        context.graph,
-        context.lattice,
-        context.config,
-        &unresolved_owned,
+    let check_input = checks::CheckInput {
+        graph: context.graph,
+        lattice: context.lattice,
+        config: context.config,
+        unresolved_edges: &unresolved_owned,
         section_ref_count,
-        section_ref_file.as_deref(),
-        context.result.implausible_refs.as_slice(),
-        context.cascade_candidates,
-        previous_snapshot.as_ref(),
-        selection,
-    );
+        section_ref_file: section_ref_file.as_deref(),
+        implausible_refs: context.result.implausible_refs.as_slice(),
+        cascade_candidates: context.cascade_candidates,
+        previous_snapshot: previous_snapshot.as_ref(),
+    };
+    let mut diagnostics = checks::run_checks_with_selection(&check_input, selection);
     checks::apply_suppressions(&mut diagnostics, &context.config.suppress);
 
     AnalysisArtifacts {

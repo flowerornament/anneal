@@ -145,7 +145,7 @@ knowledge graph. Produces compiler-style diagnostics with error codes.
 CHECK RULES:
   E001  Broken reference — a handle references something that doesn't exist
   E002  Undischarged obligation — a linear handle has no Discharges edge
-  W001  Stale reference — an active handle references a terminal one
+  W001  Stale dependency — an active handle has a DependsOn edge to a terminal one
   W002  Confidence gap — a handle at a higher pipeline level depends on a lower one
   W003  Missing frontmatter — files without status: field (above threshold)
   I001  Section references — summary of unresolved section cross-references
@@ -189,7 +189,7 @@ EXAMPLES:
         /// Show only suggestions (structural improvement hints: S001-S005)
         #[arg(long)]
         suggest: bool,
-        /// Show only staleness diagnostics (W001: active referencing terminal)
+        /// Show only staleness diagnostics (W001: active DependsOn to terminal)
         #[arg(long)]
         stale: bool,
         /// Show only obligation diagnostics (E002 undischarged, I002 multi-discharge)
@@ -351,9 +351,12 @@ EXAMPLES:
     #[command(
         long_about = "\
 Reverse graph traversal from a handle. Shows which other handles depend on it,
-directly and transitively. Traverses DependsOn, Supersedes, and Verifies edges
-in reverse. Does NOT traverse Cites (citations are not dependencies) or
-Discharges (obligation links are not structural dependencies).
+directly and transitively. Traverses edge kinds configured in [impact] traverse
+in anneal.toml (defaults to DependsOn, Supersedes, Verifies when absent).
+
+Corpora with custom edge kinds for structural relationships (Synthesizes,
+Implements, Reconciles) should configure the traversal set for accurate
+blast radius. Cites and Discharges are excluded by default.
 
 Use this before editing a key file to understand blast radius.",
         after_help = "\
@@ -897,7 +900,8 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Impact { ref handle }) => {
-            if let Some(output) = cli::cmd_impact(graph, &node_index, handle) {
+            let traverse_set = config.impact.resolve_traverse_set();
+            if let Some(output) = cli::cmd_impact(graph, &node_index, handle, &traverse_set) {
                 emit_full_output(
                     output,
                     cli_args.json,

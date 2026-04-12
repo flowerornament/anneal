@@ -10,6 +10,26 @@ use crate::handle::HandleMetadata;
 // Reference classification types
 // ---------------------------------------------------------------------------
 
+/// Why a frontmatter value was rejected as implausible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum ImplausibleReason {
+    AbsolutePath,
+    WildcardPattern,
+    CommaSeparatedList,
+    FreeformProse,
+}
+
+impl std::fmt::Display for ImplausibleReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AbsolutePath => f.write_str("absolute path"),
+            Self::WildcardPattern => f.write_str("wildcard pattern"),
+            Self::CommaSeparatedList => f.write_str("comma-separated list"),
+            Self::FreeformProse => f.write_str("freeform prose"),
+        }
+    }
+}
+
 /// Classification hint for a discovered reference.
 ///
 /// Determined during extraction before resolution. Resolution (Phase 6)
@@ -25,7 +45,7 @@ pub(crate) enum RefHint {
     /// External URL like "https://example.com".
     External,
     /// Rejected as implausible: absolute path, prose, wildcard, etc.
-    Implausible { reason: String },
+    Implausible { reason: ImplausibleReason },
 }
 
 /// Where a reference was discovered within a file.
@@ -235,21 +255,21 @@ pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
     // 2. Absolute path
     if trimmed.starts_with('/') || trimmed.starts_with("~/") {
         return RefHint::Implausible {
-            reason: "absolute path".into(),
+            reason: ImplausibleReason::AbsolutePath,
         };
     }
 
     // 3. Wildcard
     if trimmed.contains('*') || trimmed.contains('?') {
         return RefHint::Implausible {
-            reason: "wildcard pattern".into(),
+            reason: ImplausibleReason::WildcardPattern,
         };
     }
 
     // 4. Comma-separated list (check before prose since comma lists also have spaces)
     if trimmed.contains(", ") && trimmed.len() > 40 {
         return RefHint::Implausible {
-            reason: "comma-separated list".into(),
+            reason: ImplausibleReason::CommaSeparatedList,
         };
     }
 
@@ -261,7 +281,7 @@ pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
         && !LABEL_RE.is_match(trimmed)
     {
         return RefHint::Implausible {
-            reason: "freeform prose".into(),
+            reason: ImplausibleReason::FreeformProse,
         };
     }
 
@@ -323,7 +343,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("/absolute/path.md"),
             RefHint::Implausible {
-                reason: "absolute path".into()
+                reason: ImplausibleReason::AbsolutePath
             }
         );
     }
@@ -333,7 +353,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("~/home/path.md"),
             RefHint::Implausible {
-                reason: "absolute path".into()
+                reason: ImplausibleReason::AbsolutePath
             }
         );
     }
@@ -343,7 +363,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("*.md"),
             RefHint::Implausible {
-                reason: "wildcard pattern".into()
+                reason: ImplausibleReason::WildcardPattern
             }
         );
     }
@@ -353,7 +373,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("src/**/*.rs"),
             RefHint::Implausible {
-                reason: "wildcard pattern".into()
+                reason: ImplausibleReason::WildcardPattern
             }
         );
     }
@@ -363,7 +383,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("claude-desktop session"),
             RefHint::Implausible {
-                reason: "freeform prose".into()
+                reason: ImplausibleReason::FreeformProse
             }
         );
     }
@@ -373,7 +393,7 @@ mod tests {
         assert_eq!(
             classify_frontmatter_value("20+ academic papers"),
             RefHint::Implausible {
-                reason: "freeform prose".into()
+                reason: ImplausibleReason::FreeformProse
             }
         );
     }
@@ -385,7 +405,7 @@ mod tests {
                 "GitHub repos, community forums, HN threads, industry reports"
             ),
             RefHint::Implausible {
-                reason: "comma-separated list".into()
+                reason: ImplausibleReason::CommaSeparatedList
             }
         );
     }
@@ -463,7 +483,7 @@ mod tests {
             RefHint::SectionRef,
             RefHint::External,
             RefHint::Implausible {
-                reason: "test".into(),
+                reason: ImplausibleReason::FreeformProse,
             },
         ];
 

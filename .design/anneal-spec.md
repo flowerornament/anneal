@@ -151,7 +151,7 @@ HandleKind =
 The kind is **inferred from syntax** [KB-P3]:
 - Paths ending in `.md` → File
 - `§` followed by digits → Section
-- `[A-Z][A-Z_]*-\d+` → Label (candidate; confirmed by namespace recognition)
+- `[A-Z][A-Z_]*(-[A-Z][A-Z_]*)*-\d+` → Label (candidate; confirmed by namespace recognition). Compound hyphenated prefixes like `ST-OQ-1` are captured as prefix `ST-OQ`, number `1`.
 - `v\d+` in versioned context → Version
 
 #### §4.2 Handle Resolution [KB-D3]
@@ -191,7 +191,10 @@ EdgeKind =
   | Supersedes     — source replaces target (target becomes terminal)
   | Verifies       — source proves or checks target
   | Discharges     — source consumes target (for linear handles)
+  | Custom(String) — user-defined edge kind (indexed, queryable, no built-in checks)
 ```
+
+The five well-known kinds carry built-in diagnostic semantics. Any `edge_kind` string in `anneal.toml` that doesn't match a well-known kind becomes `Custom` — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in diagnostic behavior.
 
 Edge kind determines **what checks apply** [KB-P7]:
 
@@ -225,7 +228,7 @@ Edge kind is **inferred from context** where possible (a file in `synthesis/` ci
 - `target/`, `node_modules/`, `.build/` — build artifacts
 - Any directory starting with `.` that isn't the root itself
 
-Additional exclusions can be configured via `exclude` in `anneal.toml`.
+Additional exclusions can be configured via `exclude` in `anneal.toml`. Entries without glob metacharacters (`*`, `?`, `[`, `/`) are matched as directory names (backward-compatible behavior). Entries containing glob metacharacters are compiled into glob patterns and matched against paths relative to root, allowing file-level exclusions like `**/README.md`.
 
 **Scoping model**: anneal operates on the directory you point it at. A repo can contain multiple knowledge corpora (e.g., `.design/` for the project, `tools/anneal/.design/` for a sub-project). Each corpus has its own `anneal.toml` and is scanned independently. Run anneal from the directory containing the corpus, or set `root` explicitly.
 
@@ -236,12 +239,12 @@ Additional exclusions can be configured via `exclude` in `anneal.toml`.
 | Pattern | Discovers | Creates |
 |---|---|---|
 | `^#{1,6}\s` | Section boundaries | Section handles |
-| `[A-Z][A-Z_]*-\d+` | Label references (in confirmed namespaces only) | Label handles + edges |
+| `[A-Z][A-Z_]*(-[A-Z][A-Z_]*)*-\d+` | Label references (in confirmed namespaces only) | Label handles + edges |
 | `§\d+(\.\d+)*` | Section cross-references | Edges |
 | Relative `.md` paths | File cross-references | Edges |
 | `v\d+` in versioned context | Version references | Version handles + edges |
 
-No markdown AST parsing. No NLP. Five regexes and a YAML parser.
+Content scanning uses pulldown-cmark for structural parsing (headings, paragraphs, list items, table cells, code block skipping) combined with regex extraction. No NLP.
 
 ### §6 Convergence Lattice [KB-D7]
 
@@ -304,7 +307,7 @@ This prevents overwhelming a project that has just started adopting conventions.
 
 **[KB-R1] Existence.** For every edge (source, target, _): target must resolve [KB-D3]. Failure is an error.
 
-**[KB-R2] Staleness.** For every edge (source, target, _) where source is active and target is terminal [KB-D10]: warn that source references a superseded or archived handle.
+**[KB-R2] Staleness.** For every DependsOn edge (source, target) where source is active and target is terminal [KB-D10]: warn that source depends on a superseded or archived handle. Only `DependsOn` edges trigger staleness — `Cites` edges from active to terminal are normal (historical evidence, not structural dependency), and custom edges carry no built-in diagnostic behavior.
 
 **[KB-R3] Confidence gap.** For every DependsOn edge (source, target): if source's declared state is above target's declared state in the convergence lattice [KB-D9], warn. ("Your `formal` document depends on a `provisional` source.")
 
@@ -337,9 +340,11 @@ Checked by rule KB-R4.
 
 ### §9 Impact Analysis [KB-D16]
 
-**Definition KB-D16 (Impact).** Given a handle h, the **impact set** is the set of handles reachable by traversing reverse DependsOn, Supersedes, and Verifies edges from h.
+**Definition KB-D16 (Impact).** Given a handle h and a set of edge kinds T, the **impact set** is the set of handles reachable by traversing reverse edges of kinds in T from h.
 
 Impact analysis answers: "if I change this handle, what else might need attention?" This is the question the arriving agent needs most — not "what's the global state" but "given what just changed, where should I look next?"
+
+The traversal set T is configurable via `[impact] traverse` in `anneal.toml`. When absent, T defaults to {DependsOn, Supersedes, Verifies}. Corpora using custom edge kinds for structural relationships (e.g. Synthesizes, Implements, Reconciles) should configure the traversal set to include them for accurate impact analysis.
 
 Impact is computed by reverse graph traversal. Supersedes chains are acyclic by definition. DependsOn and Verifies edges can form cycles in principle (A depends on B, B verifies A) — the traversal uses standard cycle detection (visited set) to terminate.
 
@@ -408,7 +413,7 @@ The following capabilities emerge from the primitives (Handle, Graph, Lattice, L
 
 **[KB-E1] Reference checking** = rule KB-R1 applied over the existence lattice [KB-D8]. The zero-config baseline.
 
-**[KB-E2] Staleness detection** = rule KB-R2. Active handles referencing terminal handles are flagged.
+**[KB-E2] Staleness detection** = rule KB-R2. Active handles with DependsOn edges to terminal handles are flagged.
 
 **[KB-E3] Dependency consistency** = rule KB-R3. A handle declaring high convergence state while depending on a lower-state source is flagged.
 
@@ -568,7 +573,7 @@ anneal impact formal-model/v17.md
     (none — all leaf documents)
 ```
 
-Computed by reverse graph traversal over DependsOn, Supersedes, and Verifies edges.
+Computed by reverse graph traversal over the edge kinds in `[impact] traverse` [KB-D16] (defaults to DependsOn, Supersedes, Verifies when absent).
 
 #### §12.8 `anneal obligations` [KB-C8]
 
@@ -664,7 +669,7 @@ The coloring is expressed in `anneal.toml`. All fields are optional [KB-P3]. An 
 # anneal.toml — entirely optional
 
 root = ".design"
-exclude = ["archive/research"]  # additional dirs to skip (beyond defaults)
+exclude = ["archive/research", "**/README.md"]  # dirs and file glob patterns to skip
 
 [convergence]
 active = ["raw", "digested", "decided", "formal", "verified",

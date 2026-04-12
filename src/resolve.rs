@@ -4,8 +4,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use regex::Regex;
 use std::sync::LazyLock;
 
-use serde::Serialize;
-
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
@@ -57,20 +55,6 @@ pub(crate) struct ResolveStats {
     pub(crate) versions_resolved: usize,
     pub(crate) pending_edges_resolved: usize,
     pub(crate) pending_edges_unresolved: usize,
-}
-
-/// Resolution outcome for a discovered reference.
-/// Phase 4: type definition only.
-/// Phase 6: populated by resolution cascade (RESOLVE-02..06).
-#[derive(Clone, Debug, Serialize)]
-#[allow(dead_code)] // Variants used by Phase 6 resolution cascade
-pub(crate) enum Resolution {
-    /// Exact match to a known handle.
-    Exact(NodeId),
-    /// Match via structural transform with candidate list (Phase 6).
-    Fuzzy { candidates: Vec<NodeId> },
-    /// No match found.
-    Unresolved,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +138,10 @@ fn has_sequential_run(numbers: &BTreeSet<u32>) -> bool {
 /// - Create an edge from the file node to the label node with the candidate's edge kind
 ///
 /// Candidates with unconfirmed prefixes are skipped silently (HANDLE-06).
+///
+/// Heading-defined labels take ownership priority over table cell or inline
+/// references. Processed in two passes: heading candidates first, then
+/// non-heading candidates. Within each pass, first-file-wins.
 fn resolve_labels(
     graph: &mut DiGraph,
     candidates: &[LabelCandidate],
@@ -163,7 +151,14 @@ fn resolve_labels(
     let mut labels_resolved: usize = 0;
     let mut labels_skipped: usize = 0;
 
-    for candidate in candidates {
+    // Two passes: heading candidates first (definitions), then non-heading (references).
+    // This ensures heading-defined labels always own the file_path.
+    let heading_first = candidates
+        .iter()
+        .filter(|c| c.is_heading)
+        .chain(candidates.iter().filter(|c| !c.is_heading));
+
+    for candidate in heading_first {
         if !namespaces.contains(&candidate.prefix) {
             labels_skipped += 1;
             continue;
@@ -191,7 +186,7 @@ fn resolve_labels(
 
         let file_id = candidate.file_path.to_string();
         if let Some(&source_node) = node_index.get(&file_id) {
-            graph.add_edge(source_node, label_node, candidate.edge_kind);
+            graph.add_edge(source_node, label_node, candidate.edge_kind.clone());
         }
     }
 
@@ -326,9 +321,9 @@ pub(crate) fn resolve_pending_edges(
         if let Some(target_id) = resolved_target {
             // Handle inverse direction: swap source and target for inverse edges
             if edge.inverse {
-                graph.add_edge(target_id, edge.source, edge.kind);
+                graph.add_edge(target_id, edge.source, edge.kind.clone());
             } else {
-                graph.add_edge(edge.source, target_id, edge.kind);
+                graph.add_edge(edge.source, target_id, edge.kind.clone());
             }
             resolved += 1;
         }
@@ -528,11 +523,43 @@ fn try_root_prefix_strip(
     }
 }
 
+/// Pre-built index mapping base names to `(version, full_key)` pairs.
+///
+/// Built once from `node_index` so that `try_version_stem` can look up by base
+/// name in O(1) instead of scanning every key with a regex.
+type VersionStemIndex = HashMap<String, Vec<(u32, String)>>;
+
+/// Build a version-stem lookup from the node index.
+///
+/// For every key whose filename matches `{base}-v{N}.md`, records `(N, key)`
+/// under the base name. Each base's entries are sorted by version descending
+/// (latest first) so callers can use the result directly.
+fn build_version_stem_index(node_index: &HashMap<String, NodeId>) -> VersionStemIndex {
+    let mut index: VersionStemIndex = HashMap::new();
+
+    for key in node_index.keys() {
+        let filename = key.rsplit('/').next().unwrap_or(key);
+        if let Some(caps) = VERSION_FILENAME_RE.captures(filename) {
+            let base = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            if let Ok(ver) = caps.get(2).map_or("0", |m| m.as_str()).parse::<u32>() {
+                index.entry(base).or_default().push((ver, key.clone()));
+            }
+        }
+    }
+
+    // Sort each base's entries by version descending (latest first)
+    for entries in index.values_mut() {
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+    }
+
+    index
+}
+
 /// Try matching a versioned filename against other versions in the index.
 ///
 /// If target matches `{base}-v{N}.md`, finds all `{base}-v{M}.md` where M != N,
 /// sorted by version descending (latest first).
-fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<String> {
+fn try_version_stem(target: &str, vs_index: &VersionStemIndex) -> Vec<String> {
     let Some(caps) = VERSION_FILENAME_RE.captures(target) else {
         return Vec::new();
     };
@@ -543,25 +570,15 @@ fn try_version_stem(target: &str, node_index: &HashMap<String, NodeId>) -> Vec<S
         Err(_) => return Vec::new(),
     };
 
-    let mut matches: Vec<(u32, String)> = Vec::new();
+    let Some(entries) = vs_index.get(base) else {
+        return Vec::new();
+    };
 
-    for key in node_index.keys() {
-        // Extract filename from potential path
-        let filename = key.rsplit('/').next().unwrap_or(key);
-        if let Some(kcaps) = VERSION_FILENAME_RE.captures(filename) {
-            let kbase = kcaps.get(1).map_or("", |m| m.as_str());
-            if let Ok(kver) = kcaps.get(2).map_or("0", |m| m.as_str()).parse::<u32>()
-                && kbase == base
-                && kver != this_version
-            {
-                matches.push((kver, key.clone()));
-            }
-        }
-    }
-
-    // Sort by version descending (latest first)
-    matches.sort_by(|a, b| b.0.cmp(&a.0));
-    matches.into_iter().map(|(_, s)| s).collect()
+    entries
+        .iter()
+        .filter(|(ver, _)| *ver != this_version)
+        .map(|(_, key)| key.clone())
+        .collect()
 }
 
 /// Build canonical candidate identities for a zero-padded label.
@@ -632,6 +649,7 @@ pub(crate) fn cascade_unresolved(
     root_prefix: &str,
 ) -> Vec<CascadeResult> {
     let mut results = Vec::new();
+    let vs_index = build_version_stem_index(node_index);
 
     for (idx, edge) in pending.iter().enumerate() {
         // Skip already-resolved edges
@@ -651,15 +669,15 @@ pub(crate) fn cascade_unresolved(
         if let Some(node_id) = rp_resolved {
             // Unambiguous root-prefix match: create graph edge
             if edge.inverse {
-                graph.add_edge(node_id, edge.source, edge.kind);
+                graph.add_edge(node_id, edge.source, edge.kind.clone());
             } else {
-                graph.add_edge(edge.source, node_id, edge.kind);
+                graph.add_edge(edge.source, node_id, edge.kind.clone());
             }
         }
         candidates.extend(rp_candidates);
 
         // Strategy 2: Version stem
-        let vs_candidates = try_version_stem(&edge.target_identity, node_index);
+        let vs_candidates = try_version_stem(&edge.target_identity, &vs_index);
         candidates.extend(vs_candidates);
 
         // Strategy 3: Zero-pad normalize

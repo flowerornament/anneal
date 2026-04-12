@@ -8,7 +8,9 @@ use globset::{Glob, GlobMatcher};
 use serde::Serialize;
 
 use crate::analysis::{self, AnalysisContext};
-use crate::checks::{Diagnostic, DiagnosticRecord, Severity, confidence_gap_levels};
+use crate::checks::{
+    Diagnostic, DiagnosticCode, DiagnosticRecord, Severity, confidence_gap_levels,
+};
 use crate::cli::{DetailLevel, JsonEnvelope, JsonStyle, OutputMeta};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
@@ -123,9 +125,9 @@ pub(crate) struct HandleQueryArgs {
 pub(crate) struct EdgeQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
-    /// Filter by edge kind
-    #[arg(long, value_enum)]
-    pub(crate) kind: Option<EdgeKind>,
+    /// Filter by edge kind (e.g. DependsOn, Cites, Synthesizes)
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
     /// Filter by exact source handle id
     #[arg(long)]
     pub(crate) source: Option<String>,
@@ -221,7 +223,7 @@ struct HandleCandidate<'a> {
     outgoing_count: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EdgeCandidate {
     source: NodeId,
     target: NodeId,
@@ -266,7 +268,7 @@ pub(crate) struct ObligationRow {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SuggestionRow {
     pub(crate) suggestion_id: String,
-    pub(crate) code: &'static str,
+    pub(crate) code: DiagnosticCode,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -400,7 +402,7 @@ fn build_edge_output(
         args,
         state_levels.as_ref(),
     );
-    candidates.sort_by(|a, b| compare_edge_candidates(graph, *a, *b));
+    candidates.sort_by(|a, b| compare_edge_candidates(graph, a, b));
     let (meta, items) = paginate(candidates, &args.page);
     JsonEnvelope::new(
         meta,
@@ -408,7 +410,7 @@ fn build_edge_output(
             kind: "edges",
             items: items
                 .into_iter()
-                .map(|candidate| edge_row(graph, candidate))
+                .map(|candidate| edge_row(graph, &candidate))
                 .collect(),
         },
     )
@@ -580,7 +582,7 @@ fn build_suggestion_query_output(
         |diagnostic| matches_suggestion_filters(diagnostic, args),
         |a, b| {
             a.code
-                .cmp(b.code)
+                .cmp(&b.code)
                 .then_with(|| {
                     a.file
                         .as_deref()
@@ -682,7 +684,7 @@ fn build_edge_candidates(
                 graph.outgoing(source).iter().map(|edge| EdgeCandidate {
                     source,
                     target: edge.target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -696,7 +698,7 @@ fn build_edge_candidates(
                 graph.incoming(target).iter().map(|edge| EdgeCandidate {
                     source: edge.source,
                     target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -716,7 +718,7 @@ fn build_edge_candidates(
                 graph.outgoing(source).iter().map(|edge| EdgeCandidate {
                     source,
                     target: edge.target,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                 }),
                 &mut rows,
             );
@@ -738,7 +740,7 @@ fn build_edge_candidates(
             graph.incoming(target).iter().map(|edge| EdgeCandidate {
                 source: edge.source,
                 target,
-                kind: edge.kind,
+                kind: edge.kind.clone(),
             }),
             &mut rows,
         );
@@ -758,7 +760,7 @@ fn build_edge_candidates(
             graph.outgoing(node_id).iter().map(|edge| EdgeCandidate {
                 source: node_id,
                 target: edge.target,
-                kind: edge.kind,
+                kind: edge.kind.clone(),
             }),
             &mut rows,
         );
@@ -783,7 +785,7 @@ fn collect_edge_candidates(
         {
             continue;
         }
-        if matches_edge_filters(graph, lattice, args, candidate, state_levels) {
+        if matches_edge_filters(graph, lattice, args, &candidate, state_levels) {
             rows.push(candidate);
         }
     }
@@ -798,7 +800,7 @@ fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
         id: candidate.handle.id.clone(),
         handle_kind: candidate.handle.kind.as_str().to_string(),
         status: candidate.handle.status.clone(),
-        file: resolved_file(candidate.handle, graph),
+        file: resolved_file(candidate.handle, graph).map(ToString::to_string),
         namespace,
         terminal: candidate.terminal,
         incoming_count: candidate.incoming_count,
@@ -807,7 +809,7 @@ fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
     }
 }
 
-fn edge_row(graph: &DiGraph, candidate: EdgeCandidate) -> EdgeRow {
+fn edge_row(graph: &DiGraph, candidate: &EdgeCandidate) -> EdgeRow {
     let source_handle = graph.node(candidate.source);
     let target_handle = graph.node(candidate.target);
     EdgeRow {
@@ -818,8 +820,8 @@ fn edge_row(graph: &DiGraph, candidate: EdgeCandidate) -> EdgeRow {
         target_kind: target_handle.kind.as_str().to_string(),
         source_status: source_handle.status.clone(),
         target_status: target_handle.status.clone(),
-        source_file: resolved_file(source_handle, graph),
-        target_file: resolved_file(target_handle, graph),
+        source_file: resolved_file(source_handle, graph).map(ToString::to_string),
+        target_file: resolved_file(target_handle, graph).map(ToString::to_string),
     }
 }
 
@@ -854,7 +856,7 @@ fn matches_handle_filters(
         return false;
     }
     if file_matcher.is_some_and(|matcher| {
-        resolved_file(candidate.handle, graph).is_none_or(|path| !matcher.is_match(&path))
+        resolved_file(candidate.handle, graph).is_none_or(|path| !matcher.is_match(path))
     }) {
         return false;
     }
@@ -905,12 +907,16 @@ fn matches_edge_filters(
     graph: &DiGraph,
     lattice: &Lattice,
     args: &EdgeQueryArgs,
-    candidate: EdgeCandidate,
+    candidate: &EdgeCandidate,
     state_levels: Option<&HashMap<&str, usize>>,
 ) -> bool {
     let source_handle = graph.node(candidate.source);
     let target_handle = graph.node(candidate.target);
-    if args.kind.is_some_and(|kind| candidate.kind != kind) {
+    if args
+        .kind
+        .as_ref()
+        .is_some_and(|k| k != candidate.kind.as_str())
+    {
         return false;
     }
     if args
@@ -959,7 +965,7 @@ fn matches_edge_filters(
     }
     if args.confidence_gap
         && confidence_gap_levels(
-            candidate.kind,
+            &candidate.kind,
             source_handle
                 .status
                 .as_deref()
@@ -998,7 +1004,7 @@ fn matches_diagnostic_filters(diagnostic: &Diagnostic, args: &DiagnosticQueryArg
     if args
         .code
         .as_ref()
-        .is_some_and(|code| diagnostic.code != code.as_str())
+        .is_some_and(|code| diagnostic.code.as_str() != code.as_str())
     {
         return false;
     }
@@ -1033,14 +1039,14 @@ fn matches_suggestion_filters(diagnostic: &Diagnostic, args: &SuggestionQueryArg
     if args
         .code
         .as_ref()
-        .is_some_and(|code| diagnostic.code != code.as_str())
+        .is_some_and(|code| diagnostic.code.as_str() != code.as_str())
     {
         return false;
     }
     true
 }
 
-fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, &str, &str, u32, &str) {
+fn diagnostic_sort_key(diagnostic: &Diagnostic) -> (u8, DiagnosticCode, &str, u32, &str) {
     (
         diagnostic.severity as u8,
         diagnostic.code,
@@ -1091,8 +1097,8 @@ fn matches_count_filter(value: usize, filter: CountFilter) -> bool {
 
 fn compare_edge_candidates(
     graph: &DiGraph,
-    left: EdgeCandidate,
-    right: EdgeCandidate,
+    left: &EdgeCandidate,
+    right: &EdgeCandidate,
 ) -> std::cmp::Ordering {
     let left_source = &graph.node(left.source).id;
     let right_source = &graph.node(right.source).id;
@@ -1433,7 +1439,7 @@ mod tests {
         vec![
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "broken reference".to_string(),
                 file: Some("active.md".to_string()),
                 line: Some(7),
@@ -1441,7 +1447,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Suggestion,
-                code: "S001",
+                code: DiagnosticCode::S001,
                 message: "orphaned handle".to_string(),
                 file: Some("active.md".to_string()),
                 line: Some(9),
@@ -1449,7 +1455,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Warning,
-                code: "W001",
+                code: DiagnosticCode::W001,
                 message: "stale reference".to_string(),
                 file: Some("done.md".to_string()),
                 line: Some(3),
@@ -1602,7 +1608,7 @@ mod tests {
         let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
 
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "E001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::E001);
         assert_eq!(output.data.items[0].severity, "error");
     }
 
@@ -1616,7 +1622,7 @@ mod tests {
         let output = build_diagnostic_query_output(sample_diagnostics(), &terminal_files, &args);
 
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "S001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::S001);
     }
 
     #[test]
@@ -1706,6 +1712,6 @@ mod tests {
             },
         );
         assert_eq!(output.data.items.len(), 1);
-        assert_eq!(output.data.items[0].code, "S001");
+        assert_eq!(output.data.items[0].code, DiagnosticCode::S001);
     }
 }

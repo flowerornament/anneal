@@ -10,6 +10,7 @@ use crate::checks::{Diagnostic, Severity};
 use crate::config::{AnnealConfig, HistoryMode, ResolvedStateConfig};
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::HandleKind;
+use crate::identity::fnv1a_64;
 use crate::lattice::Lattice;
 
 // ---------------------------------------------------------------------------
@@ -310,23 +311,14 @@ pub(crate) fn read_latest_snapshot(
 ) -> Option<Snapshot> {
     let history_path = read_history_path(root, state)?;
 
-    let Ok(file) = fs::File::open(history_path.as_std_path()) else {
+    let Ok(contents) = fs::read_to_string(history_path.as_std_path()) else {
         return None;
     };
 
-    let reader = BufReader::new(file);
-    let mut latest = None;
-
-    for line in reader.lines() {
-        let Ok(line) = line else {
-            continue;
-        };
-        if let Some(snapshot) = parse_snapshot_line(&line) {
-            latest = Some(snapshot);
-        }
-    }
-
-    latest
+    contents
+        .rsplit('\n')
+        .find(|line| !line.trim().is_empty())
+        .and_then(parse_snapshot_line)
 }
 
 fn repo_history_path(root: &Utf8Path) -> Utf8PathBuf {
@@ -405,7 +397,7 @@ fn default_state_dir() -> Option<Utf8PathBuf> {
 
 fn root_history_key(root: &Utf8Path) -> String {
     let identity = canonical_root_identity(root);
-    format!("{:016x}", fnv1a64(identity.as_bytes()))
+    format!("{:016x}", fnv1a_64(identity.as_bytes()))
 }
 
 fn canonical_root_identity(root: &Utf8Path) -> String {
@@ -424,15 +416,6 @@ fn canonical_root_identity(root: &Utf8Path) -> String {
             },
             |path| path.to_string(),
         )
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3_u64);
-    }
-    hash
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +496,7 @@ pub(crate) fn summary_from_previous(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::DiagnosticCode;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
     use crate::handle::{Handle, HandleKind, HandleMetadata};
@@ -872,7 +856,7 @@ mod tests {
         let diags = vec![
             Diagnostic {
                 severity: Severity::Error,
-                code: "E001",
+                code: DiagnosticCode::E001,
                 message: "test error".to_string(),
                 file: None,
                 line: None,
@@ -880,7 +864,7 @@ mod tests {
             },
             Diagnostic {
                 severity: Severity::Warning,
-                code: "W001",
+                code: DiagnosticCode::W001,
                 message: "test warning".to_string(),
                 file: None,
                 line: None,

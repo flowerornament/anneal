@@ -5,6 +5,18 @@ use serde::Serialize;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::NodeId;
 
+/// The default traversal set when no `[impact]` config is present.
+pub(crate) const DEFAULT_TRAVERSE: &[EdgeKind] = &[
+    EdgeKind::DependsOn,
+    EdgeKind::Supersedes,
+    EdgeKind::Verifies,
+];
+
+/// Check whether an edge kind should be traversed during impact analysis.
+fn should_traverse(kind: &EdgeKind, traverse_set: &[EdgeKind]) -> bool {
+    traverse_set.iter().any(|t| t == kind)
+}
+
 /// Result of impact analysis: handles affected if the starting handle changes.
 #[derive(Debug, Serialize)]
 pub(crate) struct ImpactResult {
@@ -26,7 +38,7 @@ pub(crate) struct ImpactPathEntry {
     pub(crate) path: Vec<ImpactPathHop>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct ImpactPathHop {
     pub(crate) source: NodeId,
     pub(crate) edge_kind: EdgeKind,
@@ -35,10 +47,14 @@ pub(crate) struct ImpactPathHop {
 
 /// Compute the impact set by reverse BFS from a starting handle (KB-D16).
 ///
-/// Traverses reverse DependsOn, Supersedes, and Verifies edges. Uses a
-/// visited set for cycle detection (IMPACT-02). Distinguishes direct
-/// (depth=1) from indirect (depth>1) affected handles (IMPACT-03).
-pub(crate) fn compute_impact(graph: &DiGraph, start: NodeId) -> ImpactResult {
+/// Traverses edges whose kind is in `traverse_set`. Uses a visited set for
+/// cycle detection (IMPACT-02). Distinguishes direct (depth=1) from indirect
+/// (depth>1) affected handles (IMPACT-03).
+pub(crate) fn compute_impact(
+    graph: &DiGraph,
+    start: NodeId,
+    traverse_set: &[EdgeKind],
+) -> ImpactResult {
     let mut visited = HashSet::new();
     let mut direct = Vec::new();
     let mut indirect = Vec::new();
@@ -49,10 +65,7 @@ pub(crate) fn compute_impact(graph: &DiGraph, start: NodeId) -> ImpactResult {
 
     while let Some((current, depth)) = queue.pop_front() {
         for edge in graph.incoming(current) {
-            if !matches!(
-                edge.kind,
-                EdgeKind::DependsOn | EdgeKind::Supersedes | EdgeKind::Verifies
-            ) {
+            if !should_traverse(&edge.kind, traverse_set) {
                 continue;
             }
             if visited.insert(edge.source) {
@@ -71,7 +84,11 @@ pub(crate) fn compute_impact(graph: &DiGraph, start: NodeId) -> ImpactResult {
 
 /// Compute the same impact set as `compute_impact`, but retain one canonical
 /// shortest explanation path from each affected handle back to `start`.
-pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPathResult {
+pub(crate) fn compute_impact_paths(
+    graph: &DiGraph,
+    start: NodeId,
+    traverse_set: &[EdgeKind],
+) -> ImpactPathResult {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
     let mut depths: HashMap<NodeId, u32> = HashMap::new();
@@ -85,15 +102,10 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
         let mut incoming: Vec<ImpactPathHop> = graph
             .incoming(current)
             .iter()
-            .filter(|edge| {
-                matches!(
-                    edge.kind,
-                    EdgeKind::DependsOn | EdgeKind::Supersedes | EdgeKind::Verifies
-                )
-            })
+            .filter(|edge| should_traverse(&edge.kind, traverse_set))
             .map(|edge| ImpactPathHop {
                 source: edge.source,
-                edge_kind: edge.kind,
+                edge_kind: edge.kind.clone(),
                 target: current,
             })
             .collect();
@@ -110,8 +122,9 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
         for hop in incoming {
             if visited.insert(hop.source) {
                 depths.insert(hop.source, depth + 1);
-                predecessor.insert(hop.source, hop);
-                queue.push_back(hop.source);
+                let source = hop.source;
+                predecessor.insert(source, hop);
+                queue.push_back(source);
             }
         }
     }
@@ -131,9 +144,9 @@ pub(crate) fn compute_impact_paths(graph: &DiGraph, start: NodeId) -> ImpactPath
     for (node_id, depth) in nodes {
         let mut path = Vec::new();
         let mut current = node_id;
-        while let Some(hop) = predecessor.get(&current).copied() {
-            path.push(hop);
+        while let Some(hop) = predecessor.get(&current).cloned() {
             current = hop.target;
+            path.push(hop);
         }
         let entry = ImpactPathEntry {
             target: node_id,
@@ -170,7 +183,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, c, EdgeKind::DependsOn);
 
-        let result = compute_impact(&graph, c);
+        let result = compute_impact(&graph, c, DEFAULT_TRAVERSE);
         assert_eq!(result.direct, vec![b]);
         assert_eq!(result.indirect, vec![a]);
     }
@@ -185,7 +198,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, a, EdgeKind::DependsOn);
 
-        let result = compute_impact(&graph, a);
+        let result = compute_impact(&graph, a, DEFAULT_TRAVERSE);
         assert_eq!(result.direct, vec![b]);
         assert!(result.indirect.is_empty());
     }
@@ -199,7 +212,7 @@ mod tests {
         let b = graph.add_node(make_file_handle("b.md"));
         graph.add_edge(a, b, EdgeKind::Cites);
 
-        let result = compute_impact(&graph, b);
+        let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
         assert!(result.indirect.is_empty());
     }
@@ -213,7 +226,7 @@ mod tests {
         let b = graph.add_node(make_file_handle("b.md"));
         graph.add_edge(a, b, EdgeKind::Discharges);
 
-        let result = compute_impact(&graph, b);
+        let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
         assert!(result.indirect.is_empty());
     }
@@ -223,7 +236,7 @@ mod tests {
         let mut graph = DiGraph::new();
         let a = graph.add_node(make_file_handle("a.md"));
 
-        let result = compute_impact(&graph, a);
+        let result = compute_impact(&graph, a, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
         assert!(result.indirect.is_empty());
     }
@@ -233,7 +246,7 @@ mod tests {
         let mut graph = DiGraph::new();
         let a = graph.add_node(make_file_handle("a.md"));
 
-        let result = compute_impact(&graph, a);
+        let result = compute_impact(&graph, a, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
         assert!(result.indirect.is_empty());
     }
@@ -247,7 +260,7 @@ mod tests {
         let b = graph.add_node(make_file_handle("b.md"));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
-        let result = compute_impact(&graph, b);
+        let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
         assert!(!result.direct.contains(&b));
         assert!(!result.indirect.contains(&b));
     }
@@ -263,7 +276,7 @@ mod tests {
         graph.add_edge(a, c, EdgeKind::Supersedes);
         graph.add_edge(b, c, EdgeKind::Verifies);
 
-        let result = compute_impact(&graph, c);
+        let result = compute_impact(&graph, c, DEFAULT_TRAVERSE);
         assert_eq!(result.direct.len(), 2);
         assert!(result.direct.contains(&a));
         assert!(result.direct.contains(&b));
@@ -279,7 +292,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, c, EdgeKind::DependsOn);
 
-        let result = compute_impact_paths(&graph, c);
+        let result = compute_impact_paths(&graph, c, DEFAULT_TRAVERSE);
         assert_eq!(result.direct.len(), 1);
         assert_eq!(result.indirect.len(), 1);
         assert_eq!(result.direct[0].target, b);
@@ -292,5 +305,30 @@ mod tests {
         assert_eq!(result.indirect[0].path[0].target, b);
         assert_eq!(result.indirect[0].path[1].source, b);
         assert_eq!(result.indirect[0].path[1].target, c);
+    }
+
+    #[test]
+    fn custom_traverse_set_includes_custom_kinds() {
+        // A -Synthesizes-> B
+        // With DEFAULT_TRAVERSE: impact(B) = empty (Synthesizes not in default set)
+        // With custom set including Synthesizes: impact(B) = direct: [A]
+        let mut graph = DiGraph::new();
+        let a = graph.add_node(make_file_handle("a.md"));
+        let b = graph.add_node(make_file_handle("b.md"));
+        graph.add_edge(a, b, EdgeKind::Custom("Synthesizes".into()));
+
+        let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
+        assert!(
+            result.direct.is_empty(),
+            "default set should not traverse Synthesizes"
+        );
+
+        let custom_set = vec![EdgeKind::DependsOn, EdgeKind::Custom("Synthesizes".into())];
+        let result = compute_impact(&graph, b, &custom_set);
+        assert_eq!(
+            result.direct,
+            vec![a],
+            "custom set should traverse Synthesizes"
+        );
     }
 }

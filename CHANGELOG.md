@@ -2,6 +2,99 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.3 - 2026-04-08
+
+### Added
+
+- File glob patterns in `exclude` config: entries like `**/README.md` now prevent matched files from entering the graph entirely. Plain directory names continue to work as before. Useful for structural index files that should not trigger W003 or S003 diagnostics.
+
+### Fixed
+
+- Heading-defined labels now take ownership priority over table cell and inline references. Fixes incorrect `file` attribution when the same label appears in both a heading definition and a reference table elsewhere in the corpus.
+
+## 0.7.2 - 2026-04-08
+
+### Fixed
+
+- Labels defined in markdown table cells are now extracted (requires `ENABLE_TABLES` in the cmark parser). Fixes false-positive E001 broken references for corpora that define labels in tables.
+- Compound hyphenated prefixes (e.g. `ST-OQ` from `ST-OQ-1`) are now captured as a single prefix instead of only the last segment (`OQ`). Fixes resolution failures for namespaces with compound prefixes.
+
+## 0.7.1 - 2026-04-08
+
+### Fixed
+
+- CLI help text for `anneal impact` now documents `[impact] traverse` config instead of describing a hardcoded traversal set.
+- Spec §12.7 and README impact section updated to match.
+
+## 0.7.0 - 2026-04-08
+
+### Added
+
+- Configurable impact traversal: `[impact] traverse` in `anneal.toml` controls which edge kinds `anneal impact` follows. Corpora using custom edge kinds (Synthesizes, Implements, Reconciles) now get accurate blast radius analysis. Defaults to the previous behavior (DependsOn, Supersedes, Verifies) when absent.
+
+## 0.6.1 - 2026-04-08
+
+### Fixed
+
+- Off-by-one in frontmatter line count: body-text line numbers in diagnostics were reported 1 too high for files with frontmatter.
+- `Severity` serialization now consistently produces lowercase (`"error"`, `"warning"`) instead of PascalCase in JSON.
+- Diagnostics with unknown line numbers now report `line: null` instead of the misleading sentinel `line: 1`.
+- Evidence serialization in identity computation uses graceful fallback instead of `expect()`.
+
+### Changed
+
+- `resolved_file` returns `Option<&Utf8Path>` instead of allocating `Option<String>` on every call.
+- `run_checks` takes a `CheckInput` struct instead of 9 positional parameters.
+- `read_latest_snapshot` reads the history file backwards, parsing only the last line instead of all lines.
+- `try_version_stem` uses a pre-built `VersionStemIndex` for O(1) lookup instead of scanning all node keys.
+- `classify_frontmatter_value` results are cached across frontmatter processing loops.
+- `check_confidence_gap` builds a `HashMap` for state level lookups instead of linear scanning.
+- `is_terminal_by_heuristic` moved from `parse.rs` to `lattice.rs` (fixes layering inversion).
+- `parse_frontmatter` returns a `FrontmatterParseResult` struct instead of a 4-tuple.
+- `EdgeKind::from_name` uses case-insensitive matching for well-known kinds.
+- `EdgeKind::Custom` uses `Box<str>` instead of `String` (8 bytes smaller per edge).
+- Diagnostic codes promoted from `&'static str` to `DiagnosticCode` enum for exhaustive matching.
+- `ImplausibleReason` promoted from `String` to a four-variant enum.
+- `HashMap<String, usize>` in `summarize_extractions` changed to `HashMap<&'static str, usize>`.
+- `cli.rs` (4459 lines) split into `src/cli/` module directory with 11 focused submodules.
+- Malformed YAML frontmatter and non-UTF-8 filenames are now tracked in `BuildResult` for future reporting.
+
+### Removed
+
+- Dead code: `ConvergenceState`, `classify_status`, `Resolution` enum, `node_mut`, `Explanation` wrapper enum.
+- Stale Phase 2 comments and unjustified `#[allow(dead_code)]` annotations.
+- Duplicate `fnv1a_64` implementation in `snapshot.rs` (now imports from `identity.rs`).
+
+### Added
+
+- 34 new tests for `lattice.rs` (12), `graph.rs` (8), `obligations.rs` (8), and `split_frontmatter` (6) — covering all four previously untested modules.
+
+## 0.6.0 - 2026-04-08
+
+### Added
+
+- Custom edge kinds: any `edge_kind` string in `anneal.toml` that doesn't match a well-known kind (Cites, DependsOn, Supersedes, Verifies, Discharges) is now accepted as a `Custom` edge kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, with no built-in diagnostic behavior.
+- The `--kind` filter on `anneal query edges` now accepts any string, not just the five well-known kinds.
+
+### Changed
+
+- W001 (stale reference) now fires only on `DependsOn` edges. Cites and custom edges from active to terminal handles no longer trigger staleness warnings.
+
+## 0.5.0 - 2026-04-07
+
+### Added
+
+- Added the `anneal query` command family for bounded structural selection across handles, edges, diagnostics, obligations, and suggestions.
+- Added the `anneal explain` command family for provenance-oriented explanations of diagnostics, impact results, convergence signals, obligations, and suggestions.
+- Added stable diagnostic and suggestion identities so `check`, `query`, and `explain` compose through explicit IDs.
+- Added structured suggestion evidence for `S001` through `S005`, enabling typed suggestion explanation and selector matching instead of message-text heuristics.
+
+### Changed
+
+- Simplified the internal query/explain analysis pipeline by factoring shared analysis, obligation, identity, and selector logic into dedicated modules.
+- Tightened query/explain defaults around bounded output, active-scope filtering, and check-compatible diagnostic derivation.
+- Updated the README, canonical spec, CLI help, and bundled anneal skill so the new query/explain workflows are documented consistently.
+
 ## 0.4.3 - 2026-04-02
 
 ### Changed
