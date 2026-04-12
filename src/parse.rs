@@ -32,7 +32,8 @@ pub(crate) const DEFAULT_EXCLUSIONS: &[&str] = &[
 ];
 
 /// Body-text keywords that imply a DependsOn edge (D-01).
-static DEPENDS_ON_KEYWORDS: &[&str] = &["incorporates", "builds on", "extends", "based on"];
+/// "based on" was removed — too common in prose and causes false DependsOn edges.
+static DEPENDS_ON_KEYWORDS: &[&str] = &["incorporates", "builds on", "extends"];
 
 /// Body-text keywords that explicitly confirm a Cites edge (D-01).
 static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
@@ -278,6 +279,13 @@ pub(crate) struct ScanResult {
 // ---------------------------------------------------------------------------
 // Edge kind inference
 // ---------------------------------------------------------------------------
+
+/// Extract the line containing the byte offset `pos` from `text`.
+fn containing_line(text: &str, pos: usize) -> &str {
+    let start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[pos..].find('\n').map_or(text.len(), |i| pos + i);
+    &text[start..end]
+}
 
 /// Infer edge kind from body-text keywords on the same line as a reference (D-01).
 ///
@@ -621,7 +629,8 @@ pub(crate) fn scan_file_cmark(
                 if let Some(ref mut h) = heading_text {
                     h.push(' ');
                 }
-                text_accumulator.push(' ');
+                // Preserve newlines so per-line edge kind inference works correctly.
+                text_accumulator.push('\n');
             }
 
             // All other events: skip
@@ -674,6 +683,19 @@ fn classify_body_ref(value: &str) -> RefHint {
         return RefHint::FilePath;
     }
 
+    // Reject implausible link destinations: single characters, bare type
+    // variables (e.g. `T` from `Stream[r](T)` parsed as a markdown link),
+    // and other short tokens that can't be file paths.
+    if value.len() <= 2
+        || (value.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+            && !value.contains('/')
+            && !value.contains('.'))
+    {
+        return RefHint::Implausible {
+            reason: ImplausibleReason::FreeformProse,
+        };
+    }
+
     // Default: FilePath (handle identity)
     RefHint::FilePath
 }
@@ -702,10 +724,7 @@ fn scan_text_for_refs(
         discovered_refs,
     };
 
-    // Edge kind inference from full accumulated text
-    let edge_kind = infer_edge_kind_from_line(text);
-
-    // Labels
+    // Labels — infer edge kind per-line, not per-block
     for caps in LABEL_RE.captures_iter(text) {
         let prefix = caps
             .get(1)
@@ -717,6 +736,8 @@ fn scan_text_for_refs(
             .expect("label number capture always present")
             .as_str();
         if let Ok(number) = number_str.parse::<u32>() {
+            let match_line = containing_line(text, caps.get(0).unwrap().start());
+            let edge_kind = infer_edge_kind_from_line(match_line);
             recorder.record(
                 &format!("{prefix}-{number}"),
                 RefHint::Label { prefix, number },
@@ -733,6 +754,8 @@ fn scan_text_for_refs(
             .as_str()
             .to_string();
         if !section_num.is_empty() {
+            let match_line = containing_line(text, caps.get(0).unwrap().start());
+            let edge_kind = infer_edge_kind_from_line(match_line);
             recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
         }
     }
@@ -753,6 +776,8 @@ fn scan_text_for_refs(
         if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
             continue;
         }
+        let match_line = containing_line(text, m.start());
+        let edge_kind = infer_edge_kind_from_line(match_line);
         recorder.record(path, RefHint::FilePath, &edge_kind);
     }
 }
@@ -1935,6 +1960,101 @@ mod tests {
             "should NOT extract OQ-2 from indented code, got: {labels:?}"
         );
         assert!(labels.contains(&3), "should extract OQ-3, got: {labels:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge kind: per-line inference, not per-block
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn edge_kind_inference_is_per_line_not_per_block() {
+        // "incorporates" on line 1 should NOT promote OQ-99 on line 2 within the same paragraph
+        let body = "This incorporates OQ-42 into the design\nSee also OQ-99 for context\n";
+        let (result, _, _) = cmark_scan(body);
+        let oq42 = result
+            .label_candidates
+            .iter()
+            .find(|c| c.number == 42)
+            .expect("OQ-42 should be found");
+        let oq99 = result
+            .label_candidates
+            .iter()
+            .find(|c| c.number == 99)
+            .expect("OQ-99 should be found");
+        assert_eq!(
+            oq42.edge_kind,
+            EdgeKind::DependsOn,
+            "OQ-42 is on the 'incorporates' line"
+        );
+        assert_eq!(
+            oq99.edge_kind,
+            EdgeKind::Cites,
+            "OQ-99 is on a different line — should be Cites"
+        );
+    }
+
+    #[test]
+    fn based_on_no_longer_promotes_to_depends_on() {
+        let body = "This is based on OQ-10\n";
+        let (result, _, _) = cmark_scan(body);
+        assert!(!result.label_candidates.is_empty());
+        assert_eq!(
+            result.label_candidates[0].edge_kind,
+            EdgeKind::Cites,
+            "'based on' should no longer promote to DependsOn"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Body ref: implausible link destinations rejected
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_body_ref_rejects_single_char_type_var() {
+        let hint = classify_body_ref("T");
+        assert!(
+            matches!(hint, RefHint::Implausible { .. }),
+            "single char 'T' should be implausible, got: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn classify_body_ref_rejects_short_uppercase_token() {
+        let hint = classify_body_ref("FOO");
+        assert!(
+            matches!(hint, RefHint::Implausible { .. }),
+            "bare uppercase 'FOO' should be implausible, got: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn classify_body_ref_accepts_md_file_path() {
+        let hint = classify_body_ref("design.md");
+        assert!(
+            matches!(hint, RefHint::FilePath),
+            "design.md should be FilePath, got: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn classify_body_ref_accepts_label() {
+        let hint = classify_body_ref("OQ-42");
+        assert!(
+            matches!(hint, RefHint::Label { .. }),
+            "OQ-42 should be Label, got: {hint:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // containing_line helper
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn containing_line_extracts_correct_line() {
+        let text = "first line\nsecond line\nthird line";
+        assert_eq!(containing_line(text, 0), "first line");
+        assert_eq!(containing_line(text, 11), "second line");
+        assert_eq!(containing_line(text, 23), "third line");
     }
 
     // -----------------------------------------------------------------------
