@@ -1,15 +1,17 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extraction::{
-    DiscoveredRef, FileExtraction, LineIndex, RefHint, RefSource, SourceSpan,
+    DiscoveredRef, FileExtraction, ImplausibleReason, LineIndex, RefHint, RefSource, SourceSpan,
     classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
 };
 use crate::graph::{DiGraph, EdgeKind};
@@ -35,29 +37,15 @@ static DEPENDS_ON_KEYWORDS: &[&str] = &["incorporates", "builds on", "extends", 
 /// Body-text keywords that explicitly confirm a Cites edge (D-01).
 static CITES_KEYWORDS: &[&str] = &["see also", "cf.", "related"];
 
-/// Status names that heuristically indicate terminal state (UX-03).
-pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
-    "superseded",
-    "archived",
-    "retired",
-    "deprecated",
-    "obsolete",
-    "withdrawn",
-    "cancelled",
-    "canceled",
-    "closed",
-    "resolved",
-    "done",
-    "completed",
-];
-
 // ---------------------------------------------------------------------------
 // Regex patterns
 // ---------------------------------------------------------------------------
 
 /// Capture regex for label references: prefix and number.
-static LABEL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([A-Z][A-Z_]*)-(\d+)").expect("label regex must compile"));
+static LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Captures compound prefixes like ST-OQ from ST-OQ-1, as well as simple OQ from OQ-1.
+    Regex::new(r"([A-Z][A-Z_]*(?:-[A-Z][A-Z_]*)*)-(\d+)").expect("label regex must compile")
+});
 
 /// Capture regex for section cross-references (paragraph sign).
 static SECTION_REF_RE: LazyLock<Regex> =
@@ -102,34 +90,38 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Check if a status name matches terminal heuristics (case-insensitive substring match).
-pub(crate) fn is_terminal_by_heuristic(status: &str) -> bool {
-    let lower = status.to_lowercase();
-    TERMINAL_STATUS_HEURISTICS
-        .iter()
-        .any(|heuristic| lower.contains(heuristic))
+/// Parsed frontmatter result: status, metadata, field edges, all keys, and parse
+/// success (D-05, D-07).
+#[derive(Default)]
+pub(crate) struct FrontmatterParseResult {
+    pub(crate) status: Option<String>,
+    pub(crate) metadata: HandleMetadata,
+    pub(crate) field_edges: Vec<FrontmatterEdge>,
+    /// All frontmatter keys, for init auto-detection (D-07).
+    pub(crate) all_keys: Vec<String>,
+    /// `true` when YAML deserialization failed (section 7.2 silent-failure tracking).
+    pub(crate) yaml_failed: bool,
 }
 
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
 ///
 /// Deserializes as `serde_yaml_ng::Value` to handle arbitrary fields and
-/// YAML type coercion. On parse failure, returns defaults (never errors).
+/// YAML type coercion. On parse failure, returns defaults with `yaml_failed`
+/// set to `true` so callers can track files with malformed YAML.
 /// The `config` parameter drives which frontmatter keys produce edges.
-pub(crate) fn parse_frontmatter(
-    yaml: &str,
-    config: &FrontmatterConfig,
-) -> (
-    Option<String>,
-    HandleMetadata,
-    Vec<FrontmatterEdge>,
-    Vec<String>,
-) {
+pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> FrontmatterParseResult {
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
+        return FrontmatterParseResult {
+            yaml_failed: true,
+            ..FrontmatterParseResult::default()
+        };
     };
 
     let Some(mapping) = value.as_mapping() else {
-        return (None, HandleMetadata::default(), Vec::new(), Vec::new());
+        return FrontmatterParseResult {
+            yaml_failed: true,
+            ..FrontmatterParseResult::default()
+        };
     };
 
     // Collect all frontmatter keys for init auto-detection (D-07)
@@ -163,9 +155,7 @@ pub(crate) fn parse_frontmatter(
         }
 
         if let Some(field_mapping) = config.fields.get(key_str) {
-            let Some(edge_kind) = EdgeKind::from_name(&field_mapping.edge_kind) else {
-                continue;
-            };
+            let edge_kind = EdgeKind::from_name(&field_mapping.edge_kind);
             let targets = yaml_value_to_string_vec(val);
             if targets.is_empty() {
                 continue;
@@ -198,7 +188,13 @@ pub(crate) fn parse_frontmatter(
         verifies,
     };
 
-    (status, metadata, field_edges, all_keys)
+    FrontmatterParseResult {
+        status,
+        metadata,
+        field_edges,
+        all_keys,
+        yaml_failed: false,
+    }
 }
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
@@ -242,6 +238,8 @@ pub(crate) struct LabelCandidate {
     pub(crate) number: u32,
     pub(crate) file_path: Utf8PathBuf,
     pub(crate) edge_kind: EdgeKind,
+    /// Whether this label was found inside a section heading (definition site).
+    pub(crate) is_heading: bool,
 }
 
 /// An edge whose target is identified by string (not yet resolved to a `NodeId`).
@@ -309,25 +307,27 @@ struct BodyRefRecorder<'a> {
     file_path: &'a Utf8Path,
     file_path_str: &'a str,
     line: u32,
+    is_heading: bool,
     result: &'a mut ScanResult,
     discovered_refs: &'a mut Vec<DiscoveredRef>,
 }
 
 impl BodyRefRecorder<'_> {
-    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: EdgeKind) {
+    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: &EdgeKind) {
         let discovered_edge_kind = match &hint {
             RefHint::Label { prefix, number } => {
                 self.result.label_candidates.push(LabelCandidate {
                     prefix: prefix.clone(),
                     number: *number,
                     file_path: self.file_path.to_path_buf(),
-                    edge_kind,
+                    edge_kind: edge_kind.clone(),
+                    is_heading: self.is_heading,
                 });
-                edge_kind
+                edge_kind.clone()
             }
             RefHint::FilePath => {
                 self.result.file_refs.push((raw.to_string(), self.line));
-                edge_kind
+                edge_kind.clone()
             }
             RefHint::SectionRef => {
                 let section_num = raw
@@ -386,6 +386,7 @@ pub(crate) fn scan_file_cmark(
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     opts.insert(Options::ENABLE_WIKILINKS);
+    opts.insert(Options::ENABLE_TABLES);
 
     let parser = Parser::new_ext(body, opts);
 
@@ -431,6 +432,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -446,6 +448,17 @@ pub(crate) fn scan_file_cmark(
                 if let Some(heading) = heading_text.take() {
                     let heading = heading.trim().to_string();
                     if !heading.is_empty() {
+                        // Scan heading text for label definitions (is_heading = true)
+                        scan_text_for_refs(
+                            &heading,
+                            block_start_offset,
+                            file_path,
+                            file_path_str,
+                            line_index,
+                            true,
+                            &mut result,
+                            &mut discovered_refs,
+                        );
                         let section_id =
                             format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-"));
                         graph.add_node(Handle {
@@ -460,6 +473,9 @@ pub(crate) fn scan_file_cmark(
                         });
                     }
                 }
+                // Clear text_accumulator so heading labels aren't double-counted
+                // when the next block element flushes
+                text_accumulator.clear();
             }
 
             // -- Links (markdown and wiki-links) --
@@ -483,13 +499,14 @@ pub(crate) fn scan_file_cmark(
                                 file_path,
                                 file_path_str,
                                 line,
+                                is_heading: false,
                                 result: &mut result,
                                 discovered_refs: &mut discovered_refs,
                             }
                             .record(
                                 dest,
                                 classify_body_ref(dest),
-                                EdgeKind::Cites,
+                                &EdgeKind::Cites,
                             );
                         }
                     }
@@ -512,13 +529,14 @@ pub(crate) fn scan_file_cmark(
                                     file_path,
                                     file_path_str,
                                     line,
+                                    is_heading: false,
                                     result: &mut result,
                                     discovered_refs: &mut discovered_refs,
                                 }
                                 .record(
                                     clean_dest,
                                     classify_body_ref(clean_dest),
-                                    EdgeKind::Cites,
+                                    &EdgeKind::Cites,
                                 );
                             }
                         }
@@ -527,13 +545,15 @@ pub(crate) fn scan_file_cmark(
             }
 
             // -- Block element boundaries --
-            Event::Start(Tag::Paragraph | Tag::Item | Tag::BlockQuote(_)) => {
+            Event::Start(Tag::Paragraph | Tag::Item | Tag::BlockQuote(_) | Tag::TableCell) => {
                 if !in_code_block {
                     text_accumulator.clear();
                     block_start_offset = range.start;
                 }
             }
-            Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_)) => {
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_) | TagEnd::TableCell,
+            ) => {
                 if !in_code_block && !text_accumulator.is_empty() {
                     scan_text_for_refs(
                         &text_accumulator,
@@ -541,6 +561,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -574,6 +595,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -588,6 +610,7 @@ pub(crate) fn scan_file_cmark(
                         file_path,
                         file_path_str,
                         line_index,
+                        false,
                         &mut result,
                         &mut discovered_refs,
                     );
@@ -614,6 +637,7 @@ pub(crate) fn scan_file_cmark(
             file_path,
             file_path_str,
             line_index,
+            false,
             &mut result,
             &mut discovered_refs,
         );
@@ -654,6 +678,7 @@ fn classify_body_ref(value: &str) -> RefHint {
     RefHint::FilePath
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Scan accumulated text for labels, section refs, file paths using the same
 /// regex patterns as the old scanner. Creates both `LabelCandidate`/ScanResult
 /// entries and `DiscoveredRef` entries.
@@ -663,6 +688,7 @@ fn scan_text_for_refs(
     file_path: &Utf8Path,
     file_path_str: &str,
     line_index: &LineIndex,
+    is_heading: bool,
     result: &mut ScanResult,
     discovered_refs: &mut Vec<DiscoveredRef>,
 ) {
@@ -671,6 +697,7 @@ fn scan_text_for_refs(
         file_path,
         file_path_str,
         line,
+        is_heading,
         result,
         discovered_refs,
     };
@@ -693,7 +720,7 @@ fn scan_text_for_refs(
             recorder.record(
                 &format!("{prefix}-{number}"),
                 RefHint::Label { prefix, number },
-                edge_kind,
+                &edge_kind,
             );
         }
     }
@@ -706,7 +733,7 @@ fn scan_text_for_refs(
             .as_str()
             .to_string();
         if !section_num.is_empty() {
-            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, edge_kind);
+            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
         }
     }
 
@@ -726,7 +753,7 @@ fn scan_text_for_refs(
         if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
             continue;
         }
-        recorder.record(path, RefHint::FilePath, edge_kind);
+        recorder.record(path, RefHint::FilePath, &edge_kind);
     }
 }
 
@@ -761,14 +788,15 @@ pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
 pub(crate) struct ImplausibleRef {
     pub(crate) file: String,
     pub(crate) raw_value: String,
-    pub(crate) reason: String,
-    pub(crate) line: u32,
+    pub(crate) reason: ImplausibleReason,
+    pub(crate) line: Option<u32>,
 }
 
 /// An external URL found in frontmatter.
-#[allow(dead_code)] // Fields consumed when external URL handling is wired
 pub(crate) struct ExternalRef {
+    #[allow(dead_code)]
     pub(crate) file: String,
+    #[allow(dead_code)]
     pub(crate) url: String,
 }
 
@@ -797,6 +825,44 @@ pub(crate) struct BuildResult {
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
     pub(crate) label_snippets: HashMap<String, String>,
+    /// Files whose YAML frontmatter failed to deserialize (§7.2 silent-failure tracking).
+    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
+    pub(crate) malformed_frontmatter: Vec<String>,
+    /// Count of directory entries skipped because their filename was not valid UTF-8 (§7.3).
+    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
+    pub(crate) skipped_non_utf8: usize,
+}
+
+/// Split `exclude` entries into plain directory names and glob patterns.
+///
+/// An entry is treated as a glob pattern if it contains `*`, `?`, `[`, or `/`.
+/// Plain entries continue to work as directory-name exclusions (backward compatible).
+/// Glob patterns are compiled into a `GlobSet` matched against relative paths,
+/// allowing file-level exclusions like `**/README.md`.
+fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobSet>) {
+    let mut dir_names = Vec::new();
+    let mut builder = GlobSetBuilder::new();
+    let mut has_globs = false;
+
+    for entry in exclude {
+        if entry.contains('*') || entry.contains('?') || entry.contains('[') || entry.contains('/')
+        {
+            if let Ok(glob) = GlobBuilder::new(entry).literal_separator(false).build() {
+                builder.add(glob);
+                has_globs = true;
+            }
+        } else {
+            dir_names.push(entry.as_str());
+        }
+    }
+
+    let glob_set = if has_globs {
+        builder.build().ok()
+    } else {
+        None
+    };
+
+    (dir_names, glob_set)
 }
 
 /// Build the knowledge graph from a directory of markdown files.
@@ -841,13 +907,19 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
     let mut extractions: Vec<FileExtraction> = Vec::new();
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
+    let mut malformed_frontmatter: Vec<String> = Vec::new();
 
-    let extra_exclusions = &config.exclude;
+    // §7.3: Track non-UTF-8 filenames silently skipped by the walker filter.
+    // Uses Cell so the FnMut closure can increment without &mut self conflicts.
+    let skipped_non_utf8: Cell<usize> = Cell::new(0);
+
+    let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
 
     let walker = WalkDir::new(root.as_std_path())
         .into_iter()
         .filter_entry(|e| {
             let Some(name) = e.file_name().to_str() else {
+                skipped_non_utf8.set(skipped_non_utf8.get() + 1);
                 return false;
             };
             if e.file_type().is_dir() {
@@ -857,9 +929,16 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                 if name.starts_with('.') && name != ".design" {
                     return false;
                 }
-                if extra_exclusions.iter().any(|ex| ex == name) {
+                if dir_exclusions.contains(&name) {
                     return false;
                 }
+            }
+            // Glob-based file exclusion: match against path relative to root.
+            if let Some(ref gs) = file_glob_set
+                && let Ok(rel) = e.path().strip_prefix(root.as_std_path())
+                && gs.is_match(rel)
+            {
+                return false;
             }
             true
         });
@@ -899,18 +978,33 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             file_snippets.insert(relative.to_string(), snippet);
         }
 
-        // Compute frontmatter line count for LineIndex offset calculation
+        // Compute frontmatter line count for LineIndex offset calculation.
+        // LineIndex::from_content expects the opening --- plus yaml content lines;
+        // it adds the closing --- itself via +1 in base_line.
         #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
         let frontmatter_line_count = frontmatter_yaml.map_or(0, |yaml| {
-            // +2 for the opening and closing --- lines
-            yaml.lines().count() as u32 + 2
+            // +1 for the opening --- line only (closing --- handled by LineIndex)
+            yaml.lines().count() as u32 + 1
         });
 
         // D-05: table-driven frontmatter parsing with extensible field mapping
         // D-07: all_keys returned here to avoid double-parsing YAML
-        let (status, metadata, field_edges, all_keys) = frontmatter_yaml
+        let fm = frontmatter_yaml
             .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
             .unwrap_or_default();
+
+        let FrontmatterParseResult {
+            status,
+            metadata,
+            field_edges,
+            all_keys,
+            yaml_failed,
+        } = fm;
+
+        // §7.2: Track files whose YAML frontmatter was present but malformed.
+        if yaml_failed {
+            malformed_frontmatter.push(relative.to_string());
+        }
 
         for key in &all_keys {
             *observed_frontmatter_keys.entry(key.clone()).or_insert(0) += 1;
@@ -933,9 +1027,19 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             NodeId::new(u32::try_from(graph.node_count()).expect("graph exceeds u32::MAX nodes"));
         let mut file_external_targets: Vec<String> = Vec::new();
 
+        // Cache classify_frontmatter_value results so the second loop can reuse them.
+        let mut hint_cache: HashMap<&str, RefHint> = HashMap::new();
         for fe in &field_edges {
             for target in &fe.targets {
-                let hint = classify_frontmatter_value(target);
+                hint_cache
+                    .entry(target.as_str())
+                    .or_insert_with(|| classify_frontmatter_value(target));
+            }
+        }
+
+        for fe in &field_edges {
+            for target in &fe.targets {
+                let hint = &hint_cache[target.as_str()];
                 match hint {
                     RefHint::External => {
                         external_refs.push(ExternalRef {
@@ -948,15 +1052,15 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                         implausible_refs.push(ImplausibleRef {
                             file: relative.to_string(),
                             raw_value: target.clone(),
-                            reason,
-                            line: 1,
+                            reason: *reason,
+                            line: None,
                         });
                     }
                     RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
                         pending_edges.push(PendingEdge {
                             source: file_node_placeholder,
                             target_identity: target.clone(),
-                            kind: fe.edge_kind,
+                            kind: fe.edge_kind.clone(),
                             inverse: fe.inverse,
                             line: Some(1),
                         });
@@ -972,7 +1076,10 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             file_path: Some(relative.clone()),
             metadata: metadata.clone(),
         });
-        debug_assert_eq!(file_node, file_node_placeholder);
+        assert_eq!(
+            file_node, file_node_placeholder,
+            "node insertion order changed between placeholder computation and add_node"
+        );
 
         for target in file_external_targets {
             let external_node = if let Some(existing) = external_nodes.get(&target).copied() {
@@ -1015,14 +1122,14 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let mut discovered_refs = Vec::new();
         for fe in &field_edges {
             for target in &fe.targets {
-                let hint = classify_frontmatter_value(target);
+                let hint = hint_cache[target.as_str()].clone();
                 discovered_refs.push(DiscoveredRef {
                     raw: target.clone(),
                     hint,
                     source: RefSource::Frontmatter {
                         field: fe.edge_kind.as_str().to_string(),
                     },
-                    edge_kind: fe.edge_kind,
+                    edge_kind: fe.edge_kind.clone(),
                     inverse: fe.inverse,
                     span: None,
                 });
@@ -1079,6 +1186,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         extractions,
         file_snippets,
         label_snippets,
+        malformed_frontmatter,
+        skipped_non_utf8: skipped_non_utf8.get(),
     })
 }
 
@@ -1178,7 +1287,7 @@ mod tests {
                 .implausible_refs
                 .iter()
                 .any(|r| r.raw_value == "claude-desktop session"
-                    && r.reason.contains("freeform prose")),
+                    && r.reason == ImplausibleReason::FreeformProse),
             "prose should be in implausible_refs with 'freeform prose' reason, got {} entries",
             result.implausible_refs.len()
         );
@@ -1248,7 +1357,8 @@ mod tests {
             result
                 .implausible_refs
                 .iter()
-                .any(|r| r.raw_value == "/absolute/path.md" && r.reason.contains("absolute path")),
+                .any(|r| r.raw_value == "/absolute/path.md"
+                    && r.reason == ImplausibleReason::AbsolutePath),
             "absolute path should be in implausible_refs"
         );
 
@@ -1280,7 +1390,7 @@ mod tests {
             result
                 .implausible_refs
                 .iter()
-                .any(|r| r.raw_value == "*.md" && r.reason.contains("wildcard pattern")),
+                .any(|r| r.raw_value == "*.md" && r.reason == ImplausibleReason::WildcardPattern),
             "wildcard should be in implausible_refs"
         );
 
@@ -1660,6 +1770,48 @@ mod tests {
     }
 
     #[test]
+    fn cmark_table_cell_labels_extracted() {
+        // Simple labels in table cells
+        let body = "| Label | Desc |\n|---|---|\n| OQ-1 | question |\n| OQ-2 | another |\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            refs.iter().any(|r| r.raw == "OQ-1"),
+            "should extract OQ-1 from table cell, got refs: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+        assert!(
+            refs.iter().any(|r| r.raw == "OQ-2"),
+            "should extract OQ-2 from table cell"
+        );
+        assert!(
+            result
+                .label_candidates
+                .iter()
+                .any(|c| c.prefix == "OQ" && c.number == 1),
+            "should have label candidate OQ-1"
+        );
+    }
+
+    #[test]
+    fn cmark_table_cell_compound_labels_extracted() {
+        // Compound prefix labels — regex now captures full compound prefix
+        let body = "| Label | Desc |\n|---|---|\n| ST-OQ-1 | question |\n";
+        let (result, refs, _) = cmark_scan(body);
+        assert!(
+            refs.iter().any(|r| r.raw == "ST-OQ-1"),
+            "should extract ST-OQ-1 from table cell, got refs: {:?}",
+            refs.iter().map(|r| &r.raw).collect::<Vec<_>>()
+        );
+        assert!(
+            result
+                .label_candidates
+                .iter()
+                .any(|c| c.prefix == "ST-OQ" && c.number == 1),
+            "should have label candidate with compound prefix ST-OQ"
+        );
+    }
+
+    #[test]
     fn cmark_section_refs_extracted() {
         let body = "See §4.1 for details\n";
         let (result, _refs, _) = cmark_scan(body);
@@ -1869,5 +2021,135 @@ mod tests {
     fn corpus_smoke_herald() {
         let home = std::env::var("HOME").expect("HOME must be set");
         corpus_smoke_test(&format!("{home}/code/herald/.design/"), "Herald");
+    }
+
+    // -------------------------------------------------------------------
+    // split_frontmatter
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn split_frontmatter_standard() {
+        let input = "---\nstatus: draft\ntitle: Hello\n---\nBody text here.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some("status: draft\ntitle: Hello"));
+        assert_eq!(body, "Body text here.\n");
+    }
+
+    #[test]
+    fn split_frontmatter_crlf_line_endings() {
+        let input = "---\r\nstatus: draft\r\n---\r\nBody text.\r\n";
+        let (fm, body) = split_frontmatter(input);
+
+        // The \r before the closing \n---\r\n is part of the yaml slice.
+        assert_eq!(fm, Some("status: draft\r"));
+        assert_eq!(body, "Body text.\r\n");
+    }
+
+    #[test]
+    fn split_frontmatter_no_frontmatter() {
+        let input = "# Just a heading\n\nSome body text.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn split_frontmatter_empty_yaml() {
+        // With no content between fences, the closing `---` lacks the
+        // preceding `\n` the parser requires, so this is treated as no
+        // valid frontmatter.
+        let input = "---\n---\nBody after empty frontmatter.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn split_frontmatter_minimal_yaml() {
+        // A single newline between fences provides the `\n---\n` the
+        // parser needs to detect the closing fence.
+        let input = "---\n\n---\nBody after minimal frontmatter.\n";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some(""));
+        assert_eq!(body, "Body after minimal frontmatter.\n");
+    }
+
+    #[test]
+    fn split_frontmatter_eof_without_trailing_newline() {
+        let input = "---\nstatus: final\n---";
+        let (fm, body) = split_frontmatter(input);
+
+        assert_eq!(fm, Some("status: final"));
+        assert_eq!(body, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_exclude_sets
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn exclude_plain_entries_become_dir_names() {
+        let entries = vec!["vendor".to_string(), "dist".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert_eq!(dirs, vec!["vendor", "dist"]);
+        assert!(globs.is_none());
+    }
+
+    #[test]
+    fn exclude_glob_patterns_build_glob_set() {
+        let entries = vec!["**/README.md".to_string(), "docs/*.txt".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert!(dirs.is_empty());
+        let gs = globs.expect("should produce a GlobSet");
+        assert!(gs.is_match("README.md"));
+        assert!(gs.is_match("sub/README.md"));
+        assert!(gs.is_match("docs/notes.txt"));
+        assert!(!gs.is_match("docs/notes.md"));
+    }
+
+    #[test]
+    fn exclude_mixed_entries_split_correctly() {
+        let entries = vec!["node_modules".to_string(), "**/README.md".to_string()];
+        let (dirs, globs) = build_exclude_sets(&entries);
+        assert_eq!(dirs, vec!["node_modules"]);
+        assert!(globs.is_some());
+    }
+
+    #[test]
+    fn exclude_glob_filters_files_from_graph() {
+        let tmp = std::env::temp_dir().join("anneal_test_exclude_glob");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "README.md", "---\nstatus: current\n---\nIndex file\n");
+        write_md_file(&tmp, "design.md", "---\nstatus: draft\n---\nReal doc\n");
+
+        let config = AnnealConfig {
+            exclude: vec!["**/README.md".to_string()],
+            ..AnnealConfig::default()
+        };
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        let file_ids: Vec<&str> = result
+            .graph
+            .nodes()
+            .filter_map(|(_, h)| match &h.kind {
+                HandleKind::File(_) => Some(h.id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !file_ids.iter().any(|id| id.contains("README")),
+            "README.md should be excluded from graph, got: {file_ids:?}"
+        );
+        assert!(
+            file_ids.iter().any(|id| id.contains("design")),
+            "design.md should be in graph, got: {file_ids:?}"
+        );
     }
 }

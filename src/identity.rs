@@ -1,6 +1,6 @@
 use crate::checks::{Diagnostic, Severity};
 
-fn fnv1a_64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for &byte in bytes {
         hash ^= u64::from(byte);
@@ -17,7 +17,7 @@ fn canonical_diagnostic_payload(diagnostic: &Diagnostic) -> String {
     let evidence = diagnostic
         .evidence
         .as_ref()
-        .map(|value| serde_json::to_string(value).expect("evidence serializes"))
+        .and_then(|value| serde_json::to_string(value).ok())
         .unwrap_or_default();
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -43,12 +43,12 @@ pub(crate) fn suggestion_id(diagnostic: &Diagnostic) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checks::Evidence;
+    use crate::checks::{DiagnosticCode, Evidence};
 
     fn sample_diagnostic() -> Diagnostic {
         Diagnostic {
             severity: Severity::Warning,
-            code: "W002",
+            code: DiagnosticCode::W002,
             message: "confidence gap".to_string(),
             file: Some("formal-model/v17.md".to_string()),
             line: Some(42),
@@ -84,7 +84,7 @@ mod tests {
 
         let suggestion = Diagnostic {
             severity: Severity::Suggestion,
-            code: "S001",
+            code: DiagnosticCode::S001,
             message: "orphaned handle".to_string(),
             file: Some("OPEN-QUESTIONS.md".to_string()),
             line: Some(8),
