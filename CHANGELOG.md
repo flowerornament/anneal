@@ -2,6 +2,14 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.7.4 - 2026-04-12
+
+### Fixed
+
+- Body-text edge kind inference is now per-line instead of per-block. A DependsOn keyword (e.g. "incorporates") on one line no longer promotes references on other lines within the same paragraph to DependsOn. Fixes false-positive W001 warnings from prose that happened to share a paragraph with a structural keyword.
+- Removed "based on" from the DependsOn keyword list — too common in normal prose, causing false structural dependencies.
+- Implausible markdown link destinations (single characters, bare uppercase tokens like `T` from `Stream[r](T)`) are now rejected instead of creating broken-reference E001 diagnostics. Fixes false positives in corpora with formal math notation.
+
 ## 0.7.3 - 2026-04-08
 
 ### Added
