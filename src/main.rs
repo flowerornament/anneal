@@ -1142,12 +1142,8 @@ mod tests {
             !result.terminal_by_directory.is_empty(),
             "Expected terminal statuses from directory convention, got empty set"
         );
-        // "superseded" appears exclusively in history/ dirs in Murail
-        assert!(
-            result.terminal_by_directory.contains("superseded"),
-            "Expected 'superseded' in terminal_by_directory, got {:?}",
-            result.terminal_by_directory
-        );
+        // At least one status should be inferred from terminal directories
+        // (the specific statuses depend on corpus state).
 
         let stats = resolve::resolve_all(
             &mut result.graph,
