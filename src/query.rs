@@ -1376,22 +1376,7 @@ mod tests {
     use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
     use crate::handle::Handle;
-    use crate::lattice::{Lattice, LatticeKind};
-
-    fn make_lattice(active: &[&str], terminal: &[&str], ordering: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: active
-                .iter()
-                .chain(terminal.iter())
-                .copied()
-                .map(String::from)
-                .collect(),
-            active: active.iter().copied().map(String::from).collect(),
-            terminal: terminal.iter().copied().map(String::from).collect(),
-            ordering: ordering.iter().copied().map(String::from).collect(),
-            kind: LatticeKind::Confidence,
-        }
-    }
+    use crate::lattice::Lattice;
 
     fn sample_graph() -> (DiGraph, Lattice) {
         let mut graph = DiGraph::new();
@@ -1402,7 +1387,7 @@ mod tests {
         graph.add_edge(file, label, EdgeKind::Cites);
         (
             graph,
-            make_lattice(
+            Lattice::test_with_ordering(
                 &["formal", "provisional", "open"],
                 &["verified"],
                 &["provisional", "formal", "verified"],

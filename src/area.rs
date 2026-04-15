@@ -266,26 +266,7 @@ mod tests {
     use super::*;
     use crate::graph::{DiGraph, EdgeKind};
     use crate::handle::Handle;
-    use crate::lattice::LatticeKind;
-
-    fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: active
-                .iter()
-                .chain(terminal.iter())
-                .copied()
-                .map(String::from)
-                .collect(),
-            active: active.iter().copied().map(String::from).collect(),
-            terminal: terminal.iter().copied().map(String::from).collect(),
-            ordering: Vec::new(),
-            kind: LatticeKind::Confidence,
-        }
-    }
-
-    fn default_lattice() -> Lattice {
-        make_lattice(&["draft", "active"], &["archived"])
-    }
+    use crate::lattice::Lattice;
 
     #[test]
     fn area_of_extracts_directory() {
@@ -302,7 +283,7 @@ mod tests {
         graph.add_node(Handle::test_file("synthesis/c.md", Some("draft")));
         graph.add_node(Handle::test_file("README.md", None));
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &[]);
 
         assert_eq!(areas.len(), 3);
@@ -322,7 +303,7 @@ mod tests {
         graph.add_node(Handle::test_file("docs/b.md", Some("archived")));
         graph.add_node(Handle::test_file("docs/c.md", None));
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &[]);
         let docs = areas.iter().find(|a| a.name == "docs").unwrap();
         assert_eq!(docs.active, 1, "only draft is active");
@@ -336,7 +317,7 @@ mod tests {
         let b = graph.add_node(Handle::test_file("docs/b.md", Some("active")));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &[]);
         let docs = areas.iter().find(|a| a.name == "docs").unwrap();
         assert_eq!(docs.grade, AreaGrade::A);
@@ -357,7 +338,7 @@ mod tests {
             evidence: None,
         }];
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &diags);
         let imp = areas.iter().find(|a| a.name == "impl").unwrap();
         assert_eq!(imp.grade, AreaGrade::C);
@@ -371,7 +352,7 @@ mod tests {
         let b = graph.add_node(Handle::test_file("synthesis/b.md", Some("draft")));
         graph.add_edge(a, b, EdgeKind::Cites);
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &[]);
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
         assert_eq!(
@@ -409,7 +390,7 @@ mod tests {
             },
         ];
 
-        let lattice = default_lattice();
+        let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
         let areas = compute_areas(&graph, &lattice, &diags);
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
         assert_eq!(compiler.orphans, 2);

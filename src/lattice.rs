@@ -178,6 +178,47 @@ pub(crate) fn frontmatter_adoption_rate(total_files: usize, files_with_frontmatt
 }
 
 #[cfg(test)]
+impl Lattice {
+    /// Empty lattice with no statuses (existence mode).
+    pub(crate) fn test_empty() -> Self {
+        Self {
+            observed_statuses: HashSet::new(),
+            active: HashSet::new(),
+            terminal: HashSet::new(),
+            ordering: Vec::new(),
+            kind: LatticeKind::Existence,
+        }
+    }
+
+    /// Lattice with explicit active and terminal sets.
+    pub(crate) fn test_new(active: &[&str], terminal: &[&str]) -> Self {
+        Self {
+            observed_statuses: active
+                .iter()
+                .chain(terminal.iter())
+                .copied()
+                .map(String::from)
+                .collect(),
+            active: active.iter().copied().map(String::from).collect(),
+            terminal: terminal.iter().copied().map(String::from).collect(),
+            ordering: Vec::new(),
+            kind: LatticeKind::Confidence,
+        }
+    }
+
+    /// Lattice with active, terminal, and pipeline ordering.
+    pub(crate) fn test_with_ordering(
+        active: &[&str],
+        terminal: &[&str],
+        ordering: &[&str],
+    ) -> Self {
+        let mut l = Self::test_new(active, terminal);
+        l.ordering = ordering.iter().copied().map(String::from).collect();
+        l
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::AnnealConfig;

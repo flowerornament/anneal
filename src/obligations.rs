@@ -149,21 +149,7 @@ mod tests {
     use crate::config::AnnealConfig;
     use crate::graph::{DiGraph, EdgeKind};
     use crate::handle::Handle;
-    use crate::lattice::{Lattice, LatticeKind};
-    fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: active
-                .iter()
-                .chain(terminal.iter())
-                .copied()
-                .map(String::from)
-                .collect(),
-            active: active.iter().copied().map(String::from).collect(),
-            terminal: terminal.iter().copied().map(String::from).collect(),
-            ordering: Vec::new(),
-            kind: LatticeKind::Confidence,
-        }
-    }
+    use crate::lattice::Lattice;
 
     fn make_config_with_linear(ns: &[&str]) -> AnnealConfig {
         let mut config = AnnealConfig::default();
@@ -181,7 +167,7 @@ mod tests {
         // OQ-1 with terminal status
         let _oq = graph.add_node(Handle::test_label("OQ", 1, Some("archived")));
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = make_config_with_linear(&["OQ"]);
 
         let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
@@ -196,7 +182,7 @@ mod tests {
         let mut graph = DiGraph::new();
         graph.add_node(Handle::test_label("OQ", 1, Some("archived")));
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = make_config_with_linear(&["OQ"]);
 
         let entries = collect_obligation_summaries(&graph, &lattice, &config, false);
@@ -216,7 +202,7 @@ mod tests {
         let mut graph = DiGraph::new();
         let _oq = graph.add_node(Handle::test_label("OQ", 1, Some("draft")));
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = make_config_with_linear(&["OQ"]);
 
         let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
@@ -239,7 +225,7 @@ mod tests {
 
         graph.add_edge(discharger, oq, EdgeKind::Discharges);
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = make_config_with_linear(&["OQ"]);
 
         let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
@@ -264,7 +250,7 @@ mod tests {
         graph.add_edge(d1, oq, EdgeKind::Discharges);
         graph.add_edge(d2, oq, EdgeKind::Discharges);
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = make_config_with_linear(&["OQ"]);
 
         let entries = collect_obligation_summaries(&graph, &lattice, &config, true);
@@ -287,7 +273,7 @@ mod tests {
         let mut graph = DiGraph::new();
         let _label = graph.add_node(Handle::test_label("REF", 1, Some("draft")));
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         // Only "OQ" is linear, "REF" is not.
         let config = make_config_with_linear(&["OQ"]);
 

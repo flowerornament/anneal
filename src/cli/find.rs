@@ -231,7 +231,6 @@ fn build_find_facets(matches: &[FindMatch]) -> FindFacets {
 
 #[cfg(test)]
 mod tests {
-    use crate::cli::test_helpers::*;
     use crate::handle::Handle;
 
     use super::*;
@@ -245,7 +244,7 @@ mod tests {
 
         let output = cmd_find(
             &graph,
-            &empty_lattice(),
+            &Lattice::test_empty(),
             "",
             &FindFilters {
                 status: Some("draft"),
@@ -262,7 +261,7 @@ mod tests {
     #[test]
     fn find_empty_query_requires_scope_or_full() {
         let graph = DiGraph::new();
-        match cmd_find(&graph, &empty_lattice(), "", &FindFilters::default()) {
+        match cmd_find(&graph, &Lattice::test_empty(), "", &FindFilters::default()) {
             Ok(_) => panic!("empty query should fail"),
             Err(err) => assert!(err.to_string().contains("empty query")),
         }
