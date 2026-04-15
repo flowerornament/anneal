@@ -60,6 +60,8 @@ pub(crate) struct Handle {
     pub(crate) status: Option<String>,
     /// Source file for non-File handles (the file where this handle was discovered).
     pub(crate) file_path: Option<Utf8PathBuf>,
+    /// Resolved file date: `updated:` > `date:` frontmatter > filename `YYYY-MM-DD` prefix.
+    pub(crate) date: Option<chrono::NaiveDate>,
     /// Additional metadata extracted from frontmatter.
     pub(crate) metadata: HandleMetadata,
 }
@@ -107,6 +109,7 @@ impl Handle {
             kind: HandleKind::File(Utf8PathBuf::from(id)),
             status: status.map(String::from),
             file_path: Some(Utf8PathBuf::from(id)),
+            date: None,
             metadata: HandleMetadata::default(),
         }
     }
@@ -120,6 +123,7 @@ impl Handle {
             },
             status: status.map(String::from),
             file_path: None,
+            date: None,
             metadata: HandleMetadata::default(),
         }
     }

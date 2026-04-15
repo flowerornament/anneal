@@ -485,6 +485,7 @@ mod tests {
             },
             status: None,
             file_path: Some("guide.md".into()),
+            date: None,
             metadata: crate::handle::HandleMetadata::default(),
         });
 

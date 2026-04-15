@@ -177,6 +177,7 @@ fn resolve_labels(
                 },
                 status: None,
                 file_path: Some(candidate.file_path.clone()),
+                date: None,
                 metadata: HandleMetadata::default(),
             });
             node_index.insert(label_id, node);
@@ -252,6 +253,7 @@ pub(crate) fn resolve_versions(
                 },
                 status: file_status,
                 file_path: None,
+                date: None,
                 metadata: HandleMetadata::default(),
             });
             node_index.insert(version_id, version_node);
