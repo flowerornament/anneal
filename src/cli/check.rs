@@ -157,7 +157,8 @@ pub(crate) fn cmd_check(
     filters: &CheckFilters,
     terminal_files: &HashSet<String>,
 ) -> CheckOutput {
-    let diagnostics = apply_check_filters(diagnostics, filters, terminal_files);
+    let mut diagnostics = apply_check_filters(diagnostics, filters, terminal_files);
+    diagnostics.sort_by_key(|d| d.severity);
 
     let (mut errors, mut warnings, mut info, mut suggestions, mut terminal_errors) =
         (0, 0, 0, 0, 0);

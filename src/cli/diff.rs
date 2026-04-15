@@ -79,7 +79,7 @@ impl DiffOutput {
         writeln!(w, "Since {}:", self.reference)?;
         writeln!(
             w,
-            "  Handles: {:+} ({:+} active, {:+} frozen)",
+            "  Handles: {:+} ({:+} active, {:+} terminal)",
             self.handle_delta.created,
             self.handle_delta.active_delta,
             self.handle_delta.frozen_delta

@@ -102,6 +102,8 @@ pub(crate) struct FrontmatterParseResult {
     pub(crate) all_keys: Vec<String>,
     /// `true` when YAML deserialization failed (section 7.2 silent-failure tracking).
     pub(crate) yaml_failed: bool,
+    /// Explicit `date:` frontmatter field (lower priority than `updated:`).
+    pub(crate) frontmatter_date: Option<chrono::NaiveDate>,
 }
 
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
@@ -133,9 +135,12 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
 
     let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_string()));
 
-    // Special fields: status and updated (not edge-producing)
+    // Special fields: status, updated, date (not edge-producing)
     let status = get("status").and_then(yaml_value_to_string);
     let updated = get("updated")
+        .and_then(yaml_value_to_string)
+        .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+    let frontmatter_date = get("date")
         .and_then(yaml_value_to_string)
         .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
 
@@ -151,7 +156,7 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
             continue;
         };
         // Skip special fields
-        if key_str == "status" || key_str == "updated" {
+        if key_str == "status" || key_str == "updated" || key_str == "date" {
             continue;
         }
 
@@ -195,6 +200,7 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         field_edges,
         all_keys,
         yaml_failed: false,
+        frontmatter_date,
     }
 }
 
@@ -477,6 +483,7 @@ pub(crate) fn scan_file_cmark(
                             },
                             status: None,
                             file_path: Some(file_path.to_path_buf()),
+                            date: None,
                             metadata: HandleMetadata::default(),
                         });
                     }
@@ -825,6 +832,32 @@ pub(crate) struct ExternalRef {
     pub(crate) url: String,
 }
 
+/// Extract a `YYYY-MM-DD` date prefix from a filename.
+///
+/// Matches filenames like `2026-03-29-architecture-spike-findings.md`.
+/// Returns `None` if the filename doesn't start with a valid date.
+fn date_from_filename(filename: &str) -> Option<chrono::NaiveDate> {
+    if filename.len() >= 10 {
+        chrono::NaiveDate::parse_from_str(&filename[..10], "%Y-%m-%d").ok()
+    } else {
+        None
+    }
+}
+
+/// Resolve the best available date for a file handle.
+///
+/// Priority: `updated:` frontmatter > `date:` frontmatter > filename prefix.
+fn resolve_file_date(
+    metadata: &HandleMetadata,
+    frontmatter_date: Option<chrono::NaiveDate>,
+    filename: &str,
+) -> Option<chrono::NaiveDate> {
+    metadata
+        .updated
+        .or(frontmatter_date)
+        .or_else(|| date_from_filename(filename))
+}
+
 /// Result of `build_graph`: the populated graph, label candidates for namespace
 /// inference, pending edges for resolution, and observed status values for
 /// lattice inference.
@@ -1024,6 +1057,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             field_edges,
             all_keys,
             yaml_failed,
+            frontmatter_date,
         } = fm;
 
         // §7.2: Track files whose YAML frontmatter was present but malformed.
@@ -1094,11 +1128,15 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             }
         }
 
+        let filename = relative.file_name().unwrap_or(relative.as_str());
+        let file_date = resolve_file_date(&metadata, frontmatter_date, filename);
+
         let file_node = graph.add_node(Handle {
             id: relative.to_string(),
             kind: HandleKind::File(relative.clone()),
             status: status.clone(),
             file_path: Some(relative.clone()),
+            date: file_date,
             metadata: metadata.clone(),
         });
         assert_eq!(
@@ -1117,6 +1155,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
                     },
                     status: None,
                     file_path: Some(relative.clone()),
+                    date: None,
                     metadata: HandleMetadata::default(),
                 });
                 external_nodes.insert(target.clone(), node_id);
@@ -1662,6 +1701,7 @@ mod tests {
             kind: HandleKind::File(Utf8PathBuf::from("test.md")),
             status: None,
             file_path: Some(Utf8PathBuf::from("test.md")),
+            date: None,
             metadata: HandleMetadata::default(),
         });
         let line_index = LineIndex::from_content(body, 0);
@@ -2058,6 +2098,100 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Temporal awareness: date extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn date_from_filename_valid_prefix() {
+        let d = date_from_filename("2026-03-29-architecture-spike-findings.md");
+        assert_eq!(
+            d,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 29).unwrap())
+        );
+    }
+
+    #[test]
+    fn date_from_filename_no_date() {
+        assert_eq!(date_from_filename("README.md"), None);
+        assert_eq!(date_from_filename("LABELS.md"), None);
+    }
+
+    #[test]
+    fn date_from_filename_short_name() {
+        assert_eq!(date_from_filename("foo.md"), None);
+    }
+
+    #[test]
+    fn resolve_file_date_prefers_updated() {
+        let meta = HandleMetadata {
+            updated: Some(chrono::NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()),
+            ..HandleMetadata::default()
+        };
+        let fm_date = Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
+        let result = resolve_file_date(&meta, fm_date, "2026-02-01-old.md");
+        assert_eq!(
+            result, meta.updated,
+            "updated: should win over date: and filename"
+        );
+    }
+
+    #[test]
+    fn resolve_file_date_falls_back_to_frontmatter_date() {
+        let meta = HandleMetadata::default();
+        let fm_date = Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
+        let result = resolve_file_date(&meta, fm_date, "2026-02-01-old.md");
+        assert_eq!(
+            result, fm_date,
+            "date: should win over filename when no updated:"
+        );
+    }
+
+    #[test]
+    fn resolve_file_date_falls_back_to_filename() {
+        let meta = HandleMetadata::default();
+        let result = resolve_file_date(&meta, None, "2026-04-09-graph-coalescing.md");
+        assert_eq!(
+            result,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()),
+            "should extract date from filename when no frontmatter dates"
+        );
+    }
+
+    #[test]
+    fn resolve_file_date_none_when_no_signal() {
+        let meta = HandleMetadata::default();
+        assert_eq!(resolve_file_date(&meta, None, "README.md"), None);
+    }
+
+    #[test]
+    fn build_graph_populates_file_date_from_filename() {
+        let tmp = std::env::temp_dir().join("anneal_test_file_date");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "2026-03-29-design.md",
+            "---\nstatus: draft\n---\nBody\n",
+        );
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        let file_handle = result
+            .graph
+            .nodes()
+            .find(|(_, h)| h.id.contains("2026-03-29"))
+            .map(|(_, h)| h)
+            .expect("should find dated file");
+        assert_eq!(
+            file_handle.date,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 29).unwrap()),
+            "file date should be extracted from filename"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
     // Corpus smoke tests — validate cmark scanner on real corpora
     // -----------------------------------------------------------------------
 
@@ -2100,6 +2234,7 @@ mod tests {
                 kind: HandleKind::File(Utf8PathBuf::from(&*relative_str)),
                 status: None,
                 file_path: Some(Utf8PathBuf::from(&*relative_str)),
+                date: None,
                 metadata: HandleMetadata::default(),
             });
             let (result, body_discovered) =

@@ -921,6 +921,7 @@ mod tests {
             },
             status: None,
             file_path: Some(camino::Utf8PathBuf::from("proof.md")),
+            date: None,
             metadata: HandleMetadata::default(),
         });
 

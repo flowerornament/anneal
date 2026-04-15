@@ -129,7 +129,7 @@ impl StatusOutput {
         )?;
         writeln!(
             w,
-            "         {} active, {} frozen",
+            "         {} active, {} terminal",
             self.active_handles, self.frozen_handles,
         )?;
 
@@ -466,11 +466,11 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_active_frozen_line() {
+    fn status_print_human_active_terminal_line() {
         let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("142 active") && text.contains("345 frozen"),
-            "Expected active/frozen counts, got: {text}"
+            text.contains("142 active") && text.contains("345 terminal"),
+            "Expected active/terminal counts, got: {text}"
         );
     }
 

@@ -248,6 +248,7 @@ mod tests {
                 },
                 status: Some("draft".into()),
                 file_path: Some("questions.md".into()),
+                date: None,
                 metadata: crate::handle::HandleMetadata::default(),
             });
         }
