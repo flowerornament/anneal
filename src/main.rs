@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 mod analysis;
+#[allow(dead_code)] // Foundation module; CLI commands will wire it next
+mod area;
 mod checks;
 mod cli;
 mod config;
