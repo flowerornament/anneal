@@ -15,7 +15,7 @@ use crate::extraction::{
     classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
 };
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
+use crate::handle::{Handle, HandleMetadata, NodeId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -473,19 +473,11 @@ pub(crate) fn scan_file_cmark(
                             &mut result,
                             &mut discovered_refs,
                         );
-                        let section_id =
-                            format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-"));
-                        graph.add_node(Handle {
-                            id: section_id,
-                            kind: HandleKind::Section {
-                                parent: file_node,
-                                heading,
-                            },
-                            status: None,
-                            file_path: Some(file_path.to_path_buf()),
-                            date: None,
-                            metadata: HandleMetadata::default(),
-                        });
+                        graph.add_node(Handle::section(
+                            file_node,
+                            heading,
+                            file_path.to_path_buf(),
+                        ));
                     }
                 }
                 // Clear text_accumulator so heading labels aren't double-counted
@@ -1131,14 +1123,12 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         let filename = relative.file_name().unwrap_or(relative.as_str());
         let file_date = resolve_file_date(&metadata, frontmatter_date, filename);
 
-        let file_node = graph.add_node(Handle {
-            id: relative.to_string(),
-            kind: HandleKind::File(relative.clone()),
-            status: status.clone(),
-            file_path: Some(relative.clone()),
-            date: file_date,
-            metadata: metadata.clone(),
-        });
+        let file_node = graph.add_node(Handle::file(
+            relative.clone(),
+            status.clone(),
+            file_date,
+            metadata.clone(),
+        ));
         assert_eq!(
             file_node, file_node_placeholder,
             "node insertion order changed between placeholder computation and add_node"
@@ -1148,16 +1138,8 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             let external_node = if let Some(existing) = external_nodes.get(&target).copied() {
                 existing
             } else {
-                let node_id = graph.add_node(Handle {
-                    id: target.clone(),
-                    kind: HandleKind::External {
-                        url: target.clone(),
-                    },
-                    status: None,
-                    file_path: Some(relative.clone()),
-                    date: None,
-                    metadata: HandleMetadata::default(),
-                });
+                let node_id =
+                    graph.add_node(Handle::external(target.clone(), Some(relative.clone())));
                 external_nodes.insert(target.clone(), node_id);
                 node_id
             };
@@ -1696,14 +1678,7 @@ mod tests {
 
     fn cmark_scan(body: &str) -> (ScanResult, Vec<DiscoveredRef>, DiGraph) {
         let mut graph = DiGraph::new();
-        let node = graph.add_node(Handle {
-            id: "test.md".to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from("test.md")),
-            status: None,
-            file_path: Some(Utf8PathBuf::from("test.md")),
-            date: None,
-            metadata: HandleMetadata::default(),
-        });
+        let node = graph.add_node(Handle::test_file("test.md", None));
         let line_index = LineIndex::from_content(body, 0);
         let (result, refs) = scan_file_cmark(
             body,
@@ -2229,14 +2204,7 @@ mod tests {
             let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
             let line_index = LineIndex::from_content(body, fm_lines);
             let mut graph = DiGraph::new();
-            let file_node = graph.add_node(Handle {
-                id: relative_str.to_string(),
-                kind: HandleKind::File(Utf8PathBuf::from(&*relative_str)),
-                status: None,
-                file_path: Some(Utf8PathBuf::from(&*relative_str)),
-                date: None,
-                metadata: HandleMetadata::default(),
-            });
+            let file_node = graph.add_node(Handle::test_file(&relative_str, None));
             let (result, body_discovered) =
                 scan_file_cmark(body, relative, file_node, &mut graph, &line_index);
 

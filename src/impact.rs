@@ -168,18 +168,14 @@ mod tests {
     use crate::graph::DiGraph;
     use crate::handle::Handle;
 
-    fn make_file_handle(id: &str) -> Handle {
-        Handle::test_file(id, None)
-    }
-
     #[test]
     fn simple_chain_direct_and_indirect() {
         // A -DependsOn-> B -DependsOn-> C
         // impact(C) = direct: [B], indirect: [A]
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
-        let c = graph.add_node(make_file_handle("c.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
+        let c = graph.add_node(Handle::test_file("c.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, c, EdgeKind::DependsOn);
 
@@ -193,8 +189,8 @@ mod tests {
         // A -DependsOn-> B -DependsOn-> A (cycle)
         // impact(A) should terminate with direct: [B]
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, a, EdgeKind::DependsOn);
 
@@ -208,8 +204,8 @@ mod tests {
         // A -Cites-> B
         // impact(B) should be empty (Cites is not traversed)
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::Cites);
 
         let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
@@ -222,8 +218,8 @@ mod tests {
         // A -Discharges-> B
         // impact(B) should be empty (Discharges is not traversed)
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::Discharges);
 
         let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
@@ -234,7 +230,7 @@ mod tests {
     #[test]
     fn no_incoming_edges_returns_empty() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
 
         let result = compute_impact(&graph, a, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
@@ -244,7 +240,7 @@ mod tests {
     #[test]
     fn empty_graph_node_returns_empty() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
 
         let result = compute_impact(&graph, a, DEFAULT_TRAVERSE);
         assert!(result.direct.is_empty());
@@ -256,8 +252,8 @@ mod tests {
         // A -DependsOn-> B
         // impact(B) should not include B itself
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);
@@ -270,9 +266,9 @@ mod tests {
         // A -Supersedes-> C, B -Verifies-> C
         // impact(C) = direct: [A, B]
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
-        let c = graph.add_node(make_file_handle("c.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
+        let c = graph.add_node(Handle::test_file("c.md", None));
         graph.add_edge(a, c, EdgeKind::Supersedes);
         graph.add_edge(b, c, EdgeKind::Verifies);
 
@@ -286,9 +282,9 @@ mod tests {
     #[test]
     fn impact_paths_capture_direct_and_indirect_chains() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
-        let c = graph.add_node(make_file_handle("c.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
+        let c = graph.add_node(Handle::test_file("c.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, c, EdgeKind::DependsOn);
 
@@ -313,8 +309,8 @@ mod tests {
         // With DEFAULT_TRAVERSE: impact(B) = empty (Synthesizes not in default set)
         // With custom set including Synthesizes: impact(B) = direct: [A]
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::Custom("Synthesizes".into()));
 
         let result = compute_impact(&graph, b, DEFAULT_TRAVERSE);

@@ -232,7 +232,7 @@ fn build_find_facets(matches: &[FindMatch]) -> FindFacets {
 #[cfg(test)]
 mod tests {
     use crate::cli::test_helpers::*;
-    use crate::handle::HandleKind;
+    use crate::handle::Handle;
 
     use super::*;
 
@@ -240,17 +240,7 @@ mod tests {
     fn find_default_limit_truncates_results() {
         let mut graph = DiGraph::new();
         for number in 1..=30 {
-            graph.add_node(crate::handle::Handle {
-                id: format!("OQ-{number}"),
-                kind: HandleKind::Label {
-                    prefix: "OQ".into(),
-                    number,
-                },
-                status: Some("draft".into()),
-                file_path: Some("questions.md".into()),
-                date: None,
-                metadata: crate::handle::HandleMetadata::default(),
-            });
+            graph.add_node(Handle::test_label("OQ", number, Some("draft")));
         }
 
         let output = cmd_find(

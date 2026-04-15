@@ -868,14 +868,15 @@ mod tests {
     use crate::cli::test_helpers::*;
     use crate::config::AnnealConfig;
     use crate::graph::EdgeKind;
+    use crate::handle::Handle;
 
     use super::*;
 
     #[test]
     fn map_text_renders_all_active_handles_grouped_by_kind() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle("doc.md"));
-        graph.add_node(make_label_handle("OQ", 1));
+        graph.add_node(Handle::test_file("doc.md", None));
+        graph.add_node(Handle::test_label("OQ", 1, None));
 
         let node_index = test_node_index(&graph);
         let lattice = empty_lattice();
@@ -938,8 +939,8 @@ mod tests {
     #[test]
     fn map_excludes_terminal_handles_by_default() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle_with_status("active.md", "draft"));
-        graph.add_node(make_file_handle_with_status("settled.md", "done"));
+        graph.add_node(Handle::test_file("active.md", Some("draft")));
+        graph.add_node(Handle::test_file("settled.md", Some("done")));
 
         let node_index = test_node_index(&graph);
         let lattice = lattice_with_terminal(&["done"]);
@@ -983,9 +984,9 @@ mod tests {
     #[test]
     fn map_text_groups_labels_by_namespace() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_label_handle("OQ", 1));
-        graph.add_node(make_label_handle("OQ", 64));
-        graph.add_node(make_label_handle("FM", 1));
+        graph.add_node(Handle::test_label("OQ", 1, None));
+        graph.add_node(Handle::test_label("OQ", 64, None));
+        graph.add_node(Handle::test_label("FM", 1, None));
 
         let node_index = test_node_index(&graph);
         let lattice = empty_lattice();
@@ -1026,7 +1027,7 @@ mod tests {
     #[test]
     fn map_dot_starts_with_digraph() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle("a.md"));
+        graph.add_node(Handle::test_file("a.md", None));
 
         let node_index = test_node_index(&graph);
         let lattice = empty_lattice();
@@ -1061,8 +1062,8 @@ mod tests {
     #[test]
     fn map_dot_contains_edge_format() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let node_index = test_node_index(&graph);
@@ -1098,10 +1099,10 @@ mod tests {
     fn map_around_extracts_bfs_neighborhood() {
         // a -> b -> c -> d
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("a.md"));
-        let b = graph.add_node(make_file_handle("b.md"));
-        let c = graph.add_node(make_file_handle("c.md"));
-        let d = graph.add_node(make_file_handle("d.md"));
+        let a = graph.add_node(Handle::test_file("a.md", None));
+        let b = graph.add_node(Handle::test_file("b.md", None));
+        let c = graph.add_node(Handle::test_file("c.md", None));
+        let d = graph.add_node(Handle::test_file("d.md", None));
         graph.add_edge(a, b, EdgeKind::DependsOn);
         graph.add_edge(b, c, EdgeKind::DependsOn);
         graph.add_edge(c, d, EdgeKind::DependsOn);
@@ -1162,8 +1163,8 @@ mod tests {
     #[test]
     fn map_around_depth_0_returns_just_handle() {
         let mut graph = DiGraph::new();
-        let node_a = graph.add_node(make_file_handle("a.md"));
-        let node_b = graph.add_node(make_file_handle("b.md"));
+        let node_a = graph.add_node(Handle::test_file("a.md", None));
+        let node_b = graph.add_node(Handle::test_file("b.md", None));
         graph.add_edge(node_a, node_b, EdgeKind::DependsOn);
 
         let node_index = test_node_index(&graph);
@@ -1206,10 +1207,10 @@ mod tests {
     #[test]
     fn map_concern_filters_to_matching_handles() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_label_handle("OQ", 1));
-        graph.add_node(make_label_handle("OQ", 2));
-        graph.add_node(make_label_handle("FM", 1));
-        graph.add_node(make_file_handle("unrelated.md"));
+        graph.add_node(Handle::test_label("OQ", 1, None));
+        graph.add_node(Handle::test_label("OQ", 2, None));
+        graph.add_node(Handle::test_label("FM", 1, None));
+        graph.add_node(Handle::test_file("unrelated.md", None));
 
         let node_index = test_node_index(&graph);
         let lattice = empty_lattice();
@@ -1254,8 +1255,8 @@ mod tests {
     #[test]
     fn map_summary_omits_rendered_content() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle("doc.md"));
-        graph.add_node(make_label_handle("OQ", 1));
+        graph.add_node(Handle::test_file("doc.md", None));
+        graph.add_node(Handle::test_label("OQ", 1, None));
 
         let output = cmd_map(&MapOptions {
             graph: &graph,
@@ -1281,9 +1282,9 @@ mod tests {
     #[test]
     fn map_text_full_shows_all_edges() {
         let mut graph = DiGraph::new();
-        let center = graph.add_node(make_file_handle("center.md"));
+        let center = graph.add_node(Handle::test_file("center.md", None));
         for number in 1..=60 {
-            let target = graph.add_node(make_label_handle("OQ", number));
+            let target = graph.add_node(Handle::test_label("OQ", number, None));
             graph.add_edge(center, target, EdgeKind::Cites);
         }
 
@@ -1315,19 +1316,19 @@ mod tests {
     #[test]
     fn map_around_hub_uses_hub_summary() {
         let mut graph = DiGraph::new();
-        let hub = graph.add_node(make_file_handle_with_status("LABELS.md", "living"));
-        let synthesis = graph.add_node(make_file_handle_with_status("synthesis.md", "historical"));
+        let hub = graph.add_node(Handle::test_file("LABELS.md", Some("living")));
+        let synthesis = graph.add_node(Handle::test_file("synthesis.md", Some("historical")));
         graph.add_edge(synthesis, hub, EdgeKind::DependsOn);
 
         for number in 1..=30 {
-            let label = graph.add_node(make_label_handle("OQ", number));
+            let label = graph.add_node(Handle::test_label("OQ", number, None));
             graph.add_edge(hub, label, EdgeKind::Cites);
             if number <= 4 {
                 graph.add_edge(synthesis, label, EdgeKind::Cites);
             }
         }
         for number in 1..=20 {
-            let label = graph.add_node(make_label_handle("FM", number));
+            let label = graph.add_node(Handle::test_label("FM", number, None));
             graph.add_edge(hub, label, EdgeKind::DependsOn);
         }
 

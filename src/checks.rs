@@ -1447,14 +1447,6 @@ mod tests {
         }
     }
 
-    fn make_file_handle(id: &str, status: Option<&str>) -> Handle {
-        Handle::test_file(id, status)
-    }
-
-    fn make_label_handle(prefix: &str, number: u32, status: Option<&str>) -> Handle {
-        Handle::test_label(prefix, number, status)
-    }
-
     // -----------------------------------------------------------------------
     // CHECK-01: Existence
     // -----------------------------------------------------------------------
@@ -1462,7 +1454,7 @@ mod tests {
     #[test]
     fn e001_for_unresolved_non_section_edge() {
         let mut graph = DiGraph::new();
-        let source = graph.add_node(make_file_handle("doc.md", None));
+        let source = graph.add_node(Handle::test_file("doc.md", None));
 
         let unresolved = vec![PendingEdge {
             source,
@@ -1514,8 +1506,8 @@ mod tests {
     #[test]
     fn w001_active_depends_on_terminal() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("active.md", Some("draft")));
-        let b = graph.add_node(make_file_handle("terminal.md", Some("archived")));
+        let a = graph.add_node(Handle::test_file("active.md", Some("draft")));
+        let b = graph.add_node(Handle::test_file("terminal.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);
@@ -1531,8 +1523,8 @@ mod tests {
     #[test]
     fn w001_not_emitted_for_cites_edge() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("synthesis.md", Some("draft")));
-        let b = graph.add_node(make_file_handle("research.md", Some("archived")));
+        let a = graph.add_node(Handle::test_file("synthesis.md", Some("draft")));
+        let b = graph.add_node(Handle::test_file("research.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::Cites);
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);
@@ -1544,8 +1536,8 @@ mod tests {
     #[test]
     fn w001_not_emitted_for_custom_edge() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("active.md", Some("draft")));
-        let b = graph.add_node(make_file_handle("terminal.md", Some("archived")));
+        let a = graph.add_node(Handle::test_file("active.md", Some("draft")));
+        let b = graph.add_node(Handle::test_file("terminal.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::Custom("Synthesizes".to_string()));
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);
@@ -1561,8 +1553,8 @@ mod tests {
     #[test]
     fn w002_source_higher_than_target() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("formal.md", Some("formal")));
-        let b = graph.add_node(make_file_handle("provisional.md", Some("provisional")));
+        let a = graph.add_node(Handle::test_file("formal.md", Some("formal")));
+        let b = graph.add_node(Handle::test_file("provisional.md", Some("provisional")));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         // ordering: provisional(0) < draft(1) < formal(2)
@@ -1583,8 +1575,8 @@ mod tests {
     #[test]
     fn w002_not_produced_when_ordering_empty() {
         let mut graph = DiGraph::new();
-        let a = graph.add_node(make_file_handle("formal.md", Some("formal")));
-        let b = graph.add_node(make_file_handle("provisional.md", Some("provisional")));
+        let a = graph.add_node(Handle::test_file("formal.md", Some("formal")));
+        let b = graph.add_node(Handle::test_file("provisional.md", Some("provisional")));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         // No ordering -- cannot determine levels
@@ -1604,7 +1596,7 @@ mod tests {
     #[test]
     fn e002_undischarged_obligation() {
         let mut graph = DiGraph::new();
-        let _label = graph.add_node(make_label_handle("OBL", 1, None));
+        let _label = graph.add_node(Handle::test_label("OBL", 1, None));
 
         let config = AnnealConfig {
             handles: HandlesConfig {
@@ -1625,7 +1617,7 @@ mod tests {
     #[test]
     fn e002_not_produced_for_terminal_handle() {
         let mut graph = DiGraph::new();
-        let _label = graph.add_node(make_label_handle("OBL", 1, Some("archived")));
+        let _label = graph.add_node(Handle::test_label("OBL", 1, Some("archived")));
 
         let config = AnnealConfig {
             handles: HandlesConfig {
@@ -1646,9 +1638,9 @@ mod tests {
     #[test]
     fn i002_multiple_discharges() {
         let mut graph = DiGraph::new();
-        let label = graph.add_node(make_label_handle("OBL", 1, None));
-        let discharger1 = graph.add_node(make_file_handle("proof1.md", None));
-        let discharger2 = graph.add_node(make_file_handle("proof2.md", None));
+        let label = graph.add_node(Handle::test_label("OBL", 1, None));
+        let discharger1 = graph.add_node(Handle::test_file("proof1.md", None));
+        let discharger2 = graph.add_node(Handle::test_file("proof2.md", None));
         graph.add_edge(discharger1, label, EdgeKind::Discharges);
         graph.add_edge(discharger2, label, EdgeKind::Discharges);
 
@@ -1677,9 +1669,9 @@ mod tests {
     fn w003_missing_frontmatter_above_threshold() {
         let mut graph = DiGraph::new();
         // 3 files in same dir: 2 have status, 1 does not -> 66% adoption
-        let _a = graph.add_node(make_file_handle("dir/a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("dir/b.md", Some("final")));
-        let _c = graph.add_node(make_file_handle("dir/c.md", None));
+        let _a = graph.add_node(Handle::test_file("dir/a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("dir/b.md", Some("final")));
+        let _c = graph.add_node(Handle::test_file("dir/c.md", None));
 
         let diags = check_conventions(&graph);
         assert_eq!(diags.len(), 1);
@@ -1692,9 +1684,9 @@ mod tests {
     fn w003_not_produced_below_threshold() {
         let mut graph = DiGraph::new();
         // 3 files in same dir: 1 has status, 2 do not -> 33% adoption
-        let _a = graph.add_node(make_file_handle("dir/a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("dir/b.md", None));
-        let _c = graph.add_node(make_file_handle("dir/c.md", None));
+        let _a = graph.add_node(Handle::test_file("dir/a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("dir/b.md", None));
+        let _c = graph.add_node(Handle::test_file("dir/c.md", None));
 
         let diags = check_conventions(&graph);
         assert!(
@@ -1711,7 +1703,7 @@ mod tests {
     fn suggest_s001_for_orphaned_label() {
         let mut graph = DiGraph::new();
         // Label with no incoming edges -> orphaned
-        let _label = graph.add_node(make_label_handle("OQ", 1, None));
+        let _label = graph.add_node(Handle::test_label("OQ", 1, None));
 
         let diags = suggest_orphaned(&graph);
         assert_eq!(
@@ -1734,7 +1726,7 @@ mod tests {
     fn suggest_s001_not_for_file_handles() {
         let mut graph = DiGraph::new();
         // File handles are roots -- never orphaned
-        let _file = graph.add_node(make_file_handle("doc.md", None));
+        let _file = graph.add_node(Handle::test_file("doc.md", None));
 
         let diags = suggest_orphaned(&graph);
         assert!(
@@ -1746,8 +1738,8 @@ mod tests {
     #[test]
     fn suggest_s001_not_for_handles_with_incoming() {
         let mut graph = DiGraph::new();
-        let file = graph.add_node(make_file_handle("doc.md", None));
-        let label = graph.add_node(make_label_handle("OQ", 1, None));
+        let file = graph.add_node(Handle::test_file("doc.md", None));
+        let label = graph.add_node(Handle::test_label("OQ", 1, None));
         graph.add_edge(file, label, EdgeKind::Cites);
 
         let diags = suggest_orphaned(&graph);
@@ -1765,9 +1757,9 @@ mod tests {
     fn suggest_s002_for_recurring_unconfirmed_prefix() {
         let mut graph = DiGraph::new();
         // 3 labels with prefix "NEW" -- not in confirmed namespaces
-        let _a = graph.add_node(make_label_handle("NEW", 1, None));
-        let _b = graph.add_node(make_label_handle("NEW", 2, None));
-        let _c = graph.add_node(make_label_handle("NEW", 3, None));
+        let _a = graph.add_node(Handle::test_label("NEW", 1, None));
+        let _b = graph.add_node(Handle::test_label("NEW", 2, None));
+        let _c = graph.add_node(Handle::test_label("NEW", 3, None));
 
         let config = AnnealConfig::default();
 
@@ -1794,9 +1786,9 @@ mod tests {
     #[test]
     fn suggest_s002_not_for_confirmed_prefix() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_label_handle("OQ", 1, None));
-        let _b = graph.add_node(make_label_handle("OQ", 2, None));
-        let _c = graph.add_node(make_label_handle("OQ", 3, None));
+        let _a = graph.add_node(Handle::test_label("OQ", 1, None));
+        let _b = graph.add_node(Handle::test_label("OQ", 2, None));
+        let _c = graph.add_node(Handle::test_label("OQ", 3, None));
 
         let config = AnnealConfig {
             handles: HandlesConfig {
@@ -1821,11 +1813,11 @@ mod tests {
     fn suggest_s003_stall_at_level_with_no_outflow() {
         let mut graph = DiGraph::new();
         // 3 handles at "draft" level, none with DependsOn to "review" level
-        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
-        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
+        let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
+        let _c = graph.add_node(Handle::test_file("c.md", Some("draft")));
         // One handle at next level
-        let _d = graph.add_node(make_file_handle("d.md", Some("review")));
+        let _d = graph.add_node(Handle::test_file("d.md", Some("review")));
 
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
 
@@ -1860,7 +1852,7 @@ mod tests {
     #[test]
     fn suggest_s003_empty_when_no_ordering() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
+        let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
 
         let lattice = make_lattice(&["draft"], &[], &[]);
 
@@ -1900,10 +1892,10 @@ mod tests {
     #[test]
     fn suggest_s003_static_fallback_without_history() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
-        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
-        let _d = graph.add_node(make_file_handle("d.md", Some("review")));
+        let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
+        let _c = graph.add_node(Handle::test_file("c.md", Some("draft")));
+        let _d = graph.add_node(Handle::test_file("d.md", Some("review")));
 
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
 
@@ -1919,9 +1911,9 @@ mod tests {
     #[test]
     fn suggest_s003_uses_temporal_signal_when_population_unchanged() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
-        let _c = graph.add_node(make_file_handle("c.md", Some("draft")));
+        let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
+        let _c = graph.add_node(Handle::test_file("c.md", Some("draft")));
 
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
         let previous = make_snapshot(&[("draft", 3)]);
@@ -1938,9 +1930,9 @@ mod tests {
     #[test]
     fn suggest_s003_skips_temporal_signal_when_population_decreases() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_file_handle("a.md", Some("draft")));
-        let _b = graph.add_node(make_file_handle("b.md", Some("draft")));
-        let _c = graph.add_node(make_file_handle("d.md", Some("review")));
+        let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
+        let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
+        let _c = graph.add_node(Handle::test_file("d.md", Some("review")));
 
         let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
         let previous = make_snapshot(&[("draft", 4)]);
@@ -1956,8 +1948,8 @@ mod tests {
     #[test]
     fn suggest_s004_all_members_terminal() {
         let mut graph = DiGraph::new();
-        let _a = graph.add_node(make_label_handle("OLD", 1, Some("archived")));
-        let _b = graph.add_node(make_label_handle("OLD", 2, Some("archived")));
+        let _a = graph.add_node(Handle::test_label("OLD", 1, Some("archived")));
+        let _b = graph.add_node(Handle::test_label("OLD", 2, Some("archived")));
 
         let config = AnnealConfig {
             handles: HandlesConfig {
@@ -2000,10 +1992,10 @@ mod tests {
     fn suggest_s004_all_members_stale() {
         let mut graph = DiGraph::new();
         // Create handles with old updated dates (stale beyond error threshold of 90 days)
-        let mut h1 = make_label_handle("STALE", 1, Some("draft"));
+        let mut h1 = Handle::test_label("STALE", 1, Some("draft"));
         h1.metadata.updated =
             Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
-        let mut h2 = make_label_handle("STALE", 2, Some("draft"));
+        let mut h2 = Handle::test_label("STALE", 2, Some("draft"));
         h2.metadata.updated =
             Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date"));
         let _a = graph.add_node(h1);
@@ -2031,9 +2023,9 @@ mod tests {
     fn suggest_s004_not_for_fresh_active_members() {
         let mut graph = DiGraph::new();
         // Fresh active handles -- should NOT be flagged
-        let mut h1 = make_label_handle("ACTIVE", 1, Some("draft"));
+        let mut h1 = Handle::test_label("ACTIVE", 1, Some("draft"));
         h1.metadata.updated = Some(chrono::Local::now().date_naive());
-        let mut h2 = make_label_handle("ACTIVE", 2, Some("draft"));
+        let mut h2 = Handle::test_label("ACTIVE", 2, Some("draft"));
         h2.metadata.updated = Some(chrono::Local::now().date_naive());
         let _a = graph.add_node(h1);
         let _b = graph.add_node(h2);
@@ -2063,9 +2055,9 @@ mod tests {
         let mut graph = DiGraph::new();
         // 3 files each reference both "OQ" and "FM" labels
         for i in 0..3 {
-            let file = graph.add_node(make_file_handle(&format!("doc{i}.md"), None));
-            let oq = graph.add_node(make_label_handle("OQ", i + 1, None));
-            let fm = graph.add_node(make_label_handle("FM", i + 1, None));
+            let file = graph.add_node(Handle::test_file(&format!("doc{i}.md"), None));
+            let oq = graph.add_node(Handle::test_label("OQ", i + 1, None));
+            let fm = graph.add_node(Handle::test_label("FM", i + 1, None));
             graph.add_edge(file, oq, EdgeKind::Cites);
             graph.add_edge(file, fm, EdgeKind::Cites);
         }
@@ -2109,7 +2101,7 @@ mod tests {
     fn suggest_run_checks_includes_suggestions() {
         let mut graph = DiGraph::new();
         // Orphaned label -> S001
-        let _label = graph.add_node(make_label_handle("LONE", 1, None));
+        let _label = graph.add_node(Handle::test_label("LONE", 1, None));
 
         let lattice = make_lattice(&[], &[], &[]);
         let config = AnnealConfig::default();
@@ -2217,7 +2209,7 @@ mod tests {
     #[test]
     fn check_existence_with_candidates_produces_evidence() {
         let mut graph = DiGraph::new();
-        let source = graph.add_node(make_file_handle("doc.md", None));
+        let source = graph.add_node(Handle::test_file("doc.md", None));
 
         let unresolved = vec![PendingEdge {
             source,
@@ -2245,7 +2237,7 @@ mod tests {
     #[test]
     fn check_existence_without_candidates_produces_empty_candidates() {
         let mut graph = DiGraph::new();
-        let source = graph.add_node(make_file_handle("doc.md", None));
+        let source = graph.add_node(Handle::test_file("doc.md", None));
 
         let unresolved = vec![PendingEdge {
             source,
@@ -2271,8 +2263,8 @@ mod tests {
     #[test]
     fn check_existence_suggests_subdirectory_file_for_bare_filename() {
         let mut graph = DiGraph::new();
-        let source = graph.add_node(make_file_handle("doc.md", None));
-        let _nested = graph.add_node(make_file_handle("notes/foo.md", None));
+        let source = graph.add_node(Handle::test_file("doc.md", None));
+        let _nested = graph.add_node(Handle::test_file("notes/foo.md", None));
 
         let unresolved = vec![PendingEdge {
             source,
@@ -2297,7 +2289,7 @@ mod tests {
     #[test]
     fn check_existence_keeps_generic_candidates_for_non_bare_target() {
         let mut graph = DiGraph::new();
-        let source = graph.add_node(make_file_handle("doc.md", None));
+        let source = graph.add_node(Handle::test_file("doc.md", None));
 
         let unresolved = vec![PendingEdge {
             source,
@@ -2327,9 +2319,9 @@ mod tests {
         let mut graph = DiGraph::new();
         // Create a scenario producing all three severities:
         // E001 from unresolved edge
-        let source = graph.add_node(make_file_handle("doc.md", Some("draft")));
+        let source = graph.add_node(Handle::test_file("doc.md", Some("draft")));
         // W001 from stale dependency (DependsOn triggers staleness check)
-        let terminal = graph.add_node(make_file_handle("old.md", Some("archived")));
+        let terminal = graph.add_node(Handle::test_file("old.md", Some("archived")));
         graph.add_edge(source, terminal, EdgeKind::DependsOn);
 
         let lattice = make_lattice(&["draft"], &["archived"], &[]);

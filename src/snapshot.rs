@@ -499,7 +499,7 @@ mod tests {
     use crate::checks::DiagnosticCode;
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata};
+    use crate::handle::Handle;
     use crate::lattice::{Lattice, LatticeKind};
 
     fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
@@ -515,14 +515,6 @@ mod tests {
             ordering: Vec::new(),
             kind: LatticeKind::Confidence,
         }
-    }
-
-    fn make_file_handle(id: &str, status: Option<&str>) -> Handle {
-        Handle::test_file(id, status)
-    }
-
-    fn make_label_handle(prefix: &str, number: u32, status: Option<&str>) -> Handle {
-        Handle::test_label(prefix, number, status)
     }
 
     fn make_snapshot(total: usize, active: usize, frozen: usize, outstanding: usize) -> Snapshot {
@@ -831,14 +823,14 @@ mod tests {
     fn build_snapshot_counts_handles_edges_states_obligations_diagnostics_namespaces() {
         let mut graph = DiGraph::new();
         // 2 file handles: one active, one terminal
-        let _f1 = graph.add_node(make_file_handle("doc1.md", Some("draft")));
-        let _f2 = graph.add_node(make_file_handle("doc2.md", Some("archived")));
+        let _f1 = graph.add_node(Handle::test_file("doc1.md", Some("draft")));
+        let _f2 = graph.add_node(Handle::test_file("doc2.md", Some("archived")));
         // 2 label handles in OQ namespace
-        let oq1 = graph.add_node(make_label_handle("OQ", 1, None));
-        let _oq2 = graph.add_node(make_label_handle("OQ", 2, Some("archived")));
+        let oq1 = graph.add_node(Handle::test_label("OQ", 1, None));
+        let _oq2 = graph.add_node(Handle::test_label("OQ", 2, Some("archived")));
         // 1 label in linear namespace OBL with a discharge
-        let obl1 = graph.add_node(make_label_handle("OBL", 1, None));
-        let discharger = graph.add_node(make_file_handle("proof.md", Some("draft")));
+        let obl1 = graph.add_node(Handle::test_label("OBL", 1, None));
+        let discharger = graph.add_node(Handle::test_file("proof.md", Some("draft")));
         graph.add_edge(discharger, obl1, crate::graph::EdgeKind::Discharges);
         // OQ-1 has no discharge (not linear, doesn't matter)
         // Add a Cites edge for edge count
@@ -911,19 +903,13 @@ mod tests {
     #[test]
     fn build_snapshot_ignores_external_handles_for_obligations_and_namespaces() {
         let mut graph = DiGraph::new();
-        let obligation = graph.add_node(make_label_handle("OBL", 1, None));
-        let discharger = graph.add_node(make_file_handle("proof.md", Some("draft")));
+        let obligation = graph.add_node(Handle::test_label("OBL", 1, None));
+        let discharger = graph.add_node(Handle::test_file("proof.md", Some("draft")));
         graph.add_edge(discharger, obligation, crate::graph::EdgeKind::Discharges);
-        graph.add_node(Handle {
-            id: "https://example.com/spec".to_string(),
-            kind: HandleKind::External {
-                url: "https://example.com/spec".to_string(),
-            },
-            status: None,
-            file_path: Some(camino::Utf8PathBuf::from("proof.md")),
-            date: None,
-            metadata: HandleMetadata::default(),
-        });
+        graph.add_node(Handle::external(
+            "https://example.com/spec".to_string(),
+            Some(camino::Utf8PathBuf::from("proof.md")),
+        ));
 
         let lattice = make_lattice(&["draft"], &["archived"]);
         let config = AnnealConfig {

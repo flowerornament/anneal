@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
+use crate::handle::{Handle, HandleKind, NodeId};
 use crate::parse::{LabelCandidate, PendingEdge};
 
 // ---------------------------------------------------------------------------
@@ -169,17 +169,11 @@ fn resolve_labels(
         let label_node = if let Some(&existing) = node_index.get(&label_id) {
             existing
         } else {
-            let node = graph.add_node(Handle {
-                id: label_id.clone(),
-                kind: HandleKind::Label {
-                    prefix: candidate.prefix.clone(),
-                    number: candidate.number,
-                },
-                status: None,
-                file_path: Some(candidate.file_path.clone()),
-                date: None,
-                metadata: HandleMetadata::default(),
-            });
+            let node = graph.add_node(Handle::label(
+                candidate.prefix.clone(),
+                candidate.number,
+                Some(candidate.file_path.clone()),
+            ));
             node_index.insert(label_id, node);
             labels_resolved += 1;
             node
@@ -245,17 +239,8 @@ pub(crate) fn resolve_versions(
             let file_status = graph.node(*file_node).status.clone();
 
             // Create Version handle node
-            let version_node = graph.add_node(Handle {
-                id: version_id.clone(),
-                kind: HandleKind::Version {
-                    artifact: *file_node,
-                    version: *version,
-                },
-                status: file_status,
-                file_path: None,
-                date: None,
-                metadata: HandleMetadata::default(),
-            });
+            let version_node =
+                graph.add_node(Handle::version(*file_node, *version, &base, file_status));
             node_index.insert(version_id, version_node);
             count += 1;
 
