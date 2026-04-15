@@ -187,35 +187,14 @@ pub(super) fn plural(n: usize) -> &'static str {
 
 #[cfg(test)]
 pub(super) mod test_helpers {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     use crate::checks::{Diagnostic, DiagnosticCode, Severity};
     use crate::graph::DiGraph;
     use crate::handle::NodeId;
-    use crate::lattice::Lattice;
     use crate::snapshot::{
         DiagnosticCounts, EdgeCounts, HandleCounts, NamespaceStats, ObligationCounts, Snapshot,
     };
-
-    pub(crate) fn empty_lattice() -> Lattice {
-        Lattice {
-            observed_statuses: HashSet::new(),
-            active: HashSet::new(),
-            terminal: HashSet::new(),
-            ordering: Vec::new(),
-            kind: crate::lattice::LatticeKind::Existence,
-        }
-    }
-
-    pub(crate) fn lattice_with_terminal(terminal: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: terminal.iter().copied().map(str::to_string).collect(),
-            active: HashSet::new(),
-            terminal: terminal.iter().copied().map(str::to_string).collect(),
-            ordering: Vec::new(),
-            kind: crate::lattice::LatticeKind::Confidence,
-        }
-    }
 
     pub(crate) fn test_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
         crate::resolve::build_node_index(graph)

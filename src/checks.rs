@@ -1432,21 +1432,6 @@ mod tests {
         DiagnosticCounts, EdgeCounts, HandleCounts, NamespaceStats, ObligationCounts, Snapshot,
     };
 
-    fn make_lattice(active: &[&str], terminal: &[&str], ordering: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: active
-                .iter()
-                .chain(terminal.iter())
-                .copied()
-                .map(String::from)
-                .collect(),
-            active: active.iter().copied().map(String::from).collect(),
-            terminal: terminal.iter().copied().map(String::from).collect(),
-            ordering: ordering.iter().copied().map(String::from).collect(),
-            kind: crate::lattice::LatticeKind::Confidence,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // CHECK-01: Existence
     // -----------------------------------------------------------------------
@@ -1510,7 +1495,7 @@ mod tests {
         let b = graph.add_node(Handle::test_file("terminal.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
-        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &["archived"], &[]);
 
         let diags = check_staleness(&graph, &lattice);
         assert_eq!(diags.len(), 1);
@@ -1527,7 +1512,7 @@ mod tests {
         let b = graph.add_node(Handle::test_file("research.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::Cites);
 
-        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &["archived"], &[]);
 
         let diags = check_staleness(&graph, &lattice);
         assert_eq!(diags.len(), 0);
@@ -1540,7 +1525,7 @@ mod tests {
         let b = graph.add_node(Handle::test_file("terminal.md", Some("archived")));
         graph.add_edge(a, b, EdgeKind::Custom("Synthesizes".to_string()));
 
-        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &["archived"], &[]);
 
         let diags = check_staleness(&graph, &lattice);
         assert_eq!(diags.len(), 0);
@@ -1558,7 +1543,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         // ordering: provisional(0) < draft(1) < formal(2)
-        let lattice = make_lattice(
+        let lattice = Lattice::test_with_ordering(
             &["provisional", "draft", "formal"],
             &[],
             &["provisional", "draft", "formal"],
@@ -1580,7 +1565,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         // No ordering -- cannot determine levels
-        let lattice = make_lattice(&["provisional", "formal"], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&["provisional", "formal"], &[], &[]);
 
         let diags = check_confidence_gap(&graph, &lattice);
         assert!(
@@ -1605,7 +1590,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&[], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&[], &[], &[]);
 
         let diags = check_linearity(&graph, &config, &lattice);
         assert_eq!(diags.len(), 1);
@@ -1626,7 +1611,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&[], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&[], &["archived"], &[]);
 
         let diags = check_linearity(&graph, &config, &lattice);
         assert!(
@@ -1651,7 +1636,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&[], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&[], &[], &[]);
 
         let diags = check_linearity(&graph, &config, &lattice);
         assert_eq!(diags.len(), 1);
@@ -1819,7 +1804,7 @@ mod tests {
         // One handle at next level
         let _d = graph.add_node(Handle::test_file("d.md", Some("review")));
 
-        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let lattice = Lattice::test_with_ordering(&["draft", "review"], &[], &["draft", "review"]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert_eq!(
@@ -1854,7 +1839,7 @@ mod tests {
         let mut graph = DiGraph::new();
         let _a = graph.add_node(Handle::test_file("a.md", Some("draft")));
 
-        let lattice = make_lattice(&["draft"], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &[], &[]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert!(
@@ -1897,7 +1882,7 @@ mod tests {
         let _c = graph.add_node(Handle::test_file("c.md", Some("draft")));
         let _d = graph.add_node(Handle::test_file("d.md", Some("review")));
 
-        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let lattice = Lattice::test_with_ordering(&["draft", "review"], &[], &["draft", "review"]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, None);
         assert_eq!(diags.len(), 1);
@@ -1915,7 +1900,7 @@ mod tests {
         let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
         let _c = graph.add_node(Handle::test_file("c.md", Some("draft")));
 
-        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let lattice = Lattice::test_with_ordering(&["draft", "review"], &[], &["draft", "review"]);
         let previous = make_snapshot(&[("draft", 3)]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, Some(&previous));
@@ -1934,7 +1919,7 @@ mod tests {
         let _b = graph.add_node(Handle::test_file("b.md", Some("draft")));
         let _c = graph.add_node(Handle::test_file("d.md", Some("review")));
 
-        let lattice = make_lattice(&["draft", "review"], &[], &["draft", "review"]);
+        let lattice = Lattice::test_with_ordering(&["draft", "review"], &[], &["draft", "review"]);
         let previous = make_snapshot(&[("draft", 4)]);
 
         let diags = suggest_pipeline_stalls(&graph, &lattice, Some(&previous));
@@ -1958,7 +1943,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&[], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&[], &["archived"], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
         assert_eq!(
@@ -2008,7 +1993,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&["draft"], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &[], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
         assert_eq!(
@@ -2037,7 +2022,7 @@ mod tests {
             },
             ..AnnealConfig::default()
         };
-        let lattice = make_lattice(&["draft"], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &[], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
         assert!(
@@ -2103,7 +2088,7 @@ mod tests {
         // Orphaned label -> S001
         let _label = graph.add_node(Handle::test_label("LONE", 1, None));
 
-        let lattice = make_lattice(&[], &[], &[]);
+        let lattice = Lattice::test_with_ordering(&[], &[], &[]);
         let config = AnnealConfig::default();
         let unresolved: Vec<PendingEdge> = Vec::new();
 
@@ -2324,7 +2309,7 @@ mod tests {
         let terminal = graph.add_node(Handle::test_file("old.md", Some("archived")));
         graph.add_edge(source, terminal, EdgeKind::DependsOn);
 
-        let lattice = make_lattice(&["draft"], &["archived"], &[]);
+        let lattice = Lattice::test_with_ordering(&["draft"], &["archived"], &[]);
         let config = AnnealConfig::default();
 
         let unresolved = vec![PendingEdge {

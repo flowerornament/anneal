@@ -406,7 +406,6 @@ pub(crate) fn cmd_status(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::cli::test_helpers::*;
     use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
     use crate::handle::Handle;
@@ -582,7 +581,7 @@ mod tests {
         graph.add_node(Handle::test_file("doc2.md", None));
         graph.add_node(Handle::test_label("OQ", 1, None));
 
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
@@ -600,7 +599,7 @@ mod tests {
         graph.add_node(Handle::test_file("doc2.md", Some("archived")));
         graph.add_node(Handle::test_file("doc3.md", None));
 
-        let lattice = lattice_with_terminal(&["archived"]);
+        let lattice = Lattice::test_new(&[], &["archived"]);
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 

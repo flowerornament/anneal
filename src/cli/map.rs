@@ -879,7 +879,7 @@ mod tests {
         graph.add_node(Handle::test_label("OQ", 1, None));
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -943,7 +943,7 @@ mod tests {
         graph.add_node(Handle::test_file("settled.md", Some("done")));
 
         let node_index = test_node_index(&graph);
-        let lattice = lattice_with_terminal(&["done"]);
+        let lattice = Lattice::test_new(&[], &["done"]);
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -989,7 +989,7 @@ mod tests {
         graph.add_node(Handle::test_label("FM", 1, None));
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -1030,7 +1030,7 @@ mod tests {
         graph.add_node(Handle::test_file("a.md", None));
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -1067,7 +1067,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -1108,7 +1108,7 @@ mod tests {
         graph.add_edge(c, d, EdgeKind::DependsOn);
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         // Depth 1 from b: should include a (reverse), b, c (forward)
@@ -1168,7 +1168,7 @@ mod tests {
         graph.add_edge(node_a, node_b, EdgeKind::DependsOn);
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let config = AnnealConfig::default();
 
         let output = cmd_map(&MapOptions {
@@ -1213,7 +1213,7 @@ mod tests {
         graph.add_node(Handle::test_file("unrelated.md", None));
 
         let node_index = test_node_index(&graph);
-        let lattice = empty_lattice();
+        let lattice = Lattice::test_empty();
         let mut config = AnnealConfig::default();
         config
             .concerns
@@ -1261,7 +1261,7 @@ mod tests {
         let output = cmd_map(&MapOptions {
             graph: &graph,
             node_index: &test_node_index(&graph),
-            lattice: &empty_lattice(),
+            lattice: &Lattice::test_empty(),
             config: &AnnealConfig::default(),
             concern: None,
             around: None,
@@ -1291,7 +1291,7 @@ mod tests {
         let output = cmd_map(&MapOptions {
             graph: &graph,
             node_index: &test_node_index(&graph),
-            lattice: &empty_lattice(),
+            lattice: &Lattice::test_empty(),
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("center.md"),
@@ -1335,7 +1335,7 @@ mod tests {
         let output = cmd_map(&MapOptions {
             graph: &graph,
             node_index: &test_node_index(&graph),
-            lattice: &empty_lattice(),
+            lattice: &Lattice::test_empty(),
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("LABELS.md"),

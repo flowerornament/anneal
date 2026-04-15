@@ -500,22 +500,7 @@ mod tests {
     use crate::config::{AnnealConfig, HandlesConfig};
     use crate::graph::DiGraph;
     use crate::handle::Handle;
-    use crate::lattice::{Lattice, LatticeKind};
-
-    fn make_lattice(active: &[&str], terminal: &[&str]) -> Lattice {
-        Lattice {
-            observed_statuses: active
-                .iter()
-                .chain(terminal.iter())
-                .copied()
-                .map(String::from)
-                .collect(),
-            active: active.iter().copied().map(String::from).collect(),
-            terminal: terminal.iter().copied().map(String::from).collect(),
-            ordering: Vec::new(),
-            kind: LatticeKind::Confidence,
-        }
-    }
+    use crate::lattice::Lattice;
 
     fn make_snapshot(total: usize, active: usize, frozen: usize, outstanding: usize) -> Snapshot {
         Snapshot {
@@ -836,7 +821,7 @@ mod tests {
         // Add a Cites edge for edge count
         graph.add_edge(discharger, oq1, crate::graph::EdgeKind::Cites);
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = AnnealConfig {
             handles: HandlesConfig {
                 linear: vec!["OBL".to_string()],
@@ -911,7 +896,7 @@ mod tests {
             Some(camino::Utf8PathBuf::from("proof.md")),
         ));
 
-        let lattice = make_lattice(&["draft"], &["archived"]);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
         let config = AnnealConfig {
             handles: HandlesConfig {
                 linear: vec!["OBL".to_string()],
