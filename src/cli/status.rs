@@ -409,6 +409,7 @@ mod tests {
     use crate::cli::test_helpers::*;
     use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
+    use crate::handle::Handle;
 
     use super::*;
 
@@ -577,9 +578,9 @@ mod tests {
     #[test]
     fn status_cmd_status_basic_counts() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle("doc1.md"));
-        graph.add_node(make_file_handle("doc2.md"));
-        graph.add_node(make_label_handle("OQ", 1));
+        graph.add_node(Handle::test_file("doc1.md", None));
+        graph.add_node(Handle::test_file("doc2.md", None));
+        graph.add_node(Handle::test_label("OQ", 1, None));
 
         let lattice = empty_lattice();
         let config = AnnealConfig::default();
@@ -595,9 +596,9 @@ mod tests {
     #[test]
     fn status_cmd_status_counts_active_frozen() {
         let mut graph = DiGraph::new();
-        graph.add_node(make_file_handle_with_status("doc1.md", "draft"));
-        graph.add_node(make_file_handle_with_status("doc2.md", "archived"));
-        graph.add_node(make_file_handle("doc3.md"));
+        graph.add_node(Handle::test_file("doc1.md", Some("draft")));
+        graph.add_node(Handle::test_file("doc2.md", Some("archived")));
+        graph.add_node(Handle::test_file("doc3.md", None));
 
         let lattice = lattice_with_terminal(&["archived"]);
         let config = AnnealConfig::default();

@@ -433,14 +433,14 @@ mod tests {
 
     use crate::cli::test_helpers::*;
     use crate::graph::EdgeKind;
-    use crate::handle::HandleKind;
+    use crate::handle::Handle;
 
     use super::*;
 
     #[test]
     fn lookup_handle_normalizes_zero_padded_labels() {
         let mut graph = crate::graph::DiGraph::new();
-        let label = graph.add_node(make_label_handle("OQ", 1));
+        let label = graph.add_node(Handle::test_label("OQ", 1, None));
         let node_index = test_node_index(&graph);
 
         assert_eq!(
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn lookup_handle_normalizes_zero_padded_compound_labels() {
         let mut graph = crate::graph::DiGraph::new();
-        let label = graph.add_node(make_label_handle("KB-D", 1));
+        let label = graph.add_node(Handle::test_label("KB-D", 1, None));
         let node_index = test_node_index(&graph);
 
         assert_eq!(
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn lookup_handle_accepts_hyphenated_zero_padded_compound_labels() {
         let mut graph = crate::graph::DiGraph::new();
-        let label = graph.add_node(make_label_handle("KB-D", 1));
+        let label = graph.add_node(Handle::test_label("KB-D", 1, None));
         let node_index = test_node_index(&graph);
 
         assert_eq!(
@@ -476,18 +476,8 @@ mod tests {
     #[test]
     fn cmd_get_uses_precomputed_snippets() {
         let mut graph = crate::graph::DiGraph::new();
-        let file_node = graph.add_node(crate::handle::Handle::test_file("guide.md", Some("draft")));
-        let label_node = graph.add_node(crate::handle::Handle {
-            id: "OQ-64".to_string(),
-            kind: HandleKind::Label {
-                prefix: "OQ".to_string(),
-                number: 64,
-            },
-            status: None,
-            file_path: Some("guide.md".into()),
-            date: None,
-            metadata: crate::handle::HandleMetadata::default(),
-        });
+        let file_node = graph.add_node(Handle::test_file("guide.md", Some("draft")));
+        let label_node = graph.add_node(Handle::test_label("OQ", 64, None));
 
         let node_index = HashMap::from([
             ("guide.md".to_string(), file_node),
@@ -530,10 +520,10 @@ mod tests {
     #[test]
     fn get_json_summary_caps_edges() {
         let mut graph = crate::graph::DiGraph::new();
-        let center = graph.add_node(make_file_handle("center.md"));
+        let center = graph.add_node(Handle::test_file("center.md", None));
         for idx in 0..15 {
-            let source = graph.add_node(make_file_handle(&format!("source-{idx}.md")));
-            let target = graph.add_node(make_file_handle(&format!("target-{idx}.md")));
+            let source = graph.add_node(Handle::test_file(&format!("source-{idx}.md"), None));
+            let target = graph.add_node(Handle::test_file(&format!("target-{idx}.md"), None));
             graph.add_edge(source, center, EdgeKind::Cites);
             graph.add_edge(center, target, EdgeKind::DependsOn);
         }

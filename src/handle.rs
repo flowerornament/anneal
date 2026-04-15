@@ -73,6 +73,76 @@ impl Handle {
             .as_ref()
             .is_some_and(|s| lattice.terminal.contains(s))
     }
+
+    /// Create a File handle.
+    pub(crate) fn file(
+        path: Utf8PathBuf,
+        status: Option<String>,
+        date: Option<chrono::NaiveDate>,
+        metadata: HandleMetadata,
+    ) -> Self {
+        Self {
+            id: path.to_string(),
+            file_path: Some(path.clone()),
+            kind: HandleKind::File(path),
+            status,
+            date,
+            metadata,
+        }
+    }
+
+    /// Create a Section handle.
+    pub(crate) fn section(parent: NodeId, heading: String, file_path: Utf8PathBuf) -> Self {
+        Self {
+            id: format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-")),
+            kind: HandleKind::Section { parent, heading },
+            status: None,
+            file_path: Some(file_path),
+            date: None,
+            metadata: HandleMetadata::default(),
+        }
+    }
+
+    /// Create a Label handle.
+    pub(crate) fn label(prefix: String, number: u32, file_path: Option<Utf8PathBuf>) -> Self {
+        Self {
+            id: format!("{prefix}-{number}"),
+            kind: HandleKind::Label { prefix, number },
+            status: None,
+            file_path,
+            date: None,
+            metadata: HandleMetadata::default(),
+        }
+    }
+
+    /// Create a Version handle.
+    pub(crate) fn version(
+        artifact: NodeId,
+        version: u32,
+        artifact_id: &str,
+        status: Option<String>,
+    ) -> Self {
+        Self {
+            id: format!("{artifact_id}-v{version}"),
+            kind: HandleKind::Version { artifact, version },
+            status,
+            file_path: None,
+            date: None,
+            metadata: HandleMetadata::default(),
+        }
+    }
+
+    /// Create an External (URL) handle.
+    pub(crate) fn external(url: String, file_path: Option<Utf8PathBuf>) -> Self {
+        Self {
+            id: url.clone(),
+            kind: HandleKind::External { url },
+            status: None,
+            file_path,
+            date: None,
+            metadata: HandleMetadata::default(),
+        }
+    }
 }
 
 pub(crate) fn resolved_file<'a>(handle: &'a Handle, graph: &'a DiGraph) -> Option<&'a Utf8Path> {
@@ -104,28 +174,18 @@ pub(crate) struct HandleMetadata {
 #[cfg(test)]
 impl Handle {
     pub(crate) fn test_file(id: &str, status: Option<&str>) -> Self {
-        Self {
-            id: id.to_string(),
-            kind: HandleKind::File(Utf8PathBuf::from(id)),
-            status: status.map(String::from),
-            file_path: Some(Utf8PathBuf::from(id)),
-            date: None,
-            metadata: HandleMetadata::default(),
-        }
+        Self::file(
+            Utf8PathBuf::from(id),
+            status.map(String::from),
+            None,
+            HandleMetadata::default(),
+        )
     }
 
     pub(crate) fn test_label(prefix: &str, number: u32, status: Option<&str>) -> Self {
-        Self {
-            id: format!("{prefix}-{number}"),
-            kind: HandleKind::Label {
-                prefix: prefix.to_string(),
-                number,
-            },
-            status: status.map(String::from),
-            file_path: None,
-            date: None,
-            metadata: HandleMetadata::default(),
-        }
+        let mut h = Self::label(prefix.to_string(), number, None);
+        h.status = status.map(String::from);
+        h
     }
 }
 

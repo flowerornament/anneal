@@ -191,23 +191,11 @@ pub(super) mod test_helpers {
 
     use crate::checks::{Diagnostic, DiagnosticCode, Severity};
     use crate::graph::DiGraph;
-    use crate::handle::{Handle, NodeId};
+    use crate::handle::NodeId;
     use crate::lattice::Lattice;
     use crate::snapshot::{
         DiagnosticCounts, EdgeCounts, HandleCounts, NamespaceStats, ObligationCounts, Snapshot,
     };
-
-    pub(crate) fn make_file_handle(id: &str) -> Handle {
-        Handle::test_file(id, None)
-    }
-
-    pub(crate) fn make_file_handle_with_status(id: &str, status: &str) -> Handle {
-        Handle::test_file(id, Some(status))
-    }
-
-    pub(crate) fn make_label_handle(prefix: &str, number: u32) -> Handle {
-        Handle::test_label(prefix, number, None)
-    }
 
     pub(crate) fn empty_lattice() -> Lattice {
         Lattice {
