@@ -137,6 +137,9 @@ pub(crate) struct HandleQueryArgs {
     /// Sort order: id (default) or date (most recent first)
     #[arg(long, value_enum)]
     pub(crate) sort: Option<HandleSortOrder>,
+    /// Include `purpose:`/`note:` frontmatter (or body snippet) with each handle
+    #[arg(long)]
+    pub(crate) context: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -259,6 +262,8 @@ pub(crate) struct HandleRow {
     pub(crate) incoming_count: usize,
     pub(crate) outgoing_count: usize,
     pub(crate) updated: Option<chrono::NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) summary: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -323,10 +328,18 @@ pub(crate) fn run(
     json_style: JsonStyle,
     area: Option<&crate::area::AreaFilter>,
     temporal: Option<&crate::area::TemporalFilter>,
+    snippets: crate::cli::SnippetIndex<'_>,
 ) -> anyhow::Result<()> {
     match command {
         QueryCommand::Handles(args) => {
-            let output = build_handle_output(context.graph, context.lattice, args, area, temporal)?;
+            let output = build_handle_output(
+                context.graph,
+                context.lattice,
+                args,
+                area,
+                temporal,
+                snippets,
+            )?;
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -396,6 +409,7 @@ fn build_handle_output(
     args: &HandleQueryArgs,
     area: Option<&crate::area::AreaFilter>,
     temporal: Option<&crate::area::TemporalFilter>,
+    snippets: crate::cli::SnippetIndex<'_>,
 ) -> anyhow::Result<HandleQueryOutput> {
     let file_matcher = compile_glob(args.file_pattern.as_deref())?;
     let mut candidates = build_handle_candidates(graph, lattice, args.page.scope);
@@ -419,13 +433,14 @@ fn build_handle_output(
         candidates.sort_by(|a, b| a.handle.id.cmp(&b.handle.id));
     }
     let (meta, items) = paginate(candidates, &args.page);
+    let context_snippets = args.context.then_some(snippets);
     Ok(JsonEnvelope::new(
         meta,
         QueryPayload {
             kind: "handles",
             items: items
                 .into_iter()
-                .map(|candidate| handle_row(graph, candidate))
+                .map(|candidate| handle_row(graph, candidate, context_snippets))
                 .collect(),
         },
     ))
@@ -871,7 +886,11 @@ fn collect_edge_candidates(
     }
 }
 
-fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
+fn handle_row(
+    graph: &DiGraph,
+    candidate: HandleCandidate<'_>,
+    snippets: Option<crate::cli::SnippetIndex<'_>>,
+) -> HandleRow {
     let namespace = match &candidate.handle.kind {
         HandleKind::Label { prefix, .. } => Some(prefix.clone()),
         _ => None,
@@ -886,6 +905,9 @@ fn handle_row(graph: &DiGraph, candidate: HandleCandidate<'_>) -> HandleRow {
         incoming_count: candidate.incoming_count,
         outgoing_count: candidate.outgoing_count,
         updated: candidate.handle.metadata.updated,
+        summary: snippets
+            .and_then(|ix| ix.summary_for(candidate.handle))
+            .map(str::to_string),
     }
 }
 
@@ -1298,6 +1320,9 @@ fn print_handle_output_human(output: &HandleQueryOutput, w: &mut dyn Write) -> s
             kind_width = kind_width,
             status_width = status_width,
         )?;
+        if let Some(summary) = &row.summary {
+            writeln!(w, "{:>indent$}{}", "", summary, indent = kind_width + 24)?;
+        }
     }
     if !output.meta.expand.is_empty() {
         writeln!(w)?;
@@ -1557,9 +1582,14 @@ mod tests {
                 updated_after: None,
                 orphaned: false,
                 sort: None,
+                context: false,
             },
             None,
             None,
+            crate::cli::SnippetIndex {
+                files: &HashMap::new(),
+                labels: &HashMap::new(),
+            },
         )
         .expect("output");
         assert_eq!(output.data.items.len(), 1);
@@ -1594,9 +1624,14 @@ mod tests {
                 updated_after: None,
                 orphaned: true,
                 sort: None,
+                context: false,
             },
             None,
             None,
+            crate::cli::SnippetIndex {
+                files: &HashMap::new(),
+                labels: &HashMap::new(),
+            },
         )
         .expect("output");
         assert!(output.data.items.is_empty());

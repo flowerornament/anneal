@@ -165,6 +165,25 @@ pub(crate) struct HandleMetadata {
     pub(crate) discharges: Vec<String>,
     /// The `verifies:` frontmatter field (list of handle identities).
     pub(crate) verifies: Vec<String>,
+    /// Optional `purpose:` frontmatter field — preferred orientation summary.
+    pub(crate) purpose: Option<String>,
+    /// Optional `note:` frontmatter field — secondary orientation summary.
+    pub(crate) note: Option<String>,
+}
+
+impl Handle {
+    /// Preferred one-line summary for orientation output (`--context`).
+    ///
+    /// Preference chain: `purpose:` frontmatter > `note:` frontmatter > body-text
+    /// fallback (e.g. first non-empty line of a file, the definition-site line of
+    /// a label).
+    pub(crate) fn summary<'a>(&'a self, body_fallback: Option<&'a str>) -> Option<&'a str> {
+        self.metadata
+            .purpose
+            .as_deref()
+            .or(self.metadata.note.as_deref())
+            .or(body_fallback)
+    }
 }
 
 // ---------------------------------------------------------------------------

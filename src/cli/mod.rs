@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde::Serialize;
 
 use crate::graph::{DiGraph, Edge};
-use crate::handle::{HandleKind, NodeId};
+use crate::handle::{Handle, HandleKind, NodeId};
 use crate::lattice::Lattice;
 use crate::resolve::zero_padded_label_candidates;
 
@@ -38,6 +38,31 @@ mod summary;
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Bundle of precomputed body-text snippets used by `--context`-style output.
+///
+/// Snippets are extracted once during corpus scan and then looked up per handle
+/// to serve as the fallback when `purpose:`/`note:` frontmatter is absent.
+#[derive(Clone, Copy)]
+pub(crate) struct SnippetIndex<'a> {
+    pub(crate) files: &'a HashMap<String, String>,
+    pub(crate) labels: &'a HashMap<String, String>,
+}
+
+impl<'a> SnippetIndex<'a> {
+    pub(crate) fn lookup(&self, handle: &Handle) -> Option<&'a str> {
+        match &handle.kind {
+            HandleKind::File(path) => self.files.get(path.as_str()).map(String::as_str),
+            HandleKind::Label { .. } => self.labels.get(&handle.id).map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// Preferred one-line summary for a handle: purpose → note → body snippet.
+    pub(crate) fn summary_for(&self, handle: &'a Handle) -> Option<&'a str> {
+        handle.summary(self.lookup(handle))
+    }
+}
 
 /// Build the set of file paths that have terminal status.
 pub(crate) fn terminal_file_set(graph: &DiGraph, lattice: &Lattice) -> HashSet<String> {

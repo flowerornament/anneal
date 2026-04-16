@@ -330,6 +330,9 @@ EXAMPLES:
         /// Sort order: id (default) or date (most recent first)
         #[arg(long, value_enum)]
         sort: Option<FindSort>,
+        /// Include `purpose:`/`note:` frontmatter (or body snippet) with each match
+        #[arg(long)]
+        context: bool,
     },
 
     /// Generate anneal.toml from inferred structure
@@ -773,6 +776,11 @@ fn run() -> anyhow::Result<()> {
         cascade_candidates: &cascade_candidates,
     };
 
+    let snippets = cli::SnippetIndex {
+        files: &result.file_snippets,
+        labels: &result.label_snippets,
+    };
+
     let area_filter = cli_args.area.as_ref().map(|a| area::AreaFilter::new(a));
 
     let temporal_filter = if cli_args.recent {
@@ -893,13 +901,7 @@ fn run() -> anyhow::Result<()> {
             full,
             limit_edges,
         }) => {
-            if let Some(data) = cli::cmd_get(
-                graph,
-                &node_index,
-                &result.file_snippets,
-                &result.label_snippets,
-                handle,
-            ) {
+            if let Some(data) = cli::cmd_get(graph, &node_index, snippets, handle) {
                 let limit_edges = limit_edges.unwrap_or(10);
                 if cli_args.json {
                     let output = cli::build_get_json_output(
@@ -947,6 +949,7 @@ fn run() -> anyhow::Result<()> {
             full,
             no_facets,
             sort,
+            context,
         }) => {
             let output = cli::cmd_find(
                 graph,
@@ -964,6 +967,7 @@ fn run() -> anyhow::Result<()> {
                     area: area_filter.as_ref(),
                     temporal: temporal_filter.as_ref(),
                     sort_date: sort == Some(FindSort::Date),
+                    context: context.then_some(snippets),
                 },
             )?;
             emit_output(
@@ -1176,6 +1180,7 @@ fn run() -> anyhow::Result<()> {
                 json_style,
                 area_filter.as_ref(),
                 temporal_filter.as_ref(),
+                snippets,
             )?;
         }
 
