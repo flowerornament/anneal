@@ -39,10 +39,6 @@ mod summary;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Bundle of precomputed body-text snippets used by `--context`-style output.
-///
-/// Snippets are extracted once during corpus scan and then looked up per handle
-/// to serve as the fallback when `purpose:`/`note:` frontmatter is absent.
 #[derive(Clone, Copy)]
 pub(crate) struct SnippetIndex<'a> {
     pub(crate) files: &'a HashMap<String, String>,
@@ -58,7 +54,6 @@ impl<'a> SnippetIndex<'a> {
         }
     }
 
-    /// Preferred one-line summary for a handle: purpose → note → body snippet.
     pub(crate) fn summary_for(&self, handle: &'a Handle) -> Option<&'a str> {
         handle.summary(self.lookup(handle))
     }

@@ -1052,11 +1052,11 @@ fn run() -> anyhow::Result<()> {
                 );
             }
             let direction = if upstream {
-                Some(cli::TraversalDirection::Upstream)
+                cli::TraversalDirection::Upstream
             } else if downstream {
-                Some(cli::TraversalDirection::Downstream)
+                cli::TraversalDirection::Downstream
             } else {
-                None
+                cli::TraversalDirection::Both
             };
             let output = cli::cmd_map(&cli::MapOptions {
                 graph,
