@@ -289,12 +289,12 @@ EXAMPLES:
   anneal find draft --status=draft        # Handles with status 'draft'
   anneal find OQ --namespace=OQ           # Labels in OQ namespace
   anneal find OQ --limit 25               # Bounded result sample
-  anneal find \"\" --status=current         # Broad but narrowed query
-  anneal find \"\" --full --all             # Explicitly return everything"
+  anneal find --status=current            # Broad but narrowed query
+  anneal find --full --all               # Explicitly return everything"
     )]
     Find {
         /// Text to search for in handle identities
-        query: String,
+        query: Option<String>,
         /// Include terminal (settled) handles in results
         #[arg(long)]
         all: bool,
@@ -907,7 +907,7 @@ fn run() -> anyhow::Result<()> {
             let output = cli::cmd_find(
                 graph,
                 &lattice,
-                query,
+                query.as_deref().unwrap_or(""),
                 &cli::FindFilters {
                     namespace: namespace.as_deref(),
                     status: status.as_deref(),

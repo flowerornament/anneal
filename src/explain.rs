@@ -15,10 +15,15 @@ use crate::snapshot;
 
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum ExplainCommand {
+    #[command(about = "Explain why a specific diagnostic was produced")]
     Diagnostic(DiagnosticExplainArgs),
+    #[command(about = "Explain why impact included each affected handle")]
     Impact(ImpactExplainArgs),
+    #[command(about = "Explain the current convergence signal")]
     Convergence(ConvergenceExplainArgs),
+    #[command(about = "Explain an obligation's current disposition")]
     Obligation(ObligationExplainArgs),
+    #[command(about = "Explain why a structural suggestion was produced")]
     Suggestion(SuggestionExplainArgs),
 }
 

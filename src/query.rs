@@ -66,10 +66,15 @@ pub(crate) struct QueryPageArgs {
 
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum QueryCommand {
+    #[command(about = "Filter and list handles by kind, status, namespace, or edge count")]
     Handles(HandleQueryArgs),
+    #[command(about = "Filter edges by kind, endpoint properties, or structural patterns")]
     Edges(EdgeQueryArgs),
+    #[command(about = "Query freshly-derived diagnostics with severity/code/file filters")]
     Diagnostics(DiagnosticQueryArgs),
+    #[command(about = "Query obligation state by namespace and disposition")]
     Obligations(ObligationQueryArgs),
+    #[command(about = "Query structural suggestions by code")]
     Suggestions(SuggestionQueryArgs),
 }
 
