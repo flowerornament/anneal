@@ -1,3 +1,4 @@
+mod areas;
 mod check;
 mod diff;
 mod find;
@@ -18,6 +19,7 @@ use crate::lattice::Lattice;
 use crate::resolve::zero_padded_label_candidates;
 
 // Re-export public API of the cli module — used by main.rs
+pub(crate) use areas::{AreaSort, cmd_areas};
 pub(crate) use check::{
     CheckFilters, CheckJsonOptions, apply_check_filters, build_check_json_output, cmd_check,
 };
