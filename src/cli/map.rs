@@ -681,6 +681,7 @@ pub(crate) struct MapOptions<'a> {
     pub(crate) concern: Option<&'a str>,
     pub(crate) around: Option<&'a str>,
     pub(crate) area: Option<&'a crate::area::AreaFilter>,
+    pub(crate) temporal: Option<&'a crate::area::TemporalFilter>,
     pub(crate) depth: u32,
     pub(crate) render: crate::MapRender,
     pub(crate) include_nodes: bool,
@@ -779,7 +780,12 @@ fn build_map_edge_entries(
 
 /// Render or summarize the knowledge graph (CLI-05, KB-C5).
 pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
-    let nodes = extract_subgraph(opts);
+    let mut nodes = extract_subgraph(opts);
+    // Apply temporal filter as a post-processing step so it composes
+    // with area, concern, and around focuses.
+    if let Some(tf) = opts.temporal {
+        nodes.retain(|&nid| tf.matches_handle(opts.graph.node(nid)));
+    }
     let edge_count = subgraph_edges(opts.graph, &nodes).len();
     let by_kind = map_kind_counts(opts.graph, &nodes);
     let top_namespaces = map_top_namespaces(opts.graph, &nodes);
@@ -898,6 +904,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -963,6 +970,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1010,6 +1018,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1052,6 +1061,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Dot,
             include_nodes: false,
@@ -1090,6 +1100,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Dot,
             include_nodes: false,
@@ -1133,6 +1144,7 @@ mod tests {
             concern: None,
             around: Some("b.md"),
             area: None,
+            temporal: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1193,6 +1205,7 @@ mod tests {
             concern: None,
             around: Some("a.md"),
             area: None,
+            temporal: None,
             depth: 0,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1242,6 +1255,7 @@ mod tests {
             concern: Some("questions"),
             around: None,
             area: None,
+            temporal: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1282,6 +1296,7 @@ mod tests {
             concern: None,
             around: None,
             area: None,
+            temporal: None,
             depth: 1,
             render: crate::MapRender::Summary,
             include_nodes: false,
@@ -1313,6 +1328,7 @@ mod tests {
             concern: None,
             around: Some("center.md"),
             area: None,
+            temporal: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1358,6 +1374,7 @@ mod tests {
             concern: None,
             around: Some("LABELS.md"),
             area: None,
+            temporal: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,

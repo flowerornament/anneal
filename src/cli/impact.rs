@@ -41,6 +41,24 @@ impl ImpactOutput {
         self.indirect_count = self.indirect.len();
     }
 
+    /// Filter direct/indirect results to handles in the temporal window.
+    pub(crate) fn retain_temporal(
+        &mut self,
+        tf: &crate::area::TemporalFilter,
+        node_index: &HashMap<String, NodeId>,
+        graph: &DiGraph,
+    ) {
+        let keep = |id: &String| {
+            node_index
+                .get(id)
+                .is_some_and(|&nid| tf.matches_handle(graph.node(nid)))
+        };
+        self.direct.retain(keep);
+        self.indirect.retain(keep);
+        self.direct_count = self.direct.len();
+        self.indirect_count = self.indirect.len();
+    }
+
     pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
         writeln!(w, "Directly affected (depend on this):")?;
         if self.direct.is_empty() {

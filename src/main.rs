@@ -136,6 +136,14 @@ struct Cli {
     #[arg(long, global = true)]
     area: Option<String>,
 
+    /// Filter to files within the default recent window (configurable via [temporal] recent_days)
+    #[arg(long, global = true)]
+    recent: bool,
+
+    /// Filter to files dated within the last N days (e.g. --since=14d)
+    #[arg(long, global = true, conflicts_with = "recent")]
+    since: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -319,6 +327,9 @@ EXAMPLES:
         /// Skip facet counts in JSON output
         #[arg(long)]
         no_facets: bool,
+        /// Sort order: id (default) or date (most recent first)
+        #[arg(long, value_enum)]
+        sort: Option<FindSort>,
     },
 
     /// Generate anneal.toml from inferred structure
@@ -614,6 +625,15 @@ enum MapRender {
     Dot,
 }
 
+/// Sort order for `find` results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum FindSort {
+    /// Sort alphabetically by handle id (default).
+    Id,
+    /// Sort by file date, most recent first.
+    Date,
+}
+
 fn emit_output<T: Serialize>(
     output: &T,
     json: bool,
@@ -649,6 +669,14 @@ fn emit_full_output<T: Serialize>(
         render_human(&output, &mut lock).context(human_context)?;
     }
     Ok(())
+}
+
+fn parse_since_days(s: &str) -> anyhow::Result<u32> {
+    let s = s.trim().to_lowercase();
+    let num_str = s.strip_suffix('d').unwrap_or(&s);
+    num_str.parse::<u32>().map_err(|_| {
+        anyhow::anyhow!("invalid --since value: expected format like '14d' or '14', got '{s}'")
+    })
 }
 
 fn main() {
@@ -747,6 +775,18 @@ fn run() -> anyhow::Result<()> {
 
     let area_filter = cli_args.area.as_ref().map(|a| area::AreaFilter::new(a));
 
+    let temporal_filter = if cli_args.recent {
+        let cutoff = chrono::Local::now().date_naive()
+            - chrono::Duration::days(i64::from(config.temporal.recent_days));
+        Some(area::TemporalFilter::new(cutoff, graph))
+    } else if let Some(ref since) = cli_args.since {
+        let days = parse_since_days(since)?;
+        let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(i64::from(days));
+        Some(area::TemporalFilter::new(cutoff, graph))
+    } else {
+        None
+    };
+
     match cli_args.command {
         None => {
             // Bare `anneal` (no subcommand): show graph summary
@@ -786,6 +826,9 @@ fn run() -> anyhow::Result<()> {
             }
             if let Some(ref af) = area_filter {
                 diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
+            }
+            if let Some(ref tf) = temporal_filter {
+                diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| tf.matches_file(f)));
             }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
@@ -903,6 +946,7 @@ fn run() -> anyhow::Result<()> {
             offset,
             full,
             no_facets,
+            sort,
         }) => {
             let output = cli::cmd_find(
                 graph,
@@ -918,6 +962,8 @@ fn run() -> anyhow::Result<()> {
                     full,
                     no_facets: no_facets || !cli_args.json,
                     area: area_filter.as_ref(),
+                    temporal: temporal_filter.as_ref(),
+                    sort_date: sort == Some(FindSort::Date),
                 },
             )?;
             emit_output(
@@ -952,6 +998,9 @@ fn run() -> anyhow::Result<()> {
                 if let Some(ref af) = area_filter {
                     output.retain_area(af, &node_index, graph);
                 }
+                if let Some(ref tf) = temporal_filter {
+                    output.retain_temporal(tf, &node_index, graph);
+                }
                 emit_full_output(
                     output,
                     cli_args.json,
@@ -976,7 +1025,10 @@ fn run() -> anyhow::Result<()> {
             limit_nodes,
             limit_edges,
         }) => {
-            let has_focus = around.is_some() || concern.is_some() || area_filter.is_some();
+            let has_focus = around.is_some()
+                || concern.is_some()
+                || area_filter.is_some()
+                || temporal_filter.is_some();
             let render = match (render, cli_args.json, has_focus) {
                 (Some(render), _, _) => render,
                 (None, false, true) => MapRender::Text,
@@ -995,6 +1047,7 @@ fn run() -> anyhow::Result<()> {
                 concern: concern.as_deref(),
                 around: around.as_deref(),
                 area: area_filter.as_ref(),
+                temporal: temporal_filter.as_ref(),
                 depth,
                 render,
                 include_nodes: nodes,
@@ -1020,9 +1073,18 @@ fn run() -> anyhow::Result<()> {
             if let Some(ref af) = area_filter {
                 diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
             }
+            if let Some(ref tf) = temporal_filter {
+                diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| tf.matches_file(f)));
+            }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
-            let output =
-                cli::cmd_status(graph, &lattice, &snap, &diagnostics, area_filter.as_ref());
+            let output = cli::cmd_status(
+                graph,
+                &lattice,
+                &snap,
+                &diagnostics,
+                area_filter.as_ref(),
+                temporal_filter.as_ref(),
+            );
 
             // Compute convergence from history (D-05, D-06)
             let convergence = snapshot::summary_from_previous(&snap, previous_snapshot.as_ref())
@@ -1113,6 +1175,7 @@ fn run() -> anyhow::Result<()> {
                 cli_args.json,
                 json_style,
                 area_filter.as_ref(),
+                temporal_filter.as_ref(),
             )?;
         }
 
@@ -1204,6 +1267,48 @@ mod tests {
                 command: explain::ExplainCommand::Diagnostic(_),
             })
         ));
+    }
+
+    #[test]
+    fn parse_since_days_with_suffix() {
+        assert_eq!(parse_since_days("14d").unwrap(), 14);
+        assert_eq!(parse_since_days("7d").unwrap(), 7);
+        assert_eq!(parse_since_days("0d").unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_since_days_without_suffix() {
+        assert_eq!(parse_since_days("14").unwrap(), 14);
+        assert_eq!(parse_since_days("30").unwrap(), 30);
+    }
+
+    #[test]
+    fn parse_since_days_invalid() {
+        assert!(parse_since_days("abc").is_err());
+        assert!(parse_since_days("").is_err());
+        assert!(parse_since_days("14w").is_err());
+    }
+
+    #[test]
+    fn cli_parses_recent_flag() {
+        let cli =
+            Cli::try_parse_from(["anneal", "--recent", "find", "OQ"]).expect("parse --recent");
+        assert!(cli.recent);
+        assert!(cli.since.is_none());
+    }
+
+    #[test]
+    fn cli_parses_since_flag() {
+        let cli =
+            Cli::try_parse_from(["anneal", "--since=14d", "find", "OQ"]).expect("parse --since");
+        assert!(!cli.recent);
+        assert_eq!(cli.since.as_deref(), Some("14d"));
+    }
+
+    #[test]
+    fn cli_recent_and_since_conflict() {
+        let result = Cli::try_parse_from(["anneal", "--recent", "--since=14d", "find", "OQ"]);
+        assert!(result.is_err(), "--recent and --since should conflict");
     }
 
     #[test]

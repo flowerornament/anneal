@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::checks::{Diagnostic, DiagnosticCode, Severity};
@@ -297,6 +298,48 @@ fn compute_grade(
 }
 
 // ---------------------------------------------------------------------------
+// Temporal filter
+// ---------------------------------------------------------------------------
+
+/// A filter that scopes commands to handles within a time window.
+///
+/// Built once from the graph after parsing, then passed to each command.
+/// Non-file handles inherit their parent file's date via the pre-built
+/// `file_set` of qualifying file paths, so no per-handle graph lookup is
+/// needed at filter time.
+pub(crate) struct TemporalFilter {
+    file_set: HashSet<String>,
+}
+
+impl TemporalFilter {
+    /// Build the filter by scanning file handles whose date falls within
+    /// the window (>= `cutoff`).
+    pub(crate) fn new(cutoff: NaiveDate, graph: &DiGraph) -> Self {
+        let file_set = graph
+            .nodes()
+            .filter(|(_, h)| {
+                matches!(h.kind, HandleKind::File(_)) && h.date.is_some_and(|d| d >= cutoff)
+            })
+            .filter_map(|(_, h)| h.file_path.as_ref().map(ToString::to_string))
+            .collect();
+        Self { file_set }
+    }
+
+    /// Whether a handle's parent file is within the temporal window.
+    pub(crate) fn matches_handle(&self, handle: &Handle) -> bool {
+        handle
+            .file_path
+            .as_ref()
+            .is_some_and(|fp| self.file_set.contains(fp.as_str()))
+    }
+
+    /// Whether a file path is within the temporal window.
+    pub(crate) fn matches_file(&self, path: &str) -> bool {
+        self.file_set.contains(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -456,5 +499,72 @@ mod tests {
         let areas = compute_areas(&graph, &lattice, &diags, &AreasConfig::default());
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
         assert_eq!(compiler.orphans, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // TemporalFilter tests
+    // -----------------------------------------------------------------------
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn temporal_filter_matches_recent_file() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_file_with_date(
+            "docs/a.md",
+            Some("draft"),
+            date(2026, 4, 10),
+        ));
+
+        let tf = TemporalFilter::new(date(2026, 4, 5), &graph);
+        assert!(tf.matches_file("docs/a.md"));
+    }
+
+    #[test]
+    fn temporal_filter_excludes_old_file() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_file_with_date(
+            "docs/old.md",
+            Some("draft"),
+            date(2026, 1, 1),
+        ));
+
+        let tf = TemporalFilter::new(date(2026, 4, 5), &graph);
+        assert!(!tf.matches_file("docs/old.md"));
+    }
+
+    #[test]
+    fn temporal_filter_excludes_undated_file() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_file("docs/no-date.md", Some("draft")));
+
+        let tf = TemporalFilter::new(date(2026, 4, 5), &graph);
+        assert!(!tf.matches_file("docs/no-date.md"));
+    }
+
+    #[test]
+    fn temporal_filter_section_inherits_file_date() {
+        let mut graph = DiGraph::new();
+        let file_id = graph.add_node(Handle::test_file_with_date(
+            "docs/a.md",
+            Some("draft"),
+            date(2026, 4, 10),
+        ));
+        graph.add_node(Handle::section(
+            file_id,
+            "Introduction".to_string(),
+            camino::Utf8PathBuf::from("docs/a.md"),
+        ));
+
+        let tf = TemporalFilter::new(date(2026, 4, 5), &graph);
+        // The section handle has file_path "docs/a.md" which is in the set.
+        let section = graph
+            .nodes()
+            .find(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
+            .unwrap()
+            .1;
+        assert!(tf.matches_handle(section));
     }
 }
