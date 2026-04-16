@@ -25,11 +25,12 @@ Use this skill for knowledge-corpus structure, health, impact, and validation.
 Use this orientation loop when the request is broad:
 
 1. `anneal status --json --compact`
-2. `anneal check --active-only`
-3. `anneal get <handle> --context` or `anneal find <text> --limit 25` for the item the user cares about
-4. `anneal query ...` when the question is structural rather than identity-based
-5. `anneal explain ...` when you need to justify a warning, suggestion, impact set, convergence signal, or obligation state
-6. `anneal impact <file-or-handle>` before editing corpus files
+2. `anneal areas` for per-area health profiles and grading
+3. `anneal check --active-only`
+4. `anneal get <handle> --context` or `anneal find <text> --limit 25` for the item the user cares about
+5. `anneal query ...` when the question is structural rather than identity-based
+6. `anneal explain ...` when you need to justify a warning, suggestion, impact set, convergence signal, or obligation state
+7. `anneal impact <file-or-handle>` before editing corpus files
 
 For a single concrete question, run the matching command directly.
 
@@ -39,11 +40,12 @@ For a single concrete question, run the matching command directly.
 
 ```bash
 anneal status --json --compact
-anneal status -v
+anneal areas
+anneal areas --sort=grade
 anneal check --active-only
 ```
 
-Use `status --json --compact` to capture corpus shape and convergence context. Use plain-text `check --active-only` for default health checks and session orientation.
+Use `status --json --compact` to capture corpus shape and convergence context. Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use plain-text `check --active-only` for default health checks and session orientation.
 
 ### Inspect A Specific Thing
 
@@ -115,7 +117,7 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 
 ## Agent Rules
 
-- Use `anneal status --json --compact` for orientation. Use plain-text output for routine `check`, `get`, `find`, `query`, `explain`, `map`, `diff`, `impact`, and `init` unless you are immediately filtering machine-readable output.
+- Use `anneal status --json --compact` for orientation. Use `anneal areas` for per-area health when the corpus spans multiple directories. Use plain-text output for routine `check`, `get`, `find`, `query`, `explain`, `map`, `diff`, `impact`, `areas`, and `init` unless you are immediately filtering machine-readable output.
 - Use plain-text `anneal check --active-only` for default orientation and health checks.
 - Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, `anneal query ...`, and `anneal map --around=<handle>`.
 - Reach for `anneal query ...` when the user is asking an ad hoc structural question across many handles or edges.

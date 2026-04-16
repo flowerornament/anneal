@@ -13,7 +13,7 @@ A knowledge corpus grows across many sessions. No single agent sees the full his
 ```
 $ anneal status
  corpus  84 files, 1205 handles, 892 edges
-         1140 active, 65 frozen
+         1140 active, 65 terminal
     pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
 
  health  23 errors, 11 warnings
@@ -160,6 +160,9 @@ owns your shell environment.
 anneal status
 anneal status --json --compact
 
+# Per-area health profiles
+anneal areas
+
 # Actionable issues in active work
 anneal check
 
@@ -199,7 +202,7 @@ anneal init
 
 `anneal` supports a practical loop for corpus work:
 
-1. Orient: run `anneal status` or `anneal status --json --compact`, then `anneal check`, to understand the corpus shape and the actionable problems.
+1. Orient: run `anneal status` for the corpus dashboard, `anneal areas` for per-area health, then `anneal check` for actionable diagnostics.
 2. Locate context: use `anneal get --context`, bounded `anneal find --limit ...`, `anneal query ...`, and `anneal map --around=...` to understand the specific files, labels, or structural patterns involved in the task.
 3. Justify the current signal: use `anneal explain ...` when you need to know why a warning, suggestion, impact set, convergence signal, or obligation state exists.
 4. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
@@ -238,12 +241,12 @@ This is what the tool buys you in practice: quick context recovery, structural i
 
 ### `anneal status`
 
-Single-screen dashboard for quick orientation. Shows corpus size, active/frozen partition, pipeline histogram, health (errors + warnings), convergence direction, and suggestion breakdown.
+Single-screen dashboard for quick orientation. Shows corpus size, active/terminal partition, pipeline histogram, health (errors + warnings), convergence direction, and suggestion breakdown.
 
 ```
 $ anneal status -v
  corpus  84 files, 1205 handles, 892 edges
-         1140 active, 65 frozen
+         1140 active, 65 terminal
     pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
               raw (8):
                 notes/2025-01-15-auth-redesign.md
@@ -258,6 +261,33 @@ For agents and other tools, prefer:
 ```bash
 anneal status --json --compact
 ```
+
+### `anneal areas`
+
+Per-area health profiles. Areas are auto-detected from the top-level directory structure — each subdirectory is an area, files at the corpus root are grouped under `(root)`. Each area gets a grade (A–D) based on error count, connectivity, and metadata coverage.
+
+```
+$ anneal areas
+Area                 Files  Conn  Cross Grade  Signal
+────────────────────────────────────────────────────────────────────────
+synthesis/              34   1.5    793   [A]  healthy
+implementation/         73   0.7    552   [C]  2 broken
+compiler/               28   0.6    104   [B]  9 orphans
+archive/                17   0.3      0   [B]  island, no active files
+```
+
+Grades:
+- **A**: No errors, adequate connectivity, has active files
+- **B**: No errors, but low connectivity, no active metadata, or elevated orphan count
+- **C**: Has errors (E001/E002)
+- **D**: Has errors and low connectivity
+
+When `[concerns]` is configured in `anneal.toml`, concern groups can also act as areas.
+
+| Flag                 | Effect                                          |
+| -------------------- | ----------------------------------------------- |
+| `--sort=files\|grade\|conn\|name` | Sort order (default: files descending) |
+| `--include-terminal` | Include areas that contain only terminal files   |
 
 ### `anneal check`
 
@@ -354,7 +384,7 @@ What changed since last session:
 ```
 $ anneal diff
 Since last snapshot:
-  Handles: +12 (+8 active, +4 frozen)
+  Handles: +12 (+8 active, +4 terminal)
   State: draft: 3 -> 5 (+2)
   Obligations: +0 outstanding, +2 discharged, +0 mooted
   Edges: +47
@@ -501,6 +531,16 @@ history_mode = "xdg"  # optional: xdg | repo | off
 
 Five edge kinds have built-in diagnostic behavior: `Cites`, `DependsOn`, `Supersedes`, `Verifies`, `Discharges`. Any other `edge_kind` string (e.g. `Synthesizes`, `Flags`, `Implements`) is accepted as a custom kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in checks. W001 (stale dependency) fires only on `DependsOn` edges.
 
+Area and temporal tuning:
+
+```toml
+[areas]
+orphan_threshold = 5  # orphan count that downgrades an area to grade B
+
+[temporal]
+recent_days = 7  # default window for --recent (days)
+```
+
 The `[impact] traverse` list controls which edge kinds `anneal impact` follows when computing affected handles. When absent, falls back to the built-in default (`DependsOn`, `Supersedes`, `Verifies`). Corpora using custom edge kinds for structural relationships should configure this to get accurate impact analysis.
 
 If you want repo-local snapshots, set:
@@ -592,6 +632,7 @@ src/
   config.rs       anneal.toml parsing
   checks.rs       Check rules + suggestion rules
   impact.rs       Reverse graph traversal
+  area.rs         Per-area health computation + grading
   snapshot.rs     JSONL history, convergence summary
   cli.rs          Commands + output formatting
   style.rs        Terminal styling via console crate
