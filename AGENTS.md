@@ -83,6 +83,15 @@ Release automation is local-first and tag-driven:
 - merge `dev` into `master` for release prep
 - cut and push release tags from `master`
 
+Before bumping, verify that all shipped features are reflected in docs — CLI help strings are authoritative, but these must match:
+
+- `README.md` — command sections, output examples, config blocks, architecture listing
+- `skills/anneal/SKILL.md` — first moves, command map, agent rules
+- `.design/anneal-spec.md` — §12 command count and entries, §14 architecture diagram, §15 crate structure
+- `CHANGELOG.md` — entry for the target version (scaffolded by `release-bump`)
+
+Write docs as if they were always correct — no "added" or "updated" language.
+
 ```bash
 just release-bump 0.2.1
 just release-verify
