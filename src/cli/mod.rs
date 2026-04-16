@@ -28,7 +28,7 @@ pub(crate) use find::{FindFilters, cmd_find};
 pub(crate) use get::{GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output, cmd_get};
 pub(crate) use impact::cmd_impact;
 pub(crate) use init::cmd_init;
-pub(crate) use map::{MapOptions, cmd_map};
+pub(crate) use map::{MapOptions, TraversalDirection, cmd_map};
 pub(crate) use obligations::cmd_obligations;
 pub(crate) use status::{ConvergenceSummaryOutput, cmd_status};
 pub(crate) use summary::build_summary;

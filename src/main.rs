@@ -424,6 +424,12 @@ EXAMPLES:
         /// Show BFS neighborhood around this handle
         #[arg(long)]
         around: Option<String>,
+        /// With --around, walk only outgoing edges (what this handle builds on)
+        #[arg(long, requires = "around", conflicts_with = "downstream")]
+        upstream: bool,
+        /// With --around, walk only incoming edges (what depends on this handle)
+        #[arg(long, requires = "around")]
+        downstream: bool,
         /// BFS depth for --around (default: 1)
         #[arg(long, default_value = "1")]
         depth: u32,
@@ -1022,6 +1028,8 @@ fn run() -> anyhow::Result<()> {
             render,
             ref concern,
             ref around,
+            upstream,
+            downstream,
             depth,
             nodes,
             edges,
@@ -1043,6 +1051,13 @@ fn run() -> anyhow::Result<()> {
                     "full graph rendering requires --full; use `anneal map --render=text --full` or focus with --around/--concern/--area"
                 );
             }
+            let direction = if upstream {
+                Some(cli::TraversalDirection::Upstream)
+            } else if downstream {
+                Some(cli::TraversalDirection::Downstream)
+            } else {
+                None
+            };
             let output = cli::cmd_map(&cli::MapOptions {
                 graph,
                 node_index: &node_index,
@@ -1050,6 +1065,7 @@ fn run() -> anyhow::Result<()> {
                 config: &config,
                 concern: concern.as_deref(),
                 around: around.as_deref(),
+                direction,
                 area: area_filter.as_ref(),
                 temporal: temporal_filter.as_ref(),
                 depth,
