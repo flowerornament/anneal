@@ -4,9 +4,9 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::graph::DiGraph;
-use crate::handle::{HandleKind, NodeId};
+use crate::handle::NodeId;
 
-use super::{DetailLevel, OutputMeta, dedup_edges, lookup_handle};
+use super::{DetailLevel, OutputMeta, SnippetIndex, dedup_edges, lookup_handle};
 
 // ---------------------------------------------------------------------------
 // Get command (CLI-02)
@@ -378,8 +378,7 @@ fn print_get_context_human(
 pub(crate) fn cmd_get(
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
-    file_snippets: &HashMap<String, String>,
-    label_snippets: &HashMap<String, String>,
+    snippets: SnippetIndex<'_>,
     handle: &str,
 ) -> Option<GetData> {
     let node_id = lookup_handle(node_index, handle)?;
@@ -389,11 +388,7 @@ pub(crate) fn cmd_get(
 
     let outgoing_edges = dedup_edges(graph.outgoing(node_id), |e| e.target, "outgoing", graph);
     let incoming_edges = dedup_edges(graph.incoming(node_id), |e| e.source, "incoming", graph);
-    let snippet = match &h.kind {
-        HandleKind::File(path) => file_snippets.get(path.as_str()).cloned(),
-        HandleKind::Label { .. } => label_snippets.get(&h.id).cloned(),
-        _ => None,
-    };
+    let snippet = snippets.summary_for(h).map(str::to_string);
 
     Some(GetData {
         id: h.id.clone(),
@@ -490,27 +485,18 @@ mod tests {
         let label_snippets =
             HashMap::from([("OQ-64".to_string(), "Details: See OQ-64 here.".to_string())]);
 
-        let file_output = cmd_get(
-            &graph,
-            &node_index,
-            &file_snippets,
-            &label_snippets,
-            "guide.md",
-        )
-        .expect("file output");
+        let snippets = SnippetIndex {
+            files: &file_snippets,
+            labels: &label_snippets,
+        };
+
+        let file_output = cmd_get(&graph, &node_index, snippets, "guide.md").expect("file output");
         assert_eq!(
             file_output.snippet.as_deref(),
             Some("First paragraph line. Still same paragraph.")
         );
 
-        let label_output = cmd_get(
-            &graph,
-            &node_index,
-            &file_snippets,
-            &label_snippets,
-            "OQ-64",
-        )
-        .expect("label output");
+        let label_output = cmd_get(&graph, &node_index, snippets, "OQ-64").expect("label output");
         assert_eq!(
             label_output.snippet.as_deref(),
             Some("Details: See OQ-64 here.")
@@ -529,11 +515,15 @@ mod tests {
         }
 
         let node_index = test_node_index(&graph);
+        let empty_files = HashMap::new();
+        let empty_labels = HashMap::new();
         let data = cmd_get(
             &graph,
             &node_index,
-            &HashMap::new(),
-            &HashMap::new(),
+            SnippetIndex {
+                files: &empty_files,
+                labels: &empty_labels,
+            },
             "center.md",
         )
         .expect("get output");

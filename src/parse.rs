@@ -135,7 +135,7 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
 
     let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_string()));
 
-    // Special fields: status, updated, date (not edge-producing)
+    // Special fields: status, updated, date, purpose, note (not edge-producing)
     let status = get("status").and_then(yaml_value_to_string);
     let updated = get("updated")
         .and_then(yaml_value_to_string)
@@ -143,6 +143,8 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
     let frontmatter_date = get("date")
         .and_then(yaml_value_to_string)
         .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+    let purpose = get("purpose").and_then(yaml_value_to_string);
+    let note = get("note").and_then(yaml_value_to_string);
 
     // Table-driven: scan all frontmatter keys against configured field mappings
     let mut field_edges = Vec::new();
@@ -156,7 +158,7 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
             continue;
         };
         // Skip special fields
-        if key_str == "status" || key_str == "updated" || key_str == "date" {
+        if matches!(key_str, "status" | "updated" | "date" | "purpose" | "note") {
             continue;
         }
 
@@ -192,6 +194,8 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         depends_on,
         discharges,
         verifies,
+        purpose,
+        note,
     };
 
     FrontmatterParseResult {

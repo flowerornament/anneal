@@ -7,7 +7,7 @@ use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
 
-use super::{DetailLevel, OutputMeta};
+use super::{DetailLevel, OutputMeta, SnippetIndex};
 
 // ---------------------------------------------------------------------------
 // Find command (CLI-03)
@@ -22,6 +22,9 @@ pub(crate) struct FindMatch {
     pub(crate) file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) date: Option<chrono::NaiveDate>,
+    /// Frontmatter `purpose:`/`note:` or body snippet, populated when `--context` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) summary: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -68,6 +71,9 @@ impl FindOutput {
                 .map_or(String::new(), |s| format!(" status: {s}"));
             let file_str = m.file.as_deref().unwrap_or("");
             writeln!(w, "  {} ({}){status_str}  {file_str}", m.id, m.kind)?;
+            if let Some(summary) = &m.summary {
+                writeln!(w, "      {summary}")?;
+            }
         }
         if self.meta.truncated && !self.meta.expand.is_empty() {
             writeln!(w)?;
@@ -91,6 +97,8 @@ pub(crate) struct FindFilters<'a> {
     pub(crate) area: Option<&'a crate::area::AreaFilter>,
     pub(crate) temporal: Option<&'a crate::area::TemporalFilter>,
     pub(crate) sort_date: bool,
+    /// When set, populate `summary` on each match via [`SnippetIndex::summary_for`].
+    pub(crate) context: Option<SnippetIndex<'a>>,
 }
 
 /// Search handle identities with case-insensitive substring matching.
@@ -172,6 +180,10 @@ pub(crate) fn cmd_find(
             status: h.status.clone(),
             file: h.file_path.as_ref().map(ToString::to_string),
             date: h.date,
+            summary: filters
+                .context
+                .and_then(|ix| ix.summary_for(h))
+                .map(str::to_string),
         })
         .collect();
 
