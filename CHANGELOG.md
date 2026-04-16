@@ -2,6 +2,35 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.8.0 - 2026-04-15
+
+### Added
+
+- `anneal areas` command: per-directory health profiles with grades (A-D), connectivity, cross-links, orphan counts, and signal summaries. Auto-detects areas from top-level directory structure. Flags: `--sort=files|grade|conn|name`, `--include-terminal`, `--json`.
+- Temporal awareness: file handles now carry a resolved date from `updated:` frontmatter > `date:` frontmatter > `YYYY-MM-DD` filename prefix. Foundation for upcoming `--recent`, `--since`, and `orient` features.
+- `[areas]` config section with `orphan_threshold` for tuning grade sensitivity.
+- `[temporal]` config section with `recent_days` for the upcoming `--recent` flag.
+- Design specs for areas/orient/garden feature set and CLI UX audit.
+
+### Changed
+
+- `check` human output now sorts diagnostics by severity (errors first). Previously sorted by code, which buried errors under suggestions in large corpora.
+- Human output now says "terminal" instead of "frozen" to match spec terminology consistently.
+- Handle construction uses five named constructors (`Handle::file`, `::section`, `::label`, `::version`, `::external`) instead of raw struct literals. Adding a field to Handle is now a one-file change.
+
+### Fixed
+
+- Body-text edge kind inference is now per-line instead of per-block. DependsOn keywords on one line no longer promote references on other lines within the same paragraph.
+- Removed "based on" from DependsOn keyword list (too common in prose).
+- Implausible markdown link destinations (single characters, bare uppercase tokens like `T` from `Stream[r](T)`) are now rejected instead of creating E001 diagnostics.
+- File glob patterns in `exclude` config now work (`**/README.md` prevents matched files from entering the graph).
+- Heading-defined labels take ownership priority over table cell and inline references.
+
+### Internal
+
+- Deduplicated 7 test factory definitions into canonical `Handle::test_file`, `Handle::test_label`, `Lattice::test_empty`, `Lattice::test_new`, and `Lattice::test_with_ordering`.
+- Area module takes `&Lattice` for correct active/terminal counts (not the approximation from initial implementation).
+
 ## 0.7.4 - 2026-04-12
 
 ### Fixed
