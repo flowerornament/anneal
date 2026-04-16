@@ -138,6 +138,8 @@ pub(crate) fn cmd_init(
         state: crate::config::StateConfig::default(),
         concerns: HashMap::new(),
         impact: crate::config::ImpactConfig::default(),
+        areas: crate::config::AreasConfig::default(),
+        temporal: crate::config::TemporalConfig::default(),
     };
 
     let config_path = root.join("anneal.toml");

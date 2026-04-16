@@ -1074,7 +1074,14 @@ fn run() -> anyhow::Result<()> {
             include_terminal,
         }) => {
             let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
-            let output = cli::cmd_areas(graph, &lattice, &diagnostics, sort, include_terminal);
+            let output = cli::cmd_areas(
+                graph,
+                &lattice,
+                &diagnostics,
+                &config.areas,
+                sort,
+                include_terminal,
+            );
             emit_full_output(
                 output,
                 cli_args.json,

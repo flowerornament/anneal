@@ -98,6 +98,45 @@ pub(crate) struct SuppressRule {
     pub(crate) target: String,
 }
 
+/// Configuration for the `anneal areas` command grading heuristic.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AreasConfig {
+    /// Connectivity below this threshold flags an area as "sparse".
+    pub(crate) sparse_connectivity: f64,
+    /// Connectivity below this threshold + errors = grade D (decay).
+    pub(crate) decay_connectivity: f64,
+    /// Orphan count at or above this threshold downgrades to grade B.
+    pub(crate) orphan_threshold: usize,
+    /// Areas with fewer files than this skip structural signals.
+    pub(crate) min_files: usize,
+}
+
+impl Default for AreasConfig {
+    fn default() -> Self {
+        Self {
+            sparse_connectivity: 0.2,
+            decay_connectivity: 0.3,
+            orphan_threshold: 5,
+            min_files: 3,
+        }
+    }
+}
+
+/// Configuration for temporal features (`--recent`, `--since`, file dates).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct TemporalConfig {
+    /// Default window in days for the `--recent` flag.
+    pub(crate) recent_days: u32,
+}
+
+impl Default for TemporalConfig {
+    fn default() -> Self {
+        Self { recent_days: 7 }
+    }
+}
+
 /// Top-level configuration from `anneal.toml`.
 ///
 /// An absent `anneal.toml` is a valid coloring (zero-config case, KB-P3).
@@ -154,6 +193,10 @@ pub(crate) struct AnnealConfig {
     pub(crate) concerns: HashMap<String, Vec<String>>,
     /// Impact analysis configuration.
     pub(crate) impact: ImpactConfig,
+    /// Area health grading thresholds.
+    pub(crate) areas: AreasConfig,
+    /// Temporal features configuration.
+    pub(crate) temporal: TemporalConfig,
 }
 
 /// Where derived history should be stored.

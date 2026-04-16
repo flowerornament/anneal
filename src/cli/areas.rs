@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::area::{AreaGrade, AreaHealth, compute_areas};
 use crate::checks::Diagnostic;
+use crate::config::AreasConfig;
 use crate::graph::DiGraph;
 use crate::lattice::Lattice;
 use crate::style::S;
@@ -69,10 +70,11 @@ pub(crate) fn cmd_areas(
     graph: &DiGraph,
     lattice: &Lattice,
     diagnostics: &[Diagnostic],
+    config: &AreasConfig,
     sort: AreaSort,
     include_terminal: bool,
 ) -> AreasOutput {
-    let mut areas = compute_areas(graph, lattice, diagnostics);
+    let mut areas = compute_areas(graph, lattice, diagnostics, config);
 
     if !include_terminal {
         areas.retain(|a| a.active > 0 || a.errors > 0 || a.files > 0);
@@ -109,7 +111,14 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::Cites);
 
         let lattice = Lattice::test_new(&["draft"], &["archived"]);
-        let output = cmd_areas(&graph, &lattice, &[], AreaSort::Files, false);
+        let output = cmd_areas(
+            &graph,
+            &lattice,
+            &[],
+            &AreasConfig::default(),
+            AreaSort::Files,
+            false,
+        );
 
         assert_eq!(output.areas.len(), 3);
         assert_eq!(output.areas[0].name, "(root)");
@@ -124,7 +133,14 @@ mod tests {
         graph.add_node(Handle::test_file("a-area/b.md", Some("draft")));
 
         let lattice = Lattice::test_new(&["draft"], &[]);
-        let output = cmd_areas(&graph, &lattice, &[], AreaSort::Name, false);
+        let output = cmd_areas(
+            &graph,
+            &lattice,
+            &[],
+            &AreasConfig::default(),
+            AreaSort::Name,
+            false,
+        );
 
         assert_eq!(output.areas[0].name, "a-area");
         assert_eq!(output.areas[1].name, "z-area");
@@ -134,7 +150,14 @@ mod tests {
     fn cmd_areas_human_output_contains_header() {
         let graph = DiGraph::new();
         let lattice = Lattice::test_empty();
-        let output = cmd_areas(&graph, &lattice, &[], AreaSort::Files, false);
+        let output = cmd_areas(
+            &graph,
+            &lattice,
+            &[],
+            &AreasConfig::default(),
+            AreaSort::Files,
+            false,
+        );
 
         let mut buf = Vec::new();
         output.print_human(&mut buf).unwrap();
