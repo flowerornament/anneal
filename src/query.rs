@@ -303,10 +303,11 @@ pub(crate) fn run(
     command: &QueryCommand,
     json: bool,
     json_style: JsonStyle,
+    area: Option<&crate::area::AreaFilter>,
 ) -> anyhow::Result<()> {
     match command {
         QueryCommand::Handles(args) => {
-            let output = build_handle_output(context.graph, context.lattice, args)?;
+            let output = build_handle_output(context.graph, context.lattice, args, area)?;
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -317,8 +318,13 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Edges(args) => {
-            let output =
-                build_edge_output(context.graph, context.lattice, context.node_index, args);
+            let output = build_edge_output(
+                context.graph,
+                context.lattice,
+                context.node_index,
+                args,
+                area,
+            );
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -329,7 +335,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Diagnostics(args) => {
-            let output = build_diagnostic_output(context, args);
+            let output = build_diagnostic_output(context, args, area);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -340,7 +346,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Obligations(args) => {
-            let output = build_obligation_output(context, args);
+            let output = build_obligation_output(context, args, area);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -351,7 +357,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Suggestions(args) => {
-            let output = build_suggestion_output(context, args);
+            let output = build_suggestion_output(context, args, area);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -368,11 +374,15 @@ fn build_handle_output(
     graph: &DiGraph,
     lattice: &Lattice,
     args: &HandleQueryArgs,
+    area: Option<&crate::area::AreaFilter>,
 ) -> anyhow::Result<HandleQueryOutput> {
     let file_matcher = compile_glob(args.file_pattern.as_deref())?;
     let mut candidates = build_handle_candidates(graph, lattice, args.page.scope);
     candidates
         .retain(|candidate| matches_handle_filters(graph, candidate, args, file_matcher.as_ref()));
+    if let Some(af) = area {
+        candidates.retain(|c| af.matches_handle(c.handle));
+    }
     candidates.sort_by(|a, b| a.handle.id.cmp(&b.handle.id));
     let (meta, items) = paginate(candidates, &args.page);
     Ok(JsonEnvelope::new(
@@ -392,6 +402,7 @@ fn build_edge_output(
     lattice: &Lattice,
     node_index: &HashMap<String, NodeId>,
     args: &EdgeQueryArgs,
+    area: Option<&crate::area::AreaFilter>,
 ) -> EdgeQueryOutput {
     let state_levels = args.confidence_gap.then(|| build_state_levels(lattice));
     let mut candidates = build_edge_candidates(
@@ -402,6 +413,11 @@ fn build_edge_output(
         args,
         state_levels.as_ref(),
     );
+    if let Some(af) = area {
+        candidates.retain(|c| {
+            af.matches_handle(graph.node(c.source)) || af.matches_handle(graph.node(c.target))
+        });
+    }
     candidates.sort_by(|a, b| compare_edge_candidates(graph, a, b));
     let (meta, items) = paginate(candidates, &args.page);
     JsonEnvelope::new(
@@ -419,12 +435,16 @@ fn build_edge_output(
 fn build_diagnostic_output(
     context: &AnalysisContext<'_>,
     args: &DiagnosticQueryArgs,
+    area: Option<&crate::area::AreaFilter>,
 ) -> DiagnosticQueryOutput {
     let mut diagnostics =
         analysis::build_analysis_artifacts_with_selection(context, diagnostic_selection(args))
             .diagnostics;
     if let Some(file_filter) = &args.file {
         analysis::retain_diagnostics_for_file(&mut diagnostics, context.root.as_str(), file_filter);
+    }
+    if let Some(af) = area {
+        diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
     }
 
     let terminal_files = matches!(args.page.scope, QueryScope::Active)
@@ -436,6 +456,7 @@ fn build_diagnostic_output(
 fn build_obligation_output(
     context: &AnalysisContext<'_>,
     args: &ObligationQueryArgs,
+    area: Option<&crate::area::AreaFilter>,
 ) -> ObligationQueryOutput {
     let mut rows = build_obligation_rows(
         context.graph,
@@ -445,6 +466,9 @@ fn build_obligation_output(
     );
     let selected = selected_obligation_dispositions(args);
     rows.retain(|row| matches_obligation_filters(row, args, selected.as_deref()));
+    if let Some(af) = area {
+        rows.retain(|row| row.file.as_deref().is_some_and(|f| af.matches_file(f)));
+    }
     rows.sort_by(|a, b| {
         a.namespace
             .cmp(&b.namespace)
@@ -463,13 +487,17 @@ fn build_obligation_output(
 fn build_suggestion_output(
     context: &AnalysisContext<'_>,
     args: &SuggestionQueryArgs,
+    area: Option<&crate::area::AreaFilter>,
 ) -> SuggestionQueryOutput {
     let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
-    let diagnostics = analysis::build_analysis_artifacts_with_selection(
+    let mut diagnostics = analysis::build_analysis_artifacts_with_selection(
         context,
         suggestion_diagnostic_selection(args.code.as_deref()),
     )
     .diagnostics;
+    if let Some(af) = area {
+        diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
+    }
     build_suggestion_query_output(diagnostics, &terminal_files, args)
 }
 
@@ -1477,6 +1505,7 @@ mod tests {
                 updated_after: None,
                 orphaned: false,
             },
+            None,
         )
         .expect("output");
         assert_eq!(output.data.items.len(), 1);
@@ -1511,6 +1540,7 @@ mod tests {
                 updated_after: None,
                 orphaned: true,
             },
+            None,
         )
         .expect("output");
         assert!(output.data.items.is_empty());
@@ -1541,6 +1571,7 @@ mod tests {
                 cross_file: false,
                 confidence_gap: true,
             },
+            None,
         );
         assert_eq!(output.data.items.len(), 1);
         assert_eq!(output.data.items[0].edge_kind, "DependsOn");
@@ -1649,6 +1680,7 @@ mod tests {
                 cross_file: false,
                 confidence_gap: false,
             },
+            None,
         );
 
         assert_eq!(output.data.items.len(), 1);

@@ -329,14 +329,54 @@ pub(crate) fn cmd_status(
     lattice: &Lattice,
     snap: &crate::snapshot::Snapshot,
     diagnostics_list: &[crate::checks::Diagnostic],
+    area: Option<&crate::area::AreaFilter>,
 ) -> StatusOutput {
-    // File count requires a quick pass (not tracked in snapshots)
-    let files = graph
-        .nodes()
-        .filter(|(_, h)| matches!(h.kind, HandleKind::File(_)))
-        .count();
+    // When scoped to an area, compute counts from the graph directly
+    // instead of using the corpus-wide snapshot.
+    let (files, handles, edges, active_handles, frozen_handles, states) = if let Some(af) = area {
+        let mut files = 0usize;
+        let mut handles = 0usize;
+        let mut active = 0usize;
+        let mut terminal = 0usize;
+        let mut edge_count = 0usize;
+        let mut states: HashMap<String, usize> = HashMap::new();
 
-    // Pipeline histogram from snapshot states + lattice ordering
+        for (node_id, h) in graph.nodes() {
+            if !af.matches_handle(h) {
+                continue;
+            }
+            handles += 1;
+            if matches!(h.kind, HandleKind::File(_)) {
+                files += 1;
+            }
+            if let Some(ref s) = h.status {
+                *states.entry(s.clone()).or_insert(0) += 1;
+                if lattice.terminal.contains(s) {
+                    terminal += 1;
+                } else {
+                    active += 1;
+                }
+            }
+            edge_count += graph.outgoing(node_id).len();
+        }
+
+        (files, handles, edge_count, active, terminal, states)
+    } else {
+        let files = graph
+            .nodes()
+            .filter(|(_, h)| matches!(h.kind, HandleKind::File(_)))
+            .count();
+        (
+            files,
+            snap.handles.total,
+            snap.edges.total,
+            snap.handles.active,
+            snap.handles.frozen,
+            snap.states.clone(),
+        )
+    };
+
+    // Pipeline histogram from states + lattice ordering
     let pipeline = if lattice.ordering.is_empty() {
         None
     } else {
@@ -346,7 +386,7 @@ pub(crate) fn cmd_status(
                 .iter()
                 .map(|level| PipelineLevel {
                     level: level.clone(),
-                    count: snap.states.get(level).copied().unwrap_or(0),
+                    count: states.get(level).copied().unwrap_or(0),
                 })
                 .collect(),
         )
@@ -379,12 +419,12 @@ pub(crate) fn cmd_status(
 
     StatusOutput {
         files,
-        handles: snap.handles.total,
-        edges: snap.edges.total,
-        active_handles: snap.handles.active,
-        frozen_handles: snap.handles.frozen,
+        handles,
+        edges,
+        active_handles,
+        frozen_handles,
         pipeline,
-        states: snap.states.clone(),
+        states,
         obligations: ObligationSummary {
             discharged: snap.obligations.discharged,
             total: snap.obligations.outstanding
@@ -585,7 +625,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[]);
+        let output = cmd_status(&graph, &lattice, &snap, &[], None);
 
         assert_eq!(output.files, 2);
         assert_eq!(output.handles, 3);
@@ -603,7 +643,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[]);
+        let output = cmd_status(&graph, &lattice, &snap, &[], None);
 
         // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
         assert_eq!(output.active_handles, 2);

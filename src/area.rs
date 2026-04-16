@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::checks::{Diagnostic, DiagnosticCode, Severity};
 use crate::config::AreasConfig;
 use crate::graph::DiGraph;
-use crate::handle::HandleKind;
+use crate::handle::{Handle, HandleKind};
 use crate::lattice::Lattice;
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,37 @@ pub(crate) fn area_of(file: &str) -> &str {
         &file[..pos]
     } else {
         "(root)"
+    }
+}
+
+/// A filter that scopes commands to a single area (directory or concern group).
+pub(crate) struct AreaFilter {
+    name: String,
+}
+
+impl AreaFilter {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+
+    /// Whether a handle belongs to this area by file path.
+    pub(crate) fn matches_handle(&self, handle: &Handle) -> bool {
+        handle
+            .file_path
+            .as_deref()
+            .is_some_and(|fp| area_of(fp.as_str()) == self.name)
+    }
+
+    /// Whether a file path belongs to this area.
+    pub(crate) fn matches_file(&self, path: &str) -> bool {
+        area_of(path) == self.name
+    }
+
+    #[allow(dead_code)] // used by orient/garden commands (planned)
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -372,6 +403,29 @@ mod tests {
             synthesis.cross_links, 0,
             "synthesis has no outgoing cross-links"
         );
+    }
+
+    #[test]
+    fn area_filter_matches_handle_in_area() {
+        let filter = AreaFilter::new("compiler");
+        assert!(filter.matches_handle(&Handle::test_file("compiler/a.md", None)));
+        assert!(!filter.matches_handle(&Handle::test_file("synthesis/b.md", None)));
+    }
+
+    #[test]
+    fn area_filter_matches_root_area() {
+        let filter = AreaFilter::new("(root)");
+        assert!(filter.matches_handle(&Handle::test_file("README.md", None)));
+        assert!(!filter.matches_handle(&Handle::test_file("compiler/a.md", None)));
+    }
+
+    #[test]
+    fn area_filter_matches_file_path() {
+        let filter = AreaFilter::new("compiler");
+        assert!(filter.matches_file("compiler/a.md"));
+        assert!(filter.matches_file("compiler/sub/b.md"));
+        assert!(!filter.matches_file("synthesis/c.md"));
+        assert!(!filter.matches_file("README.md"));
     }
 
     #[test]

@@ -120,17 +120,14 @@ struct TextRenderOutput {
 ///
 /// - `around`: BFS from this handle to `depth` hops (forward + reverse).
 /// - `concern`: filter to handles matching concern group patterns from config.
-/// - Neither: all nodes where status is NOT terminal (active graph, D-12).
-fn extract_subgraph(
-    graph: &DiGraph,
-    node_index: &HashMap<String, NodeId>,
-    lattice: &Lattice,
-    concern: Option<&str>,
-    around: Option<&str>,
-    depth: u32,
-    config: &AnnealConfig,
-) -> HashSet<NodeId> {
-    if let Some(handle_str) = around {
+/// - `area`: filter to handles in this area, plus one-hop boundary nodes.
+/// - None of the above: all nodes where status is NOT terminal (active graph, D-12).
+fn extract_subgraph(opts: &MapOptions<'_>) -> HashSet<NodeId> {
+    let graph = opts.graph;
+    let node_index = opts.node_index;
+    let lattice = opts.lattice;
+    let depth = opts.depth;
+    if let Some(handle_str) = opts.around {
         // BFS neighborhood from a handle
         let Some(start) = lookup_handle(node_index, handle_str) else {
             return HashSet::new();
@@ -158,9 +155,9 @@ fn extract_subgraph(
             }
         }
         visited
-    } else if let Some(concern_name) = concern {
+    } else if let Some(concern_name) = opts.concern {
         // Concern group: match patterns from config
-        let patterns = config.concerns.get(concern_name);
+        let patterns = opts.config.concerns.get(concern_name);
         let Some(patterns) = patterns else {
             return HashSet::new();
         };
@@ -174,6 +171,24 @@ fn extract_subgraph(
             }
         }
         // Also include handles connected by one hop
+        let anchors: Vec<NodeId> = matched.iter().copied().collect();
+        for anchor in anchors {
+            for edge in graph.outgoing(anchor) {
+                matched.insert(edge.target);
+            }
+            for edge in graph.incoming(anchor) {
+                matched.insert(edge.source);
+            }
+        }
+        matched
+    } else if let Some(af) = opts.area {
+        // Area: handles in the area, plus one-hop cross-edge boundary nodes
+        let mut matched = HashSet::new();
+        for (node_id, handle) in graph.nodes() {
+            if af.matches_handle(handle) {
+                matched.insert(node_id);
+            }
+        }
         let anchors: Vec<NodeId> = matched.iter().copied().collect();
         for anchor in anchors {
             for edge in graph.outgoing(anchor) {
@@ -665,6 +680,7 @@ pub(crate) struct MapOptions<'a> {
     pub(crate) config: &'a AnnealConfig,
     pub(crate) concern: Option<&'a str>,
     pub(crate) around: Option<&'a str>,
+    pub(crate) area: Option<&'a crate::area::AreaFilter>,
     pub(crate) depth: u32,
     pub(crate) render: crate::MapRender,
     pub(crate) include_nodes: bool,
@@ -763,15 +779,7 @@ fn build_map_edge_entries(
 
 /// Render or summarize the knowledge graph (CLI-05, KB-C5).
 pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
-    let nodes = extract_subgraph(
-        opts.graph,
-        opts.node_index,
-        opts.lattice,
-        opts.concern,
-        opts.around,
-        opts.depth,
-        opts.config,
-    );
+    let nodes = extract_subgraph(opts);
     let edge_count = subgraph_edges(opts.graph, &nodes).len();
     let by_kind = map_kind_counts(opts.graph, &nodes);
     let top_namespaces = map_top_namespaces(opts.graph, &nodes);
@@ -889,6 +897,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -953,6 +962,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -999,6 +1009,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1040,6 +1051,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Dot,
             include_nodes: false,
@@ -1077,6 +1089,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Dot,
             include_nodes: false,
@@ -1119,6 +1132,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("b.md"),
+            area: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1178,6 +1192,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("a.md"),
+            area: None,
             depth: 0,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1226,6 +1241,7 @@ mod tests {
             config: &config,
             concern: Some("questions"),
             around: None,
+            area: None,
             depth: 2,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1265,6 +1281,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: None,
+            area: None,
             depth: 1,
             render: crate::MapRender::Summary,
             include_nodes: false,
@@ -1295,6 +1312,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("center.md"),
+            area: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,
@@ -1339,6 +1357,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("LABELS.md"),
+            area: None,
             depth: 1,
             render: crate::MapRender::Text,
             include_nodes: false,
