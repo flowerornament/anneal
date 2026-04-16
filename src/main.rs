@@ -132,6 +132,10 @@ struct Cli {
     #[arg(long, global = true)]
     pretty: bool,
 
+    /// Scope output to a single area (directory or concern group name)
+    #[arg(long, global = true)]
+    area: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -741,6 +745,8 @@ fn run() -> anyhow::Result<()> {
         cascade_candidates: &cascade_candidates,
     };
 
+    let area_filter = cli_args.area.as_ref().map(|a| area::AreaFilter::new(a));
+
     match cli_args.command {
         None => {
             // Bare `anneal` (no subcommand): show graph summary
@@ -777,6 +783,9 @@ fn run() -> anyhow::Result<()> {
             let mut diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
             if let Some(ref file_filter) = file {
                 analysis::retain_diagnostics_for_file(&mut diagnostics, &root_str, file_filter);
+            }
+            if let Some(ref af) = area_filter {
+                diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
             }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
             let terminal_files = cli::terminal_file_set(graph, &lattice);
@@ -908,6 +917,7 @@ fn run() -> anyhow::Result<()> {
                     offset,
                     full,
                     no_facets: no_facets || !cli_args.json,
+                    area: area_filter.as_ref(),
                 },
             )?;
             emit_output(
@@ -938,7 +948,10 @@ fn run() -> anyhow::Result<()> {
 
         Some(Command::Impact { ref handle }) => {
             let traverse_set = config.impact.resolve_traverse_set();
-            if let Some(output) = cli::cmd_impact(graph, &node_index, handle, &traverse_set) {
+            if let Some(mut output) = cli::cmd_impact(graph, &node_index, handle, &traverse_set) {
+                if let Some(ref af) = area_filter {
+                    output.retain_area(af, &node_index, graph);
+                }
                 emit_full_output(
                     output,
                     cli_args.json,
@@ -963,18 +976,15 @@ fn run() -> anyhow::Result<()> {
             limit_nodes,
             limit_edges,
         }) => {
-            let render = match (render, cli_args.json, around.is_some() || concern.is_some()) {
+            let has_focus = around.is_some() || concern.is_some() || area_filter.is_some();
+            let render = match (render, cli_args.json, has_focus) {
                 (Some(render), _, _) => render,
                 (None, false, true) => MapRender::Text,
                 _ => MapRender::Summary,
             };
-            if matches!(render, MapRender::Text | MapRender::Dot)
-                && !full
-                && around.is_none()
-                && concern.is_none()
-            {
+            if matches!(render, MapRender::Text | MapRender::Dot) && !full && !has_focus {
                 anyhow::bail!(
-                    "full graph rendering requires --full; use `anneal map --render=text --full` or focus with --around/--concern"
+                    "full graph rendering requires --full; use `anneal map --render=text --full` or focus with --around/--concern/--area"
                 );
             }
             let output = cli::cmd_map(&cli::MapOptions {
@@ -984,6 +994,7 @@ fn run() -> anyhow::Result<()> {
                 config: &config,
                 concern: concern.as_deref(),
                 around: around.as_deref(),
+                area: area_filter.as_ref(),
                 depth,
                 render,
                 include_nodes: nodes,
@@ -1004,10 +1015,14 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Status { verbose, compact }) => {
             let analysis::AnalysisArtifacts {
                 previous_snapshot,
-                diagnostics,
+                mut diagnostics,
             } = analysis::build_analysis_artifacts(&analysis);
+            if let Some(ref af) = area_filter {
+                diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
+            }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
-            let output = cli::cmd_status(graph, &lattice, &snap, &diagnostics);
+            let output =
+                cli::cmd_status(graph, &lattice, &snap, &diagnostics, area_filter.as_ref());
 
             // Compute convergence from history (D-05, D-06)
             let convergence = snapshot::summary_from_previous(&snap, previous_snapshot.as_ref())
@@ -1092,7 +1107,13 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Query { ref command }) => {
-            query::run(&analysis, command, cli_args.json, json_style)?;
+            query::run(
+                &analysis,
+                command,
+                cli_args.json,
+                json_style,
+                area_filter.as_ref(),
+            )?;
         }
 
         Some(Command::Explain { ref command }) => {

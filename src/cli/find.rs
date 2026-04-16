@@ -86,6 +86,7 @@ pub(crate) struct FindFilters<'a> {
     pub(crate) offset: usize,
     pub(crate) full: bool,
     pub(crate) no_facets: bool,
+    pub(crate) area: Option<&'a crate::area::AreaFilter>,
 }
 
 /// Search handle identities with case-insensitive substring matching.
@@ -97,8 +98,10 @@ pub(crate) fn cmd_find(
 ) -> anyhow::Result<FindOutput> {
     let lower_query = query.to_lowercase();
 
-    let has_narrowing_filter =
-        filters.namespace.is_some() || filters.status.is_some() || filters.kind.is_some();
+    let has_narrowing_filter = filters.namespace.is_some()
+        || filters.status.is_some()
+        || filters.kind.is_some()
+        || filters.area.is_some();
     if lower_query.is_empty() && !filters.full && !has_narrowing_filter {
         anyhow::bail!("empty query requires a narrowing filter or --full");
     }
@@ -133,6 +136,12 @@ pub(crate) fn cmd_find(
                     Some(s) if s == sf => {}
                     _ => return false,
                 }
+            }
+
+            if let Some(af) = filters.area
+                && !af.matches_handle(h)
+            {
+                return false;
             }
 
             // Exclude terminal handles unless user explicitly filtered by status
