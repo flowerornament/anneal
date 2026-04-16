@@ -7,7 +7,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 mod analysis;
-#[allow(dead_code)] // Foundation module; CLI commands will wire it next
 mod area;
 mod checks;
 mod cli;
@@ -83,6 +82,7 @@ START HERE:
   anneal find ADR             Search handle identities
   anneal impact spec/v3.md    Reverse dependencies for safe edits
   anneal diff                 Change since last snapshot or git ref
+  anneal areas                Per-area health profiles
   anneal obligations          Linear namespace obligation summary
   anneal map --around=REQ-12  Neighborhood view around one handle
   anneal init                 Generate anneal.toml from inferred structure
@@ -523,6 +523,41 @@ EXAMPLES:
   anneal obligations --json       # Machine-readable output"
     )]
     Obligations,
+
+    /// Show per-area health profiles
+    #[command(
+        long_about = "\
+Show health profiles for each area (top-level directory) in the corpus.
+
+Each area gets a grade (A-D) based on error count, connectivity, and metadata
+coverage. The table shows file count, edges per handle (connectivity), cross-area
+edges, and a signal summary.
+
+GRADES:
+  [A]  Healthy: no errors, adequate connectivity, has active files
+  [B]  Attention: no errors, but low connectivity, no active metadata, or orphans
+  [C]  Action required: has errors (E001/E002)
+  [D]  Degraded: has errors and low connectivity
+
+Areas are auto-detected from the top-level directory structure. Files in the
+corpus root are grouped under \"(root)\". When [concerns] is configured in
+anneal.toml, concern groups can also act as areas.",
+        after_help = "\
+EXAMPLES:
+  anneal areas                    # Per-area health table
+  anneal areas --sort=grade       # Worst areas first
+  anneal areas --sort=name        # Alphabetical
+  anneal areas --include-terminal # Include terminal-only areas
+  anneal areas --json             # Machine-readable output"
+    )]
+    Areas {
+        /// Sort order for the area table
+        #[arg(long, value_enum, default_value = "files")]
+        sort: cli::AreaSort,
+        /// Include areas that contain only terminal files
+        #[arg(long)]
+        include_terminal: bool,
+    },
 
     /// Query structural facts derived from the current corpus
     #[command(long_about = "\
@@ -1031,6 +1066,21 @@ fn run() -> anyhow::Result<()> {
                 json_style,
                 |output, w| output.print_human(w),
                 "failed to write obligations output",
+            )?;
+        }
+
+        Some(Command::Areas {
+            sort,
+            include_terminal,
+        }) => {
+            let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
+            let output = cli::cmd_areas(graph, &lattice, &diagnostics, sort, include_terminal);
+            emit_full_output(
+                output,
+                cli_args.json,
+                json_style,
+                |output, w| output.print_human(w),
+                "failed to write areas output",
             )?;
         }
 
