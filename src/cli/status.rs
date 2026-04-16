@@ -330,10 +330,12 @@ pub(crate) fn cmd_status(
     snap: &crate::snapshot::Snapshot,
     diagnostics_list: &[crate::checks::Diagnostic],
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> StatusOutput {
-    // When scoped to an area, compute counts from the graph directly
-    // instead of using the corpus-wide snapshot.
-    let (files, handles, edges, active_handles, frozen_handles, states) = if let Some(af) = area {
+    // When scoped to an area or temporal window, compute counts from
+    // the graph directly instead of using the corpus-wide snapshot.
+    let scoped = area.is_some() || temporal.is_some();
+    let (files, handles, edges, active_handles, frozen_handles, states) = if scoped {
         let mut files = 0usize;
         let mut handles = 0usize;
         let mut active = 0usize;
@@ -342,7 +344,10 @@ pub(crate) fn cmd_status(
         let mut states: HashMap<String, usize> = HashMap::new();
 
         for (node_id, h) in graph.nodes() {
-            if !af.matches_handle(h) {
+            if area.is_some_and(|af| !af.matches_handle(h)) {
+                continue;
+            }
+            if temporal.is_some_and(|tf| !tf.matches_handle(h)) {
                 continue;
             }
             handles += 1;
@@ -625,7 +630,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[], None);
+        let output = cmd_status(&graph, &lattice, &snap, &[], None, None);
 
         assert_eq!(output.files, 2);
         assert_eq!(output.handles, 3);
@@ -643,7 +648,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[], None);
+        let output = cmd_status(&graph, &lattice, &snap, &[], None, None);
 
         // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
         assert_eq!(output.active_handles, 2);

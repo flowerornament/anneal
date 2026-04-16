@@ -27,6 +27,16 @@ pub(crate) enum QueryScope {
     All,
 }
 
+/// Sort order for `query handles` results.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HandleSortOrder {
+    /// Sort alphabetically by handle id (default).
+    Id,
+    /// Sort by file date, most recent first.
+    Date,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum QueryHandleKind {
     File,
@@ -124,6 +134,9 @@ pub(crate) struct HandleQueryArgs {
     /// Filter to orphaned non-file handles
     #[arg(long)]
     pub(crate) orphaned: bool,
+    /// Sort order: id (default) or date (most recent first)
+    #[arg(long, value_enum)]
+    pub(crate) sort: Option<HandleSortOrder>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -309,10 +322,11 @@ pub(crate) fn run(
     json: bool,
     json_style: JsonStyle,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> anyhow::Result<()> {
     match command {
         QueryCommand::Handles(args) => {
-            let output = build_handle_output(context.graph, context.lattice, args, area)?;
+            let output = build_handle_output(context.graph, context.lattice, args, area, temporal)?;
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -329,6 +343,7 @@ pub(crate) fn run(
                 context.node_index,
                 args,
                 area,
+                temporal,
             );
             if json {
                 crate::cli::print_json(&output, json_style)?;
@@ -340,7 +355,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Diagnostics(args) => {
-            let output = build_diagnostic_output(context, args, area);
+            let output = build_diagnostic_output(context, args, area, temporal);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -351,7 +366,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Obligations(args) => {
-            let output = build_obligation_output(context, args, area);
+            let output = build_obligation_output(context, args, area, temporal);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -362,7 +377,7 @@ pub(crate) fn run(
             Ok(())
         }
         QueryCommand::Suggestions(args) => {
-            let output = build_suggestion_output(context, args, area);
+            let output = build_suggestion_output(context, args, area, temporal);
             if json {
                 crate::cli::print_json(&output, json_style)?;
             } else {
@@ -380,6 +395,7 @@ fn build_handle_output(
     lattice: &Lattice,
     args: &HandleQueryArgs,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> anyhow::Result<HandleQueryOutput> {
     let file_matcher = compile_glob(args.file_pattern.as_deref())?;
     let mut candidates = build_handle_candidates(graph, lattice, args.page.scope);
@@ -388,7 +404,20 @@ fn build_handle_output(
     if let Some(af) = area {
         candidates.retain(|c| af.matches_handle(c.handle));
     }
-    candidates.sort_by(|a, b| a.handle.id.cmp(&b.handle.id));
+    if let Some(tf) = temporal {
+        candidates.retain(|c| tf.matches_handle(c.handle));
+    }
+    if args.sort == Some(HandleSortOrder::Date) {
+        // Most recent first; handles without dates sort last.
+        candidates.sort_by(|a, b| match (b.handle.date, a.handle.date) {
+            (Some(bd), Some(ad)) => bd.cmp(&ad),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.handle.id.cmp(&b.handle.id),
+        });
+    } else {
+        candidates.sort_by(|a, b| a.handle.id.cmp(&b.handle.id));
+    }
     let (meta, items) = paginate(candidates, &args.page);
     Ok(JsonEnvelope::new(
         meta,
@@ -408,6 +437,7 @@ fn build_edge_output(
     node_index: &HashMap<String, NodeId>,
     args: &EdgeQueryArgs,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> EdgeQueryOutput {
     let state_levels = args.confidence_gap.then(|| build_state_levels(lattice));
     let mut candidates = build_edge_candidates(
@@ -421,6 +451,11 @@ fn build_edge_output(
     if let Some(af) = area {
         candidates.retain(|c| {
             af.matches_handle(graph.node(c.source)) || af.matches_handle(graph.node(c.target))
+        });
+    }
+    if let Some(tf) = temporal {
+        candidates.retain(|c| {
+            tf.matches_handle(graph.node(c.source)) || tf.matches_handle(graph.node(c.target))
         });
     }
     candidates.sort_by(|a, b| compare_edge_candidates(graph, a, b));
@@ -441,6 +476,7 @@ fn build_diagnostic_output(
     context: &AnalysisContext<'_>,
     args: &DiagnosticQueryArgs,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> DiagnosticQueryOutput {
     let mut diagnostics =
         analysis::build_analysis_artifacts_with_selection(context, diagnostic_selection(args))
@@ -450,6 +486,9 @@ fn build_diagnostic_output(
     }
     if let Some(af) = area {
         diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
+    }
+    if let Some(tf) = temporal {
+        diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| tf.matches_file(f)));
     }
 
     let terminal_files = matches!(args.page.scope, QueryScope::Active)
@@ -462,6 +501,7 @@ fn build_obligation_output(
     context: &AnalysisContext<'_>,
     args: &ObligationQueryArgs,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> ObligationQueryOutput {
     let mut rows = build_obligation_rows(
         context.graph,
@@ -473,6 +513,9 @@ fn build_obligation_output(
     rows.retain(|row| matches_obligation_filters(row, args, selected.as_deref()));
     if let Some(af) = area {
         rows.retain(|row| row.file.as_deref().is_some_and(|f| af.matches_file(f)));
+    }
+    if let Some(tf) = temporal {
+        rows.retain(|row| row.file.as_deref().is_some_and(|f| tf.matches_file(f)));
     }
     rows.sort_by(|a, b| {
         a.namespace
@@ -493,6 +536,7 @@ fn build_suggestion_output(
     context: &AnalysisContext<'_>,
     args: &SuggestionQueryArgs,
     area: Option<&crate::area::AreaFilter>,
+    temporal: Option<&crate::area::TemporalFilter>,
 ) -> SuggestionQueryOutput {
     let terminal_files = crate::cli::terminal_file_set(context.graph, context.lattice);
     let mut diagnostics = analysis::build_analysis_artifacts_with_selection(
@@ -502,6 +546,9 @@ fn build_suggestion_output(
     .diagnostics;
     if let Some(af) = area {
         diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| af.matches_file(f)));
+    }
+    if let Some(tf) = temporal {
+        diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| tf.matches_file(f)));
     }
     build_suggestion_query_output(diagnostics, &terminal_files, args)
 }
@@ -1509,7 +1556,9 @@ mod tests {
                 updated_before: None,
                 updated_after: None,
                 orphaned: false,
+                sort: None,
             },
+            None,
             None,
         )
         .expect("output");
@@ -1544,7 +1593,9 @@ mod tests {
                 updated_before: None,
                 updated_after: None,
                 orphaned: true,
+                sort: None,
             },
+            None,
             None,
         )
         .expect("output");
@@ -1576,6 +1627,7 @@ mod tests {
                 cross_file: false,
                 confidence_gap: true,
             },
+            None,
             None,
         );
         assert_eq!(output.data.items.len(), 1);
@@ -1685,6 +1737,7 @@ mod tests {
                 cross_file: false,
                 confidence_gap: false,
             },
+            None,
             None,
         );
 

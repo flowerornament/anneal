@@ -182,6 +182,19 @@ impl Handle {
         )
     }
 
+    pub(crate) fn test_file_with_date(
+        id: &str,
+        status: Option<&str>,
+        date: chrono::NaiveDate,
+    ) -> Self {
+        Self::file(
+            Utf8PathBuf::from(id),
+            status.map(String::from),
+            Some(date),
+            HandleMetadata::default(),
+        )
+    }
+
     pub(crate) fn test_label(prefix: &str, number: u32, status: Option<&str>) -> Self {
         let mut h = Self::label(prefix.to_string(), number, None);
         h.status = status.map(String::from);

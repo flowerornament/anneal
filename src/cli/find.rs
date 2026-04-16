@@ -20,6 +20,8 @@ pub(crate) struct FindMatch {
     pub(crate) kind: String,
     pub(crate) status: Option<String>,
     pub(crate) file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Serialize)]
@@ -87,6 +89,8 @@ pub(crate) struct FindFilters<'a> {
     pub(crate) full: bool,
     pub(crate) no_facets: bool,
     pub(crate) area: Option<&'a crate::area::AreaFilter>,
+    pub(crate) temporal: Option<&'a crate::area::TemporalFilter>,
+    pub(crate) sort_date: bool,
 }
 
 /// Search handle identities with case-insensitive substring matching.
@@ -101,7 +105,8 @@ pub(crate) fn cmd_find(
     let has_narrowing_filter = filters.namespace.is_some()
         || filters.status.is_some()
         || filters.kind.is_some()
-        || filters.area.is_some();
+        || filters.area.is_some()
+        || filters.temporal.is_some();
     if lower_query.is_empty() && !filters.full && !has_narrowing_filter {
         anyhow::bail!("empty query requires a narrowing filter or --full");
     }
@@ -144,6 +149,12 @@ pub(crate) fn cmd_find(
                 return false;
             }
 
+            if let Some(tf) = filters.temporal
+                && !tf.matches_handle(h)
+            {
+                return false;
+            }
+
             // Exclude terminal handles unless user explicitly filtered by status
             if !filters.include_all
                 && filters.status.is_none()
@@ -160,11 +171,22 @@ pub(crate) fn cmd_find(
             kind: h.kind.as_str().to_string(),
             status: h.status.clone(),
             file: h.file_path.as_ref().map(ToString::to_string),
+            date: h.date,
         })
         .collect();
 
     let mut sorted_matches = all_matches;
-    sorted_matches.sort_by(|a, b| a.id.cmp(&b.id));
+    if filters.sort_date {
+        // Most recent first; handles without dates sort last.
+        sorted_matches.sort_by(|a, b| match (b.date, a.date) {
+            (Some(bd), Some(ad)) => bd.cmp(&ad),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.id.cmp(&b.id),
+        });
+    } else {
+        sorted_matches.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     let total = sorted_matches.len();
     let offset = filters.offset.min(total);
     let limit = if filters.full {
