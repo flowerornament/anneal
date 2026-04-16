@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::checks::{Diagnostic, DiagnosticCode, Severity};
+use crate::config::AreasConfig;
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
@@ -77,6 +78,7 @@ pub(crate) fn compute_areas(
     graph: &DiGraph,
     lattice: &Lattice,
     diagnostics: &[Diagnostic],
+    config: &AreasConfig,
 ) -> Vec<AreaHealth> {
     let mut stats: HashMap<String, AreaStats> = HashMap::new();
 
@@ -157,7 +159,7 @@ pub(crate) fn compute_areas(
                 0.0
             };
 
-            let (grade, signal) = compute_grade(&s, file_count, connectivity);
+            let (grade, signal) = compute_grade(&s, file_count, connectivity, config);
 
             let mut namespaces: Vec<String> = s.namespaces.into_iter().collect();
             namespaces.sort();
@@ -208,24 +210,22 @@ struct AreaStats {
     orphans: usize,
 }
 
-// Grading thresholds — centralized to avoid magic numbers in the logic.
-const MIN_FILES_FOR_STRUCTURAL_SIGNALS: usize = 3;
-const SPARSE_CONNECTIVITY_THRESHOLD: f64 = 0.2;
-const DECAY_CONNECTIVITY_THRESHOLD: f64 = 0.3;
-const ORPHAN_THRESHOLD_FOR_GRADE_B: usize = 5;
-
-/// Compute grade and signal text from area stats.
-fn compute_grade(s: &AreaStats, file_count: usize, connectivity: f64) -> (AreaGrade, String) {
+/// Compute grade and signal text from area stats using configurable thresholds.
+fn compute_grade(
+    s: &AreaStats,
+    file_count: usize,
+    connectivity: f64,
+    config: &AreasConfig,
+) -> (AreaGrade, String) {
     let mut signals = Vec::new();
-    let large_enough = file_count > MIN_FILES_FOR_STRUCTURAL_SIGNALS;
+    let large_enough = file_count > config.min_files;
 
-    // Collect signals first, then derive grade from signals.
     if s.errors > 0 {
         signals.push(format!("{} broken", s.errors));
     }
     if s.cross_links == 0 && large_enough {
         signals.push("island".to_string());
-    } else if connectivity < SPARSE_CONNECTIVITY_THRESHOLD && large_enough {
+    } else if connectivity < config.sparse_connectivity && large_enough {
         signals.push("sparse".to_string());
     }
     if s.active == 0 && large_enough {
@@ -235,14 +235,12 @@ fn compute_grade(s: &AreaStats, file_count: usize, connectivity: f64) -> (AreaGr
         signals.push(format!("{} orphans", s.orphans));
     }
 
-    // Derive grade from collected signals.
     let has_errors = s.errors > 0;
     let is_island = s.cross_links == 0 && large_enough;
-    let is_sparse = connectivity < SPARSE_CONNECTIVITY_THRESHOLD && large_enough;
+    let is_sparse = connectivity < config.sparse_connectivity && large_enough;
     let no_active = s.active == 0 && large_enough;
-    let high_orphans = s.orphans >= ORPHAN_THRESHOLD_FOR_GRADE_B;
-
-    let decaying = large_enough && connectivity < DECAY_CONNECTIVITY_THRESHOLD;
+    let high_orphans = s.orphans >= config.orphan_threshold;
+    let decaying = large_enough && connectivity < config.decay_connectivity;
 
     let grade = if has_errors && (is_island || decaying) {
         AreaGrade::D
@@ -288,7 +286,7 @@ mod tests {
         graph.add_node(Handle::test_file("README.md", None));
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &[]);
+        let areas = compute_areas(&graph, &lattice, &[], &AreasConfig::default());
 
         assert_eq!(areas.len(), 3);
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
@@ -308,7 +306,7 @@ mod tests {
         graph.add_node(Handle::test_file("docs/c.md", None));
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &[]);
+        let areas = compute_areas(&graph, &lattice, &[], &AreasConfig::default());
         let docs = areas.iter().find(|a| a.name == "docs").unwrap();
         assert_eq!(docs.active, 1, "only draft is active");
         assert_eq!(docs.terminal, 1, "archived is terminal");
@@ -322,7 +320,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::DependsOn);
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &[]);
+        let areas = compute_areas(&graph, &lattice, &[], &AreasConfig::default());
         let docs = areas.iter().find(|a| a.name == "docs").unwrap();
         assert_eq!(docs.grade, AreaGrade::A);
         assert_eq!(docs.signal, "healthy");
@@ -343,7 +341,7 @@ mod tests {
         }];
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &diags);
+        let areas = compute_areas(&graph, &lattice, &diags, &AreasConfig::default());
         let imp = areas.iter().find(|a| a.name == "impl").unwrap();
         assert_eq!(imp.grade, AreaGrade::C);
         assert!(imp.signal.contains("broken"));
@@ -357,7 +355,7 @@ mod tests {
         graph.add_edge(a, b, EdgeKind::Cites);
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &[]);
+        let areas = compute_areas(&graph, &lattice, &[], &AreasConfig::default());
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
         assert_eq!(
             compiler.cross_links, 1,
@@ -395,7 +393,7 @@ mod tests {
         ];
 
         let lattice = Lattice::test_new(&["draft", "active"], &["archived"]);
-        let areas = compute_areas(&graph, &lattice, &diags);
+        let areas = compute_areas(&graph, &lattice, &diags, &AreasConfig::default());
         let compiler = areas.iter().find(|a| a.name == "compiler").unwrap();
         assert_eq!(compiler.orphans, 2);
     }
