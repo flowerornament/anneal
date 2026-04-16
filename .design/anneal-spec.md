@@ -60,7 +60,7 @@ Herald's system theory identifies a single dynamic operating at multiple timesca
 INTERACT → LEARN → FORMALIZE → DISTRIBUTE → DECAY/EVOLVE
 ```
 
-In a knowledge corpus, this is the **refinement pipeline**: raw observations are synthesized into analysis, analysis crystallizes into formal specifications, specifications are verified, verified results propagate to downstream documents, and obsolete artifacts decay into the frozen archive.
+In a knowledge corpus, this is the **refinement pipeline**: raw observations are synthesized into analysis, analysis crystallizes into formal specifications, specifications are verified, verified results propagate to downstream documents, and obsolete artifacts reach terminal state.
 
 Herald's three crystallization levels (DY-5) map directly:
 
@@ -114,7 +114,7 @@ Applied to anneal: the kernel defines handles, a graph, a convergence lattice, l
 
 **[KB-P5] Suggestions surface patterns.** The tool recognizes patterns it supports and proposes them when evidence is sufficient. The user learns the tool's capabilities by being shown what's possible, not by reading docs.
 
-**[KB-P6] Decay is healthy.** Documents that fall out of currency reach a terminal state and stop generating noise. The frozen archive can be enormous without affecting the active corpus.
+**[KB-P6] Decay is healthy.** Documents that fall out of currency reach a terminal state and stop generating noise. The terminal archive can be enormous without affecting the active corpus.
 
 **[KB-P7] Local checks over global propagation.** Consistency is checked between directly connected handles, not propagated transitively. This avoids false cascades while catching real issues at the boundaries where they matter.
 
@@ -287,7 +287,7 @@ Within the active set, the ordering is either:
 - Only surface when referenced by active handles (staleness)
 - Have their obligations automatically mooted
 
-This models **healthy decay** [KB-P6]. The frozen archive can be enormous. Only the active frontier is checked.
+This models **healthy decay** [KB-P6]. The terminal archive can be enormous. Only the active frontier is checked.
 
 #### §6.4 Freshness [KB-D11]
 
@@ -355,7 +355,7 @@ Impact is computed by reverse graph traversal. Supersedes chains are acyclic by 
 ```json
 {
   "timestamp": "2026-03-27T14:30:00Z",
-  "handles": { "total": 487, "active": 142, "frozen": 345 },
+  "handles": { "total": 487, "active": 142, "terminal": 345 },
   "edges": { "total": 2031 },
   "states": { "raw": 12, "digested": 8, "decided": 18, "formal": 6, "verified": 4 },
   "obligations": { "outstanding": 0, "discharged": 18, "mooted": 12 },
@@ -421,7 +421,7 @@ The following capabilities emerge from the primitives (Handle, Graph, Lattice, L
 
 **[KB-E5] Obligation tracking** = rule KB-R4 on linear namespaces [KB-D15].
 
-**[KB-E6] Graceful decay** = terminal states as fixed points [KB-D10]. Frozen handles don't generate diagnostics and don't contribute to pipeline statistics.
+**[KB-E6] Graceful decay** = terminal states as fixed points [KB-D10]. Terminal handles don't generate diagnostics and don't contribute to pipeline statistics.
 
 **[KB-E7] Handle inference** = the content scanner discovering new namespaces by sequential cardinality [KB-D4].
 
@@ -429,7 +429,7 @@ The following capabilities emerge from the primitives (Handle, Graph, Lattice, L
 - Handles with no incoming edges → orphaned
 - Recurring regex patterns not yet recognized as namespaces → candidate labels [KB-D4]
 - State levels with high population and no outflow → pipeline stalls [KB-E4]
-- All members of a namespace frozen for >N days → abandoned namespace
+- All members of a namespace terminal for >N days → abandoned namespace
 - Convention adoption sufficient for missing-frontmatter warnings [KB-D12]
 - Labels frequently co-occurring across files → candidate concern group
 
@@ -445,7 +445,7 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ### §12 Commands
 
-Eleven commands. Each supports `--json` for agent consumption [KB-P8].
+Twelve commands. Each supports `--json` for agent consumption [KB-P8].
 
 #### §12.1 `anneal check` [KB-C1]
 
@@ -519,7 +519,7 @@ Dashboard. Graph statistics, pipeline state [KB-E4], convergence summary [KB-D18
 ```
 anneal status
   Scanned: 265 files, 487 handles, 2031 edges
-  Active: 142 handles | Frozen: 345 handles
+  Active: 142 handles | Terminal: 345 handles
   Pipeline: 12 raw → 8 digested → 18 decided → 6 formal → 4 verified
   Obligations: 6/6 discharged, 12 mooted
   Diagnostics: 0 errors, 3 warnings
@@ -529,7 +529,7 @@ anneal status
 
 Appends a snapshot to local anneal history.
 
-For agent session start, `anneal status --json --compact` returns a bounded orientation payload: corpus counts, active/frozen split, pipeline/state summary, diagnostics counts, obligations, convergence summary, and suggestion total.
+For agent session start, `anneal status --json --compact` returns a bounded orientation payload: corpus counts, active/terminal split, pipeline/state summary, diagnostics counts, obligations, convergence summary, and suggestion total.
 
 #### §12.5 `anneal map` [KB-C5]
 
@@ -647,6 +647,37 @@ anneal explain suggestion --id sugg_deadbeef
 - `obligation` — explain one obligation's current disposition
 - `suggestion` — explain one suggestion, primarily by `suggestion_id`
 
+#### §12.12 `anneal areas` [KB-C12]
+
+Per-area health profiles. Areas are auto-detected from top-level directory structure — each subdirectory of the corpus root is an area, files at the root are grouped under `(root)`.
+
+```
+anneal areas                      # health table sorted by file count
+anneal areas --sort=grade         # worst areas first
+anneal areas --include-terminal   # include terminal-only areas
+```
+
+Each area has a computed health profile:
+
+| Signal | Source | Description |
+|---|---|---|
+| Grade | Composite | A/B/C/D letter grade from weighted signals |
+| Files | Handle count | Number of files in the area |
+| Connectivity | Edge count / handle count | Average edges per handle |
+| Cross-links | Cross-area edge count | Edges reaching other areas (0 = island) |
+| Signal | Diagnostics + metadata | Error/orphan/status summary |
+
+Grading heuristic:
+
+- **A**: No errors, connectivity ≥ threshold, has active-status files
+- **B**: No errors, but low connectivity, no active metadata, or elevated orphan count
+- **C**: Has errors (E001/E002)
+- **D**: Has errors and low connectivity (structural decay)
+
+The orphan count that triggers a B downgrade is configurable via `[areas] orphan_threshold` in `anneal.toml` (default: 5).
+
+When `[concerns]` is configured, concern groups can act as areas. A concern group may span multiple directories. `areas` shows both directory-based and concern-based views when concern groups are defined.
+
 ---
 
 ## Part V: Configuration
@@ -719,7 +750,7 @@ error = 90
 
 ```
                      ┌───────────────────────┐
-                     │   CLI (11 commands)    │  §12
+                     │   CLI (12 commands)    │  §12
                      └───────────┬───────────┘
                                  │ query / explain
                      ┌───────────┴───────────┐
@@ -768,6 +799,7 @@ anneal/
     checks.rs       # Five local check rules                §7
     obligations.rs  # Obligation lifecycle + summaries      §8
     impact.rs       # Reverse graph traversal               §9
+    area.rs         # Per-area health computation + grading §12.12
     snapshot.rs     # History, convergence summary, diff    §10
     parse.rs        # Frontmatter + regex scanning          §5.1
     resolve.rs      # Handle resolution                     §4.2
