@@ -22,7 +22,6 @@ pub(crate) struct FindMatch {
     pub(crate) file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) date: Option<chrono::NaiveDate>,
-    /// Frontmatter `purpose:`/`note:` or body snippet, populated when `--context` is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
 }
@@ -97,7 +96,7 @@ pub(crate) struct FindFilters<'a> {
     pub(crate) area: Option<&'a crate::area::AreaFilter>,
     pub(crate) temporal: Option<&'a crate::area::TemporalFilter>,
     pub(crate) sort_date: bool,
-    /// When set, populate `summary` on each match via [`SnippetIndex::summary_for`].
+    /// Snippet source for `--context` enrichment. `None` skips summary.
     pub(crate) context: Option<SnippetIndex<'a>>,
 }
 

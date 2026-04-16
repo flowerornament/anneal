@@ -127,24 +127,18 @@ pub(crate) struct ObligationExplanation {
     pub(crate) namespace: String,
     pub(crate) disposition: String,
     pub(crate) facts: Vec<ExplanationFact>,
-    /// Frontmatter syntax to discharge an outstanding obligation. Present
-    /// only when disposition is `outstanding`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) remediation: Option<RemediationHint>,
-    /// Files likely to discharge this obligation, ranked by graph proximity.
-    /// Empty unless disposition is `outstanding`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) candidates: Vec<CandidateDischarger>,
 }
 
-/// Actionable guidance for discharging an outstanding obligation.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RemediationHint {
     pub(crate) action: String,
     pub(crate) frontmatter_syntax: String,
 }
 
-/// A file that could plausibly discharge an outstanding obligation.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct CandidateDischarger {
     pub(crate) handle: String,
@@ -396,28 +390,35 @@ fn build_obligation_explanation_output(
     })
 }
 
-/// Suggest files that could plausibly discharge an outstanding obligation,
-/// ranked by graph proximity.
-///
-/// Three signals are accumulated per file, with stronger signals scoring higher:
-///   - Cites another handle in the same namespace (signal weight 1 per citation)
-///   - Has an edge to the obligation's defining file (signal weight 2)
-///
-/// Files already discharging this obligation are excluded. Returns up to 5
-/// candidates, ranked by total signal weight.
+/// Up to 5 files ranked by graph-proximity signals: citing handles in the same
+/// namespace (weight 1) and edges to the obligation's defining file (weight 2).
+/// Files already discharging the obligation are excluded.
 fn find_candidate_dischargers(
     context: &AnalysisContext<'_>,
     entry: &crate::obligations::ObligationEntry,
     obligation_node: crate::handle::NodeId,
 ) -> Vec<CandidateDischarger> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     let graph = context.graph;
     let mut scores: HashMap<crate::handle::NodeId, (u32, Vec<String>)> = HashMap::new();
 
-    let already_discharging: std::collections::HashSet<&str> =
-        entry.dischargers.iter().map(String::as_str).collect();
+    let already_discharging: HashSet<&str> = entry.dischargers.iter().map(String::as_str).collect();
 
-    // Signal 1: files that cite other handles in the same namespace.
+    let mut accumulate = |source_node: crate::handle::NodeId, weight: u32, reason: String| {
+        let source = graph.node(source_node);
+        if !matches!(source.kind, HandleKind::File(_)) {
+            return;
+        }
+        if already_discharging.contains(source.id.as_str()) {
+            return;
+        }
+        let (score, reasons) = scores.entry(source_node).or_insert((0, Vec::new()));
+        *score += weight;
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    };
+
     for (other_id, other) in graph.nodes() {
         if other_id == obligation_node {
             continue;
@@ -429,43 +430,19 @@ fn find_candidate_dischargers(
             continue;
         }
         for edge in graph.incoming(other_id) {
-            let source = graph.node(edge.source);
-            if !matches!(source.kind, HandleKind::File(_)) {
-                continue;
-            }
-            if already_discharging.contains(source.id.as_str()) {
-                continue;
-            }
-            let (score, reasons) = scores.entry(edge.source).or_insert((0, Vec::new()));
-            *score += 1;
-            let reason = format!("cites {}", other.id);
-            if !reasons.contains(&reason) {
-                reasons.push(reason);
-            }
+            accumulate(edge.source, 1, format!("cites {}", other.id));
         }
     }
 
-    // Signal 2: files with edges to the obligation's defining file.
     if let Some(file_path) = &entry.file
         && let Some(&file_node) = context.node_index.get(file_path.as_str())
     {
         for edge in graph.incoming(file_node) {
-            let source = graph.node(edge.source);
-            if !matches!(source.kind, HandleKind::File(_)) {
-                continue;
-            }
-            if already_discharging.contains(source.id.as_str()) {
-                continue;
-            }
-            if edge.source == file_node {
-                continue;
-            }
-            let (score, reasons) = scores.entry(edge.source).or_insert((0, Vec::new()));
-            *score += 2;
-            let reason = format!("{} {}", edge.kind.as_str().to_lowercase(), file_path);
-            if !reasons.contains(&reason) {
-                reasons.push(reason);
-            }
+            accumulate(
+                edge.source,
+                2,
+                format!("{} {}", edge.kind.as_str().to_lowercase(), file_path),
+            );
         }
     }
 
@@ -473,7 +450,6 @@ fn find_candidate_dischargers(
         .into_iter()
         .map(|(nid, (score, reasons))| (nid, score, reasons))
         .collect();
-    // Sort by score desc, then by handle id asc for determinism.
     ranked.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| graph.node(a.0).id.cmp(&graph.node(b.0).id))
@@ -1469,12 +1445,7 @@ mod tests {
         graph.add_node(Handle::test_label("P", 1, None));
         let p2 = graph.add_node(Handle::test_label("P", 2, None));
         let spec = graph.add_node(Handle::test_file("spec.md", Some("active")));
-        let work = graph.add_node(Handle::test_file("work.md", Some("draft")));
-        // spec cites P-2 → same-namespace signal makes spec a candidate for P-1.
         graph.add_edge(spec, p2, EdgeKind::Cites);
-        // work depends on spec (signal 2 fires only when P-1 has a defining file,
-        // which the test_label factory leaves None — so this edge is harmless setup).
-        graph.add_edge(work, spec, EdgeKind::DependsOn);
 
         let lattice = simple_lattice();
         let config = sample_linear_config();

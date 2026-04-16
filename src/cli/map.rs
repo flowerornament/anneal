@@ -116,30 +116,19 @@ struct TextRenderOutput {
     truncated: bool,
 }
 
-/// BFS walk from `start` up to `depth` hops, optionally restricted to a
-/// direction and an area boundary.
+/// BFS from `start`, optionally directional and bounded to an area.
 ///
-/// Direction:
-///   - `None` — undirected (forward + reverse). The historic `--around` view.
-///   - `Some(Upstream)` — outgoing edges only ("what does this build on?").
-///   - `Some(Downstream)` — incoming edges only ("what depends on this?").
-///
-/// When `area` is set, the walk includes the start handle and any in-area
-/// nodes reached by traversal, plus their immediate boundary neighbors as
-/// leaves (boundary nodes are visited but not expanded). This realises the
-/// "area-local handles plus boundary" semantics from the orient/garden spec.
-///
-/// Shared infrastructure for `map --around`, `orient --file` (upstream walk),
-/// and the future tree rendering of `impact` (downstream walk).
+/// When `area` is set, out-of-area nodes are included as boundary leaves but
+/// never expanded — the "area-local handles plus boundary" semantics.
 fn around_subgraph(
     graph: &DiGraph,
     start: NodeId,
     depth: u32,
-    direction: Option<TraversalDirection>,
+    direction: TraversalDirection,
     area: Option<&crate::area::AreaFilter>,
 ) -> HashSet<NodeId> {
-    let follow_outgoing = !matches!(direction, Some(TraversalDirection::Downstream));
-    let follow_incoming = !matches!(direction, Some(TraversalDirection::Upstream));
+    let follow_outgoing = !matches!(direction, TraversalDirection::Downstream);
+    let follow_incoming = !matches!(direction, TraversalDirection::Upstream);
 
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -150,7 +139,6 @@ fn around_subgraph(
         if d >= depth {
             continue;
         }
-        // Boundary nodes (out-of-area) are included but not expanded.
         if let Some(af) = area
             && current != start
             && !af.matches_handle(graph.node(current))
@@ -708,13 +696,15 @@ fn render_dot(graph: &DiGraph, nodes: &HashSet<NodeId>, lattice: &Lattice) -> St
     out
 }
 
-/// Direction of a `map --around` traversal.
+/// Direction of a `map --around` walk.
 ///
-/// `Upstream` follows outgoing edges (what this handle builds on); `Downstream`
-/// follows incoming edges (what depends on this handle). When `None`, the walk
-/// is undirected (both edge sets), preserving the historic neighborhood view.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// `Both` is the historic undirected neighborhood; `Upstream` follows outgoing
+/// edges only (what the handle builds on); `Downstream` follows incoming edges
+/// only (what depends on the handle).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum TraversalDirection {
+    #[default]
+    Both,
     Upstream,
     Downstream,
 }
@@ -727,7 +717,7 @@ pub(crate) struct MapOptions<'a> {
     pub(crate) config: &'a AnnealConfig,
     pub(crate) concern: Option<&'a str>,
     pub(crate) around: Option<&'a str>,
-    pub(crate) direction: Option<TraversalDirection>,
+    pub(crate) direction: TraversalDirection,
     pub(crate) area: Option<&'a crate::area::AreaFilter>,
     pub(crate) temporal: Option<&'a crate::area::TemporalFilter>,
     pub(crate) depth: u32,
@@ -951,7 +941,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1018,7 +1008,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1067,7 +1057,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1111,7 +1101,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1151,7 +1141,7 @@ mod tests {
             config: &config,
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1196,7 +1186,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("b.md"),
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 1,
@@ -1242,11 +1232,6 @@ mod tests {
 
     #[test]
     fn map_around_upstream_follows_only_outgoing_edges() {
-        // a -> b -> c (b depends on a; c depends on b)
-        // Wait — DependsOn arrows in this codebase point from source to target,
-        // and "upstream of b" means "what b builds on" = a.
-        // With graph.add_edge(a, b, DependsOn): a --DependsOn--> b means a depends on b.
-        // So "upstream of a" = the things a depends on = b. Outgoing from a = b.
         let mut graph = DiGraph::new();
         let a = graph.add_node(Handle::test_file("a.md", None));
         let b = graph.add_node(Handle::test_file("b.md", None));
@@ -1265,7 +1250,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("a.md"),
-            direction: Some(TraversalDirection::Upstream),
+            direction: TraversalDirection::Upstream,
             area: None,
             temporal: None,
             depth: 5,
@@ -1286,9 +1271,6 @@ mod tests {
 
     #[test]
     fn map_around_downstream_follows_only_incoming_edges() {
-        // a -> b -> c — downstream of c = nothing else (c has no incoming reverse-walk targets).
-        // Downstream of a = nothing (a has no incoming edges).
-        // Downstream of b = a (a points to b).
         let mut graph = DiGraph::new();
         let a = graph.add_node(Handle::test_file("a.md", None));
         let b = graph.add_node(Handle::test_file("b.md", None));
@@ -1307,7 +1289,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("c.md"),
-            direction: Some(TraversalDirection::Downstream),
+            direction: TraversalDirection::Downstream,
             area: None,
             temporal: None,
             depth: 5,
@@ -1321,20 +1303,13 @@ mod tests {
 
         let content = output.rendered_content.as_deref().expect("rendered");
         assert!(content.contains("c.md"));
-        assert!(content.contains("b.md"), "downstream of c includes b");
-        assert!(
-            content.contains("a.md"),
-            "downstream of c includes a (transitively)"
-        );
+        assert!(content.contains("b.md"));
+        assert!(content.contains("a.md"));
         assert_eq!(output.nodes, 3);
     }
 
     #[test]
     fn map_around_with_area_includes_boundary_but_does_not_expand() {
-        // Inside area "compiler/": a -> b -> c
-        // Outside: x -> a (boundary)
-        // Walking downstream from a with area=compiler should include x as a
-        // boundary leaf but not expand from x.
         let mut graph = DiGraph::new();
         let a = graph.add_node(Handle::test_file("compiler/a.md", None));
         let b = graph.add_node(Handle::test_file("compiler/b.md", None));
@@ -1356,7 +1331,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("compiler/a.md"),
-            direction: None,
+            direction: TraversalDirection::Both,
             area: Some(&area),
             temporal: None,
             depth: 5,
@@ -1371,15 +1346,8 @@ mod tests {
         let content = output.rendered_content.as_deref().expect("rendered");
         assert!(content.contains("compiler/a.md"));
         assert!(content.contains("compiler/b.md"));
-        assert!(
-            content.contains("other/x.md"),
-            "x is a boundary node included as leaf"
-        );
-        assert!(
-            !content.contains("other/y.md"),
-            "y is beyond x and x should not expand"
-        );
-        let _ = (a, b, x, y);
+        assert!(content.contains("other/x.md"));
+        assert!(!content.contains("other/y.md"));
     }
 
     #[test]
@@ -1400,7 +1368,7 @@ mod tests {
             config: &config,
             concern: None,
             around: Some("a.md"),
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 0,
@@ -1451,7 +1419,7 @@ mod tests {
             config: &config,
             concern: Some("questions"),
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 2,
@@ -1493,7 +1461,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: None,
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 1,
@@ -1526,7 +1494,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("center.md"),
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 1,
@@ -1573,7 +1541,7 @@ mod tests {
             config: &AnnealConfig::default(),
             concern: None,
             around: Some("LABELS.md"),
-            direction: None,
+            direction: TraversalDirection::Both,
             area: None,
             temporal: None,
             depth: 1,
