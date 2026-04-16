@@ -169,7 +169,9 @@ Tiers are filled in order until the token budget is exhausted. A tier that would
 | `--json` | Structured output with scores, tiers, and budget math |
 | `--file=X` | Scope to neighborhood of a specific file instead of area |
 
-**`--file` variant.** Instead of scoping to an area, scope to a single file's neighborhood. "I'm about to edit this file — what context do I need?" This traverses the file's edges outward (like `impact` in reverse) and returns the reading list that maximizes context for that specific edit.
+**`--file` variant.** Instead of scoping to an area, scope to a single file's upstream dependency tree. "I'm about to edit this file — what context do I need?" This follows outgoing edges from the file (DependsOn, Supersedes, frontmatter references) up to `depth` hops, collecting the files that feed into the target. The result is a reading list ranked by the same scoring formula, constrained by the token budget.
+
+This is the upstream complement to `impact` (which traverses downstream: "what breaks if I change this?"). Both use the same directed traversal infrastructure. `map --around=X --upstream` renders the same walk as a tree visualization rather than a reading list.
 
 **Configuration:**
 
@@ -253,6 +255,8 @@ $ anneal garden
 
 **Agent consumption.** `garden --json` output is designed for agent consumption. Each task includes enough context for an agent to act on it directly: the specific files involved, the diagnostic codes, and a one-line remediation hint.
 
+For obligation tasks (`fix` category, E002), the remediation hint includes the frontmatter syntax needed to discharge: `add discharges: [COMP-OQ-1] to resolving document frontmatter`. This addresses a common confusion where agents resolve an obligation substantively but don't know how to wire the discharge edge.
+
 ### `--since` flag on existing commands
 
 Temporal scoping, parallel to `--area` for spatial scoping. `--recent` is the shorthand for the common case. `--since=Nd` is the precise variant.
@@ -285,6 +289,8 @@ anneal find --sort=date --area=compiler --limit=10   # recent files in compiler
 anneal query handles --sort=date --limit=20          # recent files corpus-wide
 ```
 
+**`find` query becomes optional.** When any filter is present (`--status`, `--kind`, `--namespace`, `--area`, `--recent`, `--since`), the positional query argument defaults to empty. This makes `anneal find --status=active --kind=file` work without the awkward `""` placeholder — a common agent query that was previously hard to discover.
+
 ### `map --by-area`
 
 Area-level topology graph. Nodes are areas, edges are cross-area connection counts. Gives the 30-second "what's the shape of this corpus?" view.
@@ -311,6 +317,24 @@ Flags:
 | `--by-area` | Area-level topology instead of handle-level graph |
 | `--dot` | DOT format output (composes with `--by-area`) |
 | `--min-edges=N` | Only show cross-area connections with at least N edges (default: 1) |
+
+### `map --around` directed traversal
+
+`map --around=X` currently does undirected BFS — it shows the neighborhood. Two direction flags add directed tree traversal:
+
+```
+anneal map --around=impl-plan.md --upstream --depth=3    # what feeds into this file
+anneal map --around=impl-plan.md --downstream --depth=3  # what depends on this file
+anneal map --around=OQ-64 --upstream                     # upstream of a label
+```
+
+`--upstream` follows outgoing edges from the root: DependsOn targets, frontmatter references, Supersedes targets. This answers "what does this document build on?" — the dependency ancestry tree.
+
+`--downstream` follows incoming edges to the root: handles that DependsOn, reference, or Supersede the root. This is the same traversal as `impact` but rendered as a tree rather than a flat direct/indirect list.
+
+Without either flag, `--around` retains its current undirected BFS behavior. `--upstream` and `--downstream` are mutually exclusive. Both compose with `--depth`, `--render=dot`, and `--area` (which limits the tree to area-local handles plus boundary nodes).
+
+The directed traversal is shared infrastructure: `orient --file=X` uses the same upstream walk to build a reading list, `impact` uses the same downstream walk for blast radius. `map` renders the walk as a tree; `orient` renders it as a budget-constrained file list.
 
 ### `diff --by-area`
 
@@ -343,9 +367,115 @@ Git dates are not used by default. They reflect last commit time, which may not 
 
 **Storage.** File dates are computed during `build_graph` and stored on the `Handle` struct. No new persistent state is needed — dates are derived fresh on each run from frontmatter and filenames.
 
+### Context enrichment
+
+`--context` exists on `get` today: it produces a compact agent briefing with a body snippet. Two extensions:
+
+**Frontmatter summary preference.** `get --context` currently shows the first body line as the snippet. Many corpora use `purpose:`, `note:`, or `summary:` frontmatter fields that are more useful for orientation. `--context` should prefer frontmatter summary fields over body text:
+
+1. `purpose:` frontmatter field
+2. `note:` frontmatter field
+3. First non-empty body line (current behavior)
+
+This requires storing additional frontmatter scalar fields on `HandleMetadata`. The parser already extracts all frontmatter — it currently discards fields that don't produce edges. Retaining `purpose` and `note` is a small extension.
+
+**`--context` on `find` and `query handles`.** When present, adds a summary column to the output table using the same preference chain. This makes the common agent query "what's active and why?" a single command:
+
+```
+anneal find --status=active --kind=file --context
+```
+
+```
+Handle                    Status   Purpose
+────────────────────────────────────────────────────────────────
+arch-synthesis.md         stable   Governing architecture for Herald
+impl-plan.md              active   Phase-ordered implementation roadmap
+compression-spec.md       active   Compression pipeline specification
+```
+
+`--context` on list commands is an enrichment dimension that composes with all other flags: `--area`, `--recent`, `--sort=date`.
+
+### Obligation lifecycle guidance
+
+`explain obligation` shows disposition and facts but doesn't tell agents *how to fix* outstanding obligations. Two additions:
+
+**Remediation hint.** When disposition is `outstanding`, include actionable guidance:
+
+```
+$ anneal explain obligation COMP-OQ-1
+
+obligation   COMP-OQ-1
+namespace    COMP-OQ
+status       outstanding
+
+facts
+  disposition   state      outstanding
+  location      file       compression-spec.md
+
+remediation
+  To discharge, add to the resolving document's frontmatter:
+    discharges: [COMP-OQ-1]
+```
+
+**Candidate dischargers.** Suggest files that are likely candidates for discharging the obligation, based on graph proximity:
+
+- Files that cite handles in the same namespace
+- Files with edges to the obligation's defining file
+- Files in the same area that were recently modified
+
+```
+candidates (by graph proximity)
+  compiler/connectors-refactor.md     cites COMP-OQ-2, COMP-OQ-3
+  implementation/phase-b-plan.md      depends on compression-spec.md
+```
+
+Candidates are a suggestion, not a guarantee. When no candidates are found, say so — the discharge may need a new document.
+
+### Pipeline semantics
+
+`explain convergence` shows the convergence signal but doesn't expose the pipeline configuration. Agents encountering unfamiliar status values (e.g., `stable`, `incorporated`, `decision`) can't tell whether a document is still governing work or has settled.
+
+**Pipeline display.** `explain convergence` shows the configured active/terminal partition and ordering:
+
+```
+pipeline
+  active:    draft, active, stable
+  terminal:  archived, superseded, incorporated
+  ordering:  draft → active → stable
+```
+
+**Optional status descriptions.** A `[convergence.descriptions]` config table lets corpus authors document what each status means operationally:
+
+```toml
+[convergence.descriptions]
+stable = "Content settled, still governs active work"
+incorporated = "Absorbed into another document, no longer standalone"
+decision = "Records a binding decision, reference-only"
+```
+
+When present, `explain convergence` includes descriptions alongside the pipeline display. When absent, only the structural classification is shown. Zero configuration cost for corpora that don't need it.
+
+### Batch handle lookup
+
+`get` accepts a single handle. When an agent needs status for 5 files, it calls `get` five times. Accept multiple positional arguments:
+
+```
+anneal get arch-synthesis.md impl-plan.md compression-spec.md --status-only
+```
+
+```
+arch-synthesis.md      stable
+impl-plan.md           active
+compression-spec.md    active
+```
+
+When multiple handles are given, output defaults to a compact one-line-per-handle format. `--status-only` further reduces to just identity and status. `--context` shows the summary field. `--json` emits an array.
+
+Single-handle `get` retains its current detailed output.
+
 ## Composability
 
-The design introduces two scoping dimensions and two new commands. Everything composes:
+The design introduces two scoping dimensions, an enrichment dimension, and two new commands. Everything composes:
 
 | Dimension | Flag | Effect |
 |-----------|------|--------|
@@ -358,8 +488,9 @@ All three flags are additive on existing commands. They compose with each other 
 | Sort | Flag | Effect |
 |------|------|--------|
 | Chronological | `--sort=date` | Sort results by file date, most recent first |
+| Enrichment | `--context` | Add frontmatter summary to list output (find, query handles) |
 
-This replaces the need for a standalone `recent` command. Chronological views are a sort mode, not a separate surface.
+This replaces the need for a standalone `recent` command. Chronological views are a sort mode, not a separate surface. Context enrichment is an output mode, not a filter — `anneal find --status=active --kind=file --area=compiler --context` composes all four dimensions.
 
 ### Interaction with existing commands
 
@@ -378,13 +509,18 @@ Garden, orient, and check compose into a complete fix cycle. Garden identifies p
 ```
 $ anneal garden
 
- 2. [tidy]  9 orphaned labels in compiler/                blast=med
+ 2. [fix]   1 undischarged obligation in compiler/        blast=high
+             COMP-OQ-1 has no Discharges edge
+             fix:     add `discharges: [COMP-OQ-1]` to resolving document frontmatter
+             context: anneal orient --area=compiler --budget=20k
+             verify:  anneal check --area=compiler
+ 3. [tidy]  9 orphaned labels in compiler/                blast=med
              OD-1..OD-7 defined but never referenced
              context: anneal orient --area=compiler --budget=20k
              verify:  anneal check --area=compiler
 ```
 
-An agent can execute garden → orient → fix → check without human guidance. The garden output closes the loop by pointing to the orient command for context and the check command for verification.
+An agent can execute garden → orient → fix → check without human guidance. The garden output closes the loop: `fix:` tells the agent what to do, `context:` points to the orient command for background, and `verify:` points to the check command for confirmation. For obligation tasks, the `fix:` hint includes the exact frontmatter syntax needed — the agent doesn't need to know how discharge edges work.
 
 ### The agent edit cycle
 
@@ -405,3 +541,8 @@ The skill should teach this as a paired workflow.
 - **Git integration.** Git dates are out of scope for the initial design. Filename and frontmatter dates are sufficient.
 - **Dashboard rendering.** These commands produce text and JSON. Rendering dashboards is a downstream concern (agent skills, scripts, CI).
 - **Standalone `recent` command.** Chronological views are served by `--sort=date` and `--since=Nd` on existing commands.
+- **Content summarization.** Anneal exposes frontmatter fields (`purpose:`, `note:`) but does not interpret or summarize body text. Summarization is the agent's job; anneal provides the structural data the agent needs to decide what to read.
+- **Delivery assessment.** Anneal tracks declared status in frontmatter, not whether a spec's work has been implemented. Comparing specs against code requires code understanding, which is outside the corpus-structural scope.
+- **Work recommendation.** Anneal can surface active documents sorted by structural signals (dependency depth, recency, area health). It does not reason about project priorities, deadlines, or team capacity. Garden ranks maintenance tasks by blast radius, not business importance.
+- **Diagram generation.** Anneal provides raw graph data and tree traversals. Annotated diagrams that combine structural knowledge with semantic understanding (purposes, delivery status, relationships) are the agent's job — anneal provides the data, the agent provides the interpretation.
+- **Code-corpus alignment.** Anneal tracks convergence within a knowledge corpus. Cross-referencing specs against source code, issue trackers, or CI status is a separate tool's responsibility.
