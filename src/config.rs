@@ -98,27 +98,18 @@ pub(crate) struct SuppressRule {
     pub(crate) target: String,
 }
 
-/// Configuration for the `anneal areas` command grading heuristic.
+/// Configuration for the `anneal areas` command.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AreasConfig {
-    /// Connectivity below this threshold flags an area as "sparse".
-    pub(crate) sparse_connectivity: f64,
-    /// Connectivity below this threshold + errors = grade D (decay).
-    pub(crate) decay_connectivity: f64,
-    /// Orphan count at or above this threshold downgrades to grade B.
+    /// Orphan count at or above this threshold downgrades an area to grade B.
     pub(crate) orphan_threshold: usize,
-    /// Areas with fewer files than this skip structural signals.
-    pub(crate) min_files: usize,
 }
 
 impl Default for AreasConfig {
     fn default() -> Self {
         Self {
-            sparse_connectivity: 0.2,
-            decay_connectivity: 0.3,
             orphan_threshold: 5,
-            min_files: 3,
         }
     }
 }
