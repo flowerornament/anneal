@@ -208,47 +208,51 @@ struct AreaStats {
     orphans: usize,
 }
 
+// Grading thresholds — centralized to avoid magic numbers in the logic.
+const MIN_FILES_FOR_STRUCTURAL_SIGNALS: usize = 3;
+const SPARSE_CONNECTIVITY_THRESHOLD: f64 = 0.2;
+const DECAY_CONNECTIVITY_THRESHOLD: f64 = 0.3;
+const ORPHAN_THRESHOLD_FOR_GRADE_B: usize = 5;
+
 /// Compute grade and signal text from area stats.
 fn compute_grade(s: &AreaStats, file_count: usize, connectivity: f64) -> (AreaGrade, String) {
     let mut signals = Vec::new();
-    let mut grade = AreaGrade::A;
+    let large_enough = file_count > MIN_FILES_FOR_STRUCTURAL_SIGNALS;
 
-    // Errors are the strongest signal
+    // Collect signals first, then derive grade from signals.
     if s.errors > 0 {
-        grade = AreaGrade::C;
         signals.push(format!("{} broken", s.errors));
-
-        // Errors + low connectivity = structural decay
-        if connectivity < 0.3 && file_count > 3 {
-            grade = AreaGrade::D;
-        }
     }
-
-    // Low connectivity
-    if s.cross_links == 0 && file_count > 3 {
-        if grade > AreaGrade::B {
-            grade = AreaGrade::B;
-        }
+    if s.cross_links == 0 && large_enough {
         signals.push("island".to_string());
-    } else if connectivity < 0.2 && file_count > 3 {
-        if grade > AreaGrade::B {
-            grade = AreaGrade::B;
-        }
+    } else if connectivity < SPARSE_CONNECTIVITY_THRESHOLD && large_enough {
         signals.push("sparse".to_string());
     }
-
-    // No active metadata
-    if s.active == 0 && file_count > 3 {
-        if grade > AreaGrade::B {
-            grade = AreaGrade::B;
-        }
+    if s.active == 0 && large_enough {
         signals.push("no active files".to_string());
     }
-
-    // Orphaned labels
     if s.orphans > 0 {
         signals.push(format!("{} orphans", s.orphans));
     }
+
+    // Derive grade from collected signals.
+    let has_errors = s.errors > 0;
+    let is_island = s.cross_links == 0 && large_enough;
+    let is_sparse = connectivity < SPARSE_CONNECTIVITY_THRESHOLD && large_enough;
+    let no_active = s.active == 0 && large_enough;
+    let high_orphans = s.orphans >= ORPHAN_THRESHOLD_FOR_GRADE_B;
+
+    let decaying = large_enough && connectivity < DECAY_CONNECTIVITY_THRESHOLD;
+
+    let grade = if has_errors && (is_island || decaying) {
+        AreaGrade::D
+    } else if has_errors {
+        AreaGrade::C
+    } else if is_island || is_sparse || no_active || high_orphans {
+        AreaGrade::B
+    } else {
+        AreaGrade::A
+    };
 
     if signals.is_empty() {
         signals.push("healthy".to_string());
