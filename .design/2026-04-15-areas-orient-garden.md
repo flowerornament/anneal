@@ -533,6 +533,55 @@ anneal impact compiler/cell-graph-optimization.md          # after: what's affec
 
 The skill should teach this as a paired workflow.
 
+## Discoverability
+
+An agent that used anneal extensively on a real corpus still missed `find "" --status=active` and `diff --days=7` — features that already existed. The problem wasn't missing capability but invisible workflows. Agents are smart; they don't need a manual. But the workflows need to be *reconstructable* from the surfaces agents actually encounter: the skill file, `--help` text, and command output.
+
+### Two workflows to teach
+
+**Orientation** — arriving at a corpus, understanding what exists. Two variants:
+
+General (new corpus):
+```
+anneal areas                                    # what's here?
+anneal find --kind=file --context               # what does each thing do?
+anneal explain convergence                      # what do the statuses mean?
+anneal orient --budget=50k                      # what should I read?
+```
+
+Narrowing (specific task):
+```
+anneal orient --file=target.md --budget=30k     # what context do I need?
+anneal map --around=target.md --upstream         # what feeds into this?
+anneal impact target.md                         # what breaks if I change this?
+anneal check --area=compiler                    # any issues nearby?
+```
+
+**Gardening** — maintaining corpus health:
+```
+anneal garden                                   # what needs fixing, ranked?
+# → follow fix:/context:/verify: hints
+anneal diff --days=7                            # what moved since last session?
+anneal areas --sort=grade                       # which areas are degrading?
+```
+
+### Where these workflows must be visible
+
+**Skill file.** The First Moves section teaches the orientation loop. It should distinguish general orientation (areas → find → orient) from narrowing (orient --file → map --upstream → impact). The gardening workflow belongs in a separate section — it's a different intent than orientation.
+
+**Top-level `--help`.** The START HERE block already lists key commands. It should reflect the orientation flow: `areas` for shape, `orient` for reading list, `garden` for maintenance. The current block emphasizes `status` and `check` — those remain, but areas and orient are the stronger entry points for arriving agents.
+
+**Command `--help` EXAMPLES.** Each command's examples should include the non-obvious composable patterns. `find --help` should show `find --status=active --kind=file --context` (the "active inventory" query). `diff --help` should show `diff --days=7` prominently. These are the patterns agents miss.
+
+**Command output cross-references.** Commands that surface problems should hint at commands that provide context or remediation. Garden already does this with `fix:`/`context:`/`verify:` per task. Other commands should follow the pattern:
+
+- `status` with errors > 0: hint at `check`
+- `areas --sort=grade` with C/D areas: hint at `garden`
+- `check` with E002 obligations: hint at `explain obligation`
+- `explain obligation` with outstanding: include remediation syntax
+
+The principle: **an agent following output hints should be able to reach the right next command without consulting documentation.** Garden → orient → fix → check is a closed loop. The skill teaches the entry points; command output teaches the transitions.
+
 ## Non-goals
 
 - **Area configuration.** Areas are auto-detected from directories. We don't add an `[areas]` config section. Concern groups already serve the "custom grouping" role.
