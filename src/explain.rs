@@ -127,6 +127,28 @@ pub(crate) struct ObligationExplanation {
     pub(crate) namespace: String,
     pub(crate) disposition: String,
     pub(crate) facts: Vec<ExplanationFact>,
+    /// Frontmatter syntax to discharge an outstanding obligation. Present
+    /// only when disposition is `outstanding`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) remediation: Option<RemediationHint>,
+    /// Files likely to discharge this obligation, ranked by graph proximity.
+    /// Empty unless disposition is `outstanding`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) candidates: Vec<CandidateDischarger>,
+}
+
+/// Actionable guidance for discharging an outstanding obligation.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RemediationHint {
+    pub(crate) action: String,
+    pub(crate) frontmatter_syntax: String,
+}
+
+/// A file that could plausibly discharge an outstanding obligation.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CandidateDischarger {
+    pub(crate) handle: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -353,12 +375,118 @@ fn build_obligation_explanation_output(
         facts.push(fact("discharger", "handles", &entry.dischargers.join(", ")));
     }
 
+    let outstanding = entry.disposition == crate::obligations::ObligationDisposition::Outstanding;
+    let remediation = outstanding.then(|| RemediationHint {
+        action: "Add to the resolving document's frontmatter".to_string(),
+        frontmatter_syntax: format!("discharges: [{}]", entry.handle),
+    });
+    let candidates = if outstanding {
+        find_candidate_dischargers(context, &entry, node_id)
+    } else {
+        Vec::new()
+    };
+
     Ok(ObligationExplanation {
         handle: entry.handle,
         namespace: entry.namespace,
         disposition: entry.disposition.as_str().to_string(),
         facts,
+        remediation,
+        candidates,
     })
+}
+
+/// Suggest files that could plausibly discharge an outstanding obligation,
+/// ranked by graph proximity.
+///
+/// Three signals are accumulated per file, with stronger signals scoring higher:
+///   - Cites another handle in the same namespace (signal weight 1 per citation)
+///   - Has an edge to the obligation's defining file (signal weight 2)
+///
+/// Files already discharging this obligation are excluded. Returns up to 5
+/// candidates, ranked by total signal weight.
+fn find_candidate_dischargers(
+    context: &AnalysisContext<'_>,
+    entry: &crate::obligations::ObligationEntry,
+    obligation_node: crate::handle::NodeId,
+) -> Vec<CandidateDischarger> {
+    use std::collections::HashMap;
+    let graph = context.graph;
+    let mut scores: HashMap<crate::handle::NodeId, (u32, Vec<String>)> = HashMap::new();
+
+    let already_discharging: std::collections::HashSet<&str> =
+        entry.dischargers.iter().map(String::as_str).collect();
+
+    // Signal 1: files that cite other handles in the same namespace.
+    for (other_id, other) in graph.nodes() {
+        if other_id == obligation_node {
+            continue;
+        }
+        let HandleKind::Label { prefix, .. } = &other.kind else {
+            continue;
+        };
+        if prefix != &entry.namespace {
+            continue;
+        }
+        for edge in graph.incoming(other_id) {
+            let source = graph.node(edge.source);
+            if !matches!(source.kind, HandleKind::File(_)) {
+                continue;
+            }
+            if already_discharging.contains(source.id.as_str()) {
+                continue;
+            }
+            let (score, reasons) = scores.entry(edge.source).or_insert((0, Vec::new()));
+            *score += 1;
+            let reason = format!("cites {}", other.id);
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+    }
+
+    // Signal 2: files with edges to the obligation's defining file.
+    if let Some(file_path) = &entry.file
+        && let Some(&file_node) = context.node_index.get(file_path.as_str())
+    {
+        for edge in graph.incoming(file_node) {
+            let source = graph.node(edge.source);
+            if !matches!(source.kind, HandleKind::File(_)) {
+                continue;
+            }
+            if already_discharging.contains(source.id.as_str()) {
+                continue;
+            }
+            if edge.source == file_node {
+                continue;
+            }
+            let (score, reasons) = scores.entry(edge.source).or_insert((0, Vec::new()));
+            *score += 2;
+            let reason = format!("{} {}", edge.kind.as_str().to_lowercase(), file_path);
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+    }
+
+    let mut ranked: Vec<(crate::handle::NodeId, u32, Vec<String>)> = scores
+        .into_iter()
+        .map(|(nid, (score, reasons))| (nid, score, reasons))
+        .collect();
+    // Sort by score desc, then by handle id asc for determinism.
+    ranked.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| graph.node(a.0).id.cmp(&graph.node(b.0).id))
+    });
+    ranked.truncate(5);
+
+    ranked
+        .into_iter()
+        .map(|(nid, _, reasons)| CandidateDischarger {
+            handle: graph.node(nid).id.clone(),
+            reason: reasons.join(", "),
+        })
+        .collect()
 }
 
 fn build_suggestion_explanation_output(
@@ -999,6 +1127,31 @@ fn print_obligation_explanation_human(
             )?;
         }
     }
+    if let Some(remediation) = &explanation.remediation {
+        writeln!(w)?;
+        writeln!(w, "remediation")?;
+        writeln!(w, "  {}:", remediation.action)?;
+        writeln!(w, "    {}", remediation.frontmatter_syntax)?;
+    }
+    if !explanation.candidates.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "candidates (by graph proximity)")?;
+        let width = explanation
+            .candidates
+            .iter()
+            .map(|c| c.handle.len())
+            .max()
+            .unwrap_or(0);
+        for candidate in &explanation.candidates {
+            writeln!(
+                w,
+                "  {:<width$}  {}",
+                candidate.handle,
+                candidate.reason,
+                width = width,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1308,6 +1461,103 @@ mod tests {
                 .iter()
                 .any(|fact| fact.key == "handles" && fact.value.contains("worker.md"))
         );
+    }
+
+    #[test]
+    fn outstanding_obligation_includes_remediation_and_candidates() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_label("P", 1, None));
+        let p2 = graph.add_node(Handle::test_label("P", 2, None));
+        let spec = graph.add_node(Handle::test_file("spec.md", Some("active")));
+        let work = graph.add_node(Handle::test_file("work.md", Some("draft")));
+        // spec cites P-2 → same-namespace signal makes spec a candidate for P-1.
+        graph.add_edge(spec, p2, EdgeKind::Cites);
+        // work depends on spec (signal 2 fires only when P-1 has a defining file,
+        // which the test_label factory leaves None — so this edge is harmless setup).
+        graph.add_edge(work, spec, EdgeKind::DependsOn);
+
+        let lattice = simple_lattice();
+        let config = sample_linear_config();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = crate::resolve::build_node_index(&graph);
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_obligation_explanation_output(
+            &context,
+            &ObligationExplainArgs {
+                handle: "P-1".to_string(),
+            },
+        )
+        .expect("explanation");
+
+        assert_eq!(explanation.disposition, "outstanding");
+        let remediation = explanation
+            .remediation
+            .as_ref()
+            .expect("outstanding obligation has remediation");
+        assert_eq!(remediation.frontmatter_syntax, "discharges: [P-1]");
+        assert!(
+            !explanation.candidates.is_empty(),
+            "spec.md cites P-2 → candidate"
+        );
+        assert!(
+            explanation
+                .candidates
+                .iter()
+                .any(|c| c.handle == "spec.md" && c.reason.contains("cites P-2"))
+        );
+    }
+
+    #[test]
+    fn discharged_obligation_has_no_remediation() {
+        let mut graph = DiGraph::new();
+        let label = graph.add_node(Handle::test_label("P", 9, None));
+        let worker = graph.add_node(Handle::test_file("worker.md", None));
+        graph.add_edge(worker, label, EdgeKind::Discharges);
+
+        let lattice = simple_lattice();
+        let config = sample_linear_config();
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = crate::resolve::build_node_index(&graph);
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_obligation_explanation_output(
+            &context,
+            &ObligationExplainArgs {
+                handle: "P-9".to_string(),
+            },
+        )
+        .expect("explanation");
+
+        assert_eq!(explanation.disposition, "discharged");
+        assert!(explanation.remediation.is_none());
+        assert!(explanation.candidates.is_empty());
     }
 
     #[test]
