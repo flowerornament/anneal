@@ -210,7 +210,13 @@ struct AreaStats {
     orphans: usize,
 }
 
-/// Compute grade and signal text from area stats using configurable thresholds.
+// Internal grading constants — not user-configurable because the values
+// are ratios (edges/handle) with no intuitive meaning to config authors.
+const SPARSE_CONNECTIVITY: f64 = 0.2;
+const DECAY_CONNECTIVITY: f64 = 0.3;
+const MIN_FILES_FOR_SIGNALS: usize = 3;
+
+/// Compute grade and signal text from area stats.
 fn compute_grade(
     s: &AreaStats,
     file_count: usize,
@@ -218,14 +224,14 @@ fn compute_grade(
     config: &AreasConfig,
 ) -> (AreaGrade, String) {
     let mut signals = Vec::new();
-    let large_enough = file_count > config.min_files;
+    let large_enough = file_count > MIN_FILES_FOR_SIGNALS;
 
     if s.errors > 0 {
         signals.push(format!("{} broken", s.errors));
     }
     if s.cross_links == 0 && large_enough {
         signals.push("island".to_string());
-    } else if connectivity < config.sparse_connectivity && large_enough {
+    } else if connectivity < SPARSE_CONNECTIVITY && large_enough {
         signals.push("sparse".to_string());
     }
     if s.active == 0 && large_enough {
@@ -237,10 +243,10 @@ fn compute_grade(
 
     let has_errors = s.errors > 0;
     let is_island = s.cross_links == 0 && large_enough;
-    let is_sparse = connectivity < config.sparse_connectivity && large_enough;
+    let is_sparse = connectivity < SPARSE_CONNECTIVITY && large_enough;
     let no_active = s.active == 0 && large_enough;
     let high_orphans = s.orphans >= config.orphan_threshold;
-    let decaying = large_enough && connectivity < config.decay_connectivity;
+    let decaying = large_enough && connectivity < DECAY_CONNECTIVITY;
 
     let grade = if has_errors && (is_island || decaying) {
         AreaGrade::D
