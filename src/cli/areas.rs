@@ -53,11 +53,7 @@ impl AreasOutput {
             )?;
         }
 
-        let degraded = self
-            .areas
-            .iter()
-            .filter(|a| matches!(a.grade, AreaGrade::C | AreaGrade::D))
-            .count();
+        let degraded = self.areas.iter().filter(|a| a.grade.is_degraded()).count();
         if degraded > 0 {
             writeln!(w)?;
             writeln!(
