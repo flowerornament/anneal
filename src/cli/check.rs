@@ -106,7 +106,30 @@ impl CheckOutput {
             self.info,
             S.suggestion.apply_to(self.suggestions),
             plural(self.suggestions),
-        )
+        )?;
+
+        let has_e002 = self
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E002);
+        if self.errors > 0 || self.suggestions > 0 {
+            writeln!(w)?;
+            if has_e002 {
+                writeln!(
+                    w,
+                    "For a specific obligation: {}",
+                    S.dim.apply_to("anneal explain obligation <handle>"),
+                )?;
+            }
+            if self.errors > 0 || self.suggestions > 0 {
+                writeln!(
+                    w,
+                    "For ranked maintenance tasks: {}",
+                    S.dim.apply_to("anneal garden"),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -156,22 +156,35 @@ owns your shell environment.
 ## Quick start
 
 ```bash
+# Per-area health profiles — the "what exists here?" view
+anneal areas
+
+# Token-budgeted reading list (agent-oriented)
+anneal orient --budget=50k
+anneal orient --area=compiler --budget=30k
+anneal orient --file=impl-plan.md
+
+# Ranked maintenance tasks with fix/context/verify hints
+anneal garden
+anneal garden --area=compiler
+anneal garden --category=fix
+
 # Corpus shape, health, and convergence direction
 anneal status
 anneal status --json --compact
 
-# Per-area health profiles
-anneal areas
-
 # Actionable issues in active work
 anneal check
+anneal check --area=compiler --recent
 
 # Resolve a specific handle
 anneal get REQ-12
 anneal get REQ-12 --context
 
-# Search handle identities
+# Search handle identities (query is optional when any filter is present)
 anneal find ADR --limit 25
+anneal find --status=active --kind=file --context
+anneal find --recent --sort=date
 
 # Ask an ad hoc structural question
 anneal query diagnostics --severity error
@@ -180,12 +193,14 @@ anneal query edges --kind DependsOn --confidence-gap
 # Explain a derived result
 anneal explain convergence
 anneal explain diagnostic --id diag_deadbeef
+anneal explain obligation REQ-12
 
-# Reverse dependencies for a file or handle
+# Reverse dependencies for a file or handle (downstream complement to orient --file)
 anneal impact spec/api-v3.md
 
-# Local graph neighborhood
+# Local graph neighborhood (add --upstream / --downstream for directed traversal)
 anneal map --around=REQ-12 --depth=1
+anneal map --around=REQ-12 --upstream
 anneal map --render=text --full
 
 # Linear namespace summary
@@ -193,6 +208,7 @@ anneal obligations
 
 # Snapshot delta
 anneal diff
+anneal diff --days=7
 
 # Infer configuration
 anneal init
@@ -200,16 +216,31 @@ anneal init
 
 ## Workflow
 
-`anneal` supports a practical loop for corpus work:
+`anneal` supports three practical loops for corpus work.
 
-1. Orient: run `anneal status` for the corpus dashboard, `anneal areas` for per-area health, then `anneal check` for actionable diagnostics.
-2. Locate context: use `anneal get --context`, bounded `anneal find --limit ...`, `anneal query ...`, and `anneal map --around=...` to understand the specific files, labels, or structural patterns involved in the task.
-3. Justify the current signal: use `anneal explain ...` when you need to know why a warning, suggestion, impact set, convergence signal, or obligation state exists.
-4. Assess impact: run `anneal impact <file-or-handle>` before editing to see what depends on the thing you are about to change.
-5. Verify: run `anneal check --file=...` for a local pass or `anneal check` for a broader pass after editing.
-6. Review accumulated change: run `anneal diff` to see what changed since the last snapshot, even when no single agent saw those changes happen.
+### Arriving at an unfamiliar corpus (orientation)
 
-This is what the tool buys you in practice: quick context recovery, structural inspection, and safer edits in a corpus that outlives any one session.
+1. `anneal areas` — what exists, and how healthy is each area?
+2. `anneal find --kind=file --status=active --context` — what is each active thing actually about?
+3. `anneal explain convergence` — what do the status values mean here?
+4. `anneal orient --budget=50k` — generate a tiered reading list before making changes.
+
+### Scoped to a specific area or file (narrowing)
+
+1. `anneal orient --area=<dir> --budget=30k` or `anneal orient --file=<path>` for the reading list.
+2. `anneal map --around=<handle> --upstream` to see what the target builds on.
+3. `anneal impact <file>` to see what breaks downstream if the file changes.
+4. `anneal check --area=<dir>` to verify structural health after an edit.
+
+### Maintenance (gardening)
+
+1. `anneal garden` surfaces ranked tasks with `fix:`, `context:`, and `verify:` hints per task.
+2. Follow each task's `context:` hint (an `anneal orient` invocation) to load the files you need.
+3. Apply the `fix:` action.
+4. Run the task's `verify:` hint (usually `anneal check --area=X`) to confirm.
+5. `anneal diff --days=7` to see what moved since the last session.
+
+The paired `orient → impact` workflow covers the before/after of a specific edit: `orient --file=X` is the upstream reading list, `impact X` is the downstream review set. The `garden → orient → fix → check` loop covers the maintenance cycle.
 
 ## Concepts
 
@@ -288,6 +319,85 @@ When `[concerns]` is configured in `anneal.toml`, concern groups can also act as
 | -------------------- | ----------------------------------------------- |
 | `--sort=files\|grade\|conn\|name` | Sort order (default: files descending) |
 | `--include-terminal` | Include areas that contain only terminal files   |
+
+### `anneal orient`
+
+Generate a context-budgeted reading list for agents working on an area or a specific file. This is the "give the agent a map" command — answers "I'm about to work on this; what should I read, within a token budget?"
+
+```
+$ anneal orient --area=compiler --budget=30k
+
+compiler/ [B] — 28 files, 749 handles, conn=0.4
+
+Read first (pinned):
+  OPEN-QUESTIONS.md                                              [26k]
+
+Read next (area entry points, ranked by centrality × recency):
+  compiler/2026-03-29-architecture-spike-findings.md             [5k]
+      Outcome of the architecture spike — authoritative for compiler plan
+  compiler/2026-04-09-graph-structural-coalescing.md             [4k]
+
+Budget: 35k / 30k used
+  dropped: downstream consumers
+```
+
+Files are ranked by a score combining edge centrality, label density, recency, and status. Tiers fill in order: **pinned** (config-declared) → **entry points** (area files) → **upstream context** (files the area references) → **downstream consumers** (files that reference the area). A tier that can't fit drops out.
+
+`orient --file=X` scopes to the upstream dependency ancestry of a single file (the upstream complement to `impact`). Both use the same directed traversal infrastructure.
+
+| Flag           | Effect                                                           |
+| -------------- | ---------------------------------------------------------------- |
+| `--area=X`     | Scope to one area (also works as a global flag)                  |
+| `--budget=Nk`  | Token budget (defaults to `[orient] budget` or 50k)              |
+| `--file=X`     | Scope to the upstream ancestry of a specific file                |
+| `--paths-only` | Emit bare file paths (for piping to other tools)                 |
+| `--json`       | Structured output with scores, tiers, and budget math            |
+
+The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, default budget, traversal depth, a `pin` list (always-first files), and an `exclude` glob list.
+
+### `anneal garden`
+
+Ranked maintenance tasks with `fix:`, `context:`, and `verify:` hints per task. Closes the `garden → orient → fix → check` loop without human guidance.
+
+```
+$ anneal garden
+
+ 1. [fix]   2 broken refs in implementation/            blast=high
+             specimens/cpu-fast-path/.../family.toml not found
+             fix:     resolve or remove the broken references listed
+             context: anneal orient --area=implementation --budget=20k
+             verify:  anneal check --area=implementation --errors-only
+ 2. [tidy]  9 orphaned labels in compiler/              blast=med
+             OD-1, OD-2, OD-3, OD-4, OD-5, ... (4 more)
+             fix:     reference these labels from relevant documents, or retire them
+             context: anneal orient --area=compiler --budget=20k
+             verify:  anneal check --area=compiler --suggest
+ 3. [link]  island: 17 files, 0 cross-links in archive/  blast=low
+             nothing references this area and nothing inside it references elsewhere
+             fix:     add `depends-on:` frontmatter or body references
+             context: anneal orient --area=archive --budget=20k
+             verify:  anneal areas --area=archive
+```
+
+Six categories:
+
+| Category | Source                     | Description                                       |
+| -------- | -------------------------- | ------------------------------------------------- |
+| `fix`    | E001 / E002                | Broken references and undischarged obligations    |
+| `tidy`   | S001                       | Orphaned labels grouped by area                   |
+| `link`   | Cross-edge analysis        | Areas with zero cross-links (structural islands)  |
+| `stale`  | Temporal analysis          | Old files with no edges to recent work            |
+| `meta`   | W003                       | Areas missing frontmatter or status metadata      |
+| `drift`  | Namespace dispersion       | Namespaces leaking across area boundaries         |
+
+Tasks are ranked by blast radius: errors first, then orphan density, island size, staleness × handle count, metadata gaps, and namespace dispersion. E002 obligation tasks include the exact `discharges:` frontmatter syntax needed to remediate.
+
+| Flag                   | Effect                                    |
+| ---------------------- | ----------------------------------------- |
+| `--area=X`             | Scope to one area                         |
+| `--category=fix\|tidy\|link\|stale\|meta\|drift` | Filter to one category |
+| `--limit=N`            | Show top N tasks (default: 10)            |
+| `--json`               | Structured output for agent consumption   |
 
 ### `anneal check`
 
