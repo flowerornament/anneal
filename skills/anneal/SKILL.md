@@ -59,7 +59,7 @@ anneal orient --budget=50k
 anneal orient --area=compiler --budget=30k
 anneal orient --file=impl-plan.md --budget=30k
 anneal status --json --compact
-anneal check --active-only
+anneal check --scope=active
 ```
 
 Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use `orient` to generate a tiered, token-budgeted reading list (pinned → area entry points → upstream context → downstream consumers). Use `orient --file=X` as the upstream complement to `impact`: what does this file build on? Use `status --json --compact` when you need a machine-readable dashboard. Use plain-text `check --active-only` for default health checks.
@@ -79,15 +79,19 @@ Use `garden` to surface ranked maintenance tasks across six categories: `fix` (E
 
 ```bash
 anneal get anneal-spec.md --context
+anneal get arch.md impl.md spec.md --status-only
+anneal get arch.md impl.md spec.md --context
 anneal find <text> --limit 25
 anneal find --status=active --kind=file --context
 anneal find --recent --kind=file --sort=date
 anneal map --around=anneal-spec.md
 anneal map --around=anneal-spec.md --upstream
 anneal map --around=anneal-spec.md --downstream
+anneal map --by-area
+anneal map --by-area --min-edges=10
 ```
 
-Use `get` for one known handle, `find` for discovery (query is optional when any filter is present), and `map --around` when relationship shape matters more than raw text. Add `--upstream` or `--downstream` to turn `map --around` into a directed tree — the same traversal `orient --file` and `impact` use.
+Use `get` for one known handle, `find` for discovery (query is optional when any filter is present), and `map --around` when relationship shape matters more than raw text. Pass multiple handles to `get` for a compact batch view (`--status-only` trims to identity+status; `--context` adds the purpose/note summary). Add `--upstream` or `--downstream` to turn `map --around` into a directed tree — the same traversal `orient --file` and `impact` use. Add `--by-area` for the 30-second shape-of-the-corpus view: cross-area edge counts plus island detection.
 
 ### Ask A Structural Question
 
@@ -118,6 +122,8 @@ Use `explain` when the question is “why did anneal say this?” rather than �
 ```bash
 anneal diff
 anneal diff --days=7
+anneal diff --by-area
+anneal diff --by-area --days=7
 anneal impact anneal-spec.md
 anneal impact <file-or-handle>
 anneal orient --file=anneal-spec.md
@@ -127,7 +133,7 @@ Impact traverses edge kinds listed in `[impact] traverse` in `anneal.toml` (defa
 
 `orient --file=X` and `impact X` compose into a before/after pair for edits: `orient --file` is the upstream reading list ("what do I need to read before editing?") and `impact` is the downstream review set ("what do I need to verify after?").
 
-Use `anneal diff` when the question is about structural corpus changes rather than line edits. Add `--days=7` or `--days=30` for a coarser session-resume view; add `--json` for a structured delta.
+Use `anneal diff` when the question is about structural corpus changes rather than line edits. Add `--days=7` or `--days=30` for a coarser session-resume view; add `--json` for a structured delta. `--by-area` pivots to a per-area trend table so you can see which areas are improving, holding, or degrading.
 
 ### Initialize Or Adjust Config
 
@@ -155,20 +161,20 @@ You do not need the full model in your head. Reach for `anneal help` when exact 
 - Before editing a knowledge file: `anneal orient --file=<path>` for upstream context, then `anneal impact <file>` for downstream blast radius. The pair composes into a before/after workflow.
 - When asked "what needs fixing?": `anneal garden`. Follow each task's `fix:`, `context:`, and `verify:` hints directly — they encode the full maintenance loop without further guidance.
 - Use plain-text output for routine `check`, `get`, `find`, `query`, `explain`, `map`, `diff`, `impact`, `areas`, `orient`, `garden`, and `init` unless you are immediately filtering machine-readable output.
-- Use plain-text `anneal check --active-only` for default health checks. Scope with `--area=<dir>` or `--recent` / `--since=14d` to narrow quickly.
+- Use plain-text `anneal check --scope=active` for default health checks. Scope with `--area=<dir>` or `--recent` / `--since=14d` to narrow quickly.
 - Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, `anneal query ...`, and `anneal map --around=<handle>`.
 - `anneal find` accepts an optional query — `anneal find --status=active --kind=file --context` works without a positional argument.
 - Reach for `anneal query ...` when the user is asking an ad hoc structural question across many handles or edges.
 - Reach for `anneal explain ...` when the user wants provenance for a diagnostic, suggestion, obligation state, impact set, or convergence signal. Outstanding obligations include the exact `discharges:` frontmatter syntax needed to remediate.
 - Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
-- After editing knowledge files, run `anneal check --active-only` (or the `verify:` hint from the originating garden task).
+- After editing knowledge files, run `anneal check --scope=active` (or the `verify:` hint from the originating garden task).
 - If error counts look surprisingly high, confirm whether terminal files are included before reporting the corpus as unhealthy.
 
 When you need structured diagnostics, filter them to a narrow summary before returning them to the model, for example:
 
 ```bash
-anneal check --active-only --json | jq '.summary'
-anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
+anneal check --scope=active --json | jq '.summary'
+anneal check --scope=active --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
 ```
 
 ## High-Value Diagnostics

@@ -1,5 +1,8 @@
 # Configuration for self-check of anneal's own specification.
-# Suppress only known prose-example false positives from anneal-spec.md.
+# Suppress only known prose-example false positives from anneal-spec.md and
+# captured agent-feedback references to external Herald corpus files.
+
+exclude = ["feedback"]
 
 [suppress]
 

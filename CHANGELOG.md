@@ -2,6 +2,44 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.9.0 - 2026-04-16
+
+### Added
+
+- `anneal orient`: context-budgeted reading list for agents. Scores every file by edge centrality, label density, recency, and status, then tiers the result as pinned → area entry points → upstream context → downstream consumers. Tiers fill greedily until the token budget is exhausted. Flags: `--area=X`, `--budget=Nk`, `--file=X`, `--paths-only`, `--json`. The `--file=X` variant walks upstream dependencies — the before-edit complement to `impact`.
+- `anneal garden`: ranked maintenance tasks with `fix:`, `context:`, and `verify:` hints so an agent can close the garden → orient → fix → check loop without guidance. Six categories: `fix` (E001/E002), `tidy` (S001 orphans), `link` (island areas), `stale` (old files), `meta` (W003), `drift` (cross-area namespace dispersion). Flags: `--area=X`, `--category=X`, `--limit=N`, `--json`.
+- `anneal map --by-area`: area-level topology graph. Nodes are areas, edges are aggregated cross-area connection counts, islands are listed separately. Flags: `--by-area`, `--min-edges=N`, `--include-terminal`, `--render=text|dot`.
+- `anneal diff --by-area`: per-area convergence deltas with Δ errors, Δ orphans, Δ connectivity, and a trend column (improving/holding/degrading/new/removed). Grade changes render as `[B→C]` inline. Falls back to a current-state view when no snapshot history exists.
+- Batch handle lookup on `get`: `anneal get a.md b.md c.md` emits a compact one-line-per-handle table. `--status-only` trims to identity + status; `--context` adds the purpose/note summary. JSON emits an array. Single-handle `get` retains the detailed view.
+- `--scope=active|all` on `check`: unified convergence scope flag, mirrors `query --scope`. The legacy `--active-only` / `--include-terminal` booleans remain as deprecated aliases.
+- Pipeline semantics in `explain convergence`: active/terminal partition and ordering are always shown; optional `[convergence.descriptions]` TOML table attaches a human-readable description to each status. Agents encountering unfamiliar status values can now read the operational meaning directly from the command.
+- `--area=<name>` global flag: scopes `status`, `check`, `map`, `impact`, `find`, `query`, and the new `orient`/`garden` commands to one area (directory or concern group).
+- `--recent` / `--since=Nd` global flags: temporal scoping for files whose resolved date falls inside the window.
+- `--sort=date` on `find` and `query handles`: chronological view without needing a standalone `recent` command. `find`'s positional query is now optional when any filter is present.
+- `--context` enrichment on `find` and `query handles`: adds a `purpose:` / `note:` (or body snippet) column to the output table.
+- `map --around --upstream` / `--downstream`: directed tree traversal. `orient --file=X` and `impact X` share the same upstream/downstream infrastructure.
+- Obligation remediation in `explain obligation`: outstanding obligations now include the exact `discharges: [...]` frontmatter syntax needed to remediate, plus candidate discharger files ranked by graph proximity.
+- `[orient]`, `[temporal]`, `[convergence.descriptions]` config sections.
+
+### Changed
+
+- Snapshot schema gained an optional per-area summary (files, handles, errors, orphans, cross-links, connectivity, grade). Old snapshots without this field still parse.
+- Command count in docs and spec went from 12 to 14 (`orient`, `garden`).
+- README, skill file, and `--help` examples reorganized around three explicit loops: orientation, narrowing, gardening. Command output cross-references (e.g. `status` → `check`, `areas` → `garden`, `check` → `explain obligation`) so an agent following hints reaches the right next command without consulting documentation.
+
+### Fixed
+
+- `AreaGrade` now round-trips through serde, so per-area snapshot data keeps its type-safe shape across the write/read boundary.
+- `compute_areas` no longer treats out-of-corpus edge targets as implicitly belonging to the `(root)` area.
+
+### Internal
+
+- Extracted `area_of_handle` in `src/area.rs` as the single source of "what area does this handle belong to?". Replaces open-coded dispatch in `compute_areas` and `cmd_map_by_area`.
+- Extracted `resolve_previous_snapshot` helper shared by `cmd_diff` and `cmd_diff_by_area` — one place owns the three-mode reference resolution (git_ref → days → latest).
+- Handle constructors gained `size_bytes: Option<u32>` (populated during `build_graph`); consumed by `orient`'s token budget estimation.
+- Structured `Evidence::Suggestion::OrphanedHandle` replaces regex message parsing in `garden`'s S001 extraction.
+- `around_subgraph` in `src/cli/map.rs` is now `pub(super)` so `orient --file=X` can share the same BFS infrastructure as `map --around`.
+
 ## 0.8.0 - 2026-04-15
 
 ### Added

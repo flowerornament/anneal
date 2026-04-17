@@ -413,14 +413,15 @@ error[E001]: broken reference: REQ-99 not found
 23 errors (23 in active files), 11 warnings, 1 info, 7 suggestions
 ```
 
-`anneal check` reports active-file diagnostics by default. Use `--include-terminal` when you want the full picture, including settled material.
+`anneal check` reports active-file diagnostics by default. Use `--scope=all` (or the legacy `--include-terminal`) when you want the full picture, including settled material.
 
 For interactive health checks, prefer the plain-text report. JSON is summary-first by default, then expands deliberately with explicit flags.
 
 | Flag                 | Effect                                            |
 | -------------------- | ------------------------------------------------- |
-| `--include-terminal` | Include diagnostics from terminal (settled) files |
-| `--active-only`      | Skip diagnostics from terminal (settled) files    |
+| `--scope=active\|all`| Convergence scope (mirrors `query --scope`)       |
+| `--include-terminal` | Legacy alias for `--scope=all`                    |
+| `--active-only`      | Legacy alias for `--scope=active`                 |
 | `--errors-only`      | Errors only (for CI/pre-commit)                   |
 | `--suggest`          | Structural suggestions only (S001–S005)           |
 | `--stale`            | Staleness warnings only (W001)                    |
@@ -456,7 +457,15 @@ anneal get REQ-12 --trace --full       # full adjacency
 anneal get REQ-12 --json               # summary JSON with counts and samples
 ```
 
-`get` includes a snippet when anneal can extract one from the source file. JSON reports edge counts and truncation by default instead of dumping the full adjacency list.
+Pass multiple handles to get a compact batch table — one row per handle. `--status-only` trims to identity and status; `--context` adds the `purpose:`/`note:` summary.
+
+```bash
+anneal get arch.md impl.md spec.md               # compact batch view
+anneal get arch.md impl.md --status-only         # identity + status only
+anneal get arch.md impl.md --context             # add purpose/note summary
+```
+
+`get` includes a snippet when anneal can extract one from the source file. Single-handle JSON reports edge counts and truncation by default instead of dumping the full adjacency list; multi-handle JSON emits an array.
 
 ### `anneal impact`
 
@@ -480,12 +489,20 @@ Render or summarize the knowledge graph:
 ```bash
 anneal map                                    # Graph summary
 anneal map --around=REQ-12 --depth=1          # Focused text neighborhood
+anneal map --around=REQ-12 --upstream         # What feeds into REQ-12
+anneal map --around=REQ-12 --downstream       # What depends on REQ-12
 anneal map --render=text --full               # Full active graph (text)
 anneal map --render=dot --full | dot -Tpng -o g.png
                                                # Graphviz PNG
+anneal map --by-area                          # Area-level topology
+anneal map --by-area --min-edges=10           # Suppress weak cross-area links
+anneal map --by-area --render=dot | dot -Tpng -o areas.png
+                                               # Area-level PNG
 anneal map --json                             # Summary JSON
 anneal map --json --nodes --limit-nodes 50    # Structured node sample
 ```
+
+`--by-area` rolls every cross-area edge up into a directed edge list between top-level directories. Edges are sorted by count, with area-level islands (zero cross-links) listed separately so the topology gap is visible at a glance.
 
 ### `anneal diff`
 
@@ -501,6 +518,14 @@ Since last snapshot:
 ```
 
 Three reference modes: last snapshot (default), `--days=N` (time-based), or a git ref (`HEAD~3`, `main`) for structural diff.
+
+`--by-area` pivots the output to a per-area trend table with delta errors, delta orphans, delta connectivity, and an improving/holding/degrading/new/removed trend column. Grade changes render as `[B→C]` inline. When no snapshot history exists, `--by-area` falls back to a current-state view (equivalent to `anneal areas`).
+
+```bash
+anneal diff --by-area                         # Per-area trend table
+anneal diff --by-area --days=7                # Trend over the last week
+anneal diff --by-area --json                  # Structured per-area deltas
+```
 
 By default, `diff` reads the same machine-local snapshot history used by `status` and `check`. If you previously used repo-local `.anneal/history.jsonl`, anneal will continue reading that legacy history for compatibility.
 
@@ -564,6 +589,8 @@ anneal explain suggestion --id sugg_deadbeef
 
 `explain` is the provenance companion to anneal's structural outputs. It does not search semantically; it shows the handles, edges, states, rules, and snapshots behind a specific result.
 
+`explain convergence` also surfaces the corpus pipeline: the configured active/terminal partition, the ordering, and — if `[convergence.descriptions]` is configured — a human-readable description for each status. That turns an unfamiliar status value into something an agent can read without hunting through the config.
+
 ### `anneal init`
 
 Generate `anneal.toml` from inferred corpus structure:
@@ -598,6 +625,14 @@ exclude = ["**/README.md"]  # glob patterns and directory names to skip
 active = ["draft", "review", "approved"]
 terminal = ["published", "archived", "superseded"]
 ordering = ["raw", "draft", "review", "approved", "published"]
+
+# Optional: human-readable descriptions surfaced by `anneal explain convergence`.
+# Agents encountering unfamiliar status values can read the operational meaning
+# directly from the command instead of hunting through the config.
+[convergence.descriptions]
+draft = "Under construction — may change substantially"
+approved = "Settled primary artifact; changes require review"
+archived = "Superseded or retired; no further changes expected"
 
 [handles]
 confirmed = ["REQ", "ADR", "RFC"]
