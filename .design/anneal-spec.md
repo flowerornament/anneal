@@ -445,7 +445,7 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ### §12 Commands
 
-Twelve commands. Each supports `--json` for agent consumption [KB-P8].
+Fourteen commands. Each supports `--json` for agent consumption [KB-P8].
 
 #### §12.1 `anneal check` [KB-C1]
 
@@ -678,6 +678,32 @@ The orphan count that triggers a B downgrade is configurable via `[areas] orphan
 
 When `[concerns]` is configured, concern groups can act as areas. A concern group may span multiple directories. `areas` shows both directory-based and concern-based views when concern groups are defined.
 
+#### §12.13 `anneal orient` [KB-C13]
+
+Context-budgeted reading list for agents. Answers: "I'm about to work on this area/file — what should I read, within a token budget?"
+
+```
+anneal orient --budget=50k               # whole-corpus reading list
+anneal orient --area=compiler            # reading list for one area
+anneal orient --file=impl-plan.md        # upstream ancestry of one file
+anneal orient --paths-only               # bare paths, one per line
+```
+
+Files are scored by edge centrality, label density, recency, and status, then tiered as pinned (from `[orient] pin`) → area entry points → upstream context → downstream consumers. Tiers fill greedily until the token budget is exhausted; token count is estimated from file size in bytes. `--file=X` replaces the area scope with the upstream dependency ancestry of a single file — the before-edit complement to `impact`.
+
+#### §12.14 `anneal garden` [KB-C14]
+
+Surface maintenance tasks ranked by blast radius. Each task includes `fix:`, `context:`, and `verify:` hints so agents can close the loop without further guidance.
+
+```
+anneal garden                      # top maintenance tasks
+anneal garden --area=compiler      # scope to one area
+anneal garden --category=fix       # only correctness blockers
+anneal garden --limit=25           # more tasks
+```
+
+Categories: `fix` (E001 broken refs, E002 undischarged obligations), `tidy` (S001 orphans grouped by area), `link` (island areas), `stale` (old files), `meta` (missing frontmatter), `drift` (namespaces leaking across areas). Tasks are ranked errors-first, then by orphan density, island size, stale age × handle density, metadata gaps, and namespace dispersion. Garden complements `check`: `check` is a pass/fail correctness gate, `garden` is a maintenance advisor.
+
 ---
 
 ## Part V: Configuration
@@ -750,7 +776,7 @@ error = 90
 
 ```
                      ┌───────────────────────┐
-                     │   CLI (12 commands)    │  §12
+                     │   CLI (14 commands)    │  §12
                      └───────────┬───────────┘
                                  │ query / explain
                      ┌───────────┴───────────┐
@@ -801,6 +827,10 @@ anneal/
     impact.rs       # Reverse graph traversal               §9
     area.rs         # Per-area health computation + grading §12.12
     snapshot.rs     # History, convergence summary, diff    §10
+    cli/
+      areas.rs      # anneal areas                           §12.12
+      orient.rs     # anneal orient                          §12.13
+      garden.rs     # anneal garden                          §12.14
     parse.rs        # Frontmatter + regex scanning          §5.1
     resolve.rs      # Handle resolution                     §4.2
     config.rs       # anneal.toml parsing + inference       §13
@@ -883,7 +913,7 @@ trait CommandOutput: Serialize {
 
 **[KB-OQ3] Semantic search.** `anneal find` uses identity-substring matching in v1. A future semantic or vector backend (for example, local GGUF following QMD's approach) could broaden discovery without changing the command surface.
 
-**[KB-OQ4] MCP server.** Wrapping the eleven commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
+**[KB-OQ4] MCP server.** Wrapping the fourteen commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
 
 **[KB-OQ5] Non-markdown corpora.** Source code comments, TOML/YAML config, structured data could contain handles. Current decision: markdown primary, with optional comment scanning for configured patterns.
 
