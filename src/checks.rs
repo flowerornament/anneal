@@ -1871,6 +1871,7 @@ mod tests {
                 warnings: 0,
             },
             namespaces: HashMap::<String, NamespaceStats>::new(),
+            areas: HashMap::new(),
         }
     }
 

@@ -25,13 +25,16 @@ pub(crate) use areas::{AreaSort, cmd_areas};
 pub(crate) use check::{
     CheckFilters, CheckJsonOptions, apply_check_filters, build_check_json_output, cmd_check,
 };
-pub(crate) use diff::cmd_diff;
+pub(crate) use diff::{cmd_diff, cmd_diff_by_area};
 pub(crate) use find::{FindFilters, cmd_find};
 pub(crate) use garden::{GardenCategory, GardenOptions, cmd_garden};
-pub(crate) use get::{GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output, cmd_get};
+pub(crate) use get::{
+    BatchGetOptions, GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output,
+    cmd_batch_get, cmd_get,
+};
 pub(crate) use impact::cmd_impact;
 pub(crate) use init::cmd_init;
-pub(crate) use map::{MapOptions, TraversalDirection, cmd_map};
+pub(crate) use map::{MapByAreaOptions, MapOptions, TraversalDirection, cmd_map, cmd_map_by_area};
 pub(crate) use obligations::cmd_obligations;
 pub(crate) use orient::{OrientOptions, cmd_orient, parse_budget};
 pub(crate) use status::{ConvergenceSummaryOutput, cmd_status};
@@ -275,6 +278,7 @@ pub(super) mod test_helpers {
                 );
                 m
             },
+            areas: HashMap::new(),
         }
     }
 

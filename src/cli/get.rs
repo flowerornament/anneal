@@ -9,6 +9,130 @@ use crate::handle::NodeId;
 use super::{DetailLevel, OutputMeta, SnippetIndex, dedup_edges, lookup_handle};
 
 // ---------------------------------------------------------------------------
+// Batch get (multi-arg lookup — see spec "Batch handle lookup")
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub(crate) struct BatchGetRow {
+    pub(crate) handle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) summary: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) not_found: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct BatchGetOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    pub(crate) rows: Vec<BatchGetRow>,
+}
+
+pub(crate) struct BatchGetOptions {
+    pub(crate) status_only: bool,
+    pub(crate) context: bool,
+}
+
+/// Build a compact batch output for multiple handles.
+pub(crate) fn cmd_batch_get(
+    graph: &DiGraph,
+    node_index: &HashMap<String, NodeId>,
+    snippets: SnippetIndex<'_>,
+    handles: &[String],
+    options: &BatchGetOptions,
+) -> BatchGetOutput {
+    let rows: Vec<BatchGetRow> = handles
+        .iter()
+        .map(|requested| match lookup_handle(node_index, requested) {
+            Some(node_id) => {
+                let handle = graph.node(node_id);
+                let summary = if options.context {
+                    snippets.summary_for(handle).map(str::to_string)
+                } else {
+                    None
+                };
+                let (kind, file) = if options.status_only {
+                    (None, None)
+                } else {
+                    (
+                        Some(handle.kind.as_str().to_string()),
+                        handle.file_path.as_ref().map(ToString::to_string),
+                    )
+                };
+                BatchGetRow {
+                    handle: handle.id.clone(),
+                    kind,
+                    status: handle.status.clone(),
+                    file,
+                    summary,
+                    not_found: false,
+                }
+            }
+            None => BatchGetRow {
+                handle: requested.clone(),
+                kind: None,
+                status: None,
+                file: None,
+                summary: None,
+                not_found: true,
+            },
+        })
+        .collect();
+
+    BatchGetOutput {
+        meta: OutputMeta::full(),
+        rows,
+    }
+}
+
+impl BatchGetOutput {
+    pub(crate) fn print_human(
+        &self,
+        w: &mut dyn Write,
+        options: &BatchGetOptions,
+    ) -> std::io::Result<()> {
+        let width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
+        for row in &self.rows {
+            if row.not_found {
+                writeln!(w, "{:<width$}  (not found)", row.handle, width = width)?;
+                continue;
+            }
+            let status = row.status.as_deref().unwrap_or("—");
+            if options.status_only {
+                writeln!(w, "{:<width$}  {status}", row.handle, width = width)?;
+            } else if options.context {
+                let summary = row.summary.as_deref().unwrap_or("");
+                writeln!(
+                    w,
+                    "{:<width$}  {status:<10}  {summary}",
+                    row.handle,
+                    width = width,
+                )?;
+            } else {
+                let kind = row.kind.as_deref().unwrap_or("?");
+                writeln!(
+                    w,
+                    "{:<width$}  {status:<10}  {kind}",
+                    row.handle,
+                    width = width,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_missing(&self) -> bool {
+        self.rows.iter().any(|r| r.not_found)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Get command (CLI-02)
 // ---------------------------------------------------------------------------
 
@@ -587,5 +711,99 @@ mod tests {
             !text.contains("LABELS.md is a file."),
             "context output should no longer be a single stitched sentence: {text}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // cmd_batch_get tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn batch_get_returns_row_per_handle_including_missing() {
+        let mut graph = crate::graph::DiGraph::new();
+        graph.add_node(Handle::test_file("a.md", Some("draft")));
+        graph.add_node(Handle::test_file("b.md", Some("active")));
+
+        let node_index = test_node_index(&graph);
+        let empty = HashMap::new();
+        let snippets = SnippetIndex {
+            files: &empty,
+            labels: &empty,
+        };
+        let handles = vec![
+            "a.md".to_string(),
+            "b.md".to_string(),
+            "missing.md".to_string(),
+        ];
+        let output = cmd_batch_get(
+            &graph,
+            &node_index,
+            snippets,
+            &handles,
+            &BatchGetOptions {
+                status_only: false,
+                context: false,
+            },
+        );
+
+        assert_eq!(output.rows.len(), 3);
+        assert_eq!(output.rows[0].handle, "a.md");
+        assert_eq!(output.rows[0].status.as_deref(), Some("draft"));
+        assert!(!output.rows[0].not_found);
+        assert_eq!(output.rows[2].handle, "missing.md");
+        assert!(output.rows[2].not_found);
+        assert!(output.has_missing());
+    }
+
+    #[test]
+    fn batch_get_status_only_drops_kind_and_file() {
+        let mut graph = crate::graph::DiGraph::new();
+        graph.add_node(Handle::test_file("a.md", Some("draft")));
+
+        let node_index = test_node_index(&graph);
+        let empty = HashMap::new();
+        let snippets = SnippetIndex {
+            files: &empty,
+            labels: &empty,
+        };
+        let output = cmd_batch_get(
+            &graph,
+            &node_index,
+            snippets,
+            std::slice::from_ref(&"a.md".to_string()),
+            &BatchGetOptions {
+                status_only: true,
+                context: false,
+            },
+        );
+
+        assert_eq!(output.rows[0].status.as_deref(), Some("draft"));
+        assert!(output.rows[0].kind.is_none());
+        assert!(output.rows[0].file.is_none());
+    }
+
+    #[test]
+    fn batch_get_human_aligns_columns() {
+        let mut graph = crate::graph::DiGraph::new();
+        graph.add_node(Handle::test_file("short.md", Some("draft")));
+        graph.add_node(Handle::test_file("longer-name.md", Some("active")));
+
+        let node_index = test_node_index(&graph);
+        let empty = HashMap::new();
+        let snippets = SnippetIndex {
+            files: &empty,
+            labels: &empty,
+        };
+        let handles = vec!["short.md".to_string(), "longer-name.md".to_string()];
+        let options = BatchGetOptions {
+            status_only: true,
+            context: false,
+        };
+        let output = cmd_batch_get(&graph, &node_index, snippets, &handles, &options);
+        let mut buf = Vec::new();
+        output.print_human(&mut buf, &options).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        // Alignment on 14 (longer-name.md)
+        assert!(text.contains("short.md       "));
+        assert!(text.contains("longer-name.md"));
     }
 }

@@ -50,6 +50,18 @@ pub(crate) struct NamespaceStats {
     pub(crate) deferred: usize,
 }
 
+/// Per-area summary captured in snapshots for `diff --by-area` trend analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AreaSnapshot {
+    pub(crate) files: usize,
+    pub(crate) handles: usize,
+    pub(crate) errors: usize,
+    pub(crate) orphans: usize,
+    pub(crate) cross_links: usize,
+    pub(crate) connectivity: f64,
+    pub(crate) grade: crate::area::AreaGrade,
+}
+
 /// A point-in-time snapshot of the knowledge graph state (KB-D17).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
@@ -60,6 +72,10 @@ pub(crate) struct Snapshot {
     pub(crate) obligations: ObligationCounts,
     pub(crate) diagnostics: DiagnosticCounts,
     pub(crate) namespaces: HashMap<String, NamespaceStats>,
+    /// Per-area summary for trend analysis. Serde default so older snapshots
+    /// without this field still parse.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) areas: HashMap<String, AreaSnapshot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +211,25 @@ pub(crate) fn build_snapshot(
         .filter(|d| d.severity == Severity::Warning)
         .count();
 
+    let areas: HashMap<String, AreaSnapshot> =
+        crate::area::compute_areas(graph, lattice, diagnostics, &config.areas)
+            .into_iter()
+            .map(|a| {
+                (
+                    a.name,
+                    AreaSnapshot {
+                        files: a.files,
+                        handles: a.handles,
+                        errors: a.errors,
+                        orphans: a.orphans,
+                        cross_links: a.cross_links,
+                        connectivity: a.connectivity,
+                        grade: a.grade,
+                    },
+                )
+            })
+            .collect();
+
     Snapshot {
         timestamp: Utc::now().to_rfc3339(),
         handles: HandleCounts {
@@ -213,6 +248,7 @@ pub(crate) fn build_snapshot(
         },
         diagnostics: DiagnosticCounts { errors, warnings },
         namespaces,
+        areas,
     }
 }
 
@@ -522,6 +558,7 @@ mod tests {
                 warnings: 0,
             },
             namespaces: HashMap::new(),
+            areas: HashMap::new(),
         }
     }
 
@@ -572,6 +609,7 @@ mod tests {
                 warnings: 3,
             },
             namespaces,
+            areas: HashMap::new(),
         };
 
         let json = serde_json::to_value(&snapshot).expect("serialize");

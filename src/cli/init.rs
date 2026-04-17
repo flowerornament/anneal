@@ -93,6 +93,7 @@ pub(crate) fn cmd_init(
         active,
         terminal,
         ordering: lattice.ordering.clone(),
+        descriptions: HashMap::new(),
     };
 
     // Build handles section from namespaces

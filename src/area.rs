@@ -14,7 +14,7 @@ use crate::lattice::Lattice;
 // ---------------------------------------------------------------------------
 
 /// Health grade for an area, from best to worst.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum AreaGrade {
     A,
     B,
@@ -35,6 +35,12 @@ impl AreaGrade {
     /// Whether this grade indicates an area that needs attention.
     pub(crate) fn is_degraded(self) -> bool {
         matches!(self, Self::C | Self::D)
+    }
+}
+
+impl std::fmt::Display for AreaGrade {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -79,6 +85,15 @@ pub(crate) fn area_of(file: &str) -> &str {
     }
 }
 
+/// Extract the area name for a handle. Files use their path; other kinds
+/// inherit via `file_path`. Returns `None` for handles without a source file.
+pub(crate) fn area_of_handle(handle: &Handle) -> Option<&str> {
+    match &handle.kind {
+        HandleKind::File(path) => Some(area_of(path.as_str())),
+        _ => handle.file_path.as_deref().map(|p| area_of(p.as_str())),
+    }
+}
+
 /// A filter that scopes commands to a single area (directory or concern group).
 pub(crate) struct AreaFilter {
     name: String,
@@ -120,20 +135,14 @@ pub(crate) fn compute_areas(
     let mut stats: HashMap<String, AreaStats> = HashMap::new();
 
     for (node_id, handle) in graph.nodes() {
-        let file_str = match &handle.kind {
-            HandleKind::File(path) => path.as_str(),
-            _ => match &handle.file_path {
-                Some(fp) => fp.as_str(),
-                None => continue,
-            },
+        let Some(area_name) = area_of_handle(handle) else {
+            continue;
         };
-
-        let area_name = area_of(file_str);
         let s = stats.entry(area_name.to_string()).or_default();
 
         s.handles += 1;
-        if matches!(handle.kind, HandleKind::File(_)) {
-            s.files.insert(file_str.to_string());
+        if let HandleKind::File(path) = &handle.kind {
+            s.files.insert(path.as_str().to_string());
         }
         if matches!(handle.kind, HandleKind::Label { .. }) {
             s.labels += 1;
@@ -158,11 +167,7 @@ pub(crate) fn compute_areas(
         for edge in graph.outgoing(node_id) {
             s.total_edges += 1;
             let target = graph.node(edge.target);
-            let target_file = target
-                .file_path
-                .as_deref()
-                .map_or("", camino::Utf8Path::as_str);
-            if area_of(target_file) != area_name {
+            if area_of_handle(target).is_some_and(|t| t != area_name) {
                 s.cross_links += 1;
             }
         }

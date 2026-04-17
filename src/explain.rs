@@ -110,7 +110,24 @@ pub(crate) struct ConvergenceExplanation {
     pub(crate) detail: String,
     pub(crate) current: ConvergenceSnapshotSummary,
     pub(crate) previous: Option<ConvergenceSnapshotSummary>,
+    pub(crate) pipeline: PipelineSummary,
     pub(crate) facts: Vec<ExplanationFact>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct PipelineSummary {
+    pub(crate) active: Vec<String>,
+    pub(crate) terminal: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ordering: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) descriptions: Vec<StatusDescription>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StatusDescription {
+    pub(crate) status: String,
+    pub(crate) description: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -268,6 +285,7 @@ fn build_convergence_explanation_output(context: &AnalysisContext<'_>) -> Conver
         &analysis.diagnostics,
     );
     let current_summary = convergence_snapshot_summary(&current);
+    let pipeline = build_pipeline_summary(context);
 
     if let Some(previous) = analysis.previous_snapshot.as_ref() {
         let convergence = snapshot::analyze_convergence(&current, previous);
@@ -277,6 +295,7 @@ fn build_convergence_explanation_output(context: &AnalysisContext<'_>) -> Conver
             detail,
             current: current_summary,
             previous: Some(convergence_snapshot_summary(previous)),
+            pipeline,
             facts: convergence_facts(&current, previous, &convergence),
         }
     } else {
@@ -285,11 +304,58 @@ fn build_convergence_explanation_output(context: &AnalysisContext<'_>) -> Conver
             detail: "no previous snapshot available; run `anneal status` or `anneal check` again after this snapshot is stored".to_string(),
             current: current_summary,
             previous: None,
+            pipeline,
             facts: vec![
                 fact("history", "previous_snapshot", "missing"),
                 fact("history", "status_behavior", "status shows no convergence signal on first run"),
             ],
         }
+    }
+}
+
+fn build_pipeline_summary(context: &AnalysisContext<'_>) -> PipelineSummary {
+    // Prefer configured partition so users see what they declared, not just
+    // what the corpus happens to use. Fall back to observed lattice when the
+    // config section is absent (zero-config mode).
+    let cfg_active = &context.config.convergence.active;
+    let cfg_terminal = &context.config.convergence.terminal;
+    let mut active = if cfg_active.is_empty() {
+        context.lattice.active.iter().cloned().collect::<Vec<_>>()
+    } else {
+        cfg_active.clone()
+    };
+    active.sort();
+    let mut terminal = if cfg_terminal.is_empty() {
+        context.lattice.terminal.iter().cloned().collect::<Vec<_>>()
+    } else {
+        cfg_terminal.clone()
+    };
+    terminal.sort();
+    // Ordering is normally copied into the lattice from config; fall back to
+    // config directly in case a caller constructs a lattice without it.
+    let ordering = if context.lattice.ordering.is_empty() {
+        context.config.convergence.ordering.clone()
+    } else {
+        context.lattice.ordering.clone()
+    };
+
+    let mut descriptions: Vec<StatusDescription> = context
+        .config
+        .convergence
+        .descriptions
+        .iter()
+        .map(|(status, description)| StatusDescription {
+            status: status.clone(),
+            description: description.clone(),
+        })
+        .collect();
+    descriptions.sort_by(|a, b| a.status.cmp(&b.status));
+
+    PipelineSummary {
+        active,
+        terminal,
+        ordering,
+        descriptions,
     }
 }
 
@@ -1040,6 +1106,9 @@ fn print_convergence_explanation_human(
     } else {
         writeln!(w, "previous     (none)")?;
     }
+
+    print_pipeline_summary(&explanation.pipeline, w)?;
+
     if !explanation.facts.is_empty() {
         writeln!(w)?;
         writeln!(w, "facts")?;
@@ -1048,6 +1117,47 @@ fn print_convergence_explanation_human(
                 w,
                 "  {:<10} {:<20} {}",
                 fact.fact_type, fact.key, fact.value
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn print_pipeline_summary(pipeline: &PipelineSummary, w: &mut dyn Write) -> std::io::Result<()> {
+    if pipeline.active.is_empty()
+        && pipeline.terminal.is_empty()
+        && pipeline.ordering.is_empty()
+        && pipeline.descriptions.is_empty()
+    {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "pipeline")?;
+    if !pipeline.active.is_empty() {
+        writeln!(w, "  active    {}", pipeline.active.join(", "))?;
+    }
+    if !pipeline.terminal.is_empty() {
+        writeln!(w, "  terminal  {}", pipeline.terminal.join(", "))?;
+    }
+    if !pipeline.ordering.is_empty() {
+        writeln!(w, "  ordering  {}", pipeline.ordering.join(" → "))?;
+    }
+    if !pipeline.descriptions.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "descriptions")?;
+        let width = pipeline
+            .descriptions
+            .iter()
+            .map(|d| d.status.len())
+            .max()
+            .unwrap_or(0);
+        for desc in &pipeline.descriptions {
+            writeln!(
+                w,
+                "  {:<width$}  {}",
+                desc.status,
+                desc.description,
+                width = width,
             )?;
         }
     }
@@ -1344,6 +1454,56 @@ mod tests {
         let explanation = build_convergence_explanation_output(&context);
         assert_eq!(explanation.signal, "no_history");
         assert!(explanation.previous.is_none());
+    }
+
+    #[test]
+    fn convergence_explanation_includes_pipeline_from_config() {
+        let graph = DiGraph::new();
+        let lattice = simple_lattice();
+        let mut config = AnnealConfig::default();
+        config.convergence.active = vec!["draft".to_string(), "active".to_string()];
+        config.convergence.terminal = vec!["archived".to_string()];
+        config.convergence.ordering = vec!["draft".to_string(), "active".to_string()];
+        config
+            .convergence
+            .descriptions
+            .insert("draft".to_string(), "Under construction".to_string());
+        let state_config = ResolvedStateConfig {
+            history_mode: HistoryMode::Off,
+            history_dir: None,
+        };
+        let result = empty_result();
+        let node_index = HashMap::new();
+        let cascade_candidates = HashMap::new();
+        let context = sample_analysis_context(
+            &graph,
+            &lattice,
+            &config,
+            &state_config,
+            &result,
+            &node_index,
+            &cascade_candidates,
+        );
+
+        let explanation = build_convergence_explanation_output(&context);
+        assert!(
+            explanation.pipeline.active.contains(&"draft".to_string())
+                && explanation.pipeline.active.contains(&"active".to_string())
+        );
+        assert_eq!(explanation.pipeline.terminal, vec!["archived".to_string()]);
+        assert_eq!(
+            explanation.pipeline.ordering,
+            vec!["draft".to_string(), "active".to_string()]
+        );
+        assert_eq!(explanation.pipeline.descriptions.len(), 1);
+        assert_eq!(explanation.pipeline.descriptions[0].status, "draft");
+
+        let mut buf = Vec::new();
+        print_convergence_explanation_human(&explanation, &mut buf).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(text.contains("pipeline"));
+        assert!(text.contains("draft → active"));
+        assert!(text.contains("Under construction"));
     }
 
     #[test]

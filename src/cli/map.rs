@@ -3,6 +3,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
+use crate::area::area_of_handle;
 use crate::config::AnnealConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind, NodeId};
@@ -915,6 +916,216 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
     }
 }
 
+// ---------------------------------------------------------------------------
+// map --by-area: area-level topology
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub(crate) struct AreaNode {
+    pub(crate) name: String,
+    pub(crate) files: usize,
+    pub(crate) handles: usize,
+}
+
+/// A cross-area directed edge with aggregated count.
+#[derive(Clone, Serialize)]
+pub(crate) struct AreaEdge {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) count: usize,
+}
+
+/// Output of `anneal map --by-area`.
+#[derive(Serialize)]
+pub(crate) struct MapByAreaOutput {
+    #[serde(rename = "_meta")]
+    pub(crate) meta: OutputMeta,
+    pub(crate) format: String,
+    pub(crate) areas: Vec<AreaNode>,
+    pub(crate) edges: Vec<AreaEdge>,
+    pub(crate) islands: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rendered_content: Option<String>,
+}
+
+impl MapByAreaOutput {
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        if let Some(content) = &self.rendered_content {
+            write!(w, "{content}")?;
+            return Ok(());
+        }
+
+        if self.edges.is_empty() {
+            writeln!(w, "No cross-area edges found.")?;
+        } else {
+            let width = self.edges.iter().map(|e| e.source.len()).max().unwrap_or(0);
+            for edge in &self.edges {
+                writeln!(
+                    w,
+                    "{:<width$} ──{}──> {}",
+                    edge.source,
+                    edge.count,
+                    edge.target,
+                    width = width,
+                )?;
+            }
+        }
+
+        if !self.islands.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "Islands: {} (0 cross-links)", self.islands.join(", "),)?;
+        }
+        Ok(())
+    }
+}
+
+/// Options for `anneal map --by-area`.
+pub(crate) struct MapByAreaOptions<'a> {
+    pub(crate) graph: &'a DiGraph,
+    pub(crate) render: crate::MapRender,
+    pub(crate) min_edges: usize,
+    pub(crate) area: Option<&'a crate::area::AreaFilter>,
+    pub(crate) include_terminal: bool,
+    pub(crate) lattice: &'a Lattice,
+}
+
+/// Compute the area-level topology graph.
+pub(crate) fn cmd_map_by_area(opts: &MapByAreaOptions<'_>) -> MapByAreaOutput {
+    let mut area_files: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut area_handles: HashMap<String, usize> = HashMap::new();
+    let mut area_edges: HashMap<(String, String), usize> = HashMap::new();
+
+    for (node_id, handle) in opts.graph.nodes() {
+        let Some(source_area) = area_of_handle(handle) else {
+            continue;
+        };
+
+        if !opts.include_terminal && handle.is_terminal(opts.lattice) {
+            continue;
+        }
+
+        *area_handles.entry(source_area.to_string()).or_insert(0) += 1;
+        if let HandleKind::File(path) = &handle.kind {
+            area_files
+                .entry(source_area.to_string())
+                .or_default()
+                .insert(path.as_str().to_string());
+        }
+
+        for edge in opts.graph.outgoing(node_id) {
+            let target = opts.graph.node(edge.target);
+            if !opts.include_terminal && target.is_terminal(opts.lattice) {
+                continue;
+            }
+            let Some(target_area) = area_of_handle(target) else {
+                continue;
+            };
+            if target_area == source_area {
+                continue;
+            }
+            *area_edges
+                .entry((source_area.to_string(), target_area.to_string()))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let mut areas: Vec<AreaNode> = area_handles
+        .iter()
+        .map(|(name, handles)| AreaNode {
+            name: name.clone(),
+            files: area_files.get(name).map_or(0, HashSet::len),
+            handles: *handles,
+        })
+        .collect();
+    areas.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.name.cmp(&b.name)));
+
+    // Islands come from the full cross-edge set so --min-edges doesn't
+    // promote heavily-linked areas into islands.
+    let connected: HashSet<&str> = area_edges
+        .keys()
+        .flat_map(|(source, target)| [source.as_str(), target.as_str()])
+        .collect();
+    let mut islands: Vec<String> = areas
+        .iter()
+        .filter(|a| !connected.contains(a.name.as_str()))
+        .map(|a| a.name.clone())
+        .collect();
+    islands.sort();
+
+    let mut edges: Vec<AreaEdge> = area_edges
+        .into_iter()
+        .filter(|(_, count)| *count >= opts.min_edges)
+        .map(|((source, target), count)| AreaEdge {
+            source,
+            target,
+            count,
+        })
+        .collect();
+    edges.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.target.cmp(&b.target))
+    });
+
+    if let Some(af) = opts.area {
+        let name = af.name();
+        edges.retain(|e| e.source == name || e.target == name);
+    }
+
+    let rendered_content = match opts.render {
+        crate::MapRender::Dot => Some(render_by_area_dot(&areas, &edges)),
+        crate::MapRender::Text | crate::MapRender::Summary => None,
+    };
+
+    MapByAreaOutput {
+        meta: OutputMeta::new(
+            DetailLevel::Full,
+            false,
+            Some(edges.len()),
+            Some(edges.len()),
+            Vec::new(),
+        ),
+        format: match opts.render {
+            crate::MapRender::Dot => "dot",
+            crate::MapRender::Text | crate::MapRender::Summary => "text",
+        }
+        .to_string(),
+        areas,
+        edges,
+        islands,
+        rendered_content,
+    }
+}
+
+fn render_by_area_dot(areas: &[AreaNode], edges: &[AreaEdge]) -> String {
+    use std::fmt::Write as FmtWrite;
+    let mut out = String::new();
+    let _ = writeln!(out, "digraph anneal_areas {{");
+    let _ = writeln!(out, "  rankdir=LR;");
+    let _ = writeln!(
+        out,
+        "  node [shape=box, fontname=\"Helvetica\", fontsize=10];"
+    );
+    let _ = writeln!(out);
+    for area in areas {
+        let name = dot_escape(&area.name);
+        let _ = writeln!(
+            out,
+            "  \"{name}\" [label=\"{name}\\n{} files\"];",
+            area.files
+        );
+    }
+    let _ = writeln!(out);
+    for edge in edges {
+        let src = dot_escape(&edge.source);
+        let tgt = dot_escape(&edge.target);
+        let _ = writeln!(out, "  \"{src}\" -> \"{tgt}\" [label=\"{}\"];", edge.count);
+    }
+    let _ = writeln!(out, "}}");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cli::test_helpers::*;
@@ -1568,5 +1779,161 @@ mod tests {
             !text.contains("OQ-30"),
             "hub summary should sample namespace members instead of dumping them all: {text}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // map --by-area tests
+    // ---------------------------------------------------------------
+
+    fn by_area_graph() -> DiGraph {
+        let mut graph = DiGraph::new();
+        let ca = graph.add_node(Handle::test_file("compiler/a.md", Some("draft")));
+        let cb = graph.add_node(Handle::test_file("compiler/b.md", Some("draft")));
+        let sa = graph.add_node(Handle::test_file("synthesis/a.md", Some("draft")));
+        let sb = graph.add_node(Handle::test_file("synthesis/b.md", Some("draft")));
+        graph.add_node(Handle::test_file("archive/a.md", Some("archived")));
+        graph.add_edge(ca, sa, EdgeKind::Cites);
+        graph.add_edge(cb, sa, EdgeKind::Cites);
+        graph.add_edge(cb, sb, EdgeKind::DependsOn);
+        graph.add_edge(sa, ca, EdgeKind::Cites);
+        graph
+    }
+
+    #[test]
+    fn map_by_area_aggregates_cross_area_edges() {
+        let graph = by_area_graph();
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 1,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+
+        let compiler_to_synthesis = output
+            .edges
+            .iter()
+            .find(|e| e.source == "compiler" && e.target == "synthesis")
+            .expect("compiler -> synthesis edge");
+        assert_eq!(compiler_to_synthesis.count, 3);
+
+        let synthesis_to_compiler = output
+            .edges
+            .iter()
+            .find(|e| e.source == "synthesis" && e.target == "compiler")
+            .expect("synthesis -> compiler edge");
+        assert_eq!(synthesis_to_compiler.count, 1);
+    }
+
+    #[test]
+    fn map_by_area_detects_islands() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_file("compiler/a.md", Some("draft")));
+        graph.add_node(Handle::test_file("archive/a.md", Some("draft")));
+        graph.add_node(Handle::test_file("archive/b.md", Some("draft")));
+        let lattice = Lattice::test_new(&["draft"], &[]);
+
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 1,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+
+        assert!(output.islands.contains(&"archive".to_string()));
+        assert!(output.islands.contains(&"compiler".to_string()));
+    }
+
+    #[test]
+    fn map_by_area_min_edges_filters_but_keeps_islands_stable() {
+        let graph = by_area_graph();
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 2,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+
+        // Only compiler->synthesis (count 3) survives
+        assert_eq!(output.edges.len(), 1);
+        // Synthesis still "connected" via full edge set; not an island
+        assert!(!output.islands.iter().any(|i| i == "synthesis"));
+    }
+
+    #[test]
+    fn map_by_area_human_format_uses_count_arrow() {
+        let graph = by_area_graph();
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 1,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("compiler") && text.contains("──3──> synthesis"),
+            "expected count arrow, got: {text}"
+        );
+    }
+
+    #[test]
+    fn map_by_area_dot_render() {
+        let graph = by_area_graph();
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Dot,
+            min_edges: 1,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+
+        let content = output.rendered_content.expect("dot content");
+        assert!(content.starts_with("digraph anneal_areas {"));
+        assert!(content.contains("\"compiler\" -> \"synthesis\""));
+    }
+
+    #[test]
+    fn map_by_area_excludes_terminal_by_default() {
+        let mut graph = DiGraph::new();
+        let compiler_file = graph.add_node(Handle::test_file("compiler/a.md", Some("draft")));
+        let archived_file = graph.add_node(Handle::test_file("archive/a.md", Some("archived")));
+        graph.add_edge(compiler_file, archived_file, EdgeKind::Cites);
+        let lattice = Lattice::test_new(&["draft"], &["archived"]);
+
+        let output = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 1,
+            area: None,
+            include_terminal: false,
+            lattice: &lattice,
+        });
+        // archive file is terminal -> edge excluded
+        assert!(output.edges.is_empty());
+
+        let output_all = cmd_map_by_area(&MapByAreaOptions {
+            graph: &graph,
+            render: crate::MapRender::Text,
+            min_edges: 1,
+            area: None,
+            include_terminal: true,
+            lattice: &lattice,
+        });
+        assert_eq!(output_all.edges.len(), 1);
     }
 }

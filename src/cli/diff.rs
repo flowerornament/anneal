@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 use anyhow::Context;
 use camino::Utf8Path;
 use serde::Serialize;
+
+use crate::area::AreaGrade;
+use crate::snapshot::AreaSnapshot;
 
 // ---------------------------------------------------------------------------
 // Diff command (CLI-08, KB-C8, KB-D19)
@@ -312,12 +315,34 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Resolved reference point for a diff, shared by `cmd_diff` and
+/// `cmd_diff_by_area`. Three modes: git_ref reconstructs the graph at that
+/// ref; days finds the closest historical snapshot; default takes the latest
+/// snapshot. Returns `None` when no history exists.
+fn resolve_previous_snapshot(
+    root: &Utf8Path,
+    state: &crate::config::ResolvedStateConfig,
+    days: Option<u32>,
+    git_ref: Option<&str>,
+) -> anyhow::Result<Option<(String, crate::snapshot::Snapshot)>> {
+    if let Some(git_ref) = git_ref {
+        let previous = build_graph_at_git_ref(root, git_ref)?;
+        return Ok(Some((git_ref.to_string(), previous)));
+    }
+    if let Some(days) = days {
+        let history = crate::snapshot::read_all_snapshots(root, state);
+        if let Some(previous) = find_snapshot_by_days(&history, days) {
+            return Ok(Some((format!("{days} days ago"), previous.clone())));
+        }
+        return Ok(None);
+    }
+    Ok(
+        crate::snapshot::read_latest_snapshot(root, state)
+            .map(|s| ("last snapshot".to_string(), s)),
+    )
+}
+
 /// Compute graph-level diff output.
-///
-/// Three modes:
-/// 1. `git_ref` — reconstruct graph at that ref and diff structurally
-/// 2. `days` — find closest snapshot to N days ago in history
-/// 3. Default — diff against the most recent snapshot only
 pub(crate) fn cmd_diff(
     root: &Utf8Path,
     state: &crate::config::ResolvedStateConfig,
@@ -325,25 +350,10 @@ pub(crate) fn cmd_diff(
     days: Option<u32>,
     git_ref: Option<&str>,
 ) -> anyhow::Result<DiffOutput> {
-    if let Some(git_ref) = git_ref {
-        let previous = build_graph_at_git_ref(root, git_ref)?;
-        return Ok(diff_snapshots(current_snapshot, &previous, git_ref));
+    if let Some((reference, previous)) = resolve_previous_snapshot(root, state, days, git_ref)? {
+        return Ok(diff_snapshots(current_snapshot, &previous, &reference));
     }
 
-    if let Some(days) = days {
-        let history = crate::snapshot::read_all_snapshots(root, state);
-        if let Some(previous) = find_snapshot_by_days(&history, days) {
-            return Ok(diff_snapshots(
-                current_snapshot,
-                previous,
-                &format!("{days} days ago"),
-            ));
-        }
-    } else if let Some(previous) = crate::snapshot::read_latest_snapshot(root, state).as_ref() {
-        return Ok(diff_snapshots(current_snapshot, previous, "last snapshot"));
-    }
-
-    // No history available
     Ok(DiffOutput {
         reference: String::new(),
         has_history: false,
@@ -360,6 +370,227 @@ pub(crate) fn cmd_diff(
         },
         edge_delta: EdgeDelta { total_delta: 0 },
         namespace_deltas: Vec::new(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// diff --by-area: per-area convergence deltas
+// ---------------------------------------------------------------------------
+
+/// Trend direction for a single area between two snapshots.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AreaTrend {
+    Improving,
+    Holding,
+    Degrading,
+    New,
+    Removed,
+}
+
+impl AreaTrend {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Improving => "improving",
+            Self::Holding => "holding",
+            Self::Degrading => "degrading",
+            Self::New => "new",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// Per-area delta between two snapshots.
+#[derive(Clone, Serialize)]
+pub(crate) struct AreaDelta {
+    pub(crate) name: String,
+    pub(crate) grade: AreaGrade,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) previous_grade: Option<AreaGrade>,
+    pub(crate) errors_delta: i64,
+    pub(crate) orphans_delta: i64,
+    pub(crate) connectivity_delta: f64,
+    pub(crate) cross_links_delta: i64,
+    pub(crate) trend: AreaTrend,
+}
+
+/// Output of `anneal diff --by-area`.
+#[derive(Serialize)]
+pub(crate) struct DiffByAreaOutput {
+    pub(crate) reference: String,
+    pub(crate) has_history: bool,
+    pub(crate) areas: Vec<AreaDelta>,
+}
+
+impl DiffByAreaOutput {
+    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        if self.has_history {
+            writeln!(w, "Since {}:", self.reference)?;
+        } else {
+            writeln!(w, "No snapshot history yet — showing current area state.")?;
+        }
+        writeln!(w)?;
+
+        writeln!(
+            w,
+            "{:<18} {:<8} {:>8} {:>9} {:>8} Trend",
+            "Area", "Grade", "Δ Err", "Δ Orphans", "Δ Conn"
+        )?;
+        let sep: String = "─".repeat(78);
+        writeln!(w, "{sep}")?;
+        for area in &self.areas {
+            let grade = match area.previous_grade {
+                Some(prev) if prev != area.grade => format!("[{prev}→{}]", area.grade),
+                _ => format!("[{}]", area.grade),
+            };
+            writeln!(
+                w,
+                "{:<18} {:<8} {:>+8} {:>+9} {:>+8.1} {}",
+                format!("{}/", area.name),
+                grade,
+                area.errors_delta,
+                area.orphans_delta,
+                area.connectivity_delta,
+                area.trend.as_str(),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Classify trend from deltas using the principle: errors and orphans matter
+/// more than connectivity. A new error dominates a connectivity boost.
+fn classify_trend(
+    errors_delta: i64,
+    orphans_delta: i64,
+    connectivity_delta: f64,
+    grade_changed: bool,
+) -> AreaTrend {
+    if errors_delta > 0 || orphans_delta > 0 {
+        return AreaTrend::Degrading;
+    }
+    if errors_delta < 0 || orphans_delta < 0 {
+        return AreaTrend::Improving;
+    }
+    if connectivity_delta < -0.05 {
+        return AreaTrend::Degrading;
+    }
+    if connectivity_delta > 0.05 {
+        return AreaTrend::Improving;
+    }
+    if grade_changed {
+        AreaTrend::Degrading
+    } else {
+        AreaTrend::Holding
+    }
+}
+
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) fn compute_area_deltas(
+    current: &HashMap<String, AreaSnapshot>,
+    previous: &HashMap<String, AreaSnapshot>,
+) -> Vec<AreaDelta> {
+    let mut names: BTreeSet<&str> = current
+        .keys()
+        .chain(previous.keys())
+        .map(String::as_str)
+        .collect();
+    let mut out = Vec::with_capacity(names.len());
+    while let Some(name) = names.pop_first() {
+        let curr = current.get(name);
+        let prev = previous.get(name);
+        match (curr, prev) {
+            (Some(c), Some(p)) => {
+                let errors_delta = c.errors as i64 - p.errors as i64;
+                let orphans_delta = c.orphans as i64 - p.orphans as i64;
+                let connectivity_delta = c.connectivity - p.connectivity;
+                let cross_links_delta = c.cross_links as i64 - p.cross_links as i64;
+                let grade_changed = c.grade != p.grade;
+                let trend = classify_trend(
+                    errors_delta,
+                    orphans_delta,
+                    connectivity_delta,
+                    grade_changed,
+                );
+                out.push(AreaDelta {
+                    name: name.to_string(),
+                    grade: c.grade,
+                    previous_grade: grade_changed.then_some(p.grade),
+                    errors_delta,
+                    orphans_delta,
+                    connectivity_delta,
+                    cross_links_delta,
+                    trend,
+                });
+            }
+            (Some(c), None) => {
+                out.push(AreaDelta {
+                    name: name.to_string(),
+                    grade: c.grade,
+                    previous_grade: None,
+                    errors_delta: c.errors as i64,
+                    orphans_delta: c.orphans as i64,
+                    connectivity_delta: c.connectivity,
+                    cross_links_delta: c.cross_links as i64,
+                    trend: AreaTrend::New,
+                });
+            }
+            (None, Some(p)) => {
+                out.push(AreaDelta {
+                    name: name.to_string(),
+                    grade: p.grade,
+                    previous_grade: None,
+                    errors_delta: -(p.errors as i64),
+                    orphans_delta: -(p.orphans as i64),
+                    connectivity_delta: -p.connectivity,
+                    cross_links_delta: -(p.cross_links as i64),
+                    trend: AreaTrend::Removed,
+                });
+            }
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+fn current_only_area_view(current: &HashMap<String, AreaSnapshot>) -> Vec<AreaDelta> {
+    let mut out: Vec<AreaDelta> = current
+        .iter()
+        .map(|(name, snap)| AreaDelta {
+            name: name.clone(),
+            grade: snap.grade,
+            previous_grade: None,
+            errors_delta: 0,
+            orphans_delta: 0,
+            connectivity_delta: 0.0,
+            cross_links_delta: 0,
+            trend: AreaTrend::Holding,
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Compute `anneal diff --by-area` output. Same three reference modes as
+/// `cmd_diff`; falls back to a current-state-only view when no history exists.
+pub(crate) fn cmd_diff_by_area(
+    root: &Utf8Path,
+    state: &crate::config::ResolvedStateConfig,
+    current_snapshot: &crate::snapshot::Snapshot,
+    days: Option<u32>,
+    git_ref: Option<&str>,
+) -> anyhow::Result<DiffByAreaOutput> {
+    if let Some((reference, previous)) = resolve_previous_snapshot(root, state, days, git_ref)? {
+        return Ok(DiffByAreaOutput {
+            reference,
+            has_history: true,
+            areas: compute_area_deltas(&current_snapshot.areas, &previous.areas),
+        });
+    }
+    Ok(DiffByAreaOutput {
+        reference: String::new(),
+        has_history: false,
+        areas: current_only_area_view(&current_snapshot.areas),
     })
 }
 
@@ -564,5 +795,116 @@ mod tests {
         assert_eq!(output.handle_delta.created, 5);
         assert_eq!(output.handle_delta.active_delta, 4);
         assert_eq!(output.handle_delta.frozen_delta, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // diff --by-area tests
+    // -----------------------------------------------------------------------
+
+    fn area_snap(
+        grade: AreaGrade,
+        errors: usize,
+        orphans: usize,
+        connectivity: f64,
+    ) -> AreaSnapshot {
+        AreaSnapshot {
+            files: 10,
+            handles: 30,
+            errors,
+            orphans,
+            cross_links: 5,
+            connectivity,
+            grade,
+        }
+    }
+
+    #[test]
+    fn by_area_classifies_degrading_on_new_errors() {
+        let mut previous = HashMap::new();
+        previous.insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 0, 0.5));
+        let mut current = HashMap::new();
+        current.insert("compiler".to_string(), area_snap(AreaGrade::C, 2, 0, 0.5));
+
+        let deltas = compute_area_deltas(&current, &previous);
+        let compiler = deltas.iter().find(|d| d.name == "compiler").expect("found");
+        assert_eq!(compiler.errors_delta, 2);
+        assert_eq!(compiler.previous_grade, Some(AreaGrade::B));
+        assert!(matches!(compiler.trend, AreaTrend::Degrading));
+    }
+
+    #[test]
+    fn by_area_classifies_improving_on_fewer_orphans() {
+        let mut previous = HashMap::new();
+        previous.insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 9, 0.4));
+        let mut current = HashMap::new();
+        current.insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 3, 0.4));
+
+        let deltas = compute_area_deltas(&current, &previous);
+        assert_eq!(deltas[0].orphans_delta, -6);
+        assert!(matches!(deltas[0].trend, AreaTrend::Improving));
+    }
+
+    #[test]
+    fn by_area_classifies_new_and_removed() {
+        let mut previous = HashMap::new();
+        previous.insert("gone".to_string(), area_snap(AreaGrade::B, 0, 0, 0.4));
+        let mut current = HashMap::new();
+        current.insert("fresh".to_string(), area_snap(AreaGrade::A, 0, 0, 1.0));
+
+        let deltas = compute_area_deltas(&current, &previous);
+        let fresh = deltas.iter().find(|d| d.name == "fresh").expect("fresh");
+        assert!(matches!(fresh.trend, AreaTrend::New));
+        let gone = deltas.iter().find(|d| d.name == "gone").expect("gone");
+        assert!(matches!(gone.trend, AreaTrend::Removed));
+    }
+
+    #[test]
+    fn by_area_holding_when_nothing_changed() {
+        let mut previous = HashMap::new();
+        previous.insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 0, 0.4));
+        let mut current = HashMap::new();
+        current.insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 0, 0.4));
+        let deltas = compute_area_deltas(&current, &previous);
+        assert!(matches!(deltas[0].trend, AreaTrend::Holding));
+        assert!(deltas[0].previous_grade.is_none());
+    }
+
+    #[test]
+    fn by_area_falls_back_to_current_view_without_history() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8");
+        let mut current = make_snapshot_base();
+        current
+            .areas
+            .insert("compiler".to_string(), area_snap(AreaGrade::B, 0, 2, 0.5));
+
+        let output = cmd_diff_by_area(root, &repo_state(), &current, None, None).expect("diff");
+        assert!(!output.has_history);
+        assert_eq!(output.areas.len(), 1);
+        assert_eq!(output.areas[0].name, "compiler");
+        assert!(matches!(output.areas[0].trend, AreaTrend::Holding));
+    }
+
+    #[test]
+    fn by_area_human_no_history_message() {
+        let output = DiffByAreaOutput {
+            reference: String::new(),
+            has_history: false,
+            areas: vec![AreaDelta {
+                name: "compiler".to_string(),
+                grade: AreaGrade::B,
+                previous_grade: None,
+                errors_delta: 0,
+                orphans_delta: 0,
+                connectivity_delta: 0.0,
+                cross_links_delta: 0,
+                trend: AreaTrend::Holding,
+            }],
+        };
+        let mut buf = Vec::new();
+        output.print_human(&mut buf).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(text.contains("No snapshot history"));
+        assert!(text.contains("compiler"));
     }
 }
