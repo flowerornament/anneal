@@ -266,6 +266,39 @@ impl StatusOutput {
             }
         }
 
+        // -- Next steps — cross-reference hints --
+        let outstanding = self
+            .obligations
+            .total
+            .saturating_sub(self.obligations.discharged)
+            .saturating_sub(self.obligations.mooted);
+        let has_hints = self.diagnostics.errors > 0 || outstanding > 0 || self.suggestion_total > 0;
+        if has_hints {
+            writeln!(w)?;
+            writeln!(w, " {}", S.label.apply_to("next"))?;
+            if self.diagnostics.errors > 0 {
+                writeln!(
+                    w,
+                    "   {} for detailed diagnostics",
+                    S.dim.apply_to("anneal check"),
+                )?;
+            }
+            if outstanding > 0 {
+                writeln!(
+                    w,
+                    "   {} to inspect a specific obligation",
+                    S.dim.apply_to("anneal explain obligation <handle>"),
+                )?;
+            }
+            if self.suggestion_total > 0 {
+                writeln!(
+                    w,
+                    "   {} for ranked maintenance tasks",
+                    S.dim.apply_to("anneal garden"),
+                )?;
+            }
+        }
+
         Ok(())
     }
 

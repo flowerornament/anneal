@@ -52,6 +52,20 @@ impl AreasOutput {
                 area.signal,
             )?;
         }
+
+        let degraded = self
+            .areas
+            .iter()
+            .filter(|a| matches!(a.grade, AreaGrade::C | AreaGrade::D))
+            .count();
+        if degraded > 0 {
+            writeln!(w)?;
+            writeln!(
+                w,
+                "{degraded} area{} at C/D grade — run `anneal garden` for ranked tasks",
+                super::plural(degraded),
+            )?;
+        }
         Ok(())
     }
 }

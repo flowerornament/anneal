@@ -76,16 +76,29 @@ CORE CONCEPTS:
 
 START HERE:
 
+  anneal areas                Per-area health profiles — the \"what exists here?\" view
+  anneal orient --budget=50k  Token-budgeted reading list (agent-oriented)
+  anneal garden               Ranked maintenance tasks with fix/context/verify hints
   anneal status               Dashboard: corpus health, pipeline, convergence
   anneal check                Diagnostics: broken refs, staleness, obligations
   anneal get REQ-12           Inspect one handle with bounded context
   anneal find ADR             Search handle identities
-  anneal impact spec/v3.md    Reverse dependencies for safe edits
+  anneal impact spec/v3.md    Reverse dependencies for safe edits (downstream)
   anneal diff                 Change since last snapshot or git ref
-  anneal areas                Per-area health profiles
-  anneal obligations          Linear namespace obligation summary
   anneal map --around=REQ-12  Neighborhood view around one handle
+  anneal obligations          Linear namespace obligation summary
   anneal init                 Generate anneal.toml from inferred structure
+
+PAIRED WORKFLOWS:
+
+  Before → after edit:
+    anneal orient --file=X    Upstream reading list (what feeds into X)
+    anneal impact X           Downstream review (what breaks if X changes)
+
+  Gardening loop:
+    anneal garden             Surface ranked tasks with hints
+    anneal orient --area=X    Follow each task's context: hint
+    anneal check --area=X     Follow each task's verify: hint
 
 ROOT DIRECTORY:
 
@@ -186,6 +199,8 @@ EXAMPLES:
   anneal check                    # Actionable diagnostics from active files
   anneal check --include-terminal # Full diagnostics, including terminal files
   anneal check --file=spec/v3.md  # Scope to one file
+  anneal check --area=compiler    # Scope to one area (directory or concern)
+  anneal check --recent           # Only diagnostics from recently-touched files
   anneal check --errors-only      # Errors only (for CI/pre-commit hooks)
   anneal check --suggest          # Show only structural suggestions
   anneal check --stale            # Show only staleness warnings (W001)
@@ -297,6 +312,10 @@ EXAMPLES:
   anneal find draft --status=draft        # Handles with status 'draft'
   anneal find OQ --namespace=OQ           # Labels in OQ namespace
   anneal find OQ --limit 25               # Bounded result sample
+  anneal find --status=active --kind=file --context
+                                          # Active inventory with purpose/note
+  anneal find --recent --kind=file --sort=date
+                                          # Files touched in the last 7 days
   anneal find --status=current            # Broad but narrowed query
   anneal find --full --all               # Explicitly return everything"
     )]
@@ -514,7 +533,8 @@ delta accumulated while no single intelligence was present to witness it.",
         after_help = "\
 EXAMPLES:
   anneal diff                     # Changes since last snapshot
-  anneal diff --days=7            # Changes since ~7 days ago
+  anneal diff --days=7            # Changes since ~7 days ago (session resume)
+  anneal diff --days=30           # Coarser session-resume view
   anneal diff HEAD~3              # Structural diff against 3 commits ago
   anneal diff main                # Structural diff against main branch
   anneal diff --json              # JSON delta output"
