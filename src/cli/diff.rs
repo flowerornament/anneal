@@ -388,15 +388,15 @@ pub(crate) enum AreaTrend {
     Removed,
 }
 
-impl AreaTrend {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for AreaTrend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Improving => "improving",
             Self::Holding => "holding",
             Self::Degrading => "degrading",
             Self::New => "new",
             Self::Removed => "removed",
-        }
+        })
     }
 }
 
@@ -451,7 +451,7 @@ impl DiffByAreaOutput {
                 area.errors_delta,
                 area.orphans_delta,
                 area.connectivity_delta,
-                area.trend.as_str(),
+                area.trend,
             )?;
         }
         Ok(())

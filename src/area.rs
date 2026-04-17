@@ -94,6 +94,12 @@ pub(crate) fn area_of_handle(handle: &Handle) -> Option<&str> {
     }
 }
 
+/// Extract the area name for a diagnostic, treating unspecified locations as
+/// corpus-root (`"(root)"`). Mirrors the convention used by `compute_areas`.
+pub(crate) fn area_of_diagnostic(diag: &Diagnostic) -> &str {
+    diag.file.as_deref().map_or("(root)", area_of)
+}
+
 /// A filter that scopes commands to a single area (directory or concern group).
 pub(crate) struct AreaFilter {
     name: String,
@@ -174,7 +180,7 @@ pub(crate) fn compute_areas(
     }
 
     for diag in diagnostics {
-        let area_name = diag.file.as_deref().map_or("(root)", area_of).to_string();
+        let area_name = area_of_diagnostic(diag).to_string();
         let s = stats.entry(area_name).or_default();
 
         match diag.severity {

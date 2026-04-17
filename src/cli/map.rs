@@ -46,7 +46,7 @@ pub(crate) struct MapEdgeEntry {
 pub(crate) struct MapOutput {
     #[serde(rename = "_meta")]
     pub(crate) meta: OutputMeta,
-    pub(crate) format: String,
+    pub(crate) format: crate::MapRender,
     pub(crate) nodes: usize,
     pub(crate) edges: usize,
     pub(crate) by_kind: Vec<KindCount>,
@@ -900,12 +900,7 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
                 .or(edge_list.as_ref().map(|_| edge_count)),
             expand,
         ),
-        format: match opts.render {
-            crate::MapRender::Summary => "summary",
-            crate::MapRender::Text => "text",
-            crate::MapRender::Dot => "dot",
-        }
-        .to_string(),
+        format: opts.render,
         nodes: nodes.len(),
         edges: edge_count,
         by_kind,
@@ -940,7 +935,7 @@ pub(crate) struct AreaEdge {
 pub(crate) struct MapByAreaOutput {
     #[serde(rename = "_meta")]
     pub(crate) meta: OutputMeta,
-    pub(crate) format: String,
+    pub(crate) format: crate::MapRender,
     pub(crate) areas: Vec<AreaNode>,
     pub(crate) edges: Vec<AreaEdge>,
     pub(crate) islands: Vec<String>,
@@ -1086,11 +1081,7 @@ pub(crate) fn cmd_map_by_area(opts: &MapByAreaOptions<'_>) -> MapByAreaOutput {
             Some(edges.len()),
             Vec::new(),
         ),
-        format: match opts.render {
-            crate::MapRender::Dot => "dot",
-            crate::MapRender::Text | crate::MapRender::Summary => "text",
-        }
-        .to_string(),
+        format: opts.render,
         areas,
         edges,
         islands,
@@ -1331,7 +1322,7 @@ mod tests {
                 .expect("rendered content")
                 .starts_with("digraph anneal {")
         );
-        assert!(output.format == "dot");
+        assert_eq!(output.format, crate::MapRender::Dot);
     }
 
     #[test]
@@ -1684,7 +1675,7 @@ mod tests {
             limit_edges: 250,
         });
 
-        assert_eq!(output.format, "summary");
+        assert_eq!(output.format, crate::MapRender::Summary);
         assert!(output.rendered_content.is_none());
         assert!(!output.by_kind.is_empty());
     }

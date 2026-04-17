@@ -29,7 +29,7 @@ pub(crate) use diff::{cmd_diff, cmd_diff_by_area};
 pub(crate) use find::{FindFilters, cmd_find};
 pub(crate) use garden::{GardenCategory, GardenOptions, cmd_garden};
 pub(crate) use get::{
-    BatchGetOptions, GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output,
+    BatchGetMode, GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output,
     cmd_batch_get, cmd_get,
 };
 pub(crate) use impact::cmd_impact;

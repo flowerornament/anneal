@@ -228,7 +228,7 @@ EXAMPLES:
         obligations: bool,
         /// Convergence scope (active | all) — unified with `query --scope`
         #[arg(long, value_enum, conflicts_with_all = ["active_only", "include_terminal"])]
-        scope: Option<ConvergenceScope>,
+        scope: Option<query::Scope>,
         /// Skip diagnostics sourced from terminal (settled) files
         #[arg(long, conflicts_with_all = ["include_terminal", "scope"])]
         active_only: bool,
@@ -756,8 +756,9 @@ The current surface is typed by explanation domain:
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum MapRender {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MapRender {
     Summary,
     Text,
     Dot,
@@ -770,16 +771,6 @@ enum FindSort {
     Id,
     /// Sort by file date, most recent first.
     Date,
-}
-
-/// Shared convergence scope flag — used by `check` and mirrors the `--scope`
-/// enum on `query` subcommands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum ConvergenceScope {
-    /// Active view only — skip handles sourced from terminal files.
-    Active,
-    /// Full visible corpus, including terminal files.
-    All,
 }
 
 fn emit_output<T: Serialize>(
@@ -969,8 +960,8 @@ fn run() -> anyhow::Result<()> {
             limit,
         }) => {
             let active_only = match scope {
-                Some(ConvergenceScope::Active) => true,
-                Some(ConvergenceScope::All) => false,
+                Some(query::Scope::Active) => true,
+                Some(query::Scope::All) => false,
                 None => {
                     if include_terminal {
                         false
@@ -1055,18 +1046,21 @@ fn run() -> anyhow::Result<()> {
             limit_edges,
         }) => {
             if handle.len() > 1 || status_only {
-                let options = cli::BatchGetOptions {
-                    status_only,
-                    context,
+                let mode = if status_only {
+                    cli::BatchGetMode::StatusOnly
+                } else if context {
+                    cli::BatchGetMode::Context
+                } else {
+                    cli::BatchGetMode::Default
                 };
-                let output = cli::cmd_batch_get(graph, &node_index, snippets, handle, &options);
+                let output = cli::cmd_batch_get(graph, &node_index, snippets, handle, mode);
                 if cli_args.json {
                     cli::print_json(&output, json_style)?;
                 } else {
                     let stdout = std::io::stdout();
                     let mut lock = stdout.lock();
                     output
-                        .print_human(&mut lock, &options)
+                        .print_human(&mut lock, mode)
                         .context("failed to write get output")?;
                 }
                 if output.has_missing() {
@@ -1613,7 +1607,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Check {
-                scope: Some(ConvergenceScope::Active),
+                scope: Some(query::Scope::Active),
                 ..
             })
         ));
