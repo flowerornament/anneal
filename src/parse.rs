@@ -893,7 +893,10 @@ pub(crate) struct BuildResult {
 /// Plain entries continue to work as directory-name exclusions (backward compatible).
 /// Glob patterns are compiled into a `GlobSet` matched against relative paths,
 /// allowing file-level exclusions like `**/README.md`.
-fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobSet>) {
+///
+/// Used by the graph-building walker (parse.rs) and by the orient command's
+/// reading-list pruner so both honor the same `exclude` grammar.
+pub(crate) fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobSet>) {
     let mut dir_names = Vec::new();
     let mut builder = GlobSetBuilder::new();
     let mut has_globs = false;
