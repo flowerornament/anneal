@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use serde::Serialize;
 
 use crate::area::{AreaFilter, AreaHealth};
@@ -214,9 +214,9 @@ pub(crate) struct OrientOptions<'a> {
 /// Compute the orient reading list.
 pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutput> {
     let graph = opts.graph;
-    let exclude_set = build_exclude_set(&opts.config.exclude);
+    let exclude = ExcludeMatcher::new(&opts.config.exclude);
 
-    let file_entries = collect_file_entries(graph, exclude_set.as_ref());
+    let file_entries = collect_file_entries(graph, &exclude);
 
     let candidate_set: HashSet<NodeId> = match opts.file {
         Some(path) => {
@@ -250,7 +250,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
         .map(|(node, score)| (*node, score))
         .collect();
 
-    let pinned_entries = collect_pinned(graph, opts.node_index, opts.config, exclude_set.as_ref());
+    let pinned_entries = collect_pinned(graph, opts.node_index, opts.config, &exclude);
     let pinned_ids: HashSet<NodeId> = pinned_entries.iter().map(|e| e.node).collect();
 
     let mut entry_candidates: Vec<&ScoredFile> = tier_scope
@@ -358,23 +358,30 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn build_exclude_set(patterns: &[String]) -> Option<GlobSet> {
-    if patterns.is_empty() {
-        return None;
-    }
-    let mut builder = GlobSetBuilder::new();
-    for p in patterns {
-        if let Ok(glob) = Glob::new(p) {
-            builder.add(glob);
-        }
-    }
-    builder.build().ok()
+/// Matcher honoring the shared `exclude` grammar from `anneal.toml`.
+/// Plain names exclude whole top-level areas; glob patterns match full paths.
+/// Mirrors the semantics of the parser's graph-walker so users get one rule
+/// that means the same thing everywhere.
+struct ExcludeMatcher<'a> {
+    dir_names: Vec<&'a str>,
+    glob_set: Option<GlobSet>,
 }
 
-fn is_excluded(path: &str, excluded: Option<&GlobSet>) -> bool {
-    match excluded {
-        Some(gs) => gs.is_match(path),
-        None => false,
+impl<'a> ExcludeMatcher<'a> {
+    fn new(patterns: &'a [String]) -> Self {
+        let (dir_names, glob_set) = crate::parse::build_exclude_sets(patterns);
+        Self {
+            dir_names,
+            glob_set,
+        }
+    }
+
+    fn is_excluded(&self, path: &str) -> bool {
+        let first = path.split('/').next().unwrap_or(path);
+        if self.dir_names.contains(&first) {
+            return true;
+        }
+        self.glob_set.as_ref().is_some_and(|gs| gs.is_match(path))
     }
 }
 
@@ -384,7 +391,7 @@ struct FileEntry {
     date_ord: Option<i64>,
 }
 
-fn collect_file_entries(graph: &DiGraph, exclude: Option<&GlobSet>) -> Vec<FileEntry> {
+fn collect_file_entries(graph: &DiGraph, exclude: &ExcludeMatcher<'_>) -> Vec<FileEntry> {
     graph
         .nodes()
         .filter_map(|(node, handle)| {
@@ -392,7 +399,7 @@ fn collect_file_entries(graph: &DiGraph, exclude: Option<&GlobSet>) -> Vec<FileE
                 HandleKind::File(p) => p.as_str().to_string(),
                 _ => return None,
             };
-            if is_excluded(&path, exclude) {
+            if exclude.is_excluded(&path) {
                 return None;
             }
             Some(FileEntry {
@@ -536,7 +543,7 @@ fn collect_pinned(
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
     config: &OrientConfig,
-    exclude: Option<&GlobSet>,
+    exclude: &ExcludeMatcher<'_>,
 ) -> Vec<ScoredFile> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -552,7 +559,7 @@ fn collect_pinned(
             Some(p) => p.as_str(),
             None => continue,
         };
-        if is_excluded(path, exclude) {
+        if exclude.is_excluded(path) {
             continue;
         }
         out.push(ScoredFile {
@@ -825,5 +832,50 @@ mod tests {
         output.print_paths_only(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("a.md"));
+    }
+
+    #[test]
+    fn orient_exclude_treats_plain_names_as_dir_exclusions() {
+        let mut graph = DiGraph::new();
+        graph.add_node(file_with_size("compiler/a.md", Some("active"), 2_000));
+        graph.add_node(file_with_size("archive/old.md", Some("active"), 2_000));
+        graph.add_node(file_with_size("CHANGELOG.md", Some("active"), 2_000));
+
+        let node_index = test_node_index(&graph);
+        // `archive` is a plain directory name; `**/CHANGELOG.md` is a glob.
+        // Before the shared-exclude fix, plain names were treated as full-path
+        // globs and silently matched nothing.
+        let config = OrientConfig {
+            exclude: vec!["archive".to_string(), "**/CHANGELOG.md".to_string()],
+            ..OrientConfig::default()
+        };
+        let (files, labels) = empty_snippets();
+        let snippets = SnippetIndex {
+            files: &files,
+            labels: &labels,
+        };
+
+        let output = cmd_orient(&OrientOptions {
+            graph: &graph,
+            node_index: &node_index,
+            config: &config,
+            area: None,
+            file: None,
+            budget_tokens: 50_000,
+            snippets,
+            area_health: None,
+        })
+        .expect("orient output");
+
+        let paths: Vec<String> = output.entries.iter().map(|e| e.path.clone()).collect();
+        assert!(paths.iter().any(|p| p == "compiler/a.md"));
+        assert!(
+            !paths.iter().any(|p| p == "archive/old.md"),
+            "archive/ directory should be excluded by plain name"
+        );
+        assert!(
+            !paths.iter().any(|p| p == "CHANGELOG.md"),
+            "CHANGELOG.md should be excluded by glob"
+        );
     }
 }
