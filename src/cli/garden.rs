@@ -3,7 +3,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use crate::area::{AreaFilter, AreaHealth, area_of};
+use crate::area::{AreaFilter, AreaHealth, area_of, area_of_diagnostic};
 use crate::checks::{Diagnostic, DiagnosticCode, Evidence, Severity, SuggestionEvidence};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
@@ -31,16 +31,16 @@ pub(crate) enum GardenCategory {
     Drift,
 }
 
-impl GardenCategory {
-    fn short(self) -> &'static str {
-        match self {
+impl std::fmt::Display for GardenCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Fix => "fix",
             Self::Tidy => "tidy",
             Self::Link => "link",
             Self::Stale => "stale",
             Self::Meta => "meta",
             Self::Drift => "drift",
-        }
+        })
     }
 }
 
@@ -53,12 +53,27 @@ pub(crate) enum GardenBlast {
 }
 
 impl GardenBlast {
-    fn short(self) -> &'static str {
-        match self {
+    /// Classify a raw blast score into High/Med/Low bands. The thresholds
+    /// mirror the scoring scheme documented in the spec and are the single
+    /// source of truth linking `blast_score` to blast level.
+    pub(crate) fn from_score(score: u64) -> Self {
+        if score >= 1_000_000 {
+            Self::High
+        } else if score >= 100_000 {
+            Self::Med
+        } else {
+            Self::Low
+        }
+    }
+}
+
+impl std::fmt::Display for GardenBlast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::High => "high",
             Self::Med => "med",
             Self::Low => "low",
-        }
+        })
     }
 }
 
@@ -79,13 +94,21 @@ pub(crate) struct GardenTask {
     pub(crate) detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) area: Option<String>,
-    pub(crate) blast: GardenBlast,
     pub(crate) blast_score: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) handles: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) files: Vec<String>,
     pub(crate) hints: GardenHints,
+}
+
+impl GardenTask {
+    /// Derive the blast level from the raw score. Kept as a method so the
+    /// score stays the single source of truth; no way to construct a task
+    /// where `blast` and `blast_score` disagree.
+    pub(crate) fn blast(&self) -> GardenBlast {
+        GardenBlast::from_score(self.blast_score)
+    }
 }
 
 #[derive(Serialize)]
@@ -116,9 +139,9 @@ impl GardenOutput {
                 w,
                 "{:>2}. [{:<5}] {}{area}   blast={}",
                 idx + 1,
-                task.category.short(),
+                task.category,
                 task.title,
-                task.blast.short(),
+                task.blast(),
             )?;
             if !task.detail.is_empty() {
                 writeln!(w, "             {}", task.detail)?;
@@ -221,7 +244,7 @@ fn collect_fix_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
         if diag.severity != Severity::Error {
             continue;
         }
-        let area_name = diag.file.as_deref().map_or("(root)", area_of).to_string();
+        let area_name = area_of_diagnostic(diag).to_string();
         match diag.code {
             DiagnosticCode::E001 => by_area_e001.entry(area_name).or_default().push(diag),
             DiagnosticCode::E002 => by_area_e002.entry(area_name).or_default().push(diag),
@@ -246,7 +269,6 @@ fn collect_fix_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("{count} broken ref{}", plural(count)),
             detail: first,
             area: Some(area.clone()),
-            blast: GardenBlast::High,
             blast_score: 1_000_000 + (count as u64).saturating_mul(10),
             handles: Vec::new(),
             files,
@@ -278,7 +300,6 @@ fn collect_fix_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("{count} undischarged obligation{}", plural(count)),
             detail,
             area: Some(area.clone()),
-            blast: GardenBlast::High,
             blast_score: 1_000_000 + (count as u64).saturating_mul(10),
             files: Vec::new(),
             handles,
@@ -297,7 +318,7 @@ fn collect_tidy_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
         if diag.code != DiagnosticCode::S001 {
             continue;
         }
-        let area = diag.file.as_deref().map_or("(root)", area_of).to_string();
+        let area = area_of_diagnostic(diag).to_string();
         if let Some(handle) =
             orphan_handle_from_evidence(diag).or_else(|| extract_handle_from_message(&diag.message))
         {
@@ -328,7 +349,6 @@ fn collect_tidy_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("{count} orphaned label{}", plural(count)),
             detail,
             area: Some(area.clone()),
-            blast: GardenBlast::Med,
             blast_score: 100_000 + count as u64,
             handles,
             files: Vec::new(),
@@ -353,7 +373,6 @@ fn collect_link_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("island: {} files, 0 cross-links", area.files),
             detail: "nothing inside this area references work elsewhere, and nothing elsewhere references it".to_string(),
             area: Some(area.name.clone()),
-            blast: GardenBlast::Low,
             blast_score: 10_000 + area.files as u64,
             handles: Vec::new(),
             files: Vec::new(),
@@ -372,7 +391,7 @@ fn collect_meta_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
         if diag.code != DiagnosticCode::W003 {
             continue;
         }
-        let area = diag.file.as_deref().map_or("(root)", area_of).to_string();
+        let area = area_of_diagnostic(diag).to_string();
         *by_area.entry(area).or_insert(0) += 1;
     }
     for (area, count) in by_area {
@@ -381,7 +400,6 @@ fn collect_meta_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("{count} file{} missing frontmatter", plural(count)),
             detail: "files have no `status:` field and no inferred lifecycle".to_string(),
             area: Some(area.clone()),
-            blast: GardenBlast::Low,
             blast_score: 1_000 + count as u64,
             handles: Vec::new(),
             files: Vec::new(),
@@ -462,7 +480,6 @@ fn collect_stale_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             ),
             detail,
             area: Some(area.clone()),
-            blast: GardenBlast::Low,
             blast_score: acc.score,
             handles: Vec::new(),
             files: acc.files,
@@ -536,7 +553,6 @@ fn collect_drift_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             title: format!("{prefix} namespace spans {span} areas"),
             detail: format!("defined across {}", area_list.join(", ")),
             area: None,
-            blast: GardenBlast::Low,
             blast_score: 500 + span as u64,
             handles: Vec::new(),
             files: Vec::new(),

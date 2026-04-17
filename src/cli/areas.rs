@@ -67,7 +67,7 @@ impl AreasOutput {
 }
 
 fn format_grade(grade: AreaGrade) -> String {
-    let s = format!("[{}]", grade.as_str());
+    let s = format!("[{grade}]");
     match grade {
         AreaGrade::A => S.green.apply_to(s).to_string(),
         AreaGrade::B => S.dim.apply_to(s).to_string(),

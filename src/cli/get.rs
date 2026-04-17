@@ -34,36 +34,40 @@ pub(crate) struct BatchGetOutput {
     pub(crate) rows: Vec<BatchGetRow>,
 }
 
-pub(crate) struct BatchGetOptions {
-    pub(crate) status_only: bool,
-    pub(crate) context: bool,
+/// Projection mode for batch get output. Mutually exclusive; replaces the
+/// earlier `{status_only, context}` flag pair which allowed invalid
+/// combinations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BatchGetMode {
+    /// Identity + status + kind.
+    Default,
+    /// Identity + status only.
+    StatusOnly,
+    /// Identity + status + `purpose:`/`note:` summary.
+    Context,
 }
 
-/// Build a compact batch output for multiple handles.
 pub(crate) fn cmd_batch_get(
     graph: &DiGraph,
     node_index: &HashMap<String, NodeId>,
     snippets: SnippetIndex<'_>,
     handles: &[String],
-    options: &BatchGetOptions,
+    mode: BatchGetMode,
 ) -> BatchGetOutput {
     let rows: Vec<BatchGetRow> = handles
         .iter()
         .map(|requested| match lookup_handle(node_index, requested) {
             Some(node_id) => {
                 let handle = graph.node(node_id);
-                let summary = if options.context {
-                    snippets.summary_for(handle).map(str::to_string)
-                } else {
-                    None
-                };
-                let (kind, file) = if options.status_only {
-                    (None, None)
-                } else {
-                    (
+                let summary = (mode == BatchGetMode::Context)
+                    .then(|| snippets.summary_for(handle).map(str::to_string))
+                    .flatten();
+                let (kind, file) = match mode {
+                    BatchGetMode::StatusOnly => (None, None),
+                    _ => (
                         Some(handle.kind.as_str().to_string()),
                         handle.file_path.as_ref().map(ToString::to_string),
-                    )
+                    ),
                 };
                 BatchGetRow {
                     handle: handle.id.clone(),
@@ -92,11 +96,7 @@ pub(crate) fn cmd_batch_get(
 }
 
 impl BatchGetOutput {
-    pub(crate) fn print_human(
-        &self,
-        w: &mut dyn Write,
-        options: &BatchGetOptions,
-    ) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, mode: BatchGetMode) -> std::io::Result<()> {
         let width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
         for row in &self.rows {
             if row.not_found {
@@ -104,24 +104,28 @@ impl BatchGetOutput {
                 continue;
             }
             let status = row.status.as_deref().unwrap_or("—");
-            if options.status_only {
-                writeln!(w, "{:<width$}  {status}", row.handle, width = width)?;
-            } else if options.context {
-                let summary = row.summary.as_deref().unwrap_or("");
-                writeln!(
-                    w,
-                    "{:<width$}  {status:<10}  {summary}",
-                    row.handle,
-                    width = width,
-                )?;
-            } else {
-                let kind = row.kind.as_deref().unwrap_or("?");
-                writeln!(
-                    w,
-                    "{:<width$}  {status:<10}  {kind}",
-                    row.handle,
-                    width = width,
-                )?;
+            match mode {
+                BatchGetMode::StatusOnly => {
+                    writeln!(w, "{:<width$}  {status}", row.handle, width = width)?;
+                }
+                BatchGetMode::Context => {
+                    let summary = row.summary.as_deref().unwrap_or("");
+                    writeln!(
+                        w,
+                        "{:<width$}  {status:<10}  {summary}",
+                        row.handle,
+                        width = width,
+                    )?;
+                }
+                BatchGetMode::Default => {
+                    let kind = row.kind.as_deref().unwrap_or("?");
+                    writeln!(
+                        w,
+                        "{:<width$}  {status:<10}  {kind}",
+                        row.handle,
+                        width = width,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -739,10 +743,7 @@ mod tests {
             &node_index,
             snippets,
             &handles,
-            &BatchGetOptions {
-                status_only: false,
-                context: false,
-            },
+            BatchGetMode::Default,
         );
 
         assert_eq!(output.rows.len(), 3);
@@ -770,10 +771,7 @@ mod tests {
             &node_index,
             snippets,
             std::slice::from_ref(&"a.md".to_string()),
-            &BatchGetOptions {
-                status_only: true,
-                context: false,
-            },
+            BatchGetMode::StatusOnly,
         );
 
         assert_eq!(output.rows[0].status.as_deref(), Some("draft"));
@@ -794,13 +792,10 @@ mod tests {
             labels: &empty,
         };
         let handles = vec!["short.md".to_string(), "longer-name.md".to_string()];
-        let options = BatchGetOptions {
-            status_only: true,
-            context: false,
-        };
-        let output = cmd_batch_get(&graph, &node_index, snippets, &handles, &options);
+        let mode = BatchGetMode::StatusOnly;
+        let output = cmd_batch_get(&graph, &node_index, snippets, &handles, mode);
         let mut buf = Vec::new();
-        output.print_human(&mut buf, &options).expect("print");
+        output.print_human(&mut buf, mode).expect("print");
         let text = String::from_utf8(buf).expect("utf8");
         // Alignment on 14 (longer-name.md)
         assert!(text.contains("short.md       "));

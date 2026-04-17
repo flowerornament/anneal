@@ -20,12 +20,17 @@ use crate::obligations::{ObligationDisposition, collect_obligation_summaries};
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
 
+/// Convergence scope flag — shared across `query --scope` and `check --scope`.
+/// Selects whether commands see just the active view or the full corpus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum QueryScope {
+pub(crate) enum Scope {
     Active,
     All,
 }
+
+// Legacy name retained for callers that referenced the old identifier.
+pub(crate) use Scope as QueryScope;
 
 /// Sort order for `query handles` results.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]

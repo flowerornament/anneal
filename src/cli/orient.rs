@@ -34,14 +34,16 @@ impl OrientTier {
             Self::Downstream => "Downstream consumers (files that read this area):",
         }
     }
+}
 
-    fn short_label(self) -> &'static str {
-        match self {
+impl std::fmt::Display for OrientTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Pinned => "pinned",
             Self::EntryPoint => "entry points",
             Self::Upstream => "upstream context",
             Self::Downstream => "downstream consumers",
-        }
+        })
     }
 }
 
@@ -69,7 +71,7 @@ pub(crate) struct OrientBudget {
 #[derive(Serialize)]
 pub(crate) struct AreaSummary {
     pub(crate) name: String,
-    pub(crate) grade: String,
+    pub(crate) grade: crate::area::AreaGrade,
     pub(crate) files: usize,
     pub(crate) handles: usize,
     pub(crate) connectivity: f64,
@@ -136,11 +138,11 @@ impl OrientOutput {
             format_tokens(self.budget.limit),
         )?;
         if !self.budget.dropped_tiers.is_empty() {
-            let dropped: Vec<&str> = self
+            let dropped: Vec<String> = self
                 .budget
                 .dropped_tiers
                 .iter()
-                .map(|t| t.short_label())
+                .map(ToString::to_string)
                 .collect();
             writeln!(w, "  dropped: {}", dropped.join(", "))?;
         }
@@ -329,7 +331,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
 
     let area_summary = opts.area_health.map(|h| AreaSummary {
         name: h.name.clone(),
-        grade: h.grade.as_str().to_string(),
+        grade: h.grade,
         files: h.files,
         handles: h.handles,
         connectivity: h.connectivity,
