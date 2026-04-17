@@ -583,6 +583,41 @@ EXAMPLES:
         include_terminal: bool,
     },
 
+    /// Surface ranked maintenance tasks (the \"what's degrading?\" view)
+    #[command(
+        long_about = "\
+Surface maintenance tasks ranked by blast radius. Each task includes fix,
+context, and verify hints so agents can close the garden → orient → fix → check
+loop without human guidance.
+
+CATEGORIES:
+  fix     E001 broken refs, E002 undischarged obligations (blast=high)
+  tidy    S001 orphaned labels grouped by area (blast=med)
+  link    Areas with zero cross-links — structural islands (blast=low)
+  stale   Old files with no edges to recent work (blast=low)
+  meta    W003 files missing status/frontmatter (blast=low)
+  drift   Namespaces leaking across area boundaries (blast=low)
+
+Tasks are ranked by blast: errors first, then orphan density, island size,
+stale age × handle density, metadata gaps, and namespace dispersion. Use
+--category to filter, --area to scope, --limit to bound the list.",
+        after_help = "\
+EXAMPLES:
+  anneal garden                                # Top 10 maintenance tasks
+  anneal garden --area=compiler                # Scope to one area
+  anneal garden --category=fix                 # Only correctness blockers
+  anneal garden --json                         # Structured output for agents
+  anneal garden --limit=25                     # More tasks"
+    )]
+    Garden {
+        /// Filter to one task category
+        #[arg(long, value_enum)]
+        category: Option<cli::GardenCategory>,
+        /// Maximum number of tasks to surface (default: 10)
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+
     /// Generate a context-budgeted reading list for agents
     #[command(
         long_about = "\
@@ -1228,6 +1263,27 @@ fn run() -> anyhow::Result<()> {
                 json_style,
                 |output, w| output.print_human(w),
                 "failed to write areas output",
+            )?;
+        }
+
+        Some(Command::Garden { category, limit }) => {
+            let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
+            let areas = area::compute_areas(graph, &lattice, &diagnostics, &config.areas);
+            let output = cli::cmd_garden(&cli::GardenOptions {
+                graph,
+                diagnostics: &diagnostics,
+                areas: &areas,
+                area_filter: area_filter.as_ref(),
+                category,
+                limit,
+                config: &config,
+            });
+            emit_output(
+                &output,
+                cli_args.json,
+                json_style,
+                |w| output.print_human(w),
+                "failed to write garden output",
             )?;
         }
 

@@ -2,6 +2,7 @@ mod areas;
 mod check;
 mod diff;
 mod find;
+mod garden;
 mod get;
 mod impact;
 mod init;
@@ -26,6 +27,7 @@ pub(crate) use check::{
 };
 pub(crate) use diff::cmd_diff;
 pub(crate) use find::{FindFilters, cmd_find};
+pub(crate) use garden::{GardenCategory, GardenOptions, cmd_garden};
 pub(crate) use get::{GetHumanOutput, GetJsonMode, GetJsonOptions, build_get_json_output, cmd_get};
 pub(crate) use impact::cmd_impact;
 pub(crate) use init::cmd_init;
