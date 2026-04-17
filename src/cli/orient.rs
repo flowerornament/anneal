@@ -238,14 +238,22 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
         },
     };
 
-    let tier_scope: HashMap<NodeId, ScoredFile> =
-        score_files(graph, &file_entries, &candidate_set, opts.config);
+    // Score every file once. `tier_scope` is the subset in the candidate set;
+    // `all_scored` is the full map used for boundary (upstream/downstream) tiers
+    // so out-of-scope files carry their full-graph rank.
+    let all_scored = score_files(graph, &file_entries, opts.config);
+    let tier_scope: HashMap<NodeId, &ScoredFile> = all_scored
+        .iter()
+        .filter(|(node, _)| candidate_set.contains(node))
+        .map(|(node, score)| (*node, score))
+        .collect();
 
     let pinned_entries = collect_pinned(graph, opts.node_index, opts.config, exclude_set.as_ref());
     let pinned_ids: HashSet<NodeId> = pinned_entries.iter().map(|e| e.node).collect();
 
     let mut entry_candidates: Vec<&ScoredFile> = tier_scope
         .values()
+        .copied()
         .filter(|s| !pinned_ids.contains(&s.node))
         .collect();
     entry_candidates.sort_by(|a, b| {
@@ -257,17 +265,10 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
     let (upstream_candidates, downstream_candidates) = if opts.file.is_some() {
         (Vec::new(), Vec::new())
     } else if let Some(af) = opts.area {
-        let all_scored: HashMap<NodeId, ScoredFile> = score_files(
-            graph,
-            &file_entries,
-            &file_entries.iter().map(|fe| fe.node).collect(),
-            opts.config,
-        );
-        let in_area: HashSet<NodeId> = candidate_set.clone();
         let upstream = boundary_files(
             graph,
             &all_scored,
-            &in_area,
+            &candidate_set,
             &pinned_ids,
             af,
             &BoundaryDirection::Upstream,
@@ -275,7 +276,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
         let downstream = boundary_files(
             graph,
             &all_scored,
-            &in_area,
+            &candidate_set,
             &pinned_ids,
             af,
             &BoundaryDirection::Downstream,
@@ -416,16 +417,10 @@ const EPOCH: chrono::NaiveDate = match chrono::NaiveDate::from_ymd_opt(1970, 1, 
 fn score_files(
     graph: &DiGraph,
     all_files: &[FileEntry],
-    scope: &HashSet<NodeId>,
     config: &OrientConfig,
 ) -> HashMap<NodeId, ScoredFile> {
-    let scope_files: Vec<&FileEntry> = all_files
-        .iter()
-        .filter(|f| scope.contains(&f.node))
-        .collect();
-
     let date_range: Option<(i64, i64)> =
-        scope_files
+        all_files
             .iter()
             .filter_map(|f| f.date_ord)
             .fold(None, |acc, d| match acc {
@@ -440,8 +435,8 @@ fn score_files(
         }
     }
 
-    scope_files
-        .into_iter()
+    all_files
+        .iter()
         .map(|fe| {
             let handle = graph.node(fe.node);
             let edges = graph.outgoing(fe.node).len() + graph.incoming(fe.node).len();

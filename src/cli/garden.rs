@@ -4,9 +4,11 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::area::{AreaFilter, AreaHealth, area_of};
-use crate::checks::{Diagnostic, DiagnosticCode, Severity};
+use crate::checks::{Diagnostic, DiagnosticCode, Evidence, Severity, SuggestionEvidence};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
+
+use super::plural;
 
 // ---------------------------------------------------------------------------
 // Garden command — ranked maintenance task list
@@ -260,33 +262,28 @@ fn collect_fix_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
         let count = diags.len();
         let handles: Vec<String> = diags
             .iter()
-            .filter_map(|d| extract_obligation_handle(&d.message))
+            .filter_map(|d| extract_handle_from_message(&d.message))
             .collect();
-        let first = handles.first().cloned().unwrap_or_default();
+        let first = handles.first().cloned();
+        let detail = first.as_deref().map_or_else(
+            || "E002 obligations without a Discharges edge".to_string(),
+            |h| format!("e.g., {h} has no Discharges edge"),
+        );
+        let fix = first.as_deref().map_or_else(
+            || "add `discharges: [HANDLE]` to a resolving document's frontmatter".to_string(),
+            |h| format!("add `discharges: [{h}]` to the resolving document frontmatter"),
+        );
         out.push(GardenTask {
             category: GardenCategory::Fix,
-            title: format!("{count} undischarged obligation{}", plural(count),),
-            detail: if handles.is_empty() {
-                "E002 obligations without a Discharges edge".to_string()
-            } else {
-                format!("e.g., {first} has no Discharges edge")
-            },
+            title: format!("{count} undischarged obligation{}", plural(count)),
+            detail,
             area: Some(area.clone()),
             blast: GardenBlast::High,
             blast_score: 1_000_000 + (count as u64).saturating_mul(10),
             files: Vec::new(),
-            handles: handles.clone(),
+            handles,
             hints: GardenHints {
-                fix: if let Some(h) = handles.first() {
-                    Some(format!(
-                        "add `discharges: [{h}]` to the resolving document frontmatter",
-                    ))
-                } else {
-                    Some(
-                        "add `discharges: [HANDLE]` to a resolving document's frontmatter"
-                            .to_string(),
-                    )
-                },
+                fix: Some(fix),
                 context: Some(format!("anneal orient --area={area} --budget=20k")),
                 verify: Some(format!("anneal check --area={area} --obligations")),
             },
@@ -301,7 +298,9 @@ fn collect_tidy_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             continue;
         }
         let area = diag.file.as_deref().map_or("(root)", area_of).to_string();
-        if let Some(handle) = extract_orphan_handle(&diag.message) {
+        if let Some(handle) =
+            orphan_handle_from_evidence(diag).or_else(|| extract_handle_from_message(&diag.message))
+        {
             by_area.entry(area).or_default().push(handle);
         }
     }
@@ -552,32 +551,24 @@ fn collect_drift_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Message parsing helpers (best-effort — we avoid coupling to exact formats)
-// ---------------------------------------------------------------------------
+fn orphan_handle_from_evidence(diag: &Diagnostic) -> Option<String> {
+    match &diag.evidence {
+        Some(Evidence::Suggestion {
+            suggestion: SuggestionEvidence::OrphanedHandle { handle },
+        }) => Some(handle.clone()),
+        _ => None,
+    }
+}
 
-fn extract_orphan_handle(msg: &str) -> Option<String> {
-    // S001 messages look like: "orphaned handle OQ-64 ..."
+/// Fallback when a diagnostic has no structured evidence (e.g., E002):
+/// pluck the first uppercase-prefixed hyphenated token from the message.
+fn extract_handle_from_message(msg: &str) -> Option<String> {
     msg.split_whitespace()
         .find(|tok| tok.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && tok.contains('-'))
         .map(|s| {
             s.trim_end_matches(|c: char| !c.is_alphanumeric())
                 .to_string()
         })
-}
-
-fn extract_obligation_handle(msg: &str) -> Option<String> {
-    // E002 messages look like: "undischarged obligation COMP-OQ-1 ..."
-    msg.split_whitespace()
-        .find(|tok| tok.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && tok.contains('-'))
-        .map(|s| {
-            s.trim_end_matches(|c: char| !c.is_alphanumeric())
-                .to_string()
-        })
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]
