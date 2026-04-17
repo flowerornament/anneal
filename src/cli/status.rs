@@ -188,6 +188,7 @@ impl StatusOutput {
         } else {
             &S.green
         };
+        let outstanding = self.outstanding_obligations();
         write!(
             w,
             " {}  {} error{}, {} warning{}",
@@ -198,11 +199,6 @@ impl StatusOutput {
             plural(self.diagnostics.warnings),
         )?;
         if self.obligations.total > 0 {
-            let outstanding = self
-                .obligations
-                .total
-                .saturating_sub(self.obligations.discharged)
-                .saturating_sub(self.obligations.mooted);
             write!(
                 w,
                 ", {}/{} obligations discharged",
@@ -266,12 +262,6 @@ impl StatusOutput {
             }
         }
 
-        // -- Next steps — cross-reference hints --
-        let outstanding = self
-            .obligations
-            .total
-            .saturating_sub(self.obligations.discharged)
-            .saturating_sub(self.obligations.mooted);
         let has_hints = self.diagnostics.errors > 0 || outstanding > 0 || self.suggestion_total > 0;
         if has_hints {
             writeln!(w)?;
@@ -300,6 +290,13 @@ impl StatusOutput {
         }
 
         Ok(())
+    }
+
+    fn outstanding_obligations(&self) -> usize {
+        self.obligations
+            .total
+            .saturating_sub(self.obligations.discharged)
+            .saturating_sub(self.obligations.mooted)
     }
 
     /// Set convergence after construction (caller computes from snapshot history).

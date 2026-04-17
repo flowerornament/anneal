@@ -121,13 +121,11 @@ impl CheckOutput {
                     S.dim.apply_to("anneal explain obligation <handle>"),
                 )?;
             }
-            if self.errors > 0 || self.suggestions > 0 {
-                writeln!(
-                    w,
-                    "For ranked maintenance tasks: {}",
-                    S.dim.apply_to("anneal garden"),
-                )?;
-            }
+            writeln!(
+                w,
+                "For ranked maintenance tasks: {}",
+                S.dim.apply_to("anneal garden"),
+            )?;
         }
         Ok(())
     }

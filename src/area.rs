@@ -31,6 +31,11 @@ impl AreaGrade {
             Self::D => "D",
         }
     }
+
+    /// Whether this grade indicates an area that needs attention.
+    pub(crate) fn is_degraded(self) -> bool {
+        matches!(self, Self::C | Self::D)
+    }
 }
 
 /// Health profile for a single area (directory-level grouping).
