@@ -62,6 +62,8 @@ pub(crate) struct Handle {
     pub(crate) file_path: Option<Utf8PathBuf>,
     /// Resolved file date: `updated:` > `date:` frontmatter > filename `YYYY-MM-DD` prefix.
     pub(crate) date: Option<chrono::NaiveDate>,
+    /// Source-file size in bytes. Only populated for `HandleKind::File`.
+    pub(crate) size_bytes: Option<u32>,
     /// Additional metadata extracted from frontmatter.
     pub(crate) metadata: HandleMetadata,
 }
@@ -79,6 +81,7 @@ impl Handle {
         path: Utf8PathBuf,
         status: Option<String>,
         date: Option<chrono::NaiveDate>,
+        size_bytes: Option<u32>,
         metadata: HandleMetadata,
     ) -> Self {
         Self {
@@ -87,6 +90,7 @@ impl Handle {
             kind: HandleKind::File(path),
             status,
             date,
+            size_bytes,
             metadata,
         }
     }
@@ -99,6 +103,7 @@ impl Handle {
             status: None,
             file_path: Some(file_path),
             date: None,
+            size_bytes: None,
             metadata: HandleMetadata::default(),
         }
     }
@@ -111,6 +116,7 @@ impl Handle {
             status: None,
             file_path,
             date: None,
+            size_bytes: None,
             metadata: HandleMetadata::default(),
         }
     }
@@ -128,6 +134,7 @@ impl Handle {
             status,
             file_path: None,
             date: None,
+            size_bytes: None,
             metadata: HandleMetadata::default(),
         }
     }
@@ -140,6 +147,7 @@ impl Handle {
             status: None,
             file_path,
             date: None,
+            size_bytes: None,
             metadata: HandleMetadata::default(),
         }
     }
@@ -191,6 +199,7 @@ impl Handle {
             Utf8PathBuf::from(id),
             status.map(String::from),
             None,
+            None,
             HandleMetadata::default(),
         )
     }
@@ -204,6 +213,7 @@ impl Handle {
             Utf8PathBuf::from(id),
             status.map(String::from),
             Some(date),
+            None,
             HandleMetadata::default(),
         )
     }

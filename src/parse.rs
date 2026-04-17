@@ -1131,6 +1131,7 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             relative.clone(),
             status.clone(),
             file_date,
+            Some(u32::try_from(content.len()).unwrap_or(u32::MAX)),
             metadata.clone(),
         ));
         assert_eq!(
