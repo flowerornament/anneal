@@ -76,6 +76,7 @@ CORE CONCEPTS:
 
 START HERE:
 
+  anneal prime                Print the full agent skill briefing (arrival handoff)
   anneal areas                Per-area health profiles — the \"what exists here?\" view
   anneal orient --budget=50k  Token-budgeted reading list (agent-oriented)
   anneal garden               Ranked maintenance tasks with fix/context/verify hints
@@ -599,6 +600,26 @@ EXAMPLES:
     )]
     Obligations,
 
+    /// Print the agent skill briefing (first moves, command map, agent rules)
+    #[command(
+        long_about = "\
+Print the anneal skill briefing — the same guidance the agent skill loader
+would inject into a session that has the anneal skill installed.
+
+Useful for:
+  - Onboarding a fresh agent that doesn't have the skill preloaded
+  - Recovering context after a compaction or session restart
+  - Reading the current command map and agent rules for this version
+
+The content is baked into the binary at build time (include_str!) so the
+printed text always matches the skill shipped with this release.",
+        after_help = "\
+EXAMPLES:
+  anneal prime                    # Print the briefing to stdout
+  anneal prime | less             # Paginate"
+    )]
+    Prime,
+
     /// Show per-area health profiles
     #[command(
         long_about = "\
@@ -833,8 +854,37 @@ fn main() {
     }
 }
 
+/// The agent skill briefing, baked into the binary at build time so
+/// `anneal prime` output never drifts from skills/anneal/SKILL.md.
+const SKILL_MARKDOWN: &str = include_str!("../skills/anneal/SKILL.md");
+
+/// Return the SKILL.md body with its YAML frontmatter stripped. The
+/// frontmatter is metadata for the skill loader, not useful as terminal
+/// output. Leading blank lines are also trimmed.
+fn skill_briefing_body(markdown: &str) -> &str {
+    let trimmed = markdown.trim_start_matches(['\u{feff}']);
+    let Some(rest) = trimmed.strip_prefix("---\n") else {
+        return trimmed;
+    };
+    let Some(end) = rest.find("\n---\n") else {
+        return trimmed;
+    };
+    rest[end + "\n---\n".len()..].trim_start_matches('\n')
+}
+
 fn run() -> anyhow::Result<()> {
     let cli_args = Cli::parse();
+
+    // `anneal prime` is pure output — no graph, no config, no disk I/O.
+    // Handle it before any expensive loading so onboarding stays instant.
+    if matches!(cli_args.command, Some(Command::Prime)) {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        lock.write_all(skill_briefing_body(SKILL_MARKDOWN).as_bytes())
+            .context("failed to write skill briefing")?;
+        return Ok(());
+    }
+
     let json_style = if cli_args.pretty {
         cli::JsonStyle::Pretty
     } else {
@@ -1374,6 +1424,12 @@ fn run() -> anyhow::Result<()> {
             )?;
         }
 
+        Some(Command::Prime) => {
+            // Handled in the fast-path at the top of run(); this arm is
+            // unreachable in practice but keeps the match exhaustive.
+            unreachable!("`prime` is handled before graph construction");
+        }
+
         Some(Command::Areas {
             sort,
             include_terminal,
@@ -1630,6 +1686,43 @@ mod tests {
         } else {
             panic!("expected Get");
         }
+    }
+
+    #[test]
+    fn cli_prime_parses_with_no_args() {
+        let cli = Cli::try_parse_from(["anneal", "prime"]).expect("parse");
+        assert!(matches!(cli.command, Some(Command::Prime)));
+    }
+
+    #[test]
+    fn skill_briefing_strips_yaml_frontmatter() {
+        let markdown = "---\nname: anneal\ndescription: test\n---\n\n# Anneal\n\nBody text.";
+        let body = skill_briefing_body(markdown);
+        assert_eq!(body, "# Anneal\n\nBody text.");
+    }
+
+    #[test]
+    fn skill_briefing_handles_missing_frontmatter() {
+        let markdown = "# Anneal\n\nNo frontmatter here.";
+        assert_eq!(skill_briefing_body(markdown), markdown);
+    }
+
+    #[test]
+    fn skill_briefing_handles_unterminated_frontmatter() {
+        let markdown = "---\nname: incomplete\nno closer ever shows up";
+        // Degraded gracefully: return the raw text rather than an empty string.
+        assert_eq!(skill_briefing_body(markdown), markdown);
+    }
+
+    #[test]
+    fn skill_briefing_content_matches_shipped_file() {
+        // The embedded SKILL.md content should retain recognizable anchors
+        // from the source file so a broken include_str! path is caught at test.
+        let body = skill_briefing_body(SKILL_MARKDOWN);
+        assert!(body.contains("# Anneal"), "missing top heading: {body:.80}");
+        assert!(body.contains("## First Moves"));
+        assert!(body.contains("## Agent Rules"));
+        assert!(!body.starts_with("---"), "frontmatter should be stripped");
     }
 
     #[test]

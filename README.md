@@ -602,6 +602,17 @@ anneal init --dry-run    # Preview without writing
 
 Infers active/terminal partition, label namespaces, and frontmatter field mappings. Pipeline ordering and linear namespaces require manual tuning.
 
+### `anneal prime`
+
+Print the agent skill briefing — first moves, command map, agent rules — baked into the binary at build time from `skills/anneal/SKILL.md`. One source of truth; the printed text always matches the skill shipped with the release.
+
+```bash
+anneal prime             # Full briefing to stdout
+anneal prime | less      # Paginate
+```
+
+Use this for onboarding a fresh agent that doesn't have the anneal skill preloaded, or for recovering context after a session restart.
+
 ## Configuration
 
 `anneal.toml` at the corpus root. Optional — `anneal` works without it (existence lattice mode: reference checking only).
@@ -744,8 +755,8 @@ Use JSON for compact facts and jq-filtered summaries rather than dumping full st
 
 ```bash
 anneal status --json --compact | jq '.convergence'
-anneal check --active-only --json | jq '.summary'
-anneal check --active-only --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
+anneal check --scope=active --json | jq '.summary'
+anneal check --scope=active --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
 anneal find ADR --json | jq '._meta'
 anneal map --json | jq '{nodes, edges, by_kind}'
 ```
@@ -773,13 +784,18 @@ src/
   parse.rs        Frontmatter + markdown scanning
   extraction.rs   Typed reference extraction
   resolve.rs      Handle resolution across namespaces
+  identity.rs     Stable diagnostic / suggestion IDs
   lattice.rs      Convergence lattice, freshness
   config.rs       anneal.toml parsing
   checks.rs       Check rules + suggestion rules
   impact.rs       Reverse graph traversal
-  area.rs         Per-area health computation + grading
+  obligations.rs  Linear namespace obligation tracking
+  area.rs         Per-area health + AreaFilter + TemporalFilter
   snapshot.rs     JSONL history, convergence summary
-  cli.rs          Commands + output formatting
+  analysis.rs     Shared analysis context + artifact derivation
+  query.rs        Structural query surface (handles/edges/diagnostics/…)
+  explain.rs      Provenance for diagnostics/impact/convergence/obligations
+  cli/            Per-command modules (one file per subcommand)
   style.rs        Terminal styling via console crate
   main.rs         Entry point + CLI dispatch
 ```

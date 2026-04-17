@@ -13,6 +13,8 @@ Use `anneal` to orient in a markdown knowledge corpus, recover relevant context 
 
 Use `anneal help <command>` for exact flags and edge cases. Do not guess the CLI from memory.
 
+If you arrive at a session without this skill preloaded, run `anneal prime` to print the full briefing from the installed binary — it stays in sync with the shipped version.
+
 ## Scope
 
 Use this skill for knowledge-corpus structure, health, impact, and validation.
@@ -62,7 +64,7 @@ anneal status --json --compact
 anneal check --scope=active
 ```
 
-Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use `orient` to generate a tiered, token-budgeted reading list (pinned → area entry points → upstream context → downstream consumers). Use `orient --file=X` as the upstream complement to `impact`: what does this file build on? Use `status --json --compact` when you need a machine-readable dashboard. Use plain-text `check --active-only` for default health checks.
+Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use `orient` to generate a tiered, token-budgeted reading list (pinned → area entry points → upstream context → downstream consumers). Use `orient --file=X` as the upstream complement to `impact`: what does this file build on? Use `status --json --compact` when you need a machine-readable dashboard. Use plain-text `check --scope=active` for default health checks.
 
 ### Garden (maintenance)
 
