@@ -140,6 +140,7 @@ pub(crate) fn cmd_init(
         impact: crate::config::ImpactConfig::default(),
         areas: crate::config::AreasConfig::default(),
         temporal: crate::config::TemporalConfig::default(),
+        orient: crate::config::OrientConfig::default(),
     };
 
     let config_path = root.join("anneal.toml");

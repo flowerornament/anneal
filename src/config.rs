@@ -128,6 +128,40 @@ impl Default for TemporalConfig {
     }
 }
 
+/// Configuration for the `anneal orient` command.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct OrientConfig {
+    /// Weight applied to incoming+outgoing edge count in the score.
+    pub(crate) edge_weight: f64,
+    /// Weight applied to the label count contributed by the file.
+    pub(crate) label_weight: f64,
+    /// Weight applied to the normalized recency bonus (0.0–1.0).
+    pub(crate) recency_weight: f64,
+    /// Default token budget when `--budget` is omitted. Examples: "50k", "100k".
+    pub(crate) budget: String,
+    /// Traversal depth for `--file` upstream walks and cross-area tiers.
+    pub(crate) depth: u32,
+    /// Files always included first (pinned context).
+    pub(crate) pin: Vec<String>,
+    /// Files never included (glob or plain name, noise for agents).
+    pub(crate) exclude: Vec<String>,
+}
+
+impl Default for OrientConfig {
+    fn default() -> Self {
+        Self {
+            edge_weight: 1.0,
+            label_weight: 1.0,
+            recency_weight: 0.5,
+            budget: "50k".to_string(),
+            depth: 3,
+            pin: Vec::new(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
 /// Top-level configuration from `anneal.toml`.
 ///
 /// An absent `anneal.toml` is a valid coloring (zero-config case, KB-P3).
@@ -188,6 +222,8 @@ pub(crate) struct AnnealConfig {
     pub(crate) areas: AreasConfig,
     /// Temporal features configuration.
     pub(crate) temporal: TemporalConfig,
+    /// Orient command configuration.
+    pub(crate) orient: OrientConfig,
 }
 
 /// Where derived history should be stored.

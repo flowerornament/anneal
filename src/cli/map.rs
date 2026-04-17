@@ -120,7 +120,7 @@ struct TextRenderOutput {
 ///
 /// When `area` is set, out-of-area nodes are included as boundary leaves but
 /// never expanded — the "area-local handles plus boundary" semantics.
-fn around_subgraph(
+pub(super) fn around_subgraph(
     graph: &DiGraph,
     start: NodeId,
     depth: u32,

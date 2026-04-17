@@ -583,6 +583,49 @@ EXAMPLES:
         include_terminal: bool,
     },
 
+    /// Generate a context-budgeted reading list for agents
+    #[command(
+        long_about = "\
+Generate a context-budgeted reading list for agents. Answers: \"I'm about to work
+on this area/file — what should I read, within a token budget?\"
+
+Files are ranked by a score combining edge centrality, label density, recency,
+and status. Results are grouped in tiers: pinned files first, then area entry
+points, then upstream context, then downstream consumers. Tiers fill greedily
+until the budget is exhausted.
+
+TIERS:
+  pinned       Files listed in [orient] pin — always first
+  entry        Files in the target area (or --file upstream walk)
+  upstream     Files outside the area that the area depends on
+  downstream   Files outside the area that depend on the area
+
+TOKENS are estimated as file size in bytes / 4. This is a soft cap.
+
+Use --file=X to orient around one file's dependency ancestry instead of an area
+(the upstream complement to `impact`). Use --paths-only to pipe the reading
+list into another tool.",
+        after_help = "\
+EXAMPLES:
+  anneal orient                              # Reading list for the whole corpus
+  anneal orient --area=compiler              # Reading list for one area
+  anneal orient --area=compiler --budget=30k # Tighter budget
+  anneal orient --file=impl-plan.md          # Upstream ancestry of one file
+  anneal orient --paths-only                 # Bare paths (for piping)
+  anneal orient --json                       # Structured output for agents"
+    )]
+    Orient {
+        /// Token budget (e.g., 50k, 100k)
+        #[arg(long)]
+        budget: Option<String>,
+        /// Emit bare file paths, one per line (for piping to other tools)
+        #[arg(long, conflicts_with = "file")]
+        paths_only: bool,
+        /// Scope to the upstream dependency ancestry of a specific file
+        #[arg(long)]
+        file: Option<String>,
+    },
+
     /// Query structural facts derived from the current corpus
     #[command(long_about = "\
 Run bounded structural queries over anneal's current in-memory graph and
@@ -1186,6 +1229,46 @@ fn run() -> anyhow::Result<()> {
                 |output, w| output.print_human(w),
                 "failed to write areas output",
             )?;
+        }
+
+        Some(Command::Orient {
+            ref budget,
+            paths_only,
+            ref file,
+        }) => {
+            let budget_str = budget.as_deref().unwrap_or(&config.orient.budget);
+            let budget_tokens = cli::parse_budget(budget_str)?;
+            let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
+            let areas_summary = area::compute_areas(graph, &lattice, &diagnostics, &config.areas);
+            let area_health = area_filter
+                .as_ref()
+                .and_then(|af| areas_summary.iter().find(|a| a.name == af.name()));
+            let output = cli::cmd_orient(&cli::OrientOptions {
+                graph,
+                node_index: &node_index,
+                config: &config.orient,
+                area: area_filter.as_ref(),
+                file: file.as_deref(),
+                budget_tokens,
+                snippets,
+                area_health,
+            })?;
+
+            if paths_only {
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                output
+                    .print_paths_only(&mut lock)
+                    .context("failed to write orient paths")?;
+            } else {
+                emit_output(
+                    &output,
+                    cli_args.json,
+                    json_style,
+                    |w| output.print_human(w),
+                    "failed to write orient output",
+                )?;
+            }
         }
 
         Some(Command::Query { ref command }) => {
