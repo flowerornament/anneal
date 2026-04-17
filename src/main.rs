@@ -205,7 +205,9 @@ EXAMPLES:
   anneal check --suggest          # Show only structural suggestions
   anneal check --stale            # Show only staleness warnings (W001)
   anneal check --obligations      # Show only obligation diagnostics (E002/I002)
-  anneal check --active-only      # Explicitly keep active-only filtering
+  anneal check --scope=active     # Explicit active view (same as --active-only)
+  anneal check --scope=all        # Full corpus including terminal files
+  anneal check --active-only      # Deprecated alias for --scope=active
   anneal check --json             # Bounded machine-readable summary
   anneal check --json --diagnostics --limit 50
                                   # Include 50 diagnostics in JSON
@@ -224,11 +226,14 @@ EXAMPLES:
         /// Show only obligation diagnostics (E002 undischarged, I002 multi-discharge)
         #[arg(long)]
         obligations: bool,
+        /// Convergence scope (active | all) — unified with `query --scope`
+        #[arg(long, value_enum, conflicts_with_all = ["active_only", "include_terminal"])]
+        scope: Option<ConvergenceScope>,
         /// Skip diagnostics sourced from terminal (settled) files
-        #[arg(long, conflicts_with = "include_terminal")]
+        #[arg(long, conflicts_with_all = ["include_terminal", "scope"])]
         active_only: bool,
         /// Include diagnostics sourced from terminal (settled) files
-        #[arg(long, conflicts_with = "active_only")]
+        #[arg(long, conflicts_with_all = ["active_only", "scope"])]
         include_terminal: bool,
         /// Scope diagnostics to a single file path
         #[arg(long)]
@@ -273,11 +278,16 @@ EXAMPLES:
   anneal get OQ-64 --refs        # Bounded incoming/outgoing references
   anneal get --json OQ-64        # Summary JSON with counts and samples
   anneal get --json OQ-64 --trace --full
-                                 # Full adjacency in JSON"
+                                 # Full adjacency in JSON
+  anneal get arch.md impl.md spec.md
+                                 # Batch: compact one-line-per-handle output
+  anneal get arch.md impl.md --status-only
+                                 # Just identity + status"
     )]
     Get {
-        /// Handle identity to look up (e.g., OQ-64, formal-model/v17.md)
-        handle: String,
+        /// Handle identities to look up (one = detail view; many = compact batch)
+        #[arg(required = true, num_args = 1..)]
+        handle: Vec<String>,
         /// Include bounded incoming/outgoing reference lists
         #[arg(long)]
         refs: bool,
@@ -290,6 +300,9 @@ EXAMPLES:
         /// Include full edge lists without sampling
         #[arg(long)]
         full: bool,
+        /// Show only identity and status (batch mode)
+        #[arg(long)]
+        status_only: bool,
         /// Maximum edges per direction in bounded output
         #[arg(long)]
         limit_edges: Option<usize>,
@@ -430,6 +443,10 @@ EXAMPLES:
   anneal map --around=OQ-64 --depth=1           # 1-hop neighborhood of OQ-64
   anneal map --around=FM-17 --depth=1           # Immediate neighbors only
   anneal map --concern=formal-model             # Concern group subgraph
+  anneal map --by-area                          # Area-level topology
+  anneal map --by-area --min-edges=10           # Suppress weak cross-area links
+  anneal map --by-area --render=dot | dot -Tpng -o areas.png
+                                                # Area-level PNG
   anneal map --json                             # JSON graph summary
   anneal map --json --nodes --limit-nodes 50    # Structured node sample"
     )]
@@ -452,6 +469,15 @@ EXAMPLES:
         /// BFS depth for --around (default: 1)
         #[arg(long, default_value = "1")]
         depth: u32,
+        /// Render the area-level topology graph instead of the handle graph
+        #[arg(long, conflicts_with_all = ["around", "concern"])]
+        by_area: bool,
+        /// With --by-area, only show cross-area edges with at least N connections
+        #[arg(long, default_value = "1", requires = "by_area")]
+        min_edges: usize,
+        /// With --by-area, include terminal handles in the rollup
+        #[arg(long, requires = "by_area")]
+        include_terminal: bool,
         /// Include a structured node list in JSON output
         #[arg(long)]
         nodes: bool,
@@ -537,12 +563,17 @@ EXAMPLES:
   anneal diff --days=30           # Coarser session-resume view
   anneal diff HEAD~3              # Structural diff against 3 commits ago
   anneal diff main                # Structural diff against main branch
+  anneal diff --by-area           # Per-area trend table
+  anneal diff --by-area --days=7  # Per-area trend over the last week
   anneal diff --json              # JSON delta output"
     )]
     Diff {
         /// Compare against snapshot from N days ago
         #[arg(long)]
         days: Option<u32>,
+        /// Show per-area convergence deltas instead of the corpus-wide view
+        #[arg(long)]
+        by_area: bool,
         /// Git ref to compare against (e.g., HEAD~3, main, abc123)
         #[arg(value_name = "REF")]
         git_ref: Option<String>,
@@ -741,6 +772,16 @@ enum FindSort {
     Date,
 }
 
+/// Shared convergence scope flag — used by `check` and mirrors the `--scope`
+/// enum on `query` subcommands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ConvergenceScope {
+    /// Active view only — skip handles sourced from terminal files.
+    Active,
+    /// Full visible corpus, including terminal files.
+    All,
+}
+
 fn emit_output<T: Serialize>(
     output: &T,
     json: bool,
@@ -917,6 +958,7 @@ fn run() -> anyhow::Result<()> {
             suggest,
             stale,
             obligations,
+            scope,
             active_only,
             include_terminal,
             file,
@@ -926,10 +968,16 @@ fn run() -> anyhow::Result<()> {
             full,
             limit,
         }) => {
-            let active_only = if include_terminal {
-                false
-            } else {
-                active_only || config.check.default_filter.as_deref() == Some("active-only")
+            let active_only = match scope {
+                Some(ConvergenceScope::Active) => true,
+                Some(ConvergenceScope::All) => false,
+                None => {
+                    if include_terminal {
+                        false
+                    } else {
+                        active_only || config.check.default_filter.as_deref() == Some("active-only")
+                    }
+                }
             };
 
             let mut diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
@@ -1003,9 +1051,32 @@ fn run() -> anyhow::Result<()> {
             context,
             trace,
             full,
+            status_only,
             limit_edges,
         }) => {
-            if let Some(data) = cli::cmd_get(graph, &node_index, snippets, handle) {
+            if handle.len() > 1 || status_only {
+                let options = cli::BatchGetOptions {
+                    status_only,
+                    context,
+                };
+                let output = cli::cmd_batch_get(graph, &node_index, snippets, handle, &options);
+                if cli_args.json {
+                    cli::print_json(&output, json_style)?;
+                } else {
+                    let stdout = std::io::stdout();
+                    let mut lock = stdout.lock();
+                    output
+                        .print_human(&mut lock, &options)
+                        .context("failed to write get output")?;
+                }
+                if output.has_missing() {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+
+            let handle_one = handle.first().expect("clap requires at least one handle");
+            if let Some(data) = cli::cmd_get(graph, &node_index, snippets, handle_one) {
                 let limit_edges = limit_edges.unwrap_or(10);
                 if cli_args.json {
                     let output = cli::build_get_json_output(
@@ -1037,7 +1108,7 @@ fn run() -> anyhow::Result<()> {
                         .context("failed to write get output")?;
                 }
             } else {
-                eprintln!("handle not found: {handle}");
+                eprintln!("handle not found: {handle_one}");
                 std::process::exit(1);
             }
         }
@@ -1129,12 +1200,35 @@ fn run() -> anyhow::Result<()> {
             upstream,
             downstream,
             depth,
+            by_area,
+            min_edges,
+            include_terminal,
             nodes,
             edges,
             full,
             limit_nodes,
             limit_edges,
         }) => {
+            if by_area {
+                let render = render.unwrap_or(MapRender::Text);
+                let output = cli::cmd_map_by_area(&cli::MapByAreaOptions {
+                    graph,
+                    render,
+                    min_edges,
+                    area: area_filter.as_ref(),
+                    include_terminal,
+                    lattice: &lattice,
+                });
+                emit_output(
+                    &output,
+                    cli_args.json,
+                    json_style,
+                    |w| output.print_human(w),
+                    "failed to write map output",
+                )?;
+                return Ok(());
+            }
+
             let has_focus = around.is_some()
                 || concern.is_some()
                 || area_filter.is_some()
@@ -1233,9 +1327,31 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::Diff { days, ref git_ref }) => {
+        Some(Command::Diff {
+            days,
+            by_area,
+            ref git_ref,
+        }) => {
             let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
             let current_snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
+
+            if by_area {
+                let output = cli::cmd_diff_by_area(
+                    &root,
+                    &state_config,
+                    &current_snap,
+                    days,
+                    git_ref.as_deref(),
+                )?;
+                emit_full_output(
+                    output,
+                    cli_args.json,
+                    json_style,
+                    |output, w| output.print_human(w),
+                    "failed to write diff output",
+                )?;
+                return Ok(());
+            }
 
             let output = cli::cmd_diff(
                 &root,
@@ -1489,6 +1605,60 @@ mod tests {
     fn cli_recent_and_since_conflict() {
         let result = Cli::try_parse_from(["anneal", "--recent", "--since=14d", "find", "OQ"]);
         assert!(result.is_err(), "--recent and --since should conflict");
+    }
+
+    #[test]
+    fn cli_check_parses_scope_active() {
+        let cli = Cli::try_parse_from(["anneal", "check", "--scope=active"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Check {
+                scope: Some(ConvergenceScope::Active),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_check_scope_conflicts_with_booleans() {
+        let err = Cli::try_parse_from(["anneal", "check", "--scope=active", "--include-terminal"]);
+        assert!(
+            err.is_err(),
+            "--scope and --include-terminal should conflict"
+        );
+    }
+
+    #[test]
+    fn cli_get_accepts_multiple_handles() {
+        let cli = Cli::try_parse_from(["anneal", "get", "a.md", "b.md", "c.md"]).expect("parse");
+        if let Some(Command::Get { handle, .. }) = cli.command {
+            assert_eq!(handle.len(), 3);
+        } else {
+            panic!("expected Get");
+        }
+    }
+
+    #[test]
+    fn cli_map_by_area_parses() {
+        let cli =
+            Cli::try_parse_from(["anneal", "map", "--by-area", "--min-edges=5"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Map {
+                by_area: true,
+                min_edges: 5,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_diff_by_area_parses() {
+        let cli = Cli::try_parse_from(["anneal", "diff", "--by-area"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Diff { by_area: true, .. })
+        ));
     }
 
     #[test]

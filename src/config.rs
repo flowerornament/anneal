@@ -270,6 +270,9 @@ pub(crate) struct ConvergenceConfig {
     pub(crate) terminal: Vec<String>,
     /// Optional ordering for pipeline flow analysis.
     pub(crate) ordering: Vec<String>,
+    /// Optional human-readable descriptions per status (status -> description).
+    /// Used by `explain convergence` to annotate the pipeline display.
+    pub(crate) descriptions: HashMap<String, String>,
 }
 
 /// Configuration for handle namespace recognition.
