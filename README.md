@@ -353,7 +353,7 @@ Files are ranked by a score combining edge centrality, label density, recency, a
 | `--paths-only` | Emit bare file paths (for piping to other tools)                 |
 | `--json`       | Structured output with scores, tiers, and budget math            |
 
-The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, default budget, traversal depth, a `pin` list (always-first files), and an `exclude` glob list.
+The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, `recency_half_life_days` (default 90 — how fast old files decay out of the recency bonus), default budget, traversal depth, a `pin` list (always-first files), and an `exclude` glob list. Recency is an exponential decay anchored at today; a file exactly `recency_half_life_days` old contributes half the bonus of a file touched today.
 
 ### `anneal garden`
 

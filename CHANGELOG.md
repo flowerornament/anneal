@@ -2,6 +2,20 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.9.1 - 2026-04-17
+
+### Changed
+
+- Orient's recency ranking now uses exponential decay anchored at today with a configurable half-life, replacing the linear normalization across the corpus's full date span. The old formula measured "recency" as a file's position between the oldest and newest dates in the corpus, so a single ancient reference could recalibrate every score — and a file's recency barely nudged its rank because the `recency_weight` default was 0.5 against edge/label scores that routinely hit 10+. The new formula gives a file dated today a full bonus, halves every `recency_half_life_days` (default 90) of age, and defaults `recency_weight = 5.0` so recent work actually shows up in rankings. Agents asking "orient me on this area" now get recently-touched files floating to the top instead of being dragged down by highly-linked historical aliases.
+
+### Added
+
+- `[orient] recency_half_life_days` config field (default 90). Shorter half-life for corpora where only the last few weeks matter; longer for slower-moving reference material.
+
+### Fixed
+
+- Release workflow now opts into the Node.js 24 runtime early (via `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`) so breakage in `actions/upload-artifact@v4` / `actions/download-artifact@v4` under Node 24 surfaces on routine pushes rather than on a release day. GitHub forces the switch on 2026-06-02.
+
 ## 0.9.0 - 2026-04-17
 
 ### Added

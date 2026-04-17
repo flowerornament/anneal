@@ -428,14 +428,21 @@ fn score_files(
     all_files: &[FileEntry],
     config: &OrientConfig,
 ) -> HashMap<NodeId, ScoredFile> {
-    let date_range: Option<(i64, i64)> =
-        all_files
-            .iter()
-            .filter_map(|f| f.date_ord)
-            .fold(None, |acc, d| match acc {
-                None => Some((d, d)),
-                Some((mn, mx)) => Some((mn.min(d), mx.max(d))),
-            });
+    score_files_at(graph, all_files, config, chrono::Local::now().date_naive())
+}
+
+/// Score files relative to an anchor date. Separated from `score_files` so
+/// tests can pin a reproducible "today" without clock flake.
+fn score_files_at(
+    graph: &DiGraph,
+    all_files: &[FileEntry],
+    config: &OrientConfig,
+    today: chrono::NaiveDate,
+) -> HashMap<NodeId, ScoredFile> {
+    let today_ord = (today - EPOCH).num_days();
+    // Guard against a zero/unset half-life: treat as one day so the decay
+    // is sharp but defined, rather than dividing by zero.
+    let half_life = f64::from(config.recency_half_life_days.max(1));
 
     let mut label_counts: HashMap<&str, usize> = HashMap::new();
     for (_, h) in graph.nodes() {
@@ -454,15 +461,14 @@ fn score_files(
             let label_count = label_counts.get(fe.path.as_str()).copied().unwrap_or(0);
             #[allow(clippy::cast_precision_loss)]
             let label_score = label_count as f64 * config.label_weight;
-            let recency = match (fe.date_ord, date_range) {
-                (Some(d), Some((mn, mx))) => {
-                    let span = (mx - mn).max(1);
-                    #[allow(clippy::cast_precision_loss)]
-                    let bonus = (d - mn) as f64 / span as f64;
-                    bonus * config.recency_weight
-                }
-                _ => 0.0,
-            };
+            let recency = fe.date_ord.map_or(0.0, |d| {
+                // Files dated in the future pin to bonus=1.0 rather than
+                // overshooting; ancient files decay toward zero.
+                #[allow(clippy::cast_precision_loss)]
+                let age_days = (today_ord - d).max(0) as f64;
+                let bonus = 0.5_f64.powf(age_days / half_life);
+                bonus * config.recency_weight
+            });
             let status_bonus = status_bonus(handle);
             let score = edge_score + label_score + recency + status_bonus;
             (
@@ -661,6 +667,129 @@ mod tests {
     fn parse_budget_rejects_garbage() {
         assert!(parse_budget("abc").is_err());
         assert!(parse_budget("xyzk").is_err());
+    }
+
+    fn file_with_date(path: &str, status: Option<&str>, date: chrono::NaiveDate) -> Handle {
+        Handle::file(
+            camino::Utf8PathBuf::from(path),
+            status.map(String::from),
+            Some(date),
+            Some(4000),
+            HandleMetadata::default(),
+        )
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn recency_decays_exponentially_with_age() {
+        // Two otherwise identical files differing only in date.
+        let mut graph = DiGraph::new();
+        let fresh_id = graph.add_node(file_with_date("fresh.md", Some("draft"), date(2026, 4, 17)));
+        let old_id = graph.add_node(file_with_date("old.md", Some("draft"), date(2024, 4, 17)));
+
+        let config = OrientConfig::default();
+        let files = vec![
+            FileEntry {
+                node: fresh_id,
+                path: "fresh.md".to_string(),
+                date_ord: Some((date(2026, 4, 17) - EPOCH).num_days()),
+            },
+            FileEntry {
+                node: old_id,
+                path: "old.md".to_string(),
+                date_ord: Some((date(2024, 4, 17) - EPOCH).num_days()),
+            },
+        ];
+
+        let scores = score_files_at(&graph, &files, &config, date(2026, 4, 17));
+        let fresh_score = scores.get(&fresh_id).unwrap().score;
+        let old_score = scores.get(&old_id).unwrap().score;
+
+        // Fresh = today: full recency weight (5.0) added.
+        // Old = ~730 days = 8.1 half-lives out at half_life=90, so ~5.0 * 0.0035.
+        // With default status_bonus 2.0 for both and no edges/labels,
+        // fresh ≈ 2.0 + 5.0 = 7.0, old ≈ 2.0 + 0.018 ≈ 2.02.
+        assert!(
+            (fresh_score - old_score) > 4.0,
+            "fresh ({fresh_score}) should outscore old ({old_score}) by ≈5 under default config",
+        );
+    }
+
+    #[test]
+    fn recency_respects_half_life_config() {
+        let mut graph = DiGraph::new();
+        let day_old = graph.add_node(file_with_date(
+            "day-old.md",
+            Some("draft"),
+            date(2026, 4, 16),
+        ));
+        let year_old = graph.add_node(file_with_date(
+            "year-old.md",
+            Some("draft"),
+            date(2025, 4, 17),
+        ));
+
+        let files = vec![
+            FileEntry {
+                node: day_old,
+                path: "day-old.md".to_string(),
+                date_ord: Some((date(2026, 4, 16) - EPOCH).num_days()),
+            },
+            FileEntry {
+                node: year_old,
+                path: "year-old.md".to_string(),
+                date_ord: Some((date(2025, 4, 17) - EPOCH).num_days()),
+            },
+        ];
+
+        // Short half-life: a year-old file is almost fully decayed.
+        let short = OrientConfig {
+            recency_half_life_days: 30,
+            ..OrientConfig::default()
+        };
+        let short_scores = score_files_at(&graph, &files, &short, date(2026, 4, 17));
+        let short_gap =
+            short_scores.get(&day_old).unwrap().score - short_scores.get(&year_old).unwrap().score;
+
+        // Long half-life: a year-old file is still half-ish there, gap narrows.
+        let long = OrientConfig {
+            recency_half_life_days: 730,
+            ..OrientConfig::default()
+        };
+        let long_scores = score_files_at(&graph, &files, &long, date(2026, 4, 17));
+        let long_gap =
+            long_scores.get(&day_old).unwrap().score - long_scores.get(&year_old).unwrap().score;
+
+        assert!(
+            short_gap > long_gap,
+            "shorter half-life should widen the recent-vs-stale gap \
+             (short={short_gap:.3}, long={long_gap:.3})",
+        );
+    }
+
+    #[test]
+    fn recency_zero_for_undated_files() {
+        let mut graph = DiGraph::new();
+        let undated = graph.add_node(Handle::file(
+            camino::Utf8PathBuf::from("undated.md"),
+            Some("draft".to_string()),
+            None,
+            Some(4000),
+            HandleMetadata::default(),
+        ));
+
+        let files = vec![FileEntry {
+            node: undated,
+            path: "undated.md".to_string(),
+            date_ord: None,
+        }];
+        let config = OrientConfig::default();
+        let scores = score_files_at(&graph, &files, &config, date(2026, 4, 17));
+        // Status bonus only: 2.0 (draft), no edges, no labels, no recency.
+        assert!((scores.get(&undated).unwrap().score - 2.0).abs() < 0.001);
     }
 
     #[test]
