@@ -455,12 +455,28 @@ fn score_files_at(
         .iter()
         .map(|fe| {
             let handle = graph.node(fe.node);
-            let edges = graph.outgoing(fe.node).len() + graph.incoming(fe.node).len();
+            // Incoming edges (others → this file) are the real centrality
+            // signal for an orientation target: "people cite this." Outgoing
+            // edges say "this file consumes a lot", which is weaker evidence
+            // that it's a good reading entry point (e.g. long reference
+            // tables). Weight incoming twice as heavily.
+            //
+            // Log-scaling keeps hubs from monopolizing the top. A file with
+            // 100 citations isn't 10× more useful to read first than one
+            // with 10 — diminishing returns kick in fast. This lets
+            // recency, status, and other signals actually influence order
+            // in mature corpora where a few files have accumulated
+            // hundreds of back-references.
             #[allow(clippy::cast_precision_loss)]
-            let edge_score = edges as f64 * config.edge_weight;
+            let incoming_log = (graph.incoming(fe.node).len() as f64 + 1.0).ln();
+            #[allow(clippy::cast_precision_loss)]
+            let outgoing_log = (graph.outgoing(fe.node).len() as f64 + 1.0).ln();
+            let edge_score = (incoming_log * 2.0 + outgoing_log) * config.edge_weight;
+
             let label_count = label_counts.get(fe.path.as_str()).copied().unwrap_or(0);
             #[allow(clippy::cast_precision_loss)]
-            let label_score = label_count as f64 * config.label_weight;
+            let label_score = (label_count as f64 + 1.0).ln() * config.label_weight;
+
             let recency = fe.date_ord.map_or(0.0, |d| {
                 // Files dated in the future pin to bonus=1.0 rather than
                 // overshooting; ancient files decay toward zero.

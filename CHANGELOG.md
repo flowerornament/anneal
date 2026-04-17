@@ -2,6 +2,12 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.9.2 - 2026-04-17
+
+### Changed
+
+- Orient's edge and label scoring now uses `ln(count + 1)` instead of raw counts, and weights incoming edges twice as heavily as outgoing. The two changes fix a common failure mode where a recently-authored, status=active spec lost to an older label-anchor file whose lead came entirely from sheer inbound mass. Log-scaling gives diminishing returns: a file cited 100× isn't 10× more useful as an entry point than one cited 10×, and treating it as such drowned out recency and status bonuses. Weighting inbound higher than outbound separates "others cite this" (real centrality) from "this cites a lot" (long reference tables — weaker signal). A file authored recently and marked active now outranks an older reference-catalog doc in the same area, matching how a reader would actually want to approach the material.
+
 ## 0.9.1 - 2026-04-17
 
 ### Changed
