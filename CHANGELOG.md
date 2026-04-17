@@ -2,11 +2,12 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## 0.9.0 - 2026-04-16
+## 0.9.0 - 2026-04-17
 
 ### Added
 
-- `anneal orient`: context-budgeted reading list for agents. Scores every file by edge centrality, label density, recency, and status, then tiers the result as pinned → area entry points → upstream context → downstream consumers. Tiers fill greedily until the token budget is exhausted. Flags: `--area=X`, `--budget=Nk`, `--file=X`, `--paths-only`, `--json`. The `--file=X` variant walks upstream dependencies — the before-edit complement to `impact`.
+- `anneal prime`: print the agent skill briefing (first moves, command map, agent rules). The content is baked into the binary via `include_str!("../skills/anneal/SKILL.md")` at build time, so the skill file and the `prime` output stay in sync from a single source. Runs without building the graph or reading config — pure output, always succeeds. Intended for onboarding a fresh agent that doesn't have the skill preloaded, or recovering context after a session restart.
+- `anneal orient`: context-budgeted reading list for agents. Scores every file by edge centrality, label density, recency, and status, then tiers the result as pinned → area entry points → upstream context → downstream consumers. Tiers fill greedily until the token budget is exhausted. Flags: `--area=X`, `--budget=Nk`, `--file=X`, `--paths-only`, `--json`. The `--file=X` variant walks upstream dependencies — the before-edit complement to `impact`. `--file` and `--paths-only` compose.
 - `anneal garden`: ranked maintenance tasks with `fix:`, `context:`, and `verify:` hints so an agent can close the garden → orient → fix → check loop without guidance. Six categories: `fix` (E001/E002), `tidy` (S001 orphans), `link` (island areas), `stale` (old files), `meta` (W003), `drift` (cross-area namespace dispersion). Flags: `--area=X`, `--category=X`, `--limit=N`, `--json`.
 - `anneal map --by-area`: area-level topology graph. Nodes are areas, edges are aggregated cross-area connection counts, islands are listed separately. Flags: `--by-area`, `--min-edges=N`, `--include-terminal`, `--render=text|dot`.
 - `anneal diff --by-area`: per-area convergence deltas with Δ errors, Δ orphans, Δ connectivity, and a trend column (improving/holding/degrading/new/removed). Grade changes render as `[B→C]` inline. Falls back to a current-state view when no snapshot history exists.
@@ -24,18 +25,25 @@ All notable changes to `anneal` are documented in this file.
 ### Changed
 
 - Snapshot schema gained an optional per-area summary (files, handles, errors, orphans, cross-links, connectivity, grade). Old snapshots without this field still parse.
-- Command count in docs and spec went from 12 to 14 (`orient`, `garden`).
+- Command count in docs and spec went from 12 to 15 (`orient`, `garden`, `prime`).
 - README, skill file, and `--help` examples reorganized around three explicit loops: orientation, narrowing, gardening. Command output cross-references (e.g. `status` → `check`, `areas` → `garden`, `check` → `explain obligation`) so an agent following hints reaches the right next command without consulting documentation.
 
 ### Fixed
 
 - `AreaGrade` now round-trips through serde, so per-area snapshot data keeps its type-safe shape across the write/read boundary.
 - `compute_areas` no longer treats out-of-corpus edge targets as implicitly belonging to the `(root)` area.
+- `[orient] exclude` honors the same split-by-glob-sigil grammar as the top-level `exclude`. Plain entries like `"archive"` now exclude the whole top-level directory; glob patterns like `"**/CHANGELOG.md"` match path-wise. Previously orient ran every entry through `Glob::new` unconditionally, so plain names silently matched nothing.
+- `orient --file=<path> --paths-only` now composes. An earlier clap constraint prevented these flags from being combined even though they're the natural combination for piping a single-file upstream reading list into another tool.
 
 ### Internal
 
-- Extracted `area_of_handle` in `src/area.rs` as the single source of "what area does this handle belong to?". Replaces open-coded dispatch in `compute_areas` and `cmd_map_by_area`.
+- Extracted `area_of_handle` and `area_of_diagnostic` in `src/area.rs` as the single source of "what area does this handle/diagnostic belong to?". Replaces open-coded dispatch in `compute_areas`, `cmd_map_by_area`, and three `garden` collector paths.
+- Promoted `parse::build_exclude_sets` to `pub(crate)` so `orient` reuses the same dir-name-vs-glob split that the graph walker uses. New `ExcludeMatcher` in `orient.rs` wraps it.
 - Extracted `resolve_previous_snapshot` helper shared by `cmd_diff` and `cmd_diff_by_area` — one place owns the three-mode reference resolution (git_ref → days → latest).
+- Unified `QueryScope` and the former `ConvergenceScope` into a single `query::Scope` enum; `check --scope` and `query --scope` now share one type.
+- `MapOutput.format` and `MapByAreaOutput.format` moved from `String` to the typed `MapRender` enum; garden's `blast` is derived from `blast_score` via `GardenBlast::from_score` so the two fields can no longer drift.
+- `BatchGetOptions { status_only, context }` (which accepted `{true, true}`) replaced by `BatchGetMode { Default, StatusOnly, Context }`.
+- `Display` impls on `GardenCategory`, `GardenBlast`, `OrientTier`, `AreaTrend` collapse four drifting naming conventions (`short`, `short_label`, `as_str`) into one.
 - Handle constructors gained `size_bytes: Option<u32>` (populated during `build_graph`); consumed by `orient`'s token budget estimation.
 - Structured `Evidence::Suggestion::OrphanedHandle` replaces regex message parsing in `garden`'s S001 extraction.
 - `around_subgraph` in `src/cli/map.rs` is now `pub(super)` so `orient --file=X` can share the same BFS infrastructure as `map --around`.

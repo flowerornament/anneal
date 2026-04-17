@@ -445,7 +445,7 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ### §12 Commands
 
-Fourteen commands. Each supports `--json` for agent consumption [KB-P8].
+Fifteen commands. Each supports `--json` for agent consumption [KB-P8] (except `prime`, which always prints the skill briefing markdown).
 
 #### §12.1 `anneal check` [KB-C1]
 
@@ -704,6 +704,17 @@ anneal garden --limit=25           # more tasks
 
 Categories: `fix` (E001 broken refs, E002 undischarged obligations), `tidy` (S001 orphans grouped by area), `link` (island areas), `stale` (old files), `meta` (missing frontmatter), `drift` (namespaces leaking across areas). Tasks are ranked errors-first, then by orphan density, island size, stale age × handle density, metadata gaps, and namespace dispersion. Garden complements `check`: `check` is a pass/fail correctness gate, `garden` is a maintenance advisor.
 
+#### §12.15 `anneal prime` [KB-C15]
+
+Print the agent skill briefing — first moves, command map, agent rules — baked into the binary at build time from `skills/anneal/SKILL.md` via `include_str!`. One source of truth; the printed text always matches the skill shipped with the release. No graph is built, no config is read: `prime` is pure output and always succeeds.
+
+```
+anneal prime              # full briefing to stdout
+anneal prime | less       # paginate
+```
+
+Intended for agents arriving in a session without the skill preloaded, and for recovering context after a session restart or compaction. The YAML frontmatter from SKILL.md is stripped; markdown body prints verbatim.
+
 ---
 
 ## Part V: Configuration
@@ -776,7 +787,7 @@ error = 90
 
 ```
                      ┌───────────────────────┐
-                     │   CLI (14 commands)    │  §12
+                     │   CLI (15 commands)    │  §12
                      └───────────┬───────────┘
                                  │ query / explain
                      ┌───────────┴───────────┐
@@ -913,7 +924,7 @@ trait CommandOutput: Serialize {
 
 **[KB-OQ3] Semantic search.** `anneal find` uses identity-substring matching in v1. A future semantic or vector backend (for example, local GGUF following QMD's approach) could broaden discovery without changing the command surface.
 
-**[KB-OQ4] MCP server.** Wrapping the fourteen commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
+**[KB-OQ4] MCP server.** Wrapping the fifteen commands as MCP tools. Thin wrapper — same graph, same queries, different transport. Build once the CLI proves useful.
 
 **[KB-OQ5] Non-markdown corpora.** Source code comments, TOML/YAML config, structured data could contain handles. Current decision: markdown primary, with optional comment scanning for configured patterns.
 
