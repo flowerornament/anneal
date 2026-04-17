@@ -136,8 +136,14 @@ pub(crate) struct OrientConfig {
     pub(crate) edge_weight: f64,
     /// Weight applied to the label count contributed by the file.
     pub(crate) label_weight: f64,
-    /// Weight applied to the normalized recency bonus (0.0–1.0).
+    /// Weight applied to the recency bonus (0.0–1.0). The bonus decays
+    /// exponentially with file age using `recency_half_life_days`.
     pub(crate) recency_weight: f64,
+    /// Half-life of the recency bonus in days. A file this many days old
+    /// contributes half as much recency as a file touched today. The default
+    /// of 90 days treats the last quarter as "fresh" while letting older
+    /// material fall off smoothly.
+    pub(crate) recency_half_life_days: u32,
     /// Default token budget when `--budget` is omitted. Examples: "50k", "100k".
     pub(crate) budget: String,
     /// Traversal depth for `--file` upstream walks and cross-area tiers.
@@ -153,7 +159,11 @@ impl Default for OrientConfig {
         Self {
             edge_weight: 1.0,
             label_weight: 1.0,
-            recency_weight: 0.5,
+            // Up from 0.5 in 0.9.0. With exponential decay now anchored at
+            // today, a recent file's bonus is meaningful against edge and
+            // label scores instead of being rounding error against them.
+            recency_weight: 5.0,
+            recency_half_life_days: 90,
             budget: "50k".to_string(),
             depth: 3,
             pin: Vec::new(),
