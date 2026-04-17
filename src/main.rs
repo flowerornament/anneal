@@ -705,7 +705,7 @@ EXAMPLES:
         #[arg(long)]
         budget: Option<String>,
         /// Emit bare file paths, one per line (for piping to other tools)
-        #[arg(long, conflicts_with = "file")]
+        #[arg(long)]
         paths_only: bool,
         /// Scope to the upstream dependency ancestry of a specific file
         #[arg(long)]
