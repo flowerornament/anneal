@@ -107,7 +107,7 @@ fn lookup_canonical_label(node_index: &HashMap<String, NodeId>, handle: &str) ->
 pub(super) fn dedup_edges(
     edges: &[Edge],
     other_node: impl Fn(&Edge) -> NodeId,
-    direction: &str,
+    direction: get::EdgeDirection,
     graph: &DiGraph,
 ) -> Vec<get::EdgeSummary> {
     let mut seen = BTreeSet::new();
@@ -120,7 +120,7 @@ pub(super) fn dedup_edges(
                 Some(get::EdgeSummary {
                     kind,
                     target,
-                    direction: direction.to_string(),
+                    direction,
                 })
             } else {
                 None
@@ -212,6 +212,20 @@ pub(crate) fn print_json<T: Serialize>(output: &T, style: JsonStyle) -> anyhow::
 /// Returns "s" for plural, "" for singular.
 pub(super) fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
+}
+
+/// Char-boundary-safe slice truncation. Returns the original when `max`
+/// is at or past the string end; otherwise slices at the largest char
+/// boundary `≤ max`.
+pub(super) fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]

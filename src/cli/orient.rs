@@ -8,9 +8,10 @@ use crate::area::{AreaFilter, AreaHealth};
 use crate::config::OrientConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind, NodeId};
+use crate::output::{Line, OutputStyle, Printer, Tone, Toned};
 
 use super::map::{TraversalDirection, around_subgraph};
-use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle};
+use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle, truncate};
 
 // ---------------------------------------------------------------------------
 // Orient command
@@ -26,12 +27,17 @@ pub(crate) enum OrientTier {
 }
 
 impl OrientTier {
-    fn human_heading(self) -> &'static str {
+    /// Heading + dim caption for each tier. The caption carries the
+    /// ranking rationale without competing with the tier title.
+    fn section(self) -> (&'static str, &'static str) {
         match self {
-            Self::Pinned => "Read first (pinned):",
-            Self::EntryPoint => "Read next (area entry points, ranked by centrality × recency):",
-            Self::Upstream => "Upstream context (files these read):",
-            Self::Downstream => "Downstream consumers (files that read this area):",
+            Self::Pinned => ("Read first", "pinned files"),
+            Self::EntryPoint => (
+                "Read next",
+                "area entry points, ranked by centrality × recency",
+            ),
+            Self::Upstream => ("Upstream context", "files these read"),
+            Self::Downstream => ("Downstream consumers", "files that read this area"),
         }
     }
 }
@@ -95,19 +101,35 @@ pub(crate) struct OrientOutput {
 }
 
 impl OrientOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(sum) = &self.area_summary {
-            writeln!(
-                w,
-                "{}/ [{}] — {} files, {} handles, conn={:.1}",
-                sum.name, sum.grade, sum.files, sum.handles, sum.connectivity,
+            p.line(
+                &Line::new()
+                    .heading(format!("{}/", sum.name))
+                    .text("  ")
+                    .toned(sum.grade.tone(), format!("[{}]", sum.grade))
+                    .text("  ")
+                    .count(sum.files)
+                    .text(" files · ")
+                    .count(sum.handles)
+                    .text(" handles · conn ")
+                    .float(sum.connectivity, 1),
             )?;
-            writeln!(w)?;
+            p.blank()?;
         } else if let Some(path) = &self.scope_file {
-            writeln!(w, "Reading list for {path}")?;
-            writeln!(w)?;
+            p.line(&Line::new().heading("Reading list for ").path(path.clone()))?;
+            p.blank()?;
         }
 
+        // Column width for the path column in each tier's rows.
+        let path_col = self.path_column_width();
+
+        let mut first_section = true;
         for tier in [
             OrientTier::Pinned,
             OrientTier::EntryPoint,
@@ -119,24 +141,39 @@ impl OrientOutput {
             if in_tier.is_empty() {
                 continue;
             }
-            writeln!(w, "{}", tier.human_heading())?;
-            for e in in_tier {
-                let tokens = format!("[{}]", format_tokens(e.tokens));
-                let purpose = e
-                    .purpose
-                    .as_deref()
-                    .map_or(String::new(), |p| format!("\n      {p}"));
-                writeln!(w, "  {:<70} {tokens}{purpose}", e.path)?;
+            if !first_section {
+                p.blank()?;
             }
-            writeln!(w)?;
+            first_section = false;
+            let (title, caption) = tier.section();
+            p.heading(title, Some(in_tier.len()))?;
+            p.caption(caption)?;
+            for e in in_tier {
+                let tokens_str = format_tokens(e.tokens);
+                let path_width = console::measure_text_width(&e.path);
+                let pad = path_col.saturating_sub(path_width) + 2;
+                let row = Line::new()
+                    .path(e.path.clone())
+                    .pad(pad)
+                    .toned(Tone::Number, tokens_str);
+                p.line(&row)?;
+                if let Some(purpose) = e.purpose.as_deref()
+                    && !purpose.is_empty()
+                {
+                    p.line_at(6, &Line::new().dim(truncate(purpose, 120).to_string()))?;
+                }
+            }
         }
 
-        writeln!(
-            w,
-            "Budget: {} / {} used",
-            format_tokens(self.budget.used),
-            format_tokens(self.budget.limit),
-        )?;
+        p.blank()?;
+        // Budget line. `N / M tokens used` with dropped tiers callout if any.
+        let budget_line = Line::new()
+            .heading("Budget ")
+            .toned(Tone::Number, format_tokens(self.budget.used))
+            .dim(" / ")
+            .toned(Tone::Number, format_tokens(self.budget.limit))
+            .dim(" tokens used");
+        p.line(&budget_line)?;
         if !self.budget.dropped_tiers.is_empty() {
             let dropped: Vec<String> = self
                 .budget
@@ -144,23 +181,41 @@ impl OrientOutput {
                 .iter()
                 .map(ToString::to_string)
                 .collect();
-            writeln!(w, "  dropped: {}", dropped.join(", "))?;
+            p.line_at(4, &Line::new().dim("dropped: ").warning(dropped.join(", ")))?;
         }
 
         if let Some(sum) = &self.area_summary
             && (sum.errors > 0 || sum.orphans > 0)
         {
-            writeln!(w)?;
-            writeln!(w, "Active issues:")?;
+            p.blank()?;
+            p.heading("Active issues", None)?;
             if sum.errors > 0 {
-                writeln!(w, "  {} errors in {}/", sum.errors, sum.name)?;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .count(sum.errors)
+                        .text(" errors in ")
+                        .path(format!("{}/", sum.name)),
+                )?;
             }
             if sum.orphans > 0 {
-                writeln!(w, "  {} orphaned labels", sum.orphans)?;
+                p.line_at(4, &Line::new().count(sum.orphans).text(" orphaned labels"))?;
             }
         }
 
         Ok(())
+    }
+
+    /// Widest file path across all entries (for column alignment). Capped at
+    /// 64 to keep the token column visible on narrow terminals.
+    fn path_column_width(&self) -> usize {
+        let max = self
+            .entries
+            .iter()
+            .map(|e| console::measure_text_width(&e.path))
+            .max()
+            .unwrap_or(0);
+        max.min(64)
     }
 
     pub(crate) fn print_paths_only(&self, w: &mut dyn Write) -> std::io::Result<()> {

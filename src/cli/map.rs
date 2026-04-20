@@ -8,6 +8,7 @@ use crate::config::AnnealConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::lattice::Lattice;
+use crate::output::{Line, OutputStyle, Printer, Tone};
 
 use super::{DetailLevel, OutputMeta, lookup_handle};
 
@@ -60,39 +61,71 @@ pub(crate) struct MapOutput {
 }
 
 impl MapOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
-            write!(w, "{content}")?;
+            // Rendered content (text/dot format) — pass through verbatim so
+            // `dot -Tpng` still works, but frame expansion hint via Printer.
+            for line in content.lines() {
+                p.raw_line(line)?;
+            }
             if !self.meta.expand.is_empty() {
-                writeln!(w)?;
-                writeln!(w, "Expand with: {}", self.meta.expand.join(", "))?;
+                p.blank()?;
+                let rows: Vec<(&str, &str)> = self
+                    .meta
+                    .expand
+                    .iter()
+                    .map(|s| (s.as_str(), "expand"))
+                    .collect();
+                p.hints(&rows)?;
             }
             return Ok(());
         }
 
-        writeln!(
-            w,
-            "Graph summary: {} nodes, {} edges",
-            self.nodes, self.edges
-        )?;
+        p.heading("Graph summary", None)?;
+        p.tally(&[(self.nodes, "nodes"), (self.edges, "edges")])?;
+
         if !self.by_kind.is_empty() {
-            writeln!(w, "By kind:")?;
+            p.blank()?;
+            p.heading("By kind", Some(self.by_kind.len()))?;
             for count in &self.by_kind {
-                writeln!(w, "  {} {}", count.count, count.kind)?;
+                render_count_row(p, count.count, &count.kind)?;
             }
         }
         if !self.top_namespaces.is_empty() {
-            writeln!(w, "Top namespaces:")?;
+            p.blank()?;
+            p.heading("Top namespaces", Some(self.top_namespaces.len()))?;
             for ns in &self.top_namespaces {
-                writeln!(w, "  {} {}", ns.count, ns.namespace)?;
+                render_count_row(p, ns.count, &ns.namespace)?;
             }
         }
         if !self.meta.expand.is_empty() {
-            writeln!(w)?;
-            writeln!(w, "Expand with: {}", self.meta.expand.join(", "))?;
+            p.blank()?;
+            let rows: Vec<(&str, &str)> = self
+                .meta
+                .expand
+                .iter()
+                .map(|s| (s.as_str(), "expand"))
+                .collect();
+            p.hints(&rows)?;
         }
         Ok(())
     }
+}
+
+fn render_count_row<W: Write>(
+    p: &mut Printer<W>,
+    count: usize,
+    label: &str,
+) -> std::io::Result<()> {
+    p.line_at(
+        4,
+        &Line::new().count(count).text("  ").dim(label.to_string()),
+    )
 }
 
 /// Maximum number of edges to display in map text rendering.
@@ -944,31 +977,51 @@ pub(crate) struct MapByAreaOutput {
 }
 
 impl MapByAreaOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
-            write!(w, "{content}")?;
+            for line in content.lines() {
+                p.raw_line(line)?;
+            }
             return Ok(());
         }
 
+        p.heading("Cross-area edges", Some(self.edges.len()))?;
         if self.edges.is_empty() {
-            writeln!(w, "No cross-area edges found.")?;
+            p.line_at(4, &Line::new().dim("(none)"))?;
         } else {
-            let width = self.edges.iter().map(|e| e.source.len()).max().unwrap_or(0);
+            let width = self
+                .edges
+                .iter()
+                .map(|e| console::measure_text_width(&e.source))
+                .max()
+                .unwrap_or(0);
             for edge in &self.edges {
-                writeln!(
-                    w,
-                    "{:<width$} ──{}──> {}",
-                    edge.source,
-                    edge.count,
-                    edge.target,
-                    width = width,
+                let pad = width.saturating_sub(console::measure_text_width(&edge.source)) + 2;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .path(edge.source.clone())
+                        .pad(pad)
+                        .dim("—")
+                        .toned(Tone::Number, edge.count.to_string())
+                        .dim("→ ")
+                        .path(edge.target.clone()),
                 )?;
             }
         }
 
         if !self.islands.is_empty() {
-            writeln!(w)?;
-            writeln!(w, "Islands: {} (0 cross-links)", self.islands.join(", "),)?;
+            p.blank()?;
+            p.heading("Islands", Some(self.islands.len()))?;
+            p.caption("areas with zero cross-links")?;
+            for island in &self.islands {
+                p.bullet(&Line::new().path(island.clone()))?;
+            }
         }
         Ok(())
     }
@@ -1756,7 +1809,9 @@ mod tests {
         });
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
+        output
+            .print_human(&mut buf, plain_style())
+            .expect("print_human");
         let text = String::from_utf8(buf).expect("utf8");
 
         assert!(text.contains("Neighborhood around LABELS.md (depth 1):"));
@@ -1765,7 +1820,9 @@ mod tests {
         assert!(text.contains("FM (20):"));
         assert!(text.contains("Focus edges for LABELS.md:"));
         assert!(text.contains("Other neighborhood edges (showing"));
-        assert!(text.contains("Expand with: --nodes, --edges, --render text --full"));
+        assert!(text.contains("--nodes"));
+        assert!(text.contains("--edges"));
+        assert!(text.contains("--render text --full"));
         assert!(
             !text.contains("OQ-30"),
             "hub summary should sample namespace members instead of dumping them all: {text}"
@@ -1872,12 +1929,16 @@ mod tests {
         });
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print");
+        output.print_human(&mut buf, plain_style()).expect("print");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
-            text.contains("compiler") && text.contains("──3──> synthesis"),
-            "expected count arrow, got: {text}"
+            text.contains("compiler") && text.contains("synthesis"),
+            "expected compiler -> synthesis edge, got: {text}"
         );
+    }
+
+    fn plain_style() -> crate::output::OutputStyle {
+        crate::output::OutputStyle::plain()
     }
 
     #[test]

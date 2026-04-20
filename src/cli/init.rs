@@ -9,6 +9,7 @@ use crate::config::{
     FrontmatterFieldMapping, HandlesConfig, SuppressConfig,
 };
 use crate::lattice::Lattice;
+use crate::output::{Line, OutputStyle, Printer};
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -27,17 +28,27 @@ pub(crate) struct InitOutput {
 const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
 
 impl InitOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
         let toml_str =
             toml::to_string_pretty(&self.config).unwrap_or_else(|e| format!("# error: {e}"));
+        let mut p = Printer::new(w, style);
         if self.written {
-            writeln!(w, "Wrote config to {}", self.path)?;
-            writeln!(w)?;
+            p.line(
+                &Line::new()
+                    .success("✓ ")
+                    .text("Wrote ")
+                    .path(self.path.clone()),
+            )?;
         } else {
-            writeln!(w, "# anneal.toml (dry run -- not written)")?;
-            writeln!(w)?;
+            p.heading("anneal.toml", None)?;
+            p.caption("dry run — not written")?;
         }
-        write!(w, "{toml_str}")?;
+        p.blank()?;
+        // TOML body is config syntax; emit raw so it parses if the user
+        // pipes it into a file.
+        for line in toml_str.lines() {
+            p.raw_line(line)?;
+        }
         Ok(())
     }
 }

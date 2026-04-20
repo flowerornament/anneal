@@ -406,34 +406,17 @@ fn diagnostic_descriptor(code: DiagnosticCode) -> DiagnosticDescriptor {
     }
 }
 
-impl Diagnostic {
-    /// Print in compiler-style format per spec section 12.1:
-    /// ```text
-    /// error[E001]: broken reference: OQ-99 not found
-    ///   -> formal-model/v17.md
-    /// ```
-    pub(crate) fn print_human(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-        use crate::style::S;
-        let (prefix, style) = match self.severity {
-            Severity::Error => ("error", &S.error),
-            Severity::Warning => ("warn", &S.warning),
-            Severity::Info => ("info", &S.info),
-            Severity::Suggestion => ("suggestion", &S.suggestion),
-        };
-        write!(
-            w,
-            "{}{}{}",
-            style.apply_to(prefix),
-            S.dim.apply_to(format_args!("[{}]", self.code)),
-            format_args!(": {}", self.message),
-        )?;
-        if let Some(ref file) = self.file {
-            write!(w, "\n  {} {file}", S.dim.apply_to("->"))?;
-            if let Some(line) = self.line {
-                write!(w, ":{line}")?;
-            }
+impl Severity {
+    /// Convert to the output module's severity so diagnostics get the
+    /// shared `Printer::diagnostic` treatment (color, code padding,
+    /// `at path:line` continuation).
+    pub(crate) fn to_output(self) -> crate::output::Severity {
+        match self {
+            Severity::Error => crate::output::Severity::Error,
+            Severity::Warning => crate::output::Severity::Warning,
+            Severity::Info => crate::output::Severity::Info,
+            Severity::Suggestion => crate::output::Severity::Suggestion,
         }
-        writeln!(w)
     }
 }
 

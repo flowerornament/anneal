@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::NodeId;
+use crate::output::{Line, OutputStyle, Printer};
 
 use super::lookup_handle;
 
@@ -59,25 +60,37 @@ impl ImpactOutput {
         self.indirect_count = self.indirect.len();
     }
 
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(w, "Directly affected (depend on this):")?;
-        if self.direct.is_empty() {
-            writeln!(w, "  (none)")?;
-        } else {
-            for id in &self.direct {
-                writeln!(w, "  {id}")?;
-            }
-        }
-        writeln!(w, "Indirectly affected (depend on the above):")?;
-        if self.indirect.is_empty() {
-            writeln!(w, "  (none)")?;
-        } else {
-            for id in &self.indirect {
-                writeln!(w, "  {id}")?;
-            }
-        }
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading("Impact", None)?;
+        p.caption(&format!("what depends on {}", self.handle))?;
+        p.blank()?;
+
+        render_section(p, "Direct", &self.direct)?;
+        p.blank()?;
+        render_section(p, "Indirect", &self.indirect)?;
         Ok(())
     }
+}
+
+fn render_section<W: Write>(
+    p: &mut Printer<W>,
+    title: &str,
+    items: &[String],
+) -> std::io::Result<()> {
+    p.heading(title, Some(items.len()))?;
+    if items.is_empty() {
+        p.line_at(4, &Line::new().dim("(none)"))?;
+    } else {
+        for id in items {
+            p.bullet(&Line::new().path(id.clone()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Compute impact analysis for a handle.
