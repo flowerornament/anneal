@@ -6,6 +6,7 @@ use camino::Utf8Path;
 use serde::Serialize;
 
 use crate::area::AreaGrade;
+use crate::output::{Line, OutputStyle, Printer, TableHeader, Tone, Toned};
 use crate::snapshot::AreaSnapshot;
 
 // ---------------------------------------------------------------------------
@@ -66,52 +67,121 @@ pub(crate) struct DiffOutput {
 }
 
 impl DiffOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if !self.has_history {
-            writeln!(w, "No snapshot history yet.")?;
-            writeln!(
-                w,
-                "Run `anneal status` to create the first snapshot, then run it again later."
-            )?;
-            writeln!(
-                w,
-                "`anneal diff` compares the current state against a previous snapshot."
-            )?;
+            p.heading("No snapshot history yet", None)?;
+            p.blank()?;
+            p.hints(&[
+                ("anneal status", "create the first snapshot"),
+                ("anneal status", "run again later to compare"),
+            ])?;
             return Ok(());
         }
-        writeln!(w, "Since {}:", self.reference)?;
-        writeln!(
-            w,
-            "  Handles: {:+} ({:+} active, {:+} terminal)",
-            self.handle_delta.created,
-            self.handle_delta.active_delta,
-            self.handle_delta.frozen_delta
-        )?;
+
+        p.heading("Diff", None)?;
+        p.caption(&format!("since {}", self.reference))?;
+        p.blank()?;
+
+        let rows = &[
+            (
+                "Handles",
+                signed_summary(
+                    &[
+                        (self.handle_delta.created, "created"),
+                        (self.handle_delta.active_delta, "active"),
+                        (self.handle_delta.frozen_delta, "terminal"),
+                    ],
+                    p.style(),
+                ),
+            ),
+            (
+                "Obligations",
+                signed_summary(
+                    &[
+                        (self.obligation_delta.outstanding_delta, "outstanding"),
+                        (self.obligation_delta.discharged_delta, "discharged"),
+                        (self.obligation_delta.mooted_delta, "mooted"),
+                    ],
+                    p.style(),
+                ),
+            ),
+            (
+                "Edges",
+                signed_summary(&[(self.edge_delta.total_delta, "total")], p.style()),
+            ),
+        ];
+        p.kv_block(rows)?;
+
         if !self.state_changes.is_empty() {
+            p.blank()?;
+            p.heading("State changes", Some(self.state_changes.len()))?;
             for sc in &self.state_changes {
-                writeln!(
-                    w,
-                    "  State: {}: {} -> {} ({:+})",
-                    sc.state, sc.previous_count, sc.current_count, sc.delta
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .toned(Tone::Heading, sc.state.clone())
+                        .text("  ")
+                        .count(sc.previous_count)
+                        .dim(" → ")
+                        .count(sc.current_count)
+                        .dim(format!("  ({delta:+})", delta = sc.delta)),
                 )?;
             }
         }
-        writeln!(
-            w,
-            "  Obligations: {:+} outstanding, {:+} discharged, {:+} mooted",
-            self.obligation_delta.outstanding_delta,
-            self.obligation_delta.discharged_delta,
-            self.obligation_delta.mooted_delta
-        )?;
-        writeln!(w, "  Edges: {:+}", self.edge_delta.total_delta)?;
-        for nd in &self.namespace_deltas {
-            writeln!(
-                w,
-                "  Namespace {}: {:+} total ({:+} open, {:+} resolved)",
-                nd.prefix, nd.total_delta, nd.open_delta, nd.resolved_delta
-            )?;
+
+        if !self.namespace_deltas.is_empty() {
+            p.blank()?;
+            p.heading("Namespaces", Some(self.namespace_deltas.len()))?;
+            for nd in &self.namespace_deltas {
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .toned(Tone::Heading, nd.prefix.clone())
+                        .text("  ")
+                        .toned(delta_tone(nd.total_delta), format!("{:+}", nd.total_delta))
+                        .text(" total, ")
+                        .toned(delta_tone(nd.open_delta), format!("{:+}", nd.open_delta))
+                        .text(" open, ")
+                        .toned(
+                            delta_tone(-nd.resolved_delta),
+                            format!("{:+}", nd.resolved_delta),
+                        )
+                        .text(" resolved"),
+                )?;
+            }
         }
+
         Ok(())
+    }
+}
+
+/// Render a comma-separated list of `+N label` pairs, coloring the sign
+/// by polarity (positive = success-ish for growth; callers interpret
+/// semantics like "more terminal is improving").
+fn signed_summary(parts: &[(i64, &str)], style: OutputStyle) -> Line {
+    let sep = format!(" {} ", style.glyph(crate::output::Glyph::Separator));
+    let mut line = Line::new();
+    for (i, (delta, label)) in parts.iter().enumerate() {
+        if i > 0 {
+            line = line.dim(sep.clone());
+        }
+        line = line
+            .toned(delta_tone(*delta), format!("{delta:+}"))
+            .text(format!(" {label}"));
+    }
+    line
+}
+
+fn delta_tone(delta: i64) -> Tone {
+    match delta {
+        0 => Tone::Dim,
+        d if d > 0 => Tone::Success,
+        _ => Tone::Warning,
     }
 }
 
@@ -400,6 +470,17 @@ impl std::fmt::Display for AreaTrend {
     }
 }
 
+impl Toned for AreaTrend {
+    fn tone(&self) -> Tone {
+        match self {
+            Self::Improving => Tone::Success,
+            Self::Holding | Self::Removed => Tone::Dim,
+            Self::Degrading => Tone::Warning,
+            Self::New => Tone::Callout,
+        }
+    }
+}
+
 /// Per-area delta between two snapshots.
 #[derive(Clone, Serialize)]
 pub(crate) struct AreaDelta {
@@ -423,39 +504,78 @@ pub(crate) struct DiffByAreaOutput {
 }
 
 impl DiffByAreaOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        if self.has_history {
-            writeln!(w, "Since {}:", self.reference)?;
-        } else {
-            writeln!(w, "No snapshot history yet — showing current area state.")?;
-        }
-        writeln!(w)?;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
 
-        writeln!(
-            w,
-            "{:<18} {:<8} {:>8} {:>9} {:>8} Trend",
-            "Area", "Grade", "Δ Err", "Δ Orphans", "Δ Conn"
-        )?;
-        let sep: String = "─".repeat(78);
-        writeln!(w, "{sep}")?;
-        for area in &self.areas {
-            let grade = match area.previous_grade {
-                Some(prev) if prev != area.grade => format!("[{prev}→{}]", area.grade),
-                _ => format!("[{}]", area.grade),
-            };
-            writeln!(
-                w,
-                "{:<18} {:<8} {:>+8} {:>+9} {:>+8.1} {}",
-                format!("{}/", area.name),
-                grade,
-                area.errors_delta,
-                area.orphans_delta,
-                area.connectivity_delta,
-                area.trend,
-            )?;
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        if self.has_history {
+            p.heading("Diff by area", Some(self.areas.len()))?;
+            p.caption(&format!("since {}", self.reference))?;
+        } else {
+            p.heading("Area snapshot", Some(self.areas.len()))?;
+            p.caption("no snapshot history yet — current state only")?;
         }
+        p.blank()?;
+
+        let headers = &[
+            TableHeader::text("Area"),
+            TableHeader::text("Grade"),
+            TableHeader::numeric("Δ Err"),
+            TableHeader::numeric("Δ Orphans"),
+            TableHeader::numeric("Δ Conn"),
+            TableHeader::text("Trend"),
+        ];
+        let rows: Vec<Vec<Line>> = self
+            .areas
+            .iter()
+            .map(|area| {
+                let grade_cell = match area.previous_grade {
+                    Some(prev) if prev != area.grade => Line::new()
+                        .toned(prev.tone(), format!("[{prev}]"))
+                        .dim(" → ")
+                        .toned(area.grade.tone(), format!("[{}]", area.grade)),
+                    _ => Line::new().toned(area.grade.tone(), format!("[{}]", area.grade)),
+                };
+                vec![
+                    Line::new().path(format!("{}/", area.name)),
+                    grade_cell,
+                    signed_cell(area.errors_delta, /* lower-is-better */ true),
+                    signed_cell(area.orphans_delta, true),
+                    signed_cell_float(area.connectivity_delta),
+                    Line::new().toned(area.trend.tone(), area.trend.to_string()),
+                ]
+            })
+            .collect();
+        p.table(headers, &rows)?;
         Ok(())
     }
+}
+
+fn signed_cell(delta: i64, lower_is_better: bool) -> Line {
+    let tone = match (delta, lower_is_better) {
+        (0, _) => Tone::Dim,
+        (d, true) if d > 0 => Tone::Warning,
+        (d, true) => {
+            let _ = d;
+            Tone::Success
+        }
+        (d, false) if d > 0 => Tone::Success,
+        _ => Tone::Warning,
+    };
+    Line::new().toned(tone, format!("{delta:+}"))
+}
+
+fn signed_cell_float(delta: f64) -> Line {
+    let tone = if delta.abs() < 0.05 {
+        Tone::Dim
+    } else if delta > 0.0 {
+        Tone::Success
+    } else {
+        Tone::Warning
+    };
+    Line::new().toned(tone, format!("{delta:+.1}"))
 }
 
 /// Classify trend from deltas using the principle: errors and orphans matter
@@ -728,16 +848,18 @@ mod tests {
         let output = diff_snapshots(&current, &previous, "last snapshot");
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
+        output
+            .print_human(&mut buf, plain_style())
+            .expect("print_human");
         let text = String::from_utf8(buf).expect("utf8");
 
         assert!(
-            text.contains("Since last snapshot:"),
-            "Expected 'Since last snapshot:' in output, got: {text}"
+            text.contains("since last snapshot"),
+            "Expected 'since last snapshot' caption, got: {text}"
         );
-        assert!(text.contains("Handles:"), "Missing Handles line");
-        assert!(text.contains("Obligations:"), "Missing Obligations line");
-        assert!(text.contains("Edges:"), "Missing Edges line");
+        assert!(text.contains("Handles"), "Missing Handles line");
+        assert!(text.contains("Obligations"), "Missing Obligations line");
+        assert!(text.contains("Edges"), "Missing Edges line");
     }
 
     #[test]
@@ -750,7 +872,9 @@ mod tests {
 
         assert!(!output.has_history);
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
+        output
+            .print_human(&mut buf, plain_style())
+            .expect("print_human");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
             text.contains("No snapshot history yet"),
@@ -902,9 +1026,13 @@ mod tests {
             }],
         };
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print");
+        output.print_human(&mut buf, plain_style()).expect("print");
         let text = String::from_utf8(buf).expect("utf8");
-        assert!(text.contains("No snapshot history"));
+        assert!(text.contains("no snapshot history"));
         assert!(text.contains("compiler"));
+    }
+
+    fn plain_style() -> crate::output::OutputStyle {
+        crate::output::OutputStyle::plain()
     }
 }

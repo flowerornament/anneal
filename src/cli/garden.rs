@@ -7,6 +7,7 @@ use crate::area::{AreaFilter, AreaHealth, area_of, area_of_diagnostic};
 use crate::checks::{Diagnostic, DiagnosticCode, Evidence, Severity, SuggestionEvidence};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
+use crate::output::{Line, OutputStyle, Printer, Tone, Toned};
 
 use super::plural;
 
@@ -111,6 +112,42 @@ impl GardenTask {
     }
 }
 
+impl GardenCategory {
+    /// Upper-case category tag, un-padded (`FIX`, `TIDY`, `LINK`, `STALE`,
+    /// `META`, `DRIFT`). Caller pads to a fixed width for alignment.
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Fix => "FIX",
+            Self::Tidy => "TIDY",
+            Self::Link => "LINK",
+            Self::Stale => "STALE",
+            Self::Meta => "META",
+            Self::Drift => "DRIFT",
+        }
+    }
+}
+
+impl Toned for GardenCategory {
+    fn tone(&self) -> Tone {
+        match self {
+            Self::Fix => Tone::Error,
+            Self::Tidy => Tone::Callout,
+            Self::Link => Tone::Warning,
+            Self::Stale | Self::Meta | Self::Drift => Tone::Dim,
+        }
+    }
+}
+
+impl Toned for GardenBlast {
+    fn tone(&self) -> Tone {
+        match self {
+            Self::High => Tone::Error,
+            Self::Med => Tone::Warning,
+            Self::Low => Tone::Dim,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct GardenOutput {
     #[serde(rename = "_meta")]
@@ -125,49 +162,81 @@ pub(crate) struct GardenOutput {
 }
 
 impl GardenOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if self.tasks.is_empty() {
-            writeln!(w, "No maintenance tasks — corpus is tidy.")?;
+            p.line(&Line::new().dim("No maintenance tasks — corpus is tidy."))?;
             return Ok(());
         }
+
+        let idx_width = self.tasks.len().to_string().len().max(1);
         for (idx, task) in self.tasks.iter().enumerate() {
-            let area = task
-                .area
-                .as_deref()
-                .map_or(String::new(), |a| format!(" in {a}/"));
-            writeln!(
-                w,
-                "{:>2}. [{:<5}] {}{area}   blast={}",
-                idx + 1,
-                task.category,
-                task.title,
-                task.blast(),
-            )?;
+            if idx > 0 {
+                p.blank()?;
+            }
+            // Header row: `N  [TAG]  title (· area)  blast`.
+            // Tag column is padded to fit the widest label (`[DRIFT]` = 7).
+            const TAG_COL_WIDTH: usize = 7;
+            let tag = format!("[{}]", task.category.tag());
+            let tag_pad = TAG_COL_WIDTH.saturating_sub(tag.len());
+            let mut header = Line::new()
+                .toned(task.category.tone(), tag)
+                .pad(tag_pad)
+                .text("  ")
+                .text(task.title.clone());
+            if let Some(area) = task.area.as_deref() {
+                header = header.dim(" · ").path(format!("{area}/"));
+            }
+            // Right-padded blast on the same line, dim-separator.
+            let blast = task.blast();
+            header = header.dim("   ").toned(blast.tone(), blast.to_string());
+            p.indexed(idx + 1, idx_width, &header)?;
+
+            // Body: detail + action triad, consistently indented to col 4.
             if !task.detail.is_empty() {
-                writeln!(w, "             {}", task.detail)?;
+                p.line_at(6, &Line::new().dim(task.detail.clone()))?;
             }
-            if let Some(fix) = &task.hints.fix {
-                writeln!(w, "             fix:     {fix}")?;
-            }
-            if let Some(ctx) = &task.hints.context {
-                writeln!(w, "             context: {ctx}")?;
-            }
-            if let Some(verify) = &task.hints.verify {
-                writeln!(w, "             verify:  {verify}")?;
-            }
+            render_hint(p, "fix", task.hints.fix.as_deref())?;
+            render_hint(p, "context", task.hints.context.as_deref())?;
+            render_hint(p, "verify", task.hints.verify.as_deref())?;
         }
+
         if self.returned < self.total {
-            writeln!(w)?;
-            writeln!(
-                w,
-                "Showing {} of {} tasks. Use --limit={} for more.",
-                self.returned,
-                self.total,
-                self.total.min(self.returned * 2),
+            p.blank()?;
+            let next_limit = self.total.min(self.returned * 2);
+            p.line(
+                &Line::new()
+                    .dim("Showing ")
+                    .count(self.returned)
+                    .dim(" of ")
+                    .count(self.total)
+                    .dim(" tasks — ")
+                    .callout(format!("--limit={next_limit}"))
+                    .dim(" for more"),
             )?;
         }
         Ok(())
     }
+}
+
+fn render_hint<W: Write>(
+    p: &mut Printer<W>,
+    label: &str,
+    body: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(body) = body else { return Ok(()) };
+    // Label column width 8 so "fix", "context", "verify" align.
+    let label_styled = format!("{label:<8}");
+    p.line_at(
+        6,
+        &Line::new()
+            .toned(Tone::Callout, label_styled)
+            .text(body.to_string()),
+    )
 }
 
 pub(crate) struct GardenOptions<'a> {

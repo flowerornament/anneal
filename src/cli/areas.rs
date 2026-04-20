@@ -2,12 +2,12 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use crate::area::{AreaGrade, AreaHealth, compute_areas};
+use crate::area::{AreaHealth, compute_areas};
 use crate::checks::Diagnostic;
 use crate::config::AreasConfig;
 use crate::graph::DiGraph;
 use crate::lattice::Lattice;
-use crate::style::S;
+use crate::output::{Line, OutputStyle, Printer, TableHeader, Toned};
 
 /// Sort order for areas output.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -30,49 +30,51 @@ pub(crate) struct AreasOutput {
 }
 
 impl AreasOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(
-            w,
-            "{:<20} {:>5} {:>5} {:>6} {:>5}  Signal",
-            "Area", "Files", "Conn", "Cross", "Grade"
-        )?;
-        writeln!(w, "{}", "─".repeat(72))?;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
 
-        for area in &self.areas {
-            let grade_str = format_grade(area.grade);
-            let conn_str = format!("{:.1}", area.connectivity);
-            writeln!(
-                w,
-                "{:<20} {:>5} {:>5} {:>6} {:>5}  {}",
-                format!("{}/", area.name),
-                area.files,
-                conn_str,
-                area.cross_links,
-                grade_str,
-                area.signal,
-            )?;
-        }
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading("Areas", Some(self.areas.len()))?;
+        p.blank()?;
+
+        let headers = &[
+            TableHeader::text("Area"),
+            TableHeader::numeric("Files"),
+            TableHeader::numeric("Conn"),
+            TableHeader::numeric("Cross"),
+            TableHeader::text("Grade"),
+            TableHeader::text("Signal"),
+        ];
+        let rows: Vec<Vec<Line>> = self
+            .areas
+            .iter()
+            .map(|a| {
+                vec![
+                    Line::new().path(format!("{}/", a.name)),
+                    Line::new().count(a.files),
+                    Line::new().float(a.connectivity, 1),
+                    Line::new().count(a.cross_links),
+                    Line::new().toned(a.grade.tone(), format!("[{}]", a.grade)),
+                    Line::new().dim(a.signal.clone()),
+                ]
+            })
+            .collect();
+        p.table(headers, &rows)?;
 
         let degraded = self.areas.iter().filter(|a| a.grade.is_degraded()).count();
         if degraded > 0 {
-            writeln!(w)?;
-            writeln!(
-                w,
-                "{degraded} area{} at C/D grade — run `anneal garden` for ranked tasks",
-                super::plural(degraded),
-            )?;
+            p.blank()?;
+            p.hints(&[(
+                "anneal garden",
+                &format!(
+                    "ranked tasks for the {degraded} degraded area{}",
+                    if degraded == 1 { "" } else { "s" }
+                ),
+            )])?;
         }
         Ok(())
-    }
-}
-
-fn format_grade(grade: AreaGrade) -> String {
-    let s = format!("[{grade}]");
-    match grade {
-        AreaGrade::A => S.green.apply_to(s).to_string(),
-        AreaGrade::B => S.dim.apply_to(s).to_string(),
-        AreaGrade::C => S.warning.apply_to(s).to_string(),
-        AreaGrade::D => S.error.apply_to(s).to_string(),
     }
 }
 
@@ -111,6 +113,7 @@ mod tests {
     use crate::graph::{DiGraph, EdgeKind};
     use crate::handle::Handle;
     use crate::lattice::Lattice;
+    use crate::output::{Mode, OutputStyle};
 
     #[test]
     fn cmd_areas_produces_output_for_multi_area_graph() {
@@ -170,7 +173,9 @@ mod tests {
         );
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf).unwrap();
+        output
+            .print_human(&mut buf, OutputStyle::new(Mode::Plain, false))
+            .unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("Area"), "header should contain 'Area'");
         assert!(text.contains("Grade"), "header should contain 'Grade'");

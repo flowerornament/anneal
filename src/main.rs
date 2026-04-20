@@ -19,11 +19,11 @@ mod identity;
 mod impact;
 mod lattice;
 mod obligations;
+mod output;
 mod parse;
 mod query;
 mod resolve;
 mod snapshot;
-mod style;
 
 /// Convergence assistant for knowledge corpora.
 #[derive(Parser)]
@@ -157,6 +157,18 @@ struct Cli {
     /// Filter to files dated within the last N days (e.g. --since=14d)
     #[arg(long, global = true, conflicts_with = "recent")]
     since: Option<String>,
+
+    /// Disable color and Unicode glyphs. Useful for piping, logs, accessibility.
+    #[arg(long, global = true)]
+    plain: bool,
+
+    /// ASCII-only glyphs with color retained. For terminals without Unicode support.
+    #[arg(long, global = true, conflicts_with = "plain")]
+    minimal: bool,
+
+    /// Force-disable color (color also off under NO_COLOR or when stdout is not a TTY).
+    #[arg(long, global = true)]
+    no_color: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -891,6 +903,21 @@ fn run() -> anyhow::Result<()> {
         cli::JsonStyle::Compact
     };
 
+    // JSON mode never styles human output; skip the TTY + NO_COLOR syscalls.
+    let output_style = if cli_args.json {
+        output::OutputStyle::new(output::Mode::Plain, false)
+    } else {
+        let mode = if cli_args.plain {
+            output::Mode::Plain
+        } else if cli_args.minimal {
+            output::Mode::Minimal
+        } else {
+            output::Mode::Rich
+        };
+        let force_color = (cli_args.no_color || cli_args.plain).then_some(false);
+        output::OutputStyle::detect(mode, force_color)
+    };
+
     let cwd = Utf8PathBuf::try_from(
         std::env::current_dir().context("failed to determine current directory")?,
     )
@@ -989,7 +1016,7 @@ fn run() -> anyhow::Result<()> {
                 &summary,
                 cli_args.json,
                 json_style,
-                |w| summary.print_human(w),
+                |w| summary.print_human(w, output_style),
                 "failed to write summary",
             )?;
         }
@@ -1074,7 +1101,7 @@ fn run() -> anyhow::Result<()> {
                 let stdout = std::io::stdout();
                 let mut lock = stdout.lock();
                 output
-                    .print_human(&mut lock)
+                    .print_human(&mut lock, output_style)
                     .context("failed to write check output")?;
             }
 
@@ -1110,7 +1137,7 @@ fn run() -> anyhow::Result<()> {
                     let stdout = std::io::stdout();
                     let mut lock = stdout.lock();
                     output
-                        .print_human(&mut lock, mode)
+                        .print_human(&mut lock, output_style, mode)
                         .context("failed to write get output")?;
                 }
                 if output.has_missing() {
@@ -1148,7 +1175,7 @@ fn run() -> anyhow::Result<()> {
                     let stdout = std::io::stdout();
                     let mut lock = stdout.lock();
                     output
-                        .print_human(&mut lock)
+                        .print_human(&mut lock, output_style)
                         .context("failed to write get output")?;
                 }
             } else {
@@ -1193,7 +1220,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w),
+                |w| output.print_human(w, output_style),
                 "failed to write find output",
             )?;
         }
@@ -1210,7 +1237,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w),
+                |output, w| output.print_human(w, output_style),
                 "failed to write init output",
             )?;
         }
@@ -1228,7 +1255,7 @@ fn run() -> anyhow::Result<()> {
                     output,
                     cli_args.json,
                     json_style,
-                    |output, w| output.print_human(w),
+                    |output, w| output.print_human(w, output_style),
                     "failed to write impact output",
                 )?;
             } else {
@@ -1267,7 +1294,7 @@ fn run() -> anyhow::Result<()> {
                     &output,
                     cli_args.json,
                     json_style,
-                    |w| output.print_human(w),
+                    |w| output.print_human(w, output_style),
                     "failed to write map output",
                 )?;
                 return Ok(());
@@ -1316,7 +1343,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w),
+                |w| output.print_human(w, output_style),
                 "failed to write map output",
             )?;
         }
@@ -1366,7 +1393,7 @@ fn run() -> anyhow::Result<()> {
                 let stdout = std::io::stdout();
                 let mut lock = stdout.lock();
                 output
-                    .print_human_with_options(&mut lock, verbose, graph, &lattice)
+                    .print_human_with_options(&mut lock, output_style, verbose, graph, &lattice)
                     .context("failed to write status output")?;
             }
         }
@@ -1391,7 +1418,7 @@ fn run() -> anyhow::Result<()> {
                     output,
                     cli_args.json,
                     json_style,
-                    |output, w| output.print_human(w),
+                    |output, w| output.print_human(w, output_style),
                     "failed to write diff output",
                 )?;
                 return Ok(());
@@ -1408,7 +1435,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w),
+                |output, w| output.print_human(w, output_style),
                 "failed to write diff output",
             )?;
         }
@@ -1419,7 +1446,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w),
+                |output, w| output.print_human(w, output_style),
                 "failed to write obligations output",
             )?;
         }
@@ -1447,7 +1474,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w),
+                |output, w| output.print_human(w, output_style),
                 "failed to write areas output",
             )?;
         }
@@ -1468,7 +1495,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w),
+                |w| output.print_human(w, output_style),
                 "failed to write garden output",
             )?;
         }
@@ -1507,7 +1534,7 @@ fn run() -> anyhow::Result<()> {
                     &output,
                     cli_args.json,
                     json_style,
-                    |w| output.print_human(w),
+                    |w| output.print_human(w, output_style),
                     "failed to write orient output",
                 )?;
             }

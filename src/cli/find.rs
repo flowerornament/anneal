@@ -6,8 +6,9 @@ use serde::Serialize;
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
+use crate::output::{Line, OutputStyle, Printer, Tone};
 
-use super::{DetailLevel, OutputMeta, SnippetIndex};
+use super::{DetailLevel, OutputMeta, SnippetIndex, truncate};
 
 // ---------------------------------------------------------------------------
 // Find command (CLI-03)
@@ -53,30 +54,73 @@ pub(crate) struct FindOutput {
 }
 
 impl FindOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        if self.meta.truncated || self.offset > 0 {
-            writeln!(
-                w,
-                "Showing {} of {} matches for \"{}\" (offset {}):",
-                self.returned, self.total, self.query, self.offset
-            )?;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        // Heading: `Matches (N)` with optional query subtitle and truncation hint.
+        let title = if self.query.is_empty() {
+            "Matches".to_string()
         } else {
-            writeln!(w, "Found {} matches for \"{}\":", self.total, self.query)?;
+            format!("Matches for \"{}\"", self.query)
+        };
+        if self.meta.truncated || self.offset > 0 {
+            p.heading(&title, Some(self.returned))?;
+            p.caption(&format!(
+                "showing {} of {} · offset {}",
+                self.returned, self.total, self.offset
+            ))?;
+        } else {
+            p.heading(&title, Some(self.total))?;
         }
+        if !self.matches.is_empty() {
+            p.blank()?;
+        }
+
+        // Column widths so identity and kind line up cleanly.
+        let id_width = self
+            .matches
+            .iter()
+            .map(|m| console::measure_text_width(&m.id))
+            .max()
+            .unwrap_or(0)
+            .min(60);
+        let kind_width = self.matches.iter().map(|m| m.kind.len()).max().unwrap_or(0);
+
         for m in &self.matches {
-            let status_str = m
-                .status
-                .as_deref()
-                .map_or(String::new(), |s| format!(" status: {s}"));
-            let file_str = m.file.as_deref().unwrap_or("");
-            writeln!(w, "  {} ({}){status_str}  {file_str}", m.id, m.kind)?;
+            let id_pad = id_width.saturating_sub(console::measure_text_width(&m.id));
+            let kind_pad = kind_width.saturating_sub(m.kind.len());
+            let mut row = Line::new()
+                .path(m.id.clone())
+                .pad(id_pad + 2)
+                .dim(m.kind.clone())
+                .pad(kind_pad);
+            if let Some(status) = m.status.as_deref() {
+                row = row.dim("  ").toned(Tone::Default, status.to_string());
+            }
+            if let Some(file) = m.file.as_deref()
+                && Some(file) != m.status.as_deref()
+                && file != m.id
+            {
+                row = row.dim("  ").path(file.to_string());
+            }
+            p.line(&row)?;
             if let Some(summary) = &m.summary {
-                writeln!(w, "      {summary}")?;
+                p.line_at(6, &Line::new().dim(truncate(summary, 160).to_string()))?;
             }
         }
+
         if self.meta.truncated && !self.meta.expand.is_empty() {
-            writeln!(w)?;
-            writeln!(w, "More available: {}", self.meta.expand.join(", "))?;
+            p.blank()?;
+            let rows: Vec<(&str, &str)> = self
+                .meta
+                .expand
+                .iter()
+                .map(|hint| (hint.as_str(), "expand"))
+                .collect();
+            p.hints(&rows)?;
         }
         Ok(())
     }

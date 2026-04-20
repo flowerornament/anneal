@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
+use crate::output::{Line, OutputStyle, Printer};
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -35,43 +36,64 @@ pub(crate) struct GraphSummary {
 }
 
 impl GraphSummary {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(w, "anneal: knowledge graph built")?;
-        writeln!(w, "  root: {}", self.root)?;
-        writeln!(w, "  handles: {}", self.handles)?;
-        writeln!(
-            w,
-            "    {} files, {} labels, {} sections, {} versions",
-            self.files, self.labels, self.sections, self.versions_count
-        )?;
-        writeln!(w, "  edges: {}", self.edges)?;
-        writeln!(
-            w,
-            "  namespaces: {} ({})",
-            self.namespaces.len(),
-            self.namespaces.join(", ")
-        )?;
-        writeln!(
-            w,
-            "  labels resolved: {}, skipped: {}",
-            self.labels_resolved, self.labels_skipped
-        )?;
-        writeln!(w, "  versions resolved: {}", self.versions)?;
-        writeln!(
-            w,
-            "  pending edges resolved: {}, unresolved: {}",
-            self.pending_edges_resolved, self.pending_edges_unresolved
-        )?;
-        writeln!(w, "  lattice: {:?}", self.lattice_kind)?;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        p.heading("anneal", None)?;
+        p.caption("knowledge graph built")?;
+        p.blank()?;
 
+        let mut rows: Vec<(&str, Line)> = vec![
+            ("Root", Line::new().path(self.root.clone())),
+            (
+                "Handles",
+                Line::new().count(self.handles).text("  ").dim(format!(
+                    "{} files · {} labels · {} sections · {} versions",
+                    self.files, self.labels, self.sections, self.versions_count
+                )),
+            ),
+            ("Edges", Line::new().count(self.edges)),
+            (
+                "Namespaces",
+                Line::new()
+                    .count(self.namespaces.len())
+                    .text("  ")
+                    .dim(self.namespaces.join(", ")),
+            ),
+            (
+                "Labels",
+                Line::new()
+                    .count(self.labels_resolved)
+                    .text(" resolved · ")
+                    .count(self.labels_skipped)
+                    .text(" skipped"),
+            ),
+            ("Versions", Line::new().count(self.versions)),
+            (
+                "Edges resolved",
+                Line::new()
+                    .count(self.pending_edges_resolved)
+                    .text(" resolved · ")
+                    .count(self.pending_edges_unresolved)
+                    .text(" unresolved"),
+            ),
+            (
+                "Lattice",
+                Line::new().text(format!("{:?}", self.lattice_kind).to_lowercase()),
+            ),
+        ];
         if self.lattice_kind == crate::lattice::LatticeKind::Confidence {
-            writeln!(
-                w,
-                "  statuses: {} observed ({} active, {} terminal)",
-                self.observed_statuses, self.active_statuses, self.terminal_statuses
-            )?;
+            rows.push((
+                "Statuses",
+                Line::new()
+                    .count(self.observed_statuses)
+                    .text(" observed · ")
+                    .count(self.active_statuses)
+                    .text(" active · ")
+                    .count(self.terminal_statuses)
+                    .text(" terminal"),
+            ));
         }
-        Ok(())
+        p.kv_block(&rows)
     }
 }
 

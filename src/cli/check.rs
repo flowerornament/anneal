@@ -4,8 +4,9 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, DiagnosticCode, Severity};
+use crate::output::{Line, Location, OutputStyle, Printer};
 
-use super::{DetailLevel, OutputMeta, plural};
+use super::{DetailLevel, OutputMeta};
 
 // ---------------------------------------------------------------------------
 // Check command (CLI-01)
@@ -78,57 +79,78 @@ pub(crate) struct CheckJsonOptions {
 }
 
 impl CheckOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        use crate::style::S;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         for diag in &self.diagnostics {
-            diag.print_human(w)?;
+            render_diagnostic(p, diag)?;
         }
         if !self.diagnostics.is_empty() {
-            writeln!(w)?;
+            p.blank()?;
         }
-        let error_detail = if self.terminal_errors > 0 {
+        // Summary tally. The first entry is "errors", possibly with a
+        // `(N in terminal)` annotation when terminal errors split the total.
+        let mut tally_parts: Vec<(usize, &str)> = vec![
+            (self.errors, "errors"),
+            (self.warnings, "warnings"),
+            (self.info, "info"),
+            (self.suggestions, "suggestions"),
+        ];
+        if self.errors == 1 {
+            tally_parts[0] = (self.errors, "error");
+        }
+        if self.warnings == 1 {
+            tally_parts[1] = (self.warnings, "warning");
+        }
+        if self.suggestions == 1 {
+            tally_parts[3] = (self.suggestions, "suggestion");
+        }
+        p.tally(&tally_parts)?;
+        if self.terminal_errors > 0 {
             let active = self.errors.saturating_sub(self.terminal_errors);
-            format!(
-                " ({} in active files, {} in terminal)",
-                S.error.apply_to(active),
-                S.dim.apply_to(self.terminal_errors),
-            )
-        } else {
-            String::new()
-        };
-        writeln!(
-            w,
-            "{} error{}{error_detail}, {} warning{}, {} info, {} suggestion{}",
-            S.error.apply_to(self.errors),
-            plural(self.errors),
-            S.warning.apply_to(self.warnings),
-            plural(self.warnings),
-            self.info,
-            S.suggestion.apply_to(self.suggestions),
-            plural(self.suggestions),
-        )?;
+            p.line_at(
+                4,
+                &Line::new().dim(format!(
+                    "{active} in active files, {} in terminal",
+                    self.terminal_errors
+                )),
+            )?;
+        }
 
         let has_e002 = self
             .diagnostics
             .iter()
             .any(|d| d.code == DiagnosticCode::E002);
         if self.errors > 0 || self.suggestions > 0 {
-            writeln!(w)?;
+            p.blank()?;
+            let mut hints: Vec<(&str, &str)> = Vec::new();
             if has_e002 {
-                writeln!(
-                    w,
-                    "For a specific obligation: {}",
-                    S.dim.apply_to("anneal explain obligation <handle>"),
-                )?;
+                hints.push((
+                    "anneal explain obligation <handle>",
+                    "inspect a specific obligation",
+                ));
             }
-            writeln!(
-                w,
-                "For ranked maintenance tasks: {}",
-                S.dim.apply_to("anneal garden"),
-            )?;
+            hints.push(("anneal garden", "ranked maintenance tasks"));
+            p.hints(&hints)?;
         }
         Ok(())
     }
+}
+
+/// Render a single diagnostic through the shared Printer.
+pub(crate) fn render_diagnostic<W: Write>(
+    p: &mut Printer<W>,
+    diag: &Diagnostic,
+) -> std::io::Result<()> {
+    let at = diag
+        .file
+        .as_deref()
+        .map(|path| Location::new(path, diag.line));
+    let code = diag.code.to_string();
+    p.diagnostic(diag.severity.to_output(), &code, &diag.message, at)
 }
 
 /// Filter flags for the check command (D-19).

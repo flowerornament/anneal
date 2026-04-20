@@ -7,6 +7,7 @@ use crate::checks::{DiagnosticCode, Severity};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
+use crate::output::{Glyph, Line, OutputStyle, Printer, Tone};
 
 use super::{DetailLevel, OutputMeta, plural};
 
@@ -92,201 +93,120 @@ pub(crate) struct SuggestionCount {
 impl StatusOutput {
     /// Print dashboard without verbose expansion (used by tests).
     #[cfg(test)]
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        self.print_human_inner(w, false, None, None)
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p, false, None, None)
     }
 
     /// Print dashboard with optional verbose pipeline expansion.
     pub(crate) fn print_human_with_options(
         &self,
         w: &mut dyn Write,
+        style: OutputStyle,
         verbose: bool,
         graph: &DiGraph,
         lattice: &Lattice,
     ) -> std::io::Result<()> {
-        self.print_human_inner(w, verbose, Some(graph), Some(lattice))
+        let mut p = Printer::new(w, style);
+        self.render(&mut p, verbose, Some(graph), Some(lattice))
     }
 
-    fn print_human_inner(
+    fn render<W: Write>(
         &self,
-        w: &mut dyn Write,
+        p: &mut Printer<W>,
         verbose: bool,
         graph: Option<&DiGraph>,
         lattice: Option<&Lattice>,
     ) -> std::io::Result<()> {
-        use crate::style::S;
+        let style = p.style();
+        // Compute label width once so every section aligns.
+        const LABELS: &[&str] = &["Corpus", "Pipeline", "Health", "Convergence"];
+        let label_width = LABELS.iter().map(|s| s.len()).max().unwrap_or(0);
 
-        // -- Graph --
-        writeln!(
-            w,
-            " {}  {}",
-            S.label.apply_to("corpus"),
-            fmt_counts(&[
-                (self.files, "file"),
-                (self.handles, "handle"),
-                (self.edges, "edge"),
-            ])
+        // --- Corpus ---
+        let files_label = format!("file{}", plural(self.files));
+        let handles_label = format!("handle{}", plural(self.handles));
+        let edges_label = format!("edge{}", plural(self.edges));
+        p.kv(
+            "Corpus",
+            &counts_line(
+                &[
+                    (self.files, &files_label),
+                    (self.handles, &handles_label),
+                    (self.edges, &edges_label),
+                ],
+                style,
+            ),
+            label_width,
         )?;
-        writeln!(
-            w,
-            "         {} active, {} terminal",
-            self.active_handles, self.frozen_handles,
+        // Continuation indented to land under the value column.
+        let value_col = 2 + label_width + 2;
+        p.line_at(
+            value_col,
+            &counts_line(
+                &[
+                    (self.active_handles, "active"),
+                    (self.frozen_handles, "terminal"),
+                ],
+                style,
+            ),
         )?;
 
-        // Pipeline histogram (D-11)
-        if let Some(ref pipeline) = self.pipeline {
-            let parts: Vec<String> = pipeline
-                .iter()
-                .map(|p| format!("{} {}", S.bold.apply_to(p.count), p.level))
-                .collect();
-            writeln!(
-                w,
-                "    {}  {}",
-                S.label.apply_to("pipeline"),
-                parts.join(" → ")
-            )?;
-
-            // Verbose: list files at each pipeline level (single graph pass)
+        // --- Pipeline ---
+        if let Some(pipeline) = &self.pipeline {
+            p.kv("Pipeline", &pipeline_line(pipeline, style), label_width)?;
             if verbose && let (Some(graph), Some(lattice)) = (graph, lattice) {
-                // Collect all files grouped by status in one pass
-                let mut by_status: HashMap<&str, Vec<&str>> = HashMap::new();
-                for (_, h) in graph.nodes() {
-                    if let HandleKind::File(ref path) = h.kind
-                        && let Some(ref status) = h.status
-                        && !lattice.terminal.contains(status)
-                    {
-                        by_status
-                            .entry(status.as_str())
-                            .or_default()
-                            .push(path.as_str());
-                    }
-                }
-                for level in pipeline {
-                    let Some(files) = by_status.get_mut(level.level.as_str()) else {
-                        continue;
-                    };
-                    files.sort_unstable();
-                    writeln!(
-                        w,
-                        "              {} {}:",
-                        S.bold.apply_to(&level.level),
-                        S.dim.apply_to(format_args!("({})", files.len())),
-                    )?;
-                    for f in files.iter() {
-                        writeln!(w, "                {f}")?;
-                    }
-                }
+                render_pipeline_verbose(p, pipeline, graph, lattice)?;
             }
         }
 
-        // -- Health --
-        writeln!(w)?;
-        let health_color = if self.diagnostics.errors > 0 {
-            &S.error
-        } else if self.diagnostics.warnings > 0 {
-            &S.warning
-        } else {
-            &S.green
-        };
+        // --- Health + Convergence group ---
+        p.blank()?;
         let outstanding = self.outstanding_obligations();
-        write!(
-            w,
-            " {}  {} error{}, {} warning{}",
-            S.label.apply_to("health"),
-            health_color.apply_to(self.diagnostics.errors),
-            plural(self.diagnostics.errors),
-            self.diagnostics.warnings,
-            plural(self.diagnostics.warnings),
+        p.kv(
+            "Health",
+            &health_line(self, outstanding, style),
+            label_width,
         )?;
-        if self.obligations.total > 0 {
-            write!(
-                w,
-                ", {}/{} obligations discharged",
-                self.obligations.discharged, self.obligations.total,
-            )?;
-            if self.obligations.mooted > 0 {
-                write!(w, " ({} mooted)", self.obligations.mooted)?;
-            }
-            if outstanding > 0 {
-                write!(w, " — {outstanding} outstanding")?;
-            }
-        }
-        writeln!(w)?;
+        p.kv(
+            "Convergence",
+            &convergence_line(self.convergence.as_ref(), style),
+            label_width,
+        )?;
 
-        // -- Convergence --
-        writeln!(w)?;
-        if let Some(ref conv) = self.convergence {
-            let signal_style = match conv.signal.as_str() {
-                "advancing" => &S.green,
-                "drifting" => &S.warning,
-                _ => &S.dim,
-            };
-            writeln!(
-                w,
-                " {}  {} {}",
-                S.label.apply_to("convergence"),
-                signal_style.apply_to(&conv.signal),
-                S.dim.apply_to(format_args!("({})", conv.detail)),
-            )?;
-        } else {
-            writeln!(
-                w,
-                " {}  {}",
-                S.label.apply_to("convergence"),
-                S.dim.apply_to("(no history yet)"),
-            )?;
-        }
-
-        // -- Suggestions --
+        // --- Suggestions ---
         let active: Vec<&SuggestionCount> = self
             .suggestion_breakdown
             .iter()
             .filter(|s| s.count > 0)
             .collect();
         if !active.is_empty() {
-            writeln!(w)?;
-            writeln!(
-                w,
-                " {}  {}",
-                S.label.apply_to("suggestions"),
-                self.suggestion_total,
-            )?;
+            p.blank()?;
+            p.heading("Suggestions", Some(self.suggestion_total))?;
+            let count_width = active
+                .iter()
+                .map(|s| s.count.to_string().len())
+                .max()
+                .unwrap_or(0);
             for s in &active {
-                writeln!(
-                    w,
-                    "   {:>5}  {} {}",
-                    s.count,
-                    S.suggestion.apply_to(&s.code),
-                    S.dim.apply_to(&s.label),
-                )?;
+                let count_str = s.count.to_string();
+                let pad = count_width.saturating_sub(count_str.len());
+                let row = Line::new()
+                    .pad(pad)
+                    .count(s.count)
+                    .text("  ")
+                    .toned(Tone::Info, s.code.clone())
+                    .text("  ")
+                    .dim(s.label.clone());
+                p.line_at(4, &row)?;
             }
         }
 
-        let has_hints = self.diagnostics.errors > 0 || outstanding > 0 || self.suggestion_total > 0;
-        if has_hints {
-            writeln!(w)?;
-            writeln!(w, " {}", S.label.apply_to("next"))?;
-            if self.diagnostics.errors > 0 {
-                writeln!(
-                    w,
-                    "   {} for detailed diagnostics",
-                    S.dim.apply_to("anneal check"),
-                )?;
-            }
-            if outstanding > 0 {
-                writeln!(
-                    w,
-                    "   {} to inspect a specific obligation",
-                    S.dim.apply_to("anneal explain obligation <handle>"),
-                )?;
-            }
-            if self.suggestion_total > 0 {
-                writeln!(
-                    w,
-                    "   {} for ranked maintenance tasks",
-                    S.dim.apply_to("anneal garden"),
-                )?;
-            }
+        // --- Hints ---
+        let hints = build_hints(self, outstanding);
+        if !hints.is_empty() {
+            p.blank()?;
+            p.hints(&hints)?;
         }
 
         Ok(())
@@ -336,13 +256,144 @@ impl StatusOutput {
     }
 }
 
-/// Format counts like "262 files, 9882 handles, 6974 edges".
-fn fmt_counts(items: &[(usize, &str)]) -> String {
-    items
-        .iter()
-        .map(|(n, label)| format!("{n} {label}{}", plural(*n)))
-        .collect::<Vec<_>>()
-        .join(", ")
+/// Build a dot-separated `N label` line. Labels are taken verbatim
+/// (no auto-pluralization); callers pass the already-correct label.
+fn counts_line(items: &[(usize, &str)], style: OutputStyle) -> Line {
+    let sep = format!(" {} ", style.glyph(Glyph::Separator));
+    let mut line = Line::new();
+    for (i, (n, label)) in items.iter().enumerate() {
+        if i > 0 {
+            line = line.dim(sep.clone());
+        }
+        line = line.count(*n).text(format!(" {label}"));
+    }
+    line
+}
+
+/// Pipeline histogram: `raw 0 → draft 18 → research 17`.
+fn pipeline_line(pipeline: &[PipelineLevel], style: OutputStyle) -> Line {
+    let arrow = format!(" {} ", style.glyph(Glyph::Arrow));
+    let mut line = Line::new();
+    for (i, level) in pipeline.iter().enumerate() {
+        if i > 0 {
+            line = line.dim(arrow.clone());
+        }
+        line = line.text(level.level.clone()).text(" ").count(level.count);
+    }
+    line
+}
+
+/// Health summary: errors + warnings, plus obligation roll-up when present.
+fn health_line(s: &StatusOutput, outstanding: usize, style: OutputStyle) -> Line {
+    let sep = format!(" {} ", style.glyph(Glyph::Separator));
+    let error_tone = if s.diagnostics.errors > 0 {
+        Tone::Error
+    } else {
+        Tone::Dim
+    };
+    let warning_tone = if s.diagnostics.warnings > 0 {
+        Tone::Warning
+    } else {
+        Tone::Dim
+    };
+    let mut line = Line::new()
+        .toned(
+            error_tone,
+            format_number_suffix(s.diagnostics.errors, "error"),
+        )
+        .dim(sep.clone())
+        .toned(
+            warning_tone,
+            format_number_suffix(s.diagnostics.warnings, "warning"),
+        );
+    if s.obligations.total > 0 {
+        line = line.dim(sep.clone()).text(format!(
+            "{}/{} obligations discharged",
+            s.obligations.discharged, s.obligations.total
+        ));
+        if s.obligations.mooted > 0 {
+            line = line.dim(format!(" ({} mooted)", s.obligations.mooted));
+        }
+        if outstanding > 0 {
+            line = line.dim(sep).warning(format!("{outstanding} outstanding"));
+        }
+    }
+    line
+}
+
+fn convergence_line(conv: Option<&ConvergenceSummaryOutput>, style: OutputStyle) -> Line {
+    let Some(c) = conv else {
+        return Line::new().dim("no history yet");
+    };
+    let sep = format!(" {} ", style.glyph(Glyph::Separator));
+    let signal_tone = match c.signal.as_str() {
+        "advancing" => Tone::Success,
+        "drifting" => Tone::Warning,
+        _ => Tone::Default,
+    };
+    Line::new()
+        .toned(signal_tone, c.signal.clone())
+        .dim(sep)
+        .dim(c.detail.clone())
+}
+
+fn format_number_suffix(n: usize, singular: &str) -> String {
+    format!("{n} {singular}{}", plural(n))
+}
+
+fn render_pipeline_verbose<W: Write>(
+    p: &mut Printer<W>,
+    pipeline: &[PipelineLevel],
+    graph: &DiGraph,
+    lattice: &Lattice,
+) -> std::io::Result<()> {
+    // Collect files grouped by status in a single graph pass.
+    let mut by_status: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (_, h) in graph.nodes() {
+        if let HandleKind::File(ref path) = h.kind
+            && let Some(ref status) = h.status
+            && !lattice.terminal.contains(status)
+        {
+            by_status
+                .entry(status.as_str())
+                .or_default()
+                .push(path.as_str());
+        }
+    }
+    for level in pipeline {
+        let Some(files) = by_status.get_mut(level.level.as_str()) else {
+            continue;
+        };
+        files.sort_unstable();
+        p.line_at(
+            4,
+            &Line::new()
+                .heading(level.level.clone())
+                .text(" ")
+                .dim(format!("({})", files.len())),
+        )?;
+        for f in files.iter() {
+            p.line_at(6, &Line::new().path(f.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+fn build_hints(s: &StatusOutput, outstanding: usize) -> Vec<(&'static str, &'static str)> {
+    let mut hints = Vec::new();
+    if s.diagnostics.errors > 0 {
+        hints.push(("anneal check", "for detailed diagnostics"));
+    }
+    if outstanding > 0 {
+        hints.push((
+            "anneal explain obligation <handle>",
+            "to inspect a specific obligation",
+        ));
+    }
+    if s.suggestion_total > 0 {
+        hints.push(("anneal garden", "for ranked maintenance tasks"));
+    }
+    hints
 }
 
 /// Build the status dashboard from the graph, lattice, config, and diagnostics.
@@ -484,6 +535,7 @@ mod tests {
     use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
     use crate::handle::Handle;
+    use crate::output::{Mode, OutputStyle};
 
     use super::*;
 
@@ -515,12 +567,13 @@ mod tests {
         }
     }
 
-    /// Helper: render a StatusOutput to string for assertion (ANSI stripped).
+    /// Render to string with plain mode (ANSI stripped for assertions).
     fn render_status(output: &StatusOutput) -> String {
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
-        let raw = String::from_utf8(buf).expect("utf8");
-        console::strip_ansi_codes(&raw).to_string()
+        output
+            .print_human(&mut buf, OutputStyle::new(Mode::Plain, false))
+            .expect("print_human");
+        String::from_utf8(buf).expect("utf8")
     }
 
     #[test]
@@ -535,7 +588,7 @@ mod tests {
             "Expected handle count, got: {text}"
         );
         assert!(
-            text.contains("2031 edges"),
+            text.contains("2,031 edges"),
             "Expected edge count, got: {text}"
         );
     }
@@ -568,21 +621,20 @@ mod tests {
         ]);
         let text = render_status(&output);
         assert!(
-            text.contains("pipeline"),
+            text.contains("Pipeline"),
             "Expected pipeline section, got: {text}"
         );
         assert!(
-            text.contains("12 raw"),
-            "Expected '12 raw' in pipeline, got: {text}"
+            text.contains("raw 12"),
+            "Expected 'raw 12' in pipeline, got: {text}"
         );
     }
 
     #[test]
     fn status_print_human_flat_lattice_omits_pipeline() {
         let text = render_status(&make_status_output_basic());
-        // pipeline is None => no pipeline line, active/frozen on the corpus line
         assert!(
-            !text.contains("pipeline"),
+            !text.contains("Pipeline"),
             "Flat lattice should not show pipeline, got: {text}"
         );
     }
@@ -636,7 +688,7 @@ mod tests {
     fn status_print_human_suggestions_breakdown() {
         let text = render_status(&make_status_output_basic());
         assert!(
-            text.contains("suggestions"),
+            text.contains("Suggestions"),
             "Expected suggestions section, got: {text}"
         );
         assert!(
@@ -680,9 +732,7 @@ mod tests {
 
         let output = cmd_status(&graph, &lattice, &snap, &[], None, None);
 
-        // doc1.md (draft, not terminal) + doc3.md (no status) = 2 active
         assert_eq!(output.active_handles, 2);
-        // doc2.md (archived, terminal) = 1 frozen
         assert_eq!(output.frozen_handles, 1);
     }
 

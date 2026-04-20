@@ -7,6 +7,7 @@ use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
+use crate::output::{Line, OutputStyle, Printer, Tone};
 
 // ---------------------------------------------------------------------------
 // Obligations command (UX-06)
@@ -31,29 +32,57 @@ pub(crate) struct ObligationsOutput {
 type NamespaceBuckets = (Vec<String>, Vec<String>, Vec<String>);
 
 impl ObligationsOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(
-            w,
-            "Obligations: {} outstanding, {} discharged, {} mooted",
-            self.total_outstanding, self.total_discharged, self.total_mooted
-        )?;
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        self.render(&mut p)
+    }
+
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading("Obligations", None)?;
+        p.tally(&[
+            (self.total_outstanding, "outstanding"),
+            (self.total_discharged, "discharged"),
+            (self.total_mooted, "mooted"),
+        ])?;
+
         for ns in &self.namespaces {
-            writeln!(
-                w,
-                "\n  {}: {} outstanding, {} discharged, {} mooted",
-                ns.namespace,
-                ns.outstanding.len(),
-                ns.discharged.len(),
-                ns.mooted.len()
+            p.blank()?;
+            p.heading(
+                &ns.namespace,
+                Some(ns.outstanding.len() + ns.discharged.len() + ns.mooted.len()),
             )?;
+            p.tally(&[
+                (ns.outstanding.len(), "outstanding"),
+                (ns.discharged.len(), "discharged"),
+                (ns.mooted.len(), "mooted"),
+            ])?;
+            // Aligned status tag so identities line up in a column.
             for id in &ns.outstanding {
-                writeln!(w, "    [outstanding] {id}")?;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .toned(Tone::Warning, "outstanding")
+                        .text("  ")
+                        .path(id.clone()),
+                )?;
             }
             for id in &ns.discharged {
-                writeln!(w, "    [discharged]  {id}")?;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .toned(Tone::Success, "discharged ")
+                        .text("  ")
+                        .path(id.clone()),
+                )?;
             }
             for id in &ns.mooted {
-                writeln!(w, "    [mooted]      {id}")?;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .toned(Tone::Dim, "mooted     ")
+                        .text("  ")
+                        .path(id.clone()),
+                )?;
             }
         }
         Ok(())

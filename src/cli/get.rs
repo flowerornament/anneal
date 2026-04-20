@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::graph::DiGraph;
 use crate::handle::NodeId;
+use crate::output::{Glyph, Line, OutputStyle, Printer, Tone};
 
 use super::{DetailLevel, OutputMeta, SnippetIndex, dedup_edges, lookup_handle};
 
@@ -96,37 +97,38 @@ pub(crate) fn cmd_batch_get(
 }
 
 impl BatchGetOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, mode: BatchGetMode) -> std::io::Result<()> {
-        let width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
+    pub(crate) fn print_human(
+        &self,
+        w: &mut dyn Write,
+        style: OutputStyle,
+        mode: BatchGetMode,
+    ) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
+        let handle_width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
         for row in &self.rows {
             if row.not_found {
-                writeln!(w, "{:<width$}  (not found)", row.handle, width = width)?;
+                let pad = handle_width.saturating_sub(row.handle.len()) + 2;
+                p.line(
+                    &Line::new()
+                        .path(row.handle.clone())
+                        .pad(pad)
+                        .toned(Tone::Error, "(not found)"),
+                )?;
                 continue;
             }
+            let pad = handle_width.saturating_sub(row.handle.len()) + 2;
             let status = row.status.as_deref().unwrap_or("—");
-            match mode {
-                BatchGetMode::StatusOnly => {
-                    writeln!(w, "{:<width$}  {status}", row.handle, width = width)?;
-                }
-                BatchGetMode::Context => {
-                    let summary = row.summary.as_deref().unwrap_or("");
-                    writeln!(
-                        w,
-                        "{:<width$}  {status:<10}  {summary}",
-                        row.handle,
-                        width = width,
-                    )?;
-                }
-                BatchGetMode::Default => {
-                    let kind = row.kind.as_deref().unwrap_or("?");
-                    writeln!(
-                        w,
-                        "{:<width$}  {status:<10}  {kind}",
-                        row.handle,
-                        width = width,
-                    )?;
-                }
-            }
+            let mut line = Line::new()
+                .path(row.handle.clone())
+                .pad(pad)
+                .toned(Tone::Default, format!("{status:<10}"))
+                .text("  ");
+            line = match mode {
+                BatchGetMode::StatusOnly => line,
+                BatchGetMode::Context => line.dim(row.summary.clone().unwrap_or_default()),
+                BatchGetMode::Default => line.dim(row.kind.clone().unwrap_or_else(|| "?".into())),
+            };
+            p.line(&line)?;
         }
         Ok(())
     }
@@ -140,12 +142,21 @@ impl BatchGetOutput {
 // Get command (CLI-02)
 // ---------------------------------------------------------------------------
 
+/// Direction of an edge relative to the focus handle. Serializes as
+/// `"incoming"` / `"outgoing"` to preserve the JSON wire format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum EdgeDirection {
+    Incoming,
+    Outgoing,
+}
+
 /// Summary of a single edge for display.
 #[derive(Clone, Serialize)]
 pub(crate) struct EdgeSummary {
     pub(crate) kind: String,
     pub(crate) target: String,
-    pub(crate) direction: String,
+    pub(crate) direction: EdgeDirection,
 }
 
 pub(crate) struct GetData {
@@ -197,13 +208,13 @@ pub(crate) struct GetHumanOutput {
 }
 
 impl GetHumanOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
+    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+        let mut p = Printer::new(w, style);
         if self.context {
-            return print_get_context_human(&self.data, self.limit_edges, w);
+            render_get_context(&mut p, &self.data, self.limit_edges)
+        } else {
+            render_get_summary(&mut p, &self.data, self.limit_edges)
         }
-
-        let output = GetJsonOutput::summary(&self.data, self.limit_edges);
-        output.print_human(w)
     }
 }
 
@@ -323,56 +334,157 @@ impl GetJsonOutput {
         output.sample_outgoing.clear();
         output
     }
+}
 
-    pub(crate) fn print_human(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(w, "{} ({})", self.id, self.kind)?;
-        if let Some(ref status) = self.status {
-            writeln!(w, "  Status: {status}")?;
-        }
-        if let Some(ref file) = self.file {
-            writeln!(w, "  File: {file}")?;
-        }
-        if let Some(ref snippet) = self.snippet {
-            writeln!(w, "  Snippet: {snippet}")?;
-        }
-        let outgoing = self
-            .outgoing_edges
-            .as_ref()
-            .unwrap_or(&self.sample_outgoing);
-        if !outgoing.is_empty() {
-            writeln!(w, "  Outgoing:")?;
-            let total = self.edge_counts.outgoing;
-            for edge in outgoing {
-                writeln!(w, "    {} -> {}", edge.kind, edge.target)?;
-            }
-            if total > outgoing.len() {
-                writeln!(
-                    w,
-                    "    ... and {} more outgoing edges ({total} unique)",
-                    total - outgoing.len()
-                )?;
-            }
-        }
-        let incoming = self
-            .incoming_edges
-            .as_ref()
-            .unwrap_or(&self.sample_incoming);
-        if !incoming.is_empty() {
-            writeln!(w, "  Incoming:")?;
-            let total = self.edge_counts.incoming;
-            for edge in incoming {
-                writeln!(w, "    {} <- {}", edge.kind, edge.target)?;
-            }
-            if total > incoming.len() {
-                writeln!(
-                    w,
-                    "    ... and {} more incoming edges ({total} unique)",
-                    total - incoming.len()
-                )?;
-            }
-        }
-        Ok(())
+/// Compact identity + KV + edge sample view. Used by the default
+/// single-handle `anneal get` path.
+fn render_get_summary<W: Write>(
+    p: &mut Printer<W>,
+    data: &GetData,
+    limit_edges: usize,
+) -> std::io::Result<()> {
+    render_get_header(p, data)?;
+    render_get_kv(p, data)?;
+
+    if !data.outgoing_edges.is_empty() {
+        p.blank()?;
+        let shown = data.outgoing_edges.len().min(limit_edges);
+        p.heading("Outgoing", Some(data.outgoing_edges.len()))?;
+        render_edge_group(p, &data.outgoing_edges, shown, EdgeDirection::Outgoing)?;
     }
+    if !data.incoming_edges.is_empty() {
+        p.blank()?;
+        let shown = data.incoming_edges.len().min(limit_edges);
+        p.heading("Incoming", Some(data.incoming_edges.len()))?;
+        render_edge_group(p, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
+    }
+    Ok(())
+}
+
+/// Briefing-oriented expansion — `anneal get --context`.
+fn render_get_context<W: Write>(
+    p: &mut Printer<W>,
+    data: &GetData,
+    limit_edges: usize,
+) -> std::io::Result<()> {
+    render_get_header(p, data)?;
+    render_get_kv(p, data)?;
+
+    if let Some(snippet) = &data.snippet {
+        p.blank()?;
+        p.heading("Context", None)?;
+        p.line_at(4, &Line::new().dim(snippet.clone()))?;
+    }
+
+    p.blank()?;
+    p.heading("Refs", None)?;
+    if data.outgoing_edges.is_empty() {
+        p.line_at(4, &Line::new().dim("Outgoing: none"))?;
+    } else {
+        let shown = data.outgoing_edges.len().min(limit_edges);
+        p.line_at(
+            4,
+            &Line::new()
+                .heading("Outgoing")
+                .text(" ")
+                .dim(format!("({shown} of {})", data.outgoing_edges.len())),
+        )?;
+        render_edge_group_at(p, 6, &data.outgoing_edges, shown, EdgeDirection::Outgoing)?;
+    }
+    if data.incoming_edges.is_empty() {
+        p.line_at(4, &Line::new().dim("Incoming: none"))?;
+    } else {
+        let shown = data.incoming_edges.len().min(limit_edges);
+        p.line_at(
+            4,
+            &Line::new()
+                .heading("Incoming")
+                .text(" ")
+                .dim(format!("({shown} of {})", data.incoming_edges.len())),
+        )?;
+        render_edge_group_at(p, 6, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
+    }
+
+    p.blank()?;
+    let mut hints = vec![
+        (
+            format!("anneal get {} --refs", data.id),
+            "bounded adjacency",
+        ),
+        (format!("anneal get {} --trace", data.id), "full adjacency"),
+    ];
+    if data.outgoing_edges.len() > limit_edges || data.incoming_edges.len() > limit_edges {
+        hints.push((format!("anneal get {} --full", data.id), "expand"));
+    }
+    let hint_rows: Vec<(&str, &str)> = hints.iter().map(|(c, d)| (c.as_str(), *d)).collect();
+    p.hints(&hint_rows)?;
+    Ok(())
+}
+
+fn render_get_header<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Result<()> {
+    p.line(
+        &Line::new()
+            .heading(data.id.clone())
+            .text("  ")
+            .dim(format!("({})", data.kind)),
+    )
+}
+
+fn render_get_kv<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Result<()> {
+    let mut rows: Vec<(&str, Line)> = Vec::new();
+    if let Some(status) = &data.status {
+        rows.push(("Status", Line::new().text(status.clone())));
+    }
+    if let Some(file) = &data.file {
+        rows.push(("File", Line::new().path(file.clone())));
+    }
+    if let Some(snippet) = &data.snippet {
+        rows.push(("Snippet", Line::new().dim(snippet.clone())));
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+    p.kv_block(&rows)
+}
+
+fn render_edge_group<W: Write>(
+    p: &mut Printer<W>,
+    edges: &[EdgeSummary],
+    shown: usize,
+    direction: EdgeDirection,
+) -> std::io::Result<()> {
+    render_edge_group_at(p, 4, edges, shown, direction)
+}
+
+fn render_edge_group_at<W: Write>(
+    p: &mut Printer<W>,
+    col: usize,
+    edges: &[EdgeSummary],
+    shown: usize,
+    direction: EdgeDirection,
+) -> std::io::Result<()> {
+    let style = p.style();
+    let glyph = match direction {
+        EdgeDirection::Incoming => style.glyph(Glyph::ArrowIn),
+        EdgeDirection::Outgoing => style.glyph(Glyph::Arrow),
+    };
+    let kind_width = edges.iter().map(|e| e.kind.len()).max().unwrap_or(0);
+    for edge in edges.iter().take(shown) {
+        let kind_pad = kind_width.saturating_sub(edge.kind.len());
+        p.line_at(
+            col,
+            &Line::new()
+                .toned(Tone::Info, edge.kind.clone())
+                .pad(kind_pad)
+                .dim(format!(" {glyph} "))
+                .path(edge.target.clone()),
+        )?;
+    }
+    if edges.len() > shown {
+        let remaining = edges.len() - shown;
+        p.line_at(col, &Line::new().dim(format!("… {remaining} more")))?;
+    }
+    Ok(())
 }
 
 fn build_get_briefing(data: &GetData, limit_edges: usize) -> String {
@@ -420,85 +532,6 @@ fn build_get_briefing(data: &GetData, limit_edges: usize) -> String {
     parts.join(". ")
 }
 
-fn print_get_context_human(
-    data: &GetData,
-    limit_edges: usize,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(w, "{} ({})", data.id, data.kind)?;
-    if let Some(status) = &data.status {
-        writeln!(w, "  Status: {status}")?;
-    }
-    if let Some(file) = &data.file {
-        writeln!(w, "  File: {file}")?;
-    }
-
-    if let Some(snippet) = &data.snippet {
-        writeln!(w)?;
-        writeln!(w, "Context:")?;
-        writeln!(w, "  {snippet}")?;
-    }
-
-    writeln!(w)?;
-    writeln!(w, "Refs:")?;
-
-    if data.outgoing_edges.is_empty() {
-        writeln!(w, "  Outgoing: none")?;
-    } else {
-        let shown = data.outgoing_edges.len().min(limit_edges);
-        writeln!(
-            w,
-            "  Outgoing (showing {shown} of {}):",
-            data.outgoing_edges.len()
-        )?;
-        for edge in data.outgoing_edges.iter().take(limit_edges) {
-            writeln!(w, "    {} -> {}", edge.kind, edge.target)?;
-        }
-        if data.outgoing_edges.len() > limit_edges {
-            writeln!(
-                w,
-                "    ... and {} more",
-                data.outgoing_edges.len() - limit_edges
-            )?;
-        }
-    }
-
-    if data.incoming_edges.is_empty() {
-        writeln!(w, "  Incoming: none")?;
-    } else {
-        let shown = data.incoming_edges.len().min(limit_edges);
-        writeln!(
-            w,
-            "  Incoming (showing {shown} of {}):",
-            data.incoming_edges.len()
-        )?;
-        for edge in data.incoming_edges.iter().take(limit_edges) {
-            writeln!(w, "    {} <- {}", edge.kind, edge.target)?;
-        }
-        if data.incoming_edges.len() > limit_edges {
-            writeln!(
-                w,
-                "    ... and {} more",
-                data.incoming_edges.len() - limit_edges
-            )?;
-        }
-    }
-
-    let mut expand = vec![
-        format!(
-            "anneal get {} --refs --limit-edges {}",
-            data.id,
-            limit_edges * 2
-        ),
-        format!("anneal get {} --trace", data.id),
-    ];
-    if data.outgoing_edges.len() > limit_edges || data.incoming_edges.len() > limit_edges {
-        expand.push(format!("anneal get {} --full", data.id));
-    }
-    writeln!(w)?;
-    writeln!(w, "Expand with: {}", expand.join(", "))
-}
-
 /// Resolve a handle by identity string and build output.
 ///
 /// Looks up the handle by exact match first, then tries case-insensitive
@@ -514,8 +547,18 @@ pub(crate) fn cmd_get(
     let h = graph.node(node_id);
     let file = h.file_path.as_ref().map(ToString::to_string);
 
-    let outgoing_edges = dedup_edges(graph.outgoing(node_id), |e| e.target, "outgoing", graph);
-    let incoming_edges = dedup_edges(graph.incoming(node_id), |e| e.source, "incoming", graph);
+    let outgoing_edges = dedup_edges(
+        graph.outgoing(node_id),
+        |e| e.target,
+        EdgeDirection::Outgoing,
+        graph,
+    );
+    let incoming_edges = dedup_edges(
+        graph.incoming(node_id),
+        |e| e.source,
+        EdgeDirection::Incoming,
+        graph,
+    );
     let snippet = snippets.summary_for(h).map(str::to_string);
 
     Some(GetData {
@@ -683,18 +726,18 @@ mod tests {
                     EdgeSummary {
                         kind: "Cites".into(),
                         target: "OQ-1".into(),
-                        direction: "outgoing".into(),
+                        direction: EdgeDirection::Outgoing,
                     },
                     EdgeSummary {
                         kind: "Cites".into(),
                         target: "OQ-2".into(),
-                        direction: "outgoing".into(),
+                        direction: EdgeDirection::Outgoing,
                     },
                 ],
                 incoming_edges: vec![EdgeSummary {
                     kind: "DependsOn".into(),
                     target: "synthesis.md".into(),
-                    direction: "incoming".into(),
+                    direction: EdgeDirection::Incoming,
                 }],
                 snippet: Some("Label index for the corpus.".into()),
             },
@@ -703,14 +746,18 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf).expect("print_human");
+        output
+            .print_human(&mut buf, plain_style())
+            .expect("print_human");
         let text = String::from_utf8(buf).expect("utf8");
 
-        assert!(text.contains("Context:\n  Label index for the corpus."));
-        assert!(text.contains("Refs:\n  Outgoing (showing 1 of 2):"));
-        assert!(text.contains("    Cites -> OQ-1"));
-        assert!(text.contains("  Incoming (showing 1 of 1):"));
-        assert!(text.contains("Expand with: anneal get LABELS.md --refs --limit-edges 2"));
+        assert!(text.contains("Label index for the corpus."));
+        assert!(text.contains("Refs"));
+        assert!(text.contains("Outgoing"));
+        assert!(text.contains("Cites"));
+        assert!(text.contains("OQ-1"));
+        assert!(text.contains("Incoming"));
+        assert!(text.contains("anneal get LABELS.md --refs"));
         assert!(
             !text.contains("LABELS.md is a file."),
             "context output should no longer be a single stitched sentence: {text}"
@@ -795,10 +842,15 @@ mod tests {
         let mode = BatchGetMode::StatusOnly;
         let output = cmd_batch_get(&graph, &node_index, snippets, &handles, mode);
         let mut buf = Vec::new();
-        output.print_human(&mut buf, mode).expect("print");
+        output
+            .print_human(&mut buf, plain_style(), mode)
+            .expect("print");
         let text = String::from_utf8(buf).expect("utf8");
-        // Alignment on 14 (longer-name.md)
         assert!(text.contains("short.md       "));
         assert!(text.contains("longer-name.md"));
+    }
+
+    fn plain_style() -> crate::output::OutputStyle {
+        crate::output::OutputStyle::plain()
     }
 }

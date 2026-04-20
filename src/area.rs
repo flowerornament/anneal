@@ -8,6 +8,7 @@ use crate::config::AreasConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind};
 use crate::lattice::Lattice;
+use crate::output::{Tone, Toned};
 
 // ---------------------------------------------------------------------------
 // Area health model
@@ -41,6 +42,17 @@ impl AreaGrade {
 impl std::fmt::Display for AreaGrade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl Toned for AreaGrade {
+    fn tone(&self) -> Tone {
+        match self {
+            Self::A => Tone::Success,
+            Self::B => Tone::Default,
+            Self::C => Tone::Warning,
+            Self::D => Tone::Error,
+        }
     }
 }
 
