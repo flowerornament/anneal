@@ -433,8 +433,9 @@ and four modes where relevant (default / `--plain` / `--minimal` /
 Seed set. Add rules as the audit surfaces violations the current set
 doesn't name.
 
-- **R1** No `·`/`•`/bullet separators in inline content. Double-space or
-  blank line is the divider.
+- **R1** No `·`/`•` glyph separators in inline content. Comma is the
+  inline separator for nominal lists (`9 files, 351 handles, 7 edges`).
+  Blank line divides sections. List indentation replaces bullet markers.
 - **R2** Every command output starts with `**Heading** (count?)`.
 - **R3** Blank lines only between logical sections. Never within a
   section. Never at output start or end.
@@ -457,32 +458,62 @@ doesn't name.
 
 ## Findings table
 
-Populate during Phase 1. Each row: `ID | Command | Variant | Issue |
-Severity | Rule | Fix | Status`.
+Populated by Phase 1 against two corpora (~/code/anneal/.design,
+~/code/murail/.design). Severity: `critical` (breaks parseability),
+`design` (visual rough edge), `nit` (polish).
 
-Severity: `critical` (breaks parseability), `design` (visual rough edge),
-`nit` (polish).
+**Rule refinement (R1).** During capture, "double-space as the divider"
+proved hard to read for inline nominal lists (`9 files  351 handles  7
+edges` blurs values). Comma is punctuation, not chartjunk, and matches
+how these same counts already render in the `Convergence` detail
+(`resolution +0, creation +0, obligations 0`). R1 is therefore
+amended: **inline separators between list items use comma**. `·`/`•`
+as glyph-separator stays banned; whitespace divides sections.
 
-| ID  | Command | Variant | Issue | Severity | Rule | Fix | Status |
-|-----|---------|---------|-------|----------|------|-----|--------|
-| F01 | _pending audit_ | | | | | | |
-
-Early spotter findings from manual review (these will be re-captured
-formally during Phase 1):
-
-- **F-pre-01** `status`, `check`, `garden`, `summary`, `diff` —
-  `·` separators everywhere. R1 violation. Fix in Printer `tally()` +
-  each file's inline `counts_line`/`signed_summary` helpers.
-- **F-pre-02** `garden` — `high/med/low` word trailing, shoved right
-  by 3 arbitrary spaces; jitters by title width. Design. Move blast to
-  leading column (`1  HIGH  [FIX]  5 broken refs in implementation/`),
-  fixed-width 4-char column.
-- **F-pre-03** `garden` — `5 broken refs · implementation/` reads
-  awkwardly without color. Rewrite as `5 broken refs in
-  implementation/`.
-- **F-pre-04** `orient` vs `find` — snippet truncation limits diverge
-  (120 vs 160). R6.
-- **F-pre-05** `garden`, `check` — no top heading. R2.
+| ID  | Command              | Variant                      | Issue                                                                                            | Severity | Rule | Fix                                                                                         | Status |
+|-----|----------------------|------------------------------|--------------------------------------------------------------------------------------------------|----------|------|---------------------------------------------------------------------------------------------|--------|
+| F01 | status               | default                      | `· ` separator in corpus/active/terminal tally; also between health counts and convergence       | design   | R1   | `Printer::tally` → comma; inline helpers use comma                                          | open   |
+| F02 | status               | default                      | Convergence detail already uses comma — separator choice is inconsistent with tally              | design   | R1   | unified comma closes the gap                                                                | open   |
+| F03 | status               | verbose                      | `0` vs `+0` inconsistency on `obligations` depending on default/verbose render path              | nit      | —    | audit the convergence-detail formatter so sign convention is one code path                  | open   |
+| F04 | status               | verbose                      | No blank line between last pipeline file and the Health block — visual crush                     | design   | R3   | `status.rs::render_with_options` emit a blank before Health when pipeline detail rendered   | open   |
+| F05 | check                | default, errors-only, stale, suggest | Missing top heading — hard to landmark                                                            | design   | R2   | Emit `Diagnostics (N)` or `Check` heading (count = total findings)                          | open   |
+| F06 | check                | default                      | Summary tally uses `·`                                                                           | design   | R1   | closes with F01 via `tally()`                                                                 | open   |
+| F07 | check                | stale with zero findings     | Output is just a summary — no heading context; agent can't tell what ran                         | design   | R2   | heading emitted unconditionally                                                              | open   |
+| F08 | check                | default on murail            | 16 suggestions back-to-back, no visual grouping between severity classes                         | nit      | —    | Insert a blank line between severity groups (errors → info → suggestions)                   | open   |
+| F09 | garden               | default                      | Missing top heading                                                                              | design   | R2   | `Maintenance tasks (N)` heading                                                              | open   |
+| F10 | garden               | default, limit3              | `5 broken refs · implementation/` — `·` as separator                                             | design   | R1   | Rewrite to `5 broken refs in implementation/`                                                | open   |
+| F11 | garden               | default                      | `high/med/low` blast shoved right with jitter; title width determines blast column               | design   | R5   | Move blast to leading 4-char column: `1  HIGH  [FIX]  5 broken refs in implementation/`     | open   |
+| F12 | garden               | default                      | Orphan list truncation: `... (4 more)` in TIDY tasks vs `... (+12 more)` in STALE tasks          | design   | R8   | Single format: `... (N more)` everywhere                                                    | open   |
+| F13 | garden               | default                      | Footer `Showing 10 of 32 tasks — --limit=20 for more` uses em-dash + ad-hoc phrasing             | design   | R7   | Replace with `Printer::hints` block: `Try  --limit=20  expand`                               | open   |
+| F14 | garden               | default                      | Footer truncation display is a one-liner; find uses a sub-head `showing N of M · offset K`       | design   | R8   | Unify: both use the subtitle form under the heading                                         | open   |
+| F15 | find                 | kw, limit5, sort-date        | Very long hash-suffixed handle IDs blow out the first column; later rows don't align with first  | design   | R5   | `Printer::table` already widens to max — likely OK; verify no ad-hoc pad                    | open   |
+| F16 | find                 | kw (murail)                  | File column repeats same base path 18× when all hits are sections of one file                    | design   | —    | Out of scope (needs grouping); note for Round 3                                             | open   |
+| F17 | find                 | context                      | Context snippets appear only on `file` kind; sections have no snippet even with `--context`      | design   | —    | Out of scope; note as product-level                                                          | open   |
+| F18 | orient               | default                      | Footer `Budget 49k / 50k tokens used` is prose trailer; inconsistent with heading pattern         | design   | R2   | Move into heading: `Read next (7 files, 49k/50k budget)` or render as final `kv` row         | open   |
+| F19 | orient               | default                      | Snippet trailing text stops mid-word with no ellipsis when char-truncated                        | design   | R6   | Unified `SNIPPET_MAX` truncator appends `…`                                                  | open   |
+| F20 | orient               | --file                       | Two heading levels: `Reading list for X` at col 0 + `Read next (N)` at col 2                     | design   | R2   | Single heading: `Reading list for X (N)`; drop inner                                        | open   |
+| F21 | orient, find         | cross-command                | SNIPPET limits diverge (orient 120, find 160). Agent-inspection inconsistency                    | design   | R6   | One `SNIPPET_MAX = 120` in `cli/mod.rs`                                                      | open   |
+| F22 | get                  | default                      | Heading `path (kind)` — no bold leader; doesn't read as heading without color                    | design   | R2   | Add `Handle` gutter label or bold the path via `Tone::Heading`                              | open   |
+| F23 | get                  | context                      | `Snippet` kv row duplicates content of `Context` section                                         | design   | —    | Drop `Snippet` when `--context` present                                                      | open   |
+| F24 | get                  | full                         | `--full` output identical to `--refs` — doesn't expand the "... 112 more" tail                   | critical | —    | Separate bug; file as `anneal` issue outside UI scope (product-level)                        | open   |
+| F25 | get                  | default                      | No `Try` hint block — agents don't discover `--context`/`--refs`/`--full` paths                  | design   | R7   | Add hint rows to `GetHumanOutput::render`                                                    | open   |
+| F26 | get                  | context                      | `Incoming (10 of 10)` is redundant when returning all (should be `Incoming (10)`)                | nit      | R8   | Drop `of M` when N == M                                                                      | open   |
+| F27 | impact               | default                      | Uses `•` bullet but indent already communicates list — decorative                                | design   | R1   | Remove bullet, use indent-only at SUB_COL                                                    | open   |
+| F28 | impact               | default                      | `(none)` under `Indirect (0)` is at col 4 (SUB_COL) while bullets are at col 2 — inconsistent    | design   | R5   | With bullets removed, both at SUB_COL; consistent                                            | open   |
+| F29 | impact               | default                      | Caption `what depends on <handle>` is not a heading but reads like one without styling           | nit      | R2   | Dim via `caption()` — already the case; verify tone                                          | open   |
+| F30 | map                  | summary                      | `12,571 nodes · 3,562 edges` — `·`                                                              | design   | R1   | closes with F01                                                                              | open   |
+| F31 | map                  | summary                      | `By kind` count column width doesn't expand for 5-digit counts — `11,582  section` pushes right  | design   | R5   | Use `Printer::table` numeric column                                                          | open   |
+| F32 | map                  | --around                     | Raw `writeln!` output; no Printer. `->` arrows, custom `-Cites->` triple, `... and N more files` | critical | R1,R2,R8 | Migrate to `Printer` with aligned Outgoing/Incoming table and hint block                 | open   |
+| F33 | map                  | --render text --full         | Raw `writeln!` passthrough; uses `-Kind->` triple arrows, `[status]` status suffix               | design   | —    | Acceptable — explicit passthrough surface. Document as intentional                           | open   |
+| F34 | map                  | --by-area                    | Count jitter inside `—601→` arrow — `—9→` vs `—601→` widths differ                            | nit      | R5   | Pad count to max edge-count digits for column alignment                                     | open   |
+| F35 | diff                 | default, by-area             | `+0 created · +0 active · +0 terminal` — `·`                                                    | design   | R1   | closes with F01                                                                              | open   |
+| F36 | obligations          | default                      | `0 outstanding · 0 discharged · 0 mooted` — `·`                                                 | design   | R1   | closes with F01                                                                              | open   |
+| F37 | init                 | --dry-run                    | Header `anneal.toml` + caption indented at col 2, but TOML body unindented at col 0              | design   | R3   | Either indent TOML to col 2 (breaks copy) or un-indent header (keeps copy)                   | open   |
+| F38 | areas                | all                          | `Try anneal garden  ranked tasks for the 1 degraded area` — phrasing compresses sentence          | nit      | R7   | Normalize to `Try  anneal garden  for ranked maintenance tasks` format                       | open   |
+| F39 | query                | all subcommands              | Raw `writeln!`; no indent, lowercase `next` footer, `-> path` arrows                             | design   | —    | **Deferred to Round 3** per scope guard                                                     | defer  |
+| F40 | explain              | all subcommands              | Raw `writeln!`; lowercase kv style; unindented                                                   | design   | —    | **Deferred to Round 3** per scope guard                                                     | defer  |
+| F41 | get                  | default                      | Arrow alignment between Outgoing and Incoming sections uses different padding widths             | nit      | R5   | OK within-section; cross-section mismatch is acceptable. No fix                              | wontfix |
+| F42 | find                 | kw, limit5, sort-date        | File column is redundant when kind=section (same as base path without `#hash`)                    | nit      | —    | Could omit for section kind; defer to Round 3 when find gets grouping                        | defer  |
 
 ## Execution sequencing
 
