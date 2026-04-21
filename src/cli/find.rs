@@ -107,15 +107,8 @@ impl Render for FindOutput {
             }
         }
 
-        if self.meta.truncated && !self.meta.expand.is_empty() {
-            p.blank()?;
-            let rows: Vec<(&str, &str)> = self
-                .meta
-                .expand
-                .iter()
-                .map(|hint| (hint.as_str(), "expand"))
-                .collect();
-            p.hints(&rows)?;
+        if self.meta.truncated {
+            super::emit_expand_hints(p, &self.meta.expand)?;
         }
         Ok(())
     }

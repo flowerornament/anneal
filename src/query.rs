@@ -1295,31 +1295,7 @@ fn emit_query_heading<W: Write>(
     Ok(())
 }
 
-/// Describe the effect of a pagination/expansion flag so the `Try` hint
-/// block reads as action + outcome, not flag + filler.
-fn expand_description(flag: &str) -> &'static str {
-    if flag.starts_with("--offset") {
-        "next page"
-    } else if flag.starts_with("--limit") {
-        "expand"
-    } else if flag.starts_with("--full") {
-        "all results"
-    } else {
-        "expand"
-    }
-}
-
-fn emit_expand_hints<W: Write>(p: &mut Printer<W>, expand: &[String]) -> std::io::Result<()> {
-    if expand.is_empty() {
-        return Ok(());
-    }
-    p.blank()?;
-    let rows: Vec<(&str, &str)> = expand
-        .iter()
-        .map(|s| (s.as_str(), expand_description(s)))
-        .collect();
-    p.hints(&rows)
-}
+use crate::cli::emit_expand_hints;
 
 fn render_handle_output<W: Write>(
     output: &HandleQueryOutput,
@@ -1404,15 +1380,6 @@ fn render_edge_output<W: Write>(
     Ok(())
 }
 
-fn diagnostic_severity(raw: &str) -> OutSeverity {
-    match raw {
-        "error" => OutSeverity::Error,
-        "warning" => OutSeverity::Warning,
-        "suggestion" => OutSeverity::Suggestion,
-        _ => OutSeverity::Info,
-    }
-}
-
 fn render_diagnostic_output<W: Write>(
     output: &DiagnosticQueryOutput,
     p: &mut Printer<W>,
@@ -1432,12 +1399,7 @@ fn render_diagnostic_output<W: Write>(
             .file
             .as_deref()
             .map(|path| Location::new(path, row.line));
-        p.diagnostic(
-            diagnostic_severity(&row.severity),
-            &code,
-            &row.message,
-            location,
-        )?;
+        p.diagnostic(row.severity.to_output(), &code, &row.message, location)?;
     }
     emit_expand_hints(p, &output.meta.expand)?;
     Ok(())
@@ -1750,7 +1712,7 @@ mod tests {
 
         assert_eq!(output.data.items.len(), 1);
         assert_eq!(output.data.items[0].code, DiagnosticCode::E001);
-        assert_eq!(output.data.items[0].severity, "error");
+        assert_eq!(output.data.items[0].severity, Severity::Error);
     }
 
     #[test]

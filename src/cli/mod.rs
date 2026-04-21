@@ -214,6 +214,36 @@ pub(super) fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// Description for a pagination/expansion flag in a `Try` hint block.
+/// Centralizes the dispatch so query/map/find don't each reparse the
+/// flag text to decide whether it expands, pages, or unbounded.
+pub(super) fn expand_description(flag: &str) -> &'static str {
+    if flag.starts_with("--offset") {
+        "next page"
+    } else if flag.starts_with("--full") {
+        "all results"
+    } else {
+        "expand"
+    }
+}
+
+/// Emit the `Try` hints block for a command's expand options. Returns
+/// `Ok(())` for an empty list so callers can call unconditionally.
+pub(super) fn emit_expand_hints<W: std::io::Write>(
+    p: &mut crate::output::Printer<W>,
+    expand: &[String],
+) -> std::io::Result<()> {
+    if expand.is_empty() {
+        return Ok(());
+    }
+    p.blank()?;
+    let rows: Vec<(&str, &str)> = expand
+        .iter()
+        .map(|s| (s.as_str(), expand_description(s)))
+        .collect();
+    p.hints(&rows)
+}
+
 /// Inline snippet budget. Orient previews, find snippets, and any other
 /// "contextual excerpt" surface share this limit so agents see the same
 /// shape of truncation regardless of command.
