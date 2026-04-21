@@ -474,7 +474,7 @@ as glyph-separator stays banned; whitespace divides sections.
 |-----|----------------------|------------------------------|--------------------------------------------------------------------------------------------------|----------|------|---------------------------------------------------------------------------------------------|--------|
 | F01 | status               | default                      | `· ` separator in corpus/active/terminal tally; also between health counts and convergence       | design   | R1   | `Printer::tally` → comma; inline helpers use comma                                          | closed |
 | F02 | status               | default                      | Convergence detail already uses comma — separator choice is inconsistent with tally              | design   | R1   | unified comma closes the gap                                                                | closed |
-| F03 | status               | verbose                      | `0` vs `+0` inconsistency on `obligations` depending on default/verbose render path              | nit      | —    | audit the convergence-detail formatter so sign convention is one code path                  | open   |
+| F03 | status               | verbose                      | `0` vs `+0` inconsistency on `obligations` depending on convergence branch                        | nit      | —    | snapshot::compute_convergence_analysis now formats all deltas via `{:+}`; single code path    | closed |
 | F04 | status               | verbose                      | No blank line between last pipeline file and the Health block — visual crush                     | design   | R3   | False alarm on re-capture: blank is emitted before Health group                              | closed |
 | F05 | check                | default, errors-only, stale, suggest | Missing top heading — hard to landmark                                                            | design   | R2   | Emit `Diagnostics (N)` or `Check` heading (count = total findings)                          | closed |
 | F06 | check                | default                      | Summary tally uses `·`                                                                           | design   | R1   | closes with F01 via `tally()`                                                                 | closed |
@@ -502,10 +502,10 @@ as glyph-separator stays banned; whitespace divides sections.
 | F28 | impact               | default                      | `(none)` under `Indirect (0)` is at col 4 (SUB_COL) while bullets are at col 2 — inconsistent    | design   | R5   | With bullets removed, both at SUB_COL; consistent                                            | closed |
 | F29 | impact               | default                      | Caption `what depends on <handle>` already renders via `caption()` (dim tone). Acceptable         | nit      | R2   | Verified on re-capture                                                                       | closed |
 | F30 | map                  | summary                      | `12,571 nodes · 3,562 edges` — `·`                                                              | design   | R1   | closes with F01                                                                              | closed |
-| F31 | map                  | summary                      | `By kind` count column width doesn't expand for 5-digit counts — `11,582  section` pushes right  | design   | R5   | Not yet fixed — by_kind uses inline `indexed`/`line` pairs not a table. Open                 | open   |
+| F31 | map                  | summary                      | `By kind` count column width doesn't expand for 5-digit counts — `11,582  section` pushes right  | design   | R5   | render_count_row now right-pads each count to the max width of the section                   | closed |
 | F32 | map                  | --around                     | Raw `writeln!` output; no Printer. `->` arrows, custom `-Cites->` triple, `... and N more files` | critical | R1,R2,R8 | Large rewrite with extensive test updates. Defer to Round 3 with query/explain           | defer  |
 | F33 | map                  | --render text --full         | Raw `writeln!` passthrough; uses `-Kind->` triple arrows, `[status]` status suffix               | design   | —    | Accepted as explicit passthrough for DOT/text pipelines                                      | wontfix |
-| F34 | map                  | --by-area                    | Count jitter inside `—601→` arrow — `—9→` vs `—601→` widths differ                            | nit      | R5   | Not yet fixed. Open                                                                          | open   |
+| F34 | map                  | --by-area                    | Count jitter inside `—601→` arrow — `—9→` vs `—601→` widths differ                            | nit      | R5   | Right-aligns the count so all edges share the arrow column                                   | closed |
 | F35 | diff                 | default, by-area             | `+0 created · +0 active · +0 terminal` — `·`                                                    | design   | R1   | closes with F01                                                                              | closed |
 | F36 | obligations          | default                      | `0 outstanding · 0 discharged · 0 mooted` — `·`                                                 | design   | R1   | closes with F01                                                                              | closed |
 | F37 | init                 | --dry-run                    | Header `anneal.toml` + caption indented at col 2, but TOML body unindented at col 0              | design   | R3   | Trade-off accepted: TOML body stays col-0 for copy/paste; header stays col-2 per R2           | wontfix |
@@ -514,6 +514,32 @@ as glyph-separator stays banned; whitespace divides sections.
 | F40 | explain              | all subcommands              | Raw `writeln!`; lowercase kv style; unindented                                                   | design   | —    | **Deferred to Round 3** per scope guard                                                     | defer  |
 | F41 | get                  | default                      | Arrow alignment between Outgoing and Incoming sections uses different padding widths             | nit      | R5   | OK within-section; cross-section mismatch is acceptable. No fix                              | wontfix |
 | F42 | find                 | kw, limit5, sort-date        | File column is redundant when kind=section (same as base path without `#hash`)                    | nit      | —    | Could omit for section kind; defer to Round 3 when find gets grouping                        | defer  |
+
+## Outcome
+
+- **32 closed.** F01-F15, F19-F23, F25-F31, F34-F36 — all `·` separators
+  retired, blast-first garden layout, Diagnostics heading with severity
+  grouping, get hint block + snippet dedup, snapshot convergence sign
+  unified, map summary + by-area column alignment.
+- **3 wontfix.** F18 (orient budget footer — section-separator form
+  accepted), F20 (orient --file two-tier heading — both at col 2 is
+  fine), F33 (map --render text --full — explicit passthrough surface),
+  F37 (init --dry-run indent — copy/paste vs. layout trade-off), F38
+  (areas hint phrasing), F41 (get cross-section arrow widths).
+- **7 deferred to Round 3.** F16, F17 (find grouping features), F24
+  (get --full bug — product-level), F32 (map --around migration — large
+  rewrite), F39, F40 (query/explain narrative surfaces — original scope
+  guard), F42 (find section kind dedup).
+
+Wave commits on `dev`:
+- `7a76c45` docs: findings table populated
+- `22a9b19` feat: Wave A — comma separator + SNIPPET_MAX + bullet retirement
+- `697a4bf` feat: Wave B — garden/check/get structure
+- `226e701` feat: Wave B tail — column alignment + convergence sign
+
+Rule amendments applied during Round 2:
+- **R1** refined to allow comma as inline separator; glyph separators
+  (`·`, `•`) stay banned. See note above the findings table.
 
 ## Execution sequencing
 
