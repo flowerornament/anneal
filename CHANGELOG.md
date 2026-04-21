@@ -2,6 +2,26 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- CLI output tightened across every command (Round 2 UX audit). The
+  `·` glyph is retired from inline separators — commas carry that role
+  now, and whitespace + indentation carry list grouping. Garden gets a
+  blast-first header row (`1  HIGH  [FIX]  5 broken refs in
+  implementation/`) with a stable left-column layout regardless of
+  title length, a Maintenance-tasks heading with `showing N of M` when
+  truncated, and a unified `… (N more)` detail truncation. Check emits
+  a `Diagnostics (N)` heading unconditionally and separates severity
+  groups with a blank line. Get's default view grew a Try hint block
+  that points agents to `--context` and `--full`; `--context` drops
+  the duplicated Snippet KV row. Map summary and by-area both right-
+  pad their count columns, snapshot's convergence detail always renders
+  obligation delta with an explicit sign, and orient/find share one
+  `SNIPPET_MAX = 120` with an explicit `…` when cut. See
+  `.design/2026-04-17-cli-ux-audit-v2.md` for the findings table.
+
 ## 0.9.2 - 2026-04-17
 
 ### Changed
