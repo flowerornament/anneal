@@ -531,6 +531,47 @@ as glyph-separator stays banned; whitespace divides sections.
   rewrite), F39, F40 (query/explain narrative surfaces — original scope
   guard), F42 (find section kind dedup).
 
+## Round 3: UI coherence migrations
+
+Round 3 pursues coherence only: migrate the three `writeln!`-based
+surfaces (`query`, `explain`, `map --around` default) to Printer
+primitives so they share the heading/kv/hint/diagnostic idiom used by
+the other 12 commands. Product-level findings (F16, F17, F24, F42) stay
+deferred — they would expand the CLI surface, which Round 3's scope
+guard rules out.
+
+### Scope
+
+- **In:** F39 (`query`), F40 (`explain`), F32 (`map --around` default
+  text branch).
+- **Out (carried forward):** F16, F17, F24, F42.
+- **Explicit passthroughs preserved:** `map --render=text` and `map
+  --render=dot` keep their raw `String` passthrough so `dot -Tpng` and
+  other pipelines remain byte-stable (F33 stays wontfix).
+
+### Rules added for Round 3
+
+- **R12** Subcommand outputs share the dispatch shape of their siblings.
+  `query diagnostics` uses the same `Printer::diagnostic` helper as
+  `anneal check`; `explain` blocks use `heading + kv_block + facts
+  (N)`; `query handles/edges/obligations/suggestions` use
+  `Printer::table` headers.
+- **R13** Trailing hints use `Printer::hints`, never ad-hoc `next <cmd>`
+  lines. Applies to `query` pagination hints and `map --around` expand
+  hints.
+- **R14** When a surface is semi-passthrough (piping to `dot`, `less`,
+  `grep`), it MUST stay byte-stable: emit through `raw_line` only from
+  the explicit-render branches. The implicit branch (e.g. `--around`
+  without `--render`) renders through Printer primitives.
+
+### Round 3 disposition
+
+| ID  | Target                        | Outcome                                                                               |
+|-----|-------------------------------|---------------------------------------------------------------------------------------|
+| F39 | `query {handles,edges,…}`     | `impl Render` added; `run()` accepts `OutputStyle`; tables via `Printer::table`; `next` → `hints`. |
+| F40 | `explain {diagnostic,…}`      | `impl Render` added per explanation type; `kv_block` + `facts (N)` heading + `hints`. |
+| F32 | `map --around` default text   | `render_text_full` + `render_text_hub_summary` compose `Line`s via `Printer` when `MapRender::Around`; legacy String path retained for explicit `--render=text`/`--render=dot`. |
+
 Wave commits on `dev`:
 - `7a76c45` docs: findings table populated
 - `22a9b19` feat: Wave A — comma separator + SNIPPET_MAX + bullet retirement

@@ -1584,7 +1584,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(Command::Explain { ref command }) => {
-            explain::run(&analysis, command, cli_args.json, json_style)?;
+            explain::run(&analysis, command, cli_args.json, json_style, output_style)?;
         }
     }
 

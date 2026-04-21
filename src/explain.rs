@@ -11,6 +11,7 @@ use crate::handle::HandleKind;
 use crate::identity::{diagnostic_id, suggestion_id};
 use crate::impact;
 use crate::obligations::lookup_obligation;
+use crate::output::{Line, OutputStyle, Printer, Render, Tone};
 use crate::snapshot;
 
 #[derive(Subcommand, Clone, Debug)]
@@ -178,71 +179,52 @@ pub(crate) fn run(
     command: &ExplainCommand,
     json: bool,
     json_style: JsonStyle,
+    output_style: OutputStyle,
 ) -> anyhow::Result<()> {
     match command {
-        ExplainCommand::Diagnostic(args) => {
-            let explanation = build_diagnostic_explanation_output(context, args)?;
-            emit_explanation(
-                explanation,
-                json,
-                json_style,
-                print_diagnostic_explanation_human,
-                "failed to write explain diagnostic output",
-            )?;
-            Ok(())
-        }
-        ExplainCommand::Impact(args) => {
-            let explanation = build_impact_explanation_output(context, args)?;
-            emit_explanation(
-                explanation,
-                json,
-                json_style,
-                print_impact_explanation_human,
-                "failed to write explain impact output",
-            )?;
-            Ok(())
-        }
-        ExplainCommand::Convergence(_) => {
-            let explanation = build_convergence_explanation_output(context);
-            emit_explanation(
-                explanation,
-                json,
-                json_style,
-                print_convergence_explanation_human,
-                "failed to write explain convergence output",
-            )?;
-            Ok(())
-        }
-        ExplainCommand::Obligation(args) => {
-            let explanation = build_obligation_explanation_output(context, args)?;
-            emit_explanation(
-                explanation,
-                json,
-                json_style,
-                print_obligation_explanation_human,
-                "failed to write explain obligation output",
-            )?;
-            Ok(())
-        }
-        ExplainCommand::Suggestion(args) => {
-            let explanation = build_suggestion_explanation_output(context, args)?;
-            emit_explanation(
-                explanation,
-                json,
-                json_style,
-                print_suggestion_explanation_human,
-                "failed to write explain suggestion output",
-            )?;
-            Ok(())
-        }
+        ExplainCommand::Diagnostic(args) => emit_explanation(
+            build_diagnostic_explanation_output(context, args)?,
+            json,
+            json_style,
+            output_style,
+            "failed to write explain diagnostic output",
+        ),
+        ExplainCommand::Impact(args) => emit_explanation(
+            build_impact_explanation_output(context, args)?,
+            json,
+            json_style,
+            output_style,
+            "failed to write explain impact output",
+        ),
+        ExplainCommand::Convergence(_) => emit_explanation(
+            build_convergence_explanation_output(context),
+            json,
+            json_style,
+            output_style,
+            "failed to write explain convergence output",
+        ),
+        ExplainCommand::Obligation(args) => emit_explanation(
+            build_obligation_explanation_output(context, args)?,
+            json,
+            json_style,
+            output_style,
+            "failed to write explain obligation output",
+        ),
+        ExplainCommand::Suggestion(args) => emit_explanation(
+            build_suggestion_explanation_output(context, args)?,
+            json,
+            json_style,
+            output_style,
+            "failed to write explain suggestion output",
+        ),
     }
 }
 
-fn emit_explanation<T: Serialize>(
+fn emit_explanation<T: Serialize + Render>(
     explanation: T,
     json: bool,
     json_style: JsonStyle,
-    render_human: impl FnOnce(&T, &mut dyn Write) -> std::io::Result<()>,
+    output_style: OutputStyle,
     human_context: &'static str,
 ) -> anyhow::Result<()> {
     if json {
@@ -252,8 +234,11 @@ fn emit_explanation<T: Serialize>(
         )?;
     } else {
         let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        render_human(&explanation, &mut lock).context(human_context)?;
+        let lock = stdout.lock();
+        let mut printer = Printer::new(lock, output_style);
+        explanation
+            .render(&mut printer)
+            .map_err(|e| anyhow::anyhow!("{human_context}: {e}"))?;
     }
     Ok(())
 }
@@ -1044,86 +1029,105 @@ fn fact(fact_type: &str, key: &str, value: &str) -> ExplanationFact {
     }
 }
 
-fn print_diagnostic_explanation_human(
-    explanation: &DiagnosticExplanation,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "diagnostic  {}  {}",
-        explanation.code, explanation.severity
-    )?;
-    writeln!(w, "id          {}", explanation.diagnostic_id)?;
-    if let Some(rule) = &explanation.rule {
-        writeln!(w, "rule        {rule}")?;
+/// Emit `Facts (N)` heading followed by aligned `fact_type key value`
+/// rows. Shared across every explanation variant so facts surface
+/// identically regardless of origin.
+fn render_facts<W: Write>(p: &mut Printer<W>, facts: &[ExplanationFact]) -> std::io::Result<()> {
+    if facts.is_empty() {
+        return Ok(());
     }
-    if let Some(file) = &explanation.file {
-        if let Some(line) = explanation.line {
-            writeln!(w, "location    {file}:{line}")?;
-        } else {
-            writeln!(w, "location    {file}")?;
-        }
-    }
-    writeln!(w)?;
-    writeln!(w, "message     {}", explanation.message)?;
-    if !explanation.facts.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "facts")?;
-        for fact in &explanation.facts {
-            writeln!(
-                w,
-                "  {:<10} {:<16} {}",
-                fact.fact_type, fact.key, fact.value
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn print_convergence_explanation_human(
-    explanation: &ConvergenceExplanation,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(w, "convergence  {}", explanation.signal)?;
-    writeln!(w, "detail       {}", explanation.detail)?;
-    writeln!(
-        w,
-        "current      handles {}  active {}  frozen {}  obligations {}",
-        explanation.current.handles_total,
-        explanation.current.handles_active,
-        explanation.current.handles_frozen,
-        explanation.current.obligations_outstanding,
-    )?;
-    if let Some(previous) = &explanation.previous {
-        writeln!(
-            w,
-            "previous     handles {}  active {}  frozen {}  obligations {}",
-            previous.handles_total,
-            previous.handles_active,
-            previous.handles_frozen,
-            previous.obligations_outstanding,
+    p.blank()?;
+    p.heading("Facts", Some(facts.len()))?;
+    let type_width = facts.iter().map(|f| f.fact_type.len()).max().unwrap_or(0);
+    let key_width = facts.iter().map(|f| f.key.len()).max().unwrap_or(0);
+    for fact in facts {
+        let type_pad = type_width - fact.fact_type.len();
+        let key_pad = key_width - fact.key.len();
+        p.line_at(
+            4,
+            &Line::new()
+                .toned(Tone::Dim, fact.fact_type.clone())
+                .pad(type_pad + 2)
+                .toned(Tone::Heading, fact.key.clone())
+                .pad(key_pad + 2)
+                .text(fact.value.clone()),
         )?;
-    } else {
-        writeln!(w, "previous     (none)")?;
-    }
-
-    print_pipeline_summary(&explanation.pipeline, w)?;
-
-    if !explanation.facts.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "facts")?;
-        for fact in &explanation.facts {
-            writeln!(
-                w,
-                "  {:<10} {:<20} {}",
-                fact.fact_type, fact.key, fact.value
-            )?;
-        }
     }
     Ok(())
 }
 
-fn print_pipeline_summary(pipeline: &PipelineSummary, w: &mut dyn Write) -> std::io::Result<()> {
+fn location_line(file: &str, line: Option<u32>) -> Line {
+    match line {
+        Some(ln) => Line::new().path(format!("{file}:{ln}")),
+        None => Line::new().path(file.to_string()),
+    }
+}
+
+impl Render for DiagnosticExplanation {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.line(
+            &Line::new()
+                .heading(format!("Diagnostic {}", self.code))
+                .text("  ")
+                .dim(self.severity.clone()),
+        )?;
+        p.blank()?;
+
+        let mut rows: Vec<(&str, Line)> =
+            vec![("id", Line::new().text(self.diagnostic_id.clone()))];
+        if let Some(rule) = &self.rule {
+            rows.push(("rule", Line::new().text(rule.clone())));
+        }
+        if let Some(file) = &self.file {
+            rows.push(("location", location_line(file, self.line)));
+        }
+        rows.push(("message", Line::new().text(self.message.clone())));
+        p.kv_block(&rows)?;
+
+        render_facts(p, &self.facts)?;
+        Ok(())
+    }
+}
+
+impl Render for ConvergenceExplanation {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading(&format!("Convergence {}", self.signal), None)?;
+        p.blank()?;
+
+        let current_line = snapshot_summary_line(&self.current);
+        let mut rows: Vec<(&str, Line)> = vec![
+            ("detail", Line::new().text(self.detail.clone())),
+            ("current", current_line),
+        ];
+        if let Some(previous) = &self.previous {
+            rows.push(("previous", snapshot_summary_line(previous)));
+        } else {
+            rows.push(("previous", Line::new().dim("(none)")));
+        }
+        p.kv_block(&rows)?;
+
+        render_pipeline(p, &self.pipeline)?;
+        render_facts(p, &self.facts)?;
+        Ok(())
+    }
+}
+
+fn snapshot_summary_line(summary: &ConvergenceSnapshotSummary) -> Line {
+    Line::new()
+        .text("handles ")
+        .count(summary.handles_total)
+        .text(", active ")
+        .count(summary.handles_active)
+        .text(", frozen ")
+        .count(summary.handles_frozen)
+        .text(", obligations ")
+        .count(summary.obligations_outstanding)
+}
+
+fn render_pipeline<W: Write>(
+    p: &mut Printer<W>,
+    pipeline: &PipelineSummary,
+) -> std::io::Result<()> {
     if pipeline.active.is_empty()
         && pipeline.terminal.is_empty()
         && pipeline.ordering.is_empty()
@@ -1131,146 +1135,143 @@ fn print_pipeline_summary(pipeline: &PipelineSummary, w: &mut dyn Write) -> std:
     {
         return Ok(());
     }
-    writeln!(w)?;
-    writeln!(w, "pipeline")?;
+    p.blank()?;
+    p.heading("Pipeline", None)?;
+    let mut rows: Vec<(&str, Line)> = Vec::new();
     if !pipeline.active.is_empty() {
-        writeln!(w, "  active    {}", pipeline.active.join(", "))?;
+        rows.push(("active", Line::new().text(pipeline.active.join(", "))));
     }
     if !pipeline.terminal.is_empty() {
-        writeln!(w, "  terminal  {}", pipeline.terminal.join(", "))?;
+        rows.push(("terminal", Line::new().text(pipeline.terminal.join(", "))));
     }
     if !pipeline.ordering.is_empty() {
-        writeln!(w, "  ordering  {}", pipeline.ordering.join(" → "))?;
+        rows.push(("ordering", Line::new().text(pipeline.ordering.join(" → "))));
+    }
+    if !rows.is_empty() {
+        p.kv_block(&rows)?;
     }
     if !pipeline.descriptions.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "descriptions")?;
-        let width = pipeline
+        p.blank()?;
+        p.heading("Descriptions", Some(pipeline.descriptions.len()))?;
+        let desc_rows: Vec<(&str, Line)> = pipeline
             .descriptions
             .iter()
-            .map(|d| d.status.len())
-            .max()
-            .unwrap_or(0);
-        for desc in &pipeline.descriptions {
-            writeln!(
-                w,
-                "  {:<width$}  {}",
-                desc.status,
-                desc.description,
-                width = width,
-            )?;
-        }
+            .map(|d| (d.status.as_str(), Line::new().text(d.description.clone())))
+            .collect();
+        p.kv_block(&desc_rows)?;
     }
     Ok(())
 }
 
-fn print_impact_explanation_human(
-    explanation: &ImpactExplanation,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(w, "impact       {}", explanation.root)?;
-    writeln!(w)?;
-    print_impact_section("direct", &explanation.direct, w)?;
-    writeln!(w)?;
-    print_impact_section("indirect", &explanation.indirect, w)?;
-    Ok(())
+impl Render for ImpactExplanation {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.line(
+            &Line::new()
+                .heading("Impact")
+                .text("  ")
+                .path(self.root.clone()),
+        )?;
+        p.blank()?;
+        render_impact_section(p, "Direct", &self.direct)?;
+        p.blank()?;
+        render_impact_section(p, "Indirect", &self.indirect)?;
+        Ok(())
+    }
 }
 
-fn print_impact_section(
+fn render_impact_section<W: Write>(
+    p: &mut Printer<W>,
     label: &str,
     paths: &[ImpactPath],
-    w: &mut dyn Write,
 ) -> std::io::Result<()> {
-    writeln!(w, "{label}")?;
+    p.heading(label, Some(paths.len()))?;
     if paths.is_empty() {
-        writeln!(w, "  (none)")?;
+        p.line_at(4, &Line::new().dim("(none)"))?;
         return Ok(());
     }
     for path in paths {
-        writeln!(w, "  {}", path.target)?;
+        p.line_at(4, &Line::new().path(path.target.clone()))?;
         for hop in &path.path {
-            writeln!(w, "    {} {} {}", hop.source, hop.edge_kind, hop.target)?;
-        }
-    }
-    Ok(())
-}
-
-fn print_obligation_explanation_human(
-    explanation: &ObligationExplanation,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(w, "obligation   {}", explanation.handle)?;
-    writeln!(w, "namespace    {}", explanation.namespace)?;
-    writeln!(w, "status       {}", explanation.disposition)?;
-    if !explanation.facts.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "facts")?;
-        for fact in &explanation.facts {
-            writeln!(
-                w,
-                "  {:<10} {:<16} {}",
-                fact.fact_type, fact.key, fact.value
-            )?;
-        }
-    }
-    if let Some(remediation) = &explanation.remediation {
-        writeln!(w)?;
-        writeln!(w, "remediation")?;
-        writeln!(w, "  {}:", remediation.action)?;
-        writeln!(w, "    {}", remediation.frontmatter_syntax)?;
-    }
-    if !explanation.candidates.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "candidates (by graph proximity)")?;
-        let width = explanation
-            .candidates
-            .iter()
-            .map(|c| c.handle.len())
-            .max()
-            .unwrap_or(0);
-        for candidate in &explanation.candidates {
-            writeln!(
-                w,
-                "  {:<width$}  {}",
-                candidate.handle,
-                candidate.reason,
-                width = width,
+            p.line_at(
+                6,
+                &Line::new()
+                    .path(hop.source.clone())
+                    .dim(" ")
+                    .toned(Tone::Heading, hop.edge_kind.clone())
+                    .dim(" ")
+                    .path(hop.target.clone()),
             )?;
         }
     }
     Ok(())
 }
 
-fn print_suggestion_explanation_human(
-    explanation: &SuggestionExplanation,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(w, "suggestion   {}", explanation.code)?;
-    writeln!(w, "id           {}", explanation.suggestion_id)?;
-    if let Some(rule) = &explanation.rule {
-        writeln!(w, "rule         {rule}")?;
-    }
-    if let Some(file) = &explanation.file {
-        if let Some(line) = explanation.line {
-            writeln!(w, "location     {file}:{line}")?;
-        } else {
-            writeln!(w, "location     {file}")?;
-        }
-    }
-    writeln!(w)?;
-    writeln!(w, "message      {}", explanation.message)?;
-    if !explanation.facts.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "facts")?;
-        for fact in &explanation.facts {
-            writeln!(
-                w,
-                "  {:<10} {:<16} {}",
-                fact.fact_type, fact.key, fact.value
+impl Render for ObligationExplanation {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading(&format!("Obligation {}", self.handle), None)?;
+        p.blank()?;
+
+        let rows: Vec<(&str, Line)> = vec![
+            ("namespace", Line::new().text(self.namespace.clone())),
+            ("status", Line::new().text(self.disposition.clone())),
+        ];
+        p.kv_block(&rows)?;
+
+        render_facts(p, &self.facts)?;
+
+        if let Some(remediation) = &self.remediation {
+            p.blank()?;
+            p.heading("Remediation", None)?;
+            p.line_at(4, &Line::new().text(format!("{}:", remediation.action)))?;
+            p.line_at(
+                6,
+                &Line::new().toned(Tone::Path, remediation.frontmatter_syntax.clone()),
             )?;
         }
+        if !self.candidates.is_empty() {
+            p.blank()?;
+            p.heading("Candidates", Some(self.candidates.len()))?;
+            p.caption("ranked by graph proximity")?;
+            let width = self
+                .candidates
+                .iter()
+                .map(|c| c.handle.len())
+                .max()
+                .unwrap_or(0);
+            for candidate in &self.candidates {
+                let pad = width - candidate.handle.len();
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .path(candidate.handle.clone())
+                        .pad(pad + 2)
+                        .dim(candidate.reason.clone()),
+                )?;
+            }
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+impl Render for SuggestionExplanation {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        p.heading(&format!("Suggestion {}", self.code), None)?;
+        p.blank()?;
+
+        let mut rows: Vec<(&str, Line)> =
+            vec![("id", Line::new().text(self.suggestion_id.clone()))];
+        if let Some(rule) = &self.rule {
+            rows.push(("rule", Line::new().text(rule.clone())));
+        }
+        if let Some(file) = &self.file {
+            rows.push(("location", location_line(file, self.line)));
+        }
+        rows.push(("message", Line::new().text(self.message.clone())));
+        p.kv_block(&rows)?;
+
+        render_facts(p, &self.facts)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1499,9 +1500,12 @@ mod tests {
         assert_eq!(explanation.pipeline.descriptions[0].status, "draft");
 
         let mut buf = Vec::new();
-        print_convergence_explanation_human(&explanation, &mut buf).expect("print");
+        {
+            let mut printer = Printer::new(&mut buf, OutputStyle::plain());
+            explanation.render(&mut printer).expect("render");
+        }
         let text = String::from_utf8(buf).expect("utf8");
-        assert!(text.contains("pipeline"));
+        assert!(text.contains("Pipeline"));
         assert!(text.contains("draft → active"));
         assert!(text.contains("Under construction"));
     }
