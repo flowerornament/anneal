@@ -795,6 +795,12 @@ pub(crate) enum MapRender {
     Summary,
     Text,
     Dot,
+    /// Printer-based focused-neighborhood rendering used by default for
+    /// `--around`/`--concern` without an explicit `--render`. Not
+    /// intended as a user-facing choice — `Text` and `Dot` remain the
+    /// byte-stable passthrough formats for pipelines.
+    #[clap(hide = true)]
+    Around,
 }
 
 /// Sort order for `find` results.
@@ -1336,7 +1342,7 @@ fn run() -> anyhow::Result<()> {
                 || temporal_filter.is_some();
             let render = match (render, cli_args.json, has_focus) {
                 (Some(render), _, _) => render,
-                (None, false, true) => MapRender::Text,
+                (None, false, true) => MapRender::Around,
                 _ => MapRender::Summary,
             };
             if matches!(render, MapRender::Text | MapRender::Dot) && !full && !has_focus {
