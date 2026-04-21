@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use super::style::{Glyph, OutputStyle, Tone};
+use super::style::{OutputStyle, Tone};
 
 /// Indentation constants. Column 0-1 is reserved for glyphs (gutter);
 /// content starts at column 2. Nested detail (e.g., diagnostic detail
@@ -319,16 +319,16 @@ impl<W: Write> Printer<W> {
 
     // --- Tally / summary row -----------------------------------------
 
-    /// Emit a single row like `0 errors · 0 warnings · 1 info`. Each
+    /// Emit a single row like `0 errors, 0 warnings, 1 info`. Each
     /// part pairs a count with a label. Zero-valued parts render dim so
-    /// non-zero values pop.
+    /// non-zero values pop. Comma separator per R1 (glyph separators are
+    /// chartjunk; punctuation is prose).
     pub(crate) fn tally(&mut self, parts: &[(usize, &str)]) -> io::Result<()> {
         self.write_indent(CONTENT_COL)?;
         let sep = self.style.tone(Tone::Dim);
-        let sep_text = format!(" {} ", self.style.glyph(Glyph::Separator));
         for (i, (count, label)) in parts.iter().enumerate() {
             if i > 0 {
-                write!(self.writer, "{}", sep.apply_to(&sep_text))?;
+                write!(self.writer, "{}", sep.apply_to(", "))?;
             }
             let (num_tone, lbl_tone) = if *count == 0 {
                 (Tone::Dim, Tone::Dim)
@@ -347,18 +347,11 @@ impl<W: Write> Printer<W> {
         writeln!(self.writer)
     }
 
-    // --- Bullets / indexed lists --------------------------------------
-
-    pub(crate) fn bullet(&mut self, line: &Line) -> io::Result<()> {
-        self.write_indent(CONTENT_COL)?;
-        let glyph = self
-            .style
-            .tone(Tone::Dim)
-            .apply_to(self.style.glyph(Glyph::Bullet));
-        write!(self.writer, "{glyph} ")?;
-        self.write_segments(&line.segs)?;
-        writeln!(self.writer)
-    }
+    // --- Indexed lists -----------------------------------------------
+    //
+    // Plain list items are indentation-only: emit via `line_at(SUB_COL, …)`.
+    // R1 rules out decorative bullet glyphs — indent already communicates
+    // grouping.
 
     /// Indexed list row: `  N  content`. Index is right-aligned within
     /// `width` columns so single- and double-digit indices share a

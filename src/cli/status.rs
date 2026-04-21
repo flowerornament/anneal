@@ -128,27 +128,21 @@ impl StatusOutput {
         let edges_label = format!("edge{}", plural(self.edges));
         p.kv(
             "Corpus",
-            &counts_line(
-                &[
-                    (self.files, &files_label),
-                    (self.handles, &handles_label),
-                    (self.edges, &edges_label),
-                ],
-                style,
-            ),
+            &counts_line(&[
+                (self.files, &files_label),
+                (self.handles, &handles_label),
+                (self.edges, &edges_label),
+            ]),
             label_width,
         )?;
         // Continuation indented to land under the value column.
         let value_col = 2 + label_width + 2;
         p.line_at(
             value_col,
-            &counts_line(
-                &[
-                    (self.active_handles, "active"),
-                    (self.frozen_handles, "terminal"),
-                ],
-                style,
-            ),
+            &counts_line(&[
+                (self.active_handles, "active"),
+                (self.frozen_handles, "terminal"),
+            ]),
         )?;
 
         // --- Pipeline ---
@@ -162,14 +156,10 @@ impl StatusOutput {
         // --- Health + Convergence group ---
         p.blank()?;
         let outstanding = self.outstanding_obligations();
-        p.kv(
-            "Health",
-            &health_line(self, outstanding, style),
-            label_width,
-        )?;
+        p.kv("Health", &health_line(self, outstanding), label_width)?;
         p.kv(
             "Convergence",
-            &convergence_line(self.convergence.as_ref(), style),
+            &convergence_line(self.convergence.as_ref()),
             label_width,
         )?;
 
@@ -255,14 +245,14 @@ impl StatusOutput {
     }
 }
 
-/// Build a dot-separated `N label` line. Labels are taken verbatim
-/// (no auto-pluralization); callers pass the already-correct label.
-fn counts_line(items: &[(usize, &str)], style: OutputStyle) -> Line {
-    let sep = format!(" {} ", style.glyph(Glyph::Separator));
+/// Build a `N label, N label, ...` count line. Labels are taken
+/// verbatim (no auto-pluralization); callers pass the already-correct
+/// label. Comma separator per R1.
+fn counts_line(items: &[(usize, &str)]) -> Line {
     let mut line = Line::new();
     for (i, (n, label)) in items.iter().enumerate() {
         if i > 0 {
-            line = line.dim(sep.clone());
+            line = line.dim(", ");
         }
         line = line.count(*n).text(format!(" {label}"));
     }
@@ -283,8 +273,7 @@ fn pipeline_line(pipeline: &[PipelineLevel], style: OutputStyle) -> Line {
 }
 
 /// Health summary: errors + warnings, plus obligation roll-up when present.
-fn health_line(s: &StatusOutput, outstanding: usize, style: OutputStyle) -> Line {
-    let sep = format!(" {} ", style.glyph(Glyph::Separator));
+fn health_line(s: &StatusOutput, outstanding: usize) -> Line {
     let error_tone = if s.diagnostics.errors > 0 {
         Tone::Error
     } else {
@@ -300,13 +289,13 @@ fn health_line(s: &StatusOutput, outstanding: usize, style: OutputStyle) -> Line
             error_tone,
             format_number_suffix(s.diagnostics.errors, "error"),
         )
-        .dim(sep.clone())
+        .dim(", ")
         .toned(
             warning_tone,
             format_number_suffix(s.diagnostics.warnings, "warning"),
         );
     if s.obligations.total > 0 {
-        line = line.dim(sep.clone()).text(format!(
+        line = line.dim(", ").text(format!(
             "{}/{} obligations discharged",
             s.obligations.discharged, s.obligations.total
         ));
@@ -314,17 +303,16 @@ fn health_line(s: &StatusOutput, outstanding: usize, style: OutputStyle) -> Line
             line = line.dim(format!(" ({} mooted)", s.obligations.mooted));
         }
         if outstanding > 0 {
-            line = line.dim(sep).warning(format!("{outstanding} outstanding"));
+            line = line.dim(", ").warning(format!("{outstanding} outstanding"));
         }
     }
     line
 }
 
-fn convergence_line(conv: Option<&ConvergenceSummaryOutput>, style: OutputStyle) -> Line {
+fn convergence_line(conv: Option<&ConvergenceSummaryOutput>) -> Line {
     let Some(c) = conv else {
         return Line::new().dim("no history yet");
     };
-    let sep = format!(" {} ", style.glyph(Glyph::Separator));
     let signal_tone = match c.signal.as_str() {
         "advancing" => Tone::Success,
         "drifting" => Tone::Warning,
@@ -332,7 +320,7 @@ fn convergence_line(conv: Option<&ConvergenceSummaryOutput>, style: OutputStyle)
     };
     Line::new()
         .toned(signal_tone, c.signal.clone())
-        .dim(sep)
+        .dim(", ")
         .dim(c.detail.clone())
 }
 

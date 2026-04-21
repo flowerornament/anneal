@@ -84,7 +84,7 @@ fn render_section<W: Write>(
         p.line_at(4, &Line::new().dim("(none)"))?;
     } else {
         for id in items {
-            p.bullet(&Line::new().path(id.clone()))?;
+            p.line_at(4, &Line::new().path(id.clone()))?;
         }
     }
     Ok(())

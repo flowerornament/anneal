@@ -214,6 +214,11 @@ pub(super) fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// Inline snippet budget. Orient previews, find snippets, and any other
+/// "contextual excerpt" surface share this limit so agents see the same
+/// shape of truncation regardless of command.
+pub(super) const SNIPPET_MAX: usize = 120;
+
 /// Char-boundary-safe slice truncation. Returns the original when `max`
 /// is at or past the string end; otherwise slices at the largest char
 /// boundary `≤ max`.
@@ -226,6 +231,16 @@ pub(super) fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Truncate a display snippet to `SNIPPET_MAX`. When the input is
+/// shortened, appends `…` so agents know more content exists.
+pub(super) fn truncate_snippet(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.len() <= SNIPPET_MAX {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let cut = truncate(s, SNIPPET_MAX);
+    std::borrow::Cow::Owned(format!("{cut}…"))
 }
 
 #[cfg(test)]

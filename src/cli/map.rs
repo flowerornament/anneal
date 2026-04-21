@@ -1010,7 +1010,7 @@ impl Render for MapByAreaOutput {
             p.heading("Islands", Some(self.islands.len()))?;
             p.caption("areas with zero cross-links")?;
             for island in &self.islands {
-                p.bullet(&Line::new().path(island.clone()))?;
+                p.line_at(4, &Line::new().path(island.clone()))?;
             }
         }
         Ok(())

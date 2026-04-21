@@ -8,7 +8,7 @@ use crate::handle::HandleKind;
 use crate::lattice::Lattice;
 use crate::output::{Line, Printer, Render, Tone};
 
-use super::{DetailLevel, OutputMeta, SnippetIndex, truncate};
+use super::{DetailLevel, OutputMeta, SnippetIndex, truncate_snippet};
 
 // ---------------------------------------------------------------------------
 // Find command (CLI-03)
@@ -64,7 +64,7 @@ impl Render for FindOutput {
         if self.meta.truncated || self.offset > 0 {
             p.heading(&title, Some(self.returned))?;
             p.caption(&format!(
-                "showing {} of {} · offset {}",
+                "showing {} of {}, offset {}",
                 self.returned, self.total, self.offset
             ))?;
         } else {
@@ -103,7 +103,7 @@ impl Render for FindOutput {
             }
             p.line(&row)?;
             if let Some(summary) = &m.summary {
-                p.line_at(6, &Line::new().dim(truncate(summary, 160).to_string()))?;
+                p.line_at(6, &Line::new().dim(truncate_snippet(summary).into_owned()))?;
             }
         }
 

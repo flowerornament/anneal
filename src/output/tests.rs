@@ -58,7 +58,7 @@ fn kv_block_alignment() {
 #[test]
 fn tally_mixed_zero_nonzero() {
     let out = render(|p| p.tally(&[(2, "errors"), (0, "warnings"), (1, "info")]));
-    assert_eq!(out, "  2 errors , 0 warnings , 1 info\n");
+    assert_eq!(out, "  2 errors, 0 warnings, 1 info\n");
 }
 
 #[test]
@@ -105,12 +105,6 @@ fn hints_aligned() {
         out,
         "  Try  anneal check   for detailed diagnostics\n       anneal garden  for ranked maintenance tasks\n"
     );
-}
-
-#[test]
-fn bullet_uses_ascii_in_plain() {
-    let out = render(|p| p.bullet(&Line::new().text("hello")));
-    assert_eq!(out, "  - hello\n");
 }
 
 #[test]
@@ -167,15 +161,15 @@ fn blank_is_lf_only() {
 #[test]
 fn rich_mode_selects_unicode_glyph() {
     let style = OutputStyle::new(Mode::Rich, false);
-    assert_eq!(style.glyph(Glyph::Bullet), "•");
     assert_eq!(style.glyph(Glyph::Arrow), "→");
-    assert_eq!(style.glyph(Glyph::Separator), "·");
+    assert_eq!(style.glyph(Glyph::ArrowIn), "←");
+    assert_eq!(style.glyph(Glyph::Success), "✔");
 }
 
 #[test]
 fn plain_mode_selects_ascii_glyph() {
     let style = OutputStyle::new(Mode::Plain, false);
-    assert_eq!(style.glyph(Glyph::Bullet), "-");
     assert_eq!(style.glyph(Glyph::Arrow), "->");
-    assert_eq!(style.glyph(Glyph::Separator), ",");
+    assert_eq!(style.glyph(Glyph::ArrowIn), "<-");
+    assert_eq!(style.glyph(Glyph::Success), "+");
 }
