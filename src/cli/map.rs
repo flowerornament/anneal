@@ -87,15 +87,17 @@ impl Render for MapOutput {
         if !self.by_kind.is_empty() {
             p.blank()?;
             p.heading("By kind", Some(self.by_kind.len()))?;
+            let width = max_count_width(self.by_kind.iter().map(|c| c.count));
             for count in &self.by_kind {
-                render_count_row(p, count.count, &count.kind)?;
+                render_count_row(p, count.count, &count.kind, width)?;
             }
         }
         if !self.top_namespaces.is_empty() {
             p.blank()?;
             p.heading("Top namespaces", Some(self.top_namespaces.len()))?;
+            let width = max_count_width(self.top_namespaces.iter().map(|n| n.count));
             for ns in &self.top_namespaces {
-                render_count_row(p, ns.count, &ns.namespace)?;
+                render_count_row(p, ns.count, &ns.namespace, width)?;
             }
         }
         if !self.meta.expand.is_empty() {
@@ -116,11 +118,39 @@ fn render_count_row<W: Write>(
     p: &mut Printer<W>,
     count: usize,
     label: &str,
+    count_width: usize,
 ) -> std::io::Result<()> {
+    let rendered = format_count(count);
+    let pad = count_width.saturating_sub(rendered.len());
     p.line_at(
         4,
-        &Line::new().count(count).text("  ").dim(label.to_string()),
+        &Line::new()
+            .pad(pad)
+            .count(count)
+            .text("  ")
+            .dim(label.to_string()),
     )
+}
+
+/// Format a count the way `Line::count` will — thousands-separated —
+/// so we can compute an accurate column width before layout.
+fn format_count(n: usize) -> String {
+    let abs = n.to_string();
+    let grouped: Vec<&str> = abs
+        .as_bytes()
+        .rchunks(3)
+        .rev()
+        .map(|c| std::str::from_utf8(c).expect("ascii digits"))
+        .collect();
+    grouped.join(",")
+}
+
+fn max_count_width(counts: impl IntoIterator<Item = usize>) -> usize {
+    counts
+        .into_iter()
+        .map(|c| format_count(c).len())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Maximum number of edges to display in map text rendering.
@@ -984,21 +1014,33 @@ impl Render for MapByAreaOutput {
         if self.edges.is_empty() {
             p.line_at(4, &Line::new().dim("(none)"))?;
         } else {
-            let width = self
+            let src_width = self
                 .edges
                 .iter()
                 .map(|e| console::measure_text_width(&e.source))
                 .max()
                 .unwrap_or(0);
+            // Right-align the count inside the `—N→` arrow so rows with
+            // 1-digit and 3-digit counts have the same arrow column.
+            let count_width = self
+                .edges
+                .iter()
+                .map(|e| e.count.to_string().len())
+                .max()
+                .unwrap_or(0);
             for edge in &self.edges {
-                let pad = width.saturating_sub(console::measure_text_width(&edge.source)) + 2;
+                let src_pad =
+                    src_width.saturating_sub(console::measure_text_width(&edge.source)) + 2;
+                let count_str = edge.count.to_string();
+                let count_pad = count_width.saturating_sub(count_str.len());
                 p.line_at(
                     4,
                     &Line::new()
                         .path(edge.source.clone())
-                        .pad(pad)
+                        .pad(src_pad)
                         .dim("—")
-                        .toned(Tone::Number, edge.count.to_string())
+                        .pad(count_pad)
+                        .toned(Tone::Number, count_str)
                         .dim("→ ")
                         .path(edge.target.clone()),
                 )?;

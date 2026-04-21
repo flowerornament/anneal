@@ -471,36 +471,24 @@ pub(crate) fn analyze_convergence(current: &Snapshot, previous: &Snapshot) -> Co
     let obligations_delta =
         current.obligations.outstanding as i64 - previous.obligations.outstanding as i64;
 
-    if resolution_gain > creation_gain && obligations_delta <= 0 {
-        ConvergenceAnalysis {
-            signal: ConvergenceSignal::Advancing,
-            detail: format!(
-                "resolution +{resolution_gain}, creation +{creation_gain}, obligations {obligations_delta}"
-            ),
-            resolution_gain,
-            creation_gain,
-            obligations_delta,
-        }
+    // `{:+}` always renders the sign, so `obligations_delta` reads
+    // consistently (`+0`, `-2`, `+3`) regardless of convergence branch.
+    let detail = format!(
+        "resolution +{resolution_gain}, creation +{creation_gain}, obligations {obligations_delta:+}"
+    );
+    let signal = if resolution_gain > creation_gain && obligations_delta <= 0 {
+        ConvergenceSignal::Advancing
     } else if creation_gain > resolution_gain || obligations_delta > 0 {
-        ConvergenceAnalysis {
-            signal: ConvergenceSignal::Drifting,
-            detail: format!(
-                "resolution +{resolution_gain}, creation +{creation_gain}, obligations +{obligations_delta}"
-            ),
-            resolution_gain,
-            creation_gain,
-            obligations_delta,
-        }
+        ConvergenceSignal::Drifting
     } else {
-        ConvergenceAnalysis {
-            signal: ConvergenceSignal::Holding,
-            detail: format!(
-                "resolution +{resolution_gain}, creation +{creation_gain}, obligations {obligations_delta}"
-            ),
-            resolution_gain,
-            creation_gain,
-            obligations_delta,
-        }
+        ConvergenceSignal::Holding
+    };
+    ConvergenceAnalysis {
+        signal,
+        detail,
+        resolution_gain,
+        creation_gain,
+        obligations_delta,
     }
 }
 
