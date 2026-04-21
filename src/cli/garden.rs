@@ -163,32 +163,44 @@ pub(crate) struct GardenOutput {
 
 impl Render for GardenOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        // Heading universal (R2). Count is total tasks before category/area filter.
+        p.heading("Maintenance tasks", Some(self.total))?;
+        if self.returned < self.total {
+            p.caption(&format!("showing {} of {}", self.returned, self.total))?;
+        }
+        p.blank()?;
+
         if self.tasks.is_empty() {
             p.line(&Line::new().dim("No maintenance tasks — corpus is tidy."))?;
             return Ok(());
         }
 
+        // Blast-first header: `N  HIGH  [FIX]    title in area/`.
+        // Blast gets a fixed-width leading column so the tag column never
+        // jitters with title length. Tag column holds `[DRIFT]` (7 chars).
+        const BLAST_COL_WIDTH: usize = 4;
+        const TAG_COL_WIDTH: usize = 7;
         let idx_width = self.tasks.len().to_string().len().max(1);
         for (idx, task) in self.tasks.iter().enumerate() {
             if idx > 0 {
                 p.blank()?;
             }
-            // Header row: `N  [TAG]  title (· area)  blast`.
-            // Tag column is padded to fit the widest label (`[DRIFT]` = 7).
-            const TAG_COL_WIDTH: usize = 7;
+            let blast = task.blast();
+            let blast_label = blast.to_string().to_uppercase();
+            let blast_pad = BLAST_COL_WIDTH.saturating_sub(blast_label.len());
             let tag = format!("[{}]", task.category.tag());
             let tag_pad = TAG_COL_WIDTH.saturating_sub(tag.len());
             let mut header = Line::new()
+                .toned(blast.tone(), blast_label)
+                .pad(blast_pad)
+                .text("  ")
                 .toned(task.category.tone(), tag)
                 .pad(tag_pad)
                 .text("  ")
                 .text(task.title.clone());
             if let Some(area) = task.area.as_deref() {
-                header = header.dim(" · ").path(format!("{area}/"));
+                header = header.dim(" in ").path(format!("{area}/"));
             }
-            // Right-padded blast on the same line, dim-separator.
-            let blast = task.blast();
-            header = header.dim("   ").toned(blast.tone(), blast.to_string());
             p.indexed(idx + 1, idx_width, &header)?;
 
             // Body: detail + action triad, consistently indented to col 4.
@@ -203,16 +215,7 @@ impl Render for GardenOutput {
         if self.returned < self.total {
             p.blank()?;
             let next_limit = self.total.min(self.returned * 2);
-            p.line(
-                &Line::new()
-                    .dim("Showing ")
-                    .count(self.returned)
-                    .dim(" of ")
-                    .count(self.total)
-                    .dim(" tasks — ")
-                    .callout(format!("--limit={next_limit}"))
-                    .dim(" for more"),
-            )?;
+            p.hints(&[(&format!("--limit={next_limit}"), "expand")])?;
         }
         Ok(())
     }
@@ -404,7 +407,7 @@ fn collect_tidy_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             .collect::<Vec<_>>()
             .join(", ");
         let detail = if handles.len() > 5 {
-            format!("{sample}, ... ({} more)", handles.len() - 5)
+            format!("{sample}, … ({} more)", handles.len() - 5)
         } else {
             sample
         };
@@ -530,7 +533,7 @@ fn collect_stale_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             .collect::<Vec<_>>()
             .join(", ");
         let detail = if acc.files.len() > 3 {
-            format!("{sample}, ... (+{} more)", acc.files.len() - 3)
+            format!("{sample}, … ({} more)", acc.files.len() - 3)
         } else {
             sample
         };

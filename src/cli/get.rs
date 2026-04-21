@@ -344,7 +344,7 @@ fn render_get_summary<W: Write>(
     limit_edges: usize,
 ) -> std::io::Result<()> {
     render_get_header(p, data)?;
-    render_get_kv(p, data)?;
+    render_get_kv(p, data, true)?;
 
     if !data.outgoing_edges.is_empty() {
         p.blank()?;
@@ -358,6 +358,25 @@ fn render_get_summary<W: Write>(
         p.heading("Incoming", Some(data.incoming_edges.len()))?;
         render_edge_group(p, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
     }
+
+    // Navigation hints (R7). Only show when deeper views actually add
+    // information — i.e. there's more adjacency or a snippet to render.
+    let has_more = data.outgoing_edges.len() > limit_edges
+        || data.incoming_edges.len() > limit_edges
+        || data.snippet.is_some();
+    if has_more {
+        p.blank()?;
+        let id = &data.id;
+        let mut hints: Vec<(String, &str)> = Vec::new();
+        if data.snippet.is_some() {
+            hints.push((format!("anneal get {id} --context"), "briefing + snippet"));
+        }
+        if data.outgoing_edges.len() > limit_edges || data.incoming_edges.len() > limit_edges {
+            hints.push((format!("anneal get {id} --full"), "expand adjacency"));
+        }
+        let rows: Vec<(&str, &str)> = hints.iter().map(|(c, d)| (c.as_str(), *d)).collect();
+        p.hints(&rows)?;
+    }
     Ok(())
 }
 
@@ -368,7 +387,9 @@ fn render_get_context<W: Write>(
     limit_edges: usize,
 ) -> std::io::Result<()> {
     render_get_header(p, data)?;
-    render_get_kv(p, data)?;
+    // Snippet is shown below as the Context section — drop it from the KV
+    // block so the same prose isn't repeated (F23).
+    render_get_kv(p, data, false)?;
 
     if let Some(snippet) = &data.snippet {
         p.blank()?;
@@ -378,32 +399,20 @@ fn render_get_context<W: Write>(
 
     p.blank()?;
     p.heading("Refs", None)?;
-    if data.outgoing_edges.is_empty() {
-        p.line_at(4, &Line::new().dim("Outgoing: none"))?;
-    } else {
-        let shown = data.outgoing_edges.len().min(limit_edges);
-        p.line_at(
-            4,
-            &Line::new()
-                .heading("Outgoing")
-                .text(" ")
-                .dim(format!("({shown} of {})", data.outgoing_edges.len())),
-        )?;
-        render_edge_group_at(p, 6, &data.outgoing_edges, shown, EdgeDirection::Outgoing)?;
-    }
-    if data.incoming_edges.is_empty() {
-        p.line_at(4, &Line::new().dim("Incoming: none"))?;
-    } else {
-        let shown = data.incoming_edges.len().min(limit_edges);
-        p.line_at(
-            4,
-            &Line::new()
-                .heading("Incoming")
-                .text(" ")
-                .dim(format!("({shown} of {})", data.incoming_edges.len())),
-        )?;
-        render_edge_group_at(p, 6, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
-    }
+    render_refs_subsection(
+        p,
+        "Outgoing",
+        &data.outgoing_edges,
+        limit_edges,
+        EdgeDirection::Outgoing,
+    )?;
+    render_refs_subsection(
+        p,
+        "Incoming",
+        &data.incoming_edges,
+        limit_edges,
+        EdgeDirection::Incoming,
+    )?;
 
     p.blank()?;
     let mut hints = vec![
@@ -421,6 +430,30 @@ fn render_get_context<W: Write>(
     Ok(())
 }
 
+/// One Refs sub-block: heading `  Outgoing (N)` or `  Outgoing (N of M)`,
+/// then the edge group. Drops the `of M` when `shown == total` (F26).
+fn render_refs_subsection<W: Write>(
+    p: &mut Printer<W>,
+    label: &str,
+    edges: &[EdgeSummary],
+    limit_edges: usize,
+    direction: EdgeDirection,
+) -> std::io::Result<()> {
+    if edges.is_empty() {
+        p.line_at(4, &Line::new().dim(format!("{label}: none")))?;
+        return Ok(());
+    }
+    let total = edges.len();
+    let shown = total.min(limit_edges);
+    let suffix = if shown == total {
+        format!("({shown})")
+    } else {
+        format!("({shown} of {total})")
+    };
+    p.line_at(4, &Line::new().heading(label).text(" ").dim(suffix))?;
+    render_edge_group_at(p, 6, edges, shown, direction)
+}
+
 fn render_get_header<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Result<()> {
     p.line(
         &Line::new()
@@ -430,7 +463,11 @@ fn render_get_header<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::R
     )
 }
 
-fn render_get_kv<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Result<()> {
+fn render_get_kv<W: Write>(
+    p: &mut Printer<W>,
+    data: &GetData,
+    include_snippet: bool,
+) -> std::io::Result<()> {
     let mut rows: Vec<(&str, Line)> = Vec::new();
     if let Some(status) = &data.status {
         rows.push(("Status", Line::new().text(status.clone())));
@@ -438,7 +475,7 @@ fn render_get_kv<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Resul
     if let Some(file) = &data.file {
         rows.push(("File", Line::new().path(file.clone())));
     }
-    if let Some(snippet) = &data.snippet {
+    if include_snippet && let Some(snippet) = &data.snippet {
         rows.push(("Snippet", Line::new().dim(snippet.clone())));
     }
     if rows.is_empty() {
