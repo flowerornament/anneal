@@ -6,7 +6,7 @@ use camino::Utf8Path;
 use serde::Serialize;
 
 use crate::area::AreaGrade;
-use crate::output::{Line, OutputStyle, Printer, Render, TableHeader, Tone, Toned};
+use crate::output::{Line, Printer, Render, TableHeader, Tone, Toned};
 use crate::snapshot::AreaSnapshot;
 
 // ---------------------------------------------------------------------------
@@ -85,29 +85,23 @@ impl Render for DiffOutput {
         let rows = &[
             (
                 "Handles",
-                signed_summary(
-                    &[
-                        (self.handle_delta.created, "created"),
-                        (self.handle_delta.active_delta, "active"),
-                        (self.handle_delta.frozen_delta, "terminal"),
-                    ],
-                    p.style(),
-                ),
+                signed_summary(&[
+                    (self.handle_delta.created, "created"),
+                    (self.handle_delta.active_delta, "active"),
+                    (self.handle_delta.frozen_delta, "terminal"),
+                ]),
             ),
             (
                 "Obligations",
-                signed_summary(
-                    &[
-                        (self.obligation_delta.outstanding_delta, "outstanding"),
-                        (self.obligation_delta.discharged_delta, "discharged"),
-                        (self.obligation_delta.mooted_delta, "mooted"),
-                    ],
-                    p.style(),
-                ),
+                signed_summary(&[
+                    (self.obligation_delta.outstanding_delta, "outstanding"),
+                    (self.obligation_delta.discharged_delta, "discharged"),
+                    (self.obligation_delta.mooted_delta, "mooted"),
+                ]),
             ),
             (
                 "Edges",
-                signed_summary(&[(self.edge_delta.total_delta, "total")], p.style()),
+                signed_summary(&[(self.edge_delta.total_delta, "total")]),
             ),
         ];
         p.kv_block(rows)?;
@@ -158,12 +152,11 @@ impl Render for DiffOutput {
 /// Render a comma-separated list of `+N label` pairs, coloring the sign
 /// by polarity (positive = success-ish for growth; callers interpret
 /// semantics like "more terminal is improving").
-fn signed_summary(parts: &[(i64, &str)], style: OutputStyle) -> Line {
-    let sep = format!(" {} ", style.glyph(crate::output::Glyph::Separator));
+fn signed_summary(parts: &[(i64, &str)]) -> Line {
     let mut line = Line::new();
     for (i, (delta, label)) in parts.iter().enumerate() {
         if i > 0 {
-            line = line.dim(sep.clone());
+            line = line.dim(", ");
         }
         line = line
             .toned(delta_tone(*delta), format!("{delta:+}"))

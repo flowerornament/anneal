@@ -11,7 +11,7 @@ use crate::handle::{Handle, HandleKind, NodeId};
 use crate::output::{Line, Printer, Render, Tone, Toned};
 
 use super::map::{TraversalDirection, around_subgraph};
-use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle, truncate};
+use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle, truncate_snippet};
 
 // ---------------------------------------------------------------------------
 // Orient command
@@ -110,9 +110,9 @@ impl Render for OrientOutput {
                     .toned(sum.grade.tone(), format!("[{}]", sum.grade))
                     .text("  ")
                     .count(sum.files)
-                    .text(" files · ")
+                    .text(" files, ")
                     .count(sum.handles)
-                    .text(" handles · conn ")
+                    .text(" handles, conn ")
                     .float(sum.connectivity, 1),
             )?;
             p.blank()?;
@@ -155,7 +155,7 @@ impl Render for OrientOutput {
                 if let Some(purpose) = e.purpose.as_deref()
                     && !purpose.is_empty()
                 {
-                    p.line_at(6, &Line::new().dim(truncate(purpose, 120).to_string()))?;
+                    p.line_at(6, &Line::new().dim(truncate_snippet(purpose).into_owned()))?;
                 }
             }
         }

@@ -42,6 +42,10 @@ pub(crate) enum Tone {
 }
 
 /// Glyph categories. Each maps to a tiered character based on `Mode`.
+///
+/// Per the R1 design rule, inline separators and list-item markers are
+/// not glyphs — commas/indentation carry those roles. Glyphs are
+/// reserved for semantic pointers (arrows, severity marks).
 #[allow(dead_code)] // full glyph palette; not every variant is used yet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Glyph {
@@ -55,10 +59,6 @@ pub(crate) enum Glyph {
     Arrow,
     /// Reverse arrow for "incoming" edges (`←` / `<-`).
     ArrowIn,
-    /// Mid-dot separator (`·` / `,`).
-    Separator,
-    /// Bullet list marker (`•` / `-`).
-    Bullet,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,8 +123,6 @@ impl OutputStyle {
                 Glyph::Warning => "!",
                 Glyph::Arrow => "→",
                 Glyph::ArrowIn => "←",
-                Glyph::Separator => "·",
-                Glyph::Bullet => "•",
             },
             Mode::Minimal | Mode::Plain => match g {
                 Glyph::Success => "+",
@@ -132,8 +130,6 @@ impl OutputStyle {
                 Glyph::Warning => "!",
                 Glyph::Arrow => "->",
                 Glyph::ArrowIn => "<-",
-                Glyph::Separator => ",",
-                Glyph::Bullet => "-",
             },
         }
     }

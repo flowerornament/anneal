@@ -46,7 +46,7 @@ impl Render for GraphSummary {
             (
                 "Handles",
                 Line::new().count(self.handles).text("  ").dim(format!(
-                    "{} files · {} labels · {} sections · {} versions",
+                    "{} files, {} labels, {} sections, {} versions",
                     self.files, self.labels, self.sections, self.versions_count
                 )),
             ),
@@ -62,7 +62,7 @@ impl Render for GraphSummary {
                 "Labels",
                 Line::new()
                     .count(self.labels_resolved)
-                    .text(" resolved · ")
+                    .text(" resolved, ")
                     .count(self.labels_skipped)
                     .text(" skipped"),
             ),
@@ -71,7 +71,7 @@ impl Render for GraphSummary {
                 "Edges resolved",
                 Line::new()
                     .count(self.pending_edges_resolved)
-                    .text(" resolved · ")
+                    .text(" resolved, ")
                     .count(self.pending_edges_unresolved)
                     .text(" unresolved"),
             ),
@@ -85,9 +85,9 @@ impl Render for GraphSummary {
                 "Statuses",
                 Line::new()
                     .count(self.observed_statuses)
-                    .text(" observed · ")
+                    .text(" observed, ")
                     .count(self.active_statuses)
-                    .text(" active · ")
+                    .text(" active, ")
                     .count(self.terminal_statuses)
                     .text(" terminal"),
             ));
