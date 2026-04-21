@@ -80,8 +80,20 @@ pub(crate) struct CheckJsonOptions {
 
 impl Render for CheckOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        // Heading universal (R2). Count = total findings.
+        let total = self.errors + self.warnings + self.info + self.suggestions;
+        p.heading("Diagnostics", Some(total))?;
+        p.blank()?;
+
+        // Emit diagnostics with a blank line between severity groups so
+        // the four tiers are visually separable even without color.
+        let mut prev_severity: Option<crate::checks::Severity> = None;
         for diag in &self.diagnostics {
+            if prev_severity.is_some_and(|s| s != diag.severity) {
+                p.blank()?;
+            }
             render_diagnostic(p, diag)?;
+            prev_severity = Some(diag.severity);
         }
         if !self.diagnostics.is_empty() {
             p.blank()?;
