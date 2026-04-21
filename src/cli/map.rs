@@ -43,6 +43,55 @@ pub(crate) struct MapEdgeEntry {
     pub(crate) kind: String,
 }
 
+/// Structured data for the Printer-based `--around` render path. Not
+/// serialized: users who want machine-readable neighborhood data should
+/// pass `--nodes`/`--edges`/`--json` to get `node_list`/`edge_list`.
+pub(crate) struct AroundSummary {
+    pub(crate) focus_id: String,
+    pub(crate) depth: u32,
+    pub(crate) node_count: usize,
+    pub(crate) edge_count: usize,
+    pub(crate) files: Vec<AroundFile>,
+    pub(crate) files_total: usize,
+    pub(crate) label_total: usize,
+    pub(crate) namespaces: Vec<AroundNamespace>,
+    pub(crate) namespaces_total: usize,
+    pub(crate) sections: usize,
+    pub(crate) versions: usize,
+    pub(crate) externals: usize,
+    pub(crate) focus_outgoing: Vec<AroundEdge>,
+    pub(crate) focus_outgoing_total: usize,
+    pub(crate) focus_incoming: Vec<AroundEdge>,
+    pub(crate) focus_incoming_total: usize,
+    pub(crate) other_edges: Vec<AroundFullEdge>,
+    pub(crate) other_edges_total: usize,
+    /// True when the neighborhood rendered the full detail view (below
+    /// the hub threshold) rather than the hub summary.
+    pub(crate) full_view: bool,
+}
+
+pub(crate) struct AroundFile {
+    pub(crate) id: String,
+    pub(crate) status: Option<String>,
+}
+
+pub(crate) struct AroundNamespace {
+    pub(crate) prefix: String,
+    pub(crate) total: usize,
+    pub(crate) sample: Vec<String>,
+}
+
+pub(crate) struct AroundEdge {
+    pub(crate) kind: String,
+    pub(crate) other: String,
+}
+
+pub(crate) struct AroundFullEdge {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) kind: String,
+}
+
 #[derive(Serialize)]
 pub(crate) struct MapOutput {
     #[serde(rename = "_meta")]
@@ -58,10 +107,26 @@ pub(crate) struct MapOutput {
     pub(crate) edge_list: Option<Vec<MapEdgeEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) rendered_content: Option<String>,
+    #[serde(skip)]
+    pub(crate) around_summary: Option<AroundSummary>,
 }
 
 impl Render for MapOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        if let Some(summary) = &self.around_summary {
+            render_around(p, summary)?;
+            if !self.meta.expand.is_empty() {
+                p.blank()?;
+                let rows: Vec<(&str, &str)> = self
+                    .meta
+                    .expand
+                    .iter()
+                    .map(|s| (s.as_str(), "expand"))
+                    .collect();
+                p.hints(&rows)?;
+            }
+            return Ok(());
+        }
         if let Some(content) = &self.rendered_content {
             // Rendered content (text/dot format) — pass through verbatim so
             // `dot -Tpng` still works, but frame expansion hint via Printer.
@@ -691,6 +756,326 @@ fn render_text(
     render_text_full(graph, nodes, Some(MAP_EDGE_DISPLAY_LIMIT))
 }
 
+/// Build the structured neighborhood summary used by the Printer path.
+/// Mirrors `render_text_hub_summary` / `render_text_full` data selection
+/// but returns typed fields so `render_around` can style them.
+fn build_around_summary(
+    graph: &DiGraph,
+    nodes: &HashSet<NodeId>,
+    focus: NodeId,
+    depth: u32,
+) -> AroundSummary {
+    let focus_id = graph.node(focus).id.clone();
+    let edge_set = subgraph_edges(graph, nodes);
+    let edge_count = edge_set.len();
+
+    let label_count = nodes
+        .iter()
+        .filter(|node_id| matches!(graph.node(**node_id).kind, HandleKind::Label { .. }))
+        .count();
+    let full_view = edge_count <= MAP_HUB_EDGE_THRESHOLD && label_count <= MAP_HUB_LABEL_THRESHOLD;
+
+    let mut files: Vec<&Handle> = Vec::new();
+    let mut labels_by_ns: HashMap<String, Vec<&Handle>> = HashMap::new();
+    let mut sections = 0usize;
+    let mut versions = 0usize;
+    let mut externals = 0usize;
+
+    for &node_id in nodes {
+        let handle = graph.node(node_id);
+        match &handle.kind {
+            HandleKind::File(_) => files.push(handle),
+            HandleKind::Label { prefix, .. } => {
+                labels_by_ns.entry(prefix.clone()).or_default().push(handle);
+            }
+            HandleKind::Section { .. } => sections += 1,
+            HandleKind::Version { .. } => versions += 1,
+            HandleKind::External { .. } => externals += 1,
+        }
+    }
+
+    files.sort_by(|a, b| a.id.cmp(&b.id));
+    let files_total = files.len();
+    let file_limit = if full_view {
+        files_total
+    } else {
+        MAP_HUB_FILE_DISPLAY_LIMIT
+    };
+    let around_files: Vec<AroundFile> = files
+        .iter()
+        .take(file_limit)
+        .map(|h| AroundFile {
+            id: h.id.clone(),
+            status: h.status.clone(),
+        })
+        .collect();
+
+    let label_total: usize = labels_by_ns.values().map(Vec::len).sum();
+    let mut namespaces_vec: Vec<(String, Vec<&Handle>)> = labels_by_ns.into_iter().collect();
+    namespaces_vec.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    let namespaces_total = namespaces_vec.len();
+    let ns_limit = if full_view {
+        namespaces_total
+    } else {
+        MAP_HUB_NAMESPACE_DISPLAY_LIMIT
+    };
+    let namespaces: Vec<AroundNamespace> = namespaces_vec
+        .into_iter()
+        .take(ns_limit)
+        .map(|(prefix, mut handles)| {
+            handles.sort_by(|a, b| a.id.cmp(&b.id));
+            let sample_limit = if full_view {
+                handles.len()
+            } else {
+                MAP_HUB_LABEL_SAMPLE_LIMIT
+            };
+            let total = handles.len();
+            let sample = handles
+                .iter()
+                .take(sample_limit)
+                .map(|h| h.id.clone())
+                .collect();
+            AroundNamespace {
+                prefix,
+                total,
+                sample,
+            }
+        })
+        .collect();
+
+    let mut outgoing: Vec<AroundEdge> = edge_set
+        .iter()
+        .filter(|(source, _, _)| *source == focus)
+        .map(|(_, target, kind)| AroundEdge {
+            kind: (*kind).to_string(),
+            other: graph.node(*target).id.clone(),
+        })
+        .collect();
+    outgoing.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.other.cmp(&b.other)));
+
+    let mut incoming: Vec<AroundEdge> = edge_set
+        .iter()
+        .filter(|(_, target, _)| *target == focus)
+        .map(|(source, _, kind)| AroundEdge {
+            kind: (*kind).to_string(),
+            other: graph.node(*source).id.clone(),
+        })
+        .collect();
+    incoming.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.other.cmp(&b.other)));
+
+    let outgoing_total = outgoing.len();
+    let incoming_total = incoming.len();
+    let edge_display_limit = if full_view {
+        outgoing_total.max(incoming_total)
+    } else {
+        MAP_HUB_FOCUS_EDGE_DISPLAY_LIMIT
+    };
+    outgoing.truncate(edge_display_limit);
+    incoming.truncate(edge_display_limit);
+
+    let other_all: Vec<AroundFullEdge> = edge_set
+        .iter()
+        .filter(|(source, target, _)| *source != focus && *target != focus)
+        .map(|&(source, target, kind)| AroundFullEdge {
+            source: graph.node(source).id.clone(),
+            target: graph.node(target).id.clone(),
+            kind: kind.to_string(),
+        })
+        .collect();
+    let other_edges_total = other_all.len();
+    let other_limit = if full_view {
+        other_edges_total
+    } else {
+        MAP_HUB_NEIGHBOR_EDGE_DISPLAY_LIMIT
+    };
+    let other_edges: Vec<AroundFullEdge> = other_all.into_iter().take(other_limit).collect();
+
+    AroundSummary {
+        focus_id,
+        depth,
+        node_count: nodes.len(),
+        edge_count,
+        files: around_files,
+        files_total,
+        label_total,
+        namespaces,
+        namespaces_total,
+        sections,
+        versions,
+        externals,
+        focus_outgoing: outgoing,
+        focus_outgoing_total: outgoing_total,
+        focus_incoming: incoming,
+        focus_incoming_total: incoming_total,
+        other_edges,
+        other_edges_total,
+        full_view,
+    }
+}
+
+fn render_around<W: Write>(p: &mut Printer<W>, s: &AroundSummary) -> std::io::Result<()> {
+    p.line(
+        &Line::new()
+            .heading("Neighborhood")
+            .text("  ")
+            .path(s.focus_id.clone())
+            .dim(format!("  depth {depth}", depth = s.depth)),
+    )?;
+    p.blank()?;
+
+    let mut meta = Line::new()
+        .count(s.node_count)
+        .text(" nodes, ")
+        .count(s.edge_count)
+        .text(" edges, ")
+        .count(s.files_total)
+        .text(" files");
+    if s.label_total > 0 {
+        meta = meta
+            .text(", ")
+            .count(s.label_total)
+            .text(" labels across ")
+            .count(s.namespaces_total)
+            .text(" namespaces");
+    }
+    if s.sections > 0 {
+        meta = meta.text(", ").count(s.sections).text(" sections");
+    }
+    if s.versions > 0 {
+        meta = meta.text(", ").count(s.versions).text(" versions");
+    }
+    if s.externals > 0 {
+        meta = meta.text(", ").count(s.externals).text(" external URLs");
+    }
+    p.line_at(2, &meta)?;
+
+    if !s.files.is_empty() {
+        p.blank()?;
+        p.heading("Files", Some(s.files_total))?;
+        if s.files_total > s.files.len() {
+            p.caption(&format!("showing {} of {}", s.files.len(), s.files_total))?;
+        }
+        for file in &s.files {
+            let mut row = Line::new().path(file.id.clone());
+            if let Some(status) = &file.status {
+                row = row.dim(format!("  [{status}]"));
+            }
+            p.line_at(4, &row)?;
+        }
+        if s.files_total > s.files.len() {
+            let more = s.files_total - s.files.len();
+            p.line_at(4, &Line::new().dim(format!("… {more} more")))?;
+        }
+    }
+
+    if !s.namespaces.is_empty() {
+        p.blank()?;
+        p.heading("Namespaces", Some(s.namespaces_total))?;
+        if s.namespaces_total > s.namespaces.len() {
+            p.caption(&format!(
+                "showing {} of {}",
+                s.namespaces.len(),
+                s.namespaces_total
+            ))?;
+        }
+        for ns in &s.namespaces {
+            let more = ns.total - ns.sample.len();
+            let mut row = Line::new()
+                .toned(Tone::Heading, ns.prefix.clone())
+                .dim(format!(" ({})", ns.total))
+                .text("  ")
+                .text(ns.sample.join(", "));
+            if more > 0 {
+                row = row.dim(format!(", … {more} more"));
+            }
+            p.line_at(4, &row)?;
+        }
+        if s.namespaces_total > s.namespaces.len() {
+            let more = s.namespaces_total - s.namespaces.len();
+            p.line_at(4, &Line::new().dim(format!("… {more} more namespaces")))?;
+        }
+    }
+
+    p.blank()?;
+    p.heading(
+        "Focus edges",
+        Some(s.focus_outgoing_total + s.focus_incoming_total),
+    )?;
+    render_focus_edges(
+        p,
+        "Outgoing",
+        &s.focus_outgoing,
+        s.focus_outgoing_total,
+        "→",
+    )?;
+    render_focus_edges(
+        p,
+        "Incoming",
+        &s.focus_incoming,
+        s.focus_incoming_total,
+        "←",
+    )?;
+
+    if !s.other_edges.is_empty() {
+        p.blank()?;
+        p.heading("Other neighborhood edges", Some(s.other_edges_total))?;
+        if s.other_edges_total > s.other_edges.len() {
+            p.caption(&format!(
+                "showing {} of {}",
+                s.other_edges.len(),
+                s.other_edges_total
+            ))?;
+        }
+        for edge in &s.other_edges {
+            p.line_at(
+                4,
+                &Line::new()
+                    .path(edge.source.clone())
+                    .dim(format!(" -{}-> ", edge.kind))
+                    .path(edge.target.clone()),
+            )?;
+        }
+        if s.other_edges_total > s.other_edges.len() {
+            let more = s.other_edges_total - s.other_edges.len();
+            p.line_at(4, &Line::new().dim(format!("… {more} more")))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn render_focus_edges<W: Write>(
+    p: &mut Printer<W>,
+    label: &str,
+    edges: &[AroundEdge],
+    total: usize,
+    arrow: &str,
+) -> std::io::Result<()> {
+    if total == 0 {
+        p.line_at(4, &Line::new().toned(Tone::Heading, label).dim(": none"))?;
+        return Ok(());
+    }
+    let caption = if total > edges.len() {
+        format!("{label} (showing {} of {total})", edges.len())
+    } else {
+        format!("{label} ({total})")
+    };
+    p.line_at(4, &Line::new().toned(Tone::Heading, caption))?;
+    for edge in edges {
+        p.line_at(
+            6,
+            &Line::new()
+                .dim(format!("{} {arrow} ", edge.kind))
+                .path(edge.other.clone()),
+        )?;
+    }
+    if total > edges.len() {
+        let more = total - edges.len();
+        p.line_at(6, &Line::new().dim(format!("… {more} more")))?;
+    }
+    Ok(())
+}
+
 /// Escape a string for use as a DOT identifier.
 fn dot_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -904,20 +1289,27 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
     };
 
     let mut rendered_truncated = false;
+    let around_focus = opts
+        .around
+        .and_then(|handle| lookup_handle(opts.node_index, handle));
+    let mut around_summary: Option<AroundSummary> = None;
     let rendered_content = match opts.render {
         crate::MapRender::Summary => None,
         crate::MapRender::Dot => Some(render_dot(opts.graph, &nodes, opts.lattice)),
         crate::MapRender::Text => {
-            let rendered = render_text(
-                opts.graph,
-                &nodes,
-                opts.around
-                    .and_then(|handle| lookup_handle(opts.node_index, handle)),
-                opts.depth,
-                opts.full,
-            );
+            let rendered = render_text(opts.graph, &nodes, around_focus, opts.depth, opts.full);
             rendered_truncated = rendered.truncated;
             Some(rendered.content)
+        }
+        crate::MapRender::Around => {
+            if let Some(focus) = around_focus {
+                let summary = build_around_summary(opts.graph, &nodes, focus, opts.depth);
+                if !summary.full_view {
+                    rendered_truncated = true;
+                }
+                around_summary = Some(summary);
+            }
+            None
         }
     };
 
@@ -966,6 +1358,7 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
         node_list,
         edge_list,
         rendered_content,
+        around_summary,
     }
 }
 
@@ -1155,7 +1548,7 @@ pub(crate) fn cmd_map_by_area(opts: &MapByAreaOptions<'_>) -> MapByAreaOutput {
 
     let rendered_content = match opts.render {
         crate::MapRender::Dot => Some(render_by_area_dot(&areas, &edges)),
-        crate::MapRender::Text | crate::MapRender::Summary => None,
+        crate::MapRender::Text | crate::MapRender::Summary | crate::MapRender::Around => None,
     };
 
     MapByAreaOutput {
@@ -1857,6 +2250,62 @@ mod tests {
         assert!(
             !text.contains("OQ-30"),
             "hub summary should sample namespace members instead of dumping them all: {text}"
+        );
+    }
+
+    #[test]
+    fn map_render_around_uses_printer_path() {
+        let mut graph = DiGraph::new();
+        let hub = graph.add_node(Handle::test_file("LABELS.md", Some("living")));
+        let other = graph.add_node(Handle::test_file("cite.md", Some("draft")));
+        graph.add_edge(other, hub, EdgeKind::DependsOn);
+        for number in 1..=6 {
+            let label = graph.add_node(Handle::test_label("OQ", number, None));
+            graph.add_edge(hub, label, EdgeKind::Cites);
+        }
+
+        let output = cmd_map(&MapOptions {
+            graph: &graph,
+            node_index: &test_node_index(&graph),
+            lattice: &Lattice::test_empty(),
+            config: &AnnealConfig::default(),
+            concern: None,
+            around: Some("LABELS.md"),
+            direction: TraversalDirection::Both,
+            area: None,
+            temporal: None,
+            depth: 1,
+            render: crate::MapRender::Around,
+            include_nodes: false,
+            include_edges: false,
+            full: false,
+            limit_nodes: 100,
+            limit_edges: 250,
+        });
+
+        assert!(output.rendered_content.is_none());
+        assert!(output.around_summary.is_some());
+        let summary = output.around_summary.as_ref().expect("around summary");
+        assert_eq!(summary.focus_id, "LABELS.md");
+        assert_eq!(summary.focus_outgoing_total, 6);
+        assert_eq!(summary.focus_incoming_total, 1);
+
+        let mut buf = Vec::new();
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
+        let text = String::from_utf8(buf).expect("utf8");
+
+        assert!(text.contains("Neighborhood"));
+        assert!(text.contains("LABELS.md"));
+        assert!(text.contains("depth 1"));
+        assert!(text.contains("Focus edges"));
+        assert!(text.contains("Outgoing"));
+        assert!(text.contains("Incoming"));
+        assert!(text.contains("Cites → OQ-1"));
+        assert!(text.contains("DependsOn ← cite.md"));
+        assert!(
+            !text.contains(':'),
+            "headings should not keep trailing colons (R2): {text}"
         );
     }
 
