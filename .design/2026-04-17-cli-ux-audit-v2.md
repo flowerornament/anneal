@@ -344,3 +344,183 @@ caught in CI.
   confirmation but doesn't prompt inline).
 - Breaking `--json`. JSON stays machine-first; all visual work is
   human-facing.
+
+---
+
+# Round 2: comprehensive audit (planned — not yet executed)
+
+After migrating 12 of 15 commands, manual inspection surfaced cross-cutting
+coherence issues that weren't visible from per-command work:
+
+- `·` separators everywhere (breaks Tufte — whitespace should be the
+  divider, glyph is chartjunk)
+- Inconsistent blank-line cadence between commands
+- Inconsistent truncation (orient=120, find=160; nothing enforces)
+- Columnar alignment enforced in `table()` but ad-hoc in KV rows and
+  indexed lists
+- Some signals are color-only (agents piping anneal see no color; signal
+  must live in text)
+- Not every command starts with a heading; visual landmark absent
+
+Round 2 performs a full audit — every command, every relevant flag,
+every output mode — through three lenses, populates a running findings
+table, writes design rules first, then fixes in waves.
+
+## Methodology
+
+Each output is evaluated on three lenses. All three must pass.
+
+### Lens 1 — Graphic design
+
+Act as a visual designer:
+
+- **Hierarchy** — does the eye find the most important thing first?
+- **Rhythm** — consistent indentation, padding, blank-line cadence?
+- **Whitespace-as-divider** — any `·`/rule/border that could be replaced
+  with space?
+- **Alignment** — columns enforced where data is columnar?
+- **Typography** — bold only where it matters, dim only for secondary,
+  consistent use?
+- **Density** — neither sparse nor cramped?
+
+### Lens 2 — Agent parseability
+
+Assume no color. Assume regex:
+
+- Does text alone carry every signal? (color is an enhancement, not a
+  carrier)
+- Can an agent regex/split key fields easily?
+- Are truncations marked so agents know they can expand? (`… N more`,
+  `showing N of M`)
+- Row shapes consistent within a command?
+- Tokens wasted on decorative chars?
+- Is `--json` available and useful where structure matters?
+
+### Lens 3 — Cross-command consistency
+
+- Same primitive → same look?
+- Heading pattern universal?
+- Blank-line policy uniform?
+- Navigation hints (`Try`, `expand with`) consistent?
+
+## Test matrix
+
+Run on **two corpora** (`~/code/anneal/.design` + `~/code/murail/.design`)
+and four modes where relevant (default / `--plain` / `--minimal` /
+`--json`). Capture all outputs to `/tmp/anneal-audit-round2/`.
+
+| Command       | Variants to capture                                                  |
+|---------------|----------------------------------------------------------------------|
+| `anneal`      | default                                                              |
+| `status`      | default, `--verbose`, `--json`, `--json --compact`                   |
+| `check`       | default, `--errors-only`, `--suggest`, `--stale`, `--file=X`, `--json` |
+| `get`         | single, `--context`, `--refs`, `--trace`, `--full`; batch; `--status-only` |
+| `find`        | empty+filter, keyword, `--limit=5`, `--offset`, `--context`, `--sort=date` |
+| `init`        | `--dry-run`                                                          |
+| `impact`      | default, `--area=X`, `--json`                                        |
+| `map`         | summary, `--around=X`, `--concern=X`, `--by-area`, `--render=text --full`, `--render=dot` |
+| `diff`        | default, `--days=7`, `--by-area`                                     |
+| `obligations` | default                                                              |
+| `prime`       | default                                                              |
+| `areas`       | default, `--sort=grade`, `--sort=name`, `--include-terminal`         |
+| `garden`      | default, `--category=fix`, `--area=X`, `--limit=3`                   |
+| `orient`      | default, `--area=X`, `--file=X`, `--budget=20k`, `--paths-only`      |
+| `query`       | handles, edges, diagnostics, obligations, suggestions                |
+| `explain`     | diagnostic, impact, convergence, obligation, suggestion              |
+
+## Design rules (enforced — write the rule first, then fix)
+
+Seed set. Add rules as the audit surfaces violations the current set
+doesn't name.
+
+- **R1** No `·`/`•`/bullet separators in inline content. Double-space or
+  blank line is the divider.
+- **R2** Every command output starts with `**Heading** (count?)`.
+- **R3** Blank lines only between logical sections. Never within a
+  section. Never at output start or end.
+- **R4** Text carries every signal. Color is a redundant enhancement,
+  never the sole carrier.
+- **R5** Columnar data uses `Printer::table` or aligned `kv_block`.
+  Never ad-hoc `" ".repeat(n)` padding for alignment.
+- **R6** One `SNIPPET_MAX` constant for all truncation (120 chars).
+- **R7** Navigation hints go through `Printer::hints` — never ad-hoc
+  `Try:` strings.
+- **R8** Truncations are explicit: `… N more` inline, or `showing N of
+  M · offset K` in headings.
+- **R9** Integer counts use `Line::count(usize)` (thousands-separated).
+  Floats use `Line::float(f, precision)`. No bespoke numeric formatting.
+- **R10** Paths always `Tone::Path`. Counts always `Tone::Number`.
+  Severity labels always `Severity::tone()`.
+- **R11** `--json` is the machine-parseable surface. `--plain` is the
+  no-glyph no-color human surface. `--minimal` is ASCII glyphs + color.
+  Default is Unicode + color (pipe-detected off).
+
+## Findings table
+
+Populate during Phase 1. Each row: `ID | Command | Variant | Issue |
+Severity | Rule | Fix | Status`.
+
+Severity: `critical` (breaks parseability), `design` (visual rough edge),
+`nit` (polish).
+
+| ID  | Command | Variant | Issue | Severity | Rule | Fix | Status |
+|-----|---------|---------|-------|----------|------|-----|--------|
+| F01 | _pending audit_ | | | | | | |
+
+Early spotter findings from manual review (these will be re-captured
+formally during Phase 1):
+
+- **F-pre-01** `status`, `check`, `garden`, `summary`, `diff` —
+  `·` separators everywhere. R1 violation. Fix in Printer `tally()` +
+  each file's inline `counts_line`/`signed_summary` helpers.
+- **F-pre-02** `garden` — `high/med/low` word trailing, shoved right
+  by 3 arbitrary spaces; jitters by title width. Design. Move blast to
+  leading column (`1  HIGH  [FIX]  5 broken refs in implementation/`),
+  fixed-width 4-char column.
+- **F-pre-03** `garden` — `5 broken refs · implementation/` reads
+  awkwardly without color. Rewrite as `5 broken refs in
+  implementation/`.
+- **F-pre-04** `orient` vs `find` — snippet truncation limits diverge
+  (120 vs 160). R6.
+- **F-pre-05** `garden`, `check` — no top heading. R2.
+
+## Execution sequencing
+
+- **Phase 1 — audit (no code changes):** run every matrix cell, capture
+  to `/tmp/anneal-audit-round2/`. Populate findings table. Write new
+  rules as violations surface. Target: 60 outputs reviewed, findings
+  table has every violation indexed. ~30min.
+- **Phase 2 — cross-cutting fixes (Wave A, one commit):** changes to
+  `Printer`/`Line` primitives that fix multiple commands at once — kill
+  `·` in `tally()`/`Glyph::Separator`, add `SNIPPET_MAX`, any new
+  primitives needed. All R1/R5/R6/R7/R9/R10 findings close here.
+- **Phase 3 — per-command fixes (Wave B, batched commits):** command-
+  specific fixes (garden blast-first layout, `check`+`garden` top
+  headings, find/orient truncation, etc.). R2/R3/R8/R11 findings close
+  here.
+- **Phase 4 — verification:** re-capture all 60 outputs, diff against
+  findings. Close or reopen each row.
+- **Phase 5 — doc sync:** update CHANGELOG, `README.md`, `skills/anneal/
+  SKILL.md` if any user-visible behavior shifted. This doc's findings
+  table becomes the PR description.
+
+## Scope guards
+
+- No new commands, no new features. Audit is about coherence, not
+  surface expansion.
+- `query` and `explain` are still narrative-shaped; they're in the test
+  matrix but fixing their internal `writeln!`-based rendering is out of
+  scope for Round 2. Note findings; defer migration to Round 3.
+- Rule changes require updating this doc **before** the fix commit —
+  the doc is the enforcement mechanism, and drift from the code means
+  future rounds can't self-verify.
+
+## References
+
+- Primitives: `src/output/{mod,style,printer,tests}.rs`
+- Shared helpers: `src/cli/mod.rs` (truncate, plural, dedup_edges)
+- Design system brief: this doc's §1–§4 (from Round 1)
+- Design source material: `~/code/nx-rs/.agents/{cli-design-principles,
+  ux-design-system}.md`
+
+  human-facing.
