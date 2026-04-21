@@ -58,6 +58,14 @@ pub(crate) trait Toned {
     fn tone(&self) -> Tone;
 }
 
+/// A value that can render itself to a `Printer`. Every command output
+/// type implements this so `main.rs::emit_output` can construct the
+/// Printer once and hand it to the value — commands never see a bare
+/// writer.
+pub(crate) trait Render {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> io::Result<()>;
+}
+
 /// A styled segment. Either a text run (with a tone) or a fixed-width
 /// pad. Pads defer expansion until write time, avoiding `" ".repeat(n)`
 /// allocations on hot paths.

@@ -20,5 +20,5 @@ mod style;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use printer::{Line, Location, Printer, Severity, TableHeader, Toned};
+pub(crate) use printer::{Line, Location, Printer, Render, Severity, TableHeader, Toned};
 pub(crate) use style::{Glyph, Mode, OutputStyle, Tone};

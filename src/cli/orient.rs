@@ -8,7 +8,7 @@ use crate::area::{AreaFilter, AreaHealth};
 use crate::config::OrientConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind, NodeId};
-use crate::output::{Line, OutputStyle, Printer, Tone, Toned};
+use crate::output::{Line, Printer, Render, Tone, Toned};
 
 use super::map::{TraversalDirection, around_subgraph};
 use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle, truncate};
@@ -100,12 +100,7 @@ pub(crate) struct OrientOutput {
     pub(crate) area_summary: Option<AreaSummary>,
 }
 
-impl OrientOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for OrientOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(sum) = &self.area_summary {
             p.line(
@@ -205,7 +200,9 @@ impl OrientOutput {
 
         Ok(())
     }
+}
 
+impl OrientOutput {
     /// Widest file path across all entries (for column alignment). Capped at
     /// 64 to keep the token column visible on narrow terminals.
     fn path_column_width(&self) -> usize {

@@ -7,7 +7,7 @@ use crate::checks::Diagnostic;
 use crate::config::AreasConfig;
 use crate::graph::DiGraph;
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer, TableHeader, Toned};
+use crate::output::{Line, Printer, Render, TableHeader, Toned};
 
 /// Sort order for areas output.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -29,12 +29,7 @@ pub(crate) struct AreasOutput {
     areas: Vec<AreaHealth>,
 }
 
-impl AreasOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for AreasOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         p.heading("Areas", Some(self.areas.len()))?;
         p.blank()?;
@@ -113,7 +108,7 @@ mod tests {
     use crate::graph::{DiGraph, EdgeKind};
     use crate::handle::Handle;
     use crate::lattice::Lattice;
-    use crate::output::{Mode, OutputStyle};
+    use crate::output::OutputStyle;
 
     #[test]
     fn cmd_areas_produces_output_for_multi_area_graph() {
@@ -173,9 +168,8 @@ mod tests {
         );
 
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, OutputStyle::new(Mode::Plain, false))
-            .unwrap();
+        let mut p = Printer::new(&mut buf, OutputStyle::plain());
+        output.render(&mut p).unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("Area"), "header should contain 'Area'");
         assert!(text.contains("Grade"), "header should contain 'Grade'");

@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::graph::DiGraph;
 use crate::handle::NodeId;
-use crate::output::{Glyph, Line, OutputStyle, Printer, Tone};
+use crate::output::{Glyph, Line, Printer, Render, Tone};
 
 use super::{DetailLevel, OutputMeta, SnippetIndex, dedup_edges, lookup_handle};
 
@@ -97,13 +97,14 @@ pub(crate) fn cmd_batch_get(
 }
 
 impl BatchGetOutput {
-    pub(crate) fn print_human(
+    /// Render each row through the shared Printer. Takes a `mode` so it
+    /// can't use the `Render` trait directly — the main.rs call site
+    /// uses `emit_rendered` with a mode-aware closure.
+    pub(crate) fn render<W: Write>(
         &self,
-        w: &mut dyn Write,
-        style: OutputStyle,
+        p: &mut Printer<W>,
         mode: BatchGetMode,
     ) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
         let handle_width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
         for row in &self.rows {
             if row.not_found {
@@ -207,13 +208,12 @@ pub(crate) struct GetHumanOutput {
     pub(crate) context: bool,
 }
 
-impl GetHumanOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
+impl Render for GetHumanOutput {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if self.context {
-            render_get_context(&mut p, &self.data, self.limit_edges)
+            render_get_context(p, &self.data, self.limit_edges)
         } else {
-            render_get_summary(&mut p, &self.data, self.limit_edges)
+            render_get_summary(p, &self.data, self.limit_edges)
         }
     }
 }
@@ -746,9 +746,8 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, plain_style())
-            .expect("print_human");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
 
         assert!(text.contains("Label index for the corpus."));
@@ -842,9 +841,8 @@ mod tests {
         let mode = BatchGetMode::StatusOnly;
         let output = cmd_batch_get(&graph, &node_index, snippets, &handles, mode);
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, plain_style(), mode)
-            .expect("print");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p, mode).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(text.contains("short.md       "));
         assert!(text.contains("longer-name.md"));

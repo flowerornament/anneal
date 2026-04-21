@@ -7,7 +7,7 @@ use crate::checks::{DiagnosticCode, Severity};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
-use crate::output::{Glyph, Line, OutputStyle, Printer, Tone};
+use crate::output::{Glyph, Line, OutputStyle, Printer, Render, Tone};
 
 use super::{DetailLevel, OutputMeta, plural};
 
@@ -90,28 +90,27 @@ pub(crate) struct SuggestionCount {
     pub(crate) count: usize,
 }
 
-impl StatusOutput {
-    /// Print dashboard without verbose expansion (used by tests).
-    #[cfg(test)]
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p, false, None, None)
+impl Render for StatusOutput {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+        self.render_inner(p, false, None, None)
     }
+}
 
-    /// Print dashboard with optional verbose pipeline expansion.
-    pub(crate) fn print_human_with_options(
+impl StatusOutput {
+    /// Render dashboard with optional verbose pipeline expansion. Takes
+    /// a printer directly because it needs extra args that don't fit the
+    /// `Render` trait contract.
+    pub(crate) fn render_with_options<W: Write>(
         &self,
-        w: &mut dyn Write,
-        style: OutputStyle,
+        p: &mut Printer<W>,
         verbose: bool,
         graph: &DiGraph,
         lattice: &Lattice,
     ) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p, verbose, Some(graph), Some(lattice))
+        self.render_inner(p, verbose, Some(graph), Some(lattice))
     }
 
-    fn render<W: Write>(
+    fn render_inner<W: Write>(
         &self,
         p: &mut Printer<W>,
         verbose: bool,
@@ -535,7 +534,7 @@ mod tests {
     use crate::config::AnnealConfig;
     use crate::graph::DiGraph;
     use crate::handle::Handle;
-    use crate::output::{Mode, OutputStyle};
+    use crate::output::{OutputStyle, Printer, Render};
 
     use super::*;
 
@@ -570,9 +569,8 @@ mod tests {
     /// Render to string with plain mode (ANSI stripped for assertions).
     fn render_status(output: &StatusOutput) -> String {
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, OutputStyle::new(Mode::Plain, false))
-            .expect("print_human");
+        let mut p = Printer::new(&mut buf, OutputStyle::plain());
+        output.render(&mut p).expect("render");
         String::from_utf8(buf).expect("utf8")
     }
 

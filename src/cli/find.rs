@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer, Tone};
+use crate::output::{Line, Printer, Render, Tone};
 
 use super::{DetailLevel, OutputMeta, SnippetIndex, truncate};
 
@@ -53,12 +53,7 @@ pub(crate) struct FindOutput {
     pub(crate) facets: Option<FindFacets>,
 }
 
-impl FindOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for FindOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         // Heading: `Matches (N)` with optional query subtitle and truncation hint.
         let title = if self.query.is_empty() {

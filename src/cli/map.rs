@@ -8,7 +8,7 @@ use crate::config::AnnealConfig;
 use crate::graph::DiGraph;
 use crate::handle::{Handle, HandleKind, NodeId};
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer, Tone};
+use crate::output::{Line, Printer, Render, Tone};
 
 use super::{DetailLevel, OutputMeta, lookup_handle};
 
@@ -60,12 +60,7 @@ pub(crate) struct MapOutput {
     pub(crate) rendered_content: Option<String>,
 }
 
-impl MapOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for MapOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
             // Rendered content (text/dot format) — pass through verbatim so
@@ -976,12 +971,7 @@ pub(crate) struct MapByAreaOutput {
     pub(crate) rendered_content: Option<String>,
 }
 
-impl MapByAreaOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for MapByAreaOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
             for line in content.lines() {
@@ -1809,9 +1799,8 @@ mod tests {
         });
 
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, plain_style())
-            .expect("print_human");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
 
         assert!(text.contains("Neighborhood around LABELS.md (depth 1):"));
@@ -1929,7 +1918,8 @@ mod tests {
         });
 
         let mut buf = Vec::new();
-        output.print_human(&mut buf, plain_style()).expect("print");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
             text.contains("compiler") && text.contains("synthesis"),

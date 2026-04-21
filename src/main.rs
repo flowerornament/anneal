@@ -806,39 +806,68 @@ enum FindSort {
     Date,
 }
 
-fn emit_output<T: Serialize>(
+/// Emit a renderable output either as JSON or as styled human text.
+///
+/// On the human path, constructs a `Printer` over a locked stdout handle
+/// and delegates to the value's `Render` impl. Commands that need extra
+/// render-time arguments (e.g. `BatchGetOutput` + mode) can't use
+/// `Render` directly; they use `emit_rendered` with a custom closure.
+fn emit_output<T: Serialize + output::Render>(
     output: &T,
     json: bool,
     json_style: cli::JsonStyle,
-    render_human: impl FnOnce(&mut dyn Write) -> std::io::Result<()>,
+    style: output::OutputStyle,
     human_context: &'static str,
 ) -> anyhow::Result<()> {
-    if json {
-        cli::print_json(output, json_style)?;
-    } else {
-        let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        render_human(&mut lock).context(human_context)?;
-    }
-    Ok(())
+    emit_rendered(output, json, json_style, style, human_context, |t, p| {
+        t.render(p)
+    })
 }
 
-fn emit_full_output<T: Serialize>(
+/// `emit_output` for owned values that ship inside a `JsonEnvelope`.
+fn emit_full_output<T: Serialize + output::Render>(
     output: T,
     json: bool,
     json_style: cli::JsonStyle,
-    render_human: impl FnOnce(&T, &mut dyn Write) -> std::io::Result<()>,
+    style: output::OutputStyle,
     human_context: &'static str,
 ) -> anyhow::Result<()> {
     if json {
         cli::print_json(
             &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
             json_style,
-        )?;
+        )
     } else {
         let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        render_human(&output, &mut lock).context(human_context)?;
+        let lock = stdout.lock();
+        let mut printer = output::Printer::new(lock, style);
+        output.render(&mut printer).context(human_context)?;
+        Ok(())
+    }
+}
+
+/// `emit_output` variant for renderers that need extra arguments (e.g.
+/// `BatchGetOutput` needs a `mode`). The closure receives a borrowed
+/// value and a fresh Printer.
+fn emit_rendered<T, F>(
+    output: &T,
+    json: bool,
+    json_style: cli::JsonStyle,
+    style: output::OutputStyle,
+    human_context: &'static str,
+    render_human: F,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    F: FnOnce(&T, &mut output::Printer<std::io::StdoutLock<'_>>) -> std::io::Result<()>,
+{
+    if json {
+        cli::print_json(output, json_style)?;
+    } else {
+        let stdout = std::io::stdout();
+        let lock = stdout.lock();
+        let mut printer = output::Printer::new(lock, style);
+        render_human(output, &mut printer).context(human_context)?;
     }
     Ok(())
 }
@@ -1016,7 +1045,7 @@ fn run() -> anyhow::Result<()> {
                 &summary,
                 cli_args.json,
                 json_style,
-                |w| summary.print_human(w, output_style),
+                output_style,
                 "failed to write summary",
             )?;
         }
@@ -1099,9 +1128,9 @@ fn run() -> anyhow::Result<()> {
                 cli::print_json(&json_output, json_style)?;
             } else {
                 let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                output
-                    .print_human(&mut lock, output_style)
+                let lock = stdout.lock();
+                let mut printer = output::Printer::new(lock, output_style);
+                output::Render::render(&output, &mut printer)
                     .context("failed to write check output")?;
             }
 
@@ -1135,9 +1164,10 @@ fn run() -> anyhow::Result<()> {
                     cli::print_json(&output, json_style)?;
                 } else {
                     let stdout = std::io::stdout();
-                    let mut lock = stdout.lock();
+                    let lock = stdout.lock();
+                    let mut printer = output::Printer::new(lock, output_style);
                     output
-                        .print_human(&mut lock, output_style, mode)
+                        .render(&mut printer, mode)
                         .context("failed to write get output")?;
                 }
                 if output.has_missing() {
@@ -1173,9 +1203,9 @@ fn run() -> anyhow::Result<()> {
                         context,
                     };
                     let stdout = std::io::stdout();
-                    let mut lock = stdout.lock();
-                    output
-                        .print_human(&mut lock, output_style)
+                    let lock = stdout.lock();
+                    let mut printer = output::Printer::new(lock, output_style);
+                    output::Render::render(&output, &mut printer)
                         .context("failed to write get output")?;
                 }
             } else {
@@ -1220,7 +1250,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w, output_style),
+                output_style,
                 "failed to write find output",
             )?;
         }
@@ -1237,7 +1267,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w, output_style),
+                output_style,
                 "failed to write init output",
             )?;
         }
@@ -1255,7 +1285,7 @@ fn run() -> anyhow::Result<()> {
                     output,
                     cli_args.json,
                     json_style,
-                    |output, w| output.print_human(w, output_style),
+                    output_style,
                     "failed to write impact output",
                 )?;
             } else {
@@ -1294,7 +1324,7 @@ fn run() -> anyhow::Result<()> {
                     &output,
                     cli_args.json,
                     json_style,
-                    |w| output.print_human(w, output_style),
+                    output_style,
                     "failed to write map output",
                 )?;
                 return Ok(());
@@ -1343,7 +1373,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w, output_style),
+                output_style,
                 "failed to write map output",
             )?;
         }
@@ -1391,9 +1421,10 @@ fn run() -> anyhow::Result<()> {
                 }
             } else {
                 let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
+                let lock = stdout.lock();
+                let mut printer = output::Printer::new(lock, output_style);
                 output
-                    .print_human_with_options(&mut lock, output_style, verbose, graph, &lattice)
+                    .render_with_options(&mut printer, verbose, graph, &lattice)
                     .context("failed to write status output")?;
             }
         }
@@ -1418,7 +1449,7 @@ fn run() -> anyhow::Result<()> {
                     output,
                     cli_args.json,
                     json_style,
-                    |output, w| output.print_human(w, output_style),
+                    output_style,
                     "failed to write diff output",
                 )?;
                 return Ok(());
@@ -1435,7 +1466,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w, output_style),
+                output_style,
                 "failed to write diff output",
             )?;
         }
@@ -1446,7 +1477,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w, output_style),
+                output_style,
                 "failed to write obligations output",
             )?;
         }
@@ -1474,7 +1505,7 @@ fn run() -> anyhow::Result<()> {
                 output,
                 cli_args.json,
                 json_style,
-                |output, w| output.print_human(w, output_style),
+                output_style,
                 "failed to write areas output",
             )?;
         }
@@ -1495,7 +1526,7 @@ fn run() -> anyhow::Result<()> {
                 &output,
                 cli_args.json,
                 json_style,
-                |w| output.print_human(w, output_style),
+                output_style,
                 "failed to write garden output",
             )?;
         }
@@ -1534,7 +1565,7 @@ fn run() -> anyhow::Result<()> {
                     &output,
                     cli_args.json,
                     json_style,
-                    |w| output.print_human(w, output_style),
+                    output_style,
                     "failed to write orient output",
                 )?;
             }
