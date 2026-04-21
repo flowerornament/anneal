@@ -17,6 +17,7 @@ use crate::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::identity::suggestion_id;
 use crate::lattice::Lattice;
 use crate::obligations::{ObligationDisposition, collect_obligation_summaries};
+use crate::output::{Line, Location, OutputStyle, Printer, Severity as OutSeverity, TableHeader};
 
 const DEFAULT_QUERY_LIMIT: usize = 25;
 
@@ -326,11 +327,13 @@ type DiagnosticQueryOutput = JsonEnvelope<QueryPayload<DiagnosticRecord>>;
 type ObligationQueryOutput = JsonEnvelope<QueryPayload<ObligationRow>>;
 type SuggestionQueryOutput = JsonEnvelope<QueryPayload<SuggestionRow>>;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     context: &AnalysisContext<'_>,
     command: &QueryCommand,
     json: bool,
     json_style: JsonStyle,
+    output_style: OutputStyle,
     area: Option<&crate::area::AreaFilter>,
     temporal: Option<&crate::area::TemporalFilter>,
     snippets: crate::cli::SnippetIndex<'_>,
@@ -345,14 +348,9 @@ pub(crate) fn run(
                 temporal,
                 snippets,
             )?;
-            if json {
-                crate::cli::print_json(&output, json_style)?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_handle_output_human(&output, &mut lock)?;
-            }
-            Ok(())
+            emit(output, json, json_style, output_style, |o, p| {
+                render_handle_output(o, p)
+            })
         }
         QueryCommand::Edges(args) => {
             let output = build_edge_output(
@@ -363,49 +361,51 @@ pub(crate) fn run(
                 area,
                 temporal,
             );
-            if json {
-                crate::cli::print_json(&output, json_style)?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_edge_output_human(&output, &mut lock)?;
-            }
-            Ok(())
+            emit(output, json, json_style, output_style, |o, p| {
+                render_edge_output(o, p)
+            })
         }
         QueryCommand::Diagnostics(args) => {
             let output = build_diagnostic_output(context, args, area, temporal);
-            if json {
-                crate::cli::print_json(&output, json_style)?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_diagnostic_output_human(&output, &mut lock)?;
-            }
-            Ok(())
+            emit(output, json, json_style, output_style, |o, p| {
+                render_diagnostic_output(o, p)
+            })
         }
         QueryCommand::Obligations(args) => {
             let output = build_obligation_output(context, args, area, temporal);
-            if json {
-                crate::cli::print_json(&output, json_style)?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_obligation_output_human(&output, &mut lock)?;
-            }
-            Ok(())
+            emit(output, json, json_style, output_style, |o, p| {
+                render_obligation_output(o, p)
+            })
         }
         QueryCommand::Suggestions(args) => {
             let output = build_suggestion_output(context, args, area, temporal);
-            if json {
-                crate::cli::print_json(&output, json_style)?;
-            } else {
-                let stdout = std::io::stdout();
-                let mut lock = stdout.lock();
-                print_suggestion_output_human(&output, &mut lock)?;
-            }
-            Ok(())
+            emit(output, json, json_style, output_style, |o, p| {
+                render_suggestion_output(o, p)
+            })
         }
     }
+}
+
+fn emit<T, F>(
+    output: T,
+    json: bool,
+    json_style: JsonStyle,
+    output_style: OutputStyle,
+    render_human: F,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    F: for<'a> FnOnce(&T, &mut Printer<std::io::StdoutLock<'a>>) -> std::io::Result<()>,
+{
+    if json {
+        crate::cli::print_json(&output, json_style)?;
+    } else {
+        let stdout = std::io::stdout();
+        let lock = stdout.lock();
+        let mut printer = Printer::new(lock, output_style);
+        render_human(&output, &mut printer)?;
+    }
+    Ok(())
 }
 
 fn build_handle_output(
@@ -1276,204 +1276,232 @@ fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (OutputMeta, Vec<T>) 
     )
 }
 
-fn print_handle_output_human(output: &HandleQueryOutput, w: &mut dyn Write) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "matches    {} of {} handles",
-        output.meta.returned.unwrap_or(0),
-        output.meta.total.unwrap_or(0)
-    )?;
-    if output.data.items.is_empty() {
+/// Emit the top-of-surface heading for a query subcommand.
+///
+/// `Handles (N)` when returning the full set; `Handles (N of M)` when a
+/// page is returned with more behind `--offset`/`--limit`. A caption
+/// surfaces the offset when non-zero so agents don't have to parse the
+/// hints block to know where they are.
+fn emit_query_heading<W: Write>(
+    p: &mut Printer<W>,
+    label: &str,
+    returned: usize,
+    total: usize,
+) -> std::io::Result<()> {
+    p.heading(label, Some(returned))?;
+    if total > returned {
+        p.caption(&format!("showing {returned} of {total}"))?;
+    }
+    Ok(())
+}
+
+/// Describe the effect of a pagination/expansion flag so the `Try` hint
+/// block reads as action + outcome, not flag + filler.
+fn expand_description(flag: &str) -> &'static str {
+    if flag.starts_with("--offset") {
+        "next page"
+    } else if flag.starts_with("--limit") {
+        "expand"
+    } else if flag.starts_with("--full") {
+        "all results"
+    } else {
+        "expand"
+    }
+}
+
+fn emit_expand_hints<W: Write>(p: &mut Printer<W>, expand: &[String]) -> std::io::Result<()> {
+    if expand.is_empty() {
         return Ok(());
     }
-    writeln!(w)?;
-    let kind_width = output
+    p.blank()?;
+    let rows: Vec<(&str, &str)> = expand
+        .iter()
+        .map(|s| (s.as_str(), expand_description(s)))
+        .collect();
+    p.hints(&rows)
+}
+
+fn render_handle_output<W: Write>(
+    output: &HandleQueryOutput,
+    p: &mut Printer<W>,
+) -> std::io::Result<()> {
+    let returned = output.meta.returned.unwrap_or(0);
+    let total = output.meta.total.unwrap_or(0);
+    emit_query_heading(p, "Handles", returned, total)?;
+    if output.data.items.is_empty() {
+        emit_expand_hints(p, &output.meta.expand)?;
+        return Ok(());
+    }
+    p.blank()?;
+
+    let headers = [
+        TableHeader::text("kind"),
+        TableHeader::text("status"),
+        TableHeader::numeric("incoming"),
+        TableHeader::numeric("outgoing"),
+        TableHeader::text("handle"),
+    ];
+    let rows: Vec<Vec<Line>> = output
         .data
         .items
         .iter()
-        .map(|row| row.handle_kind.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    let status_width = output
-        .data
-        .items
-        .iter()
-        .map(|row| row.status.as_deref().unwrap_or("-").len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-    writeln!(
-        w,
-        "{:<kind_width$}  {:<status_width$}  {:>8}  {:>8}  handle",
-        "kind",
-        "status",
-        "incoming",
-        "outgoing",
-        kind_width = kind_width,
-        status_width = status_width,
-    )?;
+        .map(|row| {
+            vec![
+                Line::new().dim(row.handle_kind.clone()),
+                Line::new().text(row.status.clone().unwrap_or_else(|| "-".to_string())),
+                Line::new().count(row.incoming_count),
+                Line::new().count(row.outgoing_count),
+                Line::new().path(row.id.clone()),
+            ]
+        })
+        .collect();
+    p.table(&headers, &rows)?;
+
+    // Context summaries (when --context was requested) render under
+    // their row in dim, indented past the numeric columns so they read
+    // as supporting prose, not as the clickable handle.
     for row in &output.data.items {
-        writeln!(
-            w,
-            "{:<kind_width$}  {:<status_width$}  {:>8}  {:>8}  {}",
-            row.handle_kind,
-            row.status.as_deref().unwrap_or("-"),
-            row.incoming_count,
-            row.outgoing_count,
-            row.id,
-            kind_width = kind_width,
-            status_width = status_width,
-        )?;
         if let Some(summary) = &row.summary {
-            writeln!(w, "{:>indent$}{}", "", summary, indent = kind_width + 24)?;
+            p.line_at(6, &Line::new().dim(summary.clone()))?;
         }
     }
-    if !output.meta.expand.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
-    }
+    emit_expand_hints(p, &output.meta.expand)?;
     Ok(())
 }
 
-fn print_edge_output_human(output: &EdgeQueryOutput, w: &mut dyn Write) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "matches    {} of {} edges",
-        output.meta.returned.unwrap_or(0),
-        output.meta.total.unwrap_or(0)
-    )?;
+fn render_edge_output<W: Write>(
+    output: &EdgeQueryOutput,
+    p: &mut Printer<W>,
+) -> std::io::Result<()> {
+    let returned = output.meta.returned.unwrap_or(0);
+    let total = output.meta.total.unwrap_or(0);
+    emit_query_heading(p, "Edges", returned, total)?;
     if output.data.items.is_empty() {
+        emit_expand_hints(p, &output.meta.expand)?;
         return Ok(());
     }
-    writeln!(w)?;
-    let kind_width = output
+    p.blank()?;
+
+    let headers = [
+        TableHeader::text("kind"),
+        TableHeader::text("source"),
+        TableHeader::text("target"),
+    ];
+    let rows: Vec<Vec<Line>> = output
         .data
         .items
         .iter()
-        .map(|row| row.edge_kind.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    writeln!(
-        w,
-        "{:<kind_width$}  {:<32}  target",
-        "kind",
-        "source",
-        kind_width = kind_width,
-    )?;
-    for row in &output.data.items {
-        writeln!(
-            w,
-            "{:<kind_width$}  {:<32}  {}",
-            row.edge_kind,
-            row.source,
-            row.target,
-            kind_width = kind_width,
-        )?;
-    }
-    if !output.meta.expand.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
-    }
+        .map(|row| {
+            vec![
+                Line::new().dim(row.edge_kind.clone()),
+                Line::new().path(row.source.clone()),
+                Line::new().path(row.target.clone()),
+            ]
+        })
+        .collect();
+    p.table(&headers, &rows)?;
+    emit_expand_hints(p, &output.meta.expand)?;
     Ok(())
 }
 
-fn print_diagnostic_output_human(
+fn diagnostic_severity(raw: &str) -> OutSeverity {
+    match raw {
+        "error" => OutSeverity::Error,
+        "warning" => OutSeverity::Warning,
+        "suggestion" => OutSeverity::Suggestion,
+        _ => OutSeverity::Info,
+    }
+}
+
+fn render_diagnostic_output<W: Write>(
     output: &DiagnosticQueryOutput,
-    w: &mut dyn Write,
+    p: &mut Printer<W>,
 ) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "matches    {} of {} diagnostics",
-        output.meta.returned.unwrap_or(0),
-        output.meta.total.unwrap_or(0)
-    )?;
+    let returned = output.meta.returned.unwrap_or(0);
+    let total = output.meta.total.unwrap_or(0);
+    emit_query_heading(p, "Diagnostics", returned, total)?;
     if output.data.items.is_empty() {
+        emit_expand_hints(p, &output.meta.expand)?;
         return Ok(());
     }
-    writeln!(w)?;
-    for row in &output.data.items {
-        write!(w, "{}[{}]: {}", row.severity, row.code, row.message)?;
-        if let Some(file) = &row.file {
-            write!(w, "\n  -> {file}")?;
-            if let Some(line) = row.line {
-                write!(w, ":{line}")?;
-            }
-        }
-        writeln!(w)?;
-    }
-    if !output.meta.expand.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
-    }
-    Ok(())
-}
+    p.blank()?;
 
-fn print_obligation_output_human(
-    output: &ObligationQueryOutput,
-    w: &mut dyn Write,
-) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "matches    {} of {} obligations",
-        output.meta.returned.unwrap_or(0),
-        output.meta.total.unwrap_or(0)
-    )?;
-    if output.data.items.is_empty() {
-        return Ok(());
-    }
-    writeln!(w)?;
-    writeln!(
-        w,
-        "{:<10}  {:<16}  {:>10}  handle",
-        "namespace", "disposition", "discharges"
-    )?;
     for row in &output.data.items {
-        writeln!(
-            w,
-            "{:<10}  {:<16}  {:>10}  {}",
-            row.namespace,
-            row.disposition.as_str(),
-            row.discharge_count,
-            row.handle
+        let code = row.code.to_string();
+        let location = row
+            .file
+            .as_deref()
+            .map(|path| Location::new(path, row.line));
+        p.diagnostic(
+            diagnostic_severity(&row.severity),
+            &code,
+            &row.message,
+            location,
         )?;
     }
-    if !output.meta.expand.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
-    }
+    emit_expand_hints(p, &output.meta.expand)?;
     Ok(())
 }
 
-fn print_suggestion_output_human(
-    output: &SuggestionQueryOutput,
-    w: &mut dyn Write,
+fn render_obligation_output<W: Write>(
+    output: &ObligationQueryOutput,
+    p: &mut Printer<W>,
 ) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "matches    {} of {} suggestions",
-        output.meta.returned.unwrap_or(0),
-        output.meta.total.unwrap_or(0)
-    )?;
+    let returned = output.meta.returned.unwrap_or(0);
+    let total = output.meta.total.unwrap_or(0);
+    emit_query_heading(p, "Obligations", returned, total)?;
     if output.data.items.is_empty() {
+        emit_expand_hints(p, &output.meta.expand)?;
         return Ok(());
     }
-    writeln!(w)?;
+    p.blank()?;
+
+    let headers = [
+        TableHeader::text("namespace"),
+        TableHeader::text("disposition"),
+        TableHeader::numeric("discharges"),
+        TableHeader::text("handle"),
+    ];
+    let rows: Vec<Vec<Line>> = output
+        .data
+        .items
+        .iter()
+        .map(|row| {
+            vec![
+                Line::new().dim(row.namespace.clone()),
+                Line::new().text(row.disposition.as_str().to_string()),
+                Line::new().count(row.discharge_count),
+                Line::new().path(row.handle.clone()),
+            ]
+        })
+        .collect();
+    p.table(&headers, &rows)?;
+    emit_expand_hints(p, &output.meta.expand)?;
+    Ok(())
+}
+
+fn render_suggestion_output<W: Write>(
+    output: &SuggestionQueryOutput,
+    p: &mut Printer<W>,
+) -> std::io::Result<()> {
+    let returned = output.meta.returned.unwrap_or(0);
+    let total = output.meta.total.unwrap_or(0);
+    emit_query_heading(p, "Suggestions", returned, total)?;
+    if output.data.items.is_empty() {
+        emit_expand_hints(p, &output.meta.expand)?;
+        return Ok(());
+    }
+    p.blank()?;
+
     for row in &output.data.items {
-        write!(w, "suggestion[{}]: {}", row.code, row.message)?;
-        if let Some(file) = &row.file {
-            write!(w, "\n  -> {file}")?;
-            if let Some(line) = row.line {
-                write!(w, ":{line}")?;
-            }
-        }
-        writeln!(w)?;
+        let code = row.code.to_string();
+        let location = row
+            .file
+            .as_deref()
+            .map(|path| Location::new(path, row.line));
+        p.diagnostic(OutSeverity::Suggestion, &code, &row.message, location)?;
     }
-    if !output.meta.expand.is_empty() {
-        writeln!(w)?;
-        writeln!(w, "next       {}", output.meta.expand.join(", "))?;
-    }
+    emit_expand_hints(p, &output.meta.expand)?;
     Ok(())
 }
 

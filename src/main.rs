@@ -1577,6 +1577,7 @@ fn run() -> anyhow::Result<()> {
                 command,
                 cli_args.json,
                 json_style,
+                output_style,
                 area_filter.as_ref(),
                 temporal_filter.as_ref(),
                 snippets,
