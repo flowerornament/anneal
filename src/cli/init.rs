@@ -9,7 +9,7 @@ use crate::config::{
     FrontmatterFieldMapping, HandlesConfig, SuppressConfig,
 };
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer};
+use crate::output::{Line, Printer, Render};
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -27,11 +27,10 @@ pub(crate) struct InitOutput {
 /// Frontmatter keys that are metadata-only (not edge-producing references).
 const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
 
-impl InitOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
+impl Render for InitOutput {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         let toml_str =
             toml::to_string_pretty(&self.config).unwrap_or_else(|e| format!("# error: {e}"));
-        let mut p = Printer::new(w, style);
         if self.written {
             p.line(
                 &Line::new()

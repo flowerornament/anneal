@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::NodeId;
-use crate::output::{Line, OutputStyle, Printer};
+use crate::output::{Line, Printer, Render};
 
 use super::lookup_handle;
 
@@ -59,12 +59,9 @@ impl ImpactOutput {
         self.direct_count = self.direct.len();
         self.indirect_count = self.indirect.len();
     }
+}
 
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for ImpactOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         p.heading("Impact", None)?;
         p.caption(&format!("what depends on {}", self.handle))?;

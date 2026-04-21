@@ -7,7 +7,7 @@ use crate::config::AnnealConfig;
 use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer, Tone};
+use crate::output::{Line, Printer, Render, Tone};
 
 // ---------------------------------------------------------------------------
 // Obligations command (UX-06)
@@ -31,12 +31,7 @@ pub(crate) struct ObligationsOutput {
 
 type NamespaceBuckets = (Vec<String>, Vec<String>, Vec<String>);
 
-impl ObligationsOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for ObligationsOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         p.heading("Obligations", None)?;
         p.tally(&[

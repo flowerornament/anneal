@@ -4,7 +4,7 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::checks::{self, Diagnostic, DiagnosticCode, Severity};
-use crate::output::{Line, Location, OutputStyle, Printer};
+use crate::output::{Line, Location, Printer, Render};
 
 use super::{DetailLevel, OutputMeta};
 
@@ -78,12 +78,7 @@ pub(crate) struct CheckJsonOptions {
     pub(crate) full: bool,
 }
 
-impl CheckOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for CheckOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         for diag in &self.diagnostics {
             render_diagnostic(p, diag)?;

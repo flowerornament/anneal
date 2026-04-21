@@ -7,7 +7,7 @@ use crate::area::{AreaFilter, AreaHealth, area_of, area_of_diagnostic};
 use crate::checks::{Diagnostic, DiagnosticCode, Evidence, Severity, SuggestionEvidence};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
-use crate::output::{Line, OutputStyle, Printer, Tone, Toned};
+use crate::output::{Line, Printer, Render, Tone, Toned};
 
 use super::plural;
 
@@ -161,12 +161,7 @@ pub(crate) struct GardenOutput {
     pub(crate) category_filter: Option<GardenCategory>,
 }
 
-impl GardenOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for GardenOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if self.tasks.is_empty() {
             p.line(&Line::new().dim("No maintenance tasks — corpus is tidy."))?;

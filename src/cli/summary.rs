@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
-use crate::output::{Line, OutputStyle, Printer};
+use crate::output::{Line, Printer, Render};
 use crate::resolve::ResolveStats;
 
 // ---------------------------------------------------------------------------
@@ -35,9 +35,8 @@ pub(crate) struct GraphSummary {
     pub(crate) terminal_statuses: usize,
 }
 
-impl GraphSummary {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
+impl Render for GraphSummary {
+    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         p.heading("anneal", None)?;
         p.caption("knowledge graph built")?;
         p.blank()?;

@@ -6,7 +6,7 @@ use camino::Utf8Path;
 use serde::Serialize;
 
 use crate::area::AreaGrade;
-use crate::output::{Line, OutputStyle, Printer, TableHeader, Tone, Toned};
+use crate::output::{Line, OutputStyle, Printer, Render, TableHeader, Tone, Toned};
 use crate::snapshot::AreaSnapshot;
 
 // ---------------------------------------------------------------------------
@@ -66,12 +66,7 @@ pub(crate) struct DiffOutput {
     pub(crate) namespace_deltas: Vec<NamespaceDelta>,
 }
 
-impl DiffOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for DiffOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if !self.has_history {
             p.heading("No snapshot history yet", None)?;
@@ -503,12 +498,7 @@ pub(crate) struct DiffByAreaOutput {
     pub(crate) areas: Vec<AreaDelta>,
 }
 
-impl DiffByAreaOutput {
-    pub(crate) fn print_human(&self, w: &mut dyn Write, style: OutputStyle) -> std::io::Result<()> {
-        let mut p = Printer::new(w, style);
-        self.render(&mut p)
-    }
-
+impl Render for DiffByAreaOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if self.has_history {
             p.heading("Diff by area", Some(self.areas.len()))?;
@@ -848,9 +838,8 @@ mod tests {
         let output = diff_snapshots(&current, &previous, "last snapshot");
 
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, plain_style())
-            .expect("print_human");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
 
         assert!(
@@ -872,9 +861,8 @@ mod tests {
 
         assert!(!output.has_history);
         let mut buf = Vec::new();
-        output
-            .print_human(&mut buf, plain_style())
-            .expect("print_human");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
             text.contains("No snapshot history yet"),
@@ -1026,7 +1014,8 @@ mod tests {
             }],
         };
         let mut buf = Vec::new();
-        output.print_human(&mut buf, plain_style()).expect("print");
+        let mut p = Printer::new(&mut buf, plain_style());
+        output.render(&mut p).expect("render");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(text.contains("no snapshot history"));
         assert!(text.contains("compiler"));
