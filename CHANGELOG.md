@@ -21,6 +21,23 @@ All notable changes to `anneal` are documented in this file.
   obligation delta with an explicit sign, and orient/find share one
   `SNIPPET_MAX = 120` with an explicit `…` when cut. See
   `.design/2026-04-17-cli-ux-audit-v2.md` for the findings table.
+- `query`, `explain`, and `map --around` output now flow through the
+  same Printer primitives as the other 12 commands (Round 3 UX audit).
+  Each subcommand leads with a heading that names both the kind and the
+  count — `Handles (5)`, `Diagnostics (2)`, `Convergence drifting`,
+  `Neighborhood anneal-spec.md depth 1`. Query results use the shared
+  table primitive so `kind`/`status`/`incoming`/`outgoing` columns
+  align regardless of content width, and diagnostics/suggestions share
+  the `severity[CODE]  message / at path:line` shape with `anneal
+  check`. Pagination is a `Try` hint block with action descriptions
+  (`--offset 5  next page`, `--full  all results`) rather than a flat
+  `next` footer. Explain surfaces fold facts into a `Facts (N)`
+  heading with aligned `fact_type key value` rows; impact's direct and
+  indirect sections carry counts and render `(none)` in dim when
+  empty. Map's focused neighborhood gets a `Files (N)` / `Namespaces
+  (N)` / `Focus edges (N)` / `Other neighborhood edges (N)` structure
+  with `… N more` truncation markers. Explicit `--render=text` and
+  `--render=dot` on `map` remain byte-stable passthroughs for pipelines.
 
 ## 0.9.2 - 2026-04-17
 

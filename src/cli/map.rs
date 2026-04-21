@@ -10,7 +10,7 @@ use crate::handle::{Handle, HandleKind, NodeId};
 use crate::lattice::Lattice;
 use crate::output::{Line, Printer, Render, Tone};
 
-use super::{DetailLevel, OutputMeta, lookup_handle};
+use super::{DetailLevel, OutputMeta, emit_expand_hints, lookup_handle};
 
 // ---------------------------------------------------------------------------
 // Map command (CLI-05, KB-C5)
@@ -47,49 +47,49 @@ pub(crate) struct MapEdgeEntry {
 /// serialized: users who want machine-readable neighborhood data should
 /// pass `--nodes`/`--edges`/`--json` to get `node_list`/`edge_list`.
 pub(crate) struct AroundSummary {
-    pub(crate) focus_id: String,
-    pub(crate) depth: u32,
-    pub(crate) node_count: usize,
-    pub(crate) edge_count: usize,
-    pub(crate) files: Vec<AroundFile>,
-    pub(crate) files_total: usize,
-    pub(crate) label_total: usize,
-    pub(crate) namespaces: Vec<AroundNamespace>,
-    pub(crate) namespaces_total: usize,
-    pub(crate) sections: usize,
-    pub(crate) versions: usize,
-    pub(crate) externals: usize,
-    pub(crate) focus_outgoing: Vec<AroundEdge>,
-    pub(crate) focus_outgoing_total: usize,
-    pub(crate) focus_incoming: Vec<AroundEdge>,
-    pub(crate) focus_incoming_total: usize,
-    pub(crate) other_edges: Vec<AroundFullEdge>,
-    pub(crate) other_edges_total: usize,
+    focus_id: String,
+    depth: u32,
+    node_count: usize,
+    edge_count: usize,
+    files: Vec<AroundFile>,
+    files_total: usize,
+    label_total: usize,
+    namespaces: Vec<AroundNamespace>,
+    namespaces_total: usize,
+    sections: usize,
+    versions: usize,
+    externals: usize,
+    focus_outgoing: Vec<AroundEdge>,
+    focus_outgoing_total: usize,
+    focus_incoming: Vec<AroundEdge>,
+    focus_incoming_total: usize,
+    other_edges: Vec<AroundFullEdge>,
+    other_edges_total: usize,
     /// True when the neighborhood rendered the full detail view (below
     /// the hub threshold) rather than the hub summary.
-    pub(crate) full_view: bool,
+    full_view: bool,
 }
 
-pub(crate) struct AroundFile {
-    pub(crate) id: String,
-    pub(crate) status: Option<String>,
+struct AroundFile {
+    id: String,
+    status: Option<String>,
 }
 
-pub(crate) struct AroundNamespace {
-    pub(crate) prefix: String,
-    pub(crate) total: usize,
-    pub(crate) sample: Vec<String>,
+struct AroundNamespace {
+    prefix: String,
+    total: usize,
+    sample: Vec<String>,
 }
 
-pub(crate) struct AroundEdge {
-    pub(crate) kind: String,
-    pub(crate) other: String,
+struct AroundEdge {
+    kind: String,
+    other: String,
 }
 
-pub(crate) struct AroundFullEdge {
-    pub(crate) source: String,
-    pub(crate) target: String,
-    pub(crate) kind: String,
+struct AroundFullEdge {
+    source: String,
+    target: String,
+    kind: String,
 }
 
 #[derive(Serialize)]
@@ -115,17 +115,7 @@ impl Render for MapOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
         if let Some(summary) = &self.around_summary {
             render_around(p, summary)?;
-            if !self.meta.expand.is_empty() {
-                p.blank()?;
-                let rows: Vec<(&str, &str)> = self
-                    .meta
-                    .expand
-                    .iter()
-                    .map(|s| (s.as_str(), "expand"))
-                    .collect();
-                p.hints(&rows)?;
-            }
-            return Ok(());
+            return emit_expand_hints(p, &self.meta.expand);
         }
         if let Some(content) = &self.rendered_content {
             // Rendered content (text/dot format) — pass through verbatim so
@@ -133,17 +123,7 @@ impl Render for MapOutput {
             for line in content.lines() {
                 p.raw_line(line)?;
             }
-            if !self.meta.expand.is_empty() {
-                p.blank()?;
-                let rows: Vec<(&str, &str)> = self
-                    .meta
-                    .expand
-                    .iter()
-                    .map(|s| (s.as_str(), "expand"))
-                    .collect();
-                p.hints(&rows)?;
-            }
-            return Ok(());
+            return emit_expand_hints(p, &self.meta.expand);
         }
 
         p.heading("Graph summary", None)?;
@@ -165,17 +145,7 @@ impl Render for MapOutput {
                 render_count_row(p, ns.count, &ns.namespace, width)?;
             }
         }
-        if !self.meta.expand.is_empty() {
-            p.blank()?;
-            let rows: Vec<(&str, &str)> = self
-                .meta
-                .expand
-                .iter()
-                .map(|s| (s.as_str(), "expand"))
-                .collect();
-            p.hints(&rows)?;
-        }
-        Ok(())
+        emit_expand_hints(p, &self.meta.expand)
     }
 }
 
@@ -759,14 +729,14 @@ fn render_text(
 /// Build the structured neighborhood summary used by the Printer path.
 /// Mirrors `render_text_hub_summary` / `render_text_full` data selection
 /// but returns typed fields so `render_around` can style them.
-fn build_around_summary(
-    graph: &DiGraph,
+fn build_around_summary<'g>(
+    graph: &'g DiGraph,
     nodes: &HashSet<NodeId>,
+    edge_set: &BTreeSet<(NodeId, NodeId, &'g str)>,
     focus: NodeId,
     depth: u32,
 ) -> AroundSummary {
     let focus_id = graph.node(focus).id.clone();
-    let edge_set = subgraph_edges(graph, nodes);
     let edge_count = edge_set.len();
 
     let label_count = nodes
@@ -1268,7 +1238,8 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
     if let Some(tf) = opts.temporal {
         nodes.retain(|&nid| tf.matches_handle(opts.graph.node(nid)));
     }
-    let edge_count = subgraph_edges(opts.graph, &nodes).len();
+    let edge_set = subgraph_edges(opts.graph, &nodes);
+    let edge_count = edge_set.len();
     let by_kind = map_kind_counts(opts.graph, &nodes);
     let top_namespaces = map_top_namespaces(opts.graph, &nodes);
 
@@ -1303,7 +1274,8 @@ pub(crate) fn cmd_map(opts: &MapOptions<'_>) -> MapOutput {
         }
         crate::MapRender::Around => {
             if let Some(focus) = around_focus {
-                let summary = build_around_summary(opts.graph, &nodes, focus, opts.depth);
+                let summary =
+                    build_around_summary(opts.graph, &nodes, &edge_set, focus, opts.depth);
                 if !summary.full_view {
                     rendered_truncated = true;
                 }

@@ -185,7 +185,7 @@ pub(crate) struct DiagnosticRecord {
     pub(crate) diagnostic_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) suggestion_id: Option<String>,
-    pub(crate) severity: String,
+    pub(crate) severity: Severity,
     pub(crate) code: DiagnosticCode,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
@@ -198,7 +198,7 @@ impl DiagnosticRecord {
         Self {
             diagnostic_id: diagnostic_id(diagnostic),
             suggestion_id: suggestion_id(diagnostic),
-            severity: diagnostic.severity.as_str().to_string(),
+            severity: diagnostic.severity,
             code: diagnostic.code,
             message: diagnostic.message.clone(),
             file: diagnostic.file.clone(),

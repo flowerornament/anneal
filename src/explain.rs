@@ -76,7 +76,7 @@ pub(crate) struct ExplanationFact {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DiagnosticExplanation {
     pub(crate) diagnostic_id: String,
-    pub(crate) severity: String,
+    pub(crate) severity: crate::checks::Severity,
     pub(crate) code: String,
     pub(crate) message: String,
     pub(crate) file: Option<String>,
@@ -251,7 +251,7 @@ fn build_diagnostic_explanation_output(
     let diagnostic = select_diagnostic(&diagnostics, args)?;
     Ok(DiagnosticExplanation {
         diagnostic_id: diagnostic_id(diagnostic),
-        severity: diagnostic.severity.as_str().to_string(),
+        severity: diagnostic.severity,
         code: diagnostic.code.to_string(),
         message: diagnostic.message.clone(),
         file: diagnostic.file.clone(),
@@ -1069,7 +1069,7 @@ impl Render for DiagnosticExplanation {
             &Line::new()
                 .heading(format!("Diagnostic {}", self.code))
                 .text("  ")
-                .dim(self.severity.clone()),
+                .toned(self.severity.to_output().tone(), self.severity.as_str()),
         )?;
         p.blank()?;
 

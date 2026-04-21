@@ -503,15 +503,15 @@ as glyph-separator stays banned; whitespace divides sections.
 | F29 | impact               | default                      | Caption `what depends on <handle>` already renders via `caption()` (dim tone). Acceptable         | nit      | R2   | Verified on re-capture                                                                       | closed |
 | F30 | map                  | summary                      | `12,571 nodes · 3,562 edges` — `·`                                                              | design   | R1   | closes with F01                                                                              | closed |
 | F31 | map                  | summary                      | `By kind` count column width doesn't expand for 5-digit counts — `11,582  section` pushes right  | design   | R5   | render_count_row now right-pads each count to the max width of the section                   | closed |
-| F32 | map                  | --around                     | Raw `writeln!` output; no Printer. `->` arrows, custom `-Cites->` triple, `... and N more files` | critical | R1,R2,R8 | Large rewrite with extensive test updates. Defer to Round 3 with query/explain           | defer  |
+| F32 | map                  | --around                     | Raw `writeln!` output; no Printer. `->` arrows, custom `-Cites->` triple, `... and N more files` | critical | R1,R2,R8,R14 | Round 3: new `MapRender::Around` routes the implicit `--around` path through Printer; explicit `--render=text`/`--render=dot` remain byte-stable | closed |
 | F33 | map                  | --render text --full         | Raw `writeln!` passthrough; uses `-Kind->` triple arrows, `[status]` status suffix               | design   | —    | Accepted as explicit passthrough for DOT/text pipelines                                      | wontfix |
 | F34 | map                  | --by-area                    | Count jitter inside `—601→` arrow — `—9→` vs `—601→` widths differ                            | nit      | R5   | Right-aligns the count so all edges share the arrow column                                   | closed |
 | F35 | diff                 | default, by-area             | `+0 created · +0 active · +0 terminal` — `·`                                                    | design   | R1   | closes with F01                                                                              | closed |
 | F36 | obligations          | default                      | `0 outstanding · 0 discharged · 0 mooted` — `·`                                                 | design   | R1   | closes with F01                                                                              | closed |
 | F37 | init                 | --dry-run                    | Header `anneal.toml` + caption indented at col 2, but TOML body unindented at col 0              | design   | R3   | Trade-off accepted: TOML body stays col-0 for copy/paste; header stays col-2 per R2           | wontfix |
 | F38 | areas                | all                          | `Try anneal garden  ranked tasks for the 1 degraded area` — phrasing compresses sentence          | nit      | R7   | Hint descriptions vary across commands as prose; acceptable for now                           | wontfix |
-| F39 | query                | all subcommands              | Raw `writeln!`; no indent, lowercase `next` footer, `-> path` arrows                             | design   | —    | **Deferred to Round 3** per scope guard                                                     | defer  |
-| F40 | explain              | all subcommands              | Raw `writeln!`; lowercase kv style; unindented                                                   | design   | —    | **Deferred to Round 3** per scope guard                                                     | defer  |
+| F39 | query                | all subcommands              | Raw `writeln!`; no indent, lowercase `next` footer, `-> path` arrows                             | design   | R2,R12,R13 | Round 3: `run()` accepts `OutputStyle`; five renderers use `Printer::table` + `Printer::diagnostic`; pagination via `Printer::hints` | closed |
+| F40 | explain              | all subcommands              | Raw `writeln!`; lowercase kv style; unindented                                                   | design   | R2,R12 | Round 3: `impl Render` per explanation; heading + `kv_block` + `Facts (N)` + impact Direct/Indirect with counts | closed |
 | F41 | get                  | default                      | Arrow alignment between Outgoing and Incoming sections uses different padding widths             | nit      | R5   | OK within-section; cross-section mismatch is acceptable. No fix                              | wontfix |
 | F42 | find                 | kw, limit5, sort-date        | File column is redundant when kind=section (same as base path without `#hash`)                    | nit      | —    | Could omit for section kind; defer to Round 3 when find gets grouping                        | defer  |
 
@@ -529,7 +529,8 @@ as glyph-separator stays banned; whitespace divides sections.
 - **7 deferred to Round 3.** F16, F17 (find grouping features), F24
   (get --full bug — product-level), F32 (map --around migration — large
   rewrite), F39, F40 (query/explain narrative surfaces — original scope
-  guard), F42 (find section kind dedup).
+  guard), F42 (find section kind dedup). *Round 3 closed F32, F39, F40;
+  F16, F17, F24, F42 remain carried forward as product-level work.*
 
 ## Round 3: UI coherence migrations
 
@@ -566,17 +567,22 @@ guard rules out.
 
 ### Round 3 disposition
 
-| ID  | Target                        | Outcome                                                                               |
-|-----|-------------------------------|---------------------------------------------------------------------------------------|
-| F39 | `query {handles,edges,…}`     | `impl Render` added; `run()` accepts `OutputStyle`; tables via `Printer::table`; `next` → `hints`. |
-| F40 | `explain {diagnostic,…}`      | `impl Render` added per explanation type; `kv_block` + `facts (N)` heading + `hints`. |
-| F32 | `map --around` default text   | `render_text_full` + `render_text_hub_summary` compose `Line`s via `Printer` when `MapRender::Around`; legacy String path retained for explicit `--render=text`/`--render=dot`. |
+| ID  | Target                        | Outcome                                                                               | Status |
+|-----|-------------------------------|---------------------------------------------------------------------------------------|--------|
+| F32 | `map --around` default text   | New `MapRender::Around` variant routes the implicit `--around X` path through Printer. Structured `AroundSummary` drives `Neighborhood <h> depth N` heading, `Files (N)`/`Namespaces (N)`/`Focus edges (N)`/`Other neighborhood edges (N)` sections, `… N more` truncation, `Try` hints. Explicit `--render=text` and `--render=dot` remain byte-stable passthroughs (R14). | closed |
+| F39 | `query {handles,edges,…}`     | `run()` accepts `OutputStyle`; handles/edges/obligations render via `Printer::table`; diagnostics/suggestions share `Printer::diagnostic` with `check`; pagination footer → `Try  --offset K  next page` hint block.               | closed |
+| F40 | `explain {diagnostic,…}`      | `impl Render` on each explanation; heading folds subject (`Diagnostic I001  info`, `Convergence drifting`, `Impact <root>`) into the first line; `kv_block` for the body; `Facts (N)` heading with aligned `fact_type key value` rows; impact `Direct`/`Indirect` sections with counts. | closed |
 
-Wave commits on `dev`:
-- `7a76c45` docs: findings table populated
-- `22a9b19` feat: Wave A — comma separator + SNIPPET_MAX + bullet retirement
-- `697a4bf` feat: Wave B — garden/check/get structure
-- `226e701` feat: Wave B tail — column alignment + convergence sign
+Round 3 outcome:
+- **3 closed.** F32, F39, F40 all migrated to Printer. 348 tests green.
+- **4 carried forward (product-level, outside UI scope).** F16, F17
+  (find grouping features), F24 (`get --full` product bug), F42 (find
+  section kind dedup).
+
+Round 3 wave commits on `dev`:
+- `33fdd44` feat: Round 3 — explain migrated to Printer (F40)
+- `daa7c1a` feat: Round 3 — query migrated to Printer (F39)
+- `cbfc452` feat: Round 3 — map --around migrated to Printer (F32)
 
 Rule amendments applied during Round 2:
 - **R1** refined to allow comma as inline separator; glyph separators
