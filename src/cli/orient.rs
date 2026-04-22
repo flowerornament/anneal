@@ -268,7 +268,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
     let graph = opts.graph;
     let exclude = ExcludeMatcher::new(&opts.config.exclude);
 
-    let file_entries = collect_file_entries(graph, &exclude);
+    let file_entries = collect_file_entries(graph, &exclude, opts.config);
 
     let candidate_set: HashSet<NodeId> = match opts.file {
         Some(path) => {
@@ -443,7 +443,11 @@ struct FileEntry {
     date_ord: Option<i64>,
 }
 
-fn collect_file_entries(graph: &DiGraph, exclude: &ExcludeMatcher<'_>) -> Vec<FileEntry> {
+fn collect_file_entries(
+    graph: &DiGraph,
+    exclude: &ExcludeMatcher<'_>,
+    config: &OrientConfig,
+) -> Vec<FileEntry> {
     graph
         .nodes()
         .filter_map(|(node, handle)| {
@@ -452,6 +456,9 @@ fn collect_file_entries(graph: &DiGraph, exclude: &ExcludeMatcher<'_>) -> Vec<Fi
                 _ => return None,
             };
             if exclude.is_excluded(&path) {
+                return None;
+            }
+            if !passes_hard_filters(handle, config) {
                 return None;
             }
             Some(FileEntry {
@@ -463,6 +470,128 @@ fn collect_file_entries(graph: &DiGraph, exclude: &ExcludeMatcher<'_>) -> Vec<Fi
             })
         })
         .collect()
+}
+
+/// Statuses that mark a file as "not content anymore." Files with any
+/// of these statuses are excluded from orient entirely — they are graph
+/// plumbing (redirects, archival markers), not reading material.
+pub(super) const TERMINAL_STATUSES: &[&str] = &[
+    "superseded",
+    "archived",
+    "historical",
+    "prior",
+    "incorporated",
+    "digested",
+    "resolved",
+    "retired",
+    "deprecated",
+    "obsolete",
+];
+
+/// Statuses that mark a file as "current active work surface." These
+/// make a file eligible for the Frontier tier; everything else
+/// (non-terminal) flows to Foundation.
+pub(super) const FRONTIER_STATUSES: &[&str] = &[
+    "active",
+    "draft",
+    "current",
+    "in-progress",
+    "plan",
+    "complete",
+    "open",
+    "proposed",
+];
+
+/// Basenames (case-insensitive, stripped of extension) that carry an
+/// "orient me" contract by maintainer convention. Files matching these
+/// names are curated hubs regardless of status or frontmatter.
+///
+/// Kept conservative on purpose. `MANIFEST` and `TOC` are intentionally
+/// omitted: directory manifests tend to be redirect stubs more often
+/// than orientation material. Corpora that use those names as real
+/// entry points can promote the file explicitly with `status: living`
+/// or a `purpose:` frontmatter line.
+pub(super) const CURATED_HUB_BASENAMES: &[&str] = &[
+    "readme",
+    "changelog",
+    "design-goals",
+    "open-questions",
+    "labels",
+    "index",
+    "roadmap",
+    "overview",
+    "glossary",
+];
+
+/// Frontmatter `purpose:` substrings (case-insensitive) that flag a file
+/// as a curated hub. The maintainer declared orientation intent in
+/// words — honor it.
+pub(super) const CURATED_HUB_PURPOSE_CUES: &[&str] = &[
+    "entry point",
+    "read first",
+    "read this first",
+    "orientation",
+    "overview",
+    "map",
+    "starting point",
+    "guide",
+];
+
+/// True if a file is a curated orientation hub — via basename,
+/// `status: living`, or `purpose:` frontmatter.
+///
+/// Basename is the primary signal because agents forget to annotate.
+/// Zero-annotation corpora still get README/CHANGELOG/DESIGN-GOALS
+/// detection; corpora that bother with frontmatter get finer control.
+pub(super) fn is_curated_hub(handle: &Handle) -> bool {
+    if handle.status.as_deref() == Some("living") {
+        return true;
+    }
+    if let Some(file_path) = handle.file_path.as_deref()
+        && let Some(stem) = file_path.file_stem()
+    {
+        let lower = stem.to_ascii_lowercase();
+        if CURATED_HUB_BASENAMES.iter().any(|b| *b == lower) {
+            return true;
+        }
+    }
+    if let Some(purpose) = &handle.metadata.purpose {
+        let lower = purpose.to_ascii_lowercase();
+        if CURATED_HUB_PURPOSE_CUES
+            .iter()
+            .any(|cue| lower.contains(cue))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True if the file should be in orient output at all (before any
+/// tier/scoring logic). Replaces the 0.9.3-unreleased `content_factor`
+/// soft penalty: filters beat demotions because demoted stubs still
+/// consume budget at the tail end.
+///
+/// Excludes: terminal status, `superseded-by:` pointer, undersized
+/// non-curated files.
+fn passes_hard_filters(handle: &Handle, config: &OrientConfig) -> bool {
+    if let Some(status) = handle.status.as_deref()
+        && TERMINAL_STATUSES.contains(&status)
+    {
+        return false;
+    }
+    if handle.metadata.superseded_by.is_some() {
+        return false;
+    }
+    let is_curated = is_curated_hub(handle);
+    if !is_curated
+        && handle
+            .size_bytes
+            .is_some_and(|size| size < config.stub_bytes)
+    {
+        return false;
+    }
+    true
 }
 
 struct ScoredFile {
@@ -858,6 +987,141 @@ mod tests {
         let scores = score_files_at(&graph, &files, &config, date(2026, 4, 17));
         // Status bonus only: 2.0 (draft), no edges, no labels, no recency.
         assert!((scores.get(&undated).unwrap().score - 2.0).abs() < 0.001);
+    }
+
+    // --- Hard filters + curated-hub detection ---------------------------
+
+    #[test]
+    fn curated_hub_detects_readme_basename_case_insensitive() {
+        let readme = Handle::file(
+            camino::Utf8PathBuf::from("docs/README.md"),
+            Some("draft".to_string()),
+            None,
+            Some(2000),
+            HandleMetadata::default(),
+        );
+        assert!(is_curated_hub(&readme));
+
+        let readme_lower = Handle::file(
+            camino::Utf8PathBuf::from("docs/readme.md"),
+            None,
+            None,
+            Some(2000),
+            HandleMetadata::default(),
+        );
+        assert!(is_curated_hub(&readme_lower));
+    }
+
+    #[test]
+    fn curated_hub_detects_status_living() {
+        let living = Handle::file(
+            camino::Utf8PathBuf::from("docs/principles.md"),
+            Some("living".to_string()),
+            None,
+            Some(2000),
+            HandleMetadata::default(),
+        );
+        assert!(is_curated_hub(&living));
+    }
+
+    #[test]
+    fn curated_hub_detects_purpose_frontmatter() {
+        let meta = HandleMetadata {
+            purpose: Some("Entry point. Read this first.".to_string()),
+            ..HandleMetadata::default()
+        };
+        let hub = Handle::file(
+            camino::Utf8PathBuf::from("synthesis/corpus-map.md"),
+            Some("draft".to_string()),
+            None,
+            Some(2000),
+            meta,
+        );
+        assert!(is_curated_hub(&hub));
+    }
+
+    #[test]
+    fn curated_hub_rejects_non_hub_names() {
+        let ordinary = Handle::file(
+            camino::Utf8PathBuf::from("spec/readme-migration.md"),
+            None,
+            None,
+            Some(2000),
+            HandleMetadata::default(),
+        );
+        assert!(!is_curated_hub(&ordinary));
+    }
+
+    #[test]
+    fn hard_filter_excludes_terminal_status() {
+        let config = OrientConfig::default();
+        for status in TERMINAL_STATUSES {
+            let handle = Handle::file(
+                camino::Utf8PathBuf::from("compiler/old.md"),
+                Some((*status).to_string()),
+                None,
+                Some(8000),
+                HandleMetadata::default(),
+            );
+            assert!(
+                !passes_hard_filters(&handle, &config),
+                "status {status} should be filtered out"
+            );
+        }
+    }
+
+    #[test]
+    fn hard_filter_excludes_superseded_by_pointer() {
+        let meta = HandleMetadata {
+            superseded_by: Some("compiler/new.md".to_string()),
+            ..HandleMetadata::default()
+        };
+        let handle = Handle::file(
+            camino::Utf8PathBuf::from("compiler/old.md"),
+            Some("active".to_string()),
+            None,
+            Some(8000),
+            meta,
+        );
+        let config = OrientConfig::default();
+        assert!(!passes_hard_filters(&handle, &config));
+    }
+
+    #[test]
+    fn hard_filter_excludes_stub_sized_files_unless_curated() {
+        let config = OrientConfig::default();
+        let stub = Handle::file(
+            camino::Utf8PathBuf::from("spec/redirect.md"),
+            Some("active".to_string()),
+            None,
+            Some(500),
+            HandleMetadata::default(),
+        );
+        assert!(!passes_hard_filters(&stub, &config));
+
+        let small_hub = Handle::file(
+            camino::Utf8PathBuf::from("README.md"),
+            None,
+            None,
+            Some(500),
+            HandleMetadata::default(),
+        );
+        assert!(passes_hard_filters(&small_hub, &config));
+    }
+
+    #[test]
+    fn hard_filter_keeps_missing_size_files() {
+        // Handles without size_bytes (non-file handles would never reach
+        // here, but safety). We can't penalize what we can't measure.
+        let handle = Handle::file(
+            camino::Utf8PathBuf::from("spec/a.md"),
+            Some("active".to_string()),
+            None,
+            None,
+            HandleMetadata::default(),
+        );
+        let config = OrientConfig::default();
+        assert!(passes_hard_filters(&handle, &config));
     }
 
     #[test]
