@@ -636,23 +636,16 @@ fn score_files_at(
         .iter()
         .map(|fe| {
             let handle = graph.node(fe.node);
-            // Incoming edges (others → this file) are the real centrality
-            // signal for an orientation target: "people cite this." Outgoing
-            // edges say "this file consumes a lot", which is weaker evidence
-            // that it's a good reading entry point (e.g. long reference
-            // tables). Weight incoming twice as heavily.
-            //
-            // Log-scaling keeps hubs from monopolizing the top. A file with
-            // 100 citations isn't 10× more useful to read first than one
-            // with 10 — diminishing returns kick in fast. This lets
-            // recency, status, and other signals actually influence order
-            // in mature corpora where a few files have accumulated
-            // hundreds of back-references.
-            #[allow(clippy::cast_precision_loss)]
-            let incoming_log = (graph.incoming(fe.node).len() as f64 + 1.0).ln();
-            #[allow(clippy::cast_precision_loss)]
-            let outgoing_log = (graph.outgoing(fe.node).len() as f64 + 1.0).ln();
-            let edge_score = (incoming_log * 2.0 + outgoing_log) * config.edge_weight;
+            // Recency-weighted in-degree: each incoming citation counted
+            // by the *citer's* recency, not the cited file's. An old hub
+            // cited only by pre-frontier material decays; an old hub
+            // still cited by this month's work keeps weight. This is the
+            // core fix for stale-hub leakage — previously a March file
+            // with 50 March citers outranked a March file with 10 April
+            // citers, because raw in-degree ignored when the citer was
+            // written.
+            let edge_score = recency_weighted_in_degree(graph, fe.node, today_ord, half_life)
+                * config.edge_weight;
 
             let label_count = label_counts.get(fe.path.as_str()).copied().unwrap_or(0);
             #[allow(clippy::cast_precision_loss)]
@@ -661,13 +654,16 @@ fn score_files_at(
             let recency = fe.date_ord.map_or(0.0, |d| {
                 // Files dated in the future pin to bonus=1.0 rather than
                 // overshooting; ancient files decay toward zero.
-                #[allow(clippy::cast_precision_loss)]
-                let age_days = (today_ord - d).max(0) as f64;
-                let bonus = 0.5_f64.powf(age_days / half_life);
+                let bonus = recency_decay(today_ord, d, half_life);
                 bonus * config.recency_weight
             });
             let status_bonus = status_bonus(handle);
-            let score = edge_score + label_score + recency + status_bonus;
+            let curated_bonus = if is_curated_hub(handle) {
+                config.curated_hub_weight
+            } else {
+                0.0
+            };
+            let score = edge_score + label_score + recency + status_bonus + curated_bonus;
             (
                 fe.node,
                 ScoredFile {
@@ -685,6 +681,38 @@ fn status_bonus(handle: &Handle) -> f64 {
         Some(_) => 0.3,
         None => 0.5,
     }
+}
+
+/// Exponential recency decay: 1.0 at today, halves every `half_life`
+/// days, asymptotic to 0 for ancient files. Future-dated files pin at
+/// 1.0 rather than overshooting.
+fn recency_decay(today_ord: i64, date_ord: i64, half_life: f64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let age_days = (today_ord - date_ord).max(0) as f64;
+    0.5_f64.powf(age_days / half_life)
+}
+
+/// Sum of incoming citations, each weighted by the citer's recency.
+/// A file cited by many old papers scores less than a file cited by
+/// fewer recent papers — the foundation we want is "what the current
+/// frontier builds on," not "what everyone ever built on."
+fn recency_weighted_in_degree(
+    graph: &DiGraph,
+    node: NodeId,
+    today_ord: i64,
+    half_life: f64,
+) -> f64 {
+    graph
+        .incoming(node)
+        .iter()
+        .map(|edge| {
+            let source = graph.node(edge.source);
+            source.date.map_or(0.5, |d| {
+                let date_ord = (d - EPOCH).num_days();
+                recency_decay(today_ord, date_ord, half_life)
+            })
+        })
+        .sum()
 }
 
 enum BoundaryDirection {
@@ -1107,6 +1135,53 @@ mod tests {
             HandleMetadata::default(),
         );
         assert!(passes_hard_filters(&small_hub, &config));
+    }
+
+    #[test]
+    fn recency_weighted_in_degree_demotes_stale_hub() {
+        // Hub A: 3 citers, all ancient. Hub B: 1 citer, recent. Under
+        // raw in-degree A wins 3-1; under recency-weighted in-degree
+        // B wins because its single citation carries full weight and
+        // A's three carry decayed weight.
+        let mut graph = DiGraph::new();
+        let today = date(2026, 4, 22);
+        let ancient = date(2025, 10, 22); // 6 months ago, ~2 half-lives
+        let recent = date(2026, 4, 15);
+
+        let hub_a = graph.add_node(file_with_size("hub-a.md", Some("draft"), 10_000));
+        let hub_b = graph.add_node(file_with_size("hub-b.md", Some("draft"), 10_000));
+
+        for i in 1..=3 {
+            let citer = graph.add_node(file_with_date(
+                &format!("old-{i}.md"),
+                Some("active"),
+                ancient,
+            ));
+            graph.add_edge(citer, hub_a, EdgeKind::DependsOn);
+        }
+        let fresh_citer = graph.add_node(file_with_date("fresh.md", Some("active"), recent));
+        graph.add_edge(fresh_citer, hub_b, EdgeKind::DependsOn);
+
+        let files = vec![
+            FileEntry {
+                node: hub_a,
+                path: "hub-a.md".to_string(),
+                date_ord: None,
+            },
+            FileEntry {
+                node: hub_b,
+                path: "hub-b.md".to_string(),
+                date_ord: None,
+            },
+        ];
+        let config = OrientConfig::default();
+        let scores = score_files_at(&graph, &files, &config, today);
+        let a_score = scores.get(&hub_a).expect("a").score;
+        let b_score = scores.get(&hub_b).expect("b").score;
+        assert!(
+            b_score > a_score,
+            "fresh-citation hub (b={b_score:.3}) should outrank ancient-citation hub (a={a_score:.3})"
+        );
     }
 
     #[test]
