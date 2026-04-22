@@ -152,6 +152,17 @@ pub(crate) struct OrientConfig {
     pub(crate) pin: Vec<String>,
     /// Files never included (glob or plain name, noise for agents).
     pub(crate) exclude: Vec<String>,
+    /// Files smaller than this (in bytes) are treated as stubs and
+    /// excluded from orient unless they're curated hubs (basename match,
+    /// `status: living`, or `purpose:` containing an orientation cue).
+    /// Raise if the corpus has legitimately short standalone specs;
+    /// lower if redirect stubs leak into Foundation.
+    pub(crate) stub_bytes: u32,
+    /// Additive score bonus for curated hubs in Foundation. Sized to
+    /// compete with heavy recency-weighted centrality — a `README.md`
+    /// should beat a 50-citation hub by default. Raise if curated hubs
+    /// still get outranked.
+    pub(crate) curated_hub_weight: f64,
 }
 
 impl Default for OrientConfig {
@@ -168,6 +179,8 @@ impl Default for OrientConfig {
             depth: 3,
             pin: Vec::new(),
             exclude: Vec::new(),
+            stub_bytes: 1000,
+            curated_hub_weight: 10.0,
         }
     }
 }
