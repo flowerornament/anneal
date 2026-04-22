@@ -137,6 +137,16 @@ Active issues:
   S001: 9 orphaned labels (OD-1..OD-7, SR-18, SR-19)
 ```
 
+> **Superseded by `2026-04-21-orient-frontier-foundation.md`.** The
+> single-score ranking and `Pinned → Area entry points → Upstream →
+> Downstream` tiering below was the initial design. Cross-corpus
+> testing on murail and herald showed it misses the current frontier
+> and surfaces stale hubs. The current algorithm splits EntryPoint
+> into Frontier + Foundation, uses recency-weighted in-degree instead
+> of raw centrality, and applies hard filters for terminal status /
+> redirect stubs. See the linked design doc. Material below is kept
+> for historical reference.
+
 **Ranking formula.** Files are scored by:
 
 ```
