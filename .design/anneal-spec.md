@@ -120,6 +120,8 @@ Applied to anneal: the kernel defines handles, a graph, a convergence lattice, l
 
 **[KB-P8] Machine-readable by default.** Every command supports `--json` output. The tool is designed for agent consumption first, human readability second.
 
+**[KB-P9] Curation over centrality.** Human-curated orientation cues (filename conventions like `README`, `CHANGELOG`, `DESIGN-GOALS`; frontmatter like `status: living` or `purpose: entry point`) outrank graph-centrality guesses. The corpus speaks with two voices — its structure (the edge graph) and its maintainers' explicit intent (annotations) — and annotations are the higher-authority voice when the two disagree. Features that surface or rank files should treat curated signals as first-class, not as tiebreakers to a centrality score.
+
 ---
 
 ## Part II: Core Model
@@ -689,7 +691,7 @@ anneal orient --file=impl-plan.md        # upstream ancestry of one file
 anneal orient --paths-only               # bare paths, one per line
 ```
 
-Files are scored by edge centrality, label density, recency, and status, then tiered as pinned (from `[orient] pin`) → area entry points → upstream context → downstream consumers. Tiers fill greedily until the token budget is exhausted; token count is estimated from file size in bytes. `--file=X` replaces the area scope with the upstream dependency ancestry of a single file — the before-edit complement to `impact`.
+Output is tiered as **Pinned → Frontier → Foundation → Upstream → Downstream**, filled greedily against a token budget. **Frontier** is per-area newest file with active-like status — where work is happening now. **Foundation** is stable hubs the frontier still cites, ranked by recency-weighted in-degree (each citation counted by the *citer's* recency, so stale hubs whose citers have moved on fall off) plus a curated-hub bonus [KB-P9] for `README` / `CHANGELOG` / `DESIGN-GOALS` / `OPEN-QUESTIONS` / `INDEX` / `MANIFEST` and files marked `status: living` or `purpose:` containing *entry point* / *read first* / *overview* / *map* / *orientation*. Hard filters exclude files with terminal status (`superseded`, `archived`, `historical`, `prior`, `incorporated`, `digested`, `resolved`, `retired`, `deprecated`, `obsolete`), files with a `superseded-by:` pointer, and files smaller than `stub_bytes` (default 1000) unless they're curated hubs. Token cost is estimated from file size. `--file=X` replaces the area scope with the upstream dependency ancestry of a single file — the before-edit complement to `impact`.
 
 #### §12.14 `anneal garden` [KB-C14]
 
