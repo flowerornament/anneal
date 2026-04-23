@@ -21,7 +21,8 @@ use super::{DetailLevel, OutputMeta, SnippetIndex, lookup_handle, truncate_snipp
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OrientTier {
     Pinned,
-    EntryPoint,
+    Frontier,
+    Foundation,
     Upstream,
     Downstream,
 }
@@ -31,13 +32,11 @@ impl OrientTier {
     /// ranking rationale without competing with the tier title.
     fn section(self) -> (&'static str, &'static str) {
         match self {
-            Self::Pinned => ("Read first", "pinned files"),
-            Self::EntryPoint => (
-                "Read next",
-                "area entry points, ranked by centrality × recency",
-            ),
-            Self::Upstream => ("Upstream context", "files these read"),
-            Self::Downstream => ("Downstream consumers", "files that read this area"),
+            Self::Pinned => ("Pinned", "always-included context"),
+            Self::Frontier => ("Frontier", "where work is now"),
+            Self::Foundation => ("Foundation", "stable hubs the frontier still cites"),
+            Self::Upstream => ("Upstream", "dependencies outside this area"),
+            Self::Downstream => ("Downstream", "consumers outside this area"),
         }
     }
 }
@@ -46,9 +45,10 @@ impl std::fmt::Display for OrientTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Pinned => "pinned",
-            Self::EntryPoint => "entry points",
-            Self::Upstream => "upstream context",
-            Self::Downstream => "downstream consumers",
+            Self::Frontier => "frontier",
+            Self::Foundation => "foundation",
+            Self::Upstream => "upstream",
+            Self::Downstream => "downstream",
         })
     }
 }
@@ -65,6 +65,11 @@ pub(crate) struct OrientEntry {
     pub(crate) purpose: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) date: Option<chrono::NaiveDate>,
+    /// True when this entry was too large for the remaining budget.
+    /// Overflow entries render as `path  Nk` only (no snippet). Agents
+    /// see them as hints to re-run with a wider `--budget`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) overflow: bool,
 }
 
 #[derive(Serialize)]
@@ -127,7 +132,8 @@ impl Render for OrientOutput {
         let mut first_section = true;
         for tier in [
             OrientTier::Pinned,
-            OrientTier::EntryPoint,
+            OrientTier::Frontier,
+            OrientTier::Foundation,
             OrientTier::Upstream,
             OrientTier::Downstream,
         ] {
@@ -136,14 +142,16 @@ impl Render for OrientOutput {
             if in_tier.is_empty() {
                 continue;
             }
+            let (fits, overflow): (Vec<&OrientEntry>, Vec<&OrientEntry>) =
+                in_tier.iter().partition(|e| !e.overflow);
             if !first_section {
                 p.blank()?;
             }
             first_section = false;
             let (title, caption) = tier.section();
-            p.heading(title, Some(in_tier.len()))?;
+            p.heading(title, Some(fits.len()))?;
             p.caption(caption)?;
-            for e in in_tier {
+            for e in fits {
                 let tokens_str = format_tokens(e.tokens);
                 let path_width = console::measure_text_width(&e.path);
                 let pad = path_col.saturating_sub(path_width) + 2;
@@ -156,6 +164,26 @@ impl Render for OrientOutput {
                     && !purpose.is_empty()
                 {
                     p.line_at(6, &Line::new().dim(truncate_snippet(purpose).into_owned()))?;
+                }
+            }
+            if !overflow.is_empty() {
+                p.blank()?;
+                p.line_at(
+                    4,
+                    &Line::new()
+                        .dim("Overflow ")
+                        .dim(format!("({})", overflow.len()))
+                        .dim("  too large for budget; re-run with wider --budget"),
+                )?;
+                for e in overflow {
+                    let tokens_str = format_tokens(e.tokens);
+                    let path_width = console::measure_text_width(&e.path);
+                    let pad = path_col.saturating_sub(path_width) + 2;
+                    let row = Line::new()
+                        .dim(e.path.clone())
+                        .pad(pad)
+                        .toned(Tone::Number, tokens_str);
+                    p.line_at(4, &row)?;
                 }
             }
         }
@@ -305,12 +333,47 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
     let pinned_entries = collect_pinned(graph, opts.node_index, opts.config, &exclude);
     let pinned_ids: HashSet<NodeId> = pinned_entries.iter().map(|e| e.node).collect();
 
-    let mut entry_candidates: Vec<&ScoredFile> = tier_scope
+    // Frontier candidates: files with active-like status, partitioned
+    // by area (top-level directory or `--area`). In global mode we take
+    // the newest active file per area; in area-scoped mode we take
+    // top-K by date within the scope.
+    let frontier_ids = collect_frontier(graph, &file_entries, &candidate_set, &pinned_ids, opts);
+    // Preserve the date-descending order from collect_frontier — for
+    // Frontier, "newest first" reads better than "score-first." A
+    // resuming agent wants yesterday's landing at the top.
+    let frontier_candidates: Vec<&ScoredFile> = frontier_ids
+        .iter()
+        .filter_map(|nid| tier_scope.get(nid).copied())
+        .collect();
+    let frontier_set: HashSet<NodeId> = frontier_ids.iter().copied().collect();
+
+    // Foundation candidates: everything in tier_scope that isn't pinned
+    // or in the frontier. Ranked by score (curated-hub bonus + recency-
+    // weighted in-degree). Curated hubs from the top-level surface in
+    // area mode too, so a newcomer touching compiler/ still sees the
+    // project README.
+    let mut foundation_candidates: Vec<&ScoredFile> = tier_scope
         .values()
         .copied()
         .filter(|s| !pinned_ids.contains(&s.node))
+        .filter(|s| !frontier_set.contains(&s.node))
         .collect();
-    entry_candidates.sort_by(|a, b| {
+    if opts.area.is_some() {
+        // In area mode, also pull top-level curated hubs even if they
+        // live outside the area's scope.
+        for (nid, s) in &all_scored {
+            if candidate_set.contains(nid) {
+                continue; // already in tier_scope
+            }
+            if pinned_ids.contains(nid) || frontier_set.contains(nid) {
+                continue;
+            }
+            if is_curated_hub(graph.node(*nid)) {
+                foundation_candidates.push(s);
+            }
+        }
+    }
+    foundation_candidates.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -357,8 +420,17 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
         &mut entries,
         &mut used_tokens,
         &mut dropped_tiers,
-        OrientTier::EntryPoint,
-        entry_candidates,
+        OrientTier::Frontier,
+        frontier_candidates,
+        opts,
+        graph,
+    );
+    add_tier(
+        &mut entries,
+        &mut used_tokens,
+        &mut dropped_tiers,
+        OrientTier::Foundation,
+        foundation_candidates,
         opts,
         graph,
     );
@@ -573,7 +645,7 @@ pub(super) fn is_curated_hub(handle: &Handle) -> bool {
 /// consume budget at the tail end.
 ///
 /// Excludes: terminal status, `superseded-by:` pointer, undersized
-/// non-curated files.
+/// non-curated files, files living under an archive-style directory.
 fn passes_hard_filters(handle: &Handle, config: &OrientConfig) -> bool {
     if let Some(status) = handle.status.as_deref()
         && TERMINAL_STATUSES.contains(&status)
@@ -581,6 +653,11 @@ fn passes_hard_filters(handle: &Handle, config: &OrientConfig) -> bool {
         return false;
     }
     if handle.metadata.superseded_by.is_some() {
+        return false;
+    }
+    if let Some(file_path) = handle.file_path.as_deref()
+        && is_archive_area(file_path.as_str())
+    {
         return false;
     }
     let is_curated = is_curated_hub(handle);
@@ -715,6 +792,108 @@ fn recency_weighted_in_degree(
         .sum()
 }
 
+/// Top-level directory names that indicate historical storage — files
+/// under these are never Frontier candidates regardless of status.
+/// Protects against `status: active` accidentally surviving a file's
+/// move into archive.
+const ARCHIVE_AREAS: &[&str] = &["archive", "archives", "archived", "old", "legacy"];
+
+fn is_archive_area(path: &str) -> bool {
+    let first = path.split('/').next().unwrap_or("");
+    ARCHIVE_AREAS.contains(&first.to_ascii_lowercase().as_str())
+}
+
+/// Per-area frontier picks: where is current work happening?
+///
+/// Rules:
+/// - `--area=X` set: files in the area with active-like status, ordered
+///   newest first. Return all of them; budget cap does the rest.
+/// - `--area` not set, subdirectories present: partition candidate
+///   files by top-level directory, take the single newest active file
+///   per area.
+/// - `--file=X` set (upstream walk): no frontier concept — an upstream
+///   walk is already scoped and doesn't benefit from per-area slicing.
+///   Return empty so Foundation owns the whole walk.
+/// - Flat corpus: partition collapses to one area; top-1 picks the
+///   globally-newest active file.
+fn collect_frontier(
+    graph: &DiGraph,
+    file_entries: &[FileEntry],
+    candidate_set: &HashSet<NodeId>,
+    pinned: &HashSet<NodeId>,
+    opts: &OrientOptions<'_>,
+) -> Vec<NodeId> {
+    if opts.file.is_some() {
+        return Vec::new();
+    }
+
+    let is_active = |nid: NodeId| -> bool {
+        let status = graph.node(nid).status.as_deref();
+        status.is_some_and(|s| FRONTIER_STATUSES.contains(&s))
+    };
+
+    let active_candidates: Vec<&FileEntry> = file_entries
+        .iter()
+        .filter(|fe| candidate_set.contains(&fe.node))
+        .filter(|fe| !pinned.contains(&fe.node))
+        .filter(|fe| is_active(fe.node))
+        // Curated hubs are Foundation, not Frontier. A file that's both
+        // a curated hub (README, LABELS, OPEN-QUESTIONS) and has active-
+        // like status is reference material — it belongs to the "stable
+        // ground" tier, not the "where work is now" tier.
+        .filter(|fe| !is_curated_hub(graph.node(fe.node)))
+        // Archive-style directories are historical storage regardless
+        // of individual file status. Don't let a forgotten `status:
+        // active` in archive/ promote an old doc to Frontier.
+        .filter(|fe| !is_archive_area(&fe.path))
+        .collect();
+
+    if opts.area.is_some() {
+        // Area-scoped: return all active files in the area, newest
+        // first. Budget cap controls how many fit.
+        let mut picks: Vec<&FileEntry> = active_candidates;
+        picks.sort_by(|a, b| b.date_ord.cmp(&a.date_ord));
+        return picks.into_iter().map(|fe| fe.node).collect();
+    }
+
+    // Global mode: partition by top-level directory; pick newest active
+    // per area. Flat corpora (no subdirectories) fall back to top-K
+    // globally since there's nothing meaningful to partition.
+    fn area_of(path: &str) -> &str {
+        if path.contains('/') {
+            path.split('/').next().unwrap_or("")
+        } else {
+            "" // flat: everyone shares one "no-subdir" area
+        }
+    }
+
+    let mut by_area: HashMap<&str, &FileEntry> = HashMap::new();
+    for fe in &active_candidates {
+        let area = area_of(&fe.path);
+        match by_area.get(area) {
+            Some(current) if current.date_ord >= fe.date_ord => {}
+            _ => {
+                by_area.insert(area, fe);
+            }
+        }
+    }
+
+    if by_area.len() == 1 && by_area.contains_key("") {
+        // Flat corpus: no meaningful per-area partition. Return top-K
+        // by date globally so a newcomer sees the current frontier
+        // instead of one lonely pick.
+        const FLAT_FRONTIER_LIMIT: usize = 5;
+        let mut picks: Vec<&FileEntry> = active_candidates;
+        picks.sort_by(|a, b| b.date_ord.cmp(&a.date_ord));
+        picks.truncate(FLAT_FRONTIER_LIMIT);
+        return picks.into_iter().map(|fe| fe.node).collect();
+    }
+
+    let mut picks: Vec<&FileEntry> = by_area.into_values().collect();
+    picks.sort_by(|a, b| b.date_ord.cmp(&a.date_ord));
+    picks.into_iter().map(|fe| fe.node).collect()
+}
+
 enum BoundaryDirection {
     Upstream,
     Downstream,
@@ -801,6 +980,11 @@ fn collect_pinned(
     out
 }
 
+/// Maximum overflow rows to emit per tier. Overflow surfaces the
+/// highest-ranked candidates that didn't fit the budget; beyond this
+/// count the list is mostly noise.
+const OVERFLOW_DISPLAY_LIMIT: usize = 5;
+
 fn add_tier(
     entries: &mut Vec<OrientEntry>,
     used: &mut u32,
@@ -814,6 +998,7 @@ fn add_tier(
         return;
     }
     let mut included = 0usize;
+    let mut overflow_shown = 0usize;
     let mut seen: HashSet<NodeId> = entries
         .iter()
         .filter_map(|e| opts.node_index.get(&e.path).copied())
@@ -825,7 +1010,8 @@ fn add_tier(
         }
         let handle = graph.node(c.node);
         let tokens = tokens_for(handle);
-        if used.saturating_add(tokens) > opts.budget_tokens {
+        let overflow = used.saturating_add(tokens) > opts.budget_tokens;
+        if overflow && overflow_shown >= OVERFLOW_DISPLAY_LIMIT {
             continue;
         }
         let path = handle
@@ -840,9 +1026,16 @@ fn add_tier(
             status: handle.status.clone(),
             purpose: opts.snippets.summary_for(handle).map(str::to_string),
             date: handle.date,
+            overflow,
         });
-        *used = used.saturating_add(tokens);
-        included += 1;
+        if overflow {
+            overflow_shown += 1;
+        } else {
+            // Full entries consume budget; overflow entries are metadata-
+            // only (path + size) and don't.
+            *used = used.saturating_add(tokens);
+            included += 1;
+        }
     }
 
     if included == 0 {
@@ -1138,6 +1331,123 @@ mod tests {
     }
 
     #[test]
+    fn frontier_picks_newest_active_per_area() {
+        let mut graph = DiGraph::new();
+        // compiler/ area: two active files, different dates.
+        graph.add_node(file_with_date(
+            "compiler/a.md",
+            Some("active"),
+            date(2026, 3, 1),
+        ));
+        let newer_compiler = graph.add_node(file_with_date(
+            "compiler/b.md",
+            Some("active"),
+            date(2026, 4, 20),
+        ));
+        // formal-model/ area: one active, one archived.
+        let fm = graph.add_node(file_with_date(
+            "formal-model/model.md",
+            Some("active"),
+            date(2026, 4, 10),
+        ));
+        graph.add_node(file_with_date(
+            "formal-model/old.md",
+            Some("superseded"),
+            date(2026, 3, 15),
+        ));
+
+        let node_index = test_node_index(&graph);
+        let config = OrientConfig::default();
+        let (files, labels) = empty_snippets();
+        let snippets = SnippetIndex {
+            files: &files,
+            labels: &labels,
+        };
+
+        let output = cmd_orient(&OrientOptions {
+            graph: &graph,
+            node_index: &node_index,
+            config: &config,
+            area: None,
+            file: None,
+            budget_tokens: 50_000,
+            snippets,
+            area_health: None,
+        })
+        .expect("orient output");
+
+        let frontier_paths: HashSet<String> = output
+            .entries
+            .iter()
+            .filter(|e| e.tier == OrientTier::Frontier)
+            .map(|e| e.path.clone())
+            .collect();
+
+        assert!(frontier_paths.contains("compiler/b.md"));
+        assert!(!frontier_paths.contains("compiler/a.md"));
+        assert!(frontier_paths.contains("formal-model/model.md"));
+        assert!(!frontier_paths.contains("formal-model/old.md"));
+        let _ = newer_compiler;
+        let _ = fm;
+    }
+
+    #[test]
+    fn frontier_excludes_curated_hubs_and_archive_areas() {
+        let mut graph = DiGraph::new();
+        graph.add_node(file_with_date(
+            "README.md",
+            Some("active"),
+            date(2026, 4, 20),
+        ));
+        graph.add_node(file_with_date(
+            "archive/recent.md",
+            Some("active"),
+            date(2026, 4, 21),
+        ));
+        graph.add_node(file_with_date(
+            "compiler/active.md",
+            Some("active"),
+            date(2026, 4, 15),
+        ));
+
+        let node_index = test_node_index(&graph);
+        let config = OrientConfig::default();
+        let (files, labels) = empty_snippets();
+        let snippets = SnippetIndex {
+            files: &files,
+            labels: &labels,
+        };
+
+        let output = cmd_orient(&OrientOptions {
+            graph: &graph,
+            node_index: &node_index,
+            config: &config,
+            area: None,
+            file: None,
+            budget_tokens: 50_000,
+            snippets,
+            area_health: None,
+        })
+        .expect("orient output");
+
+        let frontier_paths: HashSet<String> = output
+            .entries
+            .iter()
+            .filter(|e| e.tier == OrientTier::Frontier)
+            .map(|e| e.path.clone())
+            .collect();
+        assert!(
+            !frontier_paths.contains("README.md"),
+            "README.md is curated — belongs in Foundation, not Frontier"
+        );
+        assert!(
+            !frontier_paths.contains("archive/recent.md"),
+            "archive/* is historical storage — never Frontier"
+        );
+        assert!(frontier_paths.contains("compiler/active.md"));
+    }
+
+    #[test]
     fn recency_weighted_in_degree_demotes_stale_hub() {
         // Hub A: 3 citers, all ancient. Hub B: 1 citer, recent. Under
         // raw in-degree A wins 3-1; under recency-weighted in-degree
@@ -1229,6 +1539,9 @@ mod tests {
 
         assert!(output.budget.used <= 5_000);
         for e in &output.entries {
+            if e.overflow {
+                continue; // overflow entries carry path + size only; budget doesn't apply
+            }
             assert!(e.tokens <= 5_000);
         }
     }
@@ -1294,14 +1607,14 @@ mod tests {
         })
         .expect("orient output");
 
-        let entry_paths: Vec<&str> = output
+        let area_scoped: Vec<&str> = output
             .entries
             .iter()
-            .filter(|e| e.tier == OrientTier::EntryPoint)
+            .filter(|e| matches!(e.tier, OrientTier::Frontier | OrientTier::Foundation))
             .map(|e| e.path.as_str())
             .collect();
-        assert!(entry_paths.contains(&"compiler/a.md"));
-        assert!(!entry_paths.contains(&"synthesis/b.md"));
+        assert!(area_scoped.contains(&"compiler/a.md"));
+        assert!(!area_scoped.contains(&"synthesis/b.md"));
     }
 
     #[test]
