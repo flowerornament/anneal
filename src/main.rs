@@ -1575,6 +1575,7 @@ fn run() -> anyhow::Result<()> {
                 graph,
                 node_index: &node_index,
                 config: &config.orient,
+                lattice: &lattice,
                 area: area_filter.as_ref(),
                 file: file.as_deref(),
                 budget_tokens,
