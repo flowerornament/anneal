@@ -284,6 +284,7 @@ pub(crate) struct OrientOptions<'a> {
     pub(crate) graph: &'a DiGraph,
     pub(crate) node_index: &'a HashMap<String, NodeId>,
     pub(crate) config: &'a OrientConfig,
+    pub(crate) lattice: &'a crate::lattice::Lattice,
     pub(crate) area: Option<&'a AreaFilter>,
     pub(crate) file: Option<&'a str>,
     pub(crate) budget_tokens: u32,
@@ -296,7 +297,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
     let graph = opts.graph;
     let exclude = ExcludeMatcher::new(&opts.config.exclude);
 
-    let file_entries = collect_file_entries(graph, &exclude, opts.config);
+    let file_entries = collect_file_entries(graph, &exclude, opts.lattice, opts.config);
 
     let candidate_set: HashSet<NodeId> = match opts.file {
         Some(path) => {
@@ -518,6 +519,7 @@ struct FileEntry {
 fn collect_file_entries(
     graph: &DiGraph,
     exclude: &ExcludeMatcher<'_>,
+    lattice: &crate::lattice::Lattice,
     config: &OrientConfig,
 ) -> Vec<FileEntry> {
     graph
@@ -530,7 +532,7 @@ fn collect_file_entries(
             if exclude.is_excluded(&path) {
                 return None;
             }
-            if !passes_hard_filters(handle, config) {
+            if !passes_hard_filters(handle, lattice, config) {
                 return None;
             }
             Some(FileEntry {
@@ -543,36 +545,6 @@ fn collect_file_entries(
         })
         .collect()
 }
-
-/// Statuses that mark a file as "not content anymore." Files with any
-/// of these statuses are excluded from orient entirely — they are graph
-/// plumbing (redirects, archival markers), not reading material.
-pub(super) const TERMINAL_STATUSES: &[&str] = &[
-    "superseded",
-    "archived",
-    "historical",
-    "prior",
-    "incorporated",
-    "digested",
-    "resolved",
-    "retired",
-    "deprecated",
-    "obsolete",
-];
-
-/// Statuses that mark a file as "current active work surface." These
-/// make a file eligible for the Frontier tier; everything else
-/// (non-terminal) flows to Foundation.
-pub(super) const FRONTIER_STATUSES: &[&str] = &[
-    "active",
-    "draft",
-    "current",
-    "in-progress",
-    "plan",
-    "complete",
-    "open",
-    "proposed",
-];
 
 /// Basenames (case-insensitive, stripped of extension) that carry an
 /// "orient me" contract by maintainer convention. Files matching these
@@ -644,12 +616,15 @@ pub(super) fn is_curated_hub(handle: &Handle) -> bool {
 /// soft penalty: filters beat demotions because demoted stubs still
 /// consume budget at the tail end.
 ///
-/// Excludes: terminal status, `superseded-by:` pointer, undersized
-/// non-curated files, files living under an archive-style directory.
-fn passes_hard_filters(handle: &Handle, config: &OrientConfig) -> bool {
-    if let Some(status) = handle.status.as_deref()
-        && TERMINAL_STATUSES.contains(&status)
-    {
+/// Excludes: terminal status (per the corpus lattice), `superseded-by:`
+/// pointer, undersized non-curated files, files living under an
+/// archive-style directory.
+fn passes_hard_filters(
+    handle: &Handle,
+    lattice: &crate::lattice::Lattice,
+    config: &OrientConfig,
+) -> bool {
+    if handle.is_terminal(lattice) {
         return false;
     }
     if handle.metadata.superseded_by.is_some() {
@@ -827,9 +802,12 @@ fn collect_frontier(
         return Vec::new();
     }
 
+    // Frontier-eligible = has a declared status that isn't terminal under
+    // the corpus lattice. This keeps orient's sense of "active work" in
+    // sync with the rest of the tool, which also uses `handle.is_terminal`.
     let is_active = |nid: NodeId| -> bool {
-        let status = graph.node(nid).status.as_deref();
-        status.is_some_and(|s| FRONTIER_STATUSES.contains(&s))
+        let handle = graph.node(nid);
+        handle.status.is_some() && !handle.is_terminal(opts.lattice)
     };
 
     let active_candidates: Vec<&FileEntry> = file_entries
@@ -1070,6 +1048,34 @@ mod tests {
         (HashMap::new(), HashMap::new())
     }
 
+    /// Test lattice covering the statuses orient tests use. Mirrors the
+    /// common heuristic set so terminal/active classification matches what
+    /// the real lattice would produce.
+    fn test_lattice() -> crate::lattice::Lattice {
+        crate::lattice::Lattice::test_new(
+            &[
+                "active",
+                "draft",
+                "current",
+                "in-progress",
+                "plan",
+                "complete",
+                "open",
+                "proposed",
+            ],
+            &[
+                "superseded",
+                "archived",
+                "historical",
+                "prior",
+                "incorporated",
+                "digested",
+                "deprecated",
+                "obsolete",
+            ],
+        )
+    }
+
     #[test]
     fn parse_budget_accepts_k_suffix() {
         assert_eq!(parse_budget("50k").unwrap(), 50_000);
@@ -1276,16 +1282,30 @@ mod tests {
     #[test]
     fn hard_filter_excludes_terminal_status() {
         let config = OrientConfig::default();
-        for status in TERMINAL_STATUSES {
+        // Any status the lattice marks terminal is filtered — tool-wide
+        // vocabulary, not an orient-private list. Sample the heuristic
+        // tokens the lattice recognizes out of the box.
+        let terminal_samples = [
+            "superseded",
+            "archived",
+            "historical",
+            "prior",
+            "incorporated",
+            "digested",
+            "deprecated",
+            "obsolete",
+        ];
+        let lattice = crate::lattice::Lattice::test_new(&["active", "draft"], &terminal_samples);
+        for status in terminal_samples {
             let handle = Handle::file(
                 camino::Utf8PathBuf::from("compiler/old.md"),
-                Some((*status).to_string()),
+                Some(status.to_string()),
                 None,
                 Some(8000),
                 HandleMetadata::default(),
             );
             assert!(
-                !passes_hard_filters(&handle, &config),
+                !passes_hard_filters(&handle, &lattice, &config),
                 "status {status} should be filtered out"
             );
         }
@@ -1305,12 +1325,14 @@ mod tests {
             meta,
         );
         let config = OrientConfig::default();
-        assert!(!passes_hard_filters(&handle, &config));
+        let lattice = crate::lattice::Lattice::test_new(&["active"], &["superseded"]);
+        assert!(!passes_hard_filters(&handle, &lattice, &config));
     }
 
     #[test]
     fn hard_filter_excludes_stub_sized_files_unless_curated() {
         let config = OrientConfig::default();
+        let lattice = crate::lattice::Lattice::test_new(&["active"], &["superseded"]);
         let stub = Handle::file(
             camino::Utf8PathBuf::from("spec/redirect.md"),
             Some("active".to_string()),
@@ -1318,7 +1340,7 @@ mod tests {
             Some(500),
             HandleMetadata::default(),
         );
-        assert!(!passes_hard_filters(&stub, &config));
+        assert!(!passes_hard_filters(&stub, &lattice, &config));
 
         let small_hub = Handle::file(
             camino::Utf8PathBuf::from("README.md"),
@@ -1327,7 +1349,7 @@ mod tests {
             Some(500),
             HandleMetadata::default(),
         );
-        assert!(passes_hard_filters(&small_hub, &config));
+        assert!(passes_hard_filters(&small_hub, &lattice, &config));
     }
 
     #[test]
@@ -1363,11 +1385,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 50_000,
@@ -1417,11 +1441,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 50_000,
@@ -1506,7 +1532,8 @@ mod tests {
             HandleMetadata::default(),
         );
         let config = OrientConfig::default();
-        assert!(passes_hard_filters(&handle, &config));
+        let lattice = crate::lattice::Lattice::test_new(&["active"], &["superseded"]);
+        assert!(passes_hard_filters(&handle, &lattice, &config));
     }
 
     #[test]
@@ -1524,11 +1551,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 5_000,
@@ -1563,11 +1592,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 50_000,
@@ -1594,11 +1625,13 @@ mod tests {
             labels: &labels,
         };
         let area = AreaFilter::new("compiler");
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: Some(&area),
             file: None,
             budget_tokens: 50_000,
@@ -1633,11 +1666,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: Some("x.md"),
             budget_tokens: 50_000,
@@ -1664,11 +1699,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 50_000,
@@ -1703,11 +1740,13 @@ mod tests {
             files: &files,
             labels: &labels,
         };
+        let lattice = test_lattice();
 
         let output = cmd_orient(&OrientOptions {
             graph: &graph,
             node_index: &node_index,
             config: &config,
+            lattice: &lattice,
             area: None,
             file: None,
             budget_tokens: 50_000,
