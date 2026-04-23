@@ -705,25 +705,47 @@ EXAMPLES:
     /// Generate a context-budgeted reading list for agents
     #[command(
         long_about = "\
-Generate a context-budgeted reading list for agents. Answers: \"I'm about to work
-on this area/file — what should I read, within a token budget?\"
+Context-budgeted reading list for onboarding or resuming. Answers:
+\"I'm about to work on this — what should I read, within a token budget?\"
 
-Files are ranked by a score combining edge centrality, label density, recency,
-and status. Results are grouped in tiers: pinned files first, then area entry
-points, then upstream context, then downstream consumers. Tiers fill greedily
-until the budget is exhausted.
+Output splits into tiers (agents read top-to-bottom):
 
 TIERS:
   pinned       Files listed in [orient] pin — always first
-  entry        Files in the target area (or --file upstream walk)
-  upstream     Files outside the area that the area depends on
-  downstream   Files outside the area that depend on the area
+  frontier    Where work is now. Per-area newest file with an active-like
+              status (active, draft, current, in-progress, plan, complete,
+              open, proposed). In --area=X mode, all files in the area
+              ordered newest first.
+  foundation  Stable hubs the frontier still cites. Curated hubs (README,
+              CHANGELOG, DESIGN-GOALS, OPEN-QUESTIONS, INDEX, LABELS,
+              ROADMAP, OVERVIEW, GLOSSARY) always surface — basename
+              detection is case-insensitive at any depth. Files with
+              `status: living` or `purpose:` containing \"entry point\",
+              \"read first\", \"overview\", \"map\", or \"orientation\" also
+              count as curated. Non-curated foundation files rank by
+              recency-weighted in-degree: each incoming citation counted
+              by the *citer's* recency, so stale hubs whose citers have
+              moved on fall off.
+  upstream    In --area=X mode, boundary files that the area cites.
+  downstream  In --area=X mode, boundary files that cite the area.
 
-TOKENS are estimated as file size in bytes / 4. This is a soft cap.
+Each row shows its token cost. Budget fills greedily in tier order.
 
-Use --file=X to orient around one file's dependency ancestry instead of an area
-(the upstream complement to `impact`). Use --paths-only to pipe the reading
-list into another tool.",
+FILTERED OUT:
+  • status in {superseded, archived, historical, prior, incorporated,
+    digested, resolved, retired, deprecated, obsolete}
+  • files with a `superseded-by:` frontmatter pointer (the replacement wins)
+  • files smaller than [orient] stub_bytes (default 1000) unless they're
+    a curated hub
+
+These are hard filters, not penalties — stubs and redirects never take
+budget. The previous soft content-size penalty let 200-byte alias stubs
+leak into the tail of the reading list.
+
+Use --file=X to orient around one file's dependency ancestry instead of
+an area (the upstream complement to `impact`). Use --paths-only to pipe
+the reading list into another tool. Tokens are estimated as file size
+in bytes / 4 — a soft cap.",
         after_help = "\
 EXAMPLES:
   anneal orient                              # Reading list for the whole corpus
