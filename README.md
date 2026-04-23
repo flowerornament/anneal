@@ -322,28 +322,65 @@ When `[concerns]` is configured in `anneal.toml`, concern groups can also act as
 
 ### `anneal orient`
 
-Generate a context-budgeted reading list for agents working on an area or a specific file. This is the "give the agent a map" command — answers "I'm about to work on this; what should I read, within a token budget?"
+Context-budgeted reading list for onboarding or resuming. Answers "I'm about to work on this; what should I read, within a token budget?"
 
 ```
-$ anneal orient --area=compiler --budget=30k
+$ anneal orient --area=implementation --budget=30k
 
-compiler/ [B] — 28 files, 749 handles, conn=0.4
+  Frontier (3)
+  where work is now
+  implementation/2026-04-20-jz1v-arc-landing.md                14k
+      Landed the jz1v arc on master; compound-cell lowering now in…
+  implementation/2026-04-20-session-service-architecture.md    8k
+      Session service architecture. Defines the boundary between…
 
-Read first (pinned):
-  OPEN-QUESTIONS.md                                              [26k]
+  Foundation (4)
+  stable hubs the frontier still cites
+  README.md                                                    3k
+      Corpus overview — read first for project orientation.
+  CHANGELOG.md                                                 6k
+      Curated release narrative; names primary artifacts per entry.
+  DESIGN-GOALS.md                                              5k
+      Seven commitments synthesized from the full corpus.
+  implementation/README.md                                     1k
+      Index and orientation guide for the implementation corpus.
 
-Read next (area entry points, ranked by centrality × recency):
-  compiler/2026-03-29-architecture-spike-findings.md             [5k]
-      Outcome of the architecture spike — authoritative for compiler plan
-  compiler/2026-04-09-graph-structural-coalescing.md             [4k]
+    Overflow (2)  too large for budget; re-run with wider --budget
+    synthesis/2026-03-25-v17-convergence-synthesis.md            20k
+    formal-model/v17.md                                          88k
 
-Budget: 35k / 30k used
-  dropped: downstream consumers
+  Budget 29k / 30k tokens used
 ```
 
-Files are ranked by a score combining edge centrality, label density, recency, and status. Tiers fill in order: **pinned** (config-declared) → **entry points** (area files) → **upstream context** (files the area references) → **downstream consumers** (files that reference the area). A tier that can't fit drops out.
+**How it picks.** Output splits into tiers, top-to-bottom:
 
-`orient --file=X` scopes to the upstream dependency ancestry of a single file (the upstream complement to `impact`). Both use the same directed traversal infrastructure.
+- **Pinned** — `[orient].pin` config; always first.
+- **Frontier** — where work is now. Per-area newest file with an active-like status (`active`, `draft`, `current`, `in-progress`, `plan`, `complete`, `open`, `proposed`). In `--area=X` mode, all area files by date. Flat corpora (no subdirs) fall back to top-5 globally by date.
+- **Foundation** — stable hubs the frontier still cites. Curated hubs (`README`, `CHANGELOG`, `DESIGN-GOALS`, `OPEN-QUESTIONS`, `LABELS`, `INDEX`, `ROADMAP`, `OVERVIEW`, `GLOSSARY` at any depth, plus files with `status: living` or a `purpose:` line mentioning "entry point" / "read first" / "overview" / "map" / "orientation") always surface. Non-curated foundation files rank by **recency-weighted in-degree**: each incoming citation counted by the *citer's* recency, so stale hubs whose citers have moved on fall off.
+- **Upstream** / **Downstream** — in `--area=X` mode only, the cross-area boundary files.
+
+**Overflow.** Files whose token cost exceeds remaining budget appear as `path  Nk` rows (no snippet) under an Overflow sub-block, capped at 5 per tier. Agents can re-run with a wider `--budget` to pull them in.
+
+**What's filtered out.** Hard excludes, not soft demotions:
+
+- `status` in `{superseded, archived, historical, prior, incorporated, digested, resolved, retired, deprecated, obsolete}`
+- Frontmatter `superseded-by: <path>` (the replacement wins)
+- Files under archive-style directories (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`)
+- Files smaller than `[orient].stub_bytes` (default 1000) unless they're a curated hub
+
+#### Annotation vocabulary
+
+| Frontmatter | Effect |
+| --- | --- |
+| `status: active|draft|current|in-progress|plan|complete|open|proposed` | Frontier-eligible |
+| `status: living` | Always in Foundation (curated hub) |
+| `status: superseded|archived|historical|prior|incorporated|digested|resolved|retired|deprecated|obsolete` | Excluded entirely |
+| `superseded-by: <path>` | Excluded; `<path>` is the replacement |
+| `purpose: "entry point"` / "read first" / "overview" / "map" / "orientation" | Foundation curated-hub bonus |
+
+When writing a doc that obsoletes another, set both `status: superseded` and `superseded-by: <new-path>` on the old file. The corpus stops surfacing the redirect the moment you save.
+
+`orient --file=X` scopes to the upstream dependency ancestry of a single file (the upstream complement to `impact`). No per-area partition inside an upstream walk — output is Foundation only.
 
 | Flag           | Effect                                                           |
 | -------------- | ---------------------------------------------------------------- |
@@ -353,7 +390,7 @@ Files are ranked by a score combining edge centrality, label density, recency, a
 | `--paths-only` | Emit bare file paths (for piping to other tools)                 |
 | `--json`       | Structured output with scores, tiers, and budget math            |
 
-The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, `recency_half_life_days` (default 90 — how fast old files decay out of the recency bonus), default budget, traversal depth, a `pin` list (always-first files), and an `exclude` glob list. Recency is an exponential decay anchored at today; a file exactly `recency_half_life_days` old contributes half the bonus of a file touched today.
+The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, `recency_half_life_days` (default 90 — how fast old files decay out of the recency bonus), default budget, traversal depth, a `pin` list (always-first files), an `exclude` glob list, `stub_bytes` (default 1000; size below which a non-curated file is treated as a stub and excluded), and `curated_hub_weight` (default 10.0; additive bonus applied to curated hubs).
 
 ### `anneal garden`
 

@@ -6,6 +6,52 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
+- `anneal orient` redesigned around two tiers: **Frontier** (where
+  work is now) and **Foundation** (stable hubs the frontier still
+  cites). Cross-corpus testing on murail and herald exposed that the
+  previous algorithm — single score from edge centrality × recency ×
+  status — surfaced old stable hubs correctly but missed the current
+  frontier and the curated entry points maintainers wrote on purpose.
+
+  The new Foundation score weights each incoming citation by the
+  *citer's* recency, so a March hub cited by twenty April docs ranks
+  highly while a March hub cited by fifty February docs (pre-frontier)
+  decays. Curated hubs (`README`, `CHANGELOG`, `DESIGN-GOALS`,
+  `OPEN-QUESTIONS`, `LABELS`, `INDEX`, `ROADMAP`, `OVERVIEW`,
+  `GLOSSARY` by basename, plus files with `status: living` or a
+  `purpose:` line matching "entry point" / "read first" / "overview" /
+  "map" / "orientation") receive an explicit bonus — human-curated
+  signals outrank graph-centrality guesses (`KB-P9` in the spec).
+
+  Frontier picks per-area newest file with active-like status
+  (`active`, `draft`, `current`, `in-progress`, `plan`, `complete`,
+  `open`, `proposed`). Curated hubs and files in archive-style
+  directories (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`)
+  are never Frontier. In `--area=X` mode, all area files by date. In
+  flat corpora (no subdirs), top-5 globally by date.
+
+  Hard filters replace the previous soft content-size penalty. Files
+  with `status` in `{superseded, archived, historical, prior,
+  incorporated, digested, resolved, retired, deprecated, obsolete}`,
+  files with a `superseded-by:` frontmatter pointer, files living
+  under archive-style directories, and files below `[orient].stub_bytes`
+  (default 1000) that aren't curated hubs are excluded entirely — not
+  demoted. Stubs and redirect aliases never consume orient budget.
+
+  Oversized candidates that won't fit in the remaining budget appear
+  as `path  size` rows under a per-tier **Overflow** sub-block (no
+  snippet; capped at 5 per tier). Agents re-run with a wider `--budget`
+  to pull specific ones in.
+
+  **`--json` breaking change:** `entry_point` tier in output replaced
+  by two variants, `frontier` and `foundation`. Downstream JSON
+  consumers must update the tier-name dispatch.
+
+  New config: `[orient].stub_bytes` (default 1000) and
+  `[orient].curated_hub_weight` (default 10.0). See `anneal orient
+  --help` for the full contract; `skills/anneal/SKILL.md` and the
+  README's orient section for the annotation vocabulary.
+
 - CLI output tightened across every command (Round 2 UX audit). The
   `·` glyph is retired from inline separators — commas carry that role
   now, and whitespace + indentation carry list grouping. Garden gets a
