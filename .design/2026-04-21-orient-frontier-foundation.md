@@ -1,7 +1,10 @@
 ---
 status: draft
 date: 2026-04-21
-depends-on: anneal-spec.md, 2026-04-15-areas-orient-garden.md
+depends-on:
+  - anneal-spec.md
+  - 2026-04-15-areas-orient-garden.md
+  - 2026-04-17-cli-ux-audit-v2.md
 ---
 
 # Orient: Frontier + Foundation
