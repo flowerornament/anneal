@@ -363,7 +363,7 @@ $ anneal orient --area=implementation --budget=30k
 
 **What's filtered out.** Hard excludes, not soft demotions:
 
-- `status` in `{superseded, archived, historical, prior, incorporated, digested, resolved, retired, deprecated, obsolete}`
+- Terminal `status` (corpus lattice): either listed in `[convergence] terminal` in `anneal.toml`, or matching the tool-wide heuristic family — `superseded`, `archived`, `historical`, `prior`, `incorporated`, `digested`, `resolved`, `retired`, `deprecated`, `obsolete`, `withdrawn`, `cancelled`, `closed`, `done`, `completed`
 - Frontmatter `superseded-by: <path>` (the replacement wins)
 - Files under archive-style directories (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`)
 - Files smaller than `[orient].stub_bytes` (default 1000) unless they're a curated hub
@@ -372,11 +372,13 @@ $ anneal orient --area=implementation --budget=30k
 
 | Frontmatter | Effect |
 | --- | --- |
-| `status: active|draft|current|in-progress|plan|complete|open|proposed` | Frontier-eligible |
+| Status in your `[convergence] ordering` (or any non-terminal status if no ordering is set) | Frontier-eligible |
 | `status: living` | Always in Foundation (curated hub) |
-| `status: superseded|archived|historical|prior|incorporated|digested|resolved|retired|deprecated|obsolete` | Excluded entirely |
+| Terminal status (see list above) | Excluded entirely |
 | `superseded-by: <path>` | Excluded; `<path>` is the replacement |
 | `purpose: "entry point"` / "read first" / "overview" / "map" / "orientation" | Foundation curated-hub bonus |
+
+The tool-wide terminal canon lives in the lattice — orient, check, query, and every other surface read it from the same place. Frontier-eligibility follows the corpus's own pipeline declaration: if you've declared an ordering, "where work is now" means *in* that ordering (so off-pipeline statuses like `reference` or `stable` stay out of Frontier without being hidden). If you haven't declared one, Frontier falls back to "any non-terminal status" — the tool has no finer signal.
 
 When writing a doc that obsoletes another, set both `status: superseded` and `superseded-by: <new-path>` on the old file. The corpus stops surfacing the redirect the moment you save.
 

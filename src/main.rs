@@ -712,10 +712,14 @@ Output splits into tiers (agents read top-to-bottom):
 
 TIERS:
   pinned       Files listed in [orient] pin — always first
-  frontier    Where work is now. Per-area newest file with an active-like
-              status (active, draft, current, in-progress, plan, complete,
-              open, proposed). In --area=X mode, all files in the area
-              ordered newest first.
+  frontier    Where work is now. Per-area newest file with a Frontier-
+              eligible status. If the corpus declares a pipeline
+              ([convergence] ordering), only statuses IN the ordering
+              count — off-pipeline alive statuses like `reference` or
+              `stable` stay out of Frontier without being hidden.
+              Without an ordering, any non-terminal declared status
+              works. In --area=X mode, all area files ordered newest
+              first.
   foundation  Stable hubs the frontier still cites. Curated hubs (README,
               CHANGELOG, DESIGN-GOALS, OPEN-QUESTIONS, INDEX, LABELS,
               ROADMAP, OVERVIEW, GLOSSARY) always surface — basename
@@ -732,8 +736,8 @@ TIERS:
 Each row shows its token cost. Budget fills greedily in tier order.
 
 FILTERED OUT:
-  • status in {superseded, archived, historical, prior, incorporated,
-    digested, resolved, retired, deprecated, obsolete}
+  • terminal status (per the corpus lattice — tool-wide canon shared
+    with every other surface, not an orient-specific list)
   • files with a `superseded-by:` frontmatter pointer (the replacement wins)
   • files smaller than [orient] stub_bytes (default 1000) unless they're
     a curated hub

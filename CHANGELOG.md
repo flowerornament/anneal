@@ -6,6 +6,33 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
+- Terminal status vocabulary unified across the tool. orient previously
+  maintained its own list of terminal tokens (`superseded`, `archived`,
+  `historical`, `prior`, `incorporated`, `digested`, `resolved`,
+  `retired`, `deprecated`, `obsolete`) that diverged from the lattice
+  heuristic used by every other surface (which covered an overlapping
+  but different set). That meant a corpus with `status: closed` got
+  one answer from `orient` and another from `check`. Now every surface
+  reads from the lattice, and the heuristic family absorbs the
+  orient-only tokens (`historical`, `prior`, `incorporated`,
+  `digested`). One canon, one contract for agents to learn: "anneal
+  respects your lattice."
+- `orient` Frontier-eligibility is now driven by the corpus's own
+  pipeline. If you declare `[convergence] ordering = [...]` in
+  `anneal.toml`, Frontier ("where work is now") means *status IN the
+  ordering* — so off-pipeline alive statuses like `reference` or
+  `stable` stay out of Frontier and flow naturally to Foundation where
+  they belong. Corpora without an ordering fall back to "any non-
+  terminal status," since there's no finer signal available. This
+  fixes a regression introduced earlier in the redesign where
+  permissive Frontier detection squeezed genuine Foundation hubs out
+  of the budget.
+- S001 (orphaned handle) no longer fires on "solo" version handles —
+  a Version generated from a filename like `2026-04-17-audit-v2.md`
+  where no `-v1` sibling exists. Detection: no outgoing `Supersedes`
+  edge means no older sibling, so the version is filename hygiene,
+  not a disconnected version chain. Real version chains (v17 of
+  formal-model) still flag when genuinely orphaned.
 - `anneal orient` redesigned around two tiers: **Frontier** (where
   work is now) and **Foundation** (stable hubs the frontier still
   cites). Cross-corpus testing on murail and herald exposed that the
