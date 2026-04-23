@@ -359,7 +359,7 @@ fn render_get_summary<W: Write>(
         render_edge_group(p, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
     }
 
-    // Navigation hints (R7). Only show when deeper views actually add
+    // Only show navigation hints when deeper views actually add
     // information — i.e. there's more adjacency or a snippet to render.
     let has_more = data.outgoing_edges.len() > limit_edges
         || data.incoming_edges.len() > limit_edges
@@ -388,7 +388,7 @@ fn render_get_context<W: Write>(
 ) -> std::io::Result<()> {
     render_get_header(p, data)?;
     // Snippet is shown below as the Context section — drop it from the KV
-    // block so the same prose isn't repeated (F23).
+    // block so the same prose isn't repeated.
     render_get_kv(p, data, false)?;
 
     if let Some(snippet) = &data.snippet {
@@ -431,7 +431,7 @@ fn render_get_context<W: Write>(
 }
 
 /// One Refs sub-block: heading `  Outgoing (N)` or `  Outgoing (N of M)`,
-/// then the edge group. Drops the `of M` when `shown == total` (F26).
+/// then the edge group. Drops the `of M` when `shown == total`.
 fn render_refs_subsection<W: Write>(
     p: &mut Printer<W>,
     label: &str,

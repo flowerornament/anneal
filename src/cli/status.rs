@@ -247,7 +247,7 @@ impl StatusOutput {
 
 /// Build a `N label, N label, ...` count line. Labels are taken
 /// verbatim (no auto-pluralization); callers pass the already-correct
-/// label. Comma separator per R1.
+/// label.
 fn counts_line(items: &[(usize, &str)]) -> Line {
     let mut line = Line::new();
     for (i, (n, label)) in items.iter().enumerate() {

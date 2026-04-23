@@ -163,7 +163,7 @@ pub(crate) struct GardenOutput {
 
 impl Render for GardenOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
-        // Heading universal (R2). Count is total tasks before category/area filter.
+        // Count is total tasks before category/area filter.
         p.heading("Maintenance tasks", Some(self.total))?;
         if self.returned < self.total {
             p.caption(&format!("showing {} of {}", self.returned, self.total))?;
