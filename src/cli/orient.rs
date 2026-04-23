@@ -802,12 +802,26 @@ fn collect_frontier(
         return Vec::new();
     }
 
-    // Frontier-eligible = has a declared status that isn't terminal under
-    // the corpus lattice. This keeps orient's sense of "active work" in
-    // sync with the rest of the tool, which also uses `handle.is_terminal`.
+    // Frontier-eligible = "under active authorship," which is finer than
+    // the lattice's "not terminal." We drive this from the corpus's own
+    // pipeline declaration when one exists: if `lattice.ordering` lists the
+    // stages a handle flows through, a Frontier-eligible file has a status
+    // IN that pipeline (so it's mid-flight, not off-pipeline reference
+    // material like `status: stable` or `status: reference`). Corpora
+    // without an ordering fall back to "any non-terminal status" — the
+    // lattice has no finer signal to offer.
     let is_active = |nid: NodeId| -> bool {
         let handle = graph.node(nid);
-        handle.status.is_some() && !handle.is_terminal(opts.lattice)
+        let Some(status) = handle.status.as_deref() else {
+            return false;
+        };
+        if handle.is_terminal(opts.lattice) {
+            return false;
+        }
+        if opts.lattice.ordering.is_empty() {
+            return true;
+        }
+        opts.lattice.ordering.iter().any(|s| s == status)
     };
 
     let active_candidates: Vec<&FileEntry> = file_entries
@@ -1471,6 +1485,84 @@ mod tests {
             "archive/* is historical storage — never Frontier"
         );
         assert!(frontier_paths.contains("compiler/active.md"));
+    }
+
+    #[test]
+    fn frontier_pipeline_ordering_excludes_off_pipeline_status() {
+        // Simulates murail: `stable` and `reference` are declared active
+        // (not terminal) but are NOT in the pipeline ordering. Under the
+        // pipeline-driven Frontier rule, only statuses inside the ordering
+        // count as "under active authorship."
+        let mut graph = DiGraph::new();
+        graph.add_node(file_with_date(
+            "compiler/in-pipeline.md",
+            Some("draft"),
+            date(2026, 4, 20),
+        ));
+        // `stable` is active in the lattice but outside the pipeline; in a
+        // corpus like murail this should not surface as Frontier.
+        graph.add_node(file_with_date(
+            "runtime/off-pipeline.md",
+            Some("stable"),
+            date(2026, 4, 21),
+        ));
+
+        let node_index = test_node_index(&graph);
+        let config = OrientConfig::default();
+        let (files, labels) = empty_snippets();
+        let snippets = SnippetIndex {
+            files: &files,
+            labels: &labels,
+        };
+        // Ordering lists only pipeline stages. `stable` is in `active`
+        // (non-terminal) but absent from `ordering`.
+        let lattice = crate::lattice::Lattice {
+            observed_statuses: ["draft", "stable"]
+                .iter()
+                .copied()
+                .map(String::from)
+                .collect(),
+            active: ["draft", "stable"]
+                .iter()
+                .copied()
+                .map(String::from)
+                .collect(),
+            terminal: std::collections::HashSet::new(),
+            ordering: ["raw", "draft", "active", "current"]
+                .iter()
+                .copied()
+                .map(String::from)
+                .collect(),
+            kind: crate::lattice::LatticeKind::Confidence,
+        };
+
+        let output = cmd_orient(&OrientOptions {
+            graph: &graph,
+            node_index: &node_index,
+            config: &config,
+            lattice: &lattice,
+            area: None,
+            file: None,
+            budget_tokens: 50_000,
+            snippets,
+            area_health: None,
+        })
+        .expect("orient output");
+
+        let frontier_paths: std::collections::HashSet<String> = output
+            .entries
+            .iter()
+            .filter(|e| e.tier == OrientTier::Frontier)
+            .map(|e| e.path.clone())
+            .collect();
+        assert!(
+            frontier_paths.contains("compiler/in-pipeline.md"),
+            "in-pipeline draft should be Frontier"
+        );
+        assert!(
+            !frontier_paths.contains("runtime/off-pipeline.md"),
+            "off-pipeline `stable` should NOT be Frontier (corpus declared a pipeline)"
+        );
     }
 
     #[test]
