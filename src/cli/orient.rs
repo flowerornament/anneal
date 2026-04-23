@@ -324,7 +324,7 @@ pub(crate) fn cmd_orient(opts: &OrientOptions<'_>) -> anyhow::Result<OrientOutpu
     // Score every file once. `tier_scope` is the subset in the candidate set;
     // `all_scored` is the full map used for boundary (upstream/downstream) tiers
     // so out-of-scope files carry their full-graph rank.
-    let all_scored = score_files(graph, &file_entries, opts.config);
+    let all_scored = score_files(graph, &file_entries, opts.lattice, opts.config);
     let tier_scope: HashMap<NodeId, &ScoredFile> = all_scored
         .iter()
         .filter(|(node, _)| candidate_set.contains(node))
@@ -514,6 +514,9 @@ struct FileEntry {
     node: NodeId,
     path: String,
     date_ord: Option<i64>,
+    /// Pre-computed curated-hub flag. Called three times per file
+    /// during scoring + tier assignment; compute once here and reuse.
+    is_curated: bool,
 }
 
 fn collect_file_entries(
@@ -541,6 +544,7 @@ fn collect_file_entries(
                 date_ord: handle
                     .date
                     .map(|d| d.signed_duration_since(EPOCH).num_days()),
+                is_curated: is_curated_hub(handle),
             })
         })
         .collect()
@@ -659,9 +663,16 @@ const EPOCH: chrono::NaiveDate = match chrono::NaiveDate::from_ymd_opt(1970, 1, 
 fn score_files(
     graph: &DiGraph,
     all_files: &[FileEntry],
+    lattice: &crate::lattice::Lattice,
     config: &OrientConfig,
 ) -> HashMap<NodeId, ScoredFile> {
-    score_files_at(graph, all_files, config, chrono::Local::now().date_naive())
+    score_files_at(
+        graph,
+        all_files,
+        lattice,
+        config,
+        chrono::Local::now().date_naive(),
+    )
 }
 
 /// Score files relative to an anchor date. Separated from `score_files` so
@@ -669,6 +680,7 @@ fn score_files(
 fn score_files_at(
     graph: &DiGraph,
     all_files: &[FileEntry],
+    lattice: &crate::lattice::Lattice,
     config: &OrientConfig,
     today: chrono::NaiveDate,
 ) -> HashMap<NodeId, ScoredFile> {
@@ -709,8 +721,8 @@ fn score_files_at(
                 let bonus = recency_decay(today_ord, d, half_life);
                 bonus * config.recency_weight
             });
-            let status_bonus = status_bonus(handle);
-            let curated_bonus = if is_curated_hub(handle) {
+            let status_bonus = status_bonus(handle, lattice);
+            let curated_bonus = if fe.is_curated {
                 config.curated_hub_weight
             } else {
                 0.0
@@ -727,9 +739,13 @@ fn score_files_at(
         .collect()
 }
 
-fn status_bonus(handle: &Handle) -> f64 {
+/// Additive score bump for handles with a status the corpus declares
+/// active. Uses the lattice (tool-wide canon) rather than a hardcoded
+/// token list — corpora that declare `wip` as active score it the same
+/// as `draft`, same as every other surface in anneal.
+fn status_bonus(handle: &Handle, lattice: &crate::lattice::Lattice) -> f64 {
     match handle.status.as_deref() {
-        Some("active" | "draft" | "stable" | "current" | "open" | "proposed") => 2.0,
+        Some(s) if lattice.active.contains(s) => 2.0,
         Some(_) => 0.3,
         None => 0.5,
     }
@@ -824,19 +840,15 @@ fn collect_frontier(
         opts.lattice.ordering.iter().any(|s| s == status)
     };
 
+    // Frontier excludes curated hubs (they belong in Foundation as
+    // reference material) and archive-style paths (historical storage
+    // regardless of individual file status).
     let active_candidates: Vec<&FileEntry> = file_entries
         .iter()
         .filter(|fe| candidate_set.contains(&fe.node))
         .filter(|fe| !pinned.contains(&fe.node))
         .filter(|fe| is_active(fe.node))
-        // Curated hubs are Foundation, not Frontier. A file that's both
-        // a curated hub (README, LABELS, OPEN-QUESTIONS) and has active-
-        // like status is reference material — it belongs to the "stable
-        // ground" tier, not the "where work is now" tier.
-        .filter(|fe| !is_curated_hub(graph.node(fe.node)))
-        // Archive-style directories are historical storage regardless
-        // of individual file status. Don't let a forgotten `status:
-        // active` in archive/ promote an old doc to Frontier.
+        .filter(|fe| !fe.is_curated)
         .filter(|fe| !is_archive_area(&fe.path))
         .collect();
 
@@ -1066,6 +1078,9 @@ mod tests {
     /// common heuristic set so terminal/active classification matches what
     /// the real lattice would produce.
     fn test_lattice() -> crate::lattice::Lattice {
+        // Terminal set drawn directly from the tool-wide heuristic so
+        // the two lists can't drift — adding a new terminal token to
+        // lattice.rs automatically covers orient's tests.
         crate::lattice::Lattice::test_new(
             &[
                 "active",
@@ -1077,16 +1092,7 @@ mod tests {
                 "open",
                 "proposed",
             ],
-            &[
-                "superseded",
-                "archived",
-                "historical",
-                "prior",
-                "incorporated",
-                "digested",
-                "deprecated",
-                "obsolete",
-            ],
+            crate::lattice::TERMINAL_STATUS_HEURISTICS,
         )
     }
 
@@ -1134,15 +1140,18 @@ mod tests {
                 node: fresh_id,
                 path: "fresh.md".to_string(),
                 date_ord: Some((date(2026, 4, 17) - EPOCH).num_days()),
+                is_curated: false,
             },
             FileEntry {
                 node: old_id,
                 path: "old.md".to_string(),
                 date_ord: Some((date(2024, 4, 17) - EPOCH).num_days()),
+                is_curated: false,
             },
         ];
 
-        let scores = score_files_at(&graph, &files, &config, date(2026, 4, 17));
+        let lattice = test_lattice();
+        let scores = score_files_at(&graph, &files, &lattice, &config, date(2026, 4, 17));
         let fresh_score = scores.get(&fresh_id).unwrap().score;
         let old_score = scores.get(&old_id).unwrap().score;
 
@@ -1175,11 +1184,13 @@ mod tests {
                 node: day_old,
                 path: "day-old.md".to_string(),
                 date_ord: Some((date(2026, 4, 16) - EPOCH).num_days()),
+                is_curated: false,
             },
             FileEntry {
                 node: year_old,
                 path: "year-old.md".to_string(),
                 date_ord: Some((date(2025, 4, 17) - EPOCH).num_days()),
+                is_curated: false,
             },
         ];
 
@@ -1188,7 +1199,8 @@ mod tests {
             recency_half_life_days: 30,
             ..OrientConfig::default()
         };
-        let short_scores = score_files_at(&graph, &files, &short, date(2026, 4, 17));
+        let lattice = test_lattice();
+        let short_scores = score_files_at(&graph, &files, &lattice, &short, date(2026, 4, 17));
         let short_gap =
             short_scores.get(&day_old).unwrap().score - short_scores.get(&year_old).unwrap().score;
 
@@ -1197,7 +1209,7 @@ mod tests {
             recency_half_life_days: 730,
             ..OrientConfig::default()
         };
-        let long_scores = score_files_at(&graph, &files, &long, date(2026, 4, 17));
+        let long_scores = score_files_at(&graph, &files, &lattice, &long, date(2026, 4, 17));
         let long_gap =
             long_scores.get(&day_old).unwrap().score - long_scores.get(&year_old).unwrap().score;
 
@@ -1223,9 +1235,11 @@ mod tests {
             node: undated,
             path: "undated.md".to_string(),
             date_ord: None,
+            is_curated: false,
         }];
         let config = OrientConfig::default();
-        let scores = score_files_at(&graph, &files, &config, date(2026, 4, 17));
+        let lattice = test_lattice();
+        let scores = score_files_at(&graph, &files, &lattice, &config, date(2026, 4, 17));
         // Status bonus only: 2.0 (draft), no edges, no labels, no recency.
         assert!((scores.get(&undated).unwrap().score - 2.0).abs() < 0.001);
     }
@@ -1375,13 +1389,13 @@ mod tests {
             Some("active"),
             date(2026, 3, 1),
         ));
-        let newer_compiler = graph.add_node(file_with_date(
+        graph.add_node(file_with_date(
             "compiler/b.md",
             Some("active"),
             date(2026, 4, 20),
         ));
         // formal-model/ area: one active, one archived.
-        let fm = graph.add_node(file_with_date(
+        graph.add_node(file_with_date(
             "formal-model/model.md",
             Some("active"),
             date(2026, 4, 10),
@@ -1425,8 +1439,6 @@ mod tests {
         assert!(!frontier_paths.contains("compiler/a.md"));
         assert!(frontier_paths.contains("formal-model/model.md"));
         assert!(!frontier_paths.contains("formal-model/old.md"));
-        let _ = newer_compiler;
-        let _ = fm;
     }
 
     #[test]
@@ -1595,15 +1607,18 @@ mod tests {
                 node: hub_a,
                 path: "hub-a.md".to_string(),
                 date_ord: None,
+                is_curated: false,
             },
             FileEntry {
                 node: hub_b,
                 path: "hub-b.md".to_string(),
                 date_ord: None,
+                is_curated: false,
             },
         ];
         let config = OrientConfig::default();
-        let scores = score_files_at(&graph, &files, &config, today);
+        let lattice = test_lattice();
+        let scores = score_files_at(&graph, &files, &lattice, &config, today);
         let a_score = scores.get(&hub_a).expect("a").score;
         let b_score = scores.get(&hub_b).expect("b").score;
         assert!(
@@ -1631,10 +1646,8 @@ mod tests {
     #[test]
     fn orient_respects_budget() {
         let mut graph = DiGraph::new();
-        let big = graph.add_node(file_with_size("compiler/big.md", Some("active"), 40_000));
-        let med = graph.add_node(file_with_size("compiler/med.md", Some("active"), 8_000));
-        let _ = big;
-        let _ = med;
+        graph.add_node(file_with_size("compiler/big.md", Some("active"), 40_000));
+        graph.add_node(file_with_size("compiler/med.md", Some("active"), 8_000));
 
         let node_index = test_node_index(&graph);
         let config = OrientConfig::default();
@@ -1747,9 +1760,9 @@ mod tests {
         let mut graph = DiGraph::new();
         let target = graph.add_node(file_with_size("x.md", Some("active"), 2_000));
         let upstream = graph.add_node(file_with_size("y.md", Some("active"), 2_000));
-        let unrelated = graph.add_node(file_with_size("z.md", Some("active"), 2_000));
+        // An unrelated node that shouldn't appear in the upstream walk.
+        graph.add_node(file_with_size("z.md", Some("active"), 2_000));
         graph.add_edge(target, upstream, EdgeKind::DependsOn);
-        let _ = unrelated;
 
         let node_index = test_node_index(&graph);
         let config = OrientConfig::default();
