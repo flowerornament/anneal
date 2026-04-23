@@ -67,11 +67,11 @@ anneal check --scope=active
 Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use `orient` to generate a tiered, token-budgeted reading list: **Pinned → Frontier → Foundation → Upstream → Downstream**. **Frontier** is per-area newest file with active-like status (where work is now); **Foundation** is stable hubs the frontier still cites (curated hubs like `README`/`CHANGELOG`/`DESIGN-GOALS` always surface, plus files ranked by recency-weighted in-degree). Oversized foundation docs appear in an `Overflow` sub-block (path + size only, no snippet) — re-run with a wider `--budget` to pull them in. Use `orient --file=X` as the upstream complement to `impact`: what does this file build on? Use `status --json --compact` when you need a machine-readable dashboard. Use plain-text `check --scope=active` for default health checks.
 
 **Annotation that helps orient** (agents who maintain a corpus):
-- `status: active|draft|current|in-progress|plan|complete|open|proposed` → Frontier-eligible
-- `status: living` → always in Foundation (authoritative hub)
-- `status: superseded|archived|historical|prior|incorporated|digested|resolved|retired|deprecated|obsolete` → excluded from orient entirely
-- `superseded-by: <path>` → excluded; the replacement wins
-- `purpose: "Entry point. Read this first."` → Foundation curated-hub bonus (also accepts "read first", "overview", "map", "orientation")
+- **Terminal status** (excluded from orient entirely): anneal reads the corpus's lattice. Any status configured in `[convergence] terminal` or matching the heuristic family — `superseded`, `archived`, `historical`, `prior`, `incorporated`, `digested`, `resolved`, `retired`, `deprecated`, `obsolete`, `withdrawn`, `cancelled`, `closed`, `done`, `completed` — is terminal. One canon, tool-wide.
+- **Frontier-eligible**: when the corpus declares a pipeline (`[convergence] ordering = [...]`), only statuses IN the ordering count. Otherwise, any non-terminal declared status works. This is why off-pipeline references like `status: stable` stay out of Frontier on a corpus with a pipeline — they're alive, just not where work is now.
+- `status: living` → always in Foundation (authoritative hub).
+- `superseded-by: <path>` → excluded; the replacement wins.
+- `purpose: "Entry point. Read this first."` → Foundation curated-hub bonus (also accepts "read first", "overview", "map", "orientation").
 - When creating a doc that obsoletes another, set both `status: superseded` and `superseded-by: <new-path>` on the old file. The corpus stops surfacing the redirect the moment you save.
 
 ### Garden (maintenance)
