@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::analysis::AnalysisContext;
 use crate::checks::{Diagnostic, DiagnosticCode, Evidence, SuggestionEvidence};
-use crate::cli::{JsonEnvelope, JsonStyle, OutputMeta};
+use crate::cli::{JsonStyle, OutputMeta};
 use crate::handle::HandleKind;
 use crate::identity::{diagnostic_id, suggestion_id};
 use crate::impact;
@@ -182,65 +182,47 @@ pub(crate) fn run(
     output_style: OutputStyle,
 ) -> anyhow::Result<()> {
     match command {
-        ExplainCommand::Diagnostic(args) => emit_explanation(
-            build_diagnostic_explanation_output(context, args)?,
+        ExplainCommand::Diagnostic(args) => crate::emit_rendered(
+            &build_diagnostic_explanation_output(context, args)?,
+            Some(OutputMeta::full()),
             json,
             json_style,
             output_style,
             "failed to write explain diagnostic output",
         ),
-        ExplainCommand::Impact(args) => emit_explanation(
-            build_impact_explanation_output(context, args)?,
+        ExplainCommand::Impact(args) => crate::emit_rendered(
+            &build_impact_explanation_output(context, args)?,
+            Some(OutputMeta::full()),
             json,
             json_style,
             output_style,
             "failed to write explain impact output",
         ),
-        ExplainCommand::Convergence(_) => emit_explanation(
-            build_convergence_explanation_output(context),
+        ExplainCommand::Convergence(_) => crate::emit_rendered(
+            &build_convergence_explanation_output(context),
+            Some(OutputMeta::full()),
             json,
             json_style,
             output_style,
             "failed to write explain convergence output",
         ),
-        ExplainCommand::Obligation(args) => emit_explanation(
-            build_obligation_explanation_output(context, args)?,
+        ExplainCommand::Obligation(args) => crate::emit_rendered(
+            &build_obligation_explanation_output(context, args)?,
+            Some(OutputMeta::full()),
             json,
             json_style,
             output_style,
             "failed to write explain obligation output",
         ),
-        ExplainCommand::Suggestion(args) => emit_explanation(
-            build_suggestion_explanation_output(context, args)?,
+        ExplainCommand::Suggestion(args) => crate::emit_rendered(
+            &build_suggestion_explanation_output(context, args)?,
+            Some(OutputMeta::full()),
             json,
             json_style,
             output_style,
             "failed to write explain suggestion output",
         ),
     }
-}
-
-fn emit_explanation<T: Serialize + Render>(
-    explanation: T,
-    json: bool,
-    json_style: JsonStyle,
-    output_style: OutputStyle,
-    human_context: &'static str,
-) -> anyhow::Result<()> {
-    if json {
-        crate::cli::print_json(
-            &JsonEnvelope::new(OutputMeta::full(), explanation),
-            json_style,
-        )?;
-    } else {
-        let stdout = std::io::stdout();
-        let lock = stdout.lock();
-        let mut printer = Printer::new(lock, output_style);
-        explanation
-            .render(&mut printer)
-            .map_err(|e| anyhow::anyhow!("{human_context}: {e}"))?;
-    }
-    Ok(())
 }
 
 fn build_diagnostic_explanation_output(

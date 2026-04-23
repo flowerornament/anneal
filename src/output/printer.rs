@@ -59,7 +59,7 @@ pub(crate) trait Toned {
 }
 
 /// A value that can render itself to a `Printer`. Every command output
-/// type implements this so `main.rs::emit_output` can construct the
+/// type implements this so `main.rs::emit_rendered` can construct the
 /// Printer once and hand it to the value — commands never see a bare
 /// writer.
 pub(crate) trait Render {
