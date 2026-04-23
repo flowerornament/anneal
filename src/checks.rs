@@ -895,6 +895,22 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
             continue;
         }
 
+        // Skip "solo" version handles: a Version handle generated from a
+        // filename with a `-v\d+` suffix that isn't part of a real version
+        // chain. Detection: no outgoing Supersedes edge means no older
+        // sibling exists, so this version is just filename hygiene (`foo-
+        // v2.md` without a `foo-v1.md`). Flagging it as "disconnected
+        // knowledge" is noise — the file twin carries the content and is
+        // the handle people actually cite.
+        if matches!(handle.kind, HandleKind::Version { .. })
+            && !graph
+                .outgoing(node_id)
+                .iter()
+                .any(|e| e.kind == EdgeKind::Supersedes)
+        {
+            continue;
+        }
+
         if graph.incoming(node_id).is_empty() {
             // Use handle's own file_path, or fall back to artifact file
             // (version handles), or any reachable edge target's file
@@ -1714,6 +1730,42 @@ mod tests {
         assert!(
             diags.is_empty(),
             "S001 should not be produced for handles with incoming edges"
+        );
+    }
+
+    #[test]
+    fn suggest_s001_skips_solo_version_handle() {
+        // A date-prefixed file like `2026-04-17-cli-ux-audit-v2.md` creates
+        // a Version handle for the `-v2` suffix, but no `-v1` sibling means
+        // no Supersedes chain. The version is filename hygiene, not
+        // "disconnected knowledge" — don't emit S001.
+        let mut graph = DiGraph::new();
+        let file = graph.add_node(Handle::test_file("audit-v2.md", None));
+        let _version = graph.add_node(Handle::version(file, 2, "audit", None));
+
+        let diags = suggest_orphaned(&graph);
+        assert!(
+            diags.is_empty(),
+            "S001 should not flag a solo Version handle (no supersedes chain)"
+        );
+    }
+
+    #[test]
+    fn suggest_s001_flags_chain_head_version_with_no_incoming() {
+        // A version with a real supersedes chain (outgoing Supersedes to an
+        // older sibling) is load-bearing: it claims to be a newer version
+        // of something. If nothing cites it, that's real orphan signal.
+        let mut graph = DiGraph::new();
+        let file = graph.add_node(Handle::test_file("model-v17.md", None));
+        let v16_file = graph.add_node(Handle::test_file("model-v16.md", None));
+        let v16 = graph.add_node(Handle::version(v16_file, 16, "model", None));
+        let v17 = graph.add_node(Handle::version(file, 17, "model", None));
+        graph.add_edge(v17, v16, EdgeKind::Supersedes);
+
+        let diags = suggest_orphaned(&graph);
+        assert!(
+            diags.iter().any(|d| d.message.contains("model-v17")),
+            "S001 should still flag an orphaned chain-head version"
         );
     }
 
