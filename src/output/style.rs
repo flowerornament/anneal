@@ -43,9 +43,9 @@ pub(crate) enum Tone {
 
 /// Glyph categories. Each maps to a tiered character based on `Mode`.
 ///
-/// Per the R1 design rule, inline separators and list-item markers are
-/// not glyphs — commas/indentation carry those roles. Glyphs are
-/// reserved for semantic pointers (arrows, severity marks).
+/// Inline separators and list-item markers are not glyphs — commas and
+/// indentation carry those roles. Glyphs are reserved for semantic
+/// pointers (arrows, severity marks).
 #[allow(dead_code)] // full glyph palette; not every variant is used yet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Glyph {

@@ -80,7 +80,6 @@ pub(crate) struct CheckJsonOptions {
 
 impl Render for CheckOutput {
     fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
-        // Heading universal (R2). Count = total findings.
         let total = self.errors + self.warnings + self.info + self.suggestions;
         p.heading("Diagnostics", Some(total))?;
         p.blank()?;

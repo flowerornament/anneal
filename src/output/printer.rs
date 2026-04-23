@@ -321,8 +321,8 @@ impl<W: Write> Printer<W> {
 
     /// Emit a single row like `0 errors, 0 warnings, 1 info`. Each
     /// part pairs a count with a label. Zero-valued parts render dim so
-    /// non-zero values pop. Comma separator per R1 (glyph separators are
-    /// chartjunk; punctuation is prose).
+    /// non-zero values pop. Comma separator — glyph separators are
+    /// chartjunk; punctuation is prose.
     pub(crate) fn tally(&mut self, parts: &[(usize, &str)]) -> io::Result<()> {
         self.write_indent(CONTENT_COL)?;
         let sep = self.style.tone(Tone::Dim);
@@ -350,8 +350,7 @@ impl<W: Write> Printer<W> {
     // --- Indexed lists -----------------------------------------------
     //
     // Plain list items are indentation-only: emit via `line_at(SUB_COL, …)`.
-    // R1 rules out decorative bullet glyphs — indent already communicates
-    // grouping.
+    // No decorative bullet glyphs — indent already communicates grouping.
 
     /// Indexed list row: `  N  content`. Index is right-aligned within
     /// `width` columns so single- and double-digit indices share a
