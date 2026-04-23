@@ -840,66 +840,29 @@ enum FindSort {
 
 /// Emit a renderable output either as JSON or as styled human text.
 ///
-/// On the human path, constructs a `Printer` over a locked stdout handle
-/// and delegates to the value's `Render` impl. Commands that need extra
-/// render-time arguments (e.g. `BatchGetOutput` + mode) can't use
-/// `Render` directly; they use `emit_rendered` with a custom closure.
-fn emit_output<T: Serialize + output::Render>(
+/// The JSON path has two shapes: if `envelope_meta` is `Some`, the value
+/// is wrapped in a `JsonEnvelope` carrying that meta; if `None`, the
+/// value is serialized directly (its type carries its own `_meta`). The
+/// human path always constructs a `Printer` over a locked stdout handle
+/// and delegates to the value's `Render` impl.
+pub(crate) fn emit_rendered<T: Serialize + output::Render>(
     output: &T,
-    json: bool,
-    json_style: cli::JsonStyle,
-    style: output::OutputStyle,
-    human_context: &'static str,
-) -> anyhow::Result<()> {
-    emit_rendered(output, json, json_style, style, human_context, |t, p| {
-        t.render(p)
-    })
-}
-
-/// `emit_output` for owned values that ship inside a `JsonEnvelope`.
-fn emit_full_output<T: Serialize + output::Render>(
-    output: T,
+    envelope_meta: Option<cli::OutputMeta>,
     json: bool,
     json_style: cli::JsonStyle,
     style: output::OutputStyle,
     human_context: &'static str,
 ) -> anyhow::Result<()> {
     if json {
-        cli::print_json(
-            &cli::JsonEnvelope::new(cli::OutputMeta::full(), output),
-            json_style,
-        )
+        match envelope_meta {
+            Some(meta) => cli::print_json(&cli::JsonEnvelope::new(meta, output), json_style)?,
+            None => cli::print_json(output, json_style)?,
+        }
     } else {
         let stdout = std::io::stdout();
         let lock = stdout.lock();
         let mut printer = output::Printer::new(lock, style);
         output.render(&mut printer).context(human_context)?;
-        Ok(())
-    }
-}
-
-/// `emit_output` variant for renderers that need extra arguments (e.g.
-/// `BatchGetOutput` needs a `mode`). The closure receives a borrowed
-/// value and a fresh Printer.
-fn emit_rendered<T, F>(
-    output: &T,
-    json: bool,
-    json_style: cli::JsonStyle,
-    style: output::OutputStyle,
-    human_context: &'static str,
-    render_human: F,
-) -> anyhow::Result<()>
-where
-    T: Serialize,
-    F: FnOnce(&T, &mut output::Printer<std::io::StdoutLock<'_>>) -> std::io::Result<()>,
-{
-    if json {
-        cli::print_json(output, json_style)?;
-    } else {
-        let stdout = std::io::stdout();
-        let lock = stdout.lock();
-        let mut printer = output::Printer::new(lock, style);
-        render_human(output, &mut printer).context(human_context)?;
     }
     Ok(())
 }
@@ -1073,8 +1036,9 @@ fn run() -> anyhow::Result<()> {
         None => {
             // Bare `anneal` (no subcommand): show graph summary
             let summary = cli::build_summary(&root_str, graph, &stats, &lattice);
-            emit_output(
+            emit_rendered(
                 &summary,
+                None,
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1278,8 +1242,9 @@ fn run() -> anyhow::Result<()> {
                     context: context.then_some(snippets),
                 },
             )?;
-            emit_output(
+            emit_rendered(
                 &output,
+                None,
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1295,8 +1260,9 @@ fn run() -> anyhow::Result<()> {
                 &result.observed_frontmatter_keys,
                 dry_run,
             )?;
-            emit_full_output(
-                output,
+            emit_rendered(
+                &output,
+                Some(cli::OutputMeta::full()),
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1313,8 +1279,9 @@ fn run() -> anyhow::Result<()> {
                 if let Some(ref tf) = temporal_filter {
                     output.retain_temporal(tf, &node_index, graph);
                 }
-                emit_full_output(
-                    output,
+                emit_rendered(
+                    &output,
+                    Some(cli::OutputMeta::full()),
                     cli_args.json,
                     json_style,
                     output_style,
@@ -1352,8 +1319,9 @@ fn run() -> anyhow::Result<()> {
                     include_terminal,
                     lattice: &lattice,
                 });
-                emit_output(
+                emit_rendered(
                     &output,
+                    None,
                     cli_args.json,
                     json_style,
                     output_style,
@@ -1401,8 +1369,9 @@ fn run() -> anyhow::Result<()> {
                 limit_nodes: limit_nodes.unwrap_or(100),
                 limit_edges: limit_edges.unwrap_or(250),
             });
-            emit_output(
+            emit_rendered(
                 &output,
+                None,
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1477,8 +1446,9 @@ fn run() -> anyhow::Result<()> {
                     days,
                     git_ref.as_deref(),
                 )?;
-                emit_full_output(
-                    output,
+                emit_rendered(
+                    &output,
+                    Some(cli::OutputMeta::full()),
                     cli_args.json,
                     json_style,
                     output_style,
@@ -1494,8 +1464,9 @@ fn run() -> anyhow::Result<()> {
                 days,
                 git_ref.as_deref(),
             )?;
-            emit_full_output(
-                output,
+            emit_rendered(
+                &output,
+                Some(cli::OutputMeta::full()),
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1505,8 +1476,9 @@ fn run() -> anyhow::Result<()> {
 
         Some(Command::Obligations) => {
             let output = cli::cmd_obligations(graph, &lattice, &config);
-            emit_full_output(
-                output,
+            emit_rendered(
+                &output,
+                Some(cli::OutputMeta::full()),
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1533,8 +1505,9 @@ fn run() -> anyhow::Result<()> {
                 sort,
                 include_terminal,
             );
-            emit_full_output(
-                output,
+            emit_rendered(
+                &output,
+                Some(cli::OutputMeta::full()),
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1554,8 +1527,9 @@ fn run() -> anyhow::Result<()> {
                 limit,
                 config: &config,
             });
-            emit_output(
+            emit_rendered(
                 &output,
+                None,
                 cli_args.json,
                 json_style,
                 output_style,
@@ -1594,8 +1568,9 @@ fn run() -> anyhow::Result<()> {
                     .print_paths_only(&mut lock)
                     .context("failed to write orient paths")?;
             } else {
-                emit_output(
+                emit_rendered(
                     &output,
+                    None,
                     cli_args.json,
                     json_style,
                     output_style,
