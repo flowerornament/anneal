@@ -5,9 +5,19 @@ use serde::Serialize;
 use crate::config::{AnnealConfig, FreshnessConfig};
 
 /// Status names that heuristically indicate terminal state (UX-03).
+///
+/// Matched case-insensitive by substring against observed statuses. Covers
+/// the superseded/archival family (`superseded`, `archived`, `historical`,
+/// `prior`, `retired`, `deprecated`, `obsolete`, `withdrawn`), the
+/// cancelled/resolved family (`cancelled`, `canceled`, `closed`, `resolved`,
+/// `done`, `completed`), and the digest/roll-up family (`incorporated`,
+/// `digested`) — all corpus-derived conventions for "the knowledge moved
+/// somewhere else, don't surface this as content anymore."
 pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
     "superseded",
     "archived",
+    "historical",
+    "prior",
     "retired",
     "deprecated",
     "obsolete",
@@ -18,6 +28,8 @@ pub(crate) const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
     "resolved",
     "done",
     "completed",
+    "incorporated",
+    "digested",
 ];
 
 /// Check if a status name matches terminal heuristics (case-insensitive substring match).
@@ -306,6 +318,8 @@ mod tests {
     fn is_terminal_by_heuristic_matches_known_statuses() {
         assert!(is_terminal_by_heuristic("archived"));
         assert!(is_terminal_by_heuristic("superseded"));
+        assert!(is_terminal_by_heuristic("historical"));
+        assert!(is_terminal_by_heuristic("prior"));
         assert!(is_terminal_by_heuristic("deprecated"));
         assert!(is_terminal_by_heuristic("done"));
         assert!(is_terminal_by_heuristic("completed"));
@@ -313,6 +327,8 @@ mod tests {
         assert!(is_terminal_by_heuristic("cancelled"));
         assert!(is_terminal_by_heuristic("canceled"));
         assert!(is_terminal_by_heuristic("resolved"));
+        assert!(is_terminal_by_heuristic("incorporated"));
+        assert!(is_terminal_by_heuristic("digested"));
     }
 
     #[test]
