@@ -2,7 +2,7 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## 0.10.0 - 2026-04-23
 
 ### Changed
 
