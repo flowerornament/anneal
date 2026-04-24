@@ -2,6 +2,18 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## 0.10.1 - 2026-04-23
+
+### Fixed
+
+- `OutputStyle::tone(Heading)` previously emitted ANSI bold even when
+  `color: false`, intending to preserve scannability in monochrome
+  terminals and log files. In practice this broke pipe/grep
+  cleanliness and violated the `NO_COLOR` spec intent ("no added
+  ANSI"), and made plain-mode tests fail in the Nix build sandbox
+  (seen as `\u{1b}[1m` wrappers around headings). Plain mode now
+  emits no ANSI at all, including bold. Rich / TTY output unchanged.
+
 ## 0.10.0 - 2026-04-23
 
 ### Changed
