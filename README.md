@@ -355,7 +355,7 @@ $ anneal orient --area=implementation --budget=30k
 **How it picks.** Output splits into tiers, top-to-bottom:
 
 - **Pinned** — `[orient].pin` config; always first.
-- **Frontier** — where work is now. Per-area newest file with an active-like status (`active`, `draft`, `current`, `in-progress`, `plan`, `complete`, `open`, `proposed`). In `--area=X` mode, all area files by date. Flat corpora (no subdirs) fall back to top-5 globally by date.
+- **Frontier** — where work is now. Per-area newest file with a Frontier-eligible status. When the corpus declares `[convergence] ordering = [...]` in `anneal.toml`, a status is Frontier-eligible if it appears in that ordering — so off-pipeline alive statuses like `reference` or `stable` stay out of Frontier and flow to Foundation where they belong. Without an ordering, any non-terminal declared status qualifies. In `--area=X` mode, all area files by date. Flat corpora fall back to top-5 globally by date.
 - **Foundation** — stable hubs the frontier still cites. Curated hubs (`README`, `CHANGELOG`, `DESIGN-GOALS`, `OPEN-QUESTIONS`, `LABELS`, `INDEX`, `ROADMAP`, `OVERVIEW`, `GLOSSARY` at any depth, plus files with `status: living` or a `purpose:` line mentioning "entry point" / "read first" / "overview" / "map" / "orientation") always surface. Non-curated foundation files rank by **recency-weighted in-degree**: each incoming citation counted by the *citer's* recency, so stale hubs whose citers have moved on fall off.
 - **Upstream** / **Downstream** — in `--area=X` mode only, the cross-area boundary files.
 
