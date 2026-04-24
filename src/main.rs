@@ -859,9 +859,8 @@ pub(crate) fn emit_rendered<T: Serialize + output::Render>(
             None => cli::print_json(output, json_style)?,
         }
     } else {
-        let stdout = std::io::stdout();
-        let lock = stdout.lock();
-        let mut printer = output::Printer::new(lock, style);
+        let writer = std::io::BufWriter::new(std::io::stdout());
+        let mut printer = output::Printer::new(writer, style);
         output.render(&mut printer).context(human_context)?;
     }
     Ok(())
@@ -1123,9 +1122,8 @@ fn run() -> anyhow::Result<()> {
                 );
                 cli::print_json(&json_output, json_style)?;
             } else {
-                let stdout = std::io::stdout();
-                let lock = stdout.lock();
-                let mut printer = output::Printer::new(lock, output_style);
+                let writer = std::io::BufWriter::new(std::io::stdout());
+                let mut printer = output::Printer::new(writer, output_style);
                 output::Render::render(&output, &mut printer)
                     .context("failed to write check output")?;
             }
@@ -1159,9 +1157,8 @@ fn run() -> anyhow::Result<()> {
                 if cli_args.json {
                     cli::print_json(&output, json_style)?;
                 } else {
-                    let stdout = std::io::stdout();
-                    let lock = stdout.lock();
-                    let mut printer = output::Printer::new(lock, output_style);
+                    let writer = std::io::BufWriter::new(std::io::stdout());
+                    let mut printer = output::Printer::new(writer, output_style);
                     output
                         .render(&mut printer, mode)
                         .context("failed to write get output")?;
@@ -1198,9 +1195,8 @@ fn run() -> anyhow::Result<()> {
                         limit_edges,
                         context,
                     };
-                    let stdout = std::io::stdout();
-                    let lock = stdout.lock();
-                    let mut printer = output::Printer::new(lock, output_style);
+                    let writer = std::io::BufWriter::new(std::io::stdout());
+                    let mut printer = output::Printer::new(writer, output_style);
                     output::Render::render(&output, &mut printer)
                         .context("failed to write get output")?;
                 }
@@ -1421,9 +1417,8 @@ fn run() -> anyhow::Result<()> {
                     )?;
                 }
             } else {
-                let stdout = std::io::stdout();
-                let lock = stdout.lock();
-                let mut printer = output::Printer::new(lock, output_style);
+                let writer = std::io::BufWriter::new(std::io::stdout());
+                let mut printer = output::Printer::new(writer, output_style);
                 output
                     .render_with_options(&mut printer, verbose, graph, &lattice)
                     .context("failed to write status output")?;

@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -147,7 +146,7 @@ pub(crate) struct GardenOutput {
 }
 
 impl Render for GardenOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         // Count is total tasks before category/area filter.
         p.heading("Maintenance tasks", Some(self.total))?;
         if self.returned < self.total {
@@ -206,11 +205,7 @@ impl Render for GardenOutput {
     }
 }
 
-fn render_hint<W: Write>(
-    p: &mut Printer<W>,
-    label: &str,
-    body: Option<&str>,
-) -> std::io::Result<()> {
+fn render_hint(p: &mut Printer, label: &str, body: Option<&str>) -> std::io::Result<()> {
     let Some(body) = body else { return Ok(()) };
     // Label column width 8 so "fix", "context", "verify" align.
     let label_styled = format!("{label:<8}");

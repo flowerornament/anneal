@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -1014,7 +1012,7 @@ fn fact(fact_type: &str, key: &str, value: &str) -> ExplanationFact {
 /// Emit `Facts (N)` heading followed by aligned `fact_type key value`
 /// rows. Shared across every explanation variant so facts surface
 /// identically regardless of origin.
-fn render_facts<W: Write>(p: &mut Printer<W>, facts: &[ExplanationFact]) -> std::io::Result<()> {
+fn render_facts(p: &mut Printer, facts: &[ExplanationFact]) -> std::io::Result<()> {
     if facts.is_empty() {
         return Ok(());
     }
@@ -1046,7 +1044,7 @@ fn location_line(file: &str, line: Option<u32>) -> Line {
 }
 
 impl Render for DiagnosticExplanation {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.line(
             &Line::new()
                 .heading(format!("Diagnostic {}", self.code))
@@ -1072,7 +1070,7 @@ impl Render for DiagnosticExplanation {
 }
 
 impl Render for ConvergenceExplanation {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading(&format!("Convergence {}", self.signal), None)?;
         p.blank()?;
 
@@ -1106,10 +1104,7 @@ fn snapshot_summary_line(summary: &ConvergenceSnapshotSummary) -> Line {
         .count(summary.obligations_outstanding)
 }
 
-fn render_pipeline<W: Write>(
-    p: &mut Printer<W>,
-    pipeline: &PipelineSummary,
-) -> std::io::Result<()> {
+fn render_pipeline(p: &mut Printer, pipeline: &PipelineSummary) -> std::io::Result<()> {
     if pipeline.active.is_empty()
         && pipeline.terminal.is_empty()
         && pipeline.ordering.is_empty()
@@ -1146,7 +1141,7 @@ fn render_pipeline<W: Write>(
 }
 
 impl Render for ImpactExplanation {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.line(
             &Line::new()
                 .heading("Impact")
@@ -1161,8 +1156,8 @@ impl Render for ImpactExplanation {
     }
 }
 
-fn render_impact_section<W: Write>(
-    p: &mut Printer<W>,
+fn render_impact_section(
+    p: &mut Printer,
     label: &str,
     paths: &[ImpactPath],
 ) -> std::io::Result<()> {
@@ -1189,7 +1184,7 @@ fn render_impact_section<W: Write>(
 }
 
 impl Render for ObligationExplanation {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading(&format!("Obligation {}", self.handle), None)?;
         p.blank()?;
 
@@ -1236,7 +1231,7 @@ impl Render for ObligationExplanation {
 }
 
 impl Render for SuggestionExplanation {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading(&format!("Suggestion {}", self.code), None)?;
         p.blank()?;
 
@@ -1481,12 +1476,12 @@ mod tests {
         assert_eq!(explanation.pipeline.descriptions.len(), 1);
         assert_eq!(explanation.pipeline.descriptions[0].status, "draft");
 
-        let mut buf = Vec::new();
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
         {
-            let mut printer = Printer::new(&mut buf, OutputStyle::plain());
+            let mut printer = Printer::new(writer, OutputStyle::plain());
             explanation.render(&mut printer).expect("render");
         }
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
         assert!(text.contains("Pipeline"));
         assert!(text.contains("draft → active"));
         assert!(text.contains("Under construction"));

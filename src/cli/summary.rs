@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -36,7 +35,7 @@ pub(crate) struct GraphSummary {
 }
 
 impl Render for GraphSummary {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading("anneal", None)?;
         p.caption("knowledge graph built")?;
         p.blank()?;

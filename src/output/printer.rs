@@ -63,7 +63,7 @@ pub(crate) trait Toned {
 /// Printer once and hand it to the value — commands never see a bare
 /// writer.
 pub(crate) trait Render {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> io::Result<()>;
+    fn render(&self, p: &mut Printer) -> io::Result<()>;
 }
 
 /// A styled segment. Either a text run (with a tone) or a fixed-width
@@ -212,14 +212,17 @@ impl Line {
 /// raw `writeln!` / inline `Style::apply_to`. This keeps the design
 /// system enforceable and lets future refactors (theming, `--minimal`
 /// mode, snapshot testing) land in one place.
-pub(crate) struct Printer<W: Write> {
-    writer: W,
+pub(crate) struct Printer {
+    writer: Box<dyn Write>,
     style: OutputStyle,
 }
 
-impl<W: Write> Printer<W> {
-    pub(crate) fn new(writer: W, style: OutputStyle) -> Self {
-        Self { writer, style }
+impl Printer {
+    pub(crate) fn new<W: Write + 'static>(writer: W, style: OutputStyle) -> Self {
+        Self {
+            writer: Box::new(writer),
+            style,
+        }
     }
 
     pub(crate) fn style(&self) -> OutputStyle {

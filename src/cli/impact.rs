@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -62,7 +61,7 @@ impl ImpactOutput {
 }
 
 impl Render for ImpactOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading("Impact", None)?;
         p.caption(&format!("what depends on {}", self.handle))?;
         p.blank()?;
@@ -74,11 +73,7 @@ impl Render for ImpactOutput {
     }
 }
 
-fn render_section<W: Write>(
-    p: &mut Printer<W>,
-    title: &str,
-    items: &[String],
-) -> std::io::Result<()> {
+fn render_section(p: &mut Printer, title: &str, items: &[String]) -> std::io::Result<()> {
     p.heading(title, Some(items.len()))?;
     if items.is_empty() {
         p.line_at(4, &Line::new().dim("(none)"))?;

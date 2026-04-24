@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -54,7 +53,7 @@ pub(crate) struct FindOutput {
 }
 
 impl Render for FindOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         // Heading: `Matches (N)` with optional query subtitle and truncation hint.
         let title = if self.query.is_empty() {
             "Matches".to_string()

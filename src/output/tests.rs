@@ -1,4 +1,5 @@
 use super::printer::{Location, TableHeader, format_number};
+use super::test_support::SharedBuf;
 use super::*;
 
 fn plain() -> OutputStyle {
@@ -7,14 +8,14 @@ fn plain() -> OutputStyle {
 
 fn render<F>(f: F) -> String
 where
-    F: FnOnce(&mut Printer<&mut Vec<u8>>) -> std::io::Result<()>,
+    F: FnOnce(&mut Printer) -> std::io::Result<()>,
 {
-    let mut buf = Vec::new();
+    let (writer, buf) = SharedBuf::new();
     {
-        let mut p = Printer::new(&mut buf, plain());
+        let mut p = Printer::new(writer, plain());
         f(&mut p).unwrap();
     }
-    String::from_utf8(buf).unwrap()
+    String::from_utf8(buf.borrow().clone()).unwrap()
 }
 
 #[test]
