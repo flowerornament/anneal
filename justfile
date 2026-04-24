@@ -7,6 +7,11 @@ default:
 check:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Force console-crate ANSI emission during tests so attribute
+    # leaks (e.g. Style::new().bold() on a color-disabled path) can't
+    # get silently neutered by non-TTY detection. A Nix build sandbox
+    # caught this once; our local gate now reproduces those conditions.
+    export CLICOLOR_FORCE=1
     _ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'; }
     _t() {
         local label="$1"; shift
