@@ -6,33 +6,6 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
-- Terminal status vocabulary unified across the tool. orient previously
-  maintained its own list of terminal tokens (`superseded`, `archived`,
-  `historical`, `prior`, `incorporated`, `digested`, `resolved`,
-  `retired`, `deprecated`, `obsolete`) that diverged from the lattice
-  heuristic used by every other surface (which covered an overlapping
-  but different set). That meant a corpus with `status: closed` got
-  one answer from `orient` and another from `check`. Now every surface
-  reads from the lattice, and the heuristic family absorbs the
-  orient-only tokens (`historical`, `prior`, `incorporated`,
-  `digested`). One canon, one contract for agents to learn: "anneal
-  respects your lattice."
-- `orient` Frontier-eligibility is now driven by the corpus's own
-  pipeline. If you declare `[convergence] ordering = [...]` in
-  `anneal.toml`, Frontier ("where work is now") means *status IN the
-  ordering* — so off-pipeline alive statuses like `reference` or
-  `stable` stay out of Frontier and flow naturally to Foundation where
-  they belong. Corpora without an ordering fall back to "any non-
-  terminal status," since there's no finer signal available. This
-  fixes a regression introduced earlier in the redesign where
-  permissive Frontier detection squeezed genuine Foundation hubs out
-  of the budget.
-- S001 (orphaned handle) no longer fires on "solo" version handles —
-  a Version generated from a filename like `2026-04-17-audit-v2.md`
-  where no `-v1` sibling exists. Detection: no outgoing `Supersedes`
-  edge means no older sibling, so the version is filename hygiene,
-  not a disconnected version chain. Real version chains (v17 of
-  formal-model) still flag when genuinely orphaned.
 - `anneal orient` redesigned around two tiers: **Frontier** (where
   work is now) and **Foundation** (stable hubs the frontier still
   cites). Cross-corpus testing on murail and herald exposed that the
@@ -40,9 +13,9 @@ All notable changes to `anneal` are documented in this file.
   status — surfaced old stable hubs correctly but missed the current
   frontier and the curated entry points maintainers wrote on purpose.
 
-  The new Foundation score weights each incoming citation by the
-  *citer's* recency, so a March hub cited by twenty April docs ranks
-  highly while a March hub cited by fifty February docs (pre-frontier)
+  **Foundation** scores each incoming citation by the *citer's*
+  recency, so a March hub cited by twenty April docs ranks highly
+  while a March hub cited by fifty February docs (pre-frontier)
   decays. Curated hubs (`README`, `CHANGELOG`, `DESIGN-GOALS`,
   `OPEN-QUESTIONS`, `LABELS`, `INDEX`, `ROADMAP`, `OVERVIEW`,
   `GLOSSARY` by basename, plus files with `status: living` or a
@@ -50,67 +23,119 @@ All notable changes to `anneal` are documented in this file.
   "map" / "orientation") receive an explicit bonus — human-curated
   signals outrank graph-centrality guesses (`KB-P9` in the spec).
 
-  Frontier picks per-area newest file with active-like status
-  (`active`, `draft`, `current`, `in-progress`, `plan`, `complete`,
-  `open`, `proposed`). Curated hubs and files in archive-style
-  directories (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`)
-  are never Frontier. In `--area=X` mode, all area files by date. In
-  flat corpora (no subdirs), top-5 globally by date.
+  **Frontier** picks per-area newest file with a Frontier-eligible
+  status. When the corpus declares `[convergence] ordering = [...]`
+  in `anneal.toml`, a status is Frontier-eligible if it appears in
+  that ordering — so off-pipeline alive statuses like `reference` or
+  `stable` stay out of Frontier and flow to Foundation where they
+  belong. Without an ordering, any non-terminal declared status
+  qualifies. Curated hubs and files in archive-style directories
+  (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`) are
+  never Frontier. In `--area=X` mode, all area files by date. Flat
+  corpora fall back to top-5 globally by date.
 
-  Hard filters replace the previous soft content-size penalty. Files
-  with `status` in `{superseded, archived, historical, prior,
-  incorporated, digested, resolved, retired, deprecated, obsolete}`,
-  files with a `superseded-by:` frontmatter pointer, files living
-  under archive-style directories, and files below `[orient].stub_bytes`
-  (default 1000) that aren't curated hubs are excluded entirely — not
-  demoted. Stubs and redirect aliases never consume orient budget.
+  **Hard filters** replace the previous soft content-size penalty.
+  Terminal status (per the corpus lattice — tool-wide, not an
+  orient-specific list), `superseded-by:` frontmatter pointer,
+  archive-style directories, and files below `[orient].stub_bytes`
+  (default 1000) that aren't curated hubs are excluded entirely —
+  not demoted. Stubs and redirect aliases never consume orient
+  budget.
 
-  Oversized candidates that won't fit in the remaining budget appear
-  as `path  size` rows under a per-tier **Overflow** sub-block (no
-  snippet; capped at 5 per tier). Agents re-run with a wider `--budget`
-  to pull specific ones in.
+  **Overflow** sub-block catches oversized candidates. Files whose
+  token cost exceeds the remaining budget appear as `path  size`
+  rows (no snippet; capped at 5 per tier). Agents re-run with a
+  wider `--budget` to pull specific ones in.
 
-  **`--json` breaking change:** `entry_point` tier in output replaced
-  by two variants, `frontier` and `foundation`. Downstream JSON
+  **`--json` breaking change:** the `entry_point` tier variant is
+  replaced by two — `frontier` and `foundation`. Downstream JSON
   consumers must update the tier-name dispatch.
 
-  New config: `[orient].stub_bytes` (default 1000) and
+  **New config:** `[orient].stub_bytes` (default 1000) and
   `[orient].curated_hub_weight` (default 10.0). See `anneal orient
   --help` for the full contract; `skills/anneal/SKILL.md` and the
   README's orient section for the annotation vocabulary.
 
-- CLI output tightened across every command (Round 2 UX audit). The
-  `·` glyph is retired from inline separators — commas carry that role
-  now, and whitespace + indentation carry list grouping. Garden gets a
+- Terminal status vocabulary unified across the tool. orient
+  previously maintained its own list of terminal tokens that
+  diverged from the lattice heuristic used by every other surface,
+  so a corpus with `status: closed` got one answer from `orient` and
+  another from `check`. Every surface now reads from the lattice;
+  the heuristic family absorbed the orient-only tokens (`historical`,
+  `prior`, `incorporated`, `digested`). One canon, one contract:
+  "anneal respects your lattice."
+
+- S001 (orphaned handle) no longer fires on "solo" version handles —
+  a Version generated from a filename like `2026-04-17-audit-v2.md`
+  where no `-v1` sibling exists. Detection: no outgoing `Supersedes`
+  edge means no older sibling, so the version is filename hygiene,
+  not a disconnected version chain. Real version chains (v17 of
+  formal-model) still flag when genuinely orphaned.
+
+- CLI output tightened across every command. The `·` glyph is
+  retired from inline separators — commas carry that role now, and
+  whitespace + indentation carry list grouping. Garden leads with a
   blast-first header row (`1  HIGH  [FIX]  5 broken refs in
   implementation/`) with a stable left-column layout regardless of
-  title length, a Maintenance-tasks heading with `showing N of M` when
-  truncated, and a unified `… (N more)` detail truncation. Check emits
-  a `Diagnostics (N)` heading unconditionally and separates severity
-  groups with a blank line. Get's default view grew a Try hint block
-  that points agents to `--context` and `--full`; `--context` drops
-  the duplicated Snippet KV row. Map summary and by-area both right-
-  pad their count columns, snapshot's convergence detail always renders
-  obligation delta with an explicit sign, and orient/find share one
-  `SNIPPET_MAX = 120` with an explicit `…` when cut. See
-  `.design/2026-04-17-cli-ux-audit-v2.md` for the findings table.
-- `query`, `explain`, and `map --around` output now flow through the
-  same Printer primitives as the other 12 commands (Round 3 UX audit).
-  Each subcommand leads with a heading that names both the kind and the
-  count — `Handles (5)`, `Diagnostics (2)`, `Convergence drifting`,
-  `Neighborhood anneal-spec.md depth 1`. Query results use the shared
-  table primitive so `kind`/`status`/`incoming`/`outgoing` columns
-  align regardless of content width, and diagnostics/suggestions share
-  the `severity[CODE]  message / at path:line` shape with `anneal
-  check`. Pagination is a `Try` hint block with action descriptions
-  (`--offset 5  next page`, `--full  all results`) rather than a flat
-  `next` footer. Explain surfaces fold facts into a `Facts (N)`
-  heading with aligned `fact_type key value` rows; impact's direct and
-  indirect sections carry counts and render `(none)` in dim when
-  empty. Map's focused neighborhood gets a `Files (N)` / `Namespaces
-  (N)` / `Focus edges (N)` / `Other neighborhood edges (N)` structure
-  with `… N more` truncation markers. Explicit `--render=text` and
-  `--render=dot` on `map` remain byte-stable passthroughs for pipelines.
+  title length, a Maintenance-tasks heading with `showing N of M`
+  when truncated, and a unified `… (N more)` detail truncation.
+  Check emits a `Diagnostics (N)` heading unconditionally and
+  separates severity groups with a blank line. Get's default view
+  grew a Try hint block that points agents to `--context` and
+  `--full`; `--context` drops the duplicated Snippet KV row. Map
+  summary and by-area both right-pad their count columns, snapshot's
+  convergence detail always renders obligation delta with an
+  explicit sign, and orient/find share one `SNIPPET_MAX = 120` with
+  an explicit `…` when cut.
+
+- `query`, `explain`, and `map --around` output flow through the
+  same Printer primitives as the other 12 commands. Each subcommand
+  leads with a heading that names both the kind and the count —
+  `Handles (5)`, `Diagnostics (2)`, `Convergence drifting`,
+  `Neighborhood anneal-spec.md depth 1`. Query results use the
+  shared table primitive so `kind`/`status`/`incoming`/`outgoing`
+  columns align regardless of content width, and
+  diagnostics/suggestions share the `severity[CODE]  message /
+  at path:line` shape with `anneal check`. Pagination is a `Try`
+  hint block with action descriptions (`--offset 5  next page`,
+  `--full  all results`) rather than a flat `next` footer. Explain
+  surfaces fold facts into a `Facts (N)` heading with aligned
+  `fact_type key value` rows; impact's direct and indirect sections
+  carry counts and render `(none)` in dim when empty. Map's focused
+  neighborhood gets a `Files (N)` / `Namespaces (N)` /
+  `Focus edges (N)` / `Other neighborhood edges (N)` structure with
+  `… N more` truncation markers. Explicit `--render=text` and
+  `--render=dot` on `map` remain byte-stable passthroughs for
+  pipelines.
+
+### Internal
+
+No user-visible behavior change, but the codebase got meaningfully
+simpler before the cut:
+
+- `Printer<W: Write>` is no longer generic. The struct owns a
+  `Box<dyn Write>`; the `Render` trait and ~45 free render helpers
+  dropped their `<W: Write>` parameter. Construction uses
+  `BufWriter::new(io::stdout())` (owned, 'static, buffered). Binary
+  is slightly smaller (monomorphization collapse).
+- Three near-duplicate output helpers (`emit_output`,
+  `emit_full_output`, `emit_explanation`) collapsed into a single
+  `emit_rendered`. Call sites pass the `OutputMeta` level they want
+  explicitly; `Printer` is constructed in exactly one place.
+- orient's `is_curated_hub` was called three times per file during
+  scoring + tier assignment. Result now memoized on `FileEntry` —
+  noticeable on corpora the size of murail. Path widths similarly
+  cached on `OrientEntry` so `measure_text_width` isn't called twice
+  per entry during render.
+- orient's `status_bonus` hardcoded a token list that ignored the
+  corpus lattice. Now reads `lattice.active` — a corpus that
+  declares `wip` as active gets the right bonus for its own work.
+- `Handle::is_terminal(lattice)` adopted at several sites that
+  open-coded `lattice.terminal.contains(s)`. Same result, consistent
+  idiom.
+- Audit-reference narration comments (`R2`, `F23`, `F32`, etc.)
+  scrubbed from the codebase. The features are landed; the refs
+  were dead weight.
 
 ## 0.9.2 - 2026-04-17
 
