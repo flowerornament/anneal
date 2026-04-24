@@ -90,16 +90,14 @@ impl OutputStyle {
         Self { mode, color }
     }
 
-    /// Resolve a tone to a `console::Style`. Returns `Style::new()` when
-    /// color is disabled, which renders as plain text.
+    /// Resolve a tone to a `console::Style`. When `color` is disabled
+    /// (via `NO_COLOR`, `--plain`, or a non-TTY stdout), returns an
+    /// empty `Style::new()` for every tone — including `Heading`. This
+    /// means no ANSI at all, not "no color but keep bold." Matches the
+    /// NO_COLOR spec intent and keeps `grep`/`diff`/`less` output clean.
     pub(crate) fn tone(self, tone: Tone) -> Style {
         if !self.color {
-            return match tone {
-                // Even without color, Heading keeps its bold so scanability
-                // survives in monochrome terminals and log files.
-                Tone::Heading => Style::new().bold(),
-                _ => Style::new(),
-            };
+            return Style::new();
         }
         match tone {
             Tone::Default => Style::new(),
