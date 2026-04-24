@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -79,7 +78,7 @@ pub(crate) struct CheckJsonOptions {
 }
 
 impl Render for CheckOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         let total = self.errors + self.warnings + self.info + self.suggestions;
         p.heading("Diagnostics", Some(total))?;
         p.blank()?;
@@ -147,10 +146,7 @@ impl Render for CheckOutput {
 }
 
 /// Render a single diagnostic through the shared Printer.
-pub(crate) fn render_diagnostic<W: Write>(
-    p: &mut Printer<W>,
-    diag: &Diagnostic,
-) -> std::io::Result<()> {
+pub(crate) fn render_diagnostic(p: &mut Printer, diag: &Diagnostic) -> std::io::Result<()> {
     let at = diag
         .file
         .as_deref()

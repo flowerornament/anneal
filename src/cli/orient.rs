@@ -111,7 +111,7 @@ pub(crate) struct OrientOutput {
 }
 
 impl Render for OrientOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if let Some(sum) = &self.area_summary {
             p.line(
                 &Line::new()

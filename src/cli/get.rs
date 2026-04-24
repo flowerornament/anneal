@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -100,11 +99,7 @@ impl BatchGetOutput {
     /// Render each row through the shared Printer. Takes a `mode` so it
     /// can't use the `Render` trait directly — the main.rs call site
     /// uses `emit_rendered` with a mode-aware closure.
-    pub(crate) fn render<W: Write>(
-        &self,
-        p: &mut Printer<W>,
-        mode: BatchGetMode,
-    ) -> std::io::Result<()> {
+    pub(crate) fn render(&self, p: &mut Printer, mode: BatchGetMode) -> std::io::Result<()> {
         let handle_width = self.rows.iter().map(|r| r.handle.len()).max().unwrap_or(0);
         for row in &self.rows {
             if row.not_found {
@@ -209,7 +204,7 @@ pub(crate) struct GetHumanOutput {
 }
 
 impl Render for GetHumanOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if self.context {
             render_get_context(p, &self.data, self.limit_edges)
         } else {
@@ -338,11 +333,7 @@ impl GetJsonOutput {
 
 /// Compact identity + KV + edge sample view. Used by the default
 /// single-handle `anneal get` path.
-fn render_get_summary<W: Write>(
-    p: &mut Printer<W>,
-    data: &GetData,
-    limit_edges: usize,
-) -> std::io::Result<()> {
+fn render_get_summary(p: &mut Printer, data: &GetData, limit_edges: usize) -> std::io::Result<()> {
     render_get_header(p, data)?;
     render_get_kv(p, data, true)?;
 
@@ -381,11 +372,7 @@ fn render_get_summary<W: Write>(
 }
 
 /// Briefing-oriented expansion — `anneal get --context`.
-fn render_get_context<W: Write>(
-    p: &mut Printer<W>,
-    data: &GetData,
-    limit_edges: usize,
-) -> std::io::Result<()> {
+fn render_get_context(p: &mut Printer, data: &GetData, limit_edges: usize) -> std::io::Result<()> {
     render_get_header(p, data)?;
     // Snippet is shown below as the Context section — drop it from the KV
     // block so the same prose isn't repeated.
@@ -432,8 +419,8 @@ fn render_get_context<W: Write>(
 
 /// One Refs sub-block: heading `  Outgoing (N)` or `  Outgoing (N of M)`,
 /// then the edge group. Drops the `of M` when `shown == total`.
-fn render_refs_subsection<W: Write>(
-    p: &mut Printer<W>,
+fn render_refs_subsection(
+    p: &mut Printer,
     label: &str,
     edges: &[EdgeSummary],
     limit_edges: usize,
@@ -454,7 +441,7 @@ fn render_refs_subsection<W: Write>(
     render_edge_group_at(p, 6, edges, shown, direction)
 }
 
-fn render_get_header<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::Result<()> {
+fn render_get_header(p: &mut Printer, data: &GetData) -> std::io::Result<()> {
     p.line(
         &Line::new()
             .heading(data.id.clone())
@@ -463,11 +450,7 @@ fn render_get_header<W: Write>(p: &mut Printer<W>, data: &GetData) -> std::io::R
     )
 }
 
-fn render_get_kv<W: Write>(
-    p: &mut Printer<W>,
-    data: &GetData,
-    include_snippet: bool,
-) -> std::io::Result<()> {
+fn render_get_kv(p: &mut Printer, data: &GetData, include_snippet: bool) -> std::io::Result<()> {
     let mut rows: Vec<(&str, Line)> = Vec::new();
     if let Some(status) = &data.status {
         rows.push(("Status", Line::new().text(status.clone())));
@@ -484,8 +467,8 @@ fn render_get_kv<W: Write>(
     p.kv_block(&rows)
 }
 
-fn render_edge_group_at<W: Write>(
-    p: &mut Printer<W>,
+fn render_edge_group_at(
+    p: &mut Printer,
     col: usize,
     edges: &[EdgeSummary],
     shown: usize,
@@ -773,10 +756,10 @@ mod tests {
             context: true,
         };
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
 
         assert!(text.contains("Label index for the corpus."));
         assert!(text.contains("Refs"));
@@ -868,10 +851,10 @@ mod tests {
         let handles = vec!["short.md".to_string(), "longer-name.md".to_string()];
         let mode = BatchGetMode::StatusOnly;
         let output = cmd_batch_get(&graph, &node_index, snippets, &handles, mode);
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p, mode).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
         assert!(text.contains("short.md       "));
         assert!(text.contains("longer-name.md"));
     }

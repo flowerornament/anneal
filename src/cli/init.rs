@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 
 use camino::Utf8Path;
 use serde::Serialize;
@@ -28,7 +27,7 @@ pub(crate) struct InitOutput {
 const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
 
 impl Render for InitOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         let toml_str =
             toml::to_string_pretty(&self.config).unwrap_or_else(|e| format!("# error: {e}"));
         if self.written {

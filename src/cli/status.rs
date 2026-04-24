@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -91,7 +90,7 @@ pub(crate) struct SuggestionCount {
 }
 
 impl Render for StatusOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         self.render_inner(p, false, None, None)
     }
 }
@@ -100,9 +99,9 @@ impl StatusOutput {
     /// Render dashboard with optional verbose pipeline expansion. Takes
     /// a printer directly because it needs extra args that don't fit the
     /// `Render` trait contract.
-    pub(crate) fn render_with_options<W: Write>(
+    pub(crate) fn render_with_options(
         &self,
-        p: &mut Printer<W>,
+        p: &mut Printer,
         verbose: bool,
         graph: &DiGraph,
         lattice: &Lattice,
@@ -110,9 +109,9 @@ impl StatusOutput {
         self.render_inner(p, verbose, Some(graph), Some(lattice))
     }
 
-    fn render_inner<W: Write>(
+    fn render_inner(
         &self,
-        p: &mut Printer<W>,
+        p: &mut Printer,
         verbose: bool,
         graph: Option<&DiGraph>,
         lattice: Option<&Lattice>,
@@ -332,8 +331,8 @@ fn format_number_suffix(n: usize, singular: &str) -> String {
     )
 }
 
-fn render_pipeline_verbose<W: Write>(
-    p: &mut Printer<W>,
+fn render_pipeline_verbose(
+    p: &mut Printer,
     pipeline: &[PipelineLevel],
     graph: &DiGraph,
     lattice: &Lattice,
@@ -560,10 +559,10 @@ mod tests {
 
     /// Render to string with plain mode (ANSI stripped for assertions).
     fn render_status(output: &StatusOutput) -> String {
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, OutputStyle::plain());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, OutputStyle::plain());
         output.render(&mut p).expect("render");
-        String::from_utf8(buf).expect("utf8")
+        String::from_utf8(buf.borrow().clone()).expect("utf8")
     }
 
     #[test]

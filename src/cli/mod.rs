@@ -229,8 +229,8 @@ pub(super) fn expand_description(flag: &str) -> &'static str {
 
 /// Emit the `Try` hints block for a command's expand options. Returns
 /// `Ok(())` for an empty list so callers can call unconditionally.
-pub(super) fn emit_expand_hints<W: std::io::Write>(
-    p: &mut crate::output::Printer<W>,
+pub(super) fn emit_expand_hints(
+    p: &mut crate::output::Printer,
     expand: &[String],
 ) -> std::io::Result<()> {
     if expand.is_empty() {

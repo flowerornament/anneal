@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -112,7 +111,7 @@ pub(crate) struct MapOutput {
 }
 
 impl Render for MapOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if let Some(summary) = &self.around_summary {
             render_around(p, summary)?;
             return emit_expand_hints(p, &self.meta.expand);
@@ -149,8 +148,8 @@ impl Render for MapOutput {
     }
 }
 
-fn render_count_row<W: Write>(
-    p: &mut Printer<W>,
+fn render_count_row(
+    p: &mut Printer,
     count: usize,
     label: &str,
     count_width: usize,
@@ -883,7 +882,7 @@ fn build_around_summary<'g>(
     }
 }
 
-fn render_around<W: Write>(p: &mut Printer<W>, s: &AroundSummary) -> std::io::Result<()> {
+fn render_around(p: &mut Printer, s: &AroundSummary) -> std::io::Result<()> {
     p.line(
         &Line::new()
             .heading("Neighborhood")
@@ -1014,8 +1013,8 @@ fn render_around<W: Write>(p: &mut Printer<W>, s: &AroundSummary) -> std::io::Re
     Ok(())
 }
 
-fn render_focus_edges<W: Write>(
-    p: &mut Printer<W>,
+fn render_focus_edges(
+    p: &mut Printer,
     label: &str,
     edges: &[AroundEdge],
     total: usize,
@@ -1367,7 +1366,7 @@ pub(crate) struct MapByAreaOutput {
 }
 
 impl Render for MapByAreaOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if let Some(content) = &self.rendered_content {
             for line in content.lines() {
                 p.raw_line(line)?;
@@ -2205,10 +2204,10 @@ mod tests {
             limit_edges: 250,
         });
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
 
         assert!(text.contains("Neighborhood around LABELS.md (depth 1):"));
         assert!(text.contains("Namespaces (showing 2 of 2):"));
@@ -2262,10 +2261,10 @@ mod tests {
         assert_eq!(summary.focus_outgoing_total, 6);
         assert_eq!(summary.focus_incoming_total, 1);
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
 
         assert!(text.contains("Neighborhood"));
         assert!(text.contains("LABELS.md"));
@@ -2380,10 +2379,10 @@ mod tests {
             lattice: &lattice,
         });
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
         assert!(
             text.contains("compiler") && text.contains("synthesis"),
             "expected compiler -> synthesis edge, got: {text}"

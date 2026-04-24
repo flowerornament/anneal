@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use serde::Serialize;
 
 use crate::area::{AreaHealth, compute_areas};
@@ -30,7 +28,7 @@ pub(crate) struct AreasOutput {
 }
 
 impl Render for AreasOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         p.heading("Areas", Some(self.areas.len()))?;
         p.blank()?;
 
@@ -167,10 +165,10 @@ mod tests {
             false,
         );
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, OutputStyle::plain());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, OutputStyle::plain());
         output.render(&mut p).unwrap();
-        let text = String::from_utf8(buf).unwrap();
+        let text = String::from_utf8(buf.borrow().clone()).unwrap();
         assert!(text.contains("Area"), "header should contain 'Area'");
         assert!(text.contains("Grade"), "header should contain 'Grade'");
     }

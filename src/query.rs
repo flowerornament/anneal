@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::Write,
-};
+use std::collections::{HashMap, HashSet};
 
 use clap::{Args, Subcommand, ValueEnum};
 use globset::{Glob, GlobMatcher};
@@ -395,14 +392,13 @@ fn emit<T, F>(
 ) -> anyhow::Result<()>
 where
     T: Serialize,
-    F: for<'a> FnOnce(&T, &mut Printer<std::io::StdoutLock<'a>>) -> std::io::Result<()>,
+    F: FnOnce(&T, &mut Printer) -> std::io::Result<()>,
 {
     if json {
         crate::cli::print_json(&output, json_style)?;
     } else {
-        let stdout = std::io::stdout();
-        let lock = stdout.lock();
-        let mut printer = Printer::new(lock, output_style);
+        let writer = std::io::BufWriter::new(std::io::stdout());
+        let mut printer = Printer::new(writer, output_style);
         render_human(&output, &mut printer)?;
     }
     Ok(())
@@ -1282,8 +1278,8 @@ fn paginate<T>(mut items: Vec<T>, page: &QueryPageArgs) -> (OutputMeta, Vec<T>) 
 /// page is returned with more behind `--offset`/`--limit`. A caption
 /// surfaces the offset when non-zero so agents don't have to parse the
 /// hints block to know where they are.
-fn emit_query_heading<W: Write>(
-    p: &mut Printer<W>,
+fn emit_query_heading(
+    p: &mut Printer,
     label: &str,
     returned: usize,
     total: usize,
@@ -1297,10 +1293,7 @@ fn emit_query_heading<W: Write>(
 
 use crate::cli::emit_expand_hints;
 
-fn render_handle_output<W: Write>(
-    output: &HandleQueryOutput,
-    p: &mut Printer<W>,
-) -> std::io::Result<()> {
+fn render_handle_output(output: &HandleQueryOutput, p: &mut Printer) -> std::io::Result<()> {
     let returned = output.meta.returned.unwrap_or(0);
     let total = output.meta.total.unwrap_or(0);
     emit_query_heading(p, "Handles", returned, total)?;
@@ -1345,10 +1338,7 @@ fn render_handle_output<W: Write>(
     Ok(())
 }
 
-fn render_edge_output<W: Write>(
-    output: &EdgeQueryOutput,
-    p: &mut Printer<W>,
-) -> std::io::Result<()> {
+fn render_edge_output(output: &EdgeQueryOutput, p: &mut Printer) -> std::io::Result<()> {
     let returned = output.meta.returned.unwrap_or(0);
     let total = output.meta.total.unwrap_or(0);
     emit_query_heading(p, "Edges", returned, total)?;
@@ -1380,9 +1370,9 @@ fn render_edge_output<W: Write>(
     Ok(())
 }
 
-fn render_diagnostic_output<W: Write>(
+fn render_diagnostic_output(
     output: &DiagnosticQueryOutput,
-    p: &mut Printer<W>,
+    p: &mut Printer,
 ) -> std::io::Result<()> {
     let returned = output.meta.returned.unwrap_or(0);
     let total = output.meta.total.unwrap_or(0);
@@ -1405,9 +1395,9 @@ fn render_diagnostic_output<W: Write>(
     Ok(())
 }
 
-fn render_obligation_output<W: Write>(
+fn render_obligation_output(
     output: &ObligationQueryOutput,
-    p: &mut Printer<W>,
+    p: &mut Printer,
 ) -> std::io::Result<()> {
     let returned = output.meta.returned.unwrap_or(0);
     let total = output.meta.total.unwrap_or(0);
@@ -1442,9 +1432,9 @@ fn render_obligation_output<W: Write>(
     Ok(())
 }
 
-fn render_suggestion_output<W: Write>(
+fn render_suggestion_output(
     output: &SuggestionQueryOutput,
-    p: &mut Printer<W>,
+    p: &mut Printer,
 ) -> std::io::Result<()> {
     let returned = output.meta.returned.unwrap_or(0);
     let total = output.meta.total.unwrap_or(0);

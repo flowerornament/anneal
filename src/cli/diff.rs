@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap};
-use std::io::Write;
 
 use anyhow::Context;
 use camino::Utf8Path;
@@ -67,7 +66,7 @@ pub(crate) struct DiffOutput {
 }
 
 impl Render for DiffOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if !self.has_history {
             p.heading("No snapshot history yet", None)?;
             p.blank()?;
@@ -492,7 +491,7 @@ pub(crate) struct DiffByAreaOutput {
 }
 
 impl Render for DiffByAreaOutput {
-    fn render<W: Write>(&self, p: &mut Printer<W>) -> std::io::Result<()> {
+    fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         if self.has_history {
             p.heading("Diff by area", Some(self.areas.len()))?;
             p.caption(&format!("since {}", self.reference))?;
@@ -830,10 +829,10 @@ mod tests {
 
         let output = diff_snapshots(&current, &previous, "last snapshot");
 
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
 
         assert!(
             text.contains("since last snapshot"),
@@ -853,10 +852,10 @@ mod tests {
         let output = cmd_diff(root, &repo_state(), &current, None, None).expect("cmd_diff");
 
         assert!(!output.has_history);
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
         assert!(
             text.contains("No snapshot history yet"),
             "Expected no-history message, got: {text}"
@@ -1006,10 +1005,10 @@ mod tests {
                 trend: AreaTrend::Holding,
             }],
         };
-        let mut buf = Vec::new();
-        let mut p = Printer::new(&mut buf, plain_style());
+        let (writer, buf) = crate::output::test_support::SharedBuf::new();
+        let mut p = Printer::new(writer, plain_style());
         output.render(&mut p).expect("render");
-        let text = String::from_utf8(buf).expect("utf8");
+        let text = String::from_utf8(buf.borrow().clone()).expect("utf8");
         assert!(text.contains("no snapshot history"));
         assert!(text.contains("compiler"));
     }
