@@ -60,6 +60,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
+        env:
+          # Force console-crate ANSI emission so attribute leaks on
+          # color-disabled paths can't be silently neutered by GitHub
+          # Actions' non-TTY detection. This mirrors what Nix build
+          # sandboxes see and caught once.
+          CLICOLOR_FORCE: 1
         run: cargo test
 
       - name: Build
