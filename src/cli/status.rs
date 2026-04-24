@@ -7,7 +7,7 @@ use crate::checks::{DiagnosticCode, Severity};
 use crate::graph::DiGraph;
 use crate::handle::HandleKind;
 use crate::lattice::Lattice;
-use crate::output::{Glyph, Line, OutputStyle, Printer, Render, Tone};
+use crate::output::{Glyph, Line, OutputStyle, Printer, Render, Tone, format_number};
 
 use super::{DetailLevel, OutputMeta, plural};
 
@@ -325,7 +325,11 @@ fn convergence_line(conv: Option<&ConvergenceSummaryOutput>) -> Line {
 }
 
 fn format_number_suffix(n: usize, singular: &str) -> String {
-    format!("{n} {singular}{}", plural(n))
+    format!(
+        "{} {singular}{}",
+        format_number(i64::try_from(n).unwrap_or(i64::MAX)),
+        plural(n)
+    )
 }
 
 fn render_pipeline_verbose<W: Write>(
@@ -339,7 +343,7 @@ fn render_pipeline_verbose<W: Write>(
     for (_, h) in graph.nodes() {
         if let HandleKind::File(ref path) = h.kind
             && let Some(ref status) = h.status
-            && !lattice.terminal.contains(status)
+            && !h.is_terminal(lattice)
         {
             by_status
                 .entry(status.as_str())
@@ -424,7 +428,7 @@ pub(crate) fn cmd_status(
             }
             if let Some(ref s) = h.status {
                 *states.entry(s.clone()).or_insert(0) += 1;
-                if lattice.terminal.contains(s) {
+                if h.is_terminal(lattice) {
                     terminal += 1;
                 } else {
                     active += 1;

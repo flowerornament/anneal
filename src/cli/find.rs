@@ -195,11 +195,7 @@ pub(crate) fn cmd_find(
             }
 
             // Exclude terminal handles unless user explicitly filtered by status
-            if !filters.include_all
-                && filters.status.is_none()
-                && let Some(ref s) = h.status
-                && lattice.terminal.contains(s)
-            {
+            if !filters.include_all && filters.status.is_none() && h.is_terminal(lattice) {
                 return false;
             }
 
