@@ -70,6 +70,11 @@ pub(crate) struct OrientEntry {
     /// see them as hints to re-run with a wider `--budget`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) overflow: bool,
+    /// Cached unicode display width of `path`. Computed once at
+    /// construction so the render loop and `path_column_width` don't
+    /// each re-measure the same string.
+    #[serde(skip)]
+    pub(crate) path_width: usize,
 }
 
 #[derive(Serialize)]
@@ -153,8 +158,7 @@ impl Render for OrientOutput {
             p.caption(caption)?;
             for e in fits {
                 let tokens_str = format_tokens(e.tokens);
-                let path_width = console::measure_text_width(&e.path);
-                let pad = path_col.saturating_sub(path_width) + 2;
+                let pad = path_col.saturating_sub(e.path_width) + 2;
                 let row = Line::new()
                     .path(e.path.clone())
                     .pad(pad)
@@ -177,8 +181,7 @@ impl Render for OrientOutput {
                 )?;
                 for e in overflow {
                     let tokens_str = format_tokens(e.tokens);
-                    let path_width = console::measure_text_width(&e.path);
-                    let pad = path_col.saturating_sub(path_width) + 2;
+                    let pad = path_col.saturating_sub(e.path_width) + 2;
                     let row = Line::new()
                         .dim(e.path.clone())
                         .pad(pad)
@@ -234,12 +237,7 @@ impl OrientOutput {
     /// Widest file path across all entries (for column alignment). Capped at
     /// 64 to keep the token column visible on narrow terminals.
     fn path_column_width(&self) -> usize {
-        let max = self
-            .entries
-            .iter()
-            .map(|e| console::measure_text_width(&e.path))
-            .max()
-            .unwrap_or(0);
+        let max = self.entries.iter().map(|e| e.path_width).max().unwrap_or(0);
         max.min(64)
     }
 
@@ -1022,6 +1020,7 @@ fn add_tier(
             .file_path
             .as_deref()
             .map_or_else(|| handle.id.clone(), |p| p.as_str().to_string());
+        let path_width = console::measure_text_width(&path);
         entries.push(OrientEntry {
             path,
             tier,
@@ -1031,6 +1030,7 @@ fn add_tier(
             purpose: opts.snippets.summary_for(handle).map(str::to_string),
             date: handle.date,
             overflow,
+            path_width,
         });
         if overflow {
             overflow_shown += 1;
