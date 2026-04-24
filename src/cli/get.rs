@@ -350,13 +350,13 @@ fn render_get_summary<W: Write>(
         p.blank()?;
         let shown = data.outgoing_edges.len().min(limit_edges);
         p.heading("Outgoing", Some(data.outgoing_edges.len()))?;
-        render_edge_group(p, &data.outgoing_edges, shown, EdgeDirection::Outgoing)?;
+        render_edge_group_at(p, 4, &data.outgoing_edges, shown, EdgeDirection::Outgoing)?;
     }
     if !data.incoming_edges.is_empty() {
         p.blank()?;
         let shown = data.incoming_edges.len().min(limit_edges);
         p.heading("Incoming", Some(data.incoming_edges.len()))?;
-        render_edge_group(p, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
+        render_edge_group_at(p, 4, &data.incoming_edges, shown, EdgeDirection::Incoming)?;
     }
 
     // Only show navigation hints when deeper views actually add
@@ -482,15 +482,6 @@ fn render_get_kv<W: Write>(
         return Ok(());
     }
     p.kv_block(&rows)
-}
-
-fn render_edge_group<W: Write>(
-    p: &mut Printer<W>,
-    edges: &[EdgeSummary],
-    shown: usize,
-    direction: EdgeDirection,
-) -> std::io::Result<()> {
-    render_edge_group_at(p, 4, edges, shown, direction)
 }
 
 fn render_edge_group_at<W: Write>(

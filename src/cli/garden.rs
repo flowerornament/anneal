@@ -112,21 +112,6 @@ impl GardenTask {
     }
 }
 
-impl GardenCategory {
-    /// Upper-case category tag, un-padded (`FIX`, `TIDY`, `LINK`, `STALE`,
-    /// `META`, `DRIFT`). Caller pads to a fixed width for alignment.
-    fn tag(self) -> &'static str {
-        match self {
-            Self::Fix => "FIX",
-            Self::Tidy => "TIDY",
-            Self::Link => "LINK",
-            Self::Stale => "STALE",
-            Self::Meta => "META",
-            Self::Drift => "DRIFT",
-        }
-    }
-}
-
 impl Toned for GardenCategory {
     fn tone(&self) -> Tone {
         match self {
@@ -188,7 +173,7 @@ impl Render for GardenOutput {
             let blast = task.blast();
             let blast_label = blast.to_string().to_uppercase();
             let blast_pad = BLAST_COL_WIDTH.saturating_sub(blast_label.len());
-            let tag = format!("[{}]", task.category.tag());
+            let tag = format!("[{}]", task.category.to_string().to_uppercase());
             let tag_pad = TAG_COL_WIDTH.saturating_sub(tag.len());
             let mut header = Line::new()
                 .toned(blast.tone(), blast_label)
