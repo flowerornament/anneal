@@ -1,5 +1,6 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-03-language-redesign.md
 updated: 2026-04-17
 description: >
   Visual-UX audit of anneal's CLI surface. Scores each command against a

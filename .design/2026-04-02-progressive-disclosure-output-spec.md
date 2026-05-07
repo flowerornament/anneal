@@ -1,5 +1,6 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-03-language-redesign.md
 updated: 2026-04-02
 description: >
   Proposal to redesign anneal CLI output around progressive disclosure,

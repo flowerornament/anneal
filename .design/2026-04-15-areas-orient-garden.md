@@ -1,5 +1,6 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-03-language-redesign.md
 date: 2026-04-15
 depends-on: anneal-spec.md
 ---

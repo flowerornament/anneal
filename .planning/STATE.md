@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Parser Hardening & UX Polish
-status: complete
-stopped_at: Completed 07-VERIFICATION.md
-last_updated: "2026-03-31T03:01:10Z"
-last_activity: 2026-03-31
+milestone: v2.0
+milestone_name: Language-First Redesign
+status: planning
+stopped_at: Spec merged (.design/2026-05-03-language-redesign.md). Phase 8 (engine) ready to start.
+last_updated: "2026-05-07T00:00:00Z"
+last_activity: 2026-05-07
 progress:
   total_phases: 4
-  completed_phases: 4
-  total_plans: 14
-  completed_plans: 14
-  percent: 100
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # State: anneal
@@ -21,21 +21,36 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** v1.1 Parser Hardening & UX Polish shipped
+**Current focus:** v2.0 Language-First Redesign — collapse 14-command CLI into Datalog dialect + prelude + 7 verbs (per .design/2026-05-03-language-redesign.md, status: current).
 
 ## Current Position
 
-Phase: 07 (ux-enrichment) — COMPLETE
-Plan: 4 of 4
-Status: Verified and shipped
-Last activity: 2026-03-31
+Milestone: v2.0 Language-First Redesign
+Phase: 8 (datalog engine) — READY TO START
+Status: Spec merged 2026-05-03; corpus and bd refocused 2026-05-07.
+Last activity: 2026-05-07
 
-Progress: [██████████] 100% (14/14 plans, v1.1 shipped)
+Progress: [          ] 0% (0/4 phases complete)
+
+**Active bd issues:**
+- Epic: `anneal-rsx` (v2.0 language-first redesign)
+- Phase 8: `anneal-9pg` engine — P1, ready
+- Phase 9: `anneal-wq6` prelude — P1, blocked on Phase 8
+- Phase 10: `anneal-tu3` verbs — P1, blocked on Phase 9
+- Phase 11: `anneal-7gi` migration/docs — P2, blocked on Phase 10
+- Open questions LR-OQ1..6: `anneal-23w`, `anneal-kys`, `anneal-46t`, `anneal-qz7`, `anneal-nty`, `anneal-s74`
+- Orthogonal ergonomics epic: `anneal-2gf` (search, context, MCP) — P3
+- Surviving bug: `anneal-bmq` (I001 misclassification, becomes a checks.dl rule fix)
+- Surviving Rust internal: `anneal-6uy` (newtype wrappers, in_progress)
 
 ## Decisions
 
 Recent decisions affecting current work (full log in PROJECT.md):
 
+- [v2.0]: Language-first redesign collapses 14-command CLI into one Datalog dialect, a prelude of `.dl` files, and 7 verbs that print their underlying queries (.design/2026-05-03-language-redesign.md merged via PR #2)
+- [v2.0]: Specs `2026-04-02-cli-output-audit`, `2026-04-02-progressive-disclosure-output-spec`, `2026-04-02-query-explain-spec`, `2026-04-15-areas-orient-garden`, `2026-04-15-cli-ux-audit`, `2026-04-17-cli-ux-audit-v2`, `2026-04-21-orient-frontier-foundation` marked superseded — their CLI-surface concerns moot or absorbed into the language redesign
+- [v2.0]: Spec `2026-04-30-agent-ergonomics-retrieval-layer` retained as draft — search/context-annotations/MCP are orthogonal to the datalog redesign and tracked under the agent-ergonomics epic
+- [v2.0]: Eleven CLI-surface bd issues (`anneal-2o4`, `t78`+children, `86k`, `33o`, `7i8`, `b2h`, `djb`, `hr9`, `xdu`) closed as superseded; `anneal-bmq` retained because the I001 fix becomes a rule edit in checks.dl
 - [v1.1]: pulldown-cmark 0.13 replaces regex body scanner (research validated)
 - [v1.1]: Do NOT enable ENABLE_YAML_STYLE_METADATA_BLOCKS (conflicts with split_frontmatter)
 - [v1.1]: Deterministic structural transforms only for resolution, no fuzzy edit distance

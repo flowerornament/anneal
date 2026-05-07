@@ -1,5 +1,5 @@
 ---
-status: draft
+status: current
 date: 2026-05-03
 depends-on:
   - anneal-spec.md

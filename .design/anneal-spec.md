@@ -445,6 +445,13 @@ Each suggestion is a graph query, not a content heuristic [KB-P5].
 
 ## Part IV: CLI Surface
 
+> **Note (2026-05-03):** Part IV (§12) is superseded by
+> [`2026-05-03-language-redesign.md`](2026-05-03-language-redesign.md).
+> The fifteen-command surface collapses to one Datalog dialect, a
+> prelude of `.dl` files, and seven verbs. Parts I–III and Parts V–VIII
+> of this spec are preserved verbatim (see language redesign §34).
+> The text below is retained as historical context only.
+
 ### §12 Commands
 
 Fifteen commands. Each supports `--json` for agent consumption [KB-P8] (except `prime`, which always prints the skill briefing markdown).
