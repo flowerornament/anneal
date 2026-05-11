@@ -35,6 +35,36 @@ use spike_runner::{EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES};
 use std::io::{self, BufWriter, Write};
 
 // ---------------------------------------------------------------------------
+// Provenance enums — capture which rule clause fired plus its join bindings.
+// Stored inside `_via` companion relations alongside the head's key columns.
+// ---------------------------------------------------------------------------
+
+/// Which clause of `release_blocker/2` fired, plus the bindings unique to
+/// that clause. Captures everything a reader needs to reconstruct *why*
+/// a handle is a blocker without re-running the query.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
+enum BlockerRule {
+    /// `E001` fired at this `file`:`line`.
+    BrokenRef { file: FilePath, line: u32 },
+    /// `E002` fired (no useful join bindings beyond the head).
+    Undischarged,
+    /// Active handle's `depends_on` edge lands on this terminal `target`.
+    StaleDep { target: HandleId },
+}
+
+/// One step in an `upstream/2` derivation chain. A `Direct` step means
+/// the head fact comes from a single edge; a `Transitive` step means a
+/// `mid` handle was reached via `depends_on` and the recursion produced
+/// the rest of the path.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+enum UpstreamStep {
+    Direct,
+    Transitive { mid: HandleId },
+}
+
+// ---------------------------------------------------------------------------
 // Ascent program — typed tuples mean swapped fields fail at compile time
 // ---------------------------------------------------------------------------
 
@@ -109,6 +139,29 @@ ascent! {
         edge(h, t, EdgeKind::DependsOn, _, _),
         active(h),
         terminal(t);
+
+    // ---- Provenance instrumentation (MVS-8) ----
+    // ascent doesn't expose derivation trails natively. The companion-
+    // relation pattern: each rule head gets a parallel `_via` relation
+    // whose extra columns capture which clause fired and the join
+    // bindings. Reconstruction walks these companions on the host side.
+    relation release_blocker_via(HandleId, &'static str, BlockerRule);
+    release_blocker_via(h, "broken_ref",   BlockerRule::BrokenRef { file: *file, line: *line })
+        <-- diagnostic(DiagnosticCode::E001, _, h, file, line);
+    release_blocker_via(h, "undischarged", BlockerRule::Undischarged)
+        <-- diagnostic(DiagnosticCode::E002, _, h, _, _);
+    release_blocker_via(h, "stale_dep",    BlockerRule::StaleDep { target: *t })
+        <-- edge(h, t, EdgeKind::DependsOn, _, _),
+            active(h),
+            terminal(t);
+
+    // upstream_via captures recursion-step provenance: every fact in
+    // `upstream` traces to either a base edge or a (mid, recurse) join.
+    relation upstream_via(HandleId, HandleId, UpstreamStep);
+    upstream_via(h, anc, UpstreamStep::Direct)
+        <-- edge(h, anc, EdgeKind::DependsOn, _, _);
+    upstream_via(h, anc, UpstreamStep::Transitive { mid: *mid })
+        <-- edge(h, mid, EdgeKind::DependsOn, _, _), upstream(mid, anc);
 
     // Open OQs (MVS-4 stratified negation visible at the rule level).
     relation open_oq(HandleId);
@@ -199,6 +252,24 @@ struct DiagnosticRow {
     handle: HandleId,
     file: FilePath,
     line: u32,
+}
+
+/// MVS-8 row: a `release_blocker` fact with its `_derivation`.
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+struct BlockerWithProvenance {
+    h: HandleId,
+    why: &'static str,
+    #[serde(rename = "_derivation")]
+    derivation: BlockerRule,
+}
+
+/// MVS-8 row: an `upstream` fact with a reconstructed derivation chain.
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+struct UpstreamWithProvenance {
+    h: HandleId,
+    anc: HandleId,
+    #[serde(rename = "_derivation")]
+    chain: Vec<UpstreamStep>,
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +405,73 @@ fn mvs5b_verify(rows: &[AreaCountRow]) -> Verdict {
     }
 }
 
+// MVS-8 — provenance via companion relations
+fn mvs8_blocker_rows(prog: &AscentProgram) -> Vec<BlockerWithProvenance> {
+    let mut rows: Vec<BlockerWithProvenance> = prog.release_blocker_via.iter()
+        .map(|(h, why, rule)| BlockerWithProvenance {
+            h: *h, why: *why, derivation: *rule,
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn mvs8_blocker_verify(rows: &[BlockerWithProvenance]) -> Verdict {
+    let has_broken      = rows.iter().any(|r| matches!(r.derivation, BlockerRule::BrokenRef { .. }));
+    let has_undischarged = rows.iter().any(|r| matches!(r.derivation, BlockerRule::Undischarged));
+    let has_stale       = rows.iter().any(|r| matches!(r.derivation, BlockerRule::StaleDep { .. }));
+    match (has_broken, has_undischarged, has_stale) {
+        (true, true, true) => Verdict::Pass,
+        _ => Verdict::Fail("companion relation did not surface all three rule clauses"),
+    }
+}
+
+/// Walk `upstream_via` to reconstruct the rule chain from `h` to `anc`.
+/// Returns the steps in order; the last entry is always `Direct`.
+fn reconstruct_upstream_chain(
+    prog: &AscentProgram,
+    h: HandleId,
+    anc: HandleId,
+) -> Vec<UpstreamStep> {
+    let mut chain = Vec::new();
+    let mut current = h;
+    while let Some(&(_, _, step)) = prog.upstream_via.iter()
+        .find(|(start, end, _)| *start == current && *end == anc)
+    {
+        chain.push(step);
+        match step {
+            UpstreamStep::Direct => break,
+            UpstreamStep::Transitive { mid } => current = mid,
+        }
+    }
+    chain
+}
+
+fn mvs8_upstream_rows(prog: &AscentProgram) -> Vec<UpstreamWithProvenance> {
+    let mut rows: Vec<UpstreamWithProvenance> = prog.upstream.iter()
+        .map(|(h, anc)| UpstreamWithProvenance {
+            h: *h,
+            anc: *anc,
+            chain: reconstruct_upstream_chain(prog, *h, *anc),
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn mvs8_upstream_verify(rows: &[UpstreamWithProvenance]) -> Verdict {
+    // exec → jit-spec → OQ-22 should reconstruct as Transitive(jit-spec) then Direct.
+    let exec = HandleId("compiler/exec.md");
+    let oq22 = HandleId("OQ-22");
+    let jit  = HandleId("compiler/jit-spec.md");
+    let exec_oq22 = rows.iter().find(|r| r.h == exec && r.anc == oq22);
+    match exec_oq22 {
+        None => Verdict::Fail("upstream(exec, OQ-22) missing"),
+        Some(r) if r.chain == [UpstreamStep::Transitive { mid: jit }, UpstreamStep::Direct] => Verdict::Pass,
+        Some(_) => Verdict::Fail("upstream(exec, OQ-22) chain != [Transitive(jit-spec), Direct]"),
+    }
+}
+
 fn diagnostics_derived(prog: &AscentProgram) -> Vec<DiagnosticRow> {
     let mut rows: Vec<DiagnosticRow> = prog.diagnostic.iter()
         .map(|(code, sev, h, file, line)| DiagnosticRow {
@@ -401,6 +539,25 @@ fn main() -> io::Result<()> {
         "oq_per_area(area, n) := n = Count{ q : *handle{kind: Label, namespace: \"OQ\", area}, not terminal(q) }.",
         &rows, v, None)?;
 
+    let rows = mvs8_blocker_rows(&prog);
+    let v = mvs8_blocker_verify(&rows);
+    record(v.is_pass());
+    emit(&mut out, "MVS-8a",
+        "release_blocker_via(h, why, BlockerRule) — companion relation per clause.\n\
+         output: each release_blocker row carries `_derivation` describing which\n\
+         rule clause fired and the join bindings (FilePath/line for broken_ref,\n\
+         target HandleId for stale_dep).",
+        &rows, v, Some("provenance via companion relation; ascent has no built-in trail"))?;
+
+    let rows = mvs8_upstream_rows(&prog);
+    let v = mvs8_upstream_verify(&rows);
+    record(v.is_pass());
+    emit(&mut out, "MVS-8b",
+        "upstream_via(h, anc, UpstreamStep) — recursive companion.\n\
+         host-side reconstruct_upstream_chain walks the companion to produce\n\
+         an ordered chain ending in Direct.",
+        &rows, v, Some("recursive provenance reconstruction"))?;
+
     // Bonus: emit the derived diagnostics under their own banner so a
     // reader can see what the rule-layer checks produced.
     let diag = diagnostics_derived(&prog);
@@ -463,6 +620,42 @@ mod tests {
         let diag = diagnostics_derived(&prog());
         assert!(!diag.iter().any(|d| d.code == DiagnosticCode::E002 && d.handle.0 == "OQ-77"),
             "OQ-77 is discharged → no E002");
+    }
+
+    #[test] fn mvs8_blocker_provenance_surfaces_all_three_clauses() {
+        assert!(mvs8_blocker_verify(&mvs8_blocker_rows(&prog())).is_pass());
+    }
+
+    #[test] fn mvs8_upstream_chain_reconstructs_exec_to_oq22() {
+        assert!(mvs8_upstream_verify(&mvs8_upstream_rows(&prog())).is_pass());
+    }
+
+    #[test] fn mvs8_direct_upstream_facts_reconstruct_as_single_direct_step() {
+        // jit-spec → OQ-22 is a one-hop edge; the chain should be [Direct].
+        let rows = mvs8_upstream_rows(&prog());
+        let direct = rows.iter().find(|r|
+            r.h == HandleId("compiler/jit-spec.md") && r.anc == HandleId("OQ-22"));
+        let direct = direct.expect("upstream(jit-spec, OQ-22) missing");
+        assert_eq!(direct.chain, vec![UpstreamStep::Direct]);
+    }
+
+    #[test] fn mvs8_blocker_rule_records_file_and_line_for_broken_ref() {
+        let rows = mvs8_blocker_rows(&prog());
+        let broken = rows.iter().find(|r| r.why == "broken_ref")
+            .expect("missing broken_ref provenance row");
+        // E001 fires on the pending_edge file:line, which is jit-spec.md:51.
+        assert!(matches!(broken.derivation,
+            BlockerRule::BrokenRef { file: FilePath("compiler/jit-spec.md"), line: 51 }),
+            "expected BrokenRef(jit-spec.md, 51), got {:?}", broken.derivation);
+    }
+
+    #[test] fn mvs8_blocker_rule_records_terminal_target_for_stale_dep() {
+        let rows = mvs8_blocker_rows(&prog());
+        let stale = rows.iter().find(|r| r.why == "stale_dep")
+            .expect("missing stale_dep provenance row");
+        assert!(matches!(stale.derivation,
+            BlockerRule::StaleDep { target: HandleId("compiler/jit-stale.md") }),
+            "expected StaleDep(jit-stale.md), got {:?}", stale.derivation);
     }
 
     #[test] fn derived_w001_fires_for_stale_dep() {
