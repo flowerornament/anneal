@@ -1,4 +1,5 @@
 /target
+/tools/*/target
 .anneal/
 .desloppify/
 scorecard.png
