@@ -84,6 +84,7 @@ pub enum EdgeKind {
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     // ---- Active statuses (common across anneal/large-corpus/host-corpus corpora) ----
+    Raw,
     Draft,
     Research,
     Plan,
@@ -151,7 +152,34 @@ impl Status {
     pub const fn is_settled(self) -> bool {
         matches!(self, Self::Authoritative | Self::Current | Self::Active | Self::Stable | Self::Living)
     }
+
+    /// Position in a canonical pipeline ordering. `None` for terminal
+    /// statuses and for any [`Status::Other`] variant. Matches the spec's
+    /// `pipeline_position_for(s, n)` predicate from §8.
+    pub fn pipeline_position(self) -> Option<usize> {
+        PIPELINE_ORDERING.iter().position(|&s| s == self)
+    }
 }
+
+/// Canonical active-status ordering. Earlier = less settled.
+pub const PIPELINE_ORDERING: &[Status] = &[
+    Status::Raw,
+    Status::Draft,
+    Status::Research,
+    Status::Plan,
+    Status::Current,
+    Status::Active,
+    Status::Stable,
+    Status::Authoritative,
+];
+
+/// Identifier for a point-in-time snapshot of corpus state. Spec's
+/// `at(<ref>) { ... }` block translates at the engine level to "join on
+/// `snapshot_handle(<ref>, ...)`"; the spike validates the underlying
+/// relational primitive without modeling the surface syntax.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
+#[serde(transparent)]
+pub struct SnapshotId(pub &'static str);
 
 // ---------------------------------------------------------------------------
 // DiagnosticCode + Severity — diagnostic IDs per §17 / LR-D8
@@ -235,6 +263,27 @@ mod tests {
     #[test]
     fn other_status_defaults_to_active() {
         assert!(Status::Other("provisional").is_active());
+    }
+
+    #[test]
+    fn pipeline_position_advances_monotonically() {
+        let positions: Vec<_> = PIPELINE_ORDERING.iter()
+            .map(|s| s.pipeline_position().expect("status in ordering must have a position"))
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]),
+            "PIPELINE_ORDERING positions must be strictly increasing");
+    }
+
+    #[test]
+    fn terminal_statuses_have_no_pipeline_position() {
+        for s in [Status::Superseded, Status::Archived, Status::Resolved, Status::Done] {
+            assert_eq!(s.pipeline_position(), None);
+        }
+    }
+
+    #[test]
+    fn other_status_has_no_pipeline_position() {
+        assert_eq!(Status::Other("provisional").pipeline_position(), None);
     }
 
     #[test]

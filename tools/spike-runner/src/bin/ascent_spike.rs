@@ -23,7 +23,10 @@ use spike_runner::types::{
     Status,
 };
 use spike_runner::fixture::ids::{EXEC, JIT_SPEC, OQ_22, OQ_99, V14, V15, V16, V17};
-use spike_runner::{EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES};
+use spike_runner::{
+    EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES, PIPELINE_ORDERING, SNAPSHOTS,
+};
+use spike_runner::types::SnapshotId;
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 
@@ -57,6 +60,14 @@ ascent! {
     relation pending_edge(HandleId, HandleId, EdgeKind, FilePath, u32);
     relation linear_namespace(Namespace);
 
+    // MVS-6 time-travel primitives: snapshot_handle is the relational
+    // form of the spec's `at(<ref>) { *handle{...} }` block; the engine
+    // joins on this rather than re-evaluating the program at a time
+    // point. pipeline_position_for is the spec's §8 derived predicate
+    // loaded as a lookup table at fixpoint entry.
+    relation snapshot_handle(SnapshotId, HandleId, Status);
+    relation pipeline_position_for(Status, usize);
+
     // Engine-derived primitives per spec §8.
     relation terminal(HandleId);
     terminal(h) <-- handle(h, _, s, _, _, _, _), if s.is_terminal();
@@ -70,6 +81,17 @@ ascent! {
     relation upstream(HandleId, HandleId);
     upstream(h, anc) <-- edge(h, anc, EdgeKind::DependsOn, _, _);
     upstream(h, anc) <-- edge(h, mid, EdgeKind::DependsOn, _, _), upstream(mid, anc);
+
+    // MVS-6: handle advanced in the pipeline since the last snapshot.
+    // Mirrors spec §16 recently_advanced/1 — joins current handle status
+    // and snapshot_handle status, requires pipeline position to increase.
+    relation recently_advanced(HandleId);
+    recently_advanced(h) <--
+        handle(h, _, current_status, _, _, _, _),
+        snapshot_handle(SnapshotId("snapshot:last"), h, prior_status),
+        pipeline_position_for(current_status, n_current),
+        pipeline_position_for(prior_status, n_prior),
+        if n_current > n_prior;
 
     relation supersedes_chain(HandleId, HandleId, usize);
     supersedes_chain(s, t, 1) <-- edge(s, t, EdgeKind::Supersedes, _, _);
@@ -180,6 +202,14 @@ fn load_fixture() -> AscentProgram {
     for ns in LINEAR_NAMESPACES {
         prog.linear_namespace.push((*ns,));
     }
+    prog.snapshot_handle.reserve(SNAPSHOTS.len());
+    for s in SNAPSHOTS {
+        prog.snapshot_handle.push((s.id, s.handle, s.status));
+    }
+    prog.pipeline_position_for.reserve(PIPELINE_ORDERING.len());
+    for (i, s) in PIPELINE_ORDERING.iter().enumerate() {
+        prog.pipeline_position_for.push((*s, i));
+    }
     prog.run();
     prog
 }
@@ -234,6 +264,9 @@ struct UpstreamWithProvenance {
     #[serde(rename = "_derivation")]
     chain: Vec<UpstreamStep>,
 }
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+struct AdvancedRow { h: HandleId }
 
 fn mvs1_rows(prog: &AscentProgram) -> Vec<HandleRow> {
     sorted(prog.handle.iter().map(|(id, kind, status, ns, _file, area, _date)| HandleRow {
@@ -380,6 +413,23 @@ fn mvs8_upstream_verify(rows: &[UpstreamWithProvenance]) -> Verdict {
     }
 }
 
+fn mvs6_rows(prog: &AscentProgram) -> Vec<AdvancedRow> {
+    sorted(prog.recently_advanced.iter().map(|(h,)| AdvancedRow { h: *h }))
+}
+
+fn mvs6_verify(rows: &[AdvancedRow]) -> Verdict {
+    // Oracle: JIT_SPEC advanced Raw → Draft; V17 advanced Current →
+    // Authoritative. EXEC and OQ_22 didn't change. JIT_STALE became
+    // terminal (Draft → Superseded) — no pipeline position now, so it
+    // cannot fire recently_advanced by the rule's definition.
+    let has = |id: HandleId| rows.iter().any(|r| r.h == id);
+    if !has(JIT_SPEC)  { return Verdict::Fail("JIT_SPEC missing — Raw → Draft should advance") }
+    if !has(V17)       { return Verdict::Fail("V17 missing — Current → Authoritative should advance") }
+    if has(EXEC)       { return Verdict::Fail("EXEC leaked — Current → Current is not advancing") }
+    if rows.len() != 2 { return Verdict::Fail("recently_advanced size != 2") }
+    Verdict::Pass
+}
+
 fn diagnostics_derived(prog: &AscentProgram) -> Vec<DiagnosticRow> {
     sorted(prog.diagnostic.iter().map(|(code, sev, h, file, line)| DiagnosticRow {
         code: *code, severity: *sev, handle: *h, file: *file, line: *line,
@@ -443,6 +493,18 @@ fn main() -> io::Result<()> {
         "oq_per_area(area, n) := n = Count{ q : *handle{kind: Label, namespace: \"OQ\", area}, not terminal(q) }.",
         &rows, v, None)?;
 
+    let rows = mvs6_rows(&prog);
+    let v = mvs6_verify(&rows);
+    record(v.is_pass());
+    emit(&mut out, "MVS-6",
+        "recently_advanced(h) := \
+         handle(h, _, current, _, _, _, _), \
+         at(\"snapshot:last\") { *handle{id: h, status: prior} }, \
+         pipeline_position_for(current, n_now), \
+         pipeline_position_for(prior, n_then), \
+         n_now > n_then.",
+        &rows, v, Some("at() block expressed as join on snapshot_handle relation"))?;
+
     let rows = mvs8_upstream_rows(&prog);
     let v = mvs8_upstream_verify(&rows);
     record(v.is_pass());
@@ -496,6 +558,16 @@ mod tests {
     }
     #[test] fn mvs5b_oq_per_area_aggregation_groups_by_area() {
         assert!(mvs5b_verify(&mvs5b_rows(prog())).is_pass());
+    }
+    #[test] fn mvs6_recently_advanced_picks_up_pipeline_forward_moves() {
+        assert!(mvs6_verify(&mvs6_rows(prog())).is_pass());
+    }
+    #[test] fn mvs6_terminal_transitions_do_not_count_as_advancing() {
+        // JIT_STALE went Draft → Superseded. Superseded has no pipeline
+        // position, so it can't appear in recently_advanced.
+        let rows = mvs6_rows(prog());
+        assert!(!rows.iter().any(|r| r.h == JIT_STALE),
+            "JIT_STALE became terminal — must not appear in recently_advanced");
     }
 
     #[test] fn derived_e001_fires_for_pending_edge_with_missing_target() {

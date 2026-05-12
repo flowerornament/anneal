@@ -13,7 +13,11 @@ pub mod fixture;
 pub mod types;
 
 pub use capability::{emit, CapabilityReport, Verdict};
-pub use fixture::{Edge, Handle, PendingEdge, EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES};
+pub use fixture::{
+    Edge, Handle, PendingEdge, Snapshot, EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES,
+    SNAPSHOTS,
+};
 pub use types::{
-    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, Namespace, Severity, Status,
+    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, Namespace, Severity,
+    SnapshotId, Status, PIPELINE_ORDERING,
 };

@@ -9,7 +9,9 @@
 //! import them by name rather than re-deriving `HandleId("...")`
 //! literals.
 
-use crate::types::{Area, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace, Status};
+use crate::types::{
+    Area, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace, SnapshotId, Status,
+};
 
 /// Stored relation row for `*handle{id, kind, status, namespace, file, area, date}`.
 #[derive(Copy, Clone, Debug)]
@@ -46,6 +48,18 @@ pub struct PendingEdge {
     pub line: u32,
 }
 
+/// Stored relation row for handle state at a historical point in time.
+/// Spec's `at(<ref>) { *handle{id: h, status: s} }` translates at the
+/// engine level to a join on `snapshot_handle(<ref>, h, s)`. The spike
+/// validates the underlying relational primitive without modeling the
+/// surface syntax.
+#[derive(Copy, Clone, Debug)]
+pub struct Snapshot {
+    pub id: SnapshotId,
+    pub handle: HandleId,
+    pub status: Status,
+}
+
 /// Canonical identifiers used by the fixture. Public so verifiers and
 /// tests can refer to handles by name without re-deriving the string
 /// literal each time.
@@ -75,11 +89,14 @@ pub mod ids {
     pub const COMPILER: Area = Area("compiler");
     pub const RESEARCH_LOG: Area = Area("research-log");
     pub const SYNTHESIS: Area = Area("synthesis");
+
+    pub const SNAPSHOT_LAST: crate::types::SnapshotId =
+        crate::types::SnapshotId("snapshot:last");
 }
 
 use ids::{
     COMPILER, DISCHARGE_NOTE, EXEC, FORMAL, JIT_SPEC, JIT_STALE, NS_OQ, OQ_22, OQ_23, OQ_60,
-    OQ_77, OQ_88, OQ_99, RESEARCH, RESEARCH_LOG, SYNTHESIS, V14, V15, V16, V17,
+    OQ_77, OQ_88, OQ_99, RESEARCH, RESEARCH_LOG, SNAPSHOT_LAST, SYNTHESIS, V14, V15, V16, V17,
 };
 
 pub const HANDLES: &[Handle] = &[
@@ -184,6 +201,22 @@ pub const PENDING_EDGES: &[PendingEdge] = &[
 /// Namespaces declared linear — labels in these namespaces are obligations
 /// that must be discharged. Drives `E002` derivation.
 pub const LINEAR_NAMESPACES: &[Namespace] = &[NS_OQ];
+
+/// Historical handle states at the previous snapshot. The "now" state is
+/// `HANDLES`; this lets MVS-6 rules join across time:
+///
+/// - `JIT_SPEC` advanced: Raw → Draft (pipeline 0 → 1)
+/// - `V17` advanced: Current → Authoritative (pipeline 4 → 7)
+/// - `EXEC` unchanged: Current → Current
+/// - `OQ_22` unchanged: Open → Open
+/// - `JIT_STALE` became terminal: Draft → Superseded
+pub const SNAPSHOTS: &[Snapshot] = &[
+    Snapshot { id: SNAPSHOT_LAST, handle: JIT_SPEC, status: Status::Raw },
+    Snapshot { id: SNAPSHOT_LAST, handle: V17,      status: Status::Current },
+    Snapshot { id: SNAPSHOT_LAST, handle: EXEC,     status: Status::Current },
+    Snapshot { id: SNAPSHOT_LAST, handle: OQ_22,    status: Status::Open },
+    Snapshot { id: SNAPSHOT_LAST, handle: JIT_STALE, status: Status::Draft },
+];
 
 // ---------------------------------------------------------------------------
 // Tests — fixture invariants
