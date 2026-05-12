@@ -36,7 +36,6 @@ impl Namespace {
     pub const fn is_empty(self) -> bool { self.0.is_empty() }
 }
 
-/// Filesystem path of the file declaring a handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
 #[serde(transparent)]
 pub struct FilePath(pub &'static str);
@@ -45,9 +44,7 @@ pub struct FilePath(pub &'static str);
 /// lack a date (labels declared in undated files, etc.).
 pub type IsoDate = &'static str;
 
-// ---------------------------------------------------------------------------
-// HandleKind — the five kinds from §4.1
-// ---------------------------------------------------------------------------
+/// The five kinds from spec §4.1.
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]

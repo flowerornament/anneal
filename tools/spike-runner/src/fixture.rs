@@ -1,17 +1,17 @@
 //! Hand-built large-corpus-shaped fixture for engine-spike testing.
 //!
-//! Models the trickiest cases from real corpora in a 13-handle subset:
-//! a supersession chain, an open obligation in a linear namespace,
-//! a discharged obligation, a stale dependency (active → terminal),
-//! and a broken reference. The data is `const` and zero-cost.
+//! Models the trickiest cases from real corpora in a 14-handle subset:
+//! a supersession chain, open and discharged obligations in a linear
+//! namespace, a stale dependency (active → terminal), a broken
+//! reference. Data is `const` and zero-cost.
+//!
+//! Identifier constants live in [`ids`] so verifiers and tests can
+//! import them by name rather than re-deriving `HandleId("...")`
+//! literals.
 
 use crate::types::{Area, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace, Status};
 
-// ---------------------------------------------------------------------------
-// Domain shapes
-// ---------------------------------------------------------------------------
-
-/// Stored relation row for `*handle{id, kind, status, namespace, file, line, date, area}`.
+/// Stored relation row for `*handle{id, kind, status, namespace, file, area, date}`.
 #[derive(Copy, Clone, Debug)]
 pub struct Handle {
     pub id: HandleId,
@@ -33,8 +33,10 @@ pub struct Edge {
     pub line: u32,
 }
 
-/// A pending-edge fact whose target is unresolved (broken reference).
-/// Used to derive `E001` in the ascent program rather than precomputing.
+/// Edge whose target is unresolved at parse time. Drives `E001` derivation
+/// downstream; modeled separately from [`Edge`] so the rule body can
+/// distinguish "missing handle" from "extant handle that happens to be
+/// terminal."
 #[derive(Copy, Clone, Debug)]
 pub struct PendingEdge {
     pub from: HandleId,
@@ -44,33 +46,41 @@ pub struct PendingEdge {
     pub line: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Const fixture data
-// ---------------------------------------------------------------------------
+/// Canonical identifiers used by the fixture. Public so verifiers and
+/// tests can refer to handles by name without re-deriving the string
+/// literal each time.
+pub mod ids {
+    use crate::types::{Area, HandleId, Namespace};
 
-const V17: HandleId = HandleId("formal-model/v17.md");
-const V16: HandleId = HandleId("formal-model/v16.md");
-const V15: HandleId = HandleId("formal-model/v15.md");
-const V14: HandleId = HandleId("formal-model/v14.md");
-const JIT_SPEC: HandleId = HandleId("compiler/jit-spec.md");
-const JIT_STALE: HandleId = HandleId("compiler/jit-stale.md");
-const EXEC: HandleId = HandleId("compiler/exec.md");
-const RESEARCH: HandleId = HandleId("research-log/2026-04-jit.md");
-const DISCHARGE_NOTE: HandleId = HandleId("synthesis/2026-04-discharge.md");
+    pub const V17: HandleId = HandleId("formal-model/v17.md");
+    pub const V16: HandleId = HandleId("formal-model/v16.md");
+    pub const V15: HandleId = HandleId("formal-model/v15.md");
+    pub const V14: HandleId = HandleId("formal-model/v14.md");
+    pub const JIT_SPEC: HandleId = HandleId("compiler/jit-spec.md");
+    pub const JIT_STALE: HandleId = HandleId("compiler/jit-stale.md");
+    pub const EXEC: HandleId = HandleId("compiler/exec.md");
+    pub const RESEARCH: HandleId = HandleId("research-log/2026-04-jit.md");
+    pub const DISCHARGE_NOTE: HandleId = HandleId("synthesis/2026-04-discharge.md");
 
-const OQ_22: HandleId = HandleId("OQ-22"); // open, depended on by settled v17
-const OQ_23: HandleId = HandleId("OQ-23"); // open, depended on by settled v17
-const OQ_60: HandleId = HandleId("OQ-60"); // open, in compiler area
-const OQ_99: HandleId = HandleId("OQ-99"); // resolved → terminal
-const OQ_77: HandleId = HandleId("OQ-77"); // discharged by DISCHARGE_NOTE
-const OQ_88: HandleId = HandleId("OQ-88"); // open, undischarged → E002
+    pub const OQ_22: HandleId = HandleId("OQ-22");
+    pub const OQ_23: HandleId = HandleId("OQ-23");
+    pub const OQ_60: HandleId = HandleId("OQ-60");
+    pub const OQ_77: HandleId = HandleId("OQ-77");
+    pub const OQ_88: HandleId = HandleId("OQ-88");
+    pub const OQ_99: HandleId = HandleId("OQ-99");
 
-const NS_OQ: Namespace = Namespace("OQ");
+    pub const NS_OQ: Namespace = Namespace("OQ");
 
-const FORMAL: Area = Area("formal-model");
-const COMPILER: Area = Area("compiler");
-const RESEARCH_LOG: Area = Area("research-log");
-const SYNTHESIS: Area = Area("synthesis");
+    pub const FORMAL: Area = Area("formal-model");
+    pub const COMPILER: Area = Area("compiler");
+    pub const RESEARCH_LOG: Area = Area("research-log");
+    pub const SYNTHESIS: Area = Area("synthesis");
+}
+
+use ids::{
+    COMPILER, DISCHARGE_NOTE, EXEC, FORMAL, JIT_SPEC, JIT_STALE, NS_OQ, OQ_22, OQ_23, OQ_60,
+    OQ_77, OQ_88, OQ_99, RESEARCH, RESEARCH_LOG, SYNTHESIS, V14, V15, V16, V17,
+};
 
 pub const HANDLES: &[Handle] = &[
     // formal-model supersession chain (v17 latest authoritative)
