@@ -56,6 +56,19 @@ pub enum HandleKind {
     External,
 }
 
+impl HandleKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "file" => Some(Self::File),
+            "section" => Some(Self::Section),
+            "label" => Some(Self::Label),
+            "version" => Some(Self::Version),
+            "external" => Some(Self::External),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EdgeKind — the kinds the parser emits and the impact traversal consumes
 // ---------------------------------------------------------------------------
@@ -68,6 +81,26 @@ pub enum EdgeKind {
     Cites,
     Discharges,
     Verifies,
+    Affects,
+    /// Extension point for corpora that define custom edge kinds.
+    Other(&'static str),
+}
+
+impl EdgeKind {
+    /// Parse an edge-kind string from anneal's JSON output. Falls back
+    /// to [`EdgeKind::Other`] for unrecognized kinds; the string must
+    /// be `'static`-leaked by the caller.
+    pub fn parse(s: &'static str) -> Self {
+        match s {
+            "DependsOn" | "depends_on" => Self::DependsOn,
+            "Supersedes" | "supersedes" => Self::Supersedes,
+            "Cites" | "cites" => Self::Cites,
+            "Discharges" | "discharges" => Self::Discharges,
+            "Verifies" | "verifies" => Self::Verifies,
+            "Affects" | "affects" => Self::Affects,
+            _ => Self::Other(s),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +191,40 @@ impl Status {
     /// `pipeline_position_for(s, n)` predicate from §8.
     pub fn pipeline_position(self) -> Option<usize> {
         PIPELINE_ORDERING.iter().position(|&s| s == self)
+    }
+
+    /// Parse a status string from frontmatter or anneal's JSON output.
+    /// Unrecognized strings become [`Status::Other`]; the caller must
+    /// pass a `'static`-leaked string.
+    pub fn parse(s: &'static str) -> Self {
+        match s {
+            "raw" => Self::Raw,
+            "draft" => Self::Draft,
+            "research" => Self::Research,
+            "plan" => Self::Plan,
+            "current" => Self::Current,
+            "active" => Self::Active,
+            "stable" => Self::Stable,
+            "authoritative" => Self::Authoritative,
+            "open" => Self::Open,
+            "living" => Self::Living,
+            "superseded" => Self::Superseded,
+            "archived" => Self::Archived,
+            "historical" => Self::Historical,
+            "prior" => Self::Prior,
+            "retired" => Self::Retired,
+            "deprecated" => Self::Deprecated,
+            "obsolete" => Self::Obsolete,
+            "withdrawn" => Self::Withdrawn,
+            "cancelled" | "canceled" => Self::Cancelled,
+            "closed" => Self::Closed,
+            "resolved" => Self::Resolved,
+            "done" => Self::Done,
+            "completed" => Self::Completed,
+            "incorporated" => Self::Incorporated,
+            "digested" => Self::Digested,
+            _ => Self::Other(s),
+        }
     }
 }
 

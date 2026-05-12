@@ -10,6 +10,8 @@
 
 pub mod capability;
 pub mod fixture;
+pub mod loader;
+pub mod program;
 pub mod types;
 
 pub use capability::{emit, CapabilityReport, Verdict};
