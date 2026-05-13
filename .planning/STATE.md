@@ -47,7 +47,13 @@ Progress: [          ] 0% (0/4 phases complete)
 
 Recent decisions affecting current work (full log in PROJECT.md):
 
-- [v2.0]: Language-first redesign collapses 14-command CLI into one Datalog dialect, a prelude of `.dl` files, and 7 verbs that print their underlying queries (.design/2026-05-03-language-redesign.md merged via PR #2)
+- [v2.0 reframe, 2026-05-13]: Product story reframed from "collapse 14 commands into Datalog + 7 verbs" to "programmable knowledge-corpus runtime for agents: searchable content, typed relations, explainable views, and saved verbs" (.design/2026-05-13-primitives-first-corpus-vm.md). Architecture from 2026-05-03 unchanged; product framing, verb model, onboarding default, and SP-DR1 capstone gate updated.
+- [v2.0 reframe]: `*content`, `*span`, `*search_hit`, `search`, `read`, `schema`, `describe`, `source`, `top_k` join the engine primitives layer (CV-D2, CV-D3). Agent-ergonomics epic anneal-2gf folds into v2.0; search and MCP promote from P3 to P1.
+- [v2.0 reframe]: Verbs become saved templates under Steele's criterion (CV-R1) — project verbs syntactically indistinguishable from prelude verbs. The "seven verbs" target is demoted to "starter verbs the prelude happens to ship."
+- [v2.0 reframe]: SP-DR1 capstone gate becomes workflow-completion (CV-R2) — cold agent reaches answer in ≤2 tool calls on the large-corpus conformance task — not MVS coverage alone.
+- [v2.0 reframe]: Onboarding defaults to lattice-on (CV-S2) — `anneal init` always scaffolds a minimal lattice rather than landing in "graph mode" until the user configures one.
+- [v2.0]: Engine architecture revised per engine-spike findings — ascent for engine-derived primitives only; a dynamic IR owns the rule layer (prelude + project + inline together). See .design/2026-05-13-engine-spike-results.md §SR-A.
+- [v2.0]: Language-first redesign — original spec at .design/2026-05-03-language-redesign.md merged via PR #2 on 2026-05-03. Architecture (engine/prelude/project, Datalog grammar, convergence vocabulary, diagnostic ID rules) remains authoritative; product framing superseded 2026-05-13.
 - [v2.0]: Specs `2026-04-02-cli-output-audit`, `2026-04-02-progressive-disclosure-output-spec`, `2026-04-02-query-explain-spec`, `2026-04-15-areas-orient-garden`, `2026-04-15-cli-ux-audit`, `2026-04-17-cli-ux-audit-v2`, `2026-04-21-orient-frontier-foundation` marked superseded — their CLI-surface concerns moot or absorbed into the language redesign
 - [v2.0]: Spec `2026-04-30-agent-ergonomics-retrieval-layer` retained as draft — search/context-annotations/MCP are orthogonal to the datalog redesign and tracked under the agent-ergonomics epic
 - [v2.0]: Eleven CLI-surface bd issues (`anneal-2o4`, `t78`+children, `86k`, `33o`, `7i8`, `b2h`, `djb`, `hr9`, `xdu`) closed as superseded; `anneal-bmq` retained because the I001 fix becomes a rule edit in checks.dl
