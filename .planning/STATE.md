@@ -32,16 +32,33 @@ Last activity: 2026-05-13
 
 Progress: [          ] 0% (0/4 phases complete)
 
-**Active bd issues:**
-- Epic: `anneal-rsx` (v2.0 language-first redesign)
-- Phase 8: `anneal-9pg` engine — P1, ready
-- Phase 9: `anneal-wq6` prelude — P1, blocked on Phase 8
-- Phase 10: `anneal-tu3` verbs — P1, blocked on Phase 9
-- Phase 11: `anneal-7gi` migration/docs — P2, blocked on Phase 10
-- Open questions LR-OQ1..6: `anneal-23w`, `anneal-kys`, `anneal-46t`, `anneal-qz7`, `anneal-nty`, `anneal-s74`
-- Orthogonal ergonomics epic: `anneal-2gf` (search, context, MCP) — P3
-- Surviving bug: `anneal-bmq` (I001 misclassification, becomes a checks.dl rule fix)
-- Surviving Rust internal: `anneal-6uy` (newtype wrappers, in_progress)
+**v2.0 phase decomposition (matches master spec layering):**
+
+| Phase | Issue | What | Blocks |
+|---|---|---|---|
+| 0 closure | `anneal-apa` (P1) | parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench | Phase 1 |
+| 1 Foundation | `anneal-xu2` (P1) | workspace, Source trait, stored relations, generation tracking, anneal-md | Phase 2 |
+| 2 Runtime | `anneal-jqh` (P1) | parser, IR, fixpoint, stratification, NDJSON output | Phase 3 |
+| 3 Primitives | `anneal-f2b` (P1) | graph, lifecycle, obligations, aggregation, time travel | Phase 4, 5, 9 |
+| 4 Content | `anneal-9yl` (P1) | `*content`/`*span`, search + Ranker, read, match | Phase 6, 8 |
+| 5 Self-description | `anneal-1gy` (P1) | schema, predicates, verbs, describe, source_of | Phase 6 |
+| 6 Standard library | `anneal-1xb` (P1) | graph.dl, convergence.dl, checks.dl, ranking.dl, views.dl | Phase 7, 10 |
+| 7 Project extension | `anneal-7it` (P1) | anneal.dl loader, @verb, adapter-qualified discovery | Phase 10 |
+| 8 Trails | `anneal-t10` (P1) | `*trail` capture, TrailSummarizer, persistence, --explain | Phase 10 |
+| 9 Capability/Policy | `anneal-m08` (P1) | ActorContext, capability gating, Policy trait | Phase 10 |
+| 10 Surfaces | `anneal-toe` (P1) | anneal-cli, anneal-mcp, anneal init | Phase 11 |
+| 11 Migration | `anneal-px9` (P2) | parity, fixtures, dual-CLI, docs | (epic close) |
+
+**Epic:** `anneal-rsx` (v2.0 — Programmable Corpus Runtime)
+
+**Supporting issues kept open:**
+- `anneal-10c` (P2): SP-Q literal-query conformance — gates Phase 11
+- `anneal-bmq` (P2): I001 misclassification — becomes a checks.dl rule fix in Phase 6
+- `anneal-aj8` (P3): test_large-corpus_corpus drift — subsumed by `apa` fixture snapshot
+- `anneal-6uy` (P3, in_progress): newtype wrappers — orthogonal Rust internals
+- LR-OQs that survive: `anneal-23w` (TakeUntil semantics), `anneal-kys` (multi-corpus federation, v2.2), `anneal-nty` (section parent_file), `anneal-s74` (perf ceiling)
+
+**Issues closed in the reframe:** anneal-9pg/wq6/tu3/7gi (old 4-phase decomposition), anneal-2gf/7t8/35s (agent ergonomics — folded into master scope), anneal-d6r (naming clash with context verb), anneal-46t/qz7 (resolved by spec refinements), anneal-pqj/4bt (placeholder; absorbed into Phase 1/8), anneal-0he (Phase 0 viability decided).
 
 ## Decisions
 
