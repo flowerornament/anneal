@@ -7,40 +7,27 @@ use spike_runner::capability::{emit, Verdict};
 use spike_runner::fixture::ids::{EXEC, JIT_SPEC, OQ_22, OQ_99, V14, V15, V16, V17};
 use spike_runner::program::{
     diagnostics_derived, mvs1_rows, mvs2_rows, mvs3_rows, mvs4_rows, mvs5a_rows, mvs5b_rows,
-    mvs6_rows, mvs8_upstream_rows, AdvancedRow, AreaCountRow, AscentProgram, Blocker, BlockerRow,
+    mvs6_rows, mvs8_upstream_rows, push_edges, push_handles, push_linear_namespaces,
+    push_pipeline_ordering, AdvancedRow, AreaCountRow, AscentProgram, Blocker, BlockerRow,
     ChainRow, HandleRow, OpenOqRow, PressureRow, UpstreamStep, UpstreamWithProvenance,
 };
 use spike_runner::types::HandleId;
-use spike_runner::{
-    EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES, PIPELINE_ORDERING, SNAPSHOTS,
-};
+use spike_runner::{EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES, SNAPSHOTS};
 use std::io::{self, BufWriter, Write};
 
 fn load_fixture() -> AscentProgram {
     let mut prog = AscentProgram::default();
-    prog.handle.reserve(HANDLES.len());
-    for h in HANDLES {
-        prog.handle.push((h.id, h.kind, h.status, h.namespace, h.file, h.area, h.date));
-    }
-    prog.edge.reserve(EDGES.len());
-    for e in EDGES {
-        prog.edge.push((e.from, e.to, e.kind, e.file, e.line));
-    }
+    push_handles(&mut prog, HANDLES);
+    push_edges(&mut prog, EDGES);
+    push_linear_namespaces(&mut prog, LINEAR_NAMESPACES);
+    push_pipeline_ordering(&mut prog);
     prog.pending_edge.reserve(PENDING_EDGES.len());
     for p in PENDING_EDGES {
         prog.pending_edge.push((p.from, p.target, p.kind, p.file, p.line));
     }
-    prog.linear_namespace.reserve(LINEAR_NAMESPACES.len());
-    for ns in LINEAR_NAMESPACES {
-        prog.linear_namespace.push((*ns,));
-    }
     prog.snapshot_handle.reserve(SNAPSHOTS.len());
     for s in SNAPSHOTS {
         prog.snapshot_handle.push((s.id, s.handle, s.status));
-    }
-    prog.pipeline_position_for.reserve(PIPELINE_ORDERING.len());
-    for (i, s) in PIPELINE_ORDERING.iter().enumerate() {
-        prog.pipeline_position_for.push((*s, i));
     }
     prog.run();
     prog

@@ -4,11 +4,15 @@
 //! [`crate::loader`]. Row mappings and verdict oracles live alongside
 //! the rules so the spike harness is one cohesive unit.
 
+// ascent! generates `_xN` placeholder bindings and auto-deref on Copy
+// fields in rule bodies. These trip pedantic clippy in macro-expanded
+// code; we suppress only the lints the macro produces, not our own.
 #![allow(clippy::no_effect_underscore_binding, clippy::explicit_auto_deref)]
 
+use crate::fixture::{Edge, Handle};
 use crate::types::{
     Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace, Severity,
-    SnapshotId, Status,
+    SnapshotId, Status, PIPELINE_ORDERING,
 };
 use ascent::ascent;
 use ascent::aggregators::count;
@@ -287,4 +291,38 @@ pub fn diagnostics_derived(prog: &AscentProgram) -> Vec<DiagnosticRow> {
     sorted(prog.diagnostic.iter().map(|(code, sev, h, file, line)| DiagnosticRow {
         code: *code, severity: *sev, handle: *h, file: *file, line: *line,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Fact loaders — shared between the fixture-driven and corpus-driven
+// binaries. The column order is encoded once here so a `relation handle(...)`
+// schema change breaks one place rather than every caller.
+// ---------------------------------------------------------------------------
+
+pub fn push_handles(prog: &mut AscentProgram, handles: &[Handle]) {
+    prog.handle.reserve(handles.len());
+    for h in handles {
+        prog.handle.push((h.id, h.kind, h.status, h.namespace, h.file, h.area, h.date));
+    }
+}
+
+pub fn push_edges(prog: &mut AscentProgram, edges: &[Edge]) {
+    prog.edge.reserve(edges.len());
+    for e in edges {
+        prog.edge.push((e.from, e.to, e.kind, e.file, e.line));
+    }
+}
+
+pub fn push_pipeline_ordering(prog: &mut AscentProgram) {
+    prog.pipeline_position_for.reserve(PIPELINE_ORDERING.len());
+    for (i, s) in PIPELINE_ORDERING.iter().enumerate() {
+        prog.pipeline_position_for.push((*s, i));
+    }
+}
+
+pub fn push_linear_namespaces(prog: &mut AscentProgram, namespaces: &[Namespace]) {
+    prog.linear_namespace.reserve(namespaces.len());
+    for ns in namespaces {
+        prog.linear_namespace.push((*ns,));
+    }
 }

@@ -10,10 +10,10 @@
 use crate::fixture::{Edge, Handle};
 use crate::types::{Area, EdgeKind, FilePath, HandleId, HandleKind, Namespace, Status};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-/// Errors raised while loading from an anneal corpus.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error("failed to spawn `anneal {kind}`: {source}")]
@@ -30,18 +30,16 @@ pub enum LoadError {
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
-/// Loaded corpus state, ready to push into an ascent program.
+/// Staging buffer holding the parsed corpus ready for the ascent program.
 #[derive(Debug, Default)]
 pub struct Corpus {
     pub handles: Vec<Handle>,
     pub edges: Vec<Edge>,
-}
-
-impl Corpus {
-    pub fn handle_count(&self) -> usize { self.handles.len() }
-    pub fn edge_count(&self)   -> usize { self.edges.len() }
 }
 
 #[derive(Deserialize)]
@@ -66,10 +64,22 @@ struct EdgeJson {
     source_file: Option<String>,
 }
 
-/// Leak `s` into a `'static` byte slice. Each call allocates; the spike
-/// uses ~O(handles × fields) leaked strings. Negligible at 13k handles.
-fn intern(s: &str) -> &'static str {
-    Box::leak(s.to_string().into_boxed_str())
+/// Deduplicating interner: each unique input string is leaked exactly
+/// once and returned as `&'static str`. Without dedup, a corpus where
+/// every edge references the same handle id (Cites is 99% of large-corpus's
+/// edges) would leak that id once per edge; with dedup, once per corpus.
+#[derive(Default)]
+struct Interner {
+    cache: HashMap<String, &'static str>,
+}
+
+impl Interner {
+    fn get(&mut self, s: &str) -> &'static str {
+        if let Some(&v) = self.cache.get(s) { return v; }
+        let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+        self.cache.insert(leaked.to_string(), leaked);
+        leaked
+    }
 }
 
 fn run_anneal_json(root: &Path, kind: &'static str) -> Result<Vec<u8>, LoadError> {
@@ -88,11 +98,11 @@ fn run_anneal_json(root: &Path, kind: &'static str) -> Result<Vec<u8>, LoadError
     Ok(out.stdout)
 }
 
-/// Derive the corpus-root-relative area (first path component) for a file
-/// handle. Mirrors anneal's `area_of` heuristic. Returns `(root)` for
-/// files at the corpus root.
-fn area_of(file: &str) -> &'static str {
-    file.split_once('/').map_or("(root)", |(first, _)| intern(first))
+/// First path component of a file handle's path. Mirrors anneal's
+/// `area_of` heuristic at `src/area.rs`. Returns `(root)` for top-level
+/// files.
+fn area_of(file: &str, interner: &mut Interner) -> &'static str {
+    file.split_once('/').map_or("(root)", |(first, _)| interner.get(first))
 }
 
 /// Load a corpus by shelling out to anneal's query surface. Requires the
@@ -111,27 +121,28 @@ pub fn load_via_anneal(root: &Path) -> Result<Corpus, LoadError> {
     let edges_env: Envelope<EdgeJson> = serde_json::from_slice(&edges_bytes)
         .map_err(|source| LoadError::Parse { kind: "edges", source })?;
 
+    let mut interner = Interner::default();
     let mut handles = Vec::with_capacity(handles_env.items.len());
     for h in handles_env.items {
         let kind = HandleKind::parse(&h.handle_kind)
             .ok_or_else(|| LoadError::UnknownHandleKind(h.handle_kind.clone()))?;
-        let id = HandleId(intern(&h.id));
-        let file = h.file.as_deref().map_or(FilePath(""), |f| FilePath(intern(f)));
-        let area = Area(area_of(h.file.as_deref().unwrap_or("")));
+        let id = HandleId(interner.get(&h.id));
+        let file = h.file.as_deref().map_or(FilePath(""), |f| FilePath(interner.get(f)));
+        let area = Area(area_of(h.file.as_deref().unwrap_or(""), &mut interner));
         let namespace = h.namespace.as_deref()
-            .map_or(Namespace::NONE, |n| Namespace(intern(n)));
+            .map_or(Namespace::NONE, |n| Namespace(interner.get(n)));
         let status = h.status.as_deref()
-            .map_or(Status::Other(""), |s| Status::parse(intern(s)));
+            .map_or(Status::Other(""), |s| Status::parse(interner.get(s)));
         handles.push(Handle { id, kind, status, namespace, file, area, date: None });
     }
 
     let mut edges = Vec::with_capacity(edges_env.items.len());
     for e in edges_env.items {
-        let kind = EdgeKind::parse(intern(&e.edge_kind));
-        let file = e.source_file.as_deref().map_or(FilePath(""), |f| FilePath(intern(f)));
+        let kind = EdgeKind::parse(interner.get(&e.edge_kind));
+        let file = e.source_file.as_deref().map_or(FilePath(""), |f| FilePath(interner.get(f)));
         edges.push(Edge {
-            from: HandleId(intern(&e.source)),
-            to: HandleId(intern(&e.target)),
+            from: HandleId(interner.get(&e.source)),
+            to: HandleId(interner.get(&e.target)),
             kind,
             file,
             line: 0,
@@ -147,12 +158,24 @@ mod tests {
 
     #[test]
     fn area_of_returns_first_segment() {
-        assert_eq!(area_of("compiler/jit.md"), "compiler");
-        assert_eq!(area_of("a/b/c.md"), "a");
+        let mut i = Interner::default();
+        assert_eq!(area_of("compiler/jit.md", &mut i), "compiler");
+        assert_eq!(area_of("a/b/c.md", &mut i), "a");
     }
 
     #[test]
     fn area_of_returns_root_marker_for_top_level_files() {
-        assert_eq!(area_of("README.md"), "(root)");
+        let mut i = Interner::default();
+        assert_eq!(area_of("README.md", &mut i), "(root)");
+    }
+
+    #[test]
+    fn interner_dedups_repeated_strings() {
+        let mut i = Interner::default();
+        let a = i.get("foo");
+        let b = i.get("foo");
+        assert!(std::ptr::eq(a, b),
+            "second call must return the same leaked address as the first");
+        assert_ne!(a, i.get("bar"));
     }
 }
