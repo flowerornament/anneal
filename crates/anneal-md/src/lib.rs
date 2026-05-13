@@ -7,9 +7,9 @@
 use std::fs;
 
 use anneal_core::{
-    ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact,
-    NativeId, OriginUri, Pattern, Revision, SearchInfo, Source, SourceCapabilities, SourceContext,
-    SourceError, SourceInfo, SourceName, SpanFact,
+    ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation,
+    HandleFact, MetaFact, NativeId, OriginUri, Pattern, Revision, SearchInfo, Source,
+    SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact, fnv1a_64,
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_yaml_ng::Value;
@@ -38,7 +38,7 @@ impl Source for MarkdownSource {
                 ConfigKey::optional("md.section_max_depth"),
             ],
             capabilities: SourceCapabilities {
-                supports_git_ref: true,
+                supports_git_ref: false,
                 supports_time_snapshot: false,
                 supports_incremental: false,
                 live_only: false,
@@ -70,14 +70,17 @@ impl Source for MarkdownSource {
             .values("md.file_extension")
             .chain(std::iter::once(".md"))
             .collect();
+        let scan_roots: Vec<&str> = cx.config_facts.values("md.scan_root").collect();
 
         for root in cx.roots {
             cx.cancellation.check()?;
-            let scan_root = cx
-                .config_facts
-                .first("md.scan_root")
-                .map_or_else(|| root.clone(), |configured| root.join(configured));
-            scan_directory(cx, &scan_root, root, &extensions, &mut batch)?;
+            if scan_roots.is_empty() {
+                scan_directory(cx, root, root, &extensions, &mut batch)?;
+            } else {
+                for scan_root in &scan_roots {
+                    scan_directory(cx, &root.join(scan_root), root, &extensions, &mut batch)?;
+                }
+            }
         }
 
         Ok(batch)
@@ -97,14 +100,11 @@ fn scan_directory(
         if !entry.file_type().is_file() {
             continue;
         }
-        let path = Utf8PathBuf::from_path_buf(entry.path().to_path_buf())
-            .map_err(|path| SourceError::Other(format!("non-UTF-8 path: {}", path.display())))?;
-        if !extensions
-            .iter()
-            .any(|extension| path.as_str().ends_with(extension))
-        {
+        if !path_matches_extensions(entry.path(), extensions) {
             continue;
         }
+        let path = Utf8PathBuf::from_path_buf(entry.path().to_path_buf())
+            .map_err(|path| SourceError::Other(format!("non-UTF-8 path: {}", path.display())))?;
         extract_file(cx, corpus_root, &path, batch)?;
     }
     Ok(())
@@ -121,8 +121,17 @@ fn extract_file(
     let file_id = relative.to_string();
     let (frontmatter, body, body_start_line) = split_frontmatter(&content);
     let parsed = frontmatter.and_then(parse_frontmatter);
-    let revision = Revision::from(format!("{:016x}", fnv1a64(content.as_bytes())));
-    let identity = identity(cx, &file_id, path, revision.clone());
+    let revision = Revision::from(format!("{:016x}", fnv1a_64(content.as_bytes())));
+    let generation = batch.generation;
+    let emission = FileEmission {
+        cx,
+        file_id: &file_id,
+        path,
+        revision: &revision,
+        generation,
+    };
+    let identity = emission.identity();
+    let body_summary = BodySummary::new(body);
     let status = parsed
         .as_ref()
         .and_then(|value| value_string(value, "status"));
@@ -139,22 +148,35 @@ fn extract_file(
             value_string(value, "updated").or_else(|| value_string(value, "date"))
         }),
         area: area_for(relative),
-        summary: summary_for(parsed.as_ref(), body),
+        summary: summary_for(parsed.as_ref(), &body_summary),
     });
 
-    emit_frontmatter(cx, &file_id, path, parsed.as_ref(), &revision, batch);
-    emit_content(cx, &file_id, path, body, body_start_line, &revision, batch);
+    emit_frontmatter(&emission, parsed.as_ref(), batch);
+    emit_content(&emission, body, body_start_line, &body_summary, batch);
     Ok(())
 }
 
-fn emit_frontmatter(
-    cx: &SourceContext<'_>,
-    file_id: &str,
-    path: &Utf8Path,
-    parsed: Option<&Value>,
-    revision: &Revision,
-    batch: &mut FactBatch,
-) {
+struct FileEmission<'a, 'cx> {
+    cx: &'a SourceContext<'cx>,
+    file_id: &'a str,
+    path: &'a Utf8Path,
+    revision: &'a Revision,
+    generation: Generation,
+}
+
+impl FileEmission<'_, '_> {
+    fn identity(&self) -> FactIdentity {
+        identity(
+            self.cx,
+            self.file_id,
+            self.path,
+            self.revision.clone(),
+            self.generation,
+        )
+    }
+}
+
+fn emit_frontmatter(ctx: &FileEmission<'_, '_>, parsed: Option<&Value>, batch: &mut FactBatch) {
     let Some(Value::Mapping(mapping)) = parsed else {
         return;
     };
@@ -162,69 +184,55 @@ fn emit_frontmatter(
         let Some(key) = key.as_str() else {
             continue;
         };
-        for scalar in scalar_values(value) {
-            let fact_identity = identity(
-                cx,
-                &format!("{file_id}:meta:{key}:{scalar}"),
-                path,
-                revision.clone(),
-            );
+        for_each_scalar_value(value, &mut |scalar| {
+            let fact_identity = ctx.identity();
             batch.meta.push(MetaFact {
                 identity: fact_identity,
-                handle: file_id.to_string(),
+                handle: ctx.file_id.to_string(),
                 key: key.to_string(),
                 value: scalar.clone(),
             });
             if let Some(kind) = edge_kind_for_frontmatter(key) {
                 batch.edges.push(EdgeFact {
-                    identity: identity(
-                        cx,
-                        &format!("{file_id}:edge:{kind}:{scalar}"),
-                        path,
-                        revision.clone(),
-                    ),
-                    from: file_id.to_string(),
+                    identity: ctx.identity(),
+                    from: ctx.file_id.to_string(),
                     to: scalar,
                     kind: kind.to_string(),
-                    file: file_id.to_string(),
+                    file: ctx.file_id.to_string(),
                     line: 1,
                 });
             }
-        }
+        });
     }
 }
 
 fn emit_content(
-    cx: &SourceContext<'_>,
-    file_id: &str,
-    path: &Utf8Path,
+    ctx: &FileEmission<'_, '_>,
     body: &str,
     body_start_line: u32,
-    revision: &Revision,
+    body_summary: &BodySummary,
     batch: &mut FactBatch,
 ) {
-    if body.trim().is_empty() {
+    if !body_summary.has_text {
         return;
     }
-    let line_count = u32::try_from(body.lines().count()).unwrap_or(u32::MAX);
-    let token_count = u32::try_from(body.split_whitespace().count()).unwrap_or(u32::MAX);
-    let span_id = format!("{file_id}#full");
-    let identity = identity(cx, &format!("{file_id}:content"), path, revision.clone());
+    let span_id = format!("{}#full", ctx.file_id);
+    let identity = ctx.identity();
     batch.content.push(ContentFact {
         identity: identity.clone(),
-        handle: file_id.to_string(),
+        handle: ctx.file_id.to_string(),
         span_id: span_id.clone(),
-        lines: line_count,
+        lines: body_summary.line_count,
         text: body.to_string(),
-        tokens: token_count,
+        tokens: body_summary.token_count,
     });
     batch.spans.push(SpanFact {
         identity,
         id: span_id,
-        handle: file_id.to_string(),
+        handle: ctx.file_id.to_string(),
         start_line: body_start_line,
-        end_line: body_start_line.saturating_add(line_count.saturating_sub(1)),
-        summary: first_non_heading_line(body),
+        end_line: body_start_line.saturating_add(body_summary.line_count.saturating_sub(1)),
+        summary: body_summary.first_text_line.clone(),
     });
 }
 
@@ -233,6 +241,7 @@ fn identity(
     native_id: &str,
     path: &Utf8Path,
     revision: Revision,
+    generation: Generation,
 ) -> FactIdentity {
     FactIdentity::new(
         cx.corpus.clone(),
@@ -240,19 +249,32 @@ fn identity(
         NativeId::from(native_id),
         OriginUri::from(format!("file://{path}")),
         revision,
-        cx.next_generation(),
+        generation,
     )
 }
 
 fn split_frontmatter(content: &str) -> (Option<&str>, &str, u32) {
-    let Some(rest) = content.strip_prefix("---\n") else {
+    let rest = if let Some(rest) = content.strip_prefix("---\n") {
+        rest
+    } else if let Some(rest) = content.strip_prefix("---\r\n") {
+        rest
+    } else {
         return (None, content, 1);
     };
+
     if let Some(pos) = rest.find("\n---\n") {
         let yaml = &rest[..pos];
         let body = &rest[pos + 5..];
         let yaml_lines = u32::try_from(yaml.lines().count()).unwrap_or(u32::MAX);
         (Some(yaml), body, yaml_lines.saturating_add(3))
+    } else if let Some(pos) = rest.find("\n---\r\n") {
+        let yaml = &rest[..pos];
+        let body = &rest[pos + 6..];
+        let yaml_lines = u32::try_from(yaml.lines().count()).unwrap_or(u32::MAX);
+        (Some(yaml), body, yaml_lines.saturating_add(3))
+    } else if let Some(yaml) = rest.strip_suffix("\n---") {
+        let yaml_lines = u32::try_from(yaml.lines().count()).unwrap_or(u32::MAX);
+        (Some(yaml), "", yaml_lines.saturating_add(3))
     } else {
         (None, content, 1)
     }
@@ -272,13 +294,17 @@ fn value_string(value: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn scalar_values(value: &Value) -> Vec<String> {
+fn for_each_scalar_value(value: &Value, visit: &mut impl FnMut(String)) {
     match value {
-        Value::String(value) => vec![value.clone()],
-        Value::Number(value) => vec![value.to_string()],
-        Value::Bool(value) => vec![value.to_string()],
-        Value::Sequence(values) => values.iter().flat_map(scalar_values).collect(),
-        _ => Vec::new(),
+        Value::String(value) => visit(value.clone()),
+        Value::Number(value) => visit(value.to_string()),
+        Value::Bool(value) => visit(value.to_string()),
+        Value::Sequence(values) => {
+            for value in values {
+                for_each_scalar_value(value, visit);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -292,20 +318,10 @@ fn edge_kind_for_frontmatter(key: &str) -> Option<&'static str> {
     }
 }
 
-fn summary_for(parsed: Option<&Value>, body: &str) -> String {
+fn summary_for(parsed: Option<&Value>, body_summary: &BodySummary) -> String {
     parsed
         .and_then(|value| value_string(value, "purpose").or_else(|| value_string(value, "note")))
-        .unwrap_or_else(|| first_non_heading_line(body))
-}
-
-fn first_non_heading_line(body: &str) -> String {
-    body.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .unwrap_or_default()
-        .chars()
-        .take(240)
-        .collect()
+        .unwrap_or_else(|| body_summary.first_text_line.clone())
 }
 
 fn area_for(path: &Utf8Path) -> String {
@@ -314,13 +330,48 @@ fn area_for(path: &Utf8Path) -> String {
         .map_or_else(String::new, |component| component.as_str().to_string())
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
+fn path_matches_extensions(path: &std::path::Path, extensions: &[&str]) -> bool {
+    path.to_str()
+        .is_some_and(|path| extensions.iter().any(|extension| path.ends_with(extension)))
+}
+
+struct BodySummary {
+    line_count: u32,
+    token_count: u32,
+    first_text_line: String,
+    has_text: bool,
+}
+
+impl BodySummary {
+    fn new(body: &str) -> Self {
+        let mut line_count = 0_u32;
+        let mut token_count = 0_u32;
+        let mut first_text_line = String::new();
+        let mut has_text = false;
+
+        for line in body.lines() {
+            line_count = line_count.saturating_add(1);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            has_text = true;
+            token_count = token_count.saturating_add(
+                u32::try_from(trimmed.split_whitespace().count()).unwrap_or(u32::MAX),
+            );
+            if first_text_line.is_empty() && !trimmed.starts_with('#') {
+                first_text_line = trimmed.chars().take(240).collect();
+            }
+        }
+
+        Self {
+            line_count,
+            token_count,
+            first_text_line,
+            has_text,
+        }
     }
-    hash
 }
 
 #[cfg(test)]
@@ -372,5 +423,17 @@ mod tests {
         assert_eq!(batch.spans.len(), 1);
         assert!(batch.edges.iter().any(|edge| edge.to == "b.md"));
         assert!(batch.meta.iter().any(|meta| meta.key == "purpose"));
+        for identity in batch
+            .handles
+            .iter()
+            .map(|fact| &fact.identity)
+            .chain(batch.edges.iter().map(|fact| &fact.identity))
+            .chain(batch.content.iter().map(|fact| &fact.identity))
+            .chain(batch.spans.iter().map(|fact| &fact.identity))
+            .chain(batch.meta.iter().map(|fact| &fact.identity))
+        {
+            assert_eq!(identity.native_id.as_str(), "a.md");
+            assert_eq!(identity.generation, batch.generation);
+        }
     }
 }

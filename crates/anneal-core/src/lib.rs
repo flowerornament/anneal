@@ -6,6 +6,7 @@
 //! depend on any adapter.
 
 pub mod facts;
+pub mod hash;
 pub mod ids;
 pub mod source;
 pub mod store;
@@ -14,6 +15,7 @@ pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
     HandleFact, MetaFact, SnapshotFact, SpanFact,
 };
+pub use hash::fnv1a_64;
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use source::{
     Action, ActorContext, CancellationToken, ConfigFacts, ConfigKey, Pattern, SearchInfo, Source,

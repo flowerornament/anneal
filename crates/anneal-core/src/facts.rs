@@ -138,8 +138,6 @@ pub struct FactBatch {
     pub spans: Vec<SpanFact>,
     pub meta: Vec<MetaFact>,
     pub concerns: Vec<ConcernFact>,
-    pub configs: Vec<ConfigFact>,
-    pub snapshots: Vec<SnapshotFact>,
     pub retractions: Vec<NativeId>,
 }
 
@@ -161,8 +159,6 @@ impl FactBatch {
             spans: Vec::new(),
             meta: Vec::new(),
             concerns: Vec::new(),
-            configs: Vec::new(),
-            snapshots: Vec::new(),
             retractions: Vec::new(),
         }
     }

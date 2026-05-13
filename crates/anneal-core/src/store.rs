@@ -31,15 +31,15 @@ pub struct GenerationFact {
 
 impl FactStore {
     pub fn merge(&mut self, batch: FactBatch) -> Result<(), StoreError> {
-        let scope = BatchScope::from_batch(&batch)?;
-
-        let mut remove_ids = native_ids_in_batch(&batch);
-        remove_ids.extend(batch.retractions.iter().cloned());
+        let mut validated = ValidatedBatch::from_batch(&batch)?;
 
         if matches!(batch.mode, FactBatchMode::FullSnapshot) {
-            self.remove_scope(&scope);
+            self.remove_scope(&validated.scope);
         } else {
-            self.remove_native_ids(&scope, &remove_ids);
+            validated
+                .native_ids
+                .extend(batch.retractions.iter().cloned());
+            self.remove_native_ids(&validated.scope, &validated.native_ids);
         }
 
         self.handles.extend(batch.handles);
@@ -48,9 +48,11 @@ impl FactStore {
         self.spans.extend(batch.spans);
         self.meta.extend(batch.meta);
         self.concerns.extend(batch.concerns);
-        self.configs.extend(batch.configs);
-        self.snapshots.extend(batch.snapshots);
-        self.set_generation(scope.corpus, scope.source, batch.generation);
+        self.set_generation(
+            validated.scope.corpus,
+            validated.scope.source,
+            batch.generation,
+        );
         Ok(())
     }
 
@@ -137,12 +139,16 @@ struct BatchScope {
     source: SourceName,
 }
 
-impl BatchScope {
+struct ValidatedBatch {
+    scope: BatchScope,
+    native_ids: BTreeSet<NativeId>,
+}
+
+impl ValidatedBatch {
     fn from_batch(batch: &FactBatch) -> Result<Self, StoreError> {
-        let scope = Self {
-            corpus: batch.corpus.clone(),
-            source: batch.source.clone(),
-        };
+        let scope = BatchScope::from_batch(batch);
+        let mut native_ids = BTreeSet::new();
+        let collect_native_ids = matches!(batch.mode, FactBatchMode::Delta);
         for identity in all_identities(batch) {
             if !scope.matches(identity) {
                 return Err(StoreError::MixedSourceBatch);
@@ -150,8 +156,20 @@ impl BatchScope {
             if identity.generation != batch.generation {
                 return Err(StoreError::MismatchedGeneration);
             }
+            if collect_native_ids {
+                native_ids.insert(identity.native_id.clone());
+            }
         }
-        Ok(scope)
+        Ok(Self { scope, native_ids })
+    }
+}
+
+impl BatchScope {
+    fn from_batch(batch: &FactBatch) -> Self {
+        Self {
+            corpus: batch.corpus.clone(),
+            source: batch.source.clone(),
+        }
     }
 
     fn matches(&self, identity: &FactIdentity) -> bool {
@@ -194,12 +212,6 @@ fn all_identities(batch: &FactBatch) -> impl Iterator<Item = &FactIdentity> {
         .chain(batch.spans.iter().map(|fact| &fact.identity))
         .chain(batch.meta.iter().map(|fact| &fact.identity))
         .chain(batch.concerns.iter().map(|fact| &fact.identity))
-}
-
-fn native_ids_in_batch(batch: &FactBatch) -> BTreeSet<NativeId> {
-    all_identities(batch)
-        .map(|identity| identity.native_id.clone())
-        .collect()
 }
 
 #[cfg(test)]
