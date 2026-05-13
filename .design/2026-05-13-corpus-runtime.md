@@ -139,6 +139,7 @@ pub struct SourceContext<'a> {
 }
 
 pub struct FactBatch {
+    pub mode: FactBatchMode,              // FullSnapshot or Delta
     pub generation: Generation,            // monotonic; runtime treats new gen as supersede
     pub handles: Vec<HandleFact>,
     pub edges: Vec<EdgeFact>,
@@ -146,6 +147,12 @@ pub struct FactBatch {
     pub spans: Vec<SpanFact>,
     pub meta: Vec<MetaFact>,
     pub concerns: Vec<ConcernFact>,
+    pub retractions: Vec<NativeId>,        // used only for Delta batches
+}
+
+pub enum FactBatchMode {
+    FullSnapshot,                          // replaces all current facts for (corpus, source)
+    Delta,                                 // upserts facts and retracts listed native ids
 }
 
 pub struct SourceInfo {
@@ -154,6 +161,7 @@ pub struct SourceInfo {
     pub doc: &'static str,
     pub config_keys: Vec<ConfigKey>,       // adapter-qualified discovery facts consumed
     pub capabilities: SourceCapabilities,  // see §11
+    pub search: Option<SearchInfo>,        // search scoring contract if the Source contributes hits
 }
 
 pub struct SourceCapabilities {
@@ -161,6 +169,12 @@ pub struct SourceCapabilities {
     pub supports_time_snapshot: bool,      // honors SourceContext.time_ref
     pub supports_incremental: bool,        // honors previous_generation for deltas
     pub live_only: bool,                   // historical at() returns "unsupported" not silent
+}
+
+pub struct SearchInfo {
+    pub reason_vocabulary: Vec<&'static str>,
+    pub fields: Vec<&'static str>,
+    pub low_confidence_threshold: f32,      // default 0.5 if omitted
 }
 ```
 
@@ -206,8 +220,9 @@ runtime executes these phases in order:
 3. Phase B — Source extraction:
    a. For each enabled Source, build SourceContext from anneal.toml + discovery facts.
    b. Source.extract(cx) → FactBatch.
-   c. Runtime merges batches with generation tracking; older facts retract
-      for handles present in newer batches.
+   c. Runtime merges batches with generation tracking:
+      - FullSnapshot replaces all current facts for (corpus, source).
+      - Delta upserts returned facts and retracts listed native ids.
 4. Phase C — rule load:
    a. Load embedded prelude (graph.dl, convergence.dl, checks.dl, ranking.dl, views.dl).
    b. Load anneal.dl rule clauses.
@@ -226,7 +241,9 @@ needed to load all-at-once.
 
 A long-running runtime (MCP server, embedded host) keeps populated
 relations in memory and re-runs Phase B on source-change events;
-generation tracking handles retractions.
+generation tracking handles retractions. A deleted file or host
+object disappears because a FullSnapshot no longer contains it, or
+because a Delta batch lists its `native_id` in `retractions`.
 
 ### §8 Crate topology
 
@@ -301,7 +318,7 @@ populates and every rule may join on.
 
 *concern{name, member, source, corpus, generation}
 
-*config{key, value}                       // from anneal.toml; no corpus field
+*config{key, value, corpus}               // from anneal.toml; runtime-populated
 *snapshot{at, id, key, value, corpus}
 *trail{...}                                // see §13
 *generation{corpus, source, current}       // current generation per (corpus, source)
@@ -320,10 +337,12 @@ populates and every rule may join on.
 | `*trail` | Session paths (§13) |
 | `*generation` | Per-source generation tracker (§7); supports retraction |
 
-Every stored relation except `*config` is **adapter-populated and
-generation-tracked**. The runtime atomically swaps generation on
-fresh extraction; old facts retract for handles present in the new
-generation. This makes long-running runtimes (MCP, host-embed)
+Every source-derived stored relation is **adapter-populated and
+generation-tracked**. `*config` is runtime-populated but still
+corpus-scoped so federation never merges two corpora's config facts.
+The runtime atomically swaps a `FullSnapshot` generation for an
+entire `(corpus, source)` or applies a `Delta` batch's upserts and
+retractions. This makes long-running runtimes (MCP, host-embed)
 correct under source edits and deletions.
 
 ### §11 Engine-derived predicates [CR-D9]
@@ -363,9 +382,9 @@ flux(h, days, delta)             // ground `days`; binds `delta`
 token_estimate(h, n)
 
 // Content retrieval — all RELATIONAL
-search(query, handle, span_id, score, reason, field)
+search(query, handle, span_id, score, reason, field, low_confidence)
 read(handle, budget, span_id, text, start_line, end_line, tokens)
-read_full(handle, content)       // capability-gated; see §15
+read_full(handle, content)       // capability-gated; see §16
 match(pattern, handle, line, snippet)
 
 // Self-description
@@ -378,23 +397,25 @@ examples(name, example)
 sources(name, recognizes, capabilities, doc)
 ```
 
-The aggregation form `TopK{k, key : body}` (Part IV §17) provides
+The aggregation form `TopK{k: N, key: score : body}` (Part IV §17) provides
 bounded selection. There is no parallel `top_k` function primitive
 and no surface syntax shortcut — one mechanism, one place.
 
 ### §12 Search scoring contract [CR-D10]
 
 **Definition CR-D10 (Search contract).** Every adapter that
-contributes `search` results obeys:
+contributes search results emits raw `SearchHit` candidates. The
+runtime passes candidates through the active `Ranker` before exposing
+the public `search(...)` relation, so the `score` column agents see
+is calibrated for the loaded adapter set.
 
-- `score` is a float in `[0.0, 1.0]`. 1.0 means "exact match by the
-  adapter's strongest signal"; 0.0 means "no signal."
-- Cross-adapter scores are **not** directly comparable. A
-  multi-adapter query that calls `TopK{k, key: score : search(...)}`
-  surfaces the runtime's calibrated cross-adapter score via the
-  `Ranker` trait, not the raw per-adapter score. The default
-  `Ranker` ships with documented calibration; projects override
-  via `[ranking]` in `anneal.toml`.
+- Public `score` is a calibrated float in `[0.0, 1.0]`. 1.0 means
+  "strongest match after the active Ranker"; 0.0 means "no signal."
+- Adapter raw scores are **not** directly comparable. Provenance may
+  expose both `raw_score` and calibrated `score`; ordinary queries
+  see only calibrated `score`. The default `Ranker` ships with
+  documented calibration; projects override via `[ranking]` in
+  `anneal.toml`.
 - `reason` is a short string explaining the match
   (`"title-substring"`, `"semantic-cluster"`,
   `"frontmatter-key-match"`). Adapters document their reason
@@ -405,8 +426,8 @@ contributes `search` results obeys:
 - Ordering by `score` is deterministic given a fixed corpus state and
   query; tie-breakers documented per `Ranker`.
 - **Confidence threshold.** Each adapter declares a
-  `search_low_confidence_threshold: f32` in `SourceInfo` (default
-  `0.5`). Hits with `score < threshold` carry
+  `low_confidence_threshold: f32` in `SourceInfo.search` (default
+  `0.5`). Hits with calibrated `score < threshold` carry
   `low_confidence: true` in the relation, signalling agents that
   the hit is plausible but uncertain. The default `Ranker` filters
   low-confidence hits from `TopK` results unless the query
@@ -440,11 +461,11 @@ v2.0; raw expression and content capture are policy-controlled.
   verb,               // verb invocation name; "-e" for ad-hoc queries
   redacted_expr,      // expr with values redacted per policy
   input_hash,         // hash of full expression (deterministic provenance)
-  surfaced_refs,      // list of {handle, span_id, score} the verb emitted
+  surfaced_refs,      // list of {corpus, source, handle, span_id, score} emitted
   consumed_refs,      // subset of surfaced_refs the agent actually used
                       // in the next step (read, follow-up query, etc.)
   prelude_hash,       // hash of loaded prelude; supports reproducibility
-  source_generations, // {source: generation} snapshot at query time
+  source_generations, // {(corpus, source): generation} snapshot at query time
   visibility,         // "public" | "team" | "private" — policy-derived
   retention,          // ISO duration; runtime garbage-collects past expiry
 }
@@ -481,8 +502,8 @@ Replay/diff workflows are forward-looking (v2.1; §47).
 expanded via `--explain` (CLI) or `derivation: true` (MCP) into a
 derivation tree:
 
-- `search_hit` rows that brought a handle into consideration, with
-  scores, reasons, matched fields
+- `search(...)` rows that brought a handle into consideration, with
+  calibrated scores, optional raw scores, reasons, matched fields
 - `*content` spans the engine consulted
 - `*edge` rows that joined to produce each derived fact
 - `*meta` and status values that participated
@@ -565,22 +586,32 @@ directive   := 'include' string '.'
              | '@verb' '(' verb_args ')'
              | 'import' ident 'from' string '.'   // see §28
 
-head        := ident '(' arg_list ')'
+head        := ident '(' positional_arg_list ')'
 local_rules := ('where' rule)+
 body        := atom (',' atom)*
 atom        := stored | derived | comparison | aggregation | negation | time_block
 stored      := '*' ident '{' field_list '}'
-derived     := ident '(' arg_list ')'
-comparison  := value op value
+derived     := ident '(' call_arg_list ')'
+comparison  := expr op expr
 negation    := 'not' (stored | derived)
-aggregation := value '=' agg_fn '{' [agg_args ':'] var ':' body '}'
+aggregation := value_or_tuple '=' agg_fn '{' [agg_args ':'] value_or_tuple ':' body '}'
 time_block  := 'at' '(' string ')' '{' body '}'
 
 field_list  := field (',' field)*
 field       := ident                        # bind: same name as variable
              | ident ':' value_or_var       # bind: explicit
-arg_list    := value_or_var (',' value_or_var)*
-value_or_var := var | literal | '_'
+positional_arg_list := value_or_var (',' value_or_var)*
+call_arg_list := call_arg (',' call_arg)*
+call_arg    := expr                         # positional
+             | ident ':' expr               # named call-site sugar
+agg_args    := named_arg (',' named_arg)*
+named_arg   := ident ':' expr
+value_or_tuple := expr | tuple
+tuple       := '(' expr (',' expr)+ ')'
+value_or_var := expr | '_'
+expr        := var | literal | function_call | '(' expr ')'
+             | expr arith_op expr
+function_call := ident '(' call_arg_list ')'
 var         := /[a-z_][a-z0-9_]*/
 literal     := string | number | bool | list
 
@@ -589,11 +620,16 @@ agg_fn      := 'Count' | 'Sum' | 'Min' | 'Max' | 'Avg' | 'List' | 'Set'
 op          := '=' | '!=' | '<' | '>' | '<=' | '>='
              | 'in' | 'matches' | 'contains'
              | 'starts_with' | 'ends_with'
+arith_op    := '+' | '-' | '*' | '/' | '%'
 ident       := /[a-z_][a-z0-9_]*/
 ```
 
 Comments: `#` to end of line. Whitespace insignificant. Statements
 terminated by `.`. Strings double-quoted with standard escapes.
+Named predicate arguments are call-site sugar over the predicate's
+declared signature. Rule heads are canonical positional definitions;
+calls may use positional arguments followed by named arguments.
+Named arguments are not records and do not introduce field access.
 
 ### §18 Types and operators
 
@@ -613,9 +649,10 @@ No first-class records. Records exist only as patterns inside
 into a variable:
 
 ```
-? search("conformance", h, span_id, score, reason, field),
+? search("conformance", h, span_id, score, reason, field, low_confidence),
+  low_confidence = false,
   score > 0.7,
-  read(h, budget: 4000, span_id, text, start, end, tokens).
+  read(h, 4000, span_id, text, start, end, tokens).
 ```
 
 This guarantees uniform handling across stored and derived
@@ -1074,9 +1111,10 @@ SourceInfo {
 }
 ```
 
-The runtime warns at load if a corpus's `anneal.dl` declares a fact
-prefix recognized by *no* linked adapter. The user fixes by linking
-the adapter or marking the fact `optional`.
+The runtime errors at load if a corpus's `anneal.dl` declares a
+required discovery fact whose prefix is recognized by no linked
+adapter. The user fixes by linking the adapter, qualifying the fact
+for a linked adapter, or marking the fact `optional`.
 
 **Single-adapter sugar.** When exactly one adapter is linked, the
 runtime auto-qualifies unqualified discovery facts to that adapter:
@@ -1114,10 +1152,10 @@ Projects override or extend any.
 | `anneal` | where am I | composed of summary, work, advancing, blocked |
 | `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges |
 | `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
-| `anneal search TEXT` | content match by query | `search("TEXT", h, span, score, reason, field, low_confidence)` |
+| `anneal search TEXT` | content match by query | `search("TEXT", h, span_id, score, reason, field, low_confidence)` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
-| `anneal read H` | give me H's content, bounded | `read(H, budget, span, text, ...)` |
-| `anneal work` | where should I work | `potential(h, e), entropy(h, src). TopK{25, key: e}.` |
+| `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
+| `anneal work` | where should I work | `(h, e) = TopK{k: 25, key: e : potential(h, e), entropy(h, src)}` |
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
 | `anneal broken` | are there errors | `diagnostic(_, "error", ...)` |
@@ -1151,30 +1189,41 @@ anneal context GOAL [--budget=N] [--neighborhood-depth=D] [--hits=K]
 | `--neighborhood-depth=D` | `1` | edges to traverse outward from the top hit |
 | `--hits=K` | `3` | candidates to return (after `TopK` filtering) |
 
-Underlying composition (from `views.dl`):
+Underlying composition contract (from `views.dl`):
 
 ```dl
 @verb(
   name: "context",
   query: "
-    ? candidates = TopK{ k: hits, key: score :
-        search(goal, h, span, score, reason, field, low_confidence)
+    ? (h, span_id, score, reason, field) = TopK{ k: hits, key: score :
+        search(goal, h, span_id, score, reason, field, low_confidence),
+        low_confidence = false
       },
-      spans = TakeUntil{ budget: budget * 0.6, sum: tokens :
-        (h, span_id, lines, text, start, end, tokens) :
-          h in candidates, read(h, budget * 0.6 / hits, span_id, …)
+      per_hit_budget = budget * 0.6 / hits,
+      (span_id, text, start_line, end_line, tokens) = TakeUntil{
+        budget: per_hit_budget, sum: tokens :
+        (span_id, text, start_line, end_line, tokens) :
+          read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)
       },
-      edges = neighborhood(top(candidates), neighborhood_depth, e).
+      neighborhood_or_self(h, neighborhood_depth, neighbor).
   ",
   output_schema: {
     goal: String,
     hits: List<{h, span_id, score, reason, field}>,
-    spans: List<{h, span_id, lines, tokens, text}>,
-    neighborhood: List<{edge, from, to}>
+    spans: List<{h, span_id, start_line, end_line, tokens, text}>,
+    neighborhood: List<{h, neighbor}>
   },
   capabilities: ["read"]
 )
 ```
+
+The `context` output is grouped by the verb surface from relational
+rows into `hits`, `spans`, and `neighborhood`; grouping is an
+`output_schema` concern, not record-style field access in the query
+language. `views.dl` defines `neighborhood_or_self/3` so an otherwise
+isolated top hit still returns its read span. Phase 1 must pin this
+as an executable `views.dl` fixture before `context` is treated as a
+shipped verb.
 
 Budget allocation: 60% to span reads on top hits, 20% to
 neighborhood expansion, 20% reserved for `--explain` if requested.
@@ -1206,7 +1255,9 @@ the echo.
 
 ### §35 CLI flags
 
-Operational only — never query-shaping. Filters belong in queries.
+Most flags are operational. Any flag that changes result policy is
+called out explicitly and mirrored by config or query predicates;
+filters still belong in queries.
 
 | Flag | Effect | Scope |
 |---|---|---|
@@ -1255,7 +1306,7 @@ Default MCP tool surface:
 
 | Tool | Wraps | Capabilities |
 |---|---|---|
-| `eval` | `-e '<query>'` | gated by `eval` capability; default-allowed |
+| `eval` | `-e '<query>'` | gated by `eval` capability; default-denied for MCP unless `[mcp] allow_eval = true` or host policy grants it |
 | `search` | `search` primitive | always allowed |
 | `read` | `read` primitive (budgeted) | always allowed |
 | `verbs` | `verbs` primitive | always allowed; agents see all available verbs |
@@ -1368,7 +1419,7 @@ For arrival on an unfamiliar corpus, prepend:
 For multi-session handoff, prepend:
 
 ```
-0c. anneal -e '? *trail{session_id: last, step, expr, summary}.'
+0c. anneal -e '? *trail{session_id: last, step, redacted_expr, consumed_refs}.'
 ```
 
 ---
@@ -1409,17 +1460,18 @@ md.section_max_depth(3).
 ```
 
 Other adapters declare their own (`code.module_pattern`,
-`issues.repo`, etc.). The runtime warns if a fact's prefix isn't
-recognized by a linked Source.
+`issues.repo`, etc.). The runtime errors if a required fact's prefix
+isn't recognized by a linked Source; `optional` facts are skipped
+when the adapter is absent.
 
 ### §43 Introspection
 
 ```
 # 1. Counts by kind
-anneal -e '? c = Count{*handle{kind: k, ...}}, k.'
+anneal -e '? c = Count{ h : *handle{id: h, kind: k} }, k.'
 
 # 2. Label namespaces and counts
-anneal -e '? c = Count{*handle{kind:"label", namespace: ns, ...}}, ns.'
+anneal -e '? c = Count{ h : *handle{id: h, kind: "label", namespace: ns} }, ns.'
 
 # 3. The corpus's discovery conventions (adapter-qualified)
 anneal -e '? md.label_pattern(ns, regex, scope).'
@@ -1534,6 +1586,9 @@ cold-agent fixtures pass:
     field
 - *Tool-call target*: 2 calls (search + read) with `MRR ≥ 0.5`
   across cold-agent runs
+- *Context target*: `anneal context "v17 conformance audit"` after
+  an optional `anneal` dashboard returns the same audit handle and
+  a useful first span in ≤2 total calls
 
 **Fixture: anneal/release-blocker**
 
@@ -1669,6 +1724,15 @@ sets, evaluation time grows. The substrate is designed for
 hundreds-of-thousands; tens-of-millions probably needs indexed
 evaluation. Out of scope for v2.0.
 
+### §62 Context verb executable contract
+
+§33.1 defines the `context` verb as a grouped, budgeted composition
+over `search`, `read`, and `neighborhood_or_self`. Phase 1 must pin
+the exact executable `views.dl` form and the row-to-group
+`output_schema` behavior in tests before `context` becomes a shipped
+verb. This is a contract question, not a UX polish item, because the
+cold-agent gate depends on it.
+
 ---
 
 ## Part XV: Labels [CR-Labels]
@@ -1743,6 +1807,7 @@ evaluation. Out of scope for v2.0.
 - CR-OQ4: Consumed-by-read vs consumed-by-display heuristic (§59)
 - CR-OQ5: MCP run_verb routing under shadowed names (§60)
 - CR-OQ6: Performance ceiling (§61)
+- CR-OQ7: Context verb executable contract (§62)
 
 ---
 
