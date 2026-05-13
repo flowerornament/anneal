@@ -390,11 +390,11 @@ contributes `search` results obeys:
 - `score` is a float in `[0.0, 1.0]`. 1.0 means "exact match by the
   adapter's strongest signal"; 0.0 means "no signal."
 - Cross-adapter scores are **not** directly comparable. A
-  multi-adapter query that calls `top_k 25 by score` will surface
-  the runtime's calibrated cross-adapter score via the `Ranker`
-  trait, not the raw per-adapter score. The default `Ranker` ships
-  with documented calibration; projects override via `[ranking]` in
-  `anneal.toml`.
+  multi-adapter query that calls `TopK{k, key: score : search(...)}`
+  surfaces the runtime's calibrated cross-adapter score via the
+  `Ranker` trait, not the raw per-adapter score. The default
+  `Ranker` ships with documented calibration; projects override
+  via `[ranking]` in `anneal.toml`.
 - `reason` is a short string explaining the match
   (`"title-substring"`, `"semantic-cluster"`,
   `"frontmatter-key-match"`). Adapters document their reason
@@ -404,6 +404,24 @@ contributes `search` results obeys:
   to decide whether a hit is structural or content-based.
 - Ordering by `score` is deterministic given a fixed corpus state and
   query; tie-breakers documented per `Ranker`.
+- **Confidence threshold.** Each adapter declares a
+  `search_low_confidence_threshold: f32` in `SourceInfo` (default
+  `0.5`). Hits with `score < threshold` carry
+  `low_confidence: true` in the relation, signalling agents that
+  the hit is plausible but uncertain. The default `Ranker` filters
+  low-confidence hits from `TopK` results unless the query
+  explicitly opts in (`search_include_low_confidence` flag in
+  `anneal.toml` `[ranking]`, or `--include-low-confidence` on the
+  CLI). The relation shape:
+
+  ```
+  search(query, handle, span_id, score, reason, field, low_confidence)
+  ```
+
+  Agents reading raw rows always see all hits with their
+  confidence flag; agents consuming `TopK` get only high-confidence
+  hits by default, eliminating the "0.62 hit looks comparable to
+  0.93 hit" failure mode the live workflow simulation surfaced.
 
 ### §13 Trails [CR-D11]
 
@@ -422,8 +440,9 @@ v2.0; raw expression and content capture are policy-controlled.
   verb,               // verb invocation name; "-e" for ad-hoc queries
   redacted_expr,      // expr with values redacted per policy
   input_hash,         // hash of full expression (deterministic provenance)
-  output_refs,        // list of {handle, span_id} actually surfaced
-  selected_handles,   // handles the agent then read or operated on
+  surfaced_refs,      // list of {handle, span_id, score} the verb emitted
+  consumed_refs,      // subset of surfaced_refs the agent actually used
+                      // in the next step (read, follow-up query, etc.)
   prelude_hash,       // hash of loaded prelude; supports reproducibility
   source_generations, // {source: generation} snapshot at query time
   visibility,         // "public" | "team" | "private" — policy-derived
@@ -431,11 +450,27 @@ v2.0; raw expression and content capture are policy-controlled.
 }
 ```
 
+**Surfaced vs consumed.** `surfaced_refs` is everything the verb's
+output stream contained. `consumed_refs` is the subset the agent
+*acted on* — handles passed to a subsequent `read`, handles
+referenced in a later query, handles selected via `run_verb`
+follow-up. The runtime infers `consumed_refs` from observed
+verb-to-verb dataflow within the session; explicit selection is
+also possible via the `TrailSummarizer.note_consumed(handle)`
+callback from a host application.
+
+This distinction matters for trail replay (v2.1): a replay agent
+re-executes consumed paths, not every surfaced candidate. The
+output-explosion failure mode the live workflow simulation
+surfaced — context verb surfaces 6 hits + 4 spans + 2 edges, agent
+uses 1 — is resolved by recording both sets and treating consumed
+as the load-bearing path.
+
 A `TrailSummarizer` (Part VI extension seam) produces the
-`redacted_expr` and may strip output_refs for handles whose
-`visibility` is `private`. Default summarizer redacts values inside
-string literals and meta-key values matching configured patterns
-(`secret`, `password`, customer ids).
+`redacted_expr` and may strip surfaced/consumed refs for handles
+whose `visibility` is `private`. Default summarizer redacts values
+inside string literals and meta-key values matching configured
+patterns (`secret`, `password`, customer ids).
 
 Trails persist to `.anneal/trails/<session-id>.jsonl` on session end.
 Replay/diff workflows are forward-looking (v2.1; §47).
@@ -1043,6 +1078,28 @@ The runtime warns at load if a corpus's `anneal.dl` declares a fact
 prefix recognized by *no* linked adapter. The user fixes by linking
 the adapter or marking the fact `optional`.
 
+**Single-adapter sugar.** When exactly one adapter is linked, the
+runtime auto-qualifies unqualified discovery facts to that adapter:
+
+```dl
+# In a markdown-only project, this is allowed:
+file_extension(".md").              # auto-qualified to md.file_extension
+label_pattern("OQ", "OQ-(\d+)", "any").
+
+# In a multi-adapter project, the same line errors at load:
+error: anneal.dl:4: ambiguous discovery fact 'file_extension'
+       multiple linked adapters declare config keys with this name:
+         - md.file_extension (anneal-md)
+         - mdx.file_extension (anneal-mdx)
+       resolve by qualifying explicitly (md.file_extension or mdx.file_extension)
+```
+
+This removes the ergonomic tax on single-adapter corpora (the
+common case) while keeping the disambiguation guarantee on
+multi-adapter corpora. The user discovers which mode applies via
+`anneal sources` — listing one adapter means unqualified facts
+work; listing more requires qualification.
+
 ---
 
 ## Part VII: Surfaces [CR-Su]
@@ -1057,8 +1114,8 @@ Projects override or extend any.
 | `anneal` | where am I | composed of summary, work, advancing, blocked |
 | `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges |
 | `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
-| `anneal search TEXT` | content match by query | `search("TEXT", h, span, score, reason, field)` |
-| `anneal context GOAL` | search + read + neighborhood in one verb | composes `search`, `top_k`, `read`, `neighborhood` |
+| `anneal search TEXT` | content match by query | `search("TEXT", h, span, score, reason, field, low_confidence)` |
+| `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span, text, ...)` |
 | `anneal work` | where should I work | `potential(h, e), entropy(h, src). TopK{25, key: e}.` |
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
@@ -1076,6 +1133,57 @@ Plus meta forms:
 | `anneal init` | scaffold a corpus with starter `anneal.toml` + `anneal.dl` |
 | `anneal --prelude-path` | print the embedded-prelude inspection path |
 | `anneal --inspect S` | parse-test a string against handle conventions |
+
+### §33.1 The `context` verb [CR-D30]
+
+**Definition CR-D30 (Context verb).** The `context` verb is the
+load-bearing primitive for cold-agent localization. It composes
+`search`, `read`, and `neighborhood` into a single budgeted call
+that returns enough to make progress without a second tool call.
+
+```
+anneal context GOAL [--budget=N] [--neighborhood-depth=D] [--hits=K]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--budget=N` | `4000` tokens | total token budget across hits + spans + neighborhood |
+| `--neighborhood-depth=D` | `1` | edges to traverse outward from the top hit |
+| `--hits=K` | `3` | candidates to return (after `TopK` filtering) |
+
+Underlying composition (from `views.dl`):
+
+```dl
+@verb(
+  name: "context",
+  query: "
+    ? candidates = TopK{ k: hits, key: score :
+        search(goal, h, span, score, reason, field, low_confidence)
+      },
+      spans = TakeUntil{ budget: budget * 0.6, sum: tokens :
+        (h, span_id, lines, text, start, end, tokens) :
+          h in candidates, read(h, budget * 0.6 / hits, span_id, …)
+      },
+      edges = neighborhood(top(candidates), neighborhood_depth, e).
+  ",
+  output_schema: {
+    goal: String,
+    hits: List<{h, span_id, score, reason, field}>,
+    spans: List<{h, span_id, lines, tokens, text}>,
+    neighborhood: List<{edge, from, to}>
+  },
+  capabilities: ["read"]
+)
+```
+
+Budget allocation: 60% to span reads on top hits, 20% to
+neighborhood expansion, 20% reserved for `--explain` if requested.
+The runtime adjusts allocations downward when the requested K hits
+or D-depth neighborhood don't exist; it never overruns.
+
+Cold-agent test (§49 large-corpus fixture) targets a single `context`
+call after an optional `anneal` dashboard — total tool calls ≤2,
+counted including any required follow-ups.
 
 ### §34 Query echo behavior [CR-D24]
 
@@ -1115,13 +1223,19 @@ Operational only — never query-shaping. Filters belong in queries.
 | `--source=NAME` | restrict ingestion to one Source | global |
 | `--mcp` | start as MCP server on stdin/stdout | global |
 | `--color=auto` | TTY detect; pipes get plain text | global |
+| `--pretty` | human-readable formatted JSON (breaks NDJSON contract) | global |
+| `--include-low-confidence` | include hits with `low_confidence: true` in `TopK` | global, search-relevant |
 
 ### §36 I/O contract [CR-D25]
 
 **Definition CR-D25 (I/O contract).**
 
 - **stdout: pure NDJSON.** Bare record stream; `--meta` adds one
-  envelope record at the top.
+  envelope record at the top. Pipe to `jq` for human-readable
+  formatting: `anneal | jq` is the canonical pretty-print path. The
+  `--pretty` flag is also available for in-process formatting; it
+  emits multi-line JSON and breaks the NDJSON contract, so it is
+  human-only and never used in agent pipelines or `--mcp` mode.
 - **stderr: human text.** Verb-banner echo, progress, warnings,
   parse errors. Never NDJSON.
 - **stdin: `-` means stdin.** `anneal blocked -` reads handles, one
@@ -1516,27 +1630,30 @@ runs in large-corpus's `.design/` runs inside host-corpus.
 contributing variables and on tied threshold-crossings need pinning
 during Phase 1.
 
-### §57 Adapter discovery missing
+### §57 Cross-adapter score calibration in the default `Ranker`
 
-When a corpus's `anneal.dl` references discovery facts whose prefix
-is unrecognized by any linked Source, current behavior is warn at
-load + treat as no-op. Should it be configurable (warn vs error vs
-silent)? Lean toward warn-by-default, `--strict-adapters` flag to
-upgrade.
+§12 defines per-adapter score range, reason vocabulary, and
+confidence threshold. The default `Ranker`'s calibration formula
+across adapters is a Phase 1 design question. Probably:
+linear-rescale by adapter quartiles + bonus for matched fields
+named in the user query + low-confidence filter applied last.
 
-### §58 Cross-adapter score normalization
-
-§12 defines per-adapter score range and reason vocabulary. Default
-`Ranker` calibration across adapters is a Phase 1 design question.
-Probably: linear-rescale by adapter quartiles + bonus for matched
-fields named in user query.
-
-### §59 Default trail summarizer redaction patterns
+### §58 Default trail summarizer redaction patterns
 
 §13 says default summarizer redacts values in string literals and
 meta-key values matching configured patterns. The default pattern
 set (`secret`, `password`, etc.) needs review; probably project-
 overridable via `[trail]` in `anneal.toml`.
+
+### §59 Distinguishing consumed-by-read from consumed-by-display
+
+§13 distinguishes `surfaced_refs` from `consumed_refs`. The runtime
+infers `consumed_refs` from observed verb-to-verb dataflow. Two
+edge cases: an agent that reads then never uses the content (the
+read is consumption-of-attention but not consumption-of-output);
+an agent that bulk-surfaces and silently drops most. Default heuristic
+TBD: lean toward `consumed = handles that appeared in a subsequent
+verb's input within the same session`.
 
 ### §60 MCP run_verb routing
 
@@ -1590,6 +1707,7 @@ evaluation. Out of scope for v2.0.
 - CR-D27: Plugin surfaces (§38)
 - CR-D28: Init defaults (§39)
 - CR-D29: Agent loop (§40)
+- CR-D30: Context verb (§33.1)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -1600,8 +1718,9 @@ evaluation. Out of scope for v2.0.
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
-- CR-Su2: CLI flags (§35)
-- CR-Su3: MCP surface (§37)
+- CR-Su2: Context verb (§33.1)
+- CR-Su3: CLI flags (§35)
+- CR-Su4: MCP surface (§37)
 
 ### CR-O (Onboarding)
 - CR-O1: Lattice-on default (§39)
@@ -1619,10 +1738,10 @@ evaluation. Out of scope for v2.0.
 
 ### CR-OQ (Open questions)
 - CR-OQ1: take_until semantics (§56)
-- CR-OQ2: Adapter discovery missing (§57)
-- CR-OQ3: Cross-adapter score normalization (§58)
-- CR-OQ4: Default trail redaction patterns (§59)
-- CR-OQ5: MCP run_verb routing (§60)
+- CR-OQ2: Cross-adapter Ranker calibration formula (§57)
+- CR-OQ3: Default trail redaction patterns (§58)
+- CR-OQ4: Consumed-by-read vs consumed-by-display heuristic (§59)
+- CR-OQ5: MCP run_verb routing under shadowed names (§60)
 - CR-OQ6: Performance ceiling (§61)
 
 ---
