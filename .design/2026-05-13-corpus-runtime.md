@@ -265,6 +265,24 @@ anneal/
 Adapters are siblings. A consumer can link any combination of
 adapters into their own binary; the CLI ships markdown by default.
 
+**Engine choice is internal to `anneal-core`.** v2.0 uses
+[`ascent`](https://github.com/s-arash/ascent) for engine-derived
+primitives and a dynamic IR for the rule layer (prelude + project +
+inline). The surface language is a stratified Datalog dialect with
+aggregation — semantics every Datalog engine in the relevant class
+(ascent, Crepe, hand-rolled, soufflé) supports. The grammar in
+Part IV (Steele's criterion for project verbs, `@verb` declarations,
+adapter-qualified discovery facts, `context` as composition primitive)
+is designed for agents reasoning about corpora, not for Rust
+developers embedding a fact engine; it deliberately does *not* mirror
+ascent's surface syntax. This is a load-bearing invariant: swapping
+engines (for performance, for non-Rust embedding, for an incremental
+evaluator) is allowed because the user-facing language and the
+stored-relation schema are independent of the engine choice. The IR's
+internal AST stays close to ascent's shape so the primitives-lowering
+pass is thin, but that's an implementation detail of `anneal-core`,
+not a public contract.
+
 ---
 
 ## Part III: Substrate primitives [CR-P]
