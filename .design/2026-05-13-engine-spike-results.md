@@ -68,14 +68,16 @@ run (release build, 13,904 handles, 6,416 edges):
 |---|---|
 | 1. MVS-1..9 all working | partial — MVS-7 untested at scale, MVS-9 not validated |
 | 2. Stratification with usable error | partial — rejected but cycle not fully named |
-| 3. <2s cold, <200ms warm fixpoint at large-corpus | fixpoint cleared (<5ms); warm unmeasured |
+| 3. <2s cold, <200ms warm full evaluation at large-corpus | cold live-runner path cleared (<510ms total, <5ms fixpoint); warm unmeasured; not run against frozen fixture |
 | 4. <500ms snapshot `at()`, <5× git-ref | **unmeasured** |
 | 5. <200MB memory | **unmeasured** |
 | 6. `unsafe_code = deny` or contained FFI | **not audited** — ascent 0.8 has unsafe blocks at `ascent/src/c_rel_index.rs:94,209,255,282` and siblings |
 
-So one of six sub-criteria is decisively met (fixpoint speed). The
-others are either partial or unmeasured. The earlier "SP-R1 cleared
-by 530×" framing in session notes was too strong.
+So only the cold/fixpoint slice of one sub-criterion is decisively
+measured. No complete SP-R1 criterion is closed as written because
+warm evaluation, frozen fixtures, runtime loading, snapshot/git-ref
+travel, memory, and dependency-unsafe audit remain open. The earlier
+"SP-R1 cleared by 530×" framing in session notes was too strong.
 
 ---
 
@@ -122,7 +124,8 @@ the spike as a conformance layer keeping the existing MVS-shaped tests
 as project-specific coverage, or (b) revise the engine-spike spec's
 SP-Q list to reflect what we actually want to validate. The current
 state is "the spike passes" while "the spec's tests" are not all run.
-Recommendation: (a), executed early in Phase 1.
+Recommendation: (a), executed as Phase 0 closure work before any
+user-visible Phase 1 surface depends on the new engine.
 
 ---
 
@@ -186,6 +189,24 @@ evaluator with one set of shadowing rules. Ascent stops being "the
 engine" and becomes "the fast primitives the engine uses." This is
 also more honest about what we proved: ascent is fast and type-safe,
 not magic.
+
+The research-graph check points the same way:
+
+- `static languages prevent runtime introspection` warns that a
+  compiled artifact severs the source/runtime link that v2.0's
+  query language is meant to preserve.
+- `observable semantics lock in implementation details and block
+  optimization` and `hirams law makes all observable interpreter
+  behavior a permanent api commitment` warn against letting spike
+  output shapes or evaluation quirks escape before the compatibility
+  contract is explicit.
+- `language runtime bootstrap requires broad infrastructure before
+  any program can run` warns that a dynamic rule layer will have a
+  long invisible-progress phase; parity fixtures and layer tests are
+  the mitigation.
+- `language quality validation requires production use not internal
+  development` argues for treating Phase 1 semantics as provisional
+  until real corpora and agent workflows exercise them.
 
 ### §5 Trade-offs
 
@@ -264,10 +285,12 @@ error: use of aggregated relation `advancing` cannot be stratified
    |                               ^
 ```
 
-Stronger than the spec's "load-time error" requirement (compile-time
-> load-time). Weaker than the spec's "naming both rules in the cycle"
-expectation — ascent names only `advancing/1`, not both `blocked/1`
-and `advancing/1`. The cycle itself is not named.
+For static compiled rules this is earlier than load-time. For v2.0's
+runtime `.dl` loader contract, it is not enough: the dynamic loader
+still needs to reject the same program before evaluation. It is also
+weaker than the spec's "naming both rules in the cycle" expectation —
+ascent names only `advancing/1`, not both `blocked/1` and
+`advancing/1`. The cycle itself is not named.
 
 Phase 1 implication: if the spec's diagnostic-quality bar matters
 (it probably does for agent ergonomics — agents need to act on
@@ -281,15 +304,18 @@ diagnostic that names every rule in the cycle.
 
 The protocol's SP-DR1 conditions:
 
-- One engine satisfies SP-R1 — partial (1 of 6 sub-criteria; rest
-  unmeasured or not-yet-attempted)
-- All MVS-Q queries pass — partial (4 of 9 match spec literal; the
-  rest drift from spec, see §SR-Q)
-- Cyclic-negation rejected at load — yes with caveat
+- One engine satisfies SP-R1 — no; ascent satisfies the narrower
+  "static primitive substrate is viable" claim, not SP-R1 as written
+- All SP-Q queries pass — no; 4 of 9 match spec literal and the rest
+  drift from spec, see §SR-Q
+- Cyclic-negation rejected at load — no for dynamic `.dl` loading;
+  yes only for static Ascent compile-time validation, with diagnostic
+  caveat
 - Spike report identifies open blockers — this document
 
-**Honest verdict: SP-DR1 is partially met.** The engine-viability bit
-is decided in ascent's favor *for primitives*. The closure work
+**Honest verdict: SP-DR1 is not met as written.** The spike supports
+a narrower decision: use ascent for fixed engine-derived primitives
+unless Phase 1 measurements falsify that choice. The closure work
 (artifacts, parity, unsafe audit, real SP-Q queries, snapshot subsystem)
 is real Phase 0 debt that should either be retired before Phase 1
 implementation work starts, or be explicitly scoped into Phase 1 as
