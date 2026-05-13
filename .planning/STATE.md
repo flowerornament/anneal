@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Language-First Redesign
+milestone_name: Programmable Corpus Runtime
 status: planning
-stopped_at: Spec merged (.design/2026-05-03-language-redesign.md). Phase 8 (engine) ready to start.
-last_updated: "2026-05-07T00:00:00Z"
-last_activity: 2026-05-07
+stopped_at: Master spec at .design/2026-05-13-corpus-runtime.md. Phase 1 closure work (anneal-apa) ready.
+last_updated: "2026-05-13T00:00:00Z"
+last_activity: 2026-05-13
 progress:
   total_phases: 4
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** v2.0 Language-First Redesign — collapse 14-command CLI into Datalog dialect + prelude + 7 verbs (per .design/2026-05-03-language-redesign.md, status: current).
+**Current focus:** v2.0 Programmable Corpus Runtime — substrate (Datalog + convergence stdlib) decoupled from sources (markdown today; mdx, code, host-embed v2.1+). The same agent skills work across every corpus the substrate can ingest. Master spec: .design/2026-05-13-corpus-runtime.md.
 
 ## Current Position
 
-Milestone: v2.0 Language-First Redesign
-Phase: 8 (datalog engine) — READY TO START
-Status: Spec merged 2026-05-03; corpus and bd refocused 2026-05-07.
-Last activity: 2026-05-07
+Milestone: v2.0 Programmable Corpus Runtime
+Phase: 1 closure — READY TO START (parity-runner, dynamic-IR bench, fixtures snapshot, unsafe audit)
+Status: Master spec landed 2026-05-13. Engine-viability question decided (ascent for primitives + dynamic IR for rules).
+Last activity: 2026-05-13
 
 Progress: [          ] 0% (0/4 phases complete)
 

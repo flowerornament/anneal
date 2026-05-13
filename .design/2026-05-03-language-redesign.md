@@ -1,5 +1,6 @@
 ---
-status: current
+status: superseded
+superseded-by: 2026-05-13-corpus-runtime.md
 date: 2026-05-03
 depends-on:
   - anneal-spec.md
@@ -7,14 +8,6 @@ depends-on:
   - 2026-04-17-cli-ux-audit-v2.md
   - 2026-04-21-orient-frontier-foundation.md
   - 2026-04-02-query-explain-spec.md
-note: >
-  The product framing in Part I (Motivation), Part V (CLI and I/O,
-  specifically the "seven verbs as engine commands" frame), and Part VII
-  (convergence as opt-in default) is superseded by
-  `2026-05-13-primitives-first-corpus-vm.md`. The architecture
-  (Parts II-IV, VI), language grammar (Part III), convergence
-  vocabulary (§16), diagnostic ID rules (§18), and handle model
-  (Part VI) remain authoritative.
 ---
 
 # Language-First Redesign

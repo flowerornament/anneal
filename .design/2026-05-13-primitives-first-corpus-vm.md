@@ -1,18 +1,16 @@
 ---
-status: current
+status: superseded
+superseded-by: 2026-05-13-corpus-runtime.md
 date: 2026-05-13
 depends-on:
   - 2026-05-03-language-redesign.md
   - 2026-05-07-engine-spike-and-parity-protocol.md
   - 2026-05-13-engine-spike-results.md
 description: >
-  Reframe of the v2.0 product story. Same architecture; sharper product
-  identity. Replaces "collapse 14 commands into one query language plus
-  seven verbs" with "programmable knowledge-corpus runtime for agents:
-  searchable content, typed relations, explainable views, and saved
-  verbs." Updates the SP-DR1 capstone gate from MVS coverage to
-  workflow-completion. Promotes search, context, and MCP from orthogonal
-  follow-up to v2.0 primary surface.
+  Reframe of the v2.0 product story. Folded into 2026-05-13-corpus-runtime.md
+  along with the substrate/adapter split. Kept here for the workflow
+  evidence (cold-agent simulation on large-corpus) and the peer-review notes
+  that drove the reframe.
 ---
 
 # v2.0 Reframe: anneal as Programmable Corpus Runtime for Agents
