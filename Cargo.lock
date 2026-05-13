@@ -41,6 +41,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "anneal-cli"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+ "anneal-md",
+]
+
+[[package]]
+name = "anneal-core"
+version = "0.10.1"
+dependencies = [
+ "camino",
+ "serde",
+]
+
+[[package]]
+name = "anneal-mcp"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+]
+
+[[package]]
+name = "anneal-md"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+ "camino",
+ "serde_yaml_ng",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
