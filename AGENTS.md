@@ -7,17 +7,25 @@ Convergence assistant for knowledge corpora.
 ## Design Corpus
 
 - `.design/` is anneal's own design corpus. Inspect and maintain it with `anneal` under `.design/anneal.toml`: `anneal status`, `anneal check --active-only`, `anneal impact <file>`.
-- `.design/anneal-spec.md` is the authoritative product and implementation spec.
+- `.design/2026-05-13-corpus-runtime.md` is the authoritative v2.0 master spec (Programmable Corpus Runtime).
+- `.design/anneal-spec.md` is the v1.x spec — superseded but retained as historical record of the shipped shape.
+- `.design/2026-05-13-engine-spike-results.md` and `.design/2026-05-13-ascent-unsafe-audit.md` are the engine-viability artifacts that gate v2.0 architecture decisions. Do not casually claim "SP-R1 cleared" — Ascent unsafe is accepted as bounded dependency risk, not eliminated.
 - `.design/.anneal/` is optional repo-local anneal state when explicitly configured.
-- `.planning/ROADMAP.md` and `.planning/STATE.md` own the roadmap spine and current state.
+- `.planning/ROADMAP.md` and `.planning/STATE.md` own the roadmap spine and current state. Treat `bd` as the source of truth for in-progress work; `.planning/STATE.md` is updated at phase boundaries.
 - `install.sh` ships with releases — treat installer correctness as release-critical.
 - `.beads/config.yaml` is tracked repo config only; keep machine-specific federation settings local to your shell environment.
 - Store state in specs sparingly. Use `bd` for state.
 
-For orientation in the spec:
-- `§1-§3` for model and motivation
-- `§12` for CLI surface
-- `§15` for implementation patterns and dependencies
+For orientation in the v2.0 master spec (`2026-05-13-corpus-runtime.md`):
+- Part I (`§1-§3`) for framing and the cold-agent test
+- Part II (`§4-§8`) for architecture (substrate / adapters / surfaces, Source trait, engine-replaceability)
+- Part III (`§9-§16`) for substrate primitives (identity, stored relations, engine-derived predicates, trails, capabilities)
+- Part IV (`§17-§20`) for the language (grammar, types, aggregation, stratification)
+- Part VII (`§29-§37`) for CLI + MCP surfaces
+- Part X (`§47-§48`) for files and layout
+- Part XV for `CR-*` label conventions (CR-D decisions, CR-R rules, CR-Q questions, CR-Fw forward-looking)
+
+CR-* labels are referenced from bd issues and commit messages — search the spec for the exact label to find the governing definition.
 
 For low-context corpus orientation, prefer:
 - `anneal status --json --compact`
@@ -38,7 +46,17 @@ Avoid broad default dumps like raw `check --json`, empty-query `find --json`, or
 
 ## Module Boundaries
 
-anneal is a single-crate binary; modules in `src/` own distinct layers.
+**v2.0 target shape (Phase 1 in flight — `bd anneal-xu2`):** a cargo workspace.
+
+- `crates/anneal-core` — substrate: Datalog runtime, dynamic IR, engine-derived primitives (Ascent-backed), convergence stdlib, provenance, trail capture. No source-specific code.
+- `crates/anneal-md` — markdown adapter; implements `Source`.
+- `crates/anneal-cli` — the binary; links core + md.
+- `crates/anneal-mcp` — MCP server; links core + md.
+- Adapters beyond markdown (`anneal-mdx`, `anneal-code`, `anneal-host`) are sibling crates added v2.1+.
+
+`anneal-core` is the only crate other anneal crates depend on. Engine choice is internal to `anneal-core` — see master spec §8 final paragraph. Do not expose Ascent as a general runtime `.dl` loader; the dynamic IR owns prelude/project/inline rules.
+
+**v1.x current shape (still operational until Phase 10 lands):** single-crate binary; modules in `src/` own distinct layers.
 
 - Durable pipeline shape: `parse` → `extraction` → `graph` / `resolve` → `analysis` / `lattice` → `checks` → `output` / `cli`.
 - `graph` owns the arena; `handle` owns identity types (`Handle`, `NodeId`, `HandleKind`, `EdgeKind`). Don't leak arena internals across module boundaries.
