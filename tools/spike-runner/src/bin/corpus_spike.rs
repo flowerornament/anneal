@@ -6,8 +6,8 @@
 //! Usage:
 //!   `cargo run --release --bin corpus_spike -- [<root>]`
 //!
-//! Default root: `/path/to/large-corpus/.design`. Set `SPIKE_CORPUS_ROOT` to
-//! override without flags.
+//! Default root: repo-local `.fixtures/sample-corpus`. Set
+//! `SPIKE_CORPUS_ROOT` to override without flags.
 
 use serde::Serialize;
 use spike_runner::loader::{load_via_anneal, Corpus, LoadError};
@@ -71,8 +71,8 @@ fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1000.0 }
 fn corpus_root() -> PathBuf {
     if let Ok(p) = std::env::var("SPIKE_CORPUS_ROOT") { return PathBuf::from(p); }
     if let Some(arg) = std::env::args().nth(1) { return PathBuf::from(arg); }
-    let home = std::env::var("HOME").expect("HOME unset");
-    PathBuf::from(home).join("code/large-corpus/.design")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.fixtures/sample-corpus")
 }
 
 fn fill_program(prog: &mut AscentProgram, corpus: &Corpus) {

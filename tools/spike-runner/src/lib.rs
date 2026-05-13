@@ -9,6 +9,7 @@
 //! MVS test catalog and pass/fail criteria.
 
 pub mod capability;
+pub mod dynamic_ir;
 pub mod fixture;
 pub mod loader;
 pub mod program;

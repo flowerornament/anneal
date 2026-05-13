@@ -37,6 +37,10 @@ path = "src/bin/ascent_spike.rs"
 name = "corpus_spike"
 path = "src/bin/corpus_spike.rs"
 
+[[bin]]
+name = "dynamic_ir_bench"
+path = "src/bin/dynamic_ir_bench.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
