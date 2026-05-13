@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Programmable Corpus Runtime
 status: planning
-stopped_at: Master spec at .design/2026-05-13-corpus-runtime.md. Phase 1 closure work (anneal-apa) ready.
-last_updated: "2026-05-13T00:00:00Z"
+stopped_at: Build scope at .planning/V2_BUILD_SCOPE.md. Phase 0 closure work (anneal-apa) is the first build move.
+last_updated: "2026-05-13T13:54:00Z"
 last_activity: 2026-05-13
 progress:
-  total_phases: 4
+  total_phases: 12
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** An arriving agent can immediately understand what's settled, what's drifting, what's connected, and where to push next.
-**Current focus:** v2.0 Programmable Corpus Runtime — substrate (Datalog + convergence stdlib) decoupled from sources (markdown today; mdx, code, host-embed v2.1+). The same agent skills work across every corpus the substrate can ingest. Master spec: .design/2026-05-13-corpus-runtime.md.
+**Current focus:** v2.0 Programmable Corpus Runtime - substrate (Datalog + convergence stdlib) decoupled from sources (markdown today; mdx, code, host-embed v2.1+). The same agent skills work across every corpus the substrate can ingest. Master spec: .design/2026-05-13-corpus-runtime.md. Build scope: .planning/V2_BUILD_SCOPE.md.
 
 ## Current Position
 
 Milestone: v2.0 Programmable Corpus Runtime
-Phase: 1 closure — READY TO START (parity-runner, dynamic-IR bench, fixtures snapshot, unsafe audit)
+Phase: 0 closure - READY TO START (parity-runner, dynamic-IR bench, fixtures snapshot, unsafe audit)
 Status: Master spec landed 2026-05-13. Engine-viability question decided (ascent for primitives + dynamic IR for rules).
 Last activity: 2026-05-13
 
-Progress: [          ] 0% (0/4 phases complete)
+Progress: [          ] 0% (0/12 phases complete)
 
 **v2.0 phase decomposition (matches master spec layering):**
 
@@ -49,7 +49,12 @@ Progress: [          ] 0% (0/4 phases complete)
 | 10 Surfaces | `anneal-toe` (P1) | anneal-cli, anneal-mcp, anneal init | Phase 11 |
 | 11 Migration | `anneal-px9` (P2) | parity, fixtures, dual-CLI, docs | (epic close) |
 
+Phase 0 is split into ready blocking tasks: `anneal-apa.1` parity runner,
+`anneal-apa.2` frozen large-corpus fixture, `anneal-apa.3` dynamic IR benchmark, and
+`anneal-apa.4` Ascent unsafe audit.
+
 **Epic:** `anneal-rsx` (v2.0 — Programmable Corpus Runtime)
+**Build scope:** `.planning/V2_BUILD_SCOPE.md`
 
 **Supporting issues kept open:**
 - `anneal-10c` (P2): SP-Q literal-query conformance — gates Phase 11
@@ -114,9 +119,9 @@ Recent decisions affecting current work (full log in PROJECT.md):
 
 ## Session Continuity
 
-Last session: 2026-03-31T02:57:56Z
-Stopped at: Completed 07-VERIFICATION.md
+Last session: 2026-05-13T13:54:00Z
+Stopped at: Build scope added; next move is claiming `anneal-apa`.
 Resume file: None
 
 ---
-*Last updated: 2026-03-31 after Phase 7 verification*
+*Last updated: 2026-05-13 after v2.0 build-scope alignment*

@@ -4,7 +4,7 @@
 
 - [x] **v1.0 MVP** - Phases 1-3 (shipped 2026-03-29)
 - [x] **v1.1 Parser Hardening & UX Polish** - Phases 4-7 (shipped 2026-03-31)
-- [ ] **v2.0 Programmable Corpus Runtime** - 11 phases (per `.design/2026-05-13-corpus-runtime.md`)
+- [ ] **v2.0 Programmable Corpus Runtime** - Phase 0 closure + 11 build phases (per `.design/2026-05-13-corpus-runtime.md`)
 
 ## Phases
 
@@ -134,6 +134,7 @@ Plans:
 **Milestone Goal:** A programmable knowledge-corpus runtime for agents and humans. Substrate (Datalog primitives + convergence standard library) decoupled from sources (markdown, MDX, code, host applications) by the `Source` trait. The same agent skills work across every corpus the substrate can ingest. Master spec: `.design/2026-05-13-corpus-runtime.md` (status: current).
 
 **Engine-spike outcome:** ascent for engine-derived primitives + dynamic IR for the rule layer. See `.design/2026-05-13-engine-spike-results.md`.
+**Build scope:** `.planning/V2_BUILD_SCOPE.md` translates the spec into implementation order, stop gates, and safe parallelism for agents.
 
 Closure work (Phase 0):
 - [ ] **Phase 0 closure** — parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench. `bd anneal-apa`.
