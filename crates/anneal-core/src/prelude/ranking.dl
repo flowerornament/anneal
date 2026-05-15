@@ -1,0 +1,6 @@
+# Source-backed topic documentation for ranking helpers.
+
+@doc(
+  name: "ranking",
+  doc: "Ranking standard-library helpers around lexical search, source-calibrated scores, low-confidence filtering, and result selection policies."
+).

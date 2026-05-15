@@ -1,0 +1,6 @@
+# Source-backed topic documentation for structural graph helpers.
+
+@doc(
+  name: "graph",
+  doc: "Graph standard-library helpers for structural corpus shapes such as orphan, stub, hub, neighborhood-friendly relation views, and source-neutral graph maintenance queries."
+).

@@ -1,0 +1,6 @@
+# Source-backed topic documentation for standard diagnostics.
+
+@doc(
+  name: "checks",
+  doc: "Diagnostic standard-library rules for E001, E002, W001-W004, I001, and S001-S005. These rules derive diagnostic facts from stored corpus relations and convergence predicates."
+).

@@ -1166,7 +1166,11 @@ mod tests {
         assert_eq!(VIEWS_PRELUDE, context_verb_source());
 
         let program = parse_program("views.dl", VIEWS_PRELUDE).expect("views.dl parses");
-        let Some(Statement::Verb(verb)) = program.statements.first() else {
+        let Some(Statement::Verb(verb)) = program
+            .statements
+            .iter()
+            .find(|statement| matches!(statement, Statement::Verb(_)))
+        else {
             panic!("expected context @verb");
         };
 

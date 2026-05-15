@@ -10,9 +10,16 @@ pub const CONTEXT_VERB_DOC: &str = "Find the most relevant handles for a goal, r
 pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "neighborhood_depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
+pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the v2 surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
+pub const GRAPH_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/graph.dl";
 pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/convergence.dl";
+pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
+pub const RANKING_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/ranking.dl";
 pub const VIEWS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/views.dl";
+pub const GRAPH_PRELUDE: &str = include_str!("../prelude/graph.dl");
 pub const CONVERGENCE_PRELUDE: &str = include_str!("../prelude/convergence.dl");
+pub const CHECKS_PRELUDE: &str = include_str!("../prelude/checks.dl");
+pub const RANKING_PRELUDE: &str = include_str!("../prelude/ranking.dl");
 pub const VIEWS_PRELUDE: &str = include_str!("../prelude/views.dl");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,8 +30,20 @@ pub struct EmbeddedPreludeFile {
 
 pub const STANDARD_PRELUDE_FILES: &[EmbeddedPreludeFile] = &[
     EmbeddedPreludeFile {
+        source_name: GRAPH_PRELUDE_SOURCE,
+        contents: GRAPH_PRELUDE,
+    },
+    EmbeddedPreludeFile {
         source_name: CONVERGENCE_PRELUDE_SOURCE,
         contents: CONVERGENCE_PRELUDE,
+    },
+    EmbeddedPreludeFile {
+        source_name: CHECKS_PRELUDE_SOURCE,
+        contents: CHECKS_PRELUDE,
+    },
+    EmbeddedPreludeFile {
+        source_name: RANKING_PRELUDE_SOURCE,
+        contents: RANKING_PRELUDE,
     },
     EmbeddedPreludeFile {
         source_name: VIEWS_PRELUDE_SOURCE,
@@ -83,6 +102,11 @@ pub fn context_verb_source() -> String {
 # executable context contract because cold-agent localization depends on
 # its exact query shape.
 
+@doc(
+  name: \"views\",
+  doc: {views_doc}
+).
+
 @verb(
   name: {name},
   query: {query},
@@ -92,6 +116,7 @@ pub fn context_verb_source() -> String {
   capabilities: {capabilities}
 ).
 ",
+        views_doc = datalog_string_literal(VIEWS_PRELUDE_DOC),
         name = datalog_string_literal(CONTEXT_VERB_NAME),
         query = datalog_string_literal(&context_query_template()),
         doc = datalog_string_literal(CONTEXT_VERB_DOC),
@@ -187,12 +212,37 @@ fn datalog_string_list(values: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
+
     use crate::runtime::ast::Statement;
     use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
 
     #[test]
     fn context_verb_source_matches_checked_in_views_prelude() {
         assert_eq!(VIEWS_PRELUDE, context_verb_source());
+    }
+
+    #[test]
+    fn standard_prelude_file_set_matches_spec_layout() {
+        let source_names = STANDARD_PRELUDE_FILES
+            .iter()
+            .map(|file| file.source_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            source_names,
+            vec![
+                GRAPH_PRELUDE_SOURCE,
+                CONVERGENCE_PRELUDE_SOURCE,
+                CHECKS_PRELUDE_SOURCE,
+                RANKING_PRELUDE_SOURCE,
+                VIEWS_PRELUDE_SOURCE,
+            ]
+        );
+        assert!(STANDARD_PRELUDE_FILES.iter().all(|file| {
+            parse_program(file.source_name, file.contents).is_ok()
+                && !file.contents.trim().is_empty()
+        }));
     }
 
     #[test]
@@ -229,6 +279,60 @@ mod tests {
             outputs[1].rows[0].fields.get("lines"),
             Some(&Value::String("3".to_string()))
         );
+    }
+
+    #[test]
+    fn standard_prelude_exposes_source_backed_topic_docs() {
+        let topic_sources = [
+            ("graph", GRAPH_PRELUDE_SOURCE),
+            ("convergence", CONVERGENCE_PRELUDE_SOURCE),
+            ("checks", CHECKS_PRELUDE_SOURCE),
+            ("ranking", RANKING_PRELUDE_SOURCE),
+            ("views", VIEWS_PRELUDE_SOURCE),
+        ];
+        let mut program = standard_prelude_program().expect("prelude parses");
+        let mut query_source = String::new();
+        for (topic, _) in &topic_sources {
+            writeln!(
+                query_source,
+                "? describe({}, doc).\n? source_of({}, file, lines).",
+                datalog_string_literal(topic),
+                datalog_string_literal(topic),
+            )
+            .expect("write query");
+        }
+        let query = parse_program("describe-topics", &query_source).expect("topic query parses");
+        program.statements.extend(query.statements);
+
+        let analyzed = analyze(program).expect("prelude topic query analyzes");
+        let queries = analyzed.queries().cloned().collect::<Vec<_>>();
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("prelude fixpoint runs");
+        let outputs = queries
+            .iter()
+            .map(|query| evaluator.eval_query(query).expect("query evaluates"))
+            .collect::<Vec<_>>();
+
+        for (idx, (topic, source_name)) in topic_sources.iter().enumerate() {
+            let describe = &outputs[idx * 2];
+            assert_eq!(describe.rows.len(), 1, "describe({topic})");
+            assert!(
+                matches!(describe.rows[0].fields.get("doc"), Some(Value::String(doc)) if !doc.is_empty()),
+                "describe({topic}) should have doc text"
+            );
+
+            let source = &outputs[idx * 2 + 1];
+            assert_eq!(
+                source.rows[0].fields.get("file"),
+                Some(&Value::String((*source_name).to_string())),
+                "source_of({topic})"
+            );
+            assert_ne!(
+                source.rows[0].fields.get("lines"),
+                Some(&Value::String("unknown".to_string())),
+                "source_of({topic}) should have concrete lines"
+            );
+        }
     }
 
     #[test]
