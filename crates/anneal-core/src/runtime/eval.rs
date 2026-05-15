@@ -3671,15 +3671,20 @@ mod tests {
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::ranking::SearchHit;
     use crate::runtime::ast::{RuleLayer, Statement};
     use crate::runtime::{StaticError, analyze, parse_program};
 
     fn identity(native_id: &str) -> FactIdentity {
+        identity_for_source("fixture", native_id)
+    }
+
+    fn identity_for_source(source: &str, native_id: &str) -> FactIdentity {
         FactIdentity::new(
             CorpusId::from("test"),
-            SourceName::from("fixture"),
+            SourceName::from(source),
             NativeId::from(native_id),
-            OriginUri::from(format!("fixture://{native_id}")),
+            OriginUri::from(format!("{source}://{native_id}")),
             Revision::from("rev"),
             Generation::initial(),
         )
@@ -3999,6 +4004,35 @@ mod tests {
         ];
         let mut store = FactStore::default();
         store.merge(batch).expect("search fixture merge");
+        Database::from_store(&store)
+    }
+
+    fn multi_source_search_database() -> Database {
+        let mut lexical = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("lexical"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        let mut lexical_handle =
+            handle_with_summary("lexical.md", "file", "current", "", "notes", "Same topic");
+        lexical_handle.identity = identity_for_source("lexical", "lexical.md");
+        lexical.handles = vec![lexical_handle];
+
+        let mut semantic = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("semantic"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        let mut semantic_handle =
+            handle_with_summary("semantic.md", "file", "current", "", "notes", "Same topic");
+        semantic_handle.identity = identity_for_source("semantic", "semantic.md");
+        semantic.handles = vec![semantic_handle];
+
+        let mut store = FactStore::default();
+        store.merge(lexical).expect("lexical fixture merge");
+        store.merge(semantic).expect("semantic fixture merge");
         Database::from_store(&store)
     }
 
@@ -4919,6 +4953,84 @@ mod tests {
         assert_eq!(rows[0].get("h"), Some(&s("notes/tie-a.md")));
         assert_eq!(rows[1].get("h"), Some(&s("notes/tie-b.md")));
         assert_eq!(rows[0].get("score"), rows[1].get("score"));
+    }
+
+    #[test]
+    fn low_confidence_policy_is_executable_before_top_k() {
+        let options = EvalOptions::default().with_low_confidence_threshold(0.9);
+        let raw = evaluate_query_output_with_options(
+            r#"? search("C-conformance", h, span_id, score, reason, field, low_confidence)."#,
+            search_database(),
+            options.clone(),
+        );
+        assert!(
+            raw.rows
+                .iter()
+                .any(|row| row.fields.get("low_confidence") == Some(&Value::Bool(true))),
+            "fixture should produce low-confidence rows at the stricter threshold"
+        );
+
+        let filtered = evaluate_query_output_with_options(
+            r#"
+            ? (h, score, low_confidence) = TopK{ k: 10, key: score :
+                (h, score, low_confidence) :
+                search("C-conformance", h, span_id, score, reason, field, low_confidence),
+                low_confidence = false
+              }.
+            "#,
+            search_database(),
+            options.clone(),
+        );
+        assert!(filtered.rows.is_empty());
+
+        let included = evaluate_query_output_with_options(
+            r#"
+            ? (h, score, low_confidence) = TopK{ k: 10, key: score :
+                (h, score, low_confidence) :
+                search("C-conformance", h, span_id, score, reason, field, low_confidence)
+              }.
+            "#,
+            search_database(),
+            options,
+        );
+        assert!(!included.rows.is_empty());
+    }
+
+    #[derive(Clone, Debug)]
+    struct SourceCalibratingRanker;
+
+    impl Ranker for SourceCalibratingRanker {
+        fn calibrate(&self, hit: &SearchHit, _ctx: &RankingContext) -> f32 {
+            if hit.source() == "semantic" {
+                0.95
+            } else {
+                0.45
+            }
+        }
+
+        fn tie_break(&self, a: &SearchHit, b: &SearchHit) -> Ordering {
+            DefaultRanker.tie_break(a, b)
+        }
+    }
+
+    #[test]
+    fn custom_ranker_can_calibrate_across_sources() {
+        let output = evaluate_query_output_with_options(
+            r#"? search("same topic", h, span_id, score, reason, field, low_confidence)."#,
+            multi_source_search_database(),
+            EvalOptions::default().with_ranker(SourceCalibratingRanker),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("h"), Some(&s("semantic.md")));
+        assert_eq!(rows[0].get("low_confidence"), Some(&Value::Bool(false)));
+        assert_eq!(rows[1].get("h"), Some(&s("lexical.md")));
+        assert_eq!(rows[1].get("low_confidence"), Some(&Value::Bool(true)));
     }
 
     #[test]

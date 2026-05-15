@@ -4,14 +4,20 @@
 //! frozen large-corpus fixture for PD-1, PD-2, and PD-3. That proves the harness is
 //! deterministic before v2.0 has any output to compare against.
 
+use anneal_cli::{ReadCommand, SearchCommand};
+use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::{
+    Database, EvalOptions, Evaluator, QueryOutput, Row, Value as RuntimeValue, analyze,
+    parse_program,
+};
 use anneal_core::{
-    ActorContext, CancellationToken, ConfigFacts, CorpusId, FactBatch, Generation, Source,
-    SourceContext,
+    ActorContext, CancellationToken, ConfigFacts, CorpusId, FactBatch, FactStore, Generation,
+    Source, SourceContext,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
-use serde_json::{Value, json};
+use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -71,7 +77,7 @@ impl RightMode {
 
 #[derive(Debug)]
 struct CommandResult {
-    stdout: Value,
+    stdout: JsonValue,
     stderr: String,
 }
 
@@ -144,6 +150,28 @@ impl FactRight {
             stderr: String::new(),
         })
     }
+
+    fn eval_query(&self, query: &str) -> Result<QueryOutput> {
+        let mut store = FactStore::default();
+        store
+            .merge(self.batch.clone())
+            .context("failed to merge anneal-md facts into runtime store")?;
+        let database = Database::from_store(&store);
+        let program = parse_program("parity-phase4", query)?;
+        let analyzed = analyze(program)?;
+        let query = analyzed
+            .queries()
+            .next()
+            .cloned()
+            .context("phase4 parity query did not contain a query")?;
+        let mut evaluator = Evaluator::with_options(analyzed, database, EvalOptions::default());
+        evaluator
+            .run_fixpoint()
+            .context("phase4 parity fixpoint failed")?;
+        evaluator
+            .eval_query(&query)
+            .context("phase4 parity query failed")
+    }
 }
 
 #[derive(Debug)]
@@ -198,6 +226,9 @@ fn main() -> Result<()> {
         &corpus_root,
         &sample_handles,
     )?);
+    if let RightRunner::AnnealMdFacts(facts) = &right_runner {
+        cases.extend(run_phase4_cases(facts)?);
+    }
 
     for case in &cases {
         let status = if case.passed { "ok" } else { "fail" };
@@ -391,6 +422,107 @@ fn run_pd3(
     })
 }
 
+fn run_phase4_cases(right: &FactRight) -> Result<Vec<CaseResult>> {
+    let search = run_pd4_search(right)?;
+    let read = run_pd5_read(right)?;
+    Ok(vec![search, read])
+}
+
+fn run_pd4_search(right: &FactRight) -> Result<CaseResult> {
+    const EXPECTED_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
+    let command = "anneal search \"v17 conformance audit\" --limit=3".to_string();
+    let query = SearchCommand::new("v17 conformance audit")
+        .with_limit(3)
+        .datalog();
+    let output = right.eval_query(&query)?;
+    let expected = output.rows.iter().find(|row| {
+        row_string(row, "h") == Some(EXPECTED_HANDLE)
+            && row_f64(row, "score").is_some_and(|score| score > 0.7)
+            && row_string(row, "reason").is_some_and(search_reason_allowed)
+            && row_bool(row, "low_confidence") == Some(false)
+    });
+    let passed = expected.is_some();
+    let detail = if passed {
+        format!("top-3 includes {EXPECTED_HANDLE}")
+    } else {
+        format!(
+            "top-3 missing expected audit handle; rows={}",
+            serde_json::to_string(&output.rows)?
+        )
+    };
+    Ok(CaseResult {
+        id: "PD-4",
+        label: "search",
+        command,
+        passed,
+        detail,
+        left_stderr: String::new(),
+        right_stderr: String::new(),
+    })
+}
+
+fn run_pd5_read(right: &FactRight) -> Result<CaseResult> {
+    const EXPECTED_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
+    let command = format!("anneal read {EXPECTED_HANDLE} --budget=4000");
+    let query = ReadCommand::new(EXPECTED_HANDLE).with_budget(4_000).datalog();
+    let output = right.eval_query(&query)?;
+    let first_text = output
+        .rows
+        .first()
+        .and_then(|row| row_string(row, "text"))
+        .unwrap_or_default();
+    let passed = first_text.contains("## Method") || first_text.contains("## Summary");
+    let detail = if passed {
+        "first span includes Method or Summary".to_string()
+    } else {
+        format!(
+            "first span missing Method/Summary; rows={}",
+            serde_json::to_string(&output.rows)?
+        )
+    };
+    Ok(CaseResult {
+        id: "PD-5",
+        label: "read",
+        command,
+        passed,
+        detail,
+        left_stderr: String::new(),
+        right_stderr: String::new(),
+    })
+}
+
+fn search_reason_allowed(reason: &str) -> bool {
+    matches!(
+        reason,
+        "identifier-substring"
+            | "title-substring"
+            | "frontmatter-key-match"
+            | "frontmatter-value-match"
+    )
+}
+
+fn row_string<'a>(row: &'a Row, field: &str) -> Option<&'a str> {
+    match row.fields.get(field) {
+        Some(RuntimeValue::String(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn row_bool(row: &Row, field: &str) -> Option<bool> {
+    match row.fields.get(field) {
+        Some(RuntimeValue::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn row_f64(row: &Row, field: &str) -> Option<f64> {
+    match row.fields.get(field) {
+        Some(RuntimeValue::Number(NumberValue::Int(value))) => value.to_string().parse().ok(),
+        Some(RuntimeValue::Number(NumberValue::Float(value))) => Some(*value),
+        _ => None,
+    }
+}
+
 fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
     let root = Utf8PathBuf::from_path_buf(corpus_root.to_path_buf())
         .map_err(|path| anyhow!("corpus path is not valid UTF-8: {}", path.display()))?;
@@ -430,7 +562,7 @@ fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandRes
         );
     }
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout: Value = serde_json::from_slice(&output.stdout)
+    let stdout: JsonValue = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("failed to parse JSON from {}", command_string(args)))?;
     Ok(CommandResult { stdout, stderr })
 }
@@ -440,11 +572,11 @@ fn sample_handles(bin: &str, corpus_root: &Path, sample_size: usize) -> Result<V
     let items = out
         .stdout
         .get("items")
-        .and_then(Value::as_array)
+        .and_then(JsonValue::as_array)
         .context("query handles output missing items array")?;
     let ids = items
         .iter()
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter_map(|item| item.get("id").and_then(JsonValue::as_str))
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
     if ids.len() < sample_size {
@@ -453,7 +585,7 @@ fn sample_handles(bin: &str, corpus_root: &Path, sample_size: usize) -> Result<V
     Ok(ids.into_iter().take(sample_size).collect())
 }
 
-fn first_json_diff(left: &Value, right: &Value) -> String {
+fn first_json_diff(left: &JsonValue, right: &JsonValue) -> String {
     let left = serde_json::to_string_pretty(left).expect("serializing JSON value cannot fail");
     let right = serde_json::to_string_pretty(right).expect("serializing JSON value cannot fail");
     for (index, (l, r)) in left.lines().zip(right.lines()).enumerate() {

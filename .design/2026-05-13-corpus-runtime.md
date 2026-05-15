@@ -536,20 +536,17 @@ is calibrated for the loaded adapter set.
   `low_confidence_threshold: f32` in `SourceInfo.search` (default
   `0.5`). Hits with calibrated `score < threshold` carry
   `low_confidence: true` in the relation, signalling agents that
-  the hit is plausible but uncertain. The default `Ranker` filters
-  low-confidence hits from `TopK` results unless the query
-  explicitly opts in (`search_include_low_confidence` flag in
-  `anneal.toml` `[ranking]`, or `--include-low-confidence` on the
-  CLI). The relation shape:
+  the hit is plausible but uncertain. The relation shape:
 
   ```
   search(query, handle, span_id, score, reason, field, low_confidence)
   ```
 
-  Agents reading raw rows always see all hits with their
-  confidence flag; agents consuming `TopK` get only high-confidence
-  hits by default, eliminating the "0.62 hit looks comparable to
-  0.93 hit" failure mode the live workflow simulation surfaced.
+  Agents reading raw rows always see all hits with their confidence
+  flag; agents consuming surfaced `TopK` search templates get only
+  high-confidence hits by default, eliminating the "0.62 hit looks
+  comparable to 0.93 hit" failure mode the live workflow simulation
+  surfaced.
 
 **Definition CR-D42 (Default lexical Ranker).** The v2.0 default
 `Ranker` is deterministic and lexical. It emits internal `SearchHit`
@@ -563,6 +560,17 @@ ranker multiplies lexical match quality by field weights
 calibrated score, then `source`, `handle`, `span_id`, `field`, and
 `reason`. Scores below the active low-confidence threshold, default
 `0.5`, set `low_confidence: true`.
+
+**Definition CR-D43 (Search selection policy).** The raw
+`search(...)` relation emits every calibrated hit with its
+`low_confidence` flag. Surfaced search result sets that use `TopK`
+(`anneal search`, `anneal context`, and prelude search templates)
+filter with `low_confidence = false` before `TopK` by default.
+`search_include_low_confidence` in `anneal.toml` `[ranking]` or
+`--include-low-confidence` removes that predicate. This is an
+ordinary query/surface policy, not special aggregator behavior, so
+custom Datalog can inspect low-confidence rows directly and opt into
+them explicitly.
 
 ### §13 Trails [CR-D11]
 
@@ -1403,7 +1411,7 @@ Projects override or extend any.
 | `anneal` | where am I | composed of summary, work, advancing, blocked |
 | `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges |
 | `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
-| `anneal search TEXT` | content match by query | `search("TEXT", h, span_id, score, reason, field, low_confidence)` |
+| `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
 | `anneal work` | where should I work | `(h, e) = TopK{k: 25, key: e : (h, e) : potential(h, e), entropy(h, src)}` |
@@ -1527,7 +1535,7 @@ filters still belong in queries.
 | `--mcp` | start as MCP server on stdin/stdout | global |
 | `--color=auto` | TTY detect; pipes get plain text | global |
 | `--pretty` | human-readable formatted JSON (breaks NDJSON contract) | global |
-| `--include-low-confidence` | include hits with `low_confidence: true` in `TopK` | global, search-relevant |
+| `--include-low-confidence` | omit the default `low_confidence = false` predicate from search/context `TopK` templates | global, search-relevant |
 
 ### §36 I/O contract [CR-D25]
 
@@ -1833,7 +1841,7 @@ cold-agent fixtures pass:
   - Top-3 `search` result for query `"v17 conformance audit"` includes
     `reviews/2026-04-28-formal-model-v17-conformance-audit.md` with
     `score > 0.7` and `reason` in
-    `{"title-substring", "frontmatter-key-match",
+    `{"identifier-substring", "title-substring", "frontmatter-key-match",
     "frontmatter-value-match"}`
   - Following `read` on that handle returns the file's `## Method`
     or `## Summary` section in first span
@@ -1943,9 +1951,11 @@ value tie-breaks rather than bucket inclusion.
 
 ### §57 Cross-adapter score calibration in the default `Ranker`
 
-Resolved for v2.0 by CR-D42. Cross-adapter statistical calibration
-remains a future Ranker override question; the default ranker is a
-deterministic lexical baseline with documented tie-breaks.
+Resolved for v2.0 by CR-D42 and CR-D43. Cross-adapter statistical
+calibration remains a future Ranker override question; the default
+ranker is a deterministic lexical baseline with documented
+tie-breaks, and surfaced search templates apply the executable
+low-confidence predicate before `TopK`.
 
 ### §58 Default trail summarizer redaction patterns
 
@@ -2053,6 +2063,7 @@ as data instead of smuggling it through row sequence.
 - CR-D40: Ordered config facts (§63)
 - CR-D41: Corpus-unique handle ids (§15)
 - CR-D42: Default lexical Ranker (§12)
+- CR-D43: Search selection policy (§12)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2085,7 +2096,6 @@ as data instead of smuggling it through row sequence.
 - CR-Fw4: Host Corpus embedding (§55)
 
 ### CR-OQ (Open questions)
-- CR-OQ2: Cross-adapter Ranker calibration formula (§57)
 - CR-OQ3: Default trail redaction patterns (§58)
 - CR-OQ4: Consumed-by-read vs consumed-by-display heuristic (§59)
 - CR-OQ5: MCP run_verb routing under shadowed names (§60)
