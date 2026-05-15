@@ -6,6 +6,7 @@ use crate::runtime::ast::{
     NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
     Statement, StoredAtom, Term,
 };
+use crate::runtime::primitives::{PrimitiveSignature, primitive_signatures};
 
 type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
 
@@ -13,6 +14,13 @@ type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
 struct PredicateSignature {
     arity: usize,
     parameters: ParameterNames,
+    kind: PredicateKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PredicateKind {
+    Derived,
+    Primitive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +64,9 @@ impl AnalyzedProgram {
     }
 
     pub fn predicates(&self) -> impl Iterator<Item = &PredicateRef> {
-        self.signatures.keys()
+        self.signatures.iter().filter_map(|(predicate, signature)| {
+            (signature.kind == PredicateKind::Derived).then_some(predicate)
+        })
     }
 }
 
@@ -159,6 +169,11 @@ pub enum StaticError {
         argument: Ident,
         location: SourceLocation,
     },
+    #[error("{location}: engine primitive '{predicate}' cannot be defined by corpus rules")]
+    PrimitiveRedefinition {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
     #[error("{location}: diagnostic id for '{predicate}' must be a string literal first argument")]
     DiagnosticIdMustBeLiteral {
         predicate: PredicateRef,
@@ -217,7 +232,7 @@ impl Analyzer {
     fn new(program: Program) -> Self {
         Self {
             program,
-            signatures: BTreeMap::new(),
+            signatures: builtin_signatures(),
             edges: Vec::new(),
             diagnostic_ids: BTreeMap::new(),
         }
@@ -324,6 +339,12 @@ fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), S
     let arity = head.arity();
     let parameters = head_parameter_names(head);
     match signatures.get_mut(&head.predicate) {
+        Some(signature) if signature.kind == PredicateKind::Primitive => {
+            Err(StaticError::PrimitiveRedefinition {
+                predicate: head.predicate.clone(),
+                location: head.location.clone(),
+            })
+        }
         Some(signature) if signature.arity != arity => Err(StaticError::ArityMismatch {
             predicate: head.predicate.clone(),
             expected: signature.arity,
@@ -337,11 +358,40 @@ fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), S
         None => {
             signatures.insert(
                 head.predicate.clone(),
-                PredicateSignature { arity, parameters },
+                PredicateSignature {
+                    arity,
+                    parameters,
+                    kind: PredicateKind::Derived,
+                },
             );
             Ok(())
         }
     }
+}
+
+fn builtin_signatures() -> SignatureMap {
+    primitive_signatures()
+        .map(|(predicate, signature)| {
+            (
+                predicate,
+                PredicateSignature {
+                    arity: signature.arity(),
+                    parameters: parameter_names(signature),
+                    kind: PredicateKind::Primitive,
+                },
+            )
+        })
+        .collect()
+}
+
+fn parameter_names(signature: PrimitiveSignature) -> ParameterNames {
+    ParameterNames::Named(
+        signature
+            .parameters
+            .iter()
+            .map(|parameter| Ident::new_unchecked(*parameter))
+            .collect(),
+    )
 }
 
 fn head_parameter_names(head: &Head) -> ParameterNames {
@@ -942,7 +992,9 @@ fn compute_strata(
     only: Option<&BTreeSet<PredicateRef>>,
 ) -> Vec<Stratum> {
     let mut levels: BTreeMap<PredicateRef, usize> = signatures
-        .keys()
+        .iter()
+        .filter(|(_, signature)| signature.kind == PredicateKind::Derived)
+        .map(|(predicate, _)| predicate)
         .filter(|predicate| only.is_none_or(|wanted| wanted.contains(*predicate)))
         .map(|predicate| (predicate.clone(), 0))
         .collect();
@@ -1117,6 +1169,36 @@ mod tests {
         assert!(
             err.to_string()
                 .contains(&location("inline", input, "missing(h)").to_string())
+        );
+    }
+
+    #[test]
+    fn accepts_engine_primitive_calls_without_rule_definitions() {
+        let program = parse_program(
+            "inline",
+            r#"
+            impacted(x) := upstream(h: "formal-model/v17.md", anc: x).
+            ? impacted(x).
+            "#,
+        )
+        .unwrap();
+        analyze(program).expect("engine primitives have builtin signatures");
+    }
+
+    #[test]
+    fn rejects_engine_primitive_rule_definitions() {
+        let input = r"upstream(h, anc) := *edge{from: h, to: anc}.";
+        let err = analyze_err("inline", input);
+        let StaticError::PrimitiveRedefinition {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected primitive redefinition");
+        };
+        assert_eq!(actual, &location("inline", input, "upstream(h, anc)"));
+        assert!(
+            err.to_string()
+                .contains("engine primitive 'upstream' cannot be defined")
         );
     }
 

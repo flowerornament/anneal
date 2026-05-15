@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::btree_set;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::io;
 use std::slice;
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -18,6 +19,7 @@ use crate::runtime::ast::{
     FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, PredicateRef, Rule, StoredAtom,
     Term,
 };
+use crate::runtime::primitives::PrimitivePredicate;
 use crate::store::FactStore;
 
 pub type Binding = BTreeMap<Ident, Value>;
@@ -123,6 +125,7 @@ impl std::hash::Hash for NumberValue {
 pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
+    graph: Arc<GraphIndex>,
 }
 
 impl fmt::Debug for Database {
@@ -144,7 +147,7 @@ impl fmt::Debug for Database {
                     .map(|(predicate, tuples)| (predicate.display_name(), tuples.len()))
                     .collect::<BTreeMap<_, _>>(),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -191,10 +194,15 @@ impl Database {
     }
 
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
-        self.stored
-            .entry(Ident::new_unchecked(relation))
-            .or_insert_with(|| StoredRelation::new(Ident::new_unchecked(relation)))
-            .extend(rows);
+        let relation = Ident::new_unchecked(relation);
+        let stored = self
+            .stored
+            .entry(relation.clone())
+            .or_insert_with(|| StoredRelation::new(relation.clone()));
+        for row in rows {
+            Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
+            stored.push(row);
+        }
     }
 }
 
@@ -218,12 +226,6 @@ impl StoredRelation {
 
     fn len(&self) -> usize {
         self.rows.len()
-    }
-
-    fn extend(&mut self, rows: impl IntoIterator<Item = NamedRow>) {
-        for row in rows {
-            self.push(row);
-        }
     }
 
     fn push(&mut self, row: NamedRow) {
@@ -288,6 +290,417 @@ impl<'a> Iterator for RowCandidates<'a> {
             Self::Empty => None,
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct GraphIndex {
+    nodes: BTreeSet<String>,
+    outgoing: BTreeMap<String, BTreeSet<String>>,
+    incoming: BTreeMap<String, BTreeSet<String>>,
+    out_edge_count: BTreeMap<String, usize>,
+    in_edge_count: BTreeMap<String, usize>,
+    cite_count: BTreeMap<String, usize>,
+}
+
+impl GraphIndex {
+    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
+        match relation.as_str() {
+            HANDLE_RELATION => {
+                if let Some(id) = row_string(row, ID_FIELD) {
+                    self.nodes.insert(id.to_owned());
+                }
+            }
+            EDGE_RELATION => {
+                let (Some(from), Some(to)) =
+                    (row_string(row, FROM_FIELD), row_string(row, TO_FIELD))
+                else {
+                    return;
+                };
+                let from = from.to_owned();
+                let to = to.to_owned();
+                self.nodes.insert(from.clone());
+                self.nodes.insert(to.clone());
+                self.outgoing
+                    .entry(from.clone())
+                    .or_default()
+                    .insert(to.clone());
+                self.incoming
+                    .entry(to.clone())
+                    .or_default()
+                    .insert(from.clone());
+                *self.out_edge_count.entry(from).or_default() += 1;
+                *self.in_edge_count.entry(to.clone()).or_default() += 1;
+                if row_string(row, KIND_FIELD) == Some(CITES_EDGE_KIND) {
+                    *self.cite_count.entry(to).or_default() += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn tuples(&self, primitive: PrimitivePredicate, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        match primitive {
+            PrimitivePredicate::Upstream => {
+                self.directional_pairs(constraints, Direction::Outgoing, Direction::Incoming)
+            }
+            PrimitivePredicate::Downstream => {
+                self.directional_pairs(constraints, Direction::Incoming, Direction::Outgoing)
+            }
+            PrimitivePredicate::Impact => self.impact_tuples(constraints),
+            PrimitivePredicate::Neighborhood => self.neighborhood_tuples(constraints),
+            PrimitivePredicate::CiteCount => self.count_tuples(constraints, &self.cite_count),
+            PrimitivePredicate::InDegree => self.count_tuples(constraints, &self.in_edge_count),
+            PrimitivePredicate::OutDegree => self.count_tuples(constraints, &self.out_edge_count),
+        }
+    }
+
+    fn directional_pairs(
+        &self,
+        constraints: &[(usize, Value)],
+        from_direction: Direction,
+        to_direction: Direction,
+    ) -> Vec<Tuple> {
+        let left = string_constraint(constraints, 0);
+        let right = string_constraint(constraints, 1);
+        match (left, right) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(start), _) => self
+                .reachable_from(start, from_direction, None)
+                .into_iter()
+                .map(|step| Tuple(vec![graph_string(start), graph_string(&step.node)]))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Exact(end)) => self
+                .reachable_from(end, to_direction, None)
+                .into_iter()
+                .map(|step| Tuple(vec![graph_string(&step.node), graph_string(end)]))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Any) => self
+                .nodes
+                .iter()
+                .flat_map(|start| {
+                    self.reachable_from(start, from_direction, None)
+                        .into_iter()
+                        .map(|step| Tuple(vec![graph_string(start), graph_string(&step.node)]))
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn impact_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let root = string_constraint(constraints, 0);
+        let impacted = string_constraint(constraints, 1);
+        let depth = i64_constraint(constraints, 2);
+        let max_depth = match depth_limit(depth) {
+            DepthLimit::Unbounded => None,
+            DepthLimit::Max(value) => Some(value),
+            DepthLimit::Impossible => return Vec::new(),
+        };
+        match (root, impacted) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(start), _) => self
+                .reachable_from(start, Direction::Incoming, max_depth)
+                .into_iter()
+                .map(|step| {
+                    Tuple(vec![
+                        graph_string(start),
+                        graph_string(&step.node),
+                        graph_int(step.depth),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Exact(end)) => self
+                .reachable_from(end, Direction::Outgoing, max_depth)
+                .into_iter()
+                .map(|step| {
+                    Tuple(vec![
+                        graph_string(&step.node),
+                        graph_string(end),
+                        graph_int(step.depth),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Any) => self
+                .nodes
+                .iter()
+                .flat_map(|start| {
+                    self.reachable_from(start, Direction::Incoming, max_depth)
+                        .into_iter()
+                        .map(|step| {
+                            Tuple(vec![
+                                graph_string(start),
+                                graph_string(&step.node),
+                                graph_int(step.depth),
+                            ])
+                        })
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn neighborhood_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let root = string_constraint(constraints, 0);
+        let depth = i64_constraint(constraints, 1);
+        let member = string_constraint(constraints, 2);
+        let max_depth = match depth_limit(depth) {
+            DepthLimit::Unbounded => None,
+            DepthLimit::Max(value) => Some(value),
+            DepthLimit::Impossible => return Vec::new(),
+        };
+        match (root, member) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(start), _) => self
+                .neighborhood_from(start, max_depth)
+                .into_iter()
+                .map(|step| {
+                    Tuple(vec![
+                        graph_string(start),
+                        graph_int(step.depth),
+                        graph_string(&step.node),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Exact(end)) => self
+                .neighborhood_from(end, max_depth)
+                .into_iter()
+                .map(|step| {
+                    Tuple(vec![
+                        graph_string(&step.node),
+                        graph_int(step.depth),
+                        graph_string(end),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, ArgConstraint::Any) => self
+                .nodes
+                .iter()
+                .flat_map(|start| {
+                    self.neighborhood_from(start, max_depth)
+                        .into_iter()
+                        .map(|step| {
+                            Tuple(vec![
+                                graph_string(start),
+                                graph_int(step.depth),
+                                graph_string(&step.node),
+                            ])
+                        })
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn count_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        counts: &BTreeMap<String, usize>,
+    ) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let count = i64_constraint(constraints, 1);
+        match (handle, count) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(handle), _) if self.nodes.contains(handle) => vec![Tuple(vec![
+                graph_string(handle),
+                graph_int(i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX)),
+            ])]
+            .into_iter()
+            .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+            .collect(),
+            (ArgConstraint::Exact(_), _) => Vec::new(),
+            (ArgConstraint::Any, _) => self
+                .nodes
+                .iter()
+                .map(|handle| {
+                    Tuple(vec![
+                        graph_string(handle),
+                        graph_int(
+                            i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX),
+                        ),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn reachable_from(
+        &self,
+        start: &str,
+        direction: Direction,
+        max_depth: Option<i64>,
+    ) -> Vec<GraphStep> {
+        self.walk_from(start, direction, false, max_depth)
+    }
+
+    fn neighborhood_from(&self, start: &str, max_depth: Option<i64>) -> Vec<GraphStep> {
+        if !self.nodes.contains(start) {
+            return Vec::new();
+        }
+        self.walk_from(start, Direction::Undirected, true, max_depth)
+    }
+
+    fn walk_from(
+        &self,
+        start: &str,
+        direction: Direction,
+        include_start: bool,
+        max_depth: Option<i64>,
+    ) -> Vec<GraphStep> {
+        let mut out = Vec::new();
+        if include_start {
+            out.push(GraphStep {
+                node: start.to_owned(),
+                depth: 0,
+            });
+        }
+        let mut seen = BTreeSet::from([start.to_owned()]);
+        let mut queue = VecDeque::from([(start.to_owned(), 0_i64)]);
+        while let Some((node, depth)) = queue.pop_front() {
+            if max_depth.is_some_and(|max_depth| depth >= max_depth) {
+                continue;
+            }
+            self.visit_neighbors(&node, direction, |next| {
+                if !seen.insert(next.clone()) {
+                    return;
+                }
+                let next_depth = depth + 1;
+                out.push(GraphStep {
+                    node: next.clone(),
+                    depth: next_depth,
+                });
+                queue.push_back((next.clone(), next_depth));
+            });
+        }
+        out
+    }
+
+    fn visit_neighbors(&self, node: &str, direction: Direction, mut visit: impl FnMut(&String)) {
+        match direction {
+            Direction::Outgoing => {
+                if let Some(outgoing) = self.outgoing.get(node) {
+                    for next in outgoing {
+                        visit(next);
+                    }
+                }
+            }
+            Direction::Incoming => {
+                if let Some(incoming) = self.incoming.get(node) {
+                    for next in incoming {
+                        visit(next);
+                    }
+                }
+            }
+            Direction::Undirected => {
+                if let Some(incoming) = self.incoming.get(node) {
+                    for next in incoming {
+                        visit(next);
+                    }
+                }
+                if let Some(outgoing) = self.outgoing.get(node) {
+                    for next in outgoing {
+                        visit(next);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Outgoing,
+    Incoming,
+    Undirected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GraphStep {
+    node: String,
+    depth: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArgConstraint<T> {
+    Any,
+    Exact(T),
+    Impossible,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DepthLimit {
+    Unbounded,
+    Max(i64),
+    Impossible,
+}
+
+fn row_string<'a>(row: &'a NamedRow, field: &str) -> Option<&'a str> {
+    let field = Ident::new_unchecked(field);
+    let Some(Value::String(value)) = row.get(&field) else {
+        return None;
+    };
+    Some(value)
+}
+
+const HANDLE_RELATION: &str = "handle";
+const EDGE_RELATION: &str = "edge";
+const ID_FIELD: &str = "id";
+const FROM_FIELD: &str = "from";
+const TO_FIELD: &str = "to";
+const KIND_FIELD: &str = "kind";
+const CITES_EDGE_KIND: &str = "Cites";
+
+fn string_constraint(constraints: &[(usize, Value)], position: usize) -> ArgConstraint<&str> {
+    value_constraint(constraints, position, |value| match value {
+        Value::String(value) => Some(value.as_str()),
+        _ => None,
+    })
+}
+
+fn i64_constraint(constraints: &[(usize, Value)], position: usize) -> ArgConstraint<i64> {
+    value_constraint(constraints, position, |value| match value {
+        Value::Number(NumberValue::Int(value)) => Some(*value),
+        _ => None,
+    })
+}
+
+fn depth_limit(depth: ArgConstraint<i64>) -> DepthLimit {
+    match depth {
+        ArgConstraint::Any => DepthLimit::Unbounded,
+        ArgConstraint::Exact(value) if value >= 0 => DepthLimit::Max(value),
+        ArgConstraint::Exact(_) | ArgConstraint::Impossible => DepthLimit::Impossible,
+    }
+}
+
+fn value_constraint<'a, T>(
+    constraints: &'a [(usize, Value)],
+    position: usize,
+    get: impl Fn(&'a Value) -> Option<T>,
+) -> ArgConstraint<T> {
+    let Some((_, value)) = constraints.iter().find(|(idx, _)| *idx == position) else {
+        return ArgConstraint::Any;
+    };
+    get(value).map_or(ArgConstraint::Impossible, ArgConstraint::Exact)
+}
+
+fn tuple_matches_constraints(tuple: &Tuple, constraints: &[(usize, Value)]) -> bool {
+    constraints
+        .iter()
+        .all(|(idx, value)| tuple.0.get(*idx) == Some(value))
+}
+
+fn graph_string(value: &str) -> Value {
+    Value::String(value.to_owned())
+}
+
+fn graph_int(value: i64) -> Value {
+    Value::Number(NumberValue::Int(value))
 }
 
 fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
@@ -626,6 +1039,9 @@ fn eval_derived(
     bindings: Vec<Binding>,
     database: &Database,
 ) -> Result<Vec<Binding>, EvalError> {
+    if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
+        return eval_primitive(primitive, &atom.args, bindings, database);
+    }
     let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
         EvalError::UnknownDerivedPredicate {
             predicate: atom.predicate.clone(),
@@ -658,6 +1074,24 @@ fn eval_derived_from_relation(
                 continue;
             }
             if let Some(next) = unify_call_args(&atom.args, tuple, &binding)? {
+                out.push(next);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn eval_primitive(
+    primitive: PrimitivePredicate,
+    args: &[CallArg],
+    bindings: Vec<Binding>,
+    database: &Database,
+) -> Result<Vec<Binding>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let constraints = call_constraints(args, &binding)?;
+        for tuple in database.graph.tuples(primitive, &constraints) {
+            if let Some(next) = unify_call_args(args, &tuple, &binding)? {
                 out.push(next);
             }
         }
@@ -1746,6 +2180,154 @@ mod tests {
         Value::Number(NumberValue::Int(value))
     }
 
+    fn evaluate_queries(input: &str, database: Database) -> Vec<QueryRows> {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let queries = analyzed.queries().cloned().collect::<Vec<_>>();
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+        queries
+            .iter()
+            .map(|query| {
+                let mut rows = evaluator
+                    .eval_query(query)
+                    .expect("query evaluates")
+                    .rows
+                    .into_iter()
+                    .map(|row| row.fields)
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            })
+            .collect()
+    }
+
+    #[test]
+    fn graph_primitives_traverse_edges_relationally() {
+        let outputs = evaluate_queries(
+            r#"
+            ? upstream("formal-model/v17.md", anc).
+            ? downstream("OQ-22", desc).
+            ? impact("OQ-22", x, depth).
+            ? neighborhood("OQ-22", depth, member), depth <= 1.
+            ? in_degree("OQ-22", n).
+            ? out_degree("formal-model/v17.md", n).
+            ? cite_count("formal-model/v17.md", n).
+            ? cite_count("OQ-22", n).
+            "#,
+            mvs_database(),
+        );
+
+        let mut rows = outputs.into_iter();
+        assert_query_rows(
+            &rows.next().expect("upstream output"),
+            vec![
+                row([("anc", s("OQ-22"))]),
+                row([("anc", s("OQ-23"))]),
+                row([("anc", s("OQ-60"))]),
+                row([("anc", s("formal-model/v14.md"))]),
+                row([("anc", s("formal-model/v15.md"))]),
+                row([("anc", s("formal-model/v16.md"))]),
+            ],
+        );
+        assert_query_rows(
+            &rows.next().expect("downstream output"),
+            vec![
+                row([("desc", s("compiler/exec.md"))]),
+                row([("desc", s("compiler/jit-spec.md"))]),
+                row([("desc", s("formal-model/v17.md"))]),
+                row([("desc", s("research-log/2026-04-jit.md"))]),
+            ],
+        );
+        assert_query_rows(
+            &rows.next().expect("impact output"),
+            vec![
+                row([("depth", n(1)), ("x", s("compiler/jit-spec.md"))]),
+                row([("depth", n(1)), ("x", s("formal-model/v17.md"))]),
+                row([("depth", n(2)), ("x", s("compiler/exec.md"))]),
+                row([("depth", n(2)), ("x", s("research-log/2026-04-jit.md"))]),
+            ],
+        );
+        assert_query_rows(
+            &rows.next().expect("neighborhood output"),
+            vec![
+                row([("depth", n(0)), ("member", s("OQ-22"))]),
+                row([("depth", n(1)), ("member", s("compiler/jit-spec.md"))]),
+                row([("depth", n(1)), ("member", s("formal-model/v17.md"))]),
+            ],
+        );
+        assert_query_rows(
+            &rows.next().expect("in_degree output"),
+            vec![row([("n", n(3))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("out_degree output"),
+            vec![row([("n", n(4))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("cite_count v17 output"),
+            vec![row([("n", n(1))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("cite_count oq output"),
+            vec![row([("n", n(0))])],
+        );
+        assert!(rows.next().is_none(), "unexpected extra primitive output");
+    }
+
+    #[test]
+    fn graph_primitives_support_named_arguments() {
+        let outputs = evaluate_queries(
+            r#"
+            ? upstream(h: "formal-model/v17.md", anc: anc).
+            ? impact(x: "compiler/exec.md", h: h, depth: d).
+            "#,
+            mvs_database(),
+        );
+
+        let mut rows = outputs.into_iter();
+        assert_query_rows(
+            &rows.next().expect("named upstream output"),
+            vec![
+                row([("anc", s("OQ-22"))]),
+                row([("anc", s("OQ-23"))]),
+                row([("anc", s("OQ-60"))]),
+                row([("anc", s("formal-model/v14.md"))]),
+                row([("anc", s("formal-model/v15.md"))]),
+                row([("anc", s("formal-model/v16.md"))]),
+            ],
+        );
+        assert_query_rows(
+            &rows.next().expect("named impact output"),
+            vec![
+                row([("d", n(1)), ("h", s("compiler/jit-spec.md"))]),
+                row([("d", n(2)), ("h", s("OQ-22"))]),
+                row([("d", n(2)), ("h", s("compiler/jit-stale.md"))]),
+            ],
+        );
+        assert!(
+            rows.next().is_none(),
+            "unexpected extra named primitive output"
+        );
+    }
+
+    #[test]
+    fn upstream_primitive_handles_scaled_chain_fixture() {
+        let outputs = evaluate_queries(
+            r#"? upstream("n0", anc)."#,
+            Database::from_store(&chain_store(4_096)),
+        );
+        assert_eq!(outputs[0].len(), 4_096);
+        assert!(outputs[0].contains(&row([("anc", s("n1"))])));
+        assert!(outputs[0].contains(&row([("anc", s("n4096"))])));
+    }
+
+    #[test]
+    fn count_primitives_do_not_invent_unknown_handles() {
+        let outputs = evaluate_queries(r#"? cite_count("missing", n)."#, mvs_database());
+        assert_query_rows(&outputs[0], Vec::new());
+    }
+
     #[test]
     fn mvs1_matches_spike_handle_rows() {
         assert_query_rows(
@@ -2000,8 +2582,8 @@ mod tests {
             terminal(h) := *handle{id: h, status: "resolved"}.
             terminal(h) := *handle{id: h, status: "superseded"}.
             open_oq(h) := *handle{id: h, kind: "label", namespace: "OQ"}, not terminal(h).
-            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
-            upstream(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, upstream(mid, anc).
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
             oq_per_area(area, n) := n = Count{ h : open_oq(h), *handle{id: h, area} }.
             ? open_oq(h).
             "#,
@@ -2090,8 +2672,8 @@ mod tests {
         let program = parse_program(
             "fixture",
             r#"
-            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
-            ? upstream("v17", anc).
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            ? dep_path("v17", anc).
             "#,
         )
         .expect("program parses");
@@ -2101,8 +2683,8 @@ mod tests {
         let relation = evaluator
             .database
             .derived
-            .get(&PredicateRef::new(Ident::new_unchecked("upstream")))
-            .expect("upstream relation");
+            .get(&PredicateRef::new(Ident::new_unchecked("dep_path")))
+            .expect("dep_path relation");
         let candidates = relation
             .candidate_tuples(&[(0, Value::String("v17".to_string()))])
             .collect::<Vec<_>>();
@@ -2159,9 +2741,9 @@ mod tests {
         let program = parse_program(
             "fixture",
             r#"
-            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
-            upstream(h, anc) := upstream(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
-            ? upstream("n0", anc).
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            dep_path(h, anc) := dep_path(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
+            ? dep_path("n0", anc).
             "#,
         )
         .expect("program parses");
@@ -2199,9 +2781,9 @@ mod tests {
         let program = parse_program(
             "fixture",
             r#"
-            upstream(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, upstream(mid, anc).
-            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
-            ? upstream("v17", anc).
+            dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            ? dep_path("v17", anc).
             "#,
         )
         .expect("program parses");

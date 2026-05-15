@@ -431,6 +431,16 @@ examples(name, example)
 sources(name, recognizes, capabilities, doc)
 ```
 
+**Definition CR-D35 (Engine primitive sealing).** Engine-derived
+primitive predicate names in CR-D9 are sealed substrate predicates.
+Prelude, project, import, inline, and fact clauses may call them but
+must not define, shadow, or union with them. Projects that need
+domain-specific variants wrap primitives in separately named derived
+predicates. Rationale: primitive semantics are part of the
+engine-replaceability contract; letting corpus rules redefine them
+would make runtime behavior depend on load order rather than the
+substrate contract.
+
 The aggregation form `TopK{k: N, key: score : body}` (Part IV §17) provides
 bounded selection. There is no parallel `top_k` function primitive
 and no surface syntax shortcut — one mechanism, one place.
@@ -1855,6 +1865,7 @@ cold-agent gate depends on it.
 - CR-D32: Transition-only legacy boundary (§8, §47)
 - CR-D33: Aggregate result unification (§20)
 - CR-D34: Empty-group origination (§20)
+- CR-D35: Engine primitive sealing (§11)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

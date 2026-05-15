@@ -11,6 +11,7 @@ pub mod eval;
 pub mod loader;
 pub mod ndjson;
 pub mod parser;
+mod primitives;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
 pub use ast::{
