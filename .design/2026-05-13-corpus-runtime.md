@@ -250,6 +250,7 @@ because a Delta batch lists its `native_id` in `retractions`.
 ```
 anneal/
 ├── crates/
+│   ├── anneal-lang/             # private v2.0 language syntax library
 │   ├── anneal-core/             # the substrate
 │   ├── anneal-legacy/           # transition-only v1 parser/config bridge
 │   ├── anneal-md/               # markdown adapter
@@ -270,6 +271,48 @@ v1 parity without depending on the root CLI package; it must not
 become a substrate extension point.
 Adapters are siblings. A consumer can link any combination of
 adapters into their own binary; the CLI ships markdown by default.
+
+### §8.1 Embeddable language boundary [CR-D51, CR-R9]
+
+**Definition CR-D51 (Embeddable language boundary).**
+`anneal-lang` owns the user-facing Datalog dialect as a lower-level
+library boundary inside the substrate: lexer/parser, AST, source
+locations, parse/load diagnostics, syntax-level `@verb` and `@doc`
+metadata, and host-neutral include/import resolution. It is designed
+so a future consumer can parse or inspect `anneal.dl` without linking
+the full runtime.
+
+`anneal-lang` must not depend on `anneal-core`, `Source`, `FactStore`,
+adapters, search/read/rank primitives, trail capture, generation
+tracking, or any concrete evaluation engine. Runtime-aware analysis
+belongs in `anneal-core`: primitive signatures, stored-relation
+schemas, capability checks, rule planning, fixpoint evaluation, and
+adapter/runtime facts. If syntax-level analysis needs relation
+signatures, it receives them through a narrow provider trait rather
+than by depending on the runtime store.
+
+In v2.0, `anneal-lang` is an internal crate boundary, not a stabilized
+public package. `anneal-core` consumes it; surfaces and adapters
+should reach language behavior through `anneal-core` unless they have
+a parser-only need.
+
+**Rule CR-R9 (Language API stabilization gate).** `anneal-lang` stays
+`0.x` and `publish = false` until:
+
+1. `@verb`, include/import, aggregation, and diagnostic-span semantics
+   are pinned by this spec and parity fixtures.
+2. At least one non-CLI consumer needs parser-only access (MCP verb
+   introspection, LSP/formatter, `anneal-host`, or an external
+   adapter).
+3. The public API hides representation choices with non-exhaustive
+   enums, constructors/accessors, or equivalent compatibility guards.
+
+Rationale: the language must be embeddable without bundling a
+mandatory runtime, but observable parser and AST quirks become
+permanent API commitments once external users depend on them. The
+private crate boundary gives the architecture a clean lower layer now
+while deferring public stability until real consumers force the right
+interface.
 
 **Engine choice is internal to `anneal-core`.** v2.0 uses
 [`ascent`](https://github.com/s-arash/ascent) for engine-derived
@@ -1986,6 +2029,12 @@ anneal describe handles
 ### §45 Substrate files (embedded)
 
 ```
+anneal-lang/src/
+  ast.rs
+  parser.rs
+  loader.rs          # host-neutral include/import resolution
+  diagnostics.rs
+
 anneal-core/src/prelude/
   graph.dl
   convergence.dl
@@ -1994,8 +2043,9 @@ anneal-core/src/prelude/
   views.dl
 ```
 
-Compile-time embedded; `ANNEAL_PRELUDE_PATH` overrides (and changes
-the recorded `prelude_hash`).
+The language files are a private v2.0 crate boundary per CR-D51.
+Prelude files are compile-time embedded; `ANNEAL_PRELUDE_PATH`
+overrides them (and changes the recorded `prelude_hash`).
 
 ---
 
@@ -2026,16 +2076,19 @@ Every v1.x command is reachable in v2.0:
 
 ### §47 Migration path
 
-1. **`anneal-core`.** Datalog runtime, primitives, IR, embedded
-   prelude.
-2. **`anneal-md`.** Refactor v1.x parse pipeline behind `Source`;
+1. **`anneal-lang` (private).** Parser, AST, source spans, and
+   host-neutral loader boundary for `anneal.dl`; not published in
+   v2.0 per CR-R9.
+2. **`anneal-core`.** Datalog runtime, primitives, IR, embedded
+   prelude; depends on `anneal-lang`, not the reverse.
+3. **`anneal-md`.** Refactor v1.x parse pipeline behind `Source`;
    while parity is being proven, shared v1 parser/config behavior may
    live in `anneal-legacy` as a transition-only library boundary
    instead of the root CLI package.
-3. **`anneal-cli` + `anneal-mcp`.** Surfaces over the shared core.
-4. **Dual ship.** v1.x and v2.0 binaries in parallel for one minor
+4. **`anneal-cli` + `anneal-mcp`.** Surfaces over the shared core.
+5. **Dual ship.** v1.x and v2.0 binaries in parallel for one minor
    release; v1.x prints deprecation warnings.
-5. **Documentation.** SKILL.md, README.md rewritten.
+6. **Documentation.** SKILL.md, README.md rewritten.
 
 ### §48 What stays unchanged
 
@@ -2293,6 +2346,7 @@ as data instead of smuggling it through row sequence.
 - CR-D48: Work ranking vocabulary (§27.2)
 - CR-D49: Relational diagnostic contract (§28.1)
 - CR-D50: S005 confirmed namespace scope (§28.2)
+- CR-D51: Embeddable language boundary (§8.1)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2303,6 +2357,7 @@ as data instead of smuggling it through row sequence.
 - CR-R6: Edge closure (§10)
 - CR-R7: Bounded graph primitive anchors (§11)
 - CR-R8: Bounded content primitive inputs (§11)
+- CR-R9: Language API stabilization gate (§8.1)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
