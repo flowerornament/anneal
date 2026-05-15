@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Programmable Corpus Runtime
-status: planning
-stopped_at: Master spec at .design/2026-05-13-corpus-runtime.md. Phase 1 closure work (anneal-apa) ready.
-last_updated: "2026-05-13T00:00:00Z"
-last_activity: 2026-05-13
+status: in_progress
+stopped_at: Phase 0 + Phase 1 closed. Phase 2 (anneal-jqh, Datalog runtime) ready.
+last_updated: "2026-05-15T00:00:00Z"
+last_activity: 2026-05-15
 progress:
-  total_phases: 4
-  completed_phases: 0
+  total_phases: 12
+  completed_phases: 2
   total_plans: 0
   completed_plans: 0
-  percent: 0
+  percent: 17
 ---
 
 # State: anneal
@@ -26,18 +26,18 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 ## Current Position
 
 Milestone: v2.0 Programmable Corpus Runtime
-Phase: 1 closure — READY TO START (parity-runner, dynamic-IR bench, fixtures snapshot, unsafe audit)
-Status: Master spec landed 2026-05-13. Engine-viability question decided (ascent for primitives + dynamic IR for rules).
-Last activity: 2026-05-13
+Phase: 2 (anneal-jqh, Datalog runtime) — READY TO START
+Status: Phase 0 closed (parity-runner, frozen fixture, dynamic-IR <50ms, unsafe audit). Phase 1 closed (workspace split, Source trait, FactStore + generation tracking, anneal-md fact parity 0 fail on PD-1..3, legacy bridge isolated to anneal-legacy crate). Master spec gained CR-R6, CR-D31, CR-D32 + §8 engine-replaceability invariant during build.
+Last activity: 2026-05-15
 
-Progress: [          ] 0% (0/4 phases complete)
+Progress: [█▌        ] 17% (2/12 phases complete)
 
 **v2.0 phase decomposition (matches master spec layering):**
 
 | Phase | Issue | What | Blocks |
 |---|---|---|---|
-| 0 closure | `anneal-apa` (P1) | parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench | Phase 1 |
-| 1 Foundation | `anneal-xu2` (P1) | workspace, Source trait, stored relations, generation tracking, anneal-md | Phase 2 |
+| 0 closure | `anneal-apa` ✓ | parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench | — |
+| 1 Foundation | `anneal-xu2` ✓ | workspace, Source trait, stored relations, generation tracking, anneal-md, anneal-legacy bridge | — |
 | 2 Runtime | `anneal-jqh` (P1) | parser, IR, fixpoint, stratification, NDJSON output | Phase 3 |
 | 3 Primitives | `anneal-f2b` (P1) | graph, lifecycle, obligations, aggregation, time travel | Phase 4, 5, 9 |
 | 4 Content | `anneal-9yl` (P1) | `*content`/`*span`, search + Ranker, read, match | Phase 6, 8 |
@@ -64,6 +64,8 @@ Progress: [          ] 0% (0/4 phases complete)
 
 Recent decisions affecting current work (full log in PROJECT.md):
 
+- [v2.0 Phase 1 close, 2026-05-15]: anneal-md fact parity landed against frozen .fixtures/sample-corpus (PD-1..3 0 fail). Generation retraction proved end-to-end. Legacy v1 parser/config isolated to `crates/anneal-legacy/` as a transition-only crate; root anneal binary became a thin wrapper. Spec gained CR-R6 (Edge closure: unresolved `*edge.to` is stored evidence, not FK violation), CR-D31 (Adapter diagnostic evidence via adapter-qualified `*meta`), CR-D32 (Transition-only legacy boundary).
+- [v2.0 Phase 0 close, 2026-05-13]: Engine architecture revision confirmed by spike. Dynamic-IR warm prelude evaluation measured at 0.85ms on frozen large-corpus (target <50ms, 60× headroom). Ascent unsafe accepted as bounded dependency risk for engine-derived primitives only — strict SP-R1 *not* cleared. Engine-replaceability invariant pinned in master spec §8.
 - [v2.0 reframe, 2026-05-13]: Product story reframed from "collapse 14 commands into Datalog + 7 verbs" to "programmable knowledge-corpus runtime for agents: searchable content, typed relations, explainable views, and saved verbs" (.design/2026-05-13-primitives-first-corpus-vm.md). Architecture from 2026-05-03 unchanged; product framing, verb model, onboarding default, and SP-DR1 capstone gate updated.
 - [v2.0 reframe]: `*content`, `*span`, `*search_hit`, `search`, `read`, `schema`, `describe`, `source`, `top_k` join the engine primitives layer (CV-D2, CV-D3). Agent-ergonomics epic anneal-2gf folds into v2.0; search and MCP promote from P3 to P1.
 - [v2.0 reframe]: Verbs become saved templates under Steele's criterion (CV-R1) — project verbs syntactically indistinguishable from prelude verbs. The "seven verbs" target is demoted to "starter verbs the prelude happens to ship."
