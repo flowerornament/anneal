@@ -81,6 +81,34 @@ impl ReadCommand {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DescribeCommand {
+    name: String,
+}
+
+impl DescribeCommand {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn runtime() -> Self {
+        Self::new("runtime")
+    }
+
+    pub fn datalog(&self) -> String {
+        format!("? describe({}, doc).", datalog_string(&self.name))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourcesCommand;
+
+impl SourcesCommand {
+    pub fn datalog(self) -> &'static str {
+        "? sources(name, recognizes, capabilities, doc)."
+    }
+}
+
 fn datalog_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -134,5 +162,21 @@ mod tests {
 
         assert!(query.contains(r#""notes/\"quoted\".md""#));
         analyze(parse_program("read", &query).expect("query parses")).expect("query analyzes");
+    }
+
+    #[test]
+    fn describe_runtime_template_targets_self_description() {
+        let query = DescribeCommand::runtime().datalog();
+
+        assert_eq!(query, r#"? describe("runtime", doc)."#);
+        analyze(parse_program("describe", &query).expect("query parses")).expect("query analyzes");
+    }
+
+    #[test]
+    fn sources_template_lists_linked_adapters() {
+        let query = SourcesCommand.datalog();
+
+        assert_eq!(query, "? sources(name, recognizes, capabilities, doc).");
+        analyze(parse_program("sources", query).expect("query parses")).expect("query analyzes");
     }
 }

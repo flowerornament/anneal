@@ -24,8 +24,11 @@ use crate::runtime::ast::{
     FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, PredicateRef, Rule, StoredAtom,
     Term,
 };
+use crate::runtime::introspection::{
+    IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
+};
 use crate::runtime::primitives::PrimitivePredicate;
-use crate::source::{ActorContext, RuntimeCapability};
+use crate::source::{ActorContext, RuntimeCapability, SourceInfo};
 use crate::store::FactStore;
 use crate::time::{
     current_days_since_epoch, iso_days_since_epoch, relative_days_reference,
@@ -37,6 +40,14 @@ type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);
+
+impl Tuple {
+    pub(crate) fn matches_constraints(&self, constraints: &[(usize, Value)]) -> bool {
+        constraints
+            .iter()
+            .all(|(idx, value)| self.0.get(*idx) == Some(value))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Row {
@@ -216,13 +227,27 @@ impl std::hash::Hash for NumberValue {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
     search: Arc<SearchIndex>,
+    introspection: Arc<IntrospectionIndex>,
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Self {
+            stored: BTreeMap::new(),
+            derived: BTreeMap::new(),
+            graph: Arc::new(GraphIndex::default()),
+            content: Arc::new(ContentIndex::default()),
+            search: Arc::new(SearchIndex::default()),
+            introspection: Arc::new(IntrospectionIndex::default()),
+        }
+    }
 }
 
 impl fmt::Debug for Database {
@@ -272,6 +297,13 @@ impl Database {
             }),
         );
         db
+    }
+
+    pub fn with_sources(mut self, sources: impl IntoIterator<Item = SourceInfo>) -> Self {
+        self.introspection = Arc::new(IntrospectionIndex::from_sources(
+            sources.into_iter().collect(),
+        ));
+        self
     }
 
     pub fn insert_stored_rows(
@@ -325,6 +357,28 @@ impl Database {
         for predicate in predicates {
             self.derived.entry(predicate).or_default();
         }
+    }
+
+    fn install_program_introspection(&mut self, program: &AnalyzedProgram) {
+        self.introspection = Arc::new(
+            self.introspection
+                .for_program(program, self.stored_relation_summaries()),
+        );
+    }
+
+    fn install_query_introspection(&mut self, query: &AnalyzedQuery) {
+        self.introspection = Arc::new(self.introspection.for_query(query));
+    }
+
+    fn stored_relation_summaries(&self) -> Vec<StoredRelationSummary> {
+        self.stored
+            .iter()
+            .filter(|(name, _)| !is_static_stored_relation(name.as_str()))
+            .map(|(name, relation)| StoredRelationSummary {
+                name: name.to_string(),
+                fields: relation.field_names(),
+            })
+            .collect()
     }
 
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
@@ -391,6 +445,7 @@ impl Database {
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
             search: Arc::clone(&self.search),
+            introspection: Arc::clone(&self.introspection),
         }
     }
 
@@ -637,6 +692,14 @@ impl StoredRelation {
                 .push(idx);
         }
         self.rows.push(row);
+    }
+
+    fn field_names(&self) -> Vec<String> {
+        let mut fields = BTreeSet::new();
+        for row in &self.rows {
+            fields.extend(row.keys().map(ToString::to_string));
+        }
+        fields.into_iter().collect()
     }
 
     fn candidate_rows(&self, constraints: &[(Ident, Value)]) -> RowCandidates<'_> {
@@ -1277,7 +1340,14 @@ impl GraphIndex {
             PrimitivePredicate::Search
             | PrimitivePredicate::Read
             | PrimitivePredicate::ReadFull
-            | PrimitivePredicate::Match => Vec::new(),
+            | PrimitivePredicate::Match
+            | PrimitivePredicate::Schema
+            | PrimitivePredicate::Predicates
+            | PrimitivePredicate::Verbs
+            | PrimitivePredicate::Describe
+            | PrimitivePredicate::SourceOf
+            | PrimitivePredicate::Examples
+            | PrimitivePredicate::Sources => Vec::new(),
         }
     }
 
@@ -1978,9 +2048,7 @@ fn value_constraint<'a, T>(
 }
 
 fn tuple_matches_constraints(tuple: &Tuple, constraints: &[(usize, Value)]) -> bool {
-    constraints
-        .iter()
-        .all(|(idx, value)| tuple.0.get(*idx) == Some(value))
+    tuple.matches_constraints(constraints)
 }
 
 fn string_value(value: &str) -> Value {
@@ -2156,6 +2224,7 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
+        database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
@@ -2205,6 +2274,7 @@ impl Evaluator {
 
         let mut database = self.database.clone();
         database.ensure_derived(query.local_predicates().cloned());
+        database.install_query_introspection(query);
         for stratum in query.local_strata() {
             let rules = query_ast
                 .local_rules
@@ -2913,6 +2983,13 @@ fn primitive_tuples(
                 .expect("regex was inserted before lookup");
             Ok(database.content.match_tuples(constraints, regex))
         }
+        PrimitivePredicate::Schema
+        | PrimitivePredicate::Predicates
+        | PrimitivePredicate::Verbs
+        | PrimitivePredicate::Describe
+        | PrimitivePredicate::SourceOf
+        | PrimitivePredicate::Examples
+        | PrimitivePredicate::Sources => Ok(database.introspection.tuples(primitive, constraints)),
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact
@@ -3583,7 +3660,7 @@ fn eval_binary(
     Ok(Value::Number(NumberValue::Int(value)))
 }
 
-fn value_from_literal(literal: &Literal) -> Value {
+pub(crate) fn value_from_literal(literal: &Literal) -> Value {
     match literal {
         Literal::String(value) => Value::String(value.clone()),
         Literal::Number(NumberLiteral::Int(value)) => Value::Number(NumberValue::Int(*value)),
@@ -3798,9 +3875,10 @@ mod tests {
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
-    use crate::ranking::SearchHit;
+    use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::ast::{RuleLayer, Statement};
     use crate::runtime::{StaticError, analyze, parse_program};
+    use crate::source::{Pattern, SourceCapabilities};
 
     fn identity(native_id: &str) -> FactIdentity {
         identity_for_source("fixture", native_id)
@@ -5235,6 +5313,140 @@ mod tests {
                 limit: 16,
             } if handle == "alpha.md"
         ));
+    }
+
+    #[test]
+    fn self_description_primitives_are_queryable() {
+        let outputs = evaluate_queries(
+            r#"issue("a", "error").
+release_blocker(code) := issue(code, "error").
+@verb(name: "broken", query: "? release_blocker(code).", doc: "Show release blockers.", output_schema: "code").
+? schema("search", kind, signature, determinism, provenance).
+? schema("release_blocker", kind, signature, determinism, provenance).
+? predicates("release_blocker", doc, file, lines).
+? verbs("broken", query, doc, output_schema).
+? describe("runtime", doc).
+? source_of("release_blocker", file, lines).
+? examples("search", example)."#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("kind", s("primitive")),
+                (
+                    "signature",
+                    s("search(query, handle, span_id, score, reason, field, low_confidence)"),
+                ),
+                ("determinism", s("ranker-dependent deterministic")),
+                ("provenance", s("engine")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![row([
+                ("kind", s("derived")),
+                ("signature", s("release_blocker(code)")),
+                ("determinism", s("deterministic")),
+                ("provenance", s("unknown")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([
+                ("doc", s("Rule-defined predicate release_blocker.")),
+                ("file", s("inline")),
+                ("lines", s("2")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[3],
+            vec![row([
+                ("query", s("? release_blocker(code).")),
+                ("doc", s("Show release blockers.")),
+                ("output_schema", s("code")),
+            ])],
+        );
+        assert!(
+            matches!(
+                outputs[4][0].get("doc"),
+                Some(Value::String(doc))
+                    if doc.contains("schema")
+                        && doc.contains("sources")
+                        && doc.contains("search primitives")
+            ),
+            "runtime description should orient a cold agent"
+        );
+        assert_query_rows(
+            &outputs[5],
+            vec![row([("file", s("inline")), ("lines", s("2"))])],
+        );
+        assert!(
+            matches!(
+                outputs[6][0].get("example"),
+                Some(Value::String(example)) if example.contains("v17 conformance audit")
+            ),
+            "search example should be concrete"
+        );
+    }
+
+    #[test]
+    fn sources_primitive_lists_linked_adapter_capabilities() {
+        let source = SourceInfo {
+            name: "markdown",
+            recognizes: vec![Pattern::new("**/*.md")],
+            doc: "Markdown source",
+            config_keys: Vec::new(),
+            capabilities: SourceCapabilities {
+                supports_git_ref: false,
+                supports_time_snapshot: false,
+                supports_incremental: true,
+                live_only: false,
+            },
+            search: Some(default_lexical_search_info()),
+        };
+
+        let outputs = evaluate_queries(
+            "? sources(name, recognizes, capabilities, doc).",
+            Database::default().with_sources([source]),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("name", s("markdown")),
+                ("recognizes", list([s("**/*.md")])),
+                (
+                    "capabilities",
+                    list([s("supports_incremental"), s("search")]),
+                ),
+                ("doc", s("Markdown source")),
+            ])],
+        );
+    }
+
+    #[test]
+    fn query_local_predicates_do_not_leak_between_introspection_queries() {
+        let outputs = evaluate_queries(
+            r#"seed("a").
+?
+  where local_only(x) := seed(x).
+  schema("local_only", kind, signature, determinism, provenance).
+? schema("local_only", kind, signature, determinism, provenance)."#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("kind", s("derived")),
+                ("signature", s("local_only(x)")),
+                ("determinism", s("deterministic")),
+                ("provenance", s("inline")),
+            ])],
+        );
+        assert_query_rows(&outputs[1], Vec::new());
     }
 
     #[test]

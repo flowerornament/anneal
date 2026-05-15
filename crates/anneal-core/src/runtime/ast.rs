@@ -146,6 +146,8 @@ pub struct ImportDirective {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerbDecl {
     pub args: Vec<NamedArg>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

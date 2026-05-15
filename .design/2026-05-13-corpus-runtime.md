@@ -1725,6 +1725,23 @@ when the adapter is absent.
 
 ### §43 Introspection
 
+**Definition CR-D44 (Introspection tuple encoding).**
+Self-description primitives return scalar strings or literal lists, not
+surface-specific records. `source_of(name, file, lines)` and
+`predicates(..., source_lines)` encode `lines` as comma-separated
+1-based line numbers, or `unknown` when the runtime only knows the
+source identity. Engine-defined names point at their implementation
+module or this spec; source-derived predicates point at the rule file.
+`sources(..., recognizes, capabilities, doc)` emits `recognizes` as a
+list of glob strings and `capabilities` as the list of true capability
+names (`supports_git_ref`, `supports_time_snapshot`,
+`supports_incremental`, `live_only`, plus `search` when the Source
+advertises `SearchInfo`). `@verb.doc` is authoritative for verbs;
+rule-defined predicates without attached docs get a generated fallback
+doc and rely on `source_of` for precise context. Rationale: agents need
+one stable relational shape across CLI, MCP, and library surfaces
+without a second decoding convention for introspection rows.
+
 ```
 # 1. Counts by kind
 anneal -e '? *handle{kind: k}, c = Count{ h : *handle{id: h, kind: k} }.'
@@ -2064,6 +2081,7 @@ as data instead of smuggling it through row sequence.
 - CR-D41: Corpus-unique handle ids (§15)
 - CR-D42: Default lexical Ranker (§12)
 - CR-D43: Search selection policy (§12)
+- CR-D44: Introspection tuple encoding (§43)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

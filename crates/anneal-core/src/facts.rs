@@ -119,6 +119,143 @@ pub struct SnapshotFact {
     pub value: String,
 }
 
+/// Runtime schema metadata for a stored relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StoredRelationDescriptor {
+    pub(crate) name: &'static str,
+    pub(crate) fields: &'static [&'static str],
+    pub(crate) doc: &'static str,
+    pub(crate) provenance: &'static str,
+}
+
+pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
+    StoredRelationDescriptor {
+        name: "handle",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "id",
+            "kind",
+            "status",
+            "namespace",
+            "file",
+            "line",
+            "date",
+            "area",
+            "summary",
+        ],
+        doc: "Stored corpus handles emitted by linked sources.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "edge",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "from",
+            "to",
+            "kind",
+            "file",
+            "line",
+        ],
+        doc: "Stored typed edges between corpus handles.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "meta",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "handle",
+            "key",
+            "value",
+        ],
+        doc: "Stored key/value metadata attached to handles.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "content",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "handle",
+            "span_id",
+            "lines",
+            "text",
+            "tokens",
+        ],
+        doc: "Stored retrievable content spans for handles.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "span",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "id",
+            "handle",
+            "start_line",
+            "end_line",
+            "summary",
+        ],
+        doc: "Stored source spans with line ranges and summaries.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "concern",
+        fields: &[
+            "corpus",
+            "source",
+            "native_id",
+            "origin_uri",
+            "revision",
+            "generation",
+            "name",
+            "member",
+        ],
+        doc: "Stored concern membership facts.",
+        provenance: "source",
+    },
+    StoredRelationDescriptor {
+        name: "config",
+        fields: &["corpus", "key", "value", "ordinal"],
+        doc: "Runtime-populated configuration facts.",
+        provenance: "runtime",
+    },
+    StoredRelationDescriptor {
+        name: "snapshot",
+        fields: &["corpus", "snapshot", "at", "id", "key", "value"],
+        doc: "Runtime-populated historical snapshot facts.",
+        provenance: "runtime",
+    },
+    StoredRelationDescriptor {
+        name: "generation",
+        fields: &["corpus", "source", "current"],
+        doc: "Runtime-populated current generation per source.",
+        provenance: "runtime",
+    },
+];
+
 /// Source extraction mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FactBatchMode {

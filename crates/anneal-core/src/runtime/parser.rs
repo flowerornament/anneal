@@ -74,12 +74,13 @@ impl Parser {
             }));
         }
         if self.eat(&TokenKind::AtSign) {
+            let location = statement_start.location(&self.source);
             self.expect_keyword("verb")?;
             self.expect(&TokenKind::LParen)?;
             let args = self.parse_named_args(&TokenKind::RParen)?;
             self.expect(&TokenKind::RParen)?;
             self.eat(&TokenKind::Dot);
-            return Ok(Statement::Verb(VerbDecl { args }));
+            return Ok(Statement::Verb(VerbDecl { args, location }));
         }
         if self.peek_keyword("at") && self.peek_n(1).kind == TokenKind::LParen {
             self.bump();

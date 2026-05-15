@@ -25,6 +25,13 @@ pub(crate) enum PrimitivePredicate {
     Read,
     ReadFull,
     Match,
+    Schema,
+    Predicates,
+    Verbs,
+    Describe,
+    SourceOf,
+    Examples,
+    Sources,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +53,39 @@ impl PrimitiveSignature {
 }
 
 impl PrimitivePredicate {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Upstream,
+        Self::Downstream,
+        Self::Impact,
+        Self::Neighborhood,
+        Self::Terminal,
+        Self::Active,
+        Self::Settled,
+        Self::PipelinePosition,
+        Self::PipelinePositionFor,
+        Self::Obligation,
+        Self::Discharged,
+        Self::Undischarged,
+        Self::CiteCount,
+        Self::InDegree,
+        Self::OutDegree,
+        Self::DischargeCount,
+        Self::Freshness,
+        Self::Flux,
+        Self::TokenEstimate,
+        Self::Search,
+        Self::Read,
+        Self::ReadFull,
+        Self::Match,
+        Self::Schema,
+        Self::Predicates,
+        Self::Verbs,
+        Self::Describe,
+        Self::SourceOf,
+        Self::Examples,
+        Self::Sources,
+    ];
+
     pub(crate) fn from_predicate(predicate: &PredicateRef) -> Option<Self> {
         if predicate.module.is_some() {
             return None;
@@ -74,6 +114,13 @@ impl PrimitivePredicate {
             "read" => Some(Self::Read),
             "read_full" => Some(Self::ReadFull),
             "match" => Some(Self::Match),
+            "schema" => Some(Self::Schema),
+            "predicates" => Some(Self::Predicates),
+            "verbs" => Some(Self::Verbs),
+            "describe" => Some(Self::Describe),
+            "source_of" => Some(Self::SourceOf),
+            "examples" => Some(Self::Examples),
+            "sources" => Some(Self::Sources),
             _ => None,
         }
     }
@@ -103,6 +150,13 @@ impl PrimitivePredicate {
             Self::Read => "read",
             Self::ReadFull => "read_full",
             Self::Match => "match",
+            Self::Schema => "schema",
+            Self::Predicates => "predicates",
+            Self::Verbs => "verbs",
+            Self::Describe => "describe",
+            Self::SourceOf => "source_of",
+            Self::Examples => "examples",
+            Self::Sources => "sources",
         }
     }
 
@@ -189,6 +243,40 @@ impl PrimitivePredicate {
                 parameters: &["pattern", "handle", "line", "snippet"],
                 sealed: true,
             },
+            Self::Schema => PrimitiveSignature {
+                parameters: &[
+                    "name",
+                    "kind",
+                    "signature",
+                    "determinism",
+                    "source_provenance",
+                ],
+                sealed: true,
+            },
+            Self::Predicates => PrimitiveSignature {
+                parameters: &["name", "doc", "source_file", "source_lines"],
+                sealed: true,
+            },
+            Self::Verbs => PrimitiveSignature {
+                parameters: &["name", "query", "doc", "output_schema"],
+                sealed: true,
+            },
+            Self::Describe => PrimitiveSignature {
+                parameters: &["name", "doc"],
+                sealed: true,
+            },
+            Self::SourceOf => PrimitiveSignature {
+                parameters: &["name", "file", "lines"],
+                sealed: true,
+            },
+            Self::Examples => PrimitiveSignature {
+                parameters: &["name", "example"],
+                sealed: true,
+            },
+            Self::Sources => PrimitiveSignature {
+                parameters: &["name", "recognizes", "capabilities", "doc"],
+                sealed: true,
+            },
         }
     }
 
@@ -218,7 +306,14 @@ impl PrimitivePredicate {
             | Self::Search
             | Self::Read
             | Self::ReadFull
-            | Self::Match => None,
+            | Self::Match
+            | Self::Schema
+            | Self::Predicates
+            | Self::Verbs
+            | Self::Describe
+            | Self::SourceOf
+            | Self::Examples
+            | Self::Sources => None,
         }
     }
 
@@ -270,39 +365,20 @@ impl PrimitivePredicate {
             | Self::DischargeCount
             | Self::Freshness
             | Self::Flux
-            | Self::TokenEstimate => &[],
+            | Self::TokenEstimate
+            | Self::Schema
+            | Self::Predicates
+            | Self::Verbs
+            | Self::Describe
+            | Self::SourceOf
+            | Self::Examples
+            | Self::Sources => &[],
         }
     }
 }
 
 pub(crate) fn primitive_signatures() -> impl Iterator<Item = (PredicateRef, PrimitiveSignature)> {
-    [
-        PrimitivePredicate::Upstream,
-        PrimitivePredicate::Downstream,
-        PrimitivePredicate::Impact,
-        PrimitivePredicate::Neighborhood,
-        PrimitivePredicate::Terminal,
-        PrimitivePredicate::Active,
-        PrimitivePredicate::Settled,
-        PrimitivePredicate::PipelinePosition,
-        PrimitivePredicate::PipelinePositionFor,
-        PrimitivePredicate::Obligation,
-        PrimitivePredicate::Discharged,
-        PrimitivePredicate::Undischarged,
-        PrimitivePredicate::CiteCount,
-        PrimitivePredicate::InDegree,
-        PrimitivePredicate::OutDegree,
-        PrimitivePredicate::DischargeCount,
-        PrimitivePredicate::Freshness,
-        PrimitivePredicate::Flux,
-        PrimitivePredicate::TokenEstimate,
-        PrimitivePredicate::Search,
-        PrimitivePredicate::Read,
-        PrimitivePredicate::ReadFull,
-        PrimitivePredicate::Match,
-    ]
-    .into_iter()
-    .map(|primitive| {
+    PrimitivePredicate::ALL.iter().copied().map(|primitive| {
         (
             PredicateRef::new(Ident::new_unchecked(primitive.name())),
             primitive.signature(),
