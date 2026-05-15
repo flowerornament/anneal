@@ -1064,7 +1064,7 @@ anneal-core/src/prelude/
   graph.dl          # structural shapes (orphan, stub, hub)
   convergence.dl    # potential, entropy, blocked, advancing, weights
   checks.dl         # E001, E002, W001-W004, I001, S001-S005
-  ranking.dl        # default Ranker calibration as Datalog rules
+  ranking.dl        # search/ranking helper predicates around CR-D42
   views.dl          # the starter verbs as saved queries
 ```
 
@@ -1833,7 +1833,8 @@ cold-agent fixtures pass:
   - Top-3 `search` result for query `"v17 conformance audit"` includes
     `reviews/2026-04-28-formal-model-v17-conformance-audit.md` with
     `score > 0.7` and `reason` in
-    `{"title-match", "frontmatter-key-match"}`
+    `{"title-substring", "frontmatter-key-match",
+    "frontmatter-value-match"}`
   - Following `read` on that handle returns the file's `## Method`
     or `## Summary` section in first span
   - `--explain` shows the rank derivation citing both score and

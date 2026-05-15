@@ -25,7 +25,9 @@ pub use history::{
     append_snapshot_entry, read_snapshot_history, repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
-pub use ranking::{DefaultRanker, Ranker, RankingContext, SearchHit};
+pub use ranking::{
+    DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
+};
 pub use source::{
     Action, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
     RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,

@@ -1,8 +1,8 @@
 //! Markdown adapter for anneal v2.
 
 use anneal_core::{
-    ConfigKey, FactBatch, FactBatchMode, Pattern, SearchInfo, Source, SourceCapabilities,
-    SourceContext, SourceError, SourceInfo, SourceName,
+    ConfigKey, FactBatch, FactBatchMode, Pattern, Source, SourceCapabilities, SourceContext,
+    SourceError, SourceInfo, SourceName, default_lexical_search_info,
 };
 
 const SOURCE_NAME: &str = "markdown";
@@ -33,17 +33,7 @@ impl Source for MarkdownSource {
                 supports_incremental: false,
                 live_only: false,
             },
-            search: Some(SearchInfo {
-                reason_vocabulary: vec![
-                    "identifier-substring",
-                    "title-substring",
-                    "frontmatter-key-match",
-                    "frontmatter-value-match",
-                    "body-substring",
-                ],
-                fields: vec!["identifier", "title", "body", "frontmatter:*"],
-                low_confidence_threshold: 0.5,
-            }),
+            search: Some(default_lexical_search_info()),
         }
     }
 

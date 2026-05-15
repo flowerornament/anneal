@@ -14,7 +14,10 @@ use crate::facts::{
     SnapshotFact, SpanFact,
 };
 use crate::ids::Generation;
-use crate::ranking::{DefaultRanker, Ranker, RankingContext, SearchHit};
+use crate::ranking::{
+    DEFAULT_LOW_CONFIDENCE_THRESHOLD, DefaultRanker, Ranker, RankingContext, SearchHandleDocument,
+    SearchIndex, SearchQuery, SearchSpanFilter, rank_search_hits,
+};
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
@@ -62,7 +65,6 @@ pub struct QueryWarning {
 
 pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
-const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 
 #[derive(Clone)]
 pub struct EvalOptions {
@@ -291,22 +293,29 @@ impl Database {
         let Some(query) = SearchQuery::parse(query_text) else {
             return Vec::new();
         };
-        let handle = string_constraint(constraints, 1);
+        let handle = match string_constraint(constraints, 1) {
+            ArgConstraint::Any => None,
+            ArgConstraint::Exact(handle) => Some(handle),
+            ArgConstraint::Impossible => return Vec::new(),
+        };
+        let span_filter = match search_span_filter(constraints, 2) {
+            SearchSpanConstraint::Any => SearchSpanFilter::Any,
+            SearchSpanConstraint::Null => SearchSpanFilter::Null,
+            SearchSpanConstraint::Exact(span_id) => SearchSpanFilter::Exact(span_id),
+            SearchSpanConstraint::Impossible => return Vec::new(),
+        };
         let ctx = options.ranking_context(query_text);
         let ranker = options.ranker();
-        let mut ranked = self
-            .search
-            .search_hits(&query, handle)
-            .into_iter()
-            .chain(self.content.search_hits(&query, handle))
-            .map(|hit| rank_search_hit(hit, &ctx, ranker))
-            .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| compare_ranked_search_hits(left, right, ranker));
+        let ranked = rank_search_hits(
+            self.search.search_hits(&query, handle, span_filter),
+            &ctx,
+            ranker,
+        );
 
         let mut seen = BTreeSet::new();
         ranked
             .into_iter()
-            .map(|hit| hit.tuple(query_text))
+            .map(|hit| search_tuple(&hit, query_text))
             .filter(|tuple| tuple_matches_constraints(tuple, constraints))
             .filter(|tuple| seen.insert(tuple.clone()))
             .collect()
@@ -327,7 +336,7 @@ impl Database {
         for row in rows {
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
             Arc::make_mut(&mut self.content).insert_row(&relation, &row);
-            Arc::make_mut(&mut self.search).insert_row(&relation, &row);
+            insert_search_row(Arc::make_mut(&mut self.search), &relation, &row);
             stored.push(row);
         }
     }
@@ -726,7 +735,6 @@ impl PartialOrd for ContentKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContentPayload {
-    source: String,
     text: String,
     tokens: i64,
 }
@@ -797,7 +805,6 @@ impl ContentIndex {
         };
         let key = ContentKey::new(handle, span_id);
         let payload = ContentPayload {
-            source: row_string(row, SOURCE_FIELD).unwrap_or_default().to_owned(),
             text: text.to_owned(),
             tokens,
         };
@@ -907,22 +914,6 @@ impl ContentIndex {
         out
     }
 
-    fn search_hits(&self, query: &SearchQuery, handle: ArgConstraint<&str>) -> Vec<SearchHit> {
-        match handle {
-            ArgConstraint::Impossible => Vec::new(),
-            ArgConstraint::Exact(handle) => self
-                .content_spans_for_handle(handle)
-                .filter_map(|span| body_search_hit(query, span))
-                .collect(),
-            ArgConstraint::Any => self
-                .span_order_by_handle
-                .keys()
-                .flat_map(|handle| self.content_spans_for_handle(handle))
-                .filter_map(|span| body_search_hit(query, span))
-                .collect(),
-        }
-    }
-
     fn content_span(&self, key: &ContentKey) -> Option<ContentSpan<'_>> {
         let (key, content) = self.content.get_key_value(key)?;
         let span = self.spans.get(key)?;
@@ -984,281 +975,85 @@ fn read_tuple(span: ContentSpan<'_>, budget: i64) -> Tuple {
     ])
 }
 
-fn body_search_hit(query: &SearchQuery, span: ContentSpan<'_>) -> Option<SearchHit> {
-    query.score(&span.content.text).map(|score| {
-        SearchHit::new(
-            span.content.source.as_str(),
-            span.key.handle.as_str(),
-            Some(span.key.span_id.clone()),
-            score,
-            SearchQuery::reason("body"),
-            "body",
-        )
-    })
+fn search_tuple(hit: &crate::ranking::RankedSearchHit, query: &str) -> Tuple {
+    let hit_data = hit.hit();
+    Tuple(vec![
+        string_value(query),
+        string_value(hit_data.handle()),
+        hit_data.span_id().map_or(Value::Null, string_value),
+        float_value(f64::from(hit.score().get())),
+        string_value(hit_data.reason()),
+        string_value(hit_data.field()),
+        Value::Bool(hit.low_confidence()),
+    ])
 }
 
-#[derive(Clone, Debug, Default)]
-struct SearchIndex {
-    documents: BTreeMap<String, SearchDocument>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchSpanConstraint<'a> {
+    Any,
+    Null,
+    Exact(&'a str),
+    Impossible,
 }
 
-#[derive(Clone, Debug, Default)]
-struct SearchDocument {
-    handle: String,
-    source: String,
-    fields: Vec<SearchField>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SearchField {
-    field: String,
-    reason: String,
-    text: String,
-}
-
-impl SearchField {
-    fn new(field: impl Into<String>, reason: impl Into<String>, text: &str) -> Option<Self> {
-        (!text.trim().is_empty()).then(|| Self {
-            field: field.into(),
-            reason: reason.into(),
-            text: text.to_owned(),
-        })
-    }
-}
-
-impl SearchIndex {
-    fn len(&self) -> usize {
-        self.documents.len()
-    }
-
-    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
-        match relation.as_str() {
-            HANDLE_RELATION => self.insert_handle(row),
-            META_RELATION => self.insert_meta(row),
-            _ => {}
-        }
-    }
-
-    fn insert_handle(&mut self, row: &NamedRow) {
-        let Some(handle) = row_string(row, ID_FIELD) else {
-            return;
-        };
-        let source = row_string(row, SOURCE_FIELD).unwrap_or_default();
-        let document = self.document_mut(handle, source);
-        push_search_field(
-            &mut document.fields,
-            "identifier",
-            "identifier-substring",
-            handle,
-        );
-        if let Some(summary) = row_string(row, SUMMARY_FIELD) {
-            push_search_field(&mut document.fields, "title", "title-substring", summary);
-        }
-        for (field, source_field) in [
-            ("frontmatter:status", STATUS_FIELD),
-            ("frontmatter:namespace", NAMESPACE_FIELD),
-            ("frontmatter:area", AREA_FIELD),
-            ("frontmatter:kind", KIND_FIELD),
-        ] {
-            if let Some(value) = row_string(row, source_field) {
-                push_search_field(
-                    &mut document.fields,
-                    field,
-                    "frontmatter-value-match",
-                    value,
-                );
-            }
-        }
-    }
-
-    fn insert_meta(&mut self, row: &NamedRow) {
-        let (Some(handle), Some(key), Some(value)) = (
-            row_string(row, HANDLE_FIELD),
-            row_string(row, KEY_FIELD),
-            row_string(row, VALUE_FIELD),
-        ) else {
-            return;
-        };
-        let source = row_string(row, SOURCE_FIELD).unwrap_or_default();
-        let field = format!("frontmatter:{key}");
-        let document = self.document_mut(handle, source);
-        push_search_field(&mut document.fields, field, "frontmatter-key-match", key);
-        push_search_field(
-            &mut document.fields,
-            format!("frontmatter:{key}"),
-            "frontmatter-value-match",
-            value,
-        );
-    }
-
-    fn document_mut(&mut self, handle: &str, source: &str) -> &mut SearchDocument {
-        let document = self
-            .documents
-            .entry(handle.to_owned())
-            .or_insert_with(|| SearchDocument {
-                handle: handle.to_owned(),
-                source: source.to_owned(),
-                fields: Vec::new(),
-            });
-        if document.source.is_empty() && !source.is_empty() {
-            source.clone_into(&mut document.source);
-        }
-        document
-    }
-
-    fn search_hits(&self, query: &SearchQuery, handle: ArgConstraint<&str>) -> Vec<SearchHit> {
-        match handle {
-            ArgConstraint::Impossible => Vec::new(),
-            ArgConstraint::Exact(handle) => self
-                .documents
-                .get(handle)
-                .map_or_else(Vec::new, |document| document.search_hits(query).collect()),
-            ArgConstraint::Any => self
-                .documents
-                .values()
-                .flat_map(|document| document.search_hits(query))
-                .collect(),
-        }
-    }
-}
-
-impl SearchDocument {
-    fn search_hits<'a>(&'a self, query: &'a SearchQuery) -> impl Iterator<Item = SearchHit> + 'a {
-        self.fields.iter().filter_map(move |field| {
-            query.score(&field.text).map(|score| {
-                SearchHit::new(
-                    self.source.as_str(),
-                    self.handle.as_str(),
-                    None,
-                    score,
-                    field.reason.clone(),
-                    field.field.clone(),
-                )
-            })
-        })
-    }
-}
-
-fn push_search_field(
-    fields: &mut Vec<SearchField>,
-    field: impl Into<String>,
-    reason: impl Into<String>,
-    text: &str,
-) {
-    if let Some(field) = SearchField::new(field, reason, text) {
-        fields.push(field);
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchQuery {
-    normalized: String,
-    terms: Vec<String>,
-}
-
-impl SearchQuery {
-    fn parse(query: &str) -> Option<Self> {
-        let normalized = normalize_search_text(query);
-        if normalized.is_empty() {
-            return None;
-        }
-        let mut terms = normalized
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        terms.sort();
-        terms.dedup();
-        Some(Self { normalized, terms })
-    }
-
-    fn score(&self, text: &str) -> Option<f32> {
-        let normalized = normalize_search_text(text);
-        if normalized.is_empty() {
-            return None;
-        }
-        if normalized.contains(&self.normalized) {
-            return Some(1.0);
-        }
-        let matched = self
-            .terms
-            .iter()
-            .filter(|term| normalized.contains(term.as_str()))
-            .count();
-        (matched > 0).then(|| {
-            let matched = u16::try_from(matched).unwrap_or(u16::MAX);
-            let total = u16::try_from(self.terms.len().max(1)).unwrap_or(u16::MAX);
-            0.35 + (0.55 * (f32::from(matched) / f32::from(total)))
-        })
-    }
-
-    fn reason(field: &str) -> &'static str {
-        if field == "body" {
-            "body-substring"
-        } else {
-            "substring"
-        }
-    }
-}
-
-fn normalize_search_text(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(char::to_lowercase)
-        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct RankedSearchHit {
-    hit: SearchHit,
-    score: f32,
-    low_confidence: bool,
-}
-
-impl RankedSearchHit {
-    fn tuple(&self, query: &str) -> Tuple {
-        Tuple(vec![
-            string_value(query),
-            string_value(&self.hit.handle),
-            self.hit
-                .span_id
-                .as_deref()
-                .map_or(Value::Null, string_value),
-            float_value(f64::from(self.score)),
-            string_value(&self.hit.reason),
-            string_value(&self.hit.field),
-            Value::Bool(self.low_confidence),
-        ])
-    }
-}
-
-fn rank_search_hit(hit: SearchHit, ctx: &RankingContext, ranker: &dyn Ranker) -> RankedSearchHit {
-    let score = ranker.calibrate(&hit, ctx);
-    let score = if score.is_finite() {
-        score.clamp(0.0, 1.0)
-    } else {
-        0.0
+fn search_span_filter(constraints: &[(usize, Value)], position: usize) -> SearchSpanConstraint<'_> {
+    let Some((_, value)) = constraints.iter().find(|(idx, _)| *idx == position) else {
+        return SearchSpanConstraint::Any;
     };
-    RankedSearchHit {
-        low_confidence: score < ctx.low_confidence_threshold,
-        hit,
-        score,
+    match value {
+        Value::Null => SearchSpanConstraint::Null,
+        Value::String(value) => SearchSpanConstraint::Exact(value),
+        Value::Number(_) | Value::Bool(_) | Value::List(_) => SearchSpanConstraint::Impossible,
     }
 }
 
-fn compare_ranked_search_hits(
-    left: &RankedSearchHit,
-    right: &RankedSearchHit,
-    ranker: &dyn Ranker,
-) -> Ordering {
-    right
-        .score
-        .total_cmp(&left.score)
-        .then_with(|| ranker.tie_break(&left.hit, &right.hit))
-        .then_with(|| left.tuple("").cmp(&right.tuple("")))
+fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow) {
+    match relation.as_str() {
+        HANDLE_RELATION => {
+            let (Some(corpus), Some(source), Some(handle)) = (
+                row_string(row, CORPUS_FIELD),
+                row_string(row, SOURCE_FIELD),
+                row_string(row, ID_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_handle(SearchHandleDocument {
+                corpus,
+                source,
+                handle,
+                summary: row_string(row, SUMMARY_FIELD),
+                status: row_string(row, STATUS_FIELD),
+                namespace: row_string(row, NAMESPACE_FIELD),
+                area: row_string(row, AREA_FIELD),
+                kind: row_string(row, KIND_FIELD),
+            });
+        }
+        META_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (
+                row_string(row, CORPUS_FIELD),
+                row_string(row, SOURCE_FIELD),
+                row_string(row, HANDLE_FIELD),
+                row_string(row, KEY_FIELD),
+                row_string(row, VALUE_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_meta(corpus, source, handle, key, value);
+        }
+        CONTENT_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text)) = (
+                row_string(row, CORPUS_FIELD),
+                row_string(row, SOURCE_FIELD),
+                row_string(row, HANDLE_FIELD),
+                row_string(row, SPAN_ID_FIELD),
+                row_string(row, TEXT_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_content(corpus, source, handle, span_id, text);
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Debug, Default)]
