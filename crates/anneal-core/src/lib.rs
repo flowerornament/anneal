@@ -8,6 +8,7 @@
 pub mod facts;
 pub mod hash;
 pub mod ids;
+pub mod runtime;
 pub mod source;
 pub mod store;
 
