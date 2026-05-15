@@ -136,10 +136,10 @@ Plans:
 **Engine-spike outcome:** ascent for engine-derived primitives + dynamic IR for the rule layer. See `.design/2026-05-13-engine-spike-results.md`.
 
 Closure work (Phase 0):
-- [x] **Phase 0 closure** — parity-runner, frozen large-corpus fixture, unsafe audit, dynamic-IR bench (0.85ms warm). `bd anneal-apa`. *(closed 2026-05-13)*
+- [ ] **Phase 0 closure** — parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench. `bd anneal-apa`.
 
 Build phases (each depends on the previous unless noted):
-- [x] **Phase 1 Foundation** — workspace, Source trait, FactStore + generation tracking, anneal-md fact parity (PD-1..3 0 fail), anneal-legacy transition crate. Spec gained CR-R6, CR-D31, CR-D32. `bd anneal-xu2`. *(closed 2026-05-15)*
+- [ ] **Phase 1 Foundation** — workspace, Source trait, stored relations, generation tracking, anneal-md. `bd anneal-xu2`.
 - [ ] **Phase 2 Datalog runtime** — parser, IR, fixpoint, stratification, NDJSON output. `bd anneal-jqh`.
 - [ ] **Phase 3 Engine primitives** — graph, lifecycle, obligations, aggregation, time travel. `bd anneal-f2b`.
 - [ ] **Phase 4 Content layer** — `*content`/`*span`, search + Ranker, read, match. `bd anneal-9yl`.
@@ -169,9 +169,9 @@ Build phases (each depends on the previous unless noted):
 | 5. pulldown-cmark Migration | v1.1 | Complete | 2026-03-30 |
 | 6. Resolution Cascade | v1.1 | Complete | 2026-03-30 |
 | 7. UX Enrichment | v1.1 | Complete | 2026-03-31 |
-| 0. Closure (parity, fixtures, unsafe audit) | v2.0 | Complete | 2026-05-13 |
-| 1. Foundation | v2.0 | Complete | 2026-05-15 |
-| 2. Datalog runtime | v2.0 | Ready | — |
+| 0. Closure (parity, fixtures, unsafe audit) | v2.0 | Ready | — |
+| 1. Foundation | v2.0 | Blocked on Phase 0 | — |
+| 2. Datalog runtime | v2.0 | Blocked on Phase 1 | — |
 | 3. Engine primitives | v2.0 | Blocked on Phase 2 | — |
 | 4. Content layer | v2.0 | Blocked on Phase 3 | — |
 | 5. Self-description | v2.0 | Blocked on Phase 3 | — |
