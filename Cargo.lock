@@ -24,6 +24,7 @@ dependencies = [
 name = "anneal"
 version = "0.10.1"
 dependencies = [
+ "anneal-core",
  "anyhow",
  "camino",
  "chrono",
@@ -67,11 +68,10 @@ dependencies = [
 name = "anneal-md"
 version = "0.10.1"
 dependencies = [
+ "anneal",
  "anneal-core",
  "camino",
- "serde_yaml_ng",
  "tempfile",
- "walkdir",
 ]
 
 [[package]]

@@ -4,7 +4,13 @@
 //! frozen large-corpus fixture for PD-1, PD-2, and PD-3. That proves the harness is
 //! deterministic before v2.0 has any output to compare against.
 
-use anyhow::{Context, Result, bail};
+use anneal_core::{
+    ActorContext, CancellationToken, ConfigFacts, CorpusId, FactBatch, Generation, Source,
+    SourceContext,
+};
+use anneal_md::MarkdownSource;
+use anyhow::{Context, Result, anyhow, bail};
+use camino::Utf8PathBuf;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::env;
@@ -22,6 +28,7 @@ struct Config {
     corpus: String,
     left_bin: String,
     right_bin: String,
+    right_mode: RightMode,
     sample_size: usize,
     report: Option<PathBuf>,
 }
@@ -32,8 +39,32 @@ impl Default for Config {
             corpus: DEFAULT_CORPUS.to_string(),
             left_bin: DEFAULT_LEFT_BIN.to_string(),
             right_bin: DEFAULT_RIGHT_BIN.to_string(),
+            right_mode: RightMode::Cli,
             sample_size: DEFAULT_SAMPLE_SIZE,
             report: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RightMode {
+    Cli,
+    AnnealMdFacts,
+}
+
+impl RightMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "cli" => Ok(Self::Cli),
+            "anneal-md" | "anneal-md-facts" => Ok(Self::AnnealMdFacts),
+            other => bail!("unknown --right-mode {other:?}; expected cli or anneal-md"),
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::AnnealMdFacts => "anneal-md",
         }
     }
 }
@@ -42,6 +73,75 @@ impl Default for Config {
 struct CommandResult {
     stdout: Value,
     stderr: String,
+}
+
+#[derive(Debug)]
+struct FactRight {
+    root: Utf8PathBuf,
+    batch: FactBatch,
+}
+
+#[derive(Debug)]
+enum RightRunner {
+    Cli { bin: String },
+    AnnealMdFacts(Box<FactRight>),
+}
+
+impl RightRunner {
+    fn build(config: &Config, corpus_root: &Path) -> Result<Self> {
+        match config.right_mode {
+            RightMode::Cli => Ok(Self::Cli {
+                bin: config.right_bin.clone(),
+            }),
+            RightMode::AnnealMdFacts => Ok(Self::AnnealMdFacts(Box::new(extract_anneal_md(
+                corpus_root,
+            )?))),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Cli { bin } => bin.clone(),
+            Self::AnnealMdFacts(_) => "anneal-md facts".to_string(),
+        }
+    }
+
+    const fn is_fact_backed(&self) -> bool {
+        matches!(self, Self::AnnealMdFacts(_))
+    }
+
+    fn run(&self, corpus_root: &Path, args: &[&str]) -> Result<CommandResult> {
+        match self {
+            Self::Cli { bin } => run_anneal(bin, corpus_root, args),
+            Self::AnnealMdFacts(facts) => facts.run(args),
+        }
+    }
+}
+
+impl FactRight {
+    fn run(&self, args: &[&str]) -> Result<CommandResult> {
+        let stdout = match args {
+            ["status", "--json"] => {
+                anneal::v2_adapter::status_json_from_facts(self.root.as_path(), &self.batch)?
+            }
+            ["check", "--scope=active", "--json"] => {
+                anneal::v2_adapter::check_json_from_facts(self.root.as_path(), &self.batch)?
+            }
+            ["get", handle, "--refs", "--json"] => anneal::v2_adapter::get_refs_json_from_facts(
+                self.root.as_path(),
+                &self.batch,
+                handle,
+            )?,
+            _ => bail!(
+                "anneal-md fact runner does not implement {}",
+                command_string(args)
+            ),
+        };
+        Ok(CommandResult {
+            stdout,
+            stderr: String::new(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -68,14 +168,15 @@ fn main() -> Result<()> {
 
     println!("corpus: {}", corpus_root.display());
     println!("left:   {}", config.left_bin);
-    println!("right:  {}", config.right_bin);
+    let right_runner = RightRunner::build(&config, &corpus_root)?;
+    println!("right:  {}", right_runner.label());
 
     let mut cases = Vec::new();
     cases.push(run_case(
         "PD-1",
         "status",
         &config.left_bin,
-        &config.right_bin,
+        &right_runner,
         &corpus_root,
         &["status", "--json"],
     )?);
@@ -83,7 +184,7 @@ fn main() -> Result<()> {
         "PD-2",
         "check",
         &config.left_bin,
-        &config.right_bin,
+        &right_runner,
         &corpus_root,
         &["check", "--scope=active", "--json"],
     )?);
@@ -91,7 +192,7 @@ fn main() -> Result<()> {
     let sample_handles = sample_handles(&config.left_bin, &corpus_root, config.sample_size)?;
     cases.push(run_pd3(
         &config.left_bin,
-        &config.right_bin,
+        &right_runner,
         &corpus_root,
         &sample_handles,
     )?);
@@ -131,6 +232,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Config> {
             "--corpus" => config.corpus = value_or_next("--corpus", value, &mut iter)?,
             "--left-bin" => config.left_bin = value_or_next("--left-bin", value, &mut iter)?,
             "--right-bin" => config.right_bin = value_or_next("--right-bin", value, &mut iter)?,
+            "--right-mode" => {
+                config.right_mode =
+                    RightMode::parse(&value_or_next("--right-mode", value, &mut iter)?)?;
+            }
             "--sample-size" => {
                 config.sample_size = value_or_next("--sample-size", value, &mut iter)?
                     .parse()
@@ -169,7 +274,8 @@ fn value_or_next(
 fn print_help() {
     println!(
         "Usage: parity-runner [--corpus large-corpus|PATH] [--left-bin anneal] \\
-         [--right-bin anneal] [--sample-size 50] [--report PATH]"
+         [--right-bin anneal] [--right-mode cli|anneal-md] \\
+         [--sample-size 50] [--report PATH]"
     );
 }
 
@@ -205,12 +311,19 @@ fn run_case(
     id: &'static str,
     label: &'static str,
     left_bin: &str,
-    right_bin: &str,
+    right: &RightRunner,
     corpus_root: &Path,
     args: &[&str],
 ) -> Result<CaseResult> {
-    let left = run_anneal(left_bin, corpus_root, args)?;
-    let right = run_anneal(right_bin, corpus_root, args)?;
+    let (left, right) = if right.is_fact_backed() {
+        let right_result = right.run(corpus_root, args)?;
+        let left_result = run_anneal(left_bin, corpus_root, args)?;
+        (left_result, right_result)
+    } else {
+        let left_result = run_anneal(left_bin, corpus_root, args)?;
+        let right_result = right.run(corpus_root, args)?;
+        (left_result, right_result)
+    };
     let json_matches = left.stdout == right.stdout;
     let stderr_matches = left.stderr == right.stderr;
     let passed = json_matches && stderr_matches;
@@ -238,7 +351,7 @@ fn run_case(
 
 fn run_pd3(
     left_bin: &str,
-    right_bin: &str,
+    right: &RightRunner,
     corpus_root: &Path,
     sample_handles: &[String],
 ) -> Result<CaseResult> {
@@ -246,7 +359,7 @@ fn run_pd3(
     for handle in sample_handles {
         let args = ["get", handle.as_str(), "--refs", "--json"];
         let left = run_anneal(left_bin, corpus_root, &args)?;
-        let right = run_anneal(right_bin, corpus_root, &args)?;
+        let right = right.run(corpus_root, &args)?;
         if left.stdout != right.stdout || left.stderr != right.stderr {
             failures.push(json!({
                 "handle": handle,
@@ -274,6 +387,29 @@ fn run_pd3(
         left_stderr: String::new(),
         right_stderr: serde_json::to_string(&failures)?,
     })
+}
+
+fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
+    let root = Utf8PathBuf::from_path_buf(corpus_root.to_path_buf())
+        .map_err(|path| anyhow!("corpus path is not valid UTF-8: {}", path.display()))?;
+    let roots = vec![root.clone()];
+    let config_facts = ConfigFacts::new(vec![
+        ("md.file_extension".to_string(), ".md".to_string()),
+        ("md.scan_root".to_string(), ".".to_string()),
+    ]);
+    let context = SourceContext {
+        corpus: CorpusId::from("parity"),
+        roots: roots.as_slice(),
+        config_facts: &config_facts,
+        time_ref: None,
+        previous_generation: Some(Generation::new(0)),
+        actor: ActorContext::anonymous_cli(),
+        cancellation: CancellationToken::new(),
+    };
+    let batch = MarkdownSource
+        .extract(&context)
+        .map_err(|err| anyhow!("anneal-md extraction failed: {err}"))?;
+    Ok(FactRight { root, batch })
 }
 
 fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandResult> {
@@ -362,6 +498,7 @@ fn write_report(
         "corpus_root": corpus_root,
         "left_bin": config.left_bin,
         "right_bin": config.right_bin,
+        "right_mode": config.right_mode.as_str(),
         "sample_size": config.sample_size,
         "sample_handles": sample_handles,
         "cases": cases.iter().map(|case| json!({

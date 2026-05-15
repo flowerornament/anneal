@@ -363,6 +363,16 @@ entire `(corpus, source)` or applies a `Delta` batch's upserts and
 retractions. This makes long-running runtimes (MCP, host-embed)
 correct under source edits and deletions.
 
+**Rule CR-R6 (Edge closure).** `*edge.to` is a handle identity string,
+not a foreign-key requirement. Unresolved reference attempts remain
+stored as `*edge` rows even when no matching `*handle{id: to}` exists;
+consumers that require a closed graph explicitly join `*edge.to` to
+`*handle.id`.
+
+Rationale: existence diagnostics, resolution-cascade suggestions, and
+legacy parity need to reason about failed references, not only resolved
+relationships.
+
 ### §11 Engine-derived predicates [CR-D9]
 
 **Definition CR-D9 (Function primitives).** Predicates implemented in
@@ -1156,6 +1166,35 @@ multi-adapter corpora. The user discovers which mode applies via
 `anneal sources` — listing one adapter means unqualified facts
 work; listing more requires qualification.
 
+### §32.1 Adapter diagnostic evidence [CR-D31]
+
+**Definition CR-D31 (Diagnostic evidence facts).** Adapter observations
+that are not handles, edges, content, or spans but are required to
+reproduce diagnostics are stored as adapter-qualified `*meta` rows on
+the nearest owning handle, usually the file handle. Keys MUST be
+adapter-qualified (`md.*`, `code.*`, `host.*`) and their value encoding
+MUST be documented by the adapter.
+
+The v2.0 markdown adapter defines:
+
+```
+*meta{
+  handle: <file handle>,
+  key: "md.implausible_ref",
+  value: JSON.stringify({
+    value,   // raw frontmatter value rejected as a reference
+    reason,  // "absolute path" | "wildcard pattern" |
+             // "comma-separated list" | "freeform prose"
+    line     // source line, null if unavailable
+  }),
+  ...
+}
+```
+
+Rationale: W004 and similar parse-filter diagnostics must be
+reconstructible from stored facts without re-running a format-specific
+parser inside the substrate.
+
 ---
 
 ## Part VII: Surfaces [CR-Su]
@@ -1790,6 +1829,7 @@ cold-agent gate depends on it.
 - CR-D28: Init defaults (§39)
 - CR-D29: Agent loop (§40)
 - CR-D30: Context verb (§33.1)
+- CR-D31: Diagnostic evidence facts (§32.1)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -1797,6 +1837,7 @@ cold-agent gate depends on it.
 - CR-R3: Reserved prefixes (§29)
 - CR-R4: Verb extensibility / Steele's criterion (§31)
 - CR-R5: Workflow gates with pinned fixtures (§49)
+- CR-R6: Edge closure (§10)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
