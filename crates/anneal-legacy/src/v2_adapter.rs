@@ -749,7 +749,6 @@ struct LoadedFacts {
     lattice: crate::lattice::Lattice,
     pending_edges: Vec<PendingEdge>,
     section_ref_count: usize,
-    section_ref_file: Option<String>,
     implausible_refs: Vec<parse::ImplausibleRef>,
     file_snippets: HashMap<String, String>,
     label_snippets: HashMap<String, String>,
@@ -771,7 +770,6 @@ impl LoadedFacts {
 
         let mut pending_edges = Vec::new();
         let mut section_ref_count = 0usize;
-        let mut section_ref_file = None;
         for fact in &batch.edges {
             let Some(&source) = id_to_node.get(&fact.from) else {
                 continue;
@@ -781,9 +779,6 @@ impl LoadedFacts {
             } else {
                 if fact.to.starts_with("section:") {
                     section_ref_count += 1;
-                    if section_ref_file.is_none() {
-                        section_ref_file = Some(fact.file.clone());
-                    }
                 }
                 pending_edges.push(PendingEdge {
                     source,
@@ -823,7 +818,6 @@ impl LoadedFacts {
             lattice,
             pending_edges,
             section_ref_count,
-            section_ref_file,
             implausible_refs,
             file_snippets,
             label_snippets,
@@ -837,7 +831,6 @@ impl LoadedFacts {
             config: &self.config,
             unresolved_edges: &self.pending_edges,
             section_ref_count: self.section_ref_count,
-            section_ref_file: self.section_ref_file.as_deref(),
             implausible_refs: self.implausible_refs.as_slice(),
             cascade_candidates: &HashMap::new(),
             previous_snapshot: None,

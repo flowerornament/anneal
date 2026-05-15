@@ -25,17 +25,14 @@ pub(crate) struct AnalysisContext<'a> {
 
 /// Clone only unresolved pending edges for check/query analysis.
 ///
-/// Section refs are counted separately for the I001 summary diagnostic.
-/// `section_ref_file` is the file path of the first section-ref source, used
-/// as a representative location for the I001 diagnostic.
+/// Section refs are counted separately for the corpus-level I001 summary
+/// diagnostic.
 pub(crate) fn collect_unresolved_owned(
     pending: &[parse::PendingEdge],
     node_index: &HashMap<String, NodeId>,
-    graph: &crate::graph::DiGraph,
-) -> (Vec<parse::PendingEdge>, usize, Option<String>) {
+) -> (Vec<parse::PendingEdge>, usize) {
     let mut unresolved = Vec::new();
     let mut section_ref_count: usize = 0;
-    let mut section_ref_file: Option<String> = None;
 
     for edge in pending {
         if node_index.contains_key(&edge.target_identity) {
@@ -43,19 +40,12 @@ pub(crate) fn collect_unresolved_owned(
         }
         if edge.target_identity.starts_with("section:") {
             section_ref_count += 1;
-            if section_ref_file.is_none() {
-                section_ref_file = graph
-                    .node(edge.source)
-                    .file_path
-                    .as_ref()
-                    .map(ToString::to_string);
-            }
         } else {
             unresolved.push(edge.clone());
         }
     }
 
-    (unresolved, section_ref_count, section_ref_file)
+    (unresolved, section_ref_count)
 }
 
 pub(crate) fn build_analysis_artifacts(context: &AnalysisContext<'_>) -> AnalysisArtifacts {
@@ -66,14 +56,10 @@ pub(crate) fn build_analysis_artifacts_with_selection(
     context: &AnalysisContext<'_>,
     selection: checks::DiagnosticSelection,
 ) -> AnalysisArtifacts {
-    let (unresolved_owned, section_ref_count, section_ref_file) = if selection.existence {
-        collect_unresolved_owned(
-            context.result.pending_edges.as_slice(),
-            context.node_index,
-            context.graph,
-        )
+    let (unresolved_owned, section_ref_count) = if selection.existence {
+        collect_unresolved_owned(context.result.pending_edges.as_slice(), context.node_index)
     } else {
-        (Vec::new(), 0, None)
+        (Vec::new(), 0)
     };
     let previous_snapshot = selection
         .includes_suggestions()
@@ -86,7 +72,6 @@ pub(crate) fn build_analysis_artifacts_with_selection(
         config: context.config,
         unresolved_edges: &unresolved_owned,
         section_ref_count,
-        section_ref_file: section_ref_file.as_deref(),
         implausible_refs: context.result.implausible_refs.as_slice(),
         cascade_candidates: context.cascade_candidates,
         previous_snapshot: previous_snapshot.as_ref(),

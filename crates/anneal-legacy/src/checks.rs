@@ -447,7 +447,6 @@ fn check_existence(
     graph: &DiGraph,
     unresolved_edges: &[PendingEdge],
     section_ref_count: usize,
-    section_ref_file: Option<&str>,
     cascade_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -461,7 +460,7 @@ fn check_existence(
                 "{section_ref_count} section references use section notation, \
                  not resolvable to heading slugs"
             ),
-            file: section_ref_file.map(ToString::to_string),
+            file: None,
             line: None,
             evidence: None,
         });
@@ -1331,7 +1330,6 @@ pub(crate) struct CheckInput<'a> {
     pub(crate) config: &'a AnnealConfig,
     pub(crate) unresolved_edges: &'a [PendingEdge],
     pub(crate) section_ref_count: usize,
-    pub(crate) section_ref_file: Option<&'a str>,
     pub(crate) implausible_refs: &'a [ImplausibleRef],
     pub(crate) cascade_candidates: &'a HashMap<String, Vec<String>>,
     pub(crate) previous_snapshot: Option<&'a crate::snapshot::Snapshot>,
@@ -1355,7 +1353,6 @@ pub(crate) fn run_checks_with_selection(
             input.graph,
             input.unresolved_edges,
             input.section_ref_count,
-            input.section_ref_file,
             input.cascade_candidates,
         ));
     }
@@ -1449,7 +1446,7 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code, DiagnosticCode::E001);
@@ -1467,14 +1464,13 @@ mod tests {
         let unresolved: Vec<PendingEdge> = Vec::new();
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 42, Some("doc.md"), &cascade);
+        let diags = check_existence(&graph, &unresolved, 42, &cascade);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Info);
         assert_eq!(diags[0].code, DiagnosticCode::I001);
         assert_eq!(
-            diags[0].file,
-            Some("doc.md".to_string()),
-            "I001 should carry representative file"
+            diags[0].file, None,
+            "I001 should be corpus-scoped, not anchored to a representative file"
         );
         assert_eq!(
             diags[0].line, None,
@@ -2135,7 +2131,6 @@ mod tests {
             config: &config,
             unresolved_edges: &unresolved,
             section_ref_count: 0,
-            section_ref_file: None,
             implausible_refs: &[],
             cascade_candidates: &cascade,
             previous_snapshot: None,
@@ -2243,7 +2238,7 @@ mod tests {
         let mut cascade = HashMap::new();
         cascade.insert("OQ-99".to_string(), vec!["OQ-9".to_string()]);
 
-        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("similar handle exists: OQ-9"));
         match &diags[0].evidence {
@@ -2269,7 +2264,7 @@ mod tests {
         }];
 
         let cascade = HashMap::new();
-        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
         assert_eq!(diags.len(), 1);
         assert!(!diags[0].message.contains("similar handle"));
         match &diags[0].evidence {
@@ -2295,7 +2290,7 @@ mod tests {
             line: Some(7),
         }];
 
-        let diags = check_existence(&graph, &unresolved, 0, None, &HashMap::new());
+        let diags = check_existence(&graph, &unresolved, 0, &HashMap::new());
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("did you mean notes/foo.md?"));
         match &diags[0].evidence {
@@ -2326,7 +2321,7 @@ mod tests {
             vec!["formal-model/foo.md".to_string()],
         );
 
-        let diags = check_existence(&graph, &unresolved, 0, None, &cascade);
+        let diags = check_existence(&graph, &unresolved, 0, &cascade);
         assert_eq!(diags.len(), 1);
         assert!(
             diags[0]
@@ -2363,7 +2358,6 @@ mod tests {
             config: &config,
             unresolved_edges: &unresolved,
             section_ref_count: 5,
-            section_ref_file: None,
             implausible_refs: &[],
             cascade_candidates: &cascade,
             previous_snapshot: None,
