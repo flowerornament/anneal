@@ -1279,7 +1279,7 @@ meaning of "work" remains "highest potential first."
 violation.
 
 The v2.0 check catalog mirrors anneal v1.x — E001 (broken refs), E002
-(undischarged), W001-W004 (warnings), I001 (info), S001-S005
+(undischarged), W001-W004 (warnings), I001-I002 (info), S001-S005
 (suggestions) — as Horn clauses in `checks.dl`. The substrate has no
 hard-coded check logic. E001 is the minimal executable anchor required
 by the convergence vocabulary; the remaining catalog must land before
@@ -1292,6 +1292,56 @@ diagnostic("E001", "error", src, file, line, target) :=
   *edge{from: src, to: target, file: file, line: line},
   not *handle{id: target}.
 ```
+
+### §28.1 Diagnostic relation boundary [CR-D49]
+
+**Definition CR-D49 (Relational diagnostic contract).**
+`checks.dl` owns the relational diagnostic contract:
+
+```
+diagnostic(code, severity, subject, file, line, evidence)
+```
+
+`code` and `severity` are stable strings. `subject` is the handle,
+namespace, status, or corpus scope that caused the diagnostic. `file`
+and `line` are nullable source-location fields. `evidence` is a
+runtime value: `null`, a scalar, or a list/tuple whose first element is
+an evidence kind such as `"broken_ref"` or
+`"candidate_namespace"`.
+
+Surfaces lower diagnostic rows into human messages, JSON records,
+diagnostic IDs, and suggestion IDs. That lowering may use adapter
+evidence rows from CR-D31 and source-specific compatibility code while
+v1.x parity is being retired. `checks.dl` MUST still derive the same
+diagnostic code/severity membership as the v1.x check pipeline on the
+frozen parity fixtures; exact rendered JSON identity is a surface
+compatibility gate, not a Datalog expressiveness requirement.
+Status-level and corpus-level suggestions such as S003 and S005 use
+`file = null`; v1.x representative files for those rows were display
+choices, not semantic locations.
+
+Rationale: v1.x diagnostic records include rendered prose, hashed IDs,
+JSON evidence decoding, and resolution-cascade candidate formatting.
+Those are output concerns; the standard library should remain
+queryable Horn clauses over stored relations.
+
+### §28.2 Concern-candidate namespace scope [CR-D50]
+
+**Definition CR-D50 (S005 confirmed namespace scope).** The standard
+S005 concern-group suggestion considers pairs of confirmed label
+namespaces only. Repeated unconfirmed prefixes are surfaced by S002
+first; after the user confirms the namespace, S005 may propose concern
+groups involving it. Because S005 describes a corpus-level
+co-occurrence pattern rather than a single source location, its
+`diagnostic(...)` row uses `file = null` and carries the concrete
+prefix pair plus file count in evidence; surfaces may choose a
+representative file for compatibility displays.
+
+Rationale: running co-occurrence over every discovered prefix scales
+with noisy parser output and creates low-signal suggestions. Confirmed
+namespaces are the stable vocabulary the agent can safely use for
+cross-file concern discovery. The representative file in v1.x was an
+iteration-order artifact, not part of the semantic diagnostic.
 
 ### §29 Diagnostic ID rules [CR-R1, CR-R2, CR-R3]
 
@@ -1471,11 +1521,28 @@ The v2.0 markdown adapter defines:
   }),
   ...
 }
+
+*meta{
+  handle: <file handle>,
+  key: "md.parent_dir",
+  value: <parent directory relative to corpus root, or "">,
+  ...
+}
+
+*meta{
+  handle: <any handle>,
+  key: "md.resolved_file",
+  value: <owning file path relative to corpus root>,
+  ...
+}
 ```
 
 Rationale: W004 and similar parse-filter diagnostics must be
 reconstructible from stored facts without re-running a format-specific
-parser inside the substrate.
+parser inside the substrate. W003 needs the markdown parent directory,
+not the source-neutral top-level area. Diagnostics for labels and
+versions need an owning source file without changing the source-neutral
+`*handle.file` field that legacy surface parity depends on.
 
 ---
 
@@ -2224,6 +2291,8 @@ as data instead of smuggling it through row sequence.
 - CR-D46: Documentation declarations (§43)
 - CR-D47: Structural graph vocabulary (§27.1)
 - CR-D48: Work ranking vocabulary (§27.2)
+- CR-D49: Relational diagnostic contract (§28.1)
+- CR-D50: S005 confirmed namespace scope (§28.2)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

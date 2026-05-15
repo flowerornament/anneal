@@ -6,23 +6,25 @@
 
 use anneal_cli::{ReadCommand, SearchCommand};
 use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::prelude::standard_prelude_program;
 use anneal_core::runtime::{
     Database, EvalOptions, Evaluator, QueryOutput, Row, Value as RuntimeValue, analyze,
     parse_program,
 };
 use anneal_core::{
-    ActorContext, CancellationToken, ConfigFacts, CorpusId, FactBatch, FactStore, Generation,
-    Source, SourceContext,
+    ActorContext, CancellationToken, ConfigFact, ConfigFacts, CorpusId, FactBatch, FactStore,
+    Generation, Source, SourceContext,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Value as JsonValue, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CORPUS: &str = "large-corpus";
 const DEFAULT_LEFT_BIN: &str = "anneal";
@@ -85,6 +87,7 @@ struct CommandResult {
 struct FactRight {
     root: Utf8PathBuf,
     batch: FactBatch,
+    configs: Vec<ConfigFact>,
 }
 
 #[derive(Debug)]
@@ -156,6 +159,11 @@ impl FactRight {
         store
             .merge(self.batch.clone())
             .context("failed to merge anneal-md facts into runtime store")?;
+        if !self.configs.is_empty() {
+            store
+                .replace_configs(&self.batch.corpus, self.configs.clone())
+                .context("failed to merge runtime config facts")?;
+        }
         let database = Database::from_store(&store);
         let program = parse_program("parity-phase4", query)?;
         let analyzed = analyze(program)?;
@@ -171,6 +179,35 @@ impl FactRight {
         evaluator
             .eval_query(&query)
             .context("phase4 parity query failed")
+    }
+
+    fn eval_prelude_query(&self, query: &str) -> Result<QueryOutput> {
+        let mut store = FactStore::default();
+        store
+            .merge(self.batch.clone())
+            .context("failed to merge anneal-md facts into runtime store")?;
+        if !self.configs.is_empty() {
+            store
+                .replace_configs(&self.batch.corpus, self.configs.clone())
+                .context("failed to merge runtime config facts")?;
+        }
+        let database = Database::from_store(&store);
+        let mut program = standard_prelude_program().context("standard prelude did not parse")?;
+        let query = parse_program("parity-phase6", query)?;
+        program.statements.extend(query.statements);
+        let analyzed = analyze(program)?;
+        let query = analyzed
+            .queries()
+            .next()
+            .cloned()
+            .context("phase6 parity query did not contain a query")?;
+        let mut evaluator = Evaluator::with_options(analyzed, database, EvalOptions::default());
+        evaluator
+            .run_fixpoint()
+            .context("phase6 parity fixpoint failed")?;
+        evaluator
+            .eval_query(&query)
+            .context("phase6 parity query failed")
     }
 }
 
@@ -227,7 +264,7 @@ fn main() -> Result<()> {
         &sample_handles,
     )?);
     if let RightRunner::AnnealMdFacts(facts) = &right_runner {
-        cases.extend(run_phase4_cases(facts)?);
+        cases.extend(run_phase4_cases(facts, &config.left_bin, &corpus_root)?);
     }
 
     for case in &cases {
@@ -422,10 +459,15 @@ fn run_pd3(
     })
 }
 
-fn run_phase4_cases(right: &FactRight) -> Result<Vec<CaseResult>> {
+fn run_phase4_cases(
+    right: &FactRight,
+    left_bin: &str,
+    corpus_root: &Path,
+) -> Result<Vec<CaseResult>> {
     let search = run_pd4_search(right)?;
     let read = run_pd5_read(right)?;
-    Ok(vec![search, read])
+    let diagnostics = run_pd6_diagnostics(right, left_bin, corpus_root)?;
+    Ok(vec![search, read, diagnostics])
 }
 
 fn run_pd4_search(right: &FactRight) -> Result<CaseResult> {
@@ -464,7 +506,9 @@ fn run_pd4_search(right: &FactRight) -> Result<CaseResult> {
 fn run_pd5_read(right: &FactRight) -> Result<CaseResult> {
     const EXPECTED_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
     let command = format!("anneal read {EXPECTED_HANDLE} --budget=4000");
-    let query = ReadCommand::new(EXPECTED_HANDLE).with_budget(4_000).datalog();
+    let query = ReadCommand::new(EXPECTED_HANDLE)
+        .with_budget(4_000)
+        .datalog();
     let output = right.eval_query(&query)?;
     let first_text = output
         .rows
@@ -489,6 +533,357 @@ fn run_pd5_read(right: &FactRight) -> Result<CaseResult> {
         left_stderr: String::new(),
         right_stderr: String::new(),
     })
+}
+
+fn run_pd6_diagnostics(
+    right: &FactRight,
+    left_bin: &str,
+    corpus_root: &Path,
+) -> Result<CaseResult> {
+    let command = "anneal --root <corpus> check --scope=all --json --full".to_string();
+    let left = run_anneal(
+        left_bin,
+        corpus_root,
+        &["check", "--scope=all", "--json", "--full"],
+    )?;
+    let expected = check_relation_rows(&left.stdout)?;
+    let output = right.eval_prelude_query(
+        r"
+        ? diagnostic(code, severity, subject, file, line, evidence).
+        ",
+    )?;
+    let actual = diagnostic_relation_rows(&output.rows)?;
+    let passed = actual == expected;
+    let detail = if passed {
+        format!("diagnostic relation rows match: {}", format_counts(&actual)?)
+    } else {
+        format!(
+            "diagnostic relation rows differ: {}",
+            first_multiset_diff(&expected, &actual)
+        )
+    };
+    Ok(CaseResult {
+        id: "PD-6",
+        label: "checks.dl",
+        command,
+        passed,
+        detail,
+        left_stderr: String::new(),
+        right_stderr: if passed {
+            String::new()
+        } else {
+            serde_json::to_string(&json!({
+                "left_counts": format_counts(&expected)?,
+                "right_counts": format_counts(&actual)?,
+                "left_rows": multiset_rows(&expected),
+                "right_rows": multiset_rows(&actual),
+                "raw_right_rows": output.rows,
+            }))?
+        },
+    })
+}
+
+type RowMultiset = BTreeMap<String, usize>;
+
+fn check_relation_rows(output: &JsonValue) -> Result<RowMultiset> {
+    let diagnostics = output
+        .get("diagnostics")
+        .and_then(JsonValue::as_array)
+        .context("check JSON missing diagnostics array; use --full for PD-6")?;
+    let mut rows = BTreeMap::new();
+    for diagnostic in diagnostics {
+        let code = diagnostic
+            .get("code")
+            .and_then(JsonValue::as_str)
+            .context("diagnostic missing code")?;
+        let severity = diagnostic
+            .get("severity")
+            .and_then(JsonValue::as_str)
+            .context("diagnostic missing severity")?;
+        let message = diagnostic
+            .get("message")
+            .and_then(JsonValue::as_str)
+            .context("diagnostic missing message")?;
+        let file = if matches!(code, "S003" | "S005") {
+            JsonValue::Null
+        } else {
+            diagnostic.get("file").cloned().unwrap_or(JsonValue::Null)
+        };
+        let line = diagnostic.get("line").cloned().unwrap_or(JsonValue::Null);
+        let evidence = diagnostic.get("evidence").unwrap_or(&JsonValue::Null);
+        let subject = left_diagnostic_subject(code, message, &file, evidence)?;
+        let evidence = left_diagnostic_evidence(code, message, evidence)?;
+        insert_multiset(
+            &mut rows,
+            canonical_diagnostic_row(code, severity, &subject, &file, &line, &evidence)?,
+        );
+    }
+    Ok(rows)
+}
+
+fn diagnostic_relation_rows(rows: &[Row]) -> Result<RowMultiset> {
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let code = row_string(row, "code").context("diagnostic row missing string code")?;
+        let severity =
+            row_string(row, "severity").context("diagnostic row missing string severity")?;
+        let subject = row_json(row, "subject").context("diagnostic row missing subject")?;
+        let file = row_json(row, "file").context("diagnostic row missing file")?;
+        let line = row_json(row, "line").context("diagnostic row missing line")?;
+        let evidence = row
+            .fields
+            .get("evidence")
+            .map(|value| runtime_diagnostic_evidence(code, value))
+            .context("diagnostic row missing evidence")??;
+        insert_multiset(
+            &mut out,
+            canonical_diagnostic_row(code, severity, &subject, &file, &line, &evidence)?,
+        );
+    }
+    Ok(out)
+}
+
+fn insert_multiset(rows: &mut RowMultiset, row: String) {
+    *rows.entry(row).or_default() += 1;
+}
+
+fn canonical_diagnostic_row(
+    code: &str,
+    severity: &str,
+    subject: &JsonValue,
+    file: &JsonValue,
+    line: &JsonValue,
+    evidence: &JsonValue,
+) -> Result<String> {
+    serde_json::to_string(&json!({
+        "code": code,
+        "severity": severity,
+        "subject": subject,
+        "file": file,
+        "line": line,
+        "evidence": evidence,
+    }))
+    .context("failed to serialize canonical diagnostic row")
+}
+
+fn left_diagnostic_subject(
+    code: &str,
+    message: &str,
+    file: &JsonValue,
+    evidence: &JsonValue,
+) -> Result<JsonValue> {
+    let subject = match code {
+        "I001" => "corpus".to_string(),
+        "E001" | "W003" | "W004" => file.as_str().unwrap_or_default().to_string(),
+        "W001" => parse_between(message, "stale dependency: ", " (active)")
+            .context("W001 message missing source subject")?
+            .to_string(),
+        "W002" => parse_until_status(message, "confidence gap: ")
+            .context("W002 message missing source subject")?,
+        "E002" => parse_between(message, "undischarged obligation: ", " has no")
+            .context("E002 message missing obligation subject")?
+            .to_string(),
+        "I002" => parse_between(message, "multiple discharges: ", " discharged")
+            .context("I002 message missing obligation subject")?
+            .to_string(),
+        "S001" => evidence_string(evidence, "handle").context("S001 evidence missing handle")?,
+        "S002" | "S004" => {
+            evidence_string(evidence, "prefix").context("namespace evidence missing prefix")?
+        }
+        "S003" => evidence_string(evidence, "status").context("S003 evidence missing status")?,
+        "S005" => evidence_string(evidence, "left_prefix")
+            .context("S005 evidence missing left_prefix")?,
+        other => bail!("unknown diagnostic code in PD-6 left output: {other}"),
+    };
+    Ok(JsonValue::String(subject))
+}
+
+fn left_diagnostic_evidence(code: &str, message: &str, evidence: &JsonValue) -> Result<JsonValue> {
+    match code {
+        "I001" => Ok(json!(["section_refs", parse_leading_usize(message)?])),
+        "E001" => Ok(json!([
+            "broken_ref",
+            evidence_string(evidence, "target").context("E001 evidence missing target")?
+        ])),
+        "E002" => Ok(JsonValue::String("undischarged".to_string())),
+        "I002" => Ok(json!([
+            "multiple_discharges",
+            parse_between(message, " discharged ", " times")
+                .context("I002 message missing discharge count")?
+                .parse::<usize>()
+                .context("I002 discharge count was not a number")?
+        ])),
+        "W001" => Ok(json!([
+            "stale_ref",
+            evidence_string(evidence, "source_status").context("W001 evidence missing source")?,
+            evidence_string(evidence, "target_status").context("W001 evidence missing target")?
+        ])),
+        "W002" => Ok(json!([
+            "confidence_gap",
+            evidence_string(evidence, "source_status").context("W002 evidence missing source")?,
+            evidence_usize(evidence, "source_level").context("W002 evidence missing source level")?,
+            evidence_string(evidence, "target_status").context("W002 evidence missing target")?,
+            evidence_usize(evidence, "target_level").context("W002 evidence missing target level")?
+        ])),
+        "W003" => Ok(JsonValue::Null),
+        "W004" => Ok(json!([
+            "implausible_ref",
+            evidence_string(evidence, "value").context("W004 evidence missing value")?,
+            evidence_string(evidence, "reason").context("W004 evidence missing reason")?,
+            evidence.get("line").cloned().unwrap_or(JsonValue::Null)
+        ])),
+        "S001" => Ok(json!([
+            "orphaned_handle",
+            evidence_string(evidence, "handle").context("S001 evidence missing handle")?
+        ])),
+        "S002" => Ok(json!([
+            "candidate_namespace",
+            evidence_string(evidence, "prefix").context("S002 evidence missing prefix")?,
+            evidence_usize(evidence, "count").context("S002 evidence missing count")?
+        ])),
+        "S003" => Ok(json!([
+            "pipeline_stall",
+            evidence_string(evidence, "status").context("S003 evidence missing status")?,
+            evidence_usize(evidence, "count").context("S003 evidence missing count")?,
+            evidence.get("next_status").cloned().unwrap_or(JsonValue::Null),
+            evidence
+                .get("based_on_history")
+                .and_then(JsonValue::as_bool)
+                .context("S003 evidence missing history flag")?
+        ])),
+        "S004" => Ok(json!([
+            "abandoned_namespace",
+            evidence_string(evidence, "prefix").context("S004 evidence missing prefix")?,
+            evidence_usize(evidence, "member_count").context("S004 evidence missing member count")?,
+            evidence_usize(evidence, "terminal_members")
+                .context("S004 evidence missing terminal count")?,
+            evidence_usize(evidence, "stale_members").context("S004 evidence missing stale count")?
+        ])),
+        "S005" => Ok(json!([
+            "concern_group_candidate",
+            evidence_string(evidence, "left_prefix").context("S005 evidence missing left prefix")?,
+            evidence_string(evidence, "right_prefix")
+                .context("S005 evidence missing right prefix")?,
+            evidence_usize(evidence, "file_count").context("S005 evidence missing file count")?
+        ])),
+        other => bail!("unknown diagnostic code in PD-6 left evidence: {other}"),
+    }
+}
+
+fn runtime_diagnostic_evidence(code: &str, value: &RuntimeValue) -> Result<JsonValue> {
+    let value = runtime_value_to_json(value);
+    if code != "W004" {
+        return Ok(value);
+    }
+    let Some(items) = value.as_array() else {
+        return Ok(value);
+    };
+    let [JsonValue::String(kind), JsonValue::String(payload)] = items.as_slice() else {
+        return Ok(value);
+    };
+    if kind != "implausible_ref" {
+        return Ok(value);
+    }
+    let parsed: JsonValue =
+        serde_json::from_str(payload).context("W004 md.implausible_ref payload was not JSON")?;
+    Ok(json!([
+        "implausible_ref",
+        parsed.get("value").cloned().unwrap_or(JsonValue::Null),
+        parsed.get("reason").cloned().unwrap_or(JsonValue::Null),
+        parsed.get("line").cloned().unwrap_or(JsonValue::Null)
+    ]))
+}
+
+fn runtime_value_to_json(value: &RuntimeValue) -> JsonValue {
+    match value {
+        RuntimeValue::String(value) => JsonValue::String(value.clone()),
+        RuntimeValue::Number(NumberValue::Int(value)) => json!(value),
+        RuntimeValue::Number(NumberValue::Float(value)) => serde_json::Number::from_f64(*value)
+            .map_or(JsonValue::Null, JsonValue::Number),
+        RuntimeValue::Bool(value) => JsonValue::Bool(*value),
+        RuntimeValue::Null => JsonValue::Null,
+        RuntimeValue::List(items) => JsonValue::Array(items.iter().map(runtime_value_to_json).collect()),
+    }
+}
+
+fn row_json(row: &Row, field: &str) -> Option<JsonValue> {
+    row.fields.get(field).map(runtime_value_to_json)
+}
+
+fn evidence_string(evidence: &JsonValue, field: &str) -> Option<String> {
+    evidence
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+}
+
+fn evidence_usize(evidence: &JsonValue, field: &str) -> Option<usize> {
+    evidence
+        .get(field)
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn parse_leading_usize(message: &str) -> Result<usize> {
+    message
+        .split_whitespace()
+        .next()
+        .context("message is empty")?
+        .parse()
+        .context("leading diagnostic count was not a number")
+}
+
+fn parse_between<'a>(message: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    message
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split_once(suffix))
+        .map(|(value, _)| value)
+}
+
+fn parse_until_status(message: &str, prefix: &str) -> Option<String> {
+    let rest = message.strip_prefix(prefix)?;
+    let (subject, _) = rest.split_once(" (")?;
+    Some(subject.to_string())
+}
+
+fn format_counts(rows: &RowMultiset) -> Result<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (row, count) in rows {
+        let value: JsonValue = serde_json::from_str(row).context("canonical row was not JSON")?;
+        let code = value
+            .get("code")
+            .and_then(JsonValue::as_str)
+            .context("canonical row missing code")?;
+        *counts.entry(code.to_string()).or_default() += count;
+    }
+    Ok(counts
+        .iter()
+        .map(|(code, count)| format!("{code}={count}"))
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+fn first_multiset_diff(left: &RowMultiset, right: &RowMultiset) -> String {
+    let keys = left.keys().chain(right.keys()).collect::<BTreeSet<_>>();
+    for key in keys {
+        let left_count = left.get(key.as_str()).copied().unwrap_or_default();
+        let right_count = right.get(key.as_str()).copied().unwrap_or_default();
+        if left_count != right_count {
+            return format!("row={key} left_count={left_count} right_count={right_count}");
+        }
+    }
+    "row multisets differ but no differing row was found".to_string()
+}
+
+fn multiset_rows(rows: &RowMultiset) -> Vec<JsonValue> {
+    let mut out = Vec::new();
+    for (row, count) in rows {
+        let value = serde_json::from_str(row).unwrap_or_else(|_| JsonValue::String(row.clone()));
+        for _ in 0..*count {
+            out.push(value.clone());
+        }
+    }
+    out
 }
 
 fn search_reason_allowed(reason: &str) -> bool {
@@ -527,12 +922,13 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
     let root = Utf8PathBuf::from_path_buf(corpus_root.to_path_buf())
         .map_err(|path| anyhow!("corpus path is not valid UTF-8: {}", path.display()))?;
     let roots = vec![root.clone()];
+    let corpus = CorpusId::from("parity");
     let config_facts = ConfigFacts::new(vec![
         ("md.file_extension".to_string(), ".md".to_string()),
         ("md.scan_root".to_string(), ".".to_string()),
     ]);
     let context = SourceContext {
-        corpus: CorpusId::from("parity"),
+        corpus: corpus.clone(),
         roots: roots.as_slice(),
         config_facts: &config_facts,
         time_ref: None,
@@ -543,16 +939,158 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
     let batch = MarkdownSource
         .extract(&context)
         .map_err(|err| anyhow!("anneal-md extraction failed: {err}"))?;
-    Ok(FactRight { root, batch })
+    let configs = load_runtime_configs(&root, &corpus)?;
+    Ok(FactRight {
+        root,
+        batch,
+        configs,
+    })
+}
+
+fn load_runtime_configs(root: &Utf8Path, corpus: &CorpusId) -> Result<Vec<ConfigFact>> {
+    let path = root.join("anneal.toml");
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read runtime config {path}"))?;
+    let value = text
+        .parse::<toml::Value>()
+        .with_context(|| format!("failed to parse runtime config {path}"))?;
+    let mut configs = Vec::new();
+    if let Some(convergence) = value.get("convergence").and_then(toml::Value::as_table) {
+        push_string_array(
+            &mut configs,
+            corpus,
+            convergence,
+            "active",
+            "convergence.active",
+        )?;
+        push_string_array(
+            &mut configs,
+            corpus,
+            convergence,
+            "terminal",
+            "convergence.terminal",
+        )?;
+        push_ordered_string_array(
+            &mut configs,
+            corpus,
+            convergence,
+            "ordering",
+            "convergence.ordering",
+        )?;
+    }
+    if let Some(handles) = value.get("handles").and_then(toml::Value::as_table) {
+        push_string_array(
+            &mut configs,
+            corpus,
+            handles,
+            "confirmed",
+            "handles.confirmed",
+        )?;
+        push_string_array(
+            &mut configs,
+            corpus,
+            handles,
+            "rejected",
+            "handles.rejected",
+        )?;
+        push_string_array(&mut configs, corpus, handles, "linear", "handles.linear")?;
+    }
+    if let Some(freshness) = value.get("freshness").and_then(toml::Value::as_table) {
+        push_integer_config(&mut configs, corpus, freshness, "warn", "freshness.warn")?;
+        push_integer_config(&mut configs, corpus, freshness, "error", "freshness.error")?;
+    }
+    Ok(configs)
+}
+
+fn push_string_array(
+    configs: &mut Vec<ConfigFact>,
+    corpus: &CorpusId,
+    table: &toml::value::Table,
+    field: &str,
+    key: &str,
+) -> Result<()> {
+    let Some(values) = table.get(field).and_then(toml::Value::as_array) else {
+        return Ok(());
+    };
+    for value in values {
+        let value = value
+            .as_str()
+            .with_context(|| format!("{field} contains a non-string value"))?;
+        configs.push(ConfigFact {
+            corpus: corpus.clone(),
+            key: key.to_string(),
+            value: value.to_string(),
+            ordinal: None,
+        });
+    }
+    Ok(())
+}
+
+fn push_ordered_string_array(
+    configs: &mut Vec<ConfigFact>,
+    corpus: &CorpusId,
+    table: &toml::value::Table,
+    field: &str,
+    key: &str,
+) -> Result<()> {
+    let Some(values) = table.get(field).and_then(toml::Value::as_array) else {
+        return Ok(());
+    };
+    for (idx, value) in values.iter().enumerate() {
+        let value = value
+            .as_str()
+            .with_context(|| format!("{field} contains a non-string value"))?;
+        configs.push(ConfigFact {
+            corpus: corpus.clone(),
+            key: key.to_string(),
+            value: value.to_string(),
+            ordinal: Some(u32::try_from(idx).context("ordered config index overflowed u32")?),
+        });
+    }
+    Ok(())
+}
+
+fn push_integer_config(
+    configs: &mut Vec<ConfigFact>,
+    corpus: &CorpusId,
+    table: &toml::value::Table,
+    field: &str,
+    key: &str,
+) -> Result<()> {
+    let Some(value) = table.get(field) else {
+        return Ok(());
+    };
+    let value = value
+        .as_integer()
+        .with_context(|| format!("{field} contains a non-integer value"))?;
+    configs.push(ConfigFact {
+        corpus: corpus.clone(),
+        key: key.to_string(),
+        value: value.to_string(),
+        ordinal: None,
+    });
+    Ok(())
 }
 
 fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandResult> {
-    let output = Command::new(bin)
+    let sandbox = isolated_command_sandbox(args);
+    let state_home = sandbox.join("state");
+    let config_home = sandbox.join("config");
+    fs::create_dir_all(&state_home)
+        .with_context(|| format!("failed to create {}", state_home.display()))?;
+    fs::create_dir_all(&config_home)
+        .with_context(|| format!("failed to create {}", config_home.display()))?;
+
+    let output_result = Command::new(bin)
         .arg("--root")
         .arg(corpus_root)
         .args(args)
-        .output()
-        .with_context(|| format!("failed to spawn {}", command_string(args)))?;
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .output();
+    let _ = fs::remove_dir_all(&sandbox);
+    let output =
+        output_result.with_context(|| format!("failed to spawn {}", command_string(args)))?;
     if !output.status.success() {
         bail!(
             "{} exited {}: {}",
@@ -565,6 +1103,17 @@ fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandRes
     let stdout: JsonValue = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("failed to parse JSON from {}", command_string(args)))?;
     Ok(CommandResult { stdout, stderr })
+}
+
+fn isolated_command_sandbox(args: &[&str]) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    env::temp_dir().join(format!(
+        "anneal-parity-{}-{}-{nanos}",
+        std::process::id(),
+        sanitize(&args.join("-"))
+    ))
 }
 
 fn sample_handles(bin: &str, corpus_root: &Path, sample_size: usize) -> Result<Vec<String>> {

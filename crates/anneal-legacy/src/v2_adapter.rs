@@ -13,7 +13,7 @@ use crate::cli;
 use crate::config;
 use crate::extraction::ImplausibleReason;
 use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId};
+use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId, resolved_file};
 use crate::parse::{self, PendingEdge};
 
 pub fn extract_markdown_facts(
@@ -46,13 +46,9 @@ pub fn extract_markdown_facts(
     let mut revisions = RevisionCache::new(root);
 
     for (node_id, handle) in result.graph.nodes() {
-        batch.handles.push(handle_fact(
-            &batch,
-            &mut revisions,
-            &result,
-            node_id,
-            handle,
-        ));
+        let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
+        batch.handles.push(fact);
+        emit_resolved_file_meta(&mut batch, &mut revisions, &result.graph, handle);
     }
 
     let edge_order_context = EdgeOrderContext {
@@ -66,6 +62,7 @@ pub fn extract_markdown_facts(
     emit_ordered_edges(&mut batch, &mut revisions, &edge_order_context);
 
     for extraction in &result.extractions {
+        emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
         emit_frontmatter_meta(&mut batch, &mut revisions, root, &extraction.file);
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
@@ -92,15 +89,7 @@ pub fn status_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Valu
         None,
         None,
     );
-    let user_config = config::load_user_config().unwrap_or_default();
-    let state_config = config::resolve_state_config(&loaded.config, &user_config);
-    let previous_snapshot = crate::snapshot::read_latest_snapshot(root, &state_config);
-    let convergence = crate::snapshot::summary_from_previous(&snap, previous_snapshot.as_ref())
-        .map(|summary| cli::ConvergenceSummaryOutput {
-            signal: summary.signal.to_string(),
-            detail: summary.detail,
-        });
-    let output = output.with_convergence(convergence);
+    let output = output.with_convergence(None);
     serde_json::to_value(cli::JsonEnvelope::new(cli::OutputMeta::full(), output))
         .context("serialize fact-backed status output")
 }
@@ -215,6 +204,27 @@ fn handle_fact(
     }
 }
 
+fn emit_resolved_file_meta(
+    batch: &mut FactBatch,
+    revisions: &mut RevisionCache<'_>,
+    graph: &DiGraph,
+    handle: &Handle,
+) {
+    let Some(file) = resolved_file(handle, graph).map(ToString::to_string) else {
+        return;
+    };
+    if file.is_empty() {
+        return;
+    }
+    let native_id = native_id_for(handle);
+    batch.meta.push(MetaFact {
+        identity: identity_for(batch, revisions, &native_id, &file),
+        handle: handle.id.clone(),
+        key: "md.resolved_file".to_string(),
+        value: file,
+    });
+}
+
 fn declaration_line(_result: &parse::BuildResult, _node_id: NodeId, handle: &Handle) -> u32 {
     u32::from(matches!(handle.kind, HandleKind::File(_)))
 }
@@ -226,19 +236,34 @@ fn edge_fact(
     to: String,
     kind: &str,
     line: u32,
+    ordinal: usize,
 ) -> EdgeFact {
     let file = source_handle
         .file_path
         .as_ref()
         .map_or_else(String::new, ToString::to_string);
+    let native_id = native_id_for_edge(source_handle, kind, &to, line, ordinal);
     EdgeFact {
-        identity: identity_for(batch, revisions, &native_id_for(source_handle), &file),
+        identity: identity_for(batch, revisions, &native_id, &file),
         from: source_handle.id.clone(),
         to,
         kind: kind.to_string(),
         file,
         line,
     }
+}
+
+fn native_id_for_edge(
+    source_handle: &Handle,
+    kind: &str,
+    target: &str,
+    line: u32,
+    ordinal: usize,
+) -> String {
+    format!(
+        "{}::edge::{ordinal}::{kind}::{target}::{line}",
+        native_id_for(source_handle)
+    )
 }
 
 struct OrderedEdge {
@@ -290,7 +315,7 @@ fn emit_ordered_edges(
     );
     ordered.extend(remaining);
 
-    for edge in ordered {
+    for (ordinal, edge) in ordered.into_iter().enumerate() {
         let source_handle = context.result.graph.node(edge.source);
         let target_handle = context.result.graph.node(edge.target);
         batch.edges.push(edge_fact(
@@ -300,10 +325,12 @@ fn emit_ordered_edges(
             target_handle.id.clone(),
             edge.kind.as_str(),
             edge.line,
+            ordinal,
         ));
     }
 
-    for edge in &context.result.pending_edges {
+    let ordered_count = batch.edges.len();
+    for (idx, edge) in context.result.pending_edges.iter().enumerate() {
         if context.node_index.contains_key(&edge.target_identity) {
             continue;
         }
@@ -317,6 +344,7 @@ fn emit_ordered_edges(
             edge.target_identity.clone(),
             edge.kind.as_str(),
             edge.line.unwrap_or(0),
+            ordered_count + idx,
         ));
     }
 }
@@ -521,6 +549,18 @@ fn resolve_bare_filename(
     crate::resolve::resolve_file_path(reference, referring_file, root)
         .and_then(|found| node_index.get(found.as_str()).copied())
         .or_else(|| node_index.get(reference).copied())
+}
+
+fn emit_file_parent_meta(batch: &mut FactBatch, revisions: &mut RevisionCache<'_>, file: &str) {
+    let parent = Utf8Path::new(file)
+        .parent()
+        .map_or_else(String::new, ToString::to_string);
+    batch.meta.push(MetaFact {
+        identity: identity_for(batch, revisions, file, file),
+        handle: file.to_string(),
+        key: "md.parent_dir".to_string(),
+        value: parent,
+    });
 }
 
 fn emit_frontmatter_meta(

@@ -144,7 +144,12 @@ pub enum StaticError {
     },
     #[error("{location}: cyclic negation between {cycle}")]
     CyclicNegation {
-        cycle: NegationCycle,
+        cycle: DependencyCycle,
+        location: SourceLocation,
+    },
+    #[error("{location}: cyclic stratifying dependency between {cycle}")]
+    CyclicStratification {
+        cycle: DependencyCycle,
         location: SourceLocation,
     },
     #[error("{location}: named call to '{predicate}' requires a named predicate signature")]
@@ -212,11 +217,11 @@ pub enum StaticError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NegationCycle {
+pub struct DependencyCycle {
     predicates: Vec<PredicateRef>,
 }
 
-impl NegationCycle {
+impl DependencyCycle {
     fn new(predicates: Vec<PredicateRef>) -> Self {
         Self { predicates }
     }
@@ -226,7 +231,7 @@ impl NegationCycle {
     }
 }
 
-impl fmt::Display for NegationCycle {
+impl fmt::Display for DependencyCycle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, predicate) in self.predicates.iter().enumerate() {
             if idx > 0 {
@@ -260,7 +265,7 @@ impl Analyzer {
         normalize_global_named_calls(&mut self.program, &self.signatures)?;
         self.check_facts()?;
         self.check_rules()?;
-        check_cyclic_negation(&self.edges)?;
+        check_cyclic_stratification(&self.edges)?;
         let strata = compute_strata(&self.signatures, &self.edges, None);
         let queries = self.check_queries()?;
         Ok(AnalyzedProgram {
@@ -333,7 +338,7 @@ impl Analyzer {
             &PredicateRef::new(Ident::new_unchecked("query")),
             &query.body,
         )?;
-        check_cyclic_negation(&edges)?;
+        check_cyclic_stratification(&edges)?;
         let local_strata = compute_strata(&signatures, &edges, Some(&local_predicates));
 
         Ok(AnalyzedQuery {
@@ -348,8 +353,21 @@ impl Analyzer {
 struct DependencyEdge {
     from: PredicateRef,
     to: PredicateRef,
-    negative: bool,
+    kind: DependencyKind,
     location: SourceLocation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DependencyKind {
+    Positive,
+    Negation,
+    Aggregation,
+}
+
+impl DependencyKind {
+    const fn is_stratifying(self) -> bool {
+        !matches!(self, Self::Positive)
+    }
 }
 
 fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), StaticError> {
@@ -806,6 +824,16 @@ fn check_body(
     signatures: &SignatureMap,
     edges: &mut Vec<DependencyEdge>,
 ) -> Result<(), StaticError> {
+    check_body_with_dependency_kind(head, body, signatures, edges, DependencyKind::Positive)
+}
+
+fn check_body_with_dependency_kind(
+    head: &PredicateRef,
+    body: &Body,
+    signatures: &SignatureMap,
+    edges: &mut Vec<DependencyEdge>,
+    default_dependency: DependencyKind,
+) -> Result<(), StaticError> {
     for atom in &body.atoms {
         match atom {
             Atom::Stored(_)
@@ -818,7 +846,7 @@ fn check_body(
                 check_derived_dependency(
                     head,
                     derived,
-                    false,
+                    default_dependency,
                     &derived.location,
                     signatures,
                     edges,
@@ -829,7 +857,7 @@ fn check_body(
                     check_derived_dependency(
                         head,
                         derived,
-                        true,
+                        DependencyKind::Negation,
                         &negation.location,
                         signatures,
                         edges,
@@ -837,10 +865,22 @@ fn check_body(
                 }
             }
             Atom::Aggregation(aggregate) => {
-                check_body(head, &aggregate.body, signatures, edges)?;
+                check_body_with_dependency_kind(
+                    head,
+                    &aggregate.body,
+                    signatures,
+                    edges,
+                    DependencyKind::Aggregation,
+                )?;
             }
             Atom::TimeBlock(time_block) => {
-                check_body(head, &time_block.body, signatures, edges)?;
+                check_body_with_dependency_kind(
+                    head,
+                    &time_block.body,
+                    signatures,
+                    edges,
+                    default_dependency,
+                )?;
             }
         }
     }
@@ -850,7 +890,7 @@ fn check_body(
 fn check_derived_dependency(
     head: &PredicateRef,
     derived: &DerivedAtom,
-    negative: bool,
+    kind: DependencyKind,
     edge_location: &SourceLocation,
     signatures: &SignatureMap,
     edges: &mut Vec<DependencyEdge>,
@@ -864,7 +904,7 @@ fn check_derived_dependency(
     edges.push(DependencyEdge {
         from: head.clone(),
         to: derived.predicate.clone(),
-        negative,
+        kind,
         location: edge_location.clone(),
     });
     Ok(())
@@ -1134,16 +1174,24 @@ fn ensure_bound(
     Ok(())
 }
 
-fn check_cyclic_negation(edges: &[DependencyEdge]) -> Result<(), StaticError> {
-    for edge in edges.iter().filter(|edge| edge.negative) {
+fn check_cyclic_stratification(edges: &[DependencyEdge]) -> Result<(), StaticError> {
+    for edge in edges.iter().filter(|edge| edge.kind.is_stratifying()) {
         if let Some(mut path) = find_path(edges, &edge.to, &edge.from) {
             path.insert(0, edge.from.clone());
             path.insert(1, edge.to.clone());
             path.dedup();
-            return Err(StaticError::CyclicNegation {
-                cycle: NegationCycle::new(path),
-                location: edge.location.clone(),
-            });
+            let cycle = DependencyCycle::new(path);
+            return match edge.kind {
+                DependencyKind::Negation => Err(StaticError::CyclicNegation {
+                    cycle,
+                    location: edge.location.clone(),
+                }),
+                DependencyKind::Aggregation => Err(StaticError::CyclicStratification {
+                    cycle,
+                    location: edge.location.clone(),
+                }),
+                DependencyKind::Positive => unreachable!("filtered to stratifying edges"),
+            };
         }
     }
     Ok(())
@@ -1191,7 +1239,8 @@ fn compute_strata(
             if !levels.contains_key(&edge.from) {
                 continue;
             }
-            let required = levels.get(&edge.to).copied().unwrap_or(0) + usize::from(edge.negative);
+            let required = levels.get(&edge.to).copied().unwrap_or(0)
+                + usize::from(edge.kind.is_stratifying());
             let entry = levels.entry(edge.from.clone()).or_default();
             if *entry < required {
                 *entry = required;
@@ -1831,5 +1880,55 @@ mod tests {
             .find(|stratum| stratum.predicates.contains(&open))
             .expect("open stratum");
         assert_eq!(open_stratum.level, 1);
+    }
+
+    #[test]
+    fn computes_higher_stratum_for_aggregate_body_dependency() {
+        let program = parse_program(
+            "inline",
+            r"
+            value(h, 1) := *handle{id: h}.
+            subject(h) := value(h, n).
+            total(h, n) := subject(h), n = Sum{ v : value(h, v) }.
+            ",
+        )
+        .unwrap();
+        let analyzed = analyze(program).expect("program analyzes");
+        let value = PredicateRef::new(Ident::new_unchecked("value"));
+        let total = PredicateRef::new(Ident::new_unchecked("total"));
+        let value_level = analyzed
+            .strata()
+            .iter()
+            .find(|stratum| stratum.predicates.contains(&value))
+            .expect("value stratum")
+            .level;
+        let total_level = analyzed
+            .strata()
+            .iter()
+            .find(|stratum| stratum.predicates.contains(&total))
+            .expect("total stratum")
+            .level;
+        assert!(total_level > value_level);
+    }
+
+    #[test]
+    fn rejects_cyclic_aggregate_dependency() {
+        let input = "total(h, n) := *handle{id: h}, n = Sum{ v : total(h, v) }.";
+        let program = parse_program("inline", input).unwrap();
+        let err = analyze(program).expect_err("cyclic aggregate should fail");
+        let StaticError::CyclicStratification {
+            cycle,
+            location: actual,
+        } = &err
+        else {
+            panic!("expected cyclic stratification");
+        };
+        assert_eq!(actual, &location("inline", input, "total(h, v)"));
+        let names = cycle
+            .predicates()
+            .iter()
+            .map(PredicateRef::display_name)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "total"));
     }
 }

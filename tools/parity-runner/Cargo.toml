@@ -24,3 +24,4 @@ anyhow = "1.0.102"
 camino = "1.2.2"
 serde_json = "1.0.149"
 anneal-cli = { version = "0.10.1", path = "../../crates/anneal-cli" }
+toml = "0.8"

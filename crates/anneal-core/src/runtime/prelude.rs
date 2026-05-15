@@ -216,7 +216,8 @@ mod tests {
     use std::fmt::Write as _;
 
     use crate::facts::{
-        ConfigFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, SnapshotFact,
+        ConfigFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact,
+        SnapshotFact,
     };
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::QueryOutput;
@@ -407,7 +408,10 @@ mod tests {
                 ("severity", string("error")),
                 ("file", string("ticket-1.md")),
                 ("line", int(7)),
-                ("evidence", string("ghost"))
+                (
+                    "evidence",
+                    list(vec![string("broken_ref"), string("ghost")])
+                )
             ]
         ));
         assert!(has_row(
@@ -456,6 +460,233 @@ mod tests {
             output(&outputs, "source_of").rows[0].fields.get("file"),
             Some(&Value::String(RANKING_PRELUDE_SOURCE.to_string()))
         );
+    }
+
+    #[test]
+    fn standard_prelude_derives_v1_diagnostic_catalog_relations() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "E001",
+                    r#"? diagnostic("E001", severity, "broken.md", file, line, evidence)."#,
+                ),
+                (
+                    "I001",
+                    r#"? diagnostic("I001", severity, subject, file, line, evidence)."#,
+                ),
+                (
+                    "W004",
+                    r#"? diagnostic("W004", severity, "implausible.md", file, line, evidence)."#,
+                ),
+                (
+                    "W001",
+                    r#"? diagnostic("W001", severity, "stale-src.md", file, line, evidence)."#,
+                ),
+                (
+                    "W002",
+                    r#"? diagnostic("W002", severity, "stable-src.md", file, line, evidence)."#,
+                ),
+                (
+                    "E002",
+                    r#"? diagnostic("E002", severity, "OQ-1", file, line, evidence)."#,
+                ),
+                (
+                    "I002",
+                    r#"? diagnostic("I002", severity, "OQ-2", file, line, evidence)."#,
+                ),
+                (
+                    "W003",
+                    r#"? diagnostic("W003", severity, "team/missing.md", file, line, evidence)."#,
+                ),
+                (
+                    "S001",
+                    r#"? diagnostic("S001", severity, "ORPH-1", file, line, evidence)."#,
+                ),
+                (
+                    "S002",
+                    r#"? diagnostic("S002", severity, "NEW", file, line, evidence)."#,
+                ),
+                (
+                    "S003",
+                    r#"? diagnostic("S003", severity, "draft", file, line, evidence)."#,
+                ),
+                (
+                    "S004",
+                    r#"? diagnostic("S004", severity, "OLD", file, line, evidence)."#,
+                ),
+                (
+                    "S005",
+                    r#"? diagnostic("S005", severity, "AA", file, line, evidence)."#,
+                ),
+            ],
+            diagnostic_catalog_database(),
+        );
+
+        assert!(
+            has_row(
+                output(&outputs, "E001"),
+                &[
+                    ("severity", string("error")),
+                    ("file", string("broken.md")),
+                    ("line", int(3)),
+                    (
+                        "evidence",
+                        list(vec![string("broken_ref"), string("missing.md")])
+                    )
+                ]
+            ),
+            "E001 rows: {:?}",
+            output(&outputs, "E001").rows
+        );
+        assert!(has_row(
+            output(&outputs, "I001"),
+            &[
+                ("severity", string("info")),
+                ("subject", string("corpus")),
+                ("file", Value::Null),
+                ("evidence", list(vec![string("section_refs"), int(1)]))
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W004"),
+            &[
+                ("severity", string("warning")),
+                ("file", string("implausible.md")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("implausible_ref"),
+                        string(r#"{"value":"/tmp/foo","reason":"absolute path","line":4}"#)
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W001"),
+            &[
+                ("severity", string("warning")),
+                ("file", string("stale-src.md")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("stale_ref"),
+                        string("draft"),
+                        string("archived")
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W002"),
+            &[
+                ("severity", string("warning")),
+                ("file", string("stable-src.md")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("confidence_gap"),
+                        string("stable"),
+                        int(1),
+                        string("draft"),
+                        int(0)
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "E002"),
+            &[
+                ("severity", string("error")),
+                ("file", string("OQ-1.md")),
+                ("evidence", string("undischarged"))
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "I002"),
+            &[
+                ("severity", string("info")),
+                ("file", string("OQ-2.md")),
+                (
+                    "evidence",
+                    list(vec![string("multiple_discharges"), int(2)])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W003"),
+            &[
+                ("severity", string("warning")),
+                ("file", string("team/missing.md")),
+                ("evidence", Value::Null)
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "S001"),
+            &[
+                ("severity", string("suggestion")),
+                (
+                    "evidence",
+                    list(vec![string("orphaned_handle"), string("ORPH-1")])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "S002"),
+            &[
+                ("severity", string("suggestion")),
+                (
+                    "evidence",
+                    list(vec![string("candidate_namespace"), string("NEW"), int(3)])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "S003"),
+            &[
+                ("severity", string("suggestion")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("pipeline_stall"),
+                        string("draft"),
+                        int(20),
+                        string("stable"),
+                        Value::Bool(false)
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "S004"),
+            &[
+                ("severity", string("suggestion")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("abandoned_namespace"),
+                        string("OLD"),
+                        int(2),
+                        int(2),
+                        int(0)
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "S005"),
+            &[
+                ("severity", string("suggestion")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("concern_group_candidate"),
+                        string("AA"),
+                        string("BB"),
+                        int(3)
+                    ])
+                )
+            ]
+        ));
     }
 
     #[test]
@@ -638,6 +869,96 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         Database::from_store(&store)
     }
 
+    fn diagnostic_catalog_database() -> Database {
+        let corpus = CorpusId::from("diagnostics");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(&scope, "broken.md", "file", Some("draft"), "", ""),
+            handle(&scope, "section.md", "file", Some("draft"), "", ""),
+            handle(&scope, "implausible.md", "file", Some("draft"), "", ""),
+            handle(&scope, "stale-src.md", "file", Some("draft"), "", ""),
+            handle(&scope, "terminal.md", "file", Some("archived"), "", ""),
+            handle(&scope, "stable-src.md", "file", Some("stable"), "", ""),
+            handle(&scope, "draft-target.md", "file", Some("draft"), "", ""),
+            handle(&scope, "team/with-a.md", "file", Some("draft"), "", "team"),
+            handle(&scope, "team/with-b.md", "file", Some("draft"), "", "team"),
+            handle(&scope, "team/missing.md", "file", None, "", "team"),
+            handle(&scope, "OQ-1", "label", Some("draft"), "OQ", ""),
+            handle(&scope, "OQ-2", "label", Some("draft"), "OQ", ""),
+            handle(&scope, "impl-1.md", "file", Some("draft"), "", ""),
+            handle(&scope, "impl-2.md", "file", Some("draft"), "", ""),
+            handle(&scope, "ORPH-1", "label", Some("draft"), "ORPH", ""),
+            handle(&scope, "NEW-1", "label", Some("draft"), "NEW", ""),
+            handle(&scope, "NEW-2", "label", Some("draft"), "NEW", ""),
+            handle(&scope, "NEW-3", "label", Some("draft"), "NEW", ""),
+            handle(&scope, "OLD-1", "label", Some("archived"), "OLD", ""),
+            handle(&scope, "OLD-2", "label", Some("archived"), "OLD", ""),
+            handle(&scope, "AA-1", "label", Some("draft"), "AA", ""),
+            handle(&scope, "BB-1", "label", Some("draft"), "BB", ""),
+            handle(&scope, "co1.md", "file", Some("draft"), "", ""),
+            handle(&scope, "co2.md", "file", Some("draft"), "", ""),
+            handle(&scope, "co3.md", "file", Some("draft"), "", ""),
+        ];
+        batch.edges = vec![
+            edge(&scope, "broken.md", "missing.md", "Cites", 3),
+            edge(&scope, "section.md", "section:intro", "Cites", 9),
+            edge(&scope, "stale-src.md", "terminal.md", "DependsOn", 1),
+            edge(&scope, "stable-src.md", "draft-target.md", "DependsOn", 2),
+            edge(&scope, "impl-1.md", "OQ-2", "Discharges", 1),
+            edge(&scope, "impl-2.md", "OQ-2", "Discharges", 1),
+            edge(&scope, "co1.md", "AA-1", "Cites", 1),
+            edge(&scope, "co1.md", "BB-1", "Cites", 2),
+            edge(&scope, "co2.md", "AA-1", "Cites", 1),
+            edge(&scope, "co2.md", "BB-1", "Cites", 2),
+            edge(&scope, "co3.md", "AA-1", "Cites", 1),
+            edge(&scope, "co3.md", "BB-1", "Cites", 2),
+        ];
+        batch.meta = vec![
+            meta(
+                &scope,
+                "implausible.md",
+                "md.implausible_ref",
+                r#"{"value":"/tmp/foo","reason":"absolute path","line":4}"#,
+            ),
+            meta(&scope, "team/with-a.md", "md.parent_dir", "team"),
+            meta(&scope, "team/with-b.md", "md.parent_dir", "team"),
+            meta(&scope, "team/missing.md", "md.parent_dir", "team"),
+        ];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge diagnostic fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.active", "draft", None),
+                    config(&corpus, "convergence.active", "stable", None),
+                    config(&corpus, "convergence.terminal", "archived", None),
+                    config(&corpus, "convergence.ordering", "draft", Some(0)),
+                    config(&corpus, "convergence.ordering", "stable", Some(1)),
+                    config(&corpus, "convergence.ordering", "archived", Some(2)),
+                    config(&corpus, "handles.linear", "OQ", None),
+                    config(&corpus, "handles.confirmed", "OLD", None),
+                    config(&corpus, "handles.confirmed", "AA", None),
+                    config(&corpus, "handles.confirmed", "BB", None),
+                ],
+            )
+            .expect("replace diagnostic fixture config");
+        Database::from_store(&store)
+    }
+
     struct FixtureScope<'a> {
         corpus: &'a CorpusId,
         source: &'a SourceName,
@@ -652,13 +973,14 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         namespace: &str,
         area: &str,
     ) -> HandleFact {
+        let file = fixture_file_for(id);
         HandleFact {
             identity: identity(scope, id),
             id: id.to_string(),
             kind: kind.to_string(),
             status: status.map(str::to_string),
             namespace: namespace.to_string(),
-            file: format!("{id}.md"),
+            file,
             line: 1,
             date: None,
             area: area.to_string(),
@@ -667,13 +989,34 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     }
 
     fn edge(scope: &FixtureScope<'_>, from: &str, to: &str, kind: &str, line: u32) -> EdgeFact {
+        let file = fixture_file_for(from);
         EdgeFact {
             identity: identity(scope, &format!("{from}->{to}")),
             from: from.to_string(),
             to: to.to_string(),
             kind: kind.to_string(),
-            file: format!("{from}.md"),
+            file,
             line,
+        }
+    }
+
+    fn meta(scope: &FixtureScope<'_>, handle: &str, key: &str, value: &str) -> MetaFact {
+        MetaFact {
+            identity: identity(scope, &format!("{handle}:{key}:{value}")),
+            handle: handle.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn fixture_file_for(id: &str) -> String {
+        if std::path::Path::new(id)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            id.to_string()
+        } else {
+            format!("{id}.md")
         }
     }
 
@@ -711,5 +1054,9 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
 
     fn int(value: i64) -> Value {
         Value::Number(NumberValue::Int(value))
+    }
+
+    fn list(values: Vec<Value>) -> Value {
+        Value::List(values)
     }
 }

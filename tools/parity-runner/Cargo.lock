@@ -428,6 +428,7 @@ dependencies = [
  "anyhow",
  "camino",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
