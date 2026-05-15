@@ -1412,6 +1412,11 @@ mod tests {
     fn rejects_content_primitives_without_required_bound_inputs() {
         for (input, name, argument) in [
             (
+                r"? search(query, handle, span_id, score, reason, field, low_confidence).",
+                "search",
+                "query",
+            ),
+            (
                 r"? read(h, 100, span_id, text, start_line, end_line, tokens).",
                 "read",
                 "handle",
@@ -1451,6 +1456,8 @@ mod tests {
             r#"
             budget(100).
             pattern("urgent").
+            query("conformance").
+            ? query(q), search(q, h, span_id, score, reason, field, low_confidence).
             ? *handle{id: h}, budget(b), read(h, b, span_id, text, start_line, end_line, tokens).
             ? read_full("doc.md", content).
             ? *handle{id: h}, pattern(p), match(p, h, line, snippet).

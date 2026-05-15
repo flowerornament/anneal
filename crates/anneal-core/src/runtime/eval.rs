@@ -14,6 +14,7 @@ use crate::facts::{
     SnapshotFact, SpanFact,
 };
 use crate::ids::Generation;
+use crate::ranking::{DefaultRanker, Ranker, RankingContext, SearchHit};
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
@@ -61,11 +62,14 @@ pub struct QueryWarning {
 
 pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
+const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct EvalOptions {
     actor: ActorContext,
     read_full_token_limit: i64,
+    low_confidence_threshold: f32,
+    ranker: Arc<dyn Ranker>,
 }
 
 impl EvalOptions {
@@ -84,8 +88,26 @@ impl EvalOptions {
         self
     }
 
+    pub fn with_low_confidence_threshold(mut self, threshold: f32) -> Self {
+        self.low_confidence_threshold = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_ranker(mut self, ranker: impl Ranker + 'static) -> Self {
+        self.ranker = Arc::new(ranker);
+        self
+    }
+
     fn has_capability(&self, capability: RuntimeCapability) -> bool {
         self.actor.has_runtime_capability(capability)
+    }
+
+    fn ranking_context(&self, query: &str) -> RankingContext {
+        RankingContext::new(query, self.low_confidence_threshold)
+    }
+
+    fn ranker(&self) -> &dyn Ranker {
+        self.ranker.as_ref()
     }
 }
 
@@ -94,7 +116,19 @@ impl Default for EvalOptions {
         Self {
             actor: ActorContext::anonymous_cli(),
             read_full_token_limit: DEFAULT_READ_FULL_TOKEN_LIMIT,
+            low_confidence_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+            ranker: Arc::new(DefaultRanker),
         }
+    }
+}
+
+impl fmt::Debug for EvalOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EvalOptions")
+            .field("actor", &self.actor)
+            .field("read_full_token_limit", &self.read_full_token_limit)
+            .field("low_confidence_threshold", &self.low_confidence_threshold)
+            .finish_non_exhaustive()
     }
 }
 
@@ -186,6 +220,7 @@ pub struct Database {
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
+    search: Arc<SearchIndex>,
 }
 
 impl fmt::Debug for Database {
@@ -208,6 +243,7 @@ impl fmt::Debug for Database {
                     .collect::<BTreeMap<_, _>>(),
             )
             .field("content_spans", &self.content.len())
+            .field("search_documents", &self.search.len())
             .finish_non_exhaustive()
     }
 }
@@ -248,6 +284,34 @@ impl Database {
         self.derived.get(predicate).map(DerivedRelation::tuples)
     }
 
+    fn search_tuples(&self, constraints: &[(usize, Value)], options: &EvalOptions) -> Vec<Tuple> {
+        let ArgConstraint::Exact(query_text) = string_constraint(constraints, 0) else {
+            return Vec::new();
+        };
+        let Some(query) = SearchQuery::parse(query_text) else {
+            return Vec::new();
+        };
+        let handle = string_constraint(constraints, 1);
+        let ctx = options.ranking_context(query_text);
+        let ranker = options.ranker();
+        let mut ranked = self
+            .search
+            .search_hits(&query, handle)
+            .into_iter()
+            .chain(self.content.search_hits(&query, handle))
+            .map(|hit| rank_search_hit(hit, &ctx, ranker))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| compare_ranked_search_hits(left, right, ranker));
+
+        let mut seen = BTreeSet::new();
+        ranked
+            .into_iter()
+            .map(|hit| hit.tuple(query_text))
+            .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+            .filter(|tuple| seen.insert(tuple.clone()))
+            .collect()
+    }
+
     fn ensure_derived(&mut self, predicates: impl IntoIterator<Item = PredicateRef>) {
         for predicate in predicates {
             self.derived.entry(predicate).or_default();
@@ -263,6 +327,7 @@ impl Database {
         for row in rows {
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
             Arc::make_mut(&mut self.content).insert_row(&relation, &row);
+            Arc::make_mut(&mut self.search).insert_row(&relation, &row);
             stored.push(row);
         }
     }
@@ -326,6 +391,7 @@ impl Database {
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
+            search: Arc::clone(&self.search),
         }
     }
 
@@ -660,6 +726,7 @@ impl PartialOrd for ContentKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContentPayload {
+    source: String,
     text: String,
     tokens: i64,
 }
@@ -730,6 +797,7 @@ impl ContentIndex {
         };
         let key = ContentKey::new(handle, span_id);
         let payload = ContentPayload {
+            source: row_string(row, SOURCE_FIELD).unwrap_or_default().to_owned(),
             text: text.to_owned(),
             tokens,
         };
@@ -839,6 +907,22 @@ impl ContentIndex {
         out
     }
 
+    fn search_hits(&self, query: &SearchQuery, handle: ArgConstraint<&str>) -> Vec<SearchHit> {
+        match handle {
+            ArgConstraint::Impossible => Vec::new(),
+            ArgConstraint::Exact(handle) => self
+                .content_spans_for_handle(handle)
+                .filter_map(|span| body_search_hit(query, span))
+                .collect(),
+            ArgConstraint::Any => self
+                .span_order_by_handle
+                .keys()
+                .flat_map(|handle| self.content_spans_for_handle(handle))
+                .filter_map(|span| body_search_hit(query, span))
+                .collect(),
+        }
+    }
+
     fn content_span(&self, key: &ContentKey) -> Option<ContentSpan<'_>> {
         let (key, content) = self.content.get_key_value(key)?;
         let span = self.spans.get(key)?;
@@ -898,6 +982,283 @@ fn read_tuple(span: ContentSpan<'_>, budget: i64) -> Tuple {
         int_value(span.span.end_line),
         int_value(span.content.tokens),
     ])
+}
+
+fn body_search_hit(query: &SearchQuery, span: ContentSpan<'_>) -> Option<SearchHit> {
+    query.score(&span.content.text).map(|score| {
+        SearchHit::new(
+            span.content.source.as_str(),
+            span.key.handle.as_str(),
+            Some(span.key.span_id.clone()),
+            score,
+            SearchQuery::reason("body"),
+            "body",
+        )
+    })
+}
+
+#[derive(Clone, Debug, Default)]
+struct SearchIndex {
+    documents: BTreeMap<String, SearchDocument>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SearchDocument {
+    handle: String,
+    source: String,
+    fields: Vec<SearchField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SearchField {
+    field: String,
+    reason: String,
+    text: String,
+}
+
+impl SearchField {
+    fn new(field: impl Into<String>, reason: impl Into<String>, text: &str) -> Option<Self> {
+        (!text.trim().is_empty()).then(|| Self {
+            field: field.into(),
+            reason: reason.into(),
+            text: text.to_owned(),
+        })
+    }
+}
+
+impl SearchIndex {
+    fn len(&self) -> usize {
+        self.documents.len()
+    }
+
+    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
+        match relation.as_str() {
+            HANDLE_RELATION => self.insert_handle(row),
+            META_RELATION => self.insert_meta(row),
+            _ => {}
+        }
+    }
+
+    fn insert_handle(&mut self, row: &NamedRow) {
+        let Some(handle) = row_string(row, ID_FIELD) else {
+            return;
+        };
+        let source = row_string(row, SOURCE_FIELD).unwrap_or_default();
+        let document = self.document_mut(handle, source);
+        push_search_field(
+            &mut document.fields,
+            "identifier",
+            "identifier-substring",
+            handle,
+        );
+        if let Some(summary) = row_string(row, SUMMARY_FIELD) {
+            push_search_field(&mut document.fields, "title", "title-substring", summary);
+        }
+        for (field, source_field) in [
+            ("frontmatter:status", STATUS_FIELD),
+            ("frontmatter:namespace", NAMESPACE_FIELD),
+            ("frontmatter:area", AREA_FIELD),
+            ("frontmatter:kind", KIND_FIELD),
+        ] {
+            if let Some(value) = row_string(row, source_field) {
+                push_search_field(
+                    &mut document.fields,
+                    field,
+                    "frontmatter-value-match",
+                    value,
+                );
+            }
+        }
+    }
+
+    fn insert_meta(&mut self, row: &NamedRow) {
+        let (Some(handle), Some(key), Some(value)) = (
+            row_string(row, HANDLE_FIELD),
+            row_string(row, KEY_FIELD),
+            row_string(row, VALUE_FIELD),
+        ) else {
+            return;
+        };
+        let source = row_string(row, SOURCE_FIELD).unwrap_or_default();
+        let field = format!("frontmatter:{key}");
+        let document = self.document_mut(handle, source);
+        push_search_field(&mut document.fields, field, "frontmatter-key-match", key);
+        push_search_field(
+            &mut document.fields,
+            format!("frontmatter:{key}"),
+            "frontmatter-value-match",
+            value,
+        );
+    }
+
+    fn document_mut(&mut self, handle: &str, source: &str) -> &mut SearchDocument {
+        let document = self
+            .documents
+            .entry(handle.to_owned())
+            .or_insert_with(|| SearchDocument {
+                handle: handle.to_owned(),
+                source: source.to_owned(),
+                fields: Vec::new(),
+            });
+        if document.source.is_empty() && !source.is_empty() {
+            source.clone_into(&mut document.source);
+        }
+        document
+    }
+
+    fn search_hits(&self, query: &SearchQuery, handle: ArgConstraint<&str>) -> Vec<SearchHit> {
+        match handle {
+            ArgConstraint::Impossible => Vec::new(),
+            ArgConstraint::Exact(handle) => self
+                .documents
+                .get(handle)
+                .map_or_else(Vec::new, |document| document.search_hits(query).collect()),
+            ArgConstraint::Any => self
+                .documents
+                .values()
+                .flat_map(|document| document.search_hits(query))
+                .collect(),
+        }
+    }
+}
+
+impl SearchDocument {
+    fn search_hits<'a>(&'a self, query: &'a SearchQuery) -> impl Iterator<Item = SearchHit> + 'a {
+        self.fields.iter().filter_map(move |field| {
+            query.score(&field.text).map(|score| {
+                SearchHit::new(
+                    self.source.as_str(),
+                    self.handle.as_str(),
+                    None,
+                    score,
+                    field.reason.clone(),
+                    field.field.clone(),
+                )
+            })
+        })
+    }
+}
+
+fn push_search_field(
+    fields: &mut Vec<SearchField>,
+    field: impl Into<String>,
+    reason: impl Into<String>,
+    text: &str,
+) {
+    if let Some(field) = SearchField::new(field, reason, text) {
+        fields.push(field);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchQuery {
+    normalized: String,
+    terms: Vec<String>,
+}
+
+impl SearchQuery {
+    fn parse(query: &str) -> Option<Self> {
+        let normalized = normalize_search_text(query);
+        if normalized.is_empty() {
+            return None;
+        }
+        let mut terms = normalized
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        terms.sort();
+        terms.dedup();
+        Some(Self { normalized, terms })
+    }
+
+    fn score(&self, text: &str) -> Option<f32> {
+        let normalized = normalize_search_text(text);
+        if normalized.is_empty() {
+            return None;
+        }
+        if normalized.contains(&self.normalized) {
+            return Some(1.0);
+        }
+        let matched = self
+            .terms
+            .iter()
+            .filter(|term| normalized.contains(term.as_str()))
+            .count();
+        (matched > 0).then(|| {
+            let matched = u16::try_from(matched).unwrap_or(u16::MAX);
+            let total = u16::try_from(self.terms.len().max(1)).unwrap_or(u16::MAX);
+            0.35 + (0.55 * (f32::from(matched) / f32::from(total)))
+        })
+    }
+
+    fn reason(field: &str) -> &'static str {
+        if field == "body" {
+            "body-substring"
+        } else {
+            "substring"
+        }
+    }
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RankedSearchHit {
+    hit: SearchHit,
+    score: f32,
+    low_confidence: bool,
+}
+
+impl RankedSearchHit {
+    fn tuple(&self, query: &str) -> Tuple {
+        Tuple(vec![
+            string_value(query),
+            string_value(&self.hit.handle),
+            self.hit
+                .span_id
+                .as_deref()
+                .map_or(Value::Null, string_value),
+            float_value(f64::from(self.score)),
+            string_value(&self.hit.reason),
+            string_value(&self.hit.field),
+            Value::Bool(self.low_confidence),
+        ])
+    }
+}
+
+fn rank_search_hit(hit: SearchHit, ctx: &RankingContext, ranker: &dyn Ranker) -> RankedSearchHit {
+    let score = ranker.calibrate(&hit, ctx);
+    let score = if score.is_finite() {
+        score.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    RankedSearchHit {
+        low_confidence: score < ctx.low_confidence_threshold,
+        hit,
+        score,
+    }
+}
+
+fn compare_ranked_search_hits(
+    left: &RankedSearchHit,
+    right: &RankedSearchHit,
+    ranker: &dyn Ranker,
+) -> Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| ranker.tie_break(&left.hit, &right.hit))
+        .then_with(|| left.tuple("").cmp(&right.tuple("")))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1103,9 +1464,10 @@ impl GraphIndex {
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
-            PrimitivePredicate::Read | PrimitivePredicate::ReadFull | PrimitivePredicate::Match => {
-                Vec::new()
-            }
+            PrimitivePredicate::Search
+            | PrimitivePredicate::Read
+            | PrimitivePredicate::ReadFull
+            | PrimitivePredicate::Match => Vec::new(),
         }
     }
 
@@ -1680,6 +2042,7 @@ fn row_i64(row: &NamedRow, field: &str) -> Option<i64> {
 
 const HANDLE_RELATION: &str = "handle";
 const EDGE_RELATION: &str = "edge";
+const META_RELATION: &str = "meta";
 const CONFIG_RELATION: &str = "config";
 const CONTENT_RELATION: &str = "content";
 const SPAN_RELATION: &str = "span";
@@ -1695,6 +2058,8 @@ const KIND_FIELD: &str = "kind";
 const STATUS_FIELD: &str = "status";
 const NAMESPACE_FIELD: &str = "namespace";
 const DATE_FIELD: &str = "date";
+const AREA_FIELD: &str = "area";
+const SUMMARY_FIELD: &str = "summary";
 const HANDLE_FIELD: &str = "handle";
 const SPAN_ID_FIELD: &str = "span_id";
 const TEXT_FIELD: &str = "text";
@@ -1814,6 +2179,10 @@ fn string_value(value: &str) -> Value {
 
 fn int_value(value: i64) -> Value {
     Value::Number(NumberValue::Int(value))
+}
+
+fn float_value(value: f64) -> Value {
+    Value::Number(NumberValue::Float(value))
 }
 
 fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
@@ -2593,6 +2962,7 @@ fn primitive_tuples(
     regex_cache: &mut BTreeMap<String, Regex>,
 ) -> Result<Vec<Tuple>, EvalError> {
     match primitive {
+        PrimitivePredicate::Search => Ok(database.search_tuples(constraints, options)),
         PrimitivePredicate::Read => Ok(database.content.read_tuples(constraints)),
         PrimitivePredicate::ReadFull => {
             if !options.has_capability(READ_FULL_CAPABILITY) {
@@ -3546,6 +3916,19 @@ mod tests {
         }
     }
 
+    fn handle_with_summary(
+        id: &str,
+        kind: &str,
+        status: &str,
+        namespace: &str,
+        area: &str,
+        summary: &str,
+    ) -> HandleFact {
+        let mut handle = handle(id, kind, status, namespace, area);
+        handle.summary = summary.to_string();
+        handle
+    }
+
     fn edge(from: &str, to: &str, kind: &str) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}")),
@@ -3554,6 +3937,15 @@ mod tests {
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
+        }
+    }
+
+    fn meta(handle: &str, key: &str, value: &str) -> MetaFact {
+        MetaFact {
+            identity: identity(&format!("{handle}:meta:{key}")),
+            handle: handle.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
         }
     }
 
@@ -3744,6 +4136,74 @@ mod tests {
         ];
         let mut store = FactStore::default();
         store.merge(batch).expect("content fixture merge");
+        Database::from_store(&store)
+    }
+
+    fn search_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle_with_summary(
+                "audit/v17.md",
+                "file",
+                "current",
+                "",
+                "audit",
+                "V17 conformance audit",
+            ),
+            handle_with_summary(
+                "notes/release.md",
+                "file",
+                "current",
+                "",
+                "notes",
+                "Release readiness notes",
+            ),
+            handle_with_summary(
+                "notes/tie-a.md",
+                "file",
+                "current",
+                "",
+                "notes",
+                "Same topic",
+            ),
+            handle_with_summary(
+                "notes/tie-b.md",
+                "file",
+                "current",
+                "",
+                "notes",
+                "Same topic",
+            ),
+        ];
+        batch.meta = vec![
+            meta("audit/v17.md", "concern", "C-conformance"),
+            meta("notes/release.md", "concern", "C-release"),
+        ];
+        batch.content = vec![
+            content_with_text(
+                "audit/v17.md",
+                "body",
+                "urgent blocker list for conformance gaps",
+                6,
+            ),
+            content_with_text(
+                "notes/release.md",
+                "body",
+                "packaging checklist and smoke test notes",
+                6,
+            ),
+        ];
+        batch.spans = vec![
+            span("audit/v17.md", "body", 10, 11),
+            span("notes/release.md", "body", 3, 4),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("search fixture merge");
         Database::from_store(&store)
     }
 
@@ -4276,6 +4736,13 @@ mod tests {
         Value::Number(NumberValue::Float(value))
     }
 
+    fn value_f64(value: &Value) -> f64 {
+        match value {
+            Value::Number(NumberValue::Float(value)) => *value,
+            other => panic!("expected float value, got {other:?}"),
+        }
+    }
+
     fn list(values: impl IntoIterator<Item = Value>) -> Value {
         Value::List(values.into_iter().collect())
     }
@@ -4568,6 +5035,95 @@ mod tests {
         );
 
         assert!(matches!(err, EvalError::InvalidRegex { pattern, .. } if pattern == "["));
+    }
+
+    #[test]
+    fn search_returns_ranked_title_body_and_frontmatter_hits() {
+        let output = evaluate_query_output(
+            r#"? search("v17 conformance", h, span_id, score, reason, field, low_confidence)."#,
+            search_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert!(
+            rows.len() >= 4,
+            "expected title, identifier, body, and frontmatter hits: {rows:?}"
+        );
+        assert_eq!(rows[0].get("h"), Some(&s("audit/v17.md")));
+        assert_eq!(rows[0].get("span_id"), Some(&Value::Null));
+        assert_eq!(rows[0].get("reason"), Some(&s("title-substring")));
+        assert_eq!(rows[0].get("field"), Some(&s("title")));
+        assert_eq!(rows[0].get("low_confidence"), Some(&Value::Bool(false)));
+        assert!(
+            (value_f64(rows[0].get("score").expect("score")) - f64::from(0.95_f32)).abs()
+                < 0.000_001
+        );
+
+        assert!(rows.iter().any(|row| {
+            row.get("h") == Some(&s("audit/v17.md"))
+                && row.get("span_id") == Some(&s("body"))
+                && row.get("field") == Some(&s("body"))
+                && row.get("reason") == Some(&s("body-substring"))
+        }));
+        assert!(rows.iter().any(|row| {
+            row.get("h") == Some(&s("audit/v17.md"))
+                && row.get("field") == Some(&s("frontmatter:concern"))
+                && row.get("reason") == Some(&s("frontmatter-value-match"))
+        }));
+        assert!(
+            rows.windows(2).all(|pair| {
+                value_f64(pair[0].get("score").expect("left score"))
+                    >= value_f64(pair[1].get("score").expect("right score"))
+            }),
+            "search rows should be score-sorted: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| {
+                let score = value_f64(row.get("score").expect("score"));
+                (0.0..=1.0).contains(&score)
+            }),
+            "scores must be calibrated into [0, 1]: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn search_honors_handle_and_span_constraints() {
+        let output = evaluate_query_output(
+            r#"? search("conformance", "audit/v17.md", "body", score, reason, field, low_confidence)."#,
+            search_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("field"), Some(&s("body")));
+        assert_eq!(rows[0].get("reason"), Some(&s("body-substring")));
+        assert_eq!(rows[0].get("low_confidence"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn search_tie_breaks_by_source_handle_span_field_and_reason() {
+        let output = evaluate_query_output(
+            r#"? search("same topic", h, span_id, score, reason, field, low_confidence)."#,
+            search_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("h"), Some(&s("notes/tie-a.md")));
+        assert_eq!(rows[1].get("h"), Some(&s("notes/tie-b.md")));
+        assert_eq!(rows[0].get("score"), rows[1].get("score"));
     }
 
     #[test]

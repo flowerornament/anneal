@@ -34,8 +34,14 @@ impl Source for MarkdownSource {
                 live_only: false,
             },
             search: Some(SearchInfo {
-                reason_vocabulary: vec!["title-match", "frontmatter-key-match", "body-substring"],
-                fields: vec!["title", "body", "frontmatter"],
+                reason_vocabulary: vec![
+                    "identifier-substring",
+                    "title-substring",
+                    "frontmatter-key-match",
+                    "frontmatter-value-match",
+                    "body-substring",
+                ],
+                fields: vec!["identifier", "title", "body", "frontmatter:*"],
                 low_confidence_threshold: 0.5,
             }),
         }

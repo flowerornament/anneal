@@ -444,9 +444,10 @@ silent corpus-wide graph expansion.
 
 **Rule CR-R8 (Bounded content primitive inputs).** Content access
 primitives require their control arguments to be ground by a literal
-or by a positive atom outside the primitive call. `read` requires
-`handle` and `budget`; `read_full` requires `handle` and the
-`read_full` capability; `match` requires `pattern` and `handle`.
+or by a positive atom outside the primitive call. `search` requires
+`query`; `read` requires `handle` and `budget`; `read_full` requires
+`handle` and the `read_full` capability; `match` requires `pattern`
+and `handle`.
 `read` treats
 `span_id` as an optional narrowing constraint and emits spans in
 `start_line`, `span_id` order while the cumulative `tokens` remain
@@ -549,6 +550,19 @@ is calibrated for the loaded adapter set.
   confidence flag; agents consuming `TopK` get only high-confidence
   hits by default, eliminating the "0.62 hit looks comparable to
   0.93 hit" failure mode the live workflow simulation surfaced.
+
+**Definition CR-D42 (Default lexical Ranker).** The v2.0 default
+`Ranker` is deterministic and lexical. It emits internal `SearchHit`
+candidates from handle identifiers, handle summaries as `title`,
+frontmatter-style handle/meta fields, and content spans as `body`.
+Raw adapter or field scores are internal. Public `score` is the
+active ranker's calibrated score clamped to `[0.0, 1.0]`; the default
+ranker multiplies lexical match quality by field weights
+(`identifier`: `1.0`, `title`: `0.95`, `body`: `0.82`,
+`frontmatter:*`: `0.88`, other fields: `0.75`). Ordering is descending
+calibrated score, then `source`, `handle`, `span_id`, `field`, and
+`reason`. Scores below the active low-confidence threshold, default
+`0.5`, set `low_confidence: true`.
 
 ### §13 Trails [CR-D11]
 
@@ -1928,11 +1942,9 @@ value tie-breaks rather than bucket inclusion.
 
 ### §57 Cross-adapter score calibration in the default `Ranker`
 
-§12 defines per-adapter score range, reason vocabulary, and
-confidence threshold. The default `Ranker`'s calibration formula
-across adapters is a Phase 1 design question. Probably:
-linear-rescale by adapter quartiles + bonus for matched fields
-named in the user query + low-confidence filter applied last.
+Resolved for v2.0 by CR-D42. Cross-adapter statistical calibration
+remains a future Ranker override question; the default ranker is a
+deterministic lexical baseline with documented tie-breaks.
 
 ### §58 Default trail summarizer redaction patterns
 
@@ -2039,6 +2051,7 @@ as data instead of smuggling it through row sequence.
 - CR-D39: Snapshot identity and fallback history semantics (§15)
 - CR-D40: Ordered config facts (§63)
 - CR-D41: Corpus-unique handle ids (§15)
+- CR-D42: Default lexical Ranker (§12)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

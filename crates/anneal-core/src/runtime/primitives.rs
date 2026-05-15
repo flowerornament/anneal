@@ -21,6 +21,7 @@ pub(crate) enum PrimitivePredicate {
     Freshness,
     Flux,
     TokenEstimate,
+    Search,
     Read,
     ReadFull,
     Match,
@@ -69,6 +70,7 @@ impl PrimitivePredicate {
             "freshness" => Some(Self::Freshness),
             "flux" => Some(Self::Flux),
             "token_estimate" => Some(Self::TokenEstimate),
+            "search" => Some(Self::Search),
             "read" => Some(Self::Read),
             "read_full" => Some(Self::ReadFull),
             "match" => Some(Self::Match),
@@ -97,6 +99,7 @@ impl PrimitivePredicate {
             Self::Freshness => "freshness",
             Self::Flux => "flux",
             Self::TokenEstimate => "token_estimate",
+            Self::Search => "search",
             Self::Read => "read",
             Self::ReadFull => "read_full",
             Self::Match => "match",
@@ -154,6 +157,18 @@ impl PrimitivePredicate {
                 parameters: &["h", "days", "delta"],
                 sealed: true,
             },
+            Self::Search => PrimitiveSignature {
+                parameters: &[
+                    "query",
+                    "handle",
+                    "span_id",
+                    "score",
+                    "reason",
+                    "field",
+                    "low_confidence",
+                ],
+                sealed: true,
+            },
             Self::Read => PrimitiveSignature {
                 parameters: &[
                     "handle",
@@ -200,6 +215,7 @@ impl PrimitivePredicate {
             | Self::Freshness
             | Self::Flux
             | Self::TokenEstimate
+            | Self::Search
             | Self::Read
             | Self::ReadFull
             | Self::Match => None,
@@ -208,6 +224,10 @@ impl PrimitivePredicate {
 
     pub(crate) fn required_bound_inputs(self) -> &'static [RequiredPrimitiveInput] {
         match self {
+            Self::Search => &[RequiredPrimitiveInput {
+                position: 0,
+                argument: "query",
+            }],
             Self::Read => &[
                 RequiredPrimitiveInput {
                     position: 0,
@@ -276,6 +296,7 @@ pub(crate) fn primitive_signatures() -> impl Iterator<Item = (PredicateRef, Prim
         PrimitivePredicate::Freshness,
         PrimitivePredicate::Flux,
         PrimitivePredicate::TokenEstimate,
+        PrimitivePredicate::Search,
         PrimitivePredicate::Read,
         PrimitivePredicate::ReadFull,
         PrimitivePredicate::Match,
