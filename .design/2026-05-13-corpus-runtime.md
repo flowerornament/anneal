@@ -476,9 +476,11 @@ total over known handles so agent queries can distinguish "no signal"
 from "relation missing"; snapshot-backed precision can improve
 without changing the relational shape.
 
-The aggregation form `TopK{k: N, key: score : body}` (Part IV §17) provides
-bounded selection. There is no parallel `top_k` function primitive
-and no surface syntax shortcut — one mechanism, one place.
+The aggregation form
+`TopK{k: N, key: score : (h, score) : body}` (Part IV §17)
+provides bounded selection. There is no parallel `top_k` function
+primitive and no surface syntax shortcut — one mechanism, one
+place.
 
 ### §12 Search scoring contract [CR-D10]
 
@@ -775,27 +777,35 @@ derived.*
 **Definition CR-D17 (Aggregation).** Form:
 `agg_var = AggFn{ [agg_args :] contributing_var : sub_body }`.
 
-`TopK` and `TakeUntil` take agg_args; the standard aggregators don't.
+`TopK`, `Rank`, and `TakeUntil` take agg_args; the standard
+aggregators don't.
 
 ```
+area(area) := area_of(h, area).
 total_potential(area, total) :=
+  area(area),
   total = Sum{ e : potential(h, e), area_of(h, area) }.
 
+namespace(ns) := *handle{namespace: ns}.
 namespace_open_count(ns, n) :=
+  namespace(ns),
   n = Count{ h : *handle{id: h, namespace: ns},
                  obligation(h),
                  not discharged(h) }.
 
 top_blockers(h, score) :=
   (h, score) = TopK{ k: 10, key: score :
+    (h, score) :
     *handle{id: h, namespace: "OQ"},
     not discharged(h),
     potential(h, score)
   }.
 
-read_until_budget(h, span_id, text, used) :=
-  used = TakeUntil{ budget: 4000, sum: tokens :
-    span_id : read(h, 4000, span_id, text, _, _, tokens)
+read_until_budget(h, span_id, text, start_line, end_line, tokens) :=
+  (span_id, text, start_line, end_line, tokens) =
+  TakeUntil{ budget: 4000, sum: tokens, key: start_line :
+    (span_id, text, start_line, end_line, tokens) :
+    read(h, 4000, span_id, text, start_line, end_line, tokens)
   }.
 ```
 
@@ -805,6 +815,38 @@ with the aggregation function. Free variables outside the
 aggregation form the grouping key. `TopK` and `TakeUntil` are
 first-class — set semantics alone are insufficient for agent
 retrieval workflows.
+
+**Definition CR-D38 (Non-count aggregation semantics).** `Sum`,
+`Avg`, `Min`, `Max`, `List`, and `Set` are scalar aggregators:
+they produce one value per positively originated group that has at
+least one contribution. `Count` is the only aggregate that emits for
+an originated empty group. `Sum` and `Avg` require numeric
+contribution values; `Avg` returns a float. `Min` and `Max` use the
+runtime's total value ordering. `List` and `Set` return
+deterministic sorted lists of distinct contribution values because
+the runtime has set semantics and no bag type.
+
+`TopK`, `Rank`, and `TakeUntil` are row-producing aggregators:
+they may emit zero or more rows per group by unifying the aggregate
+result expression with selected contribution values. `TopK` requires
+ground integer `k` and a ground `key` expression for each candidate;
+it sorts by descending key with contribution-value tie-breaks and
+emits exactly the first `k` candidates. Ties at the boundary are
+resolved by that deterministic tie-break, not by "include all ties".
+
+`Rank` requires `key` and `rank` args. `rank` must name a variable
+available to the contribution expression; the runtime emits all
+candidates sorted by descending key and binds 1-based dense ranks,
+with equal keys sharing a rank. `TakeUntil` requires ground integer
+`budget`, non-negative integer `sum` per candidate, and ground `key`
+per candidate. It sorts by ascending key with contribution-value
+tie-breaks, then emits candidates while the cumulative `sum` remains
+`<= budget`; the first candidate that would exceed budget stops the
+group. Contribution values may be non-numeric for row-producing
+aggregators; only `key`, `k`, `budget`, and `sum` carry numeric or
+ordering requirements. Rationale: budgeted context assembly must be
+deterministic and explicit about ordering, while preserving the
+relational shape agents can compose.
 
 **Definition CR-D33 (Aggregate result unification).** The left-hand
 side of an aggregation form participates in normal equality
@@ -989,7 +1031,9 @@ potential_weight("freshness_decay",  2).
 potential_weight("missing_meta",     1).
 potential_weight("orphan_label",     1).
 
+potential_subject(h) := entropy(h, source).
 potential(h, energy) :=
+  potential_subject(h),
   energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
 
 entropy(h, "undischarged") :=
@@ -1276,7 +1320,7 @@ Projects override or extend any.
 | `anneal search TEXT` | content match by query | `search("TEXT", h, span_id, score, reason, field, low_confidence)` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
-| `anneal work` | where should I work | `(h, e) = TopK{k: 25, key: e : potential(h, e), entropy(h, src)}` |
+| `anneal work` | where should I work | `(h, e) = TopK{k: 25, key: e : (h, e) : potential(h, e), entropy(h, src)}` |
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
 | `anneal broken` | are there errors | `diagnostic(_, "error", ...)` |
@@ -1317,12 +1361,13 @@ Underlying composition contract (from `views.dl`):
   name: "context",
   query: "
     ? (h, span_id, score, reason, field) = TopK{ k: hits, key: score :
+        (h, span_id, score, reason, field) :
         search(goal, h, span_id, score, reason, field, low_confidence),
         low_confidence = false
       },
       per_hit_budget = budget * 0.6 / hits,
       (span_id, text, start_line, end_line, tokens) = TakeUntil{
-        budget: per_hit_budget, sum: tokens :
+        budget: per_hit_budget, sum: tokens, key: start_line :
         (span_id, text, start_line, end_line, tokens) :
           read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)
       },
@@ -1589,10 +1634,10 @@ when the adapter is absent.
 
 ```
 # 1. Counts by kind
-anneal -e '? c = Count{ h : *handle{id: h, kind: k} }, k.'
+anneal -e '? *handle{kind: k}, c = Count{ h : *handle{id: h, kind: k} }.'
 
 # 2. Label namespaces and counts
-anneal -e '? c = Count{ h : *handle{id: h, kind: "label", namespace: ns} }, ns.'
+anneal -e '? *handle{kind: "label", namespace: ns}, c = Count{ h : *handle{id: h, kind: "label", namespace: ns} }.'
 
 # 3. The corpus's discovery conventions (adapter-qualified)
 anneal -e '? md.label_pattern(ns, regex, scope).'
@@ -1805,9 +1850,10 @@ runs in large-corpus's `.design/` runs inside host-corpus.
 
 ### §56 take_until aggregation behavior
 
-§20 declares `TakeUntil` but its exact semantics on non-numeric
-contributing variables and on tied threshold-crossings need pinning
-during Phase 1.
+Resolved by CR-D38: `TakeUntil` contribution values may be
+non-numeric, `sum` must be non-negative integer, `key` gives
+deterministic ordering, and threshold ties are resolved by stable
+value tie-breaks rather than bucket inclusion.
 
 ### §57 Cross-adapter score calibration in the default `Ranker`
 
@@ -1913,6 +1959,7 @@ round-trip contract before persisted/federated config facts ship.
 - CR-D35: Sealed engine primitives (§11)
 - CR-D36: Soft lifecycle primitives (§11)
 - CR-D37: Default scalar lifecycle metrics (§11)
+- CR-D38: Non-count aggregation semantics (§20)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -1943,7 +1990,6 @@ round-trip contract before persisted/federated config facts ship.
 - CR-Fw4: Host Corpus embedding (§55)
 
 ### CR-OQ (Open questions)
-- CR-OQ1: take_until semantics (§56)
 - CR-OQ2: Cross-adapter Ranker calibration formula (§57)
 - CR-OQ3: Default trail redaction patterns (§58)
 - CR-OQ4: Consumed-by-read vs consumed-by-display heuristic (§59)

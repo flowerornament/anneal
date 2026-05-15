@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::runtime::ast::{
-    Aggregate, Atom, Body, CallArg, Comparison, DerivedAtom, Expr, Head, Ident, Literal,
-    NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
+    Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, DerivedAtom, Expr, Head, Ident,
+    Literal, NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
     Statement, StoredAtom, Term,
 };
 use crate::runtime::primitives::{PrimitiveSignature, primitive_signatures};
@@ -883,7 +883,7 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
     let mut bound = BTreeSet::new();
     collect_positive_body_vars(body, &mut bound);
 
-    for atom in &body.atoms {
+    for (atom_index, atom) in body.atoms.iter().enumerate() {
         match atom {
             Atom::Stored(_) | Atom::Derived(_) => {}
             Atom::Comparison(comparison) => {
@@ -907,7 +907,13 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
                 )?;
             }
             Atom::Aggregation(aggregate) => {
-                check_aggregate_safety(predicate, aggregate, &bound)?;
+                let mut outside_bound = BTreeSet::new();
+                for (other_index, other) in body.atoms.iter().enumerate() {
+                    if other_index != atom_index {
+                        collect_positive_atom_vars(other, &mut outside_bound);
+                    }
+                }
+                check_aggregate_safety(predicate, aggregate, &outside_bound)?;
             }
             Atom::TimeBlock(time_block) => {
                 check_body_safety(predicate, &time_block.body)?;
@@ -920,21 +926,65 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
 fn check_aggregate_safety(
     predicate: &PredicateRef,
     aggregate: &Aggregate,
-    outer_bound: &BTreeSet<Ident>,
+    outside_bound: &BTreeSet<Ident>,
 ) -> Result<(), StaticError> {
-    let mut vars = BTreeSet::new();
-    aggregate.value.variables(&mut vars);
-    for arg in &aggregate.args {
-        arg.expr.variables(&mut vars);
+    let mut body_bound = BTreeSet::new();
+    collect_positive_body_vars(&aggregate.body, &mut body_bound);
+    let mut row_bound = outside_bound.clone();
+    row_bound.extend(body_bound);
+
+    let rank_var = rank_arg_variable(aggregate);
+
+    let mut value_vars = BTreeSet::new();
+    aggregate.value.variables(&mut value_vars);
+    if let Some(rank_var) = &rank_var {
+        value_vars.remove(rank_var);
     }
     ensure_bound(
         predicate,
-        vars,
-        outer_bound,
+        value_vars,
+        &row_bound,
         SafetyContext::Expression,
         &aggregate.location,
     )?;
+
+    for arg in &aggregate.args {
+        let mut arg_vars = BTreeSet::new();
+        arg.expr.variables(&mut arg_vars);
+        if aggregate.function == AggregateFunction::Rank && arg.name.as_str() == "rank" {
+            continue;
+        }
+        let required_bound = if matches!(
+            (aggregate.function, arg.name.as_str()),
+            (AggregateFunction::TopK, "k") | (AggregateFunction::TakeUntil, "budget")
+        ) {
+            outside_bound
+        } else {
+            &row_bound
+        };
+        ensure_bound(
+            predicate,
+            arg_vars,
+            required_bound,
+            SafetyContext::Expression,
+            &aggregate.location,
+        )?;
+    }
     check_body_safety(predicate, &aggregate.body)
+}
+
+fn rank_arg_variable(aggregate: &Aggregate) -> Option<Ident> {
+    if aggregate.function != AggregateFunction::Rank {
+        return None;
+    }
+    aggregate
+        .args
+        .iter()
+        .find(|arg| arg.name.as_str() == "rank")
+        .and_then(|arg| match &arg.expr {
+            Expr::Var(var) => Some(var.clone()),
+            _ => None,
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -1077,7 +1127,6 @@ fn collect_positive_atom_vars(atom: &Atom, out: &mut BTreeSet<Ident>) {
         Atom::Comparison(_) | Atom::Negation(_) => {}
         Atom::Aggregation(aggregate) => {
             aggregate.result.variables(out);
-            collect_positive_body_vars(&aggregate.body, out);
         }
         Atom::TimeBlock(time_block) => collect_positive_body_vars(&time_block.body, out),
     }
@@ -1174,6 +1223,36 @@ mod tests {
             err.to_string()
                 .contains(&location("inline", input, "h = missing").to_string())
         );
+    }
+
+    #[test]
+    fn aggregate_body_variables_do_not_satisfy_head_safety() {
+        let input = r#"item("a", "h"). bad(area, n) := n = Count{ h : item(area, h) }."#;
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnboundHeadVariable { variable, .. } if variable.as_str() == "area"
+        ));
+    }
+
+    #[test]
+    fn aggregate_group_level_args_must_be_bound_outside_aggregate() {
+        let input = r#"limit("a", 2). score("a", 5). bad(h) := (h, s) = TopK{ k: k, key: s : (h, s) : limit(h, k), score(h, s) }."#;
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnboundExpressionVariable { variable, .. } if variable.as_str() == "k"
+        ));
+    }
+
+    #[test]
+    fn rank_generated_variable_is_not_available_to_key_arg() {
+        let input = r#"score("a", 5). bad(h, rank) := (h, rank) = Rank{ key: rank, rank: rank : (h, rank) : score(h, score) }."#;
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnboundExpressionVariable { variable, .. } if variable.as_str() == "rank"
+        ));
     }
 
     #[test]

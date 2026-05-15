@@ -1018,7 +1018,7 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::ast::{Atom, CallArg, Literal};
+    use crate::runtime::ast::{AggregateFunction, Atom, CallArg, Literal};
 
     #[test]
     fn parses_stored_query_with_negation_and_comparison() {
@@ -1049,6 +1049,34 @@ mod tests {
         let query = program.queries().next().expect("query");
         assert_eq!(query.local_rules.len(), 1);
         assert!(matches!(query.body.atoms[1], Atom::Aggregation(_)));
+    }
+
+    #[test]
+    fn parses_row_producing_aggregations_with_named_args() {
+        let program = parse_program(
+            "inline",
+            r"
+            ? (h, score) = TopK{ k: 10, key: score : (h, score) : score(h, score) }.
+            ? (span_id, tokens) =
+              TakeUntil{ budget: 4000, sum: tokens, key: line :
+                (span_id, tokens) :
+                span(span_id, line, tokens)
+              }.
+            ",
+        )
+        .expect("program parses");
+        let queries = program.queries().collect::<Vec<_>>();
+        let Atom::Aggregation(top_k) = &queries[0].body.atoms[0] else {
+            panic!("expected TopK aggregation");
+        };
+        assert_eq!(top_k.function, AggregateFunction::TopK);
+        assert_eq!(top_k.args.len(), 2);
+
+        let Atom::Aggregation(take_until) = &queries[1].body.atoms[0] else {
+            panic!("expected TakeUntil aggregation");
+        };
+        assert_eq!(take_until.function, AggregateFunction::TakeUntil);
+        assert_eq!(take_until.args.len(), 3);
     }
 
     #[test]

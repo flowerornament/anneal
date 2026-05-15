@@ -1324,6 +1324,16 @@ pub enum EvalError {
     UnboundVariable { variable: Ident },
     #[error("unsupported aggregate '{function:?}'")]
     UnsupportedAggregate { function: AggregateFunction },
+    #[error("aggregate '{function:?}' requires argument '{argument}'")]
+    MissingAggregateArg {
+        function: AggregateFunction,
+        argument: &'static str,
+    },
+    #[error("aggregate '{function:?}' argument '{argument}' is invalid")]
+    InvalidAggregateArg {
+        function: AggregateFunction,
+        argument: &'static str,
+    },
     #[error("unsupported time reference '{reference}'")]
     UnsupportedTimeRef { reference: String },
     #[error("unsupported expression")]
@@ -1678,132 +1688,400 @@ fn eval_aggregate(
     bindings: Vec<Binding>,
     database: &Database,
 ) -> Result<Vec<Binding>, EvalError> {
-    if aggregate.function != AggregateFunction::Count {
-        return Err(EvalError::UnsupportedAggregate {
-            function: aggregate.function,
-        });
-    }
-    let Expr::Var(result_var) = &aggregate.result else {
-        return Err(EvalError::UnsupportedExpression);
-    };
-    let Expr::Var(value_var) = &aggregate.value else {
-        return Err(EvalError::UnsupportedExpression);
-    };
-    let group_vars = aggregate_group_vars(aggregate, value_var, result_var);
+    validate_aggregate_args(aggregate)?;
 
     let mut out = Vec::new();
     for binding in bindings {
-        let expected_result = binding.get(result_var).cloned();
         let inner = eval_body(&aggregate.body, vec![binding.clone()], database)?;
         if inner.is_empty() {
-            let mut group = binding;
-            group.remove(value_var);
-            if !group_vars.iter().all(|var| group.contains_key(var)) {
-                continue;
-            }
-            if let Some(group) =
-                bind_aggregate_count(group, result_var, 0, expected_result.as_ref())
+            if aggregate.function == AggregateFunction::Count
+                && let Some(group) = bind_aggregate_result(
+                    &aggregate.result,
+                    &binding,
+                    &Value::Number(NumberValue::Int(0)),
+                )?
             {
                 out.push(group);
             }
             continue;
         }
-        let mut groups: BTreeMap<Binding, BTreeSet<Value>> = BTreeMap::new();
-        for mut row in inner {
-            let Some(value) = row.remove(value_var) else {
-                return Err(EvalError::UnboundVariable {
-                    variable: value_var.clone(),
-                });
+        out.extend(eval_aggregate_group(aggregate, &binding, &inner)?);
+    }
+    Ok(out)
+}
+
+fn eval_aggregate_group(
+    aggregate: &Aggregate,
+    base: &Binding,
+    rows: &[Binding],
+) -> Result<Vec<Binding>, EvalError> {
+    match aggregate.function {
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => {
+            let values = distinct_aggregate_values(aggregate, rows)?;
+            let Some(value) = scalar_aggregate_value(aggregate.function, &values)? else {
+                return Ok(Vec::new());
             };
-            row.remove(result_var);
-            groups.entry(row).or_default().insert(value);
+            Ok(bind_aggregate_result(&aggregate.result, base, &value)?
+                .into_iter()
+                .collect())
         }
-        for (group, values) in groups {
-            if let Some(group) =
-                bind_aggregate_count(group, result_var, values.len(), expected_result.as_ref())
-            {
-                out.push(group);
+        AggregateFunction::TopK => eval_top_k_aggregate(aggregate, base, rows),
+        AggregateFunction::Rank => eval_rank_aggregate(aggregate, base, rows),
+        AggregateFunction::TakeUntil => eval_take_until_aggregate(aggregate, base, rows),
+    }
+}
+
+fn distinct_aggregate_values(
+    aggregate: &Aggregate,
+    rows: &[Binding],
+) -> Result<BTreeSet<Value>, EvalError> {
+    rows.iter()
+        .map(|row| eval_expr(&aggregate.value, row))
+        .collect()
+}
+
+fn scalar_aggregate_value(
+    function: AggregateFunction,
+    values: &BTreeSet<Value>,
+) -> Result<Option<Value>, EvalError> {
+    if values.is_empty() && function != AggregateFunction::Count {
+        return Ok(None);
+    }
+    match function {
+        AggregateFunction::Count => Ok(Some(Value::Number(NumberValue::Int(
+            i64::try_from(values.len()).unwrap_or(i64::MAX),
+        )))),
+        AggregateFunction::Sum => numeric_sum(values).map(Some),
+        AggregateFunction::Min => Ok(values.first().cloned()),
+        AggregateFunction::Max => Ok(values.last().cloned()),
+        AggregateFunction::Avg => numeric_avg(values).map(Some),
+        AggregateFunction::List | AggregateFunction::Set => {
+            Ok(Some(Value::List(values.iter().cloned().collect())))
+        }
+        AggregateFunction::TopK | AggregateFunction::Rank | AggregateFunction::TakeUntil => {
+            Err(EvalError::UnsupportedAggregate { function })
+        }
+    }
+}
+
+fn numeric_sum(values: &BTreeSet<Value>) -> Result<Value, EvalError> {
+    let mut int_sum = 0_i64;
+    let mut float_sum = 0.0_f64;
+    let mut has_float = false;
+    for value in values {
+        match numeric_value(value)? {
+            NumberValue::Int(value) if !has_float => {
+                int_sum = int_sum.saturating_add(value);
             }
+            NumberValue::Int(value) => {
+                float_sum += i64_to_f64(value);
+            }
+            NumberValue::Float(value) => {
+                if !has_float {
+                    float_sum = i64_to_f64(int_sum);
+                    has_float = true;
+                }
+                float_sum += value;
+            }
+        }
+    }
+    if has_float {
+        Ok(Value::Number(NumberValue::Float(float_sum)))
+    } else {
+        Ok(Value::Number(NumberValue::Int(int_sum)))
+    }
+}
+
+fn numeric_avg(values: &BTreeSet<Value>) -> Result<Value, EvalError> {
+    let mut total = 0.0_f64;
+    for value in values {
+        match numeric_value(value)? {
+            NumberValue::Int(value) => total += i64_to_f64(value),
+            NumberValue::Float(value) => total += value,
+        }
+    }
+    Ok(Value::Number(NumberValue::Float(
+        total / usize_to_f64(values.len()),
+    )))
+}
+
+fn numeric_value(value: &Value) -> Result<NumberValue, EvalError> {
+    let Value::Number(value) = value else {
+        return Err(EvalError::UnsupportedExpression);
+    };
+    Ok(*value)
+}
+
+fn i64_to_f64(value: i64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    {
+        value as f64
+    }
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    {
+        value as f64
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OrderedAggregateCandidate {
+    value: Value,
+    key: Value,
+}
+
+#[derive(Clone, Debug)]
+struct RankAggregateCandidate {
+    key: Value,
+    row: Binding,
+}
+
+fn compare_ordered_candidates(
+    left: &OrderedAggregateCandidate,
+    right: &OrderedAggregateCandidate,
+) -> Ordering {
+    right
+        .key
+        .cmp(&left.key)
+        .then_with(|| left.value.cmp(&right.value))
+}
+
+fn top_k_candidates(
+    aggregate: &Aggregate,
+    rows: &[Binding],
+    limit: usize,
+) -> Result<Vec<OrderedAggregateCandidate>, EvalError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let key = required_aggregate_arg(aggregate, "key")?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let candidate = OrderedAggregateCandidate {
+            value: eval_expr(&aggregate.value, row)?,
+            key: eval_expr(&key.expr, row)?,
+        };
+        let insert_at = candidates
+            .binary_search_by(|existing| compare_ordered_candidates(existing, &candidate))
+            .unwrap_or_else(|idx| idx);
+        if insert_at < limit {
+            candidates.insert(insert_at, candidate);
+            if candidates.len() > limit {
+                candidates.pop();
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+fn rank_candidates(
+    aggregate: &Aggregate,
+    rows: &[Binding],
+) -> Result<Vec<RankAggregateCandidate>, EvalError> {
+    let key = required_aggregate_arg(aggregate, "key")?;
+    let mut candidates = rows
+        .iter()
+        .map(|row| {
+            Ok(RankAggregateCandidate {
+                key: eval_expr(&key.expr, row)?,
+                row: row.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    candidates.sort_by(|left, right| {
+        right
+            .key
+            .cmp(&left.key)
+            .then_with(|| left.row.cmp(&right.row))
+    });
+    Ok(candidates)
+}
+
+fn eval_top_k_aggregate(
+    aggregate: &Aggregate,
+    base: &Binding,
+    rows: &[Binding],
+) -> Result<Vec<Binding>, EvalError> {
+    let k = required_non_negative_int_arg(aggregate, "k", base)?;
+    let candidates = top_k_candidates(aggregate, rows, usize::try_from(k).unwrap_or(usize::MAX))?;
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            bind_aggregate_result(&aggregate.result, base, &candidate.value).transpose()
+        })
+        .collect()
+}
+
+fn eval_rank_aggregate(
+    aggregate: &Aggregate,
+    base: &Binding,
+    rows: &[Binding],
+) -> Result<Vec<Binding>, EvalError> {
+    let rank_var = required_rank_var_arg(aggregate)?;
+    let candidates = rank_candidates(aggregate, rows)?;
+    let mut out = Vec::new();
+    let mut current_rank = 0_i64;
+    let mut previous_key = None;
+    for candidate in candidates {
+        if previous_key.as_ref() != Some(&candidate.key) {
+            current_rank += 1;
+            previous_key = Some(candidate.key.clone());
+        }
+        let mut row = candidate.row;
+        row.insert(
+            rank_var.clone(),
+            Value::Number(NumberValue::Int(current_rank)),
+        );
+        let value = eval_expr(&aggregate.value, &row)?;
+        if let Some(binding) = bind_aggregate_result(&aggregate.result, base, &value)? {
+            out.push(binding);
         }
     }
     Ok(out)
 }
 
-fn bind_aggregate_count(
-    mut group: Binding,
-    result_var: &Ident,
-    count: usize,
-    expected_result: Option<&Value>,
-) -> Option<Binding> {
-    let count = Value::Number(NumberValue::Int(i64::try_from(count).unwrap_or(i64::MAX)));
-    if expected_result.is_some_and(|expected| expected != &count) {
-        return None;
-    }
-    group.remove(result_var);
-    group.insert(result_var.clone(), count);
-    Some(group)
-}
-
-fn aggregate_group_vars(
+fn eval_take_until_aggregate(
     aggregate: &Aggregate,
-    value_var: &Ident,
-    result_var: &Ident,
-) -> BTreeSet<Ident> {
-    let mut vars = BTreeSet::new();
-    collect_body_variables(&aggregate.body, &mut vars);
+    base: &Binding,
+    rows: &[Binding],
+) -> Result<Vec<Binding>, EvalError> {
+    let budget = required_non_negative_int_arg(aggregate, "budget", base)?;
+    let sum = required_aggregate_arg(aggregate, "sum")?;
+    let key = required_aggregate_arg(aggregate, "key")?;
+    let mut candidates = rows
+        .iter()
+        .map(|row| {
+            let cost = eval_expr(&sum.expr, row)?;
+            let NumberValue::Int(cost) = numeric_value(&cost)? else {
+                return Err(EvalError::InvalidAggregateArg {
+                    function: aggregate.function,
+                    argument: "sum",
+                });
+            };
+            if cost < 0 {
+                return Err(EvalError::InvalidAggregateArg {
+                    function: aggregate.function,
+                    argument: "sum",
+                });
+            }
+            Ok((
+                eval_expr(&key.expr, row)?,
+                eval_expr(&aggregate.value, row)?,
+                cost,
+            ))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut out = Vec::new();
+    let mut used = 0_i64;
+    for (_, value, cost) in candidates {
+        let next = used.saturating_add(cost);
+        if next > budget {
+            break;
+        }
+        used = next;
+        if let Some(binding) = bind_aggregate_result(&aggregate.result, base, &value)? {
+            out.push(binding);
+        }
+    }
+    Ok(out)
+}
+
+fn bind_aggregate_result(
+    result: &Expr,
+    base: &Binding,
+    value: &Value,
+) -> Result<Option<Binding>, EvalError> {
+    let mut next = None;
+    if !unify_expr(result, value, base, &mut next)? {
+        return Ok(None);
+    }
+    Ok(Some(next.unwrap_or_else(|| base.clone())))
+}
+
+fn validate_aggregate_args(aggregate: &Aggregate) -> Result<(), EvalError> {
+    let allowed = match aggregate.function {
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => &[][..],
+        AggregateFunction::TopK => &["k", "key"][..],
+        AggregateFunction::Rank => &["key", "rank"][..],
+        AggregateFunction::TakeUntil => &["budget", "sum", "key"][..],
+    };
+    let mut seen = BTreeSet::new();
     for arg in &aggregate.args {
-        arg.expr.variables(&mut vars);
+        if !allowed.contains(&arg.name.as_str()) {
+            return Err(EvalError::InvalidAggregateArg {
+                function: aggregate.function,
+                argument: "unknown",
+            });
+        }
+        if !seen.insert(arg.name.as_str()) {
+            return Err(EvalError::InvalidAggregateArg {
+                function: aggregate.function,
+                argument: "duplicate",
+            });
+        }
     }
-    vars.remove(value_var);
-    vars.remove(result_var);
-    vars
+    Ok(())
 }
 
-fn collect_body_variables(body: &Body, out: &mut BTreeSet<Ident>) {
-    for atom in &body.atoms {
-        collect_atom_variables(atom, out);
-    }
+fn required_aggregate_arg<'a>(
+    aggregate: &'a Aggregate,
+    name: &'static str,
+) -> Result<&'a crate::runtime::ast::NamedArg, EvalError> {
+    aggregate
+        .args
+        .iter()
+        .find(|arg| arg.name.as_str() == name)
+        .ok_or(EvalError::MissingAggregateArg {
+            function: aggregate.function,
+            argument: name,
+        })
 }
 
-fn collect_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
-    match atom {
-        Atom::Stored(stored) => {
-            for field in &stored.fields {
-                if let Some(expr) = field.term.expr() {
-                    expr.variables(out);
-                }
-            }
-        }
-        Atom::Derived(derived) => {
-            for arg in &derived.args {
-                arg.expr().variables(out);
-            }
-        }
-        Atom::Comparison(comparison) => {
-            comparison.left.variables(out);
-            comparison.right.variables(out);
-        }
-        Atom::Negation(negation) => match &negation.atom {
-            NegatedAtom::Stored(stored) => {
-                for field in &stored.fields {
-                    if let Some(expr) = field.term.expr() {
-                        expr.variables(out);
-                    }
-                }
-            }
-            NegatedAtom::Derived(derived) => {
-                for arg in &derived.args {
-                    arg.expr().variables(out);
-                }
-            }
-        },
-        Atom::Aggregation(nested) => {
-            nested.result.variables(out);
-            nested.value.variables(out);
-            collect_body_variables(&nested.body, out);
-        }
-        Atom::TimeBlock(time_block) => collect_body_variables(&time_block.body, out),
+fn required_non_negative_int_arg(
+    aggregate: &Aggregate,
+    name: &'static str,
+    binding: &Binding,
+) -> Result<i64, EvalError> {
+    let value = eval_expr(&required_aggregate_arg(aggregate, name)?.expr, binding)?;
+    let Value::Number(NumberValue::Int(value)) = value else {
+        return Err(EvalError::InvalidAggregateArg {
+            function: aggregate.function,
+            argument: name,
+        });
+    };
+    if value < 0 {
+        return Err(EvalError::InvalidAggregateArg {
+            function: aggregate.function,
+            argument: name,
+        });
     }
+    Ok(value)
+}
+
+fn required_rank_var_arg(aggregate: &Aggregate) -> Result<Ident, EvalError> {
+    let Expr::Var(var) = &required_aggregate_arg(aggregate, "rank")?.expr else {
+        return Err(EvalError::InvalidAggregateArg {
+            function: aggregate.function,
+            argument: "rank",
+        });
+    };
+    Ok(var.clone())
 }
 
 fn stored_constraints(
@@ -1907,6 +2185,20 @@ fn unify_expr(
                 writable_binding(binding, next).insert(var.clone(), value.clone());
                 Ok(true)
             }
+        }
+        Expr::Tuple(items) => {
+            let Value::List(values) = value else {
+                return Ok(false);
+            };
+            if items.len() != values.len() {
+                return Ok(false);
+            }
+            for (item, value) in items.iter().zip(values) {
+                if !unify_expr(item, value, binding, next)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
         _ => Ok(eval_expr(expr, active_binding(binding, next.as_ref()))? == *value),
     }
@@ -2191,12 +2483,13 @@ fn generation_value(generation: Generation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::sync::OnceLock;
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::ast::{RuleLayer, Statement};
-    use crate::runtime::{analyze, parse_program};
+    use crate::runtime::{StaticError, analyze, parse_program};
 
     fn identity(native_id: &str) -> FactIdentity {
         FactIdentity::new(
@@ -2725,7 +3018,9 @@ mod tests {
             oq_in_area(area, q) :=
               *handle{id: q, kind: "label", namespace: "OQ", area: area},
               not terminal(q).
+            oq_area(area) := *handle{kind: "label", namespace: "OQ", area: area}.
             oq_per_area(area, n) :=
+              oq_area(area),
               n = Count{ q : oq_in_area(area, q) }.
 
             ? *handle{id, kind, status, namespace, area}.
@@ -2816,6 +3111,14 @@ mod tests {
 
     fn n(value: i64) -> Value {
         Value::Number(NumberValue::Int(value))
+    }
+
+    fn f(value: f64) -> Value {
+        Value::Number(NumberValue::Float(value))
+    }
+
+    fn list(values: impl IntoIterator<Item = Value>) -> Value {
+        Value::List(values.into_iter().collect())
     }
 
     fn evaluate_queries(input: &str, database: Database) -> Vec<QueryRows> {
@@ -3327,7 +3630,8 @@ mod tests {
             open_oq(h) := *handle{id: h, kind: "label", namespace: "OQ"}, not terminal(h).
             dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
             dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
-            oq_per_area(area, n) := n = Count{ h : open_oq(h), *handle{id: h, area} }.
+            oq_area(area) := *handle{kind: "label", namespace: "OQ", area}.
+            oq_per_area(area, n) := oq_area(area), n = Count{ h : open_oq(h), *handle{id: h, area} }.
             ? open_oq(h).
             "#,
         )
@@ -3394,20 +3698,185 @@ mod tests {
             "#,
         )
         .expect("program parses");
+        let err = analyze(program).expect_err("group key must be bound outside aggregate");
+        assert!(matches!(
+            err,
+            StaticError::UnboundHeadVariable { variable, .. } if variable.as_str() == "area"
+        ));
+    }
+
+    #[test]
+    fn scalar_aggregates_compute_distinct_values() {
+        let outputs = evaluate_queries(
+            r"
+            amount(2).
+            amount(5).
+            ? total = Sum{ value : amount(value) }.
+            ? min = Min{ value : amount(value) }.
+            ? max = Max{ value : amount(value) }.
+            ? avg = Avg{ value : amount(value) }.
+            ? values = List{ value : amount(value) }.
+            ? values = Set{ value : amount(value) }.
+            ",
+            Database::default(),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("total", n(7))])]);
+        assert_query_rows(&outputs[1], vec![row([("min", n(2))])]);
+        assert_query_rows(&outputs[2], vec![row([("max", n(5))])]);
+        assert_query_rows(&outputs[3], vec![row([("avg", f(3.5))])]);
+        assert_query_rows(&outputs[4], vec![row([("values", list([n(2), n(5)]))])]);
+        assert_query_rows(&outputs[5], vec![row([("values", list([n(2), n(5)]))])]);
+    }
+
+    #[test]
+    fn top_k_selects_ranked_rows_and_unifies_result_tuple() {
+        let outputs = evaluate_queries(
+            r#"
+            score("a", 5).
+            score("b", 9).
+            score("c", 9).
+            ? (h, score) = TopK{ k: 2, key: score : (h, score) : score(h, score) }.
+            wanted("b", 9).
+            ? wanted(h, score), (h, score) = TopK{ k: 1, key: score : (h, score) : score(h, score) }.
+            "#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("h", s("b")), ("score", n(9))]),
+                row([("h", s("c")), ("score", n(9))]),
+            ],
+        );
+        assert_query_rows(&outputs[1], vec![row([("h", s("b")), ("score", n(9))])]);
+    }
+
+    #[test]
+    fn aggregate_duplicate_args_are_rejected() {
+        let program = parse_program(
+            "inline",
+            r#"
+            score("a", 5).
+            ? (h, score) = TopK{ k: 1, k: 2, key: score : (h, score) : score(h, score) }.
+            "#,
+        )
+        .expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
         let query = analyzed.queries().next().cloned().expect("query exists");
-        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
         evaluator.run_fixpoint().expect("fixpoint");
-        assert_query_rows(
-            &evaluator
-                .eval_query(&query)
-                .expect("query evaluates")
-                .rows
-                .into_iter()
-                .map(|row| row.fields)
-                .collect::<Vec<_>>(),
-            Vec::new(),
+        let err = evaluator
+            .eval_query(&query)
+            .expect_err("duplicate aggregate arg rejected");
+        assert!(matches!(
+            err,
+            EvalError::InvalidAggregateArg {
+                argument: "duplicate",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rank_binds_dense_ranks_before_evaluating_contribution() {
+        let outputs = evaluate_queries(
+            r#"
+            score("a", 5).
+            score("b", 9).
+            score("c", 9).
+            score("d", 2).
+            ? (h, rank) = Rank{ key: score, rank: rank : (h, rank) : score(h, score) }.
+            "#,
+            Database::default(),
         );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("h", s("a")), ("rank", n(2))]),
+                row([("h", s("b")), ("rank", n(1))]),
+                row([("h", s("c")), ("rank", n(1))]),
+                row([("h", s("d")), ("rank", n(3))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn take_until_sorts_by_key_and_stops_at_budget() {
+        let outputs = evaluate_queries(
+            r#"
+            span("s1", 1, 3).
+            span("s2", 2, 4).
+            span("s3", 3, 2).
+            ? (span_id, tokens) =
+              TakeUntil{ budget: 7, sum: tokens, key: line :
+                (span_id, tokens) :
+                span(span_id, line, tokens)
+              }.
+            "#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("span_id", s("s1")), ("tokens", n(3))]),
+                row([("span_id", s("s2")), ("tokens", n(4))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn row_producing_aggregates_handle_scaled_inputs_deterministically() {
+        let mut input = String::new();
+        for idx in 0..256 {
+            writeln!(&mut input, r#"score("h{idx:04}", {idx})."#).expect("write score fixture");
+            writeln!(&mut input, r#"span("s{idx:04}", {idx}, 1)."#).expect("write span fixture");
+        }
+        input.push_str(
+            r"
+            ? (h, score) = TopK{ k: 3, key: score : (h, score) : score(h, score) }.
+            ? (span_id, tokens) =
+              TakeUntil{ budget: 5, sum: tokens, key: line :
+                (span_id, tokens) :
+                span(span_id, line, tokens)
+              }.
+            ",
+        );
+
+        let outputs = evaluate_queries(&input, Database::default());
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("h", s("h0253")), ("score", n(253))]),
+                row([("h", s("h0254")), ("score", n(254))]),
+                row([("h", s("h0255")), ("score", n(255))]),
+            ],
+        );
+        assert_query_rows(
+            &outputs[1],
+            (0..5)
+                .map(|idx| row([("span_id", s(&format!("s{idx:04}"))), ("tokens", n(1))]))
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn non_count_aggregates_do_not_emit_empty_groups() {
+        let outputs = evaluate_queries(
+            r#"
+            group("x").
+            candidate("x", 1).
+            empty_value(g, value) := candidate(g, value), value = 2.
+            ? group(g), total = Sum{ value : empty_value(g, value) }.
+            "#,
+            Database::default(),
+        );
+
+        assert_query_rows(&outputs[0], Vec::new());
     }
 
     #[test]
