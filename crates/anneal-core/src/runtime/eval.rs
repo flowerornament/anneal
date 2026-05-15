@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
+use std::collections::btree_set;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io;
+use std::slice;
 
 use serde::Serialize;
 
@@ -18,7 +21,7 @@ use crate::runtime::ast::{
 use crate::store::FactStore;
 
 pub type Binding = BTreeMap<Ident, Value>;
-type DeltaMap = BTreeMap<PredicateRef, BTreeSet<Tuple>>;
+type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);
@@ -116,10 +119,33 @@ impl std::hash::Hash for NumberValue {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Database {
-    stored: BTreeMap<Ident, Vec<NamedRow>>,
-    derived: BTreeMap<PredicateRef, BTreeSet<Tuple>>,
+    stored: BTreeMap<Ident, StoredRelation>,
+    derived: BTreeMap<PredicateRef, DerivedRelation>,
+}
+
+impl fmt::Debug for Database {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Database")
+            .field(
+                "stored",
+                &self
+                    .stored
+                    .iter()
+                    .map(|(relation, rows)| (relation.to_string(), rows.len()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+            .field(
+                "derived",
+                &self
+                    .derived
+                    .iter()
+                    .map(|(predicate, tuples)| (predicate.display_name(), tuples.len()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+            .finish()
+    }
 }
 
 impl Database {
@@ -155,7 +181,7 @@ impl Database {
     }
 
     pub fn derived(&self, predicate: &PredicateRef) -> Option<&BTreeSet<Tuple>> {
-        self.derived.get(predicate)
+        self.derived.get(predicate).map(DerivedRelation::tuples)
     }
 
     fn ensure_derived(&mut self, predicates: impl IntoIterator<Item = PredicateRef>) {
@@ -167,12 +193,181 @@ impl Database {
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
         self.stored
             .entry(Ident::new_unchecked(relation))
-            .or_default()
+            .or_insert_with(|| StoredRelation::new(Ident::new_unchecked(relation)))
             .extend(rows);
     }
 }
 
 pub type NamedRow = BTreeMap<Ident, Value>;
+
+#[derive(Clone, Debug)]
+struct StoredRelation {
+    relation: Ident,
+    rows: Vec<NamedRow>,
+    indexes: BTreeMap<Ident, BTreeMap<Value, Vec<usize>>>,
+}
+
+impl StoredRelation {
+    fn new(relation: Ident) -> Self {
+        Self {
+            relation,
+            rows: Vec::new(),
+            indexes: BTreeMap::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn extend(&mut self, rows: impl IntoIterator<Item = NamedRow>) {
+        for row in rows {
+            self.push(row);
+        }
+    }
+
+    fn push(&mut self, row: NamedRow) {
+        let idx = self.rows.len();
+        for (field, value) in &row {
+            if !should_index_stored_field(&self.relation, field) {
+                continue;
+            }
+            self.indexes
+                .entry(field.clone())
+                .or_default()
+                .entry(value.clone())
+                .or_default()
+                .push(idx);
+        }
+        self.rows.push(row);
+    }
+
+    fn candidate_rows(&self, constraints: &[(Ident, Value)]) -> RowCandidates<'_> {
+        let mut best = None;
+        for (field, value) in constraints {
+            if !should_index_stored_field(&self.relation, field) {
+                continue;
+            }
+            let Some(values) = self.indexes.get(field) else {
+                return RowCandidates::Empty;
+            };
+            let Some(indices) = values.get(value) else {
+                return RowCandidates::Empty;
+            };
+            if best.is_none_or(|current: &Vec<usize>| indices.len() < current.len()) {
+                best = Some(indices);
+            }
+        }
+
+        best.map_or_else(
+            || RowCandidates::All(self.rows.iter()),
+            |indices| RowCandidates::Indexed {
+                rows: &self.rows,
+                indices: indices.iter(),
+            },
+        )
+    }
+}
+
+enum RowCandidates<'a> {
+    All(slice::Iter<'a, NamedRow>),
+    Indexed {
+        rows: &'a [NamedRow],
+        indices: slice::Iter<'a, usize>,
+    },
+    Empty,
+}
+
+impl<'a> Iterator for RowCandidates<'a> {
+    type Item = &'a NamedRow;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::All(rows) => rows.next(),
+            Self::Indexed { rows, indices } => indices.next().map(|idx| &rows[*idx]),
+            Self::Empty => None,
+        }
+    }
+}
+
+fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
+    !matches!(
+        (relation.as_str(), field.as_str()),
+        ("content", "text")
+            | ("span" | "handle", "summary")
+            | ("meta" | "config" | "snapshot", "value")
+    )
+}
+
+#[derive(Clone, Debug, Default)]
+struct DerivedRelation {
+    tuples: BTreeSet<Tuple>,
+    indexes: Vec<BTreeMap<Value, Vec<Tuple>>>,
+}
+
+impl DerivedRelation {
+    fn len(&self) -> usize {
+        self.tuples.len()
+    }
+
+    fn tuples(&self) -> &BTreeSet<Tuple> {
+        &self.tuples
+    }
+
+    fn insert(&mut self, tuple: &Tuple) -> bool {
+        if !self.tuples.insert(tuple.clone()) {
+            return false;
+        }
+        if self.indexes.len() < tuple.0.len() {
+            self.indexes.resize_with(tuple.0.len(), BTreeMap::new);
+        }
+        for (idx, value) in tuple.0.iter().enumerate() {
+            self.indexes[idx]
+                .entry(value.clone())
+                .or_default()
+                .push(tuple.clone());
+        }
+        true
+    }
+
+    fn candidate_tuples(&self, constraints: &[(usize, Value)]) -> TupleCandidates<'_> {
+        let mut best = None;
+        for (idx, value) in constraints {
+            let Some(values) = self.indexes.get(*idx) else {
+                return TupleCandidates::Empty;
+            };
+            let Some(tuples) = values.get(value) else {
+                return TupleCandidates::Empty;
+            };
+            if best.is_none_or(|current: &Vec<Tuple>| tuples.len() < current.len()) {
+                best = Some(tuples);
+            }
+        }
+
+        best.map_or_else(
+            || TupleCandidates::All(self.tuples.iter()),
+            |tuples| TupleCandidates::Indexed(tuples.iter()),
+        )
+    }
+}
+
+enum TupleCandidates<'a> {
+    All(btree_set::Iter<'a, Tuple>),
+    Indexed(slice::Iter<'a, Tuple>),
+    Empty,
+}
+
+impl<'a> Iterator for TupleCandidates<'a> {
+    type Item = &'a Tuple;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::All(tuples) => tuples.next(),
+            Self::Indexed(tuples) => tuples.next(),
+            Self::Empty => None,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
@@ -264,7 +459,7 @@ impl Evaluator {
                 .derived
                 .entry(fact.predicate.clone())
                 .or_default()
-                .insert(tuple);
+                .insert(&tuple);
         }
         self.facts_seeded = true;
         Ok(())
@@ -332,8 +527,8 @@ fn insert_new_tuples(
     let relation = database.derived.entry(predicate.clone()).or_default();
     let mut changed = false;
     for tuple in tuples {
-        if relation.insert(tuple.clone()) {
-            delta.entry(predicate.clone()).or_default().insert(tuple);
+        if relation.insert(&tuple) {
+            delta.entry(predicate.clone()).or_default().insert(&tuple);
             changed = true;
         }
     }
@@ -407,7 +602,7 @@ fn eval_stored(
     bindings: Vec<Binding>,
     database: &Database,
 ) -> Result<Vec<Binding>, EvalError> {
-    let rows =
+    let relation =
         database
             .stored
             .get(&atom.relation)
@@ -416,7 +611,8 @@ fn eval_stored(
             })?;
     let mut out = Vec::new();
     for binding in bindings {
-        for row in rows {
+        let constraints = stored_constraints(&atom.fields, &binding)?;
+        for row in relation.candidate_rows(&constraints) {
             if let Some(next) = unify_stored_fields(&atom.fields, row, &binding)? {
                 out.push(next);
             }
@@ -430,12 +626,12 @@ fn eval_derived(
     bindings: Vec<Binding>,
     database: &Database,
 ) -> Result<Vec<Binding>, EvalError> {
-    let tuples = database.derived.get(&atom.predicate).ok_or_else(|| {
+    let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
         EvalError::UnknownDerivedPredicate {
             predicate: atom.predicate.clone(),
         }
     })?;
-    eval_derived_from_tuples(atom, bindings, tuples)
+    eval_derived_from_relation(atom, bindings, relation)
 }
 
 fn eval_derived_from_delta(
@@ -443,20 +639,21 @@ fn eval_derived_from_delta(
     bindings: Vec<Binding>,
     delta: &DeltaMap,
 ) -> Result<Vec<Binding>, EvalError> {
-    let Some(tuples) = delta.get(&atom.predicate) else {
+    let Some(relation) = delta.get(&atom.predicate) else {
         return Ok(Vec::new());
     };
-    eval_derived_from_tuples(atom, bindings, tuples)
+    eval_derived_from_relation(atom, bindings, relation)
 }
 
-fn eval_derived_from_tuples(
+fn eval_derived_from_relation(
     atom: &crate::runtime::ast::DerivedAtom,
     bindings: Vec<Binding>,
-    tuples: &BTreeSet<Tuple>,
+    relation: &DerivedRelation,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
-        for tuple in tuples {
+        let constraints = call_constraints(&atom.args, &binding)?;
+        for tuple in relation.candidate_tuples(&constraints) {
             if tuple.0.len() != atom.args.len() {
                 continue;
             }
@@ -543,6 +740,50 @@ fn eval_aggregate(
         }
     }
     Ok(out)
+}
+
+fn stored_constraints(
+    fields: &[FieldPattern],
+    binding: &Binding,
+) -> Result<Vec<(Ident, Value)>, EvalError> {
+    let mut constraints = Vec::new();
+    for field in fields {
+        if let Some(value) = bound_value_for_term(&field.term, binding)? {
+            constraints.push((field.field.clone(), value));
+        }
+    }
+    Ok(constraints)
+}
+
+fn call_constraints(args: &[CallArg], binding: &Binding) -> Result<Vec<(usize, Value)>, EvalError> {
+    let mut constraints = Vec::new();
+    for (idx, arg) in args.iter().enumerate() {
+        if let Some(value) = bound_value_for_expr(arg.expr(), binding)? {
+            constraints.push((idx, value));
+        }
+    }
+    Ok(constraints)
+}
+
+fn bound_value_for_term(term: &Term, binding: &Binding) -> Result<Option<Value>, EvalError> {
+    match term {
+        Term::Wildcard => Ok(None),
+        Term::Expr(expr) => bound_value_for_expr(expr, binding),
+    }
+}
+
+fn bound_value_for_expr(expr: &Expr, binding: &Binding) -> Result<Option<Value>, EvalError> {
+    match expr {
+        Expr::Var(var) => Ok(binding.get(var).cloned()),
+        _ if expr_is_bound(expr, binding) => eval_expr(expr, binding).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn expr_is_bound(expr: &Expr, binding: &Binding) -> bool {
+    let mut vars = BTreeSet::new();
+    expr.variables(&mut vars);
+    vars.iter().all(|var| binding.contains_key(var))
 }
 
 fn unify_stored_fields(
@@ -931,6 +1172,21 @@ mod tests {
         }
     }
 
+    fn chain_store(edge_count: usize) -> FactStore {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.edges = (0..edge_count)
+            .map(|idx| edge(&format!("n{idx}"), &format!("n{}", idx + 1), "DependsOn"))
+            .collect();
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merge");
+        store
+    }
+
     fn fixture_store() -> FactStore {
         let mut batch = FactBatch::new(
             CorpusId::from("test"),
@@ -953,6 +1209,23 @@ mod tests {
         let mut store = FactStore::default();
         store.merge(batch).expect("fixture merge");
         store
+    }
+
+    #[test]
+    fn stored_relation_uses_bound_field_candidates() {
+        let database = Database::from_store(&fixture_store());
+        let relation = database
+            .stored
+            .get(&Ident::new_unchecked("handle"))
+            .expect("handle relation");
+        let candidates = relation
+            .candidate_rows(&[(Ident::new_unchecked("id"), Value::String("v17".to_string()))])
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].get(&Ident::new_unchecked("id")),
+            Some(&Value::String("v17".to_string()))
+        );
     }
 
     #[test]
@@ -988,6 +1261,99 @@ mod tests {
 
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 1);
+    }
+
+    #[test]
+    fn derived_relation_uses_bound_position_candidates() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            ? upstream("v17", anc).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
+        evaluator.run_fixpoint().expect("fixpoint");
+        let relation = evaluator
+            .database
+            .derived
+            .get(&PredicateRef::new(Ident::new_unchecked("upstream")))
+            .expect("upstream relation");
+        let candidates = relation
+            .candidate_tuples(&[(0, Value::String("v17".to_string()))])
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn stored_index_preserves_same_atom_expression_unification() {
+        let program =
+            parse_program("fixture", r"? *pair{n: x, next: x + 1}.").expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut database = Database::default();
+        database.insert_stored_rows(
+            "pair",
+            [
+                named_row([
+                    ("n", Value::Number(NumberValue::Int(1))),
+                    ("next", Value::Number(NumberValue::Int(2))),
+                ]),
+                named_row([
+                    ("n", Value::Number(NumberValue::Int(1))),
+                    ("next", Value::Number(NumberValue::Int(3))),
+                ]),
+            ],
+        );
+        let evaluator = Evaluator::new(analyzed, database);
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            output.rows[0].fields.get("x"),
+            Some(&Value::Number(NumberValue::Int(1)))
+        );
+    }
+
+    #[test]
+    fn derived_index_preserves_same_atom_expression_unification() {
+        let program = parse_program("fixture", r"seed(1, 2). seed(1, 3). ? seed(x, x + 1).")
+            .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(
+            output.rows[0].fields.get("x"),
+            Some(&Value::Number(NumberValue::Int(1)))
+        );
+    }
+
+    #[test]
+    fn semi_naive_recursion_handles_chain_closure() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            upstream(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            upstream(h, anc) := upstream(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
+            ? upstream("n0", anc).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&chain_store(256)));
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 256);
+        assert!(output.rows.iter().any(|row| {
+            row.fields
+                .get("anc")
+                .is_some_and(|value| value == &Value::String("n256".to_string()))
+        }));
     }
 
     #[test]
