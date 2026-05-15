@@ -442,6 +442,18 @@ unanchored traversal is a physical execution strategy disguised as a
 relation; agents need explicit bounded entry points rather than
 silent corpus-wide graph expansion.
 
+**Rule CR-R8 (Bounded content primitive inputs).** Content access
+primitives require their control arguments to be ground by a literal
+or by a positive atom outside the primitive call. `read` requires
+`handle` and `budget`; `read_full` requires `handle` and the
+`read_full` capability; `match` requires `pattern`. `read` treats
+`span_id` as an optional narrowing constraint and emits spans in
+`start_line`, `span_id` order while the cumulative `tokens` remain
+within `budget`. `match` may scan the corpus when only `pattern` is
+ground, but a bound `handle` narrows it. Rationale: content access is
+the substrate's context-loading valve; agents need predictable bounded
+reads instead of accidental full-corpus dumps.
+
 **Definition CR-D35 (Sealed engine primitives).** Substrate-only
 engine primitive predicate names in CR-D9 are sealed. Prelude,
 project, import, inline, and fact clauses may call them but must not
@@ -2034,6 +2046,7 @@ as data instead of smuggling it through row sequence.
 - CR-R5: Workflow gates with pinned fixtures (§49)
 - CR-R6: Edge closure (§10)
 - CR-R7: Bounded graph primitive anchors (§11)
+- CR-R8: Bounded content primitive inputs (§11)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)

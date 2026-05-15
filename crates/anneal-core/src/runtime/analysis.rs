@@ -185,6 +185,12 @@ pub enum StaticError {
         predicate: PredicateRef,
         location: SourceLocation,
     },
+    #[error("{location}: primitive '{predicate}' requires bound input argument '{argument}'")]
+    UnboundPrimitiveInput {
+        predicate: PredicateRef,
+        argument: &'static str,
+        location: SourceLocation,
+    },
     #[error("{location}: diagnostic id for '{predicate}' must be a string literal first argument")]
     DiagnosticIdMustBeLiteral {
         predicate: PredicateRef,
@@ -893,7 +899,7 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
             Atom::Stored(_) => {}
             Atom::Derived(derived) => {
                 let outside_bound = positive_vars_outside(body, atom_index);
-                check_graph_primitive_anchor_safety(derived, &outside_bound)?;
+                check_primitive_input_safety(derived, &outside_bound)?;
             }
             Atom::Comparison(comparison) => {
                 let mut vars = BTreeSet::new();
@@ -937,19 +943,79 @@ fn positive_vars_outside(body: &Body, excluded_index: usize) -> BTreeSet<Ident> 
     outside_bound
 }
 
-fn check_graph_primitive_anchor_safety(
+fn check_primitive_input_safety(
     atom: &DerivedAtom,
     outside_bound: &BTreeSet<Ident>,
 ) -> Result<(), StaticError> {
     let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
         return Ok(());
     };
-    let anchor_positions: &[usize] = match primitive {
+    check_graph_primitive_anchor_safety(atom, primitive, outside_bound)?;
+    check_content_primitive_input_safety(atom, primitive, outside_bound)
+}
+
+fn check_graph_primitive_anchor_safety(
+    atom: &DerivedAtom,
+    primitive: PrimitivePredicate,
+    outside_bound: &BTreeSet<Ident>,
+) -> Result<(), StaticError> {
+    let Some(anchor_positions) = graph_anchor_positions(primitive) else {
+        return Ok(());
+    };
+    if anchor_positions.iter().any(|idx| {
+        atom.args
+            .get(*idx)
+            .is_some_and(|arg| expr_is_bound_by(arg.expr(), outside_bound))
+    }) {
+        return Ok(());
+    }
+    Err(StaticError::UnboundGraphPrimitiveAnchor {
+        predicate: atom.predicate.clone(),
+        location: atom.location.clone(),
+    })
+}
+
+fn graph_anchor_positions(primitive: PrimitivePredicate) -> Option<&'static [usize]> {
+    match primitive {
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact => &[0, 1],
-        PrimitivePredicate::Neighborhood => &[0, 2],
+        | PrimitivePredicate::Impact => Some(&[0, 1]),
+        PrimitivePredicate::Neighborhood => Some(&[0, 2]),
         PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::Flux
+        | PrimitivePredicate::TokenEstimate
+        | PrimitivePredicate::Read
+        | PrimitivePredicate::ReadFull
+        | PrimitivePredicate::Match => None,
+    }
+}
+
+fn check_content_primitive_input_safety(
+    atom: &DerivedAtom,
+    primitive: PrimitivePredicate,
+    outside_bound: &BTreeSet<Ident>,
+) -> Result<(), StaticError> {
+    let required: &[(usize, &'static str)] = match primitive {
+        PrimitivePredicate::Read => &[(0, "handle"), (1, "budget")],
+        PrimitivePredicate::ReadFull => &[(0, "handle")],
+        PrimitivePredicate::Match => &[(0, "pattern")],
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact
+        | PrimitivePredicate::Neighborhood
+        | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
         | PrimitivePredicate::PipelinePosition
@@ -965,17 +1031,19 @@ fn check_graph_primitive_anchor_safety(
         | PrimitivePredicate::Flux
         | PrimitivePredicate::TokenEstimate => return Ok(()),
     };
-    if anchor_positions.iter().any(|idx| {
-        atom.args
-            .get(*idx)
-            .is_some_and(|arg| expr_is_bound_by(arg.expr(), outside_bound))
-    }) {
-        return Ok(());
+    for (position, argument) in required {
+        let Some(arg) = atom.args.get(*position) else {
+            continue;
+        };
+        if !expr_is_bound_by(arg.expr(), outside_bound) {
+            return Err(StaticError::UnboundPrimitiveInput {
+                predicate: atom.predicate.clone(),
+                argument,
+                location: atom.location.clone(),
+            });
+        }
     }
-    Err(StaticError::UnboundGraphPrimitiveAnchor {
-        predicate: atom.predicate.clone(),
-        location: atom.location.clone(),
-    })
+    Ok(())
 }
 
 fn expr_is_bound_by(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
@@ -1389,6 +1457,58 @@ mod tests {
         )
         .expect("program parses");
         analyze(program).expect("reverse endpoint anchors graph traversal");
+    }
+
+    #[test]
+    fn rejects_content_primitives_without_required_bound_inputs() {
+        for (input, name, argument) in [
+            (
+                r"? read(h, 100, span_id, text, start_line, end_line, tokens).",
+                "read",
+                "handle",
+            ),
+            (
+                r#"? read("doc.md", budget, span_id, text, start_line, end_line, tokens)."#,
+                "read",
+                "budget",
+            ),
+            (r"? read_full(h, content).", "read_full", "handle"),
+            (
+                r"? match(pattern, handle, line, snippet).",
+                "match",
+                "pattern",
+            ),
+        ] {
+            let err = analyze_err("inline", input);
+            assert!(
+                matches!(
+                    err,
+                    StaticError::UnboundPrimitiveInput {
+                        ref predicate,
+                        argument: actual,
+                        ..
+                    } if predicate.name.as_str() == name && actual == argument
+                ),
+                "{input} should reject unbound {argument}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_content_primitives_with_required_bound_inputs() {
+        let program = parse_program(
+            "inline",
+            r#"
+            budget(100).
+            pattern("urgent").
+            ? *handle{id: h}, budget(b), read(h, b, span_id, text, start_line, end_line, tokens).
+            ? read_full("doc.md", content).
+            ? pattern(p), match(p, handle, line, snippet).
+            "#,
+        )
+        .expect("program parses");
+
+        analyze(program).expect("content primitive inputs are bound");
     }
 
     #[test]

@@ -21,7 +21,8 @@ pub use ast::{
     TimeBlock, VerbDecl,
 };
 pub use eval::{
-    Binding, Database, EvalError, Evaluator, QueryOutput, QueryWarning, Row, Tuple, Value,
+    Binding, Database, EvalError, EvalOptions, Evaluator, QueryOutput, QueryWarning,
+    READ_FULL_CAPABILITY, Row, Tuple, Value,
 };
 pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};
 pub use ndjson::{NdjsonError, write_ndjson, write_ndjson_with_meta};

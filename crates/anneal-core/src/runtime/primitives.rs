@@ -21,6 +21,9 @@ pub(crate) enum PrimitivePredicate {
     Freshness,
     Flux,
     TokenEstimate,
+    Read,
+    ReadFull,
+    Match,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +63,9 @@ impl PrimitivePredicate {
             "freshness" => Some(Self::Freshness),
             "flux" => Some(Self::Flux),
             "token_estimate" => Some(Self::TokenEstimate),
+            "read" => Some(Self::Read),
+            "read_full" => Some(Self::ReadFull),
+            "match" => Some(Self::Match),
             _ => None,
         }
     }
@@ -85,6 +91,9 @@ impl PrimitivePredicate {
             Self::Freshness => "freshness",
             Self::Flux => "flux",
             Self::TokenEstimate => "token_estimate",
+            Self::Read => "read",
+            Self::ReadFull => "read_full",
+            Self::Match => "match",
         }
     }
 
@@ -139,6 +148,26 @@ impl PrimitivePredicate {
                 parameters: &["h", "days", "delta"],
                 sealed: true,
             },
+            Self::Read => PrimitiveSignature {
+                parameters: &[
+                    "handle",
+                    "budget",
+                    "span_id",
+                    "text",
+                    "start_line",
+                    "end_line",
+                    "tokens",
+                ],
+                sealed: true,
+            },
+            Self::ReadFull => PrimitiveSignature {
+                parameters: &["handle", "content"],
+                sealed: true,
+            },
+            Self::Match => PrimitiveSignature {
+                parameters: &["pattern", "handle", "line", "snippet"],
+                sealed: true,
+            },
         }
     }
 
@@ -168,6 +197,9 @@ pub(crate) fn primitive_signatures() -> impl Iterator<Item = (PredicateRef, Prim
         PrimitivePredicate::Freshness,
         PrimitivePredicate::Flux,
         PrimitivePredicate::TokenEstimate,
+        PrimitivePredicate::Read,
+        PrimitivePredicate::ReadFull,
+        PrimitivePredicate::Match,
     ]
     .into_iter()
     .map(|primitive| {

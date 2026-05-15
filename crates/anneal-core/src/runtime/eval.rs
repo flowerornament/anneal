@@ -6,6 +6,7 @@ use std::io;
 use std::slice;
 use std::sync::Arc;
 
+use regex::Regex;
 use serde::Serialize;
 
 use crate::facts::{
@@ -55,6 +56,40 @@ pub struct QueryWarning {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation: Option<String>,
+}
+
+pub const READ_FULL_CAPABILITY: &str = "read_full";
+const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalOptions {
+    capabilities: BTreeSet<String>,
+    read_full_token_limit: i64,
+}
+
+impl EvalOptions {
+    pub fn with_capability(mut self, capability: impl Into<String>) -> Self {
+        self.capabilities.insert(capability.into());
+        self
+    }
+
+    pub fn with_read_full_token_limit(mut self, limit: i64) -> Self {
+        self.read_full_token_limit = limit.max(0);
+        self
+    }
+
+    fn has_capability(&self, capability: &str) -> bool {
+        self.capabilities.contains(capability)
+    }
+}
+
+impl Default for EvalOptions {
+    fn default() -> Self {
+        Self {
+            capabilities: BTreeSet::new(),
+            read_full_token_limit: DEFAULT_READ_FULL_TOKEN_LIMIT,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -144,6 +179,7 @@ pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
+    content: Arc<ContentIndex>,
 }
 
 impl fmt::Debug for Database {
@@ -165,6 +201,7 @@ impl fmt::Debug for Database {
                     .map(|(predicate, tuples)| (predicate.display_name(), tuples.len()))
                     .collect::<BTreeMap<_, _>>(),
             )
+            .field("content_spans", &self.content.len())
             .finish_non_exhaustive()
     }
 }
@@ -219,6 +256,7 @@ impl Database {
             .or_insert_with(|| StoredRelation::new(relation.clone()));
         for row in rows {
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
+            Arc::make_mut(&mut self.content).insert_row(&relation, &row);
             stored.push(row);
         }
     }
@@ -236,14 +274,17 @@ impl Database {
         self.stored.insert(relation, stored);
     }
 
-    fn rebuild_graph(&mut self) {
+    fn rebuild_indexes(&mut self) {
         let mut graph = GraphIndex::default();
+        let mut content = ContentIndex::default();
         for (relation, stored) in &self.stored {
             for row in &stored.rows {
                 graph.insert_row(relation, row);
+                content.insert_row(relation, row);
             }
         }
         self.graph = Arc::new(graph);
+        self.content = Arc::new(content);
     }
 
     fn scoped_to_time_ref(&self, reference: &str) -> Result<(Self, Vec<QueryWarning>), EvalError> {
@@ -256,7 +297,7 @@ impl Database {
         let mut scoped = self.clone_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
         scoped.apply_handle_snapshot(&selection.rows);
-        scoped.rebuild_graph();
+        scoped.rebuild_indexes();
 
         Ok((
             scoped,
@@ -281,6 +322,7 @@ impl Database {
             stored: self.stored.clone(),
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
+            content: Arc::clone(&self.content),
         }
     }
 
@@ -578,6 +620,278 @@ impl<'a> Iterator for RowCandidates<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
+struct ContentIndex {
+    content: BTreeMap<ContentKey, ContentPayload>,
+    spans: BTreeMap<ContentKey, SpanPayload>,
+    span_keys_by_handle: BTreeMap<String, BTreeSet<ContentKey>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContentKey {
+    handle: String,
+    span_id: String,
+}
+
+impl ContentKey {
+    fn new(handle: &str, span_id: &str) -> Self {
+        Self {
+            handle: handle.to_owned(),
+            span_id: span_id.to_owned(),
+        }
+    }
+}
+
+impl Ord for ContentKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.handle
+            .cmp(&other.handle)
+            .then_with(|| self.span_id.cmp(&other.span_id))
+    }
+}
+
+impl PartialOrd for ContentKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContentPayload {
+    text: String,
+    tokens: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SpanPayload {
+    start_line: i64,
+    end_line: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadSpan {
+    handle: String,
+    span_id: String,
+    text: String,
+    start_line: i64,
+    end_line: i64,
+    tokens: i64,
+}
+
+impl ContentIndex {
+    fn len(&self) -> usize {
+        self.content.len()
+    }
+
+    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
+        match relation.as_str() {
+            CONTENT_RELATION => self.insert_content(row),
+            SPAN_RELATION => self.insert_span(row),
+            _ => {}
+        }
+    }
+
+    fn insert_content(&mut self, row: &NamedRow) {
+        let (Some(handle), Some(span_id), Some(text), Some(tokens)) = (
+            row_string(row, HANDLE_FIELD),
+            row_string(row, SPAN_ID_FIELD),
+            row_string(row, TEXT_FIELD),
+            row_i64(row, TOKENS_FIELD),
+        ) else {
+            return;
+        };
+        let key = ContentKey::new(handle, span_id);
+        let payload = ContentPayload {
+            text: text.to_owned(),
+            tokens,
+        };
+        self.span_keys_by_handle
+            .entry(key.handle.clone())
+            .or_default()
+            .insert(key.clone());
+        self.content.insert(key, payload);
+    }
+
+    fn insert_span(&mut self, row: &NamedRow) {
+        let (Some(handle), Some(span_id), Some(start_line), Some(end_line)) = (
+            row_string(row, HANDLE_FIELD),
+            row_string(row, ID_FIELD),
+            row_i64(row, START_LINE_FIELD),
+            row_i64(row, END_LINE_FIELD),
+        ) else {
+            return;
+        };
+        let key = ContentKey::new(handle, span_id);
+        let payload = SpanPayload {
+            start_line,
+            end_line,
+        };
+        self.span_keys_by_handle
+            .entry(key.handle.clone())
+            .or_default()
+            .insert(key.clone());
+        self.spans.insert(key, payload);
+    }
+
+    fn read_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
+            return Vec::new();
+        };
+        let ArgConstraint::Exact(budget) = i64_constraint(constraints, 1) else {
+            return Vec::new();
+        };
+        if budget < 0 {
+            return Vec::new();
+        }
+        let span_id = string_constraint(constraints, 2);
+        let mut used = 0_i64;
+        let mut out = Vec::new();
+        for span in self.read_spans_for_handle(handle) {
+            if let ArgConstraint::Exact(expected) = span_id
+                && span.span_id != expected
+            {
+                continue;
+            }
+            let next = used.saturating_add(span.tokens);
+            if next > budget {
+                break;
+            }
+            used = next;
+            let tuple = Tuple(vec![
+                Value::String(span.handle.clone()),
+                Value::Number(NumberValue::Int(budget)),
+                Value::String(span.span_id.clone()),
+                Value::String(span.text.clone()),
+                Value::Number(NumberValue::Int(span.start_line)),
+                Value::Number(NumberValue::Int(span.end_line)),
+                Value::Number(NumberValue::Int(span.tokens)),
+            ]);
+            if tuple_matches_constraints(&tuple, constraints) {
+                out.push(tuple);
+            }
+        }
+        out
+    }
+
+    fn read_full_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        token_limit: i64,
+    ) -> Result<Vec<Tuple>, EvalError> {
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
+            return Ok(Vec::new());
+        };
+        let Some((content, tokens)) = self.full_content(handle) else {
+            return Ok(Vec::new());
+        };
+        if tokens > token_limit {
+            return Err(EvalError::ReadFullBudgetExceeded {
+                handle: handle.to_owned(),
+                tokens,
+                limit: token_limit,
+            });
+        }
+        let tuple = Tuple(vec![
+            Value::String(handle.to_owned()),
+            Value::String(content),
+        ]);
+        Ok(tuple_matches_constraints(&tuple, constraints)
+            .then_some(tuple)
+            .into_iter()
+            .collect())
+    }
+
+    fn match_tuples(&self, constraints: &[(usize, Value)]) -> Result<Vec<Tuple>, EvalError> {
+        let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
+            return Ok(Vec::new());
+        };
+        let regex = Regex::new(pattern).map_err(|source| EvalError::InvalidRegex {
+            pattern: pattern.to_owned(),
+            source,
+        })?;
+        let handle = string_constraint(constraints, 1);
+        let spans = match handle {
+            ArgConstraint::Exact(handle) => self.read_spans_for_handle(handle),
+            ArgConstraint::Any => self.all_read_spans(),
+            ArgConstraint::Impossible => return Ok(Vec::new()),
+        };
+        let mut out = Vec::new();
+        for span in spans {
+            for (line_offset, line) in span.text.lines().enumerate() {
+                if !regex.is_match(line) {
+                    continue;
+                }
+                let line_offset = i64::try_from(line_offset).unwrap_or(i64::MAX);
+                let tuple = Tuple(vec![
+                    Value::String(pattern.to_owned()),
+                    Value::String(span.handle.clone()),
+                    Value::Number(NumberValue::Int(
+                        span.start_line.saturating_add(line_offset),
+                    )),
+                    Value::String(line.to_owned()),
+                ]);
+                if tuple_matches_constraints(&tuple, constraints) {
+                    out.push(tuple);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn all_read_spans(&self) -> Vec<ReadSpan> {
+        self.span_keys_by_handle
+            .keys()
+            .flat_map(|handle| self.read_spans_for_handle(handle))
+            .collect()
+    }
+
+    fn read_spans_for_handle(&self, handle: &str) -> Vec<ReadSpan> {
+        let Some(span_keys) = self.span_keys_by_handle.get(handle) else {
+            return Vec::new();
+        };
+        let mut spans = span_keys
+            .iter()
+            .filter_map(|span_key| self.read_span(span_key))
+            .collect::<Vec<_>>();
+        spans.sort_by(|left, right| {
+            left.start_line
+                .cmp(&right.start_line)
+                .then_with(|| left.span_id.cmp(&right.span_id))
+        });
+        spans
+    }
+
+    fn read_span(&self, key: &ContentKey) -> Option<ReadSpan> {
+        let content = self.content.get(key)?;
+        let span = self.spans.get(key)?;
+        Some(ReadSpan {
+            handle: key.handle.clone(),
+            span_id: key.span_id.clone(),
+            text: content.text.clone(),
+            start_line: span.start_line,
+            end_line: span.end_line,
+            tokens: content.tokens,
+        })
+    }
+
+    fn full_content(&self, handle: &str) -> Option<(String, i64)> {
+        let spans = self.read_spans_for_handle(handle);
+        if spans.is_empty() {
+            return None;
+        }
+        let mut content = String::new();
+        let mut tokens = 0_i64;
+        for span in spans {
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&span.text);
+            tokens = tokens.saturating_add(span.tokens);
+        }
+        Some((content, tokens))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct GraphIndex {
     nodes: BTreeSet<String>,
     handles: BTreeMap<String, HandleState>,
@@ -779,6 +1093,9 @@ impl GraphIndex {
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
+            }
+            PrimitivePredicate::Read | PrimitivePredicate::ReadFull | PrimitivePredicate::Match => {
+                Vec::new()
             }
         }
     }
@@ -1356,6 +1673,7 @@ const HANDLE_RELATION: &str = "handle";
 const EDGE_RELATION: &str = "edge";
 const CONFIG_RELATION: &str = "config";
 const CONTENT_RELATION: &str = "content";
+const SPAN_RELATION: &str = "span";
 const SNAPSHOT_RELATION: &str = "snapshot";
 const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
 const CORPUS_FIELD: &str = "corpus";
@@ -1369,6 +1687,10 @@ const STATUS_FIELD: &str = "status";
 const NAMESPACE_FIELD: &str = "namespace";
 const DATE_FIELD: &str = "date";
 const HANDLE_FIELD: &str = "handle";
+const SPAN_ID_FIELD: &str = "span_id";
+const TEXT_FIELD: &str = "text";
+const START_LINE_FIELD: &str = "start_line";
+const END_LINE_FIELD: &str = "end_line";
 const TOKENS_FIELD: &str = "tokens";
 const KEY_FIELD: &str = "key";
 const VALUE_FIELD: &str = "value";
@@ -1604,6 +1926,22 @@ pub enum EvalError {
         reference: String,
         predicate: PredicateRef,
     },
+    #[error("primitive '{primitive}' requires capability '{capability}'")]
+    CapabilityRequired {
+        primitive: &'static str,
+        capability: &'static str,
+    },
+    #[error("read_full({handle:?}) would return {tokens} tokens, exceeding the hard limit {limit}")]
+    ReadFullBudgetExceeded {
+        handle: String,
+        tokens: i64,
+        limit: i64,
+    },
+    #[error("invalid regex pattern {pattern:?}: {source}")]
+    InvalidRegex {
+        pattern: String,
+        source: regex::Error,
+    },
     #[error("unsupported expression")]
     UnsupportedExpression,
     #[error("division by zero")]
@@ -1617,16 +1955,26 @@ pub struct Evaluator {
     database: Database,
     facts_seeded: bool,
     warnings: Vec<QueryWarning>,
+    options: EvalOptions,
 }
 
 impl Evaluator {
-    pub fn new(program: AnalyzedProgram, mut database: Database) -> Self {
+    pub fn new(program: AnalyzedProgram, database: Database) -> Self {
+        Self::with_options(program, database, EvalOptions::default())
+    }
+
+    pub fn with_options(
+        program: AnalyzedProgram,
+        mut database: Database,
+        options: EvalOptions,
+    ) -> Self {
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
             database,
             facts_seeded: false,
             warnings: Vec::new(),
+            options,
         }
     }
 
@@ -1640,7 +1988,12 @@ impl Evaluator {
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
-            run_rule_group(&mut self.database, &rules, &mut self.warnings)?;
+            run_rule_group(
+                &mut self.database,
+                &rules,
+                &mut self.warnings,
+                &self.options,
+            )?;
         }
         Ok(())
     }
@@ -1654,6 +2007,7 @@ impl Evaluator {
                 vec![Binding::new()],
                 &self.database,
                 &mut warnings,
+                &self.options,
             )?;
             return Ok(QueryOutput {
                 rows: bindings.into_iter().map(binding_to_row).collect(),
@@ -1670,13 +2024,14 @@ impl Evaluator {
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
-            run_rule_group(&mut database, &rules, &mut warnings)?;
+            run_rule_group(&mut database, &rules, &mut warnings, &self.options)?;
         }
         let bindings = eval_body(
             &query_ast.body,
             vec![Binding::new()],
             &database,
             &mut warnings,
+            &self.options,
         )?;
         let rows = bindings.into_iter().map(binding_to_row).collect();
         Ok(QueryOutput { rows, warnings })
@@ -1707,6 +2062,7 @@ fn run_rule_group(
     database: &mut Database,
     rules: &[Rule],
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<(), EvalError> {
     let stratum_predicates = rules
         .iter()
@@ -1716,7 +2072,7 @@ fn run_rule_group(
 
     let mut delta = DeltaMap::new();
     for rule in rules {
-        let tuples = eval_rule(rule, database, warnings)?;
+        let tuples = eval_rule(rule, database, warnings, options)?;
         insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
     }
 
@@ -1725,8 +2081,14 @@ fn run_rule_group(
         delta = DeltaMap::new();
         for rule in rules {
             for atom_index in recursive_atom_indexes(&rule.body, &stratum_predicates) {
-                let tuples =
-                    eval_rule_with_delta(rule, database, &previous_delta, atom_index, warnings)?;
+                let tuples = eval_rule_with_delta(
+                    rule,
+                    database,
+                    &previous_delta,
+                    atom_index,
+                    warnings,
+                    options,
+                )?;
                 insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
             }
         }
@@ -1738,8 +2100,15 @@ fn eval_rule(
     rule: &Rule,
     database: &Database,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Tuple>, EvalError> {
-    let bindings = eval_body(&rule.body, vec![Binding::new()], database, warnings)?;
+    let bindings = eval_body(
+        &rule.body,
+        vec![Binding::new()],
+        database,
+        warnings,
+        options,
+    )?;
     bindings
         .into_iter()
         .map(|binding| project_head(&rule.head, &binding))
@@ -1752,6 +2121,7 @@ fn eval_rule_with_delta(
     delta: &DeltaMap,
     atom_index: usize,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Tuple>, EvalError> {
     let bindings = eval_body_with_delta(
         &rule.body,
@@ -1759,6 +2129,7 @@ fn eval_rule_with_delta(
         database,
         Some(DeltaView { delta, atom_index }),
         warnings,
+        options,
     )?;
     bindings
         .into_iter()
@@ -1805,8 +2176,9 @@ fn eval_body(
     bindings: Vec<Binding>,
     database: &Database,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
-    eval_body_with_delta(body, bindings, database, None, warnings)
+    eval_body_with_delta(body, bindings, database, None, warnings, options)
 }
 
 fn eval_body_with_delta(
@@ -1815,6 +2187,7 @@ fn eval_body_with_delta(
     database: &Database,
     delta: Option<DeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut remaining = body.atoms.iter().enumerate().collect::<Vec<_>>();
     while !remaining.is_empty() {
@@ -1828,7 +2201,7 @@ fn eval_body_with_delta(
             .unwrap_or(0);
         let (atom_index, atom) = remaining.remove(next_index);
         let atom_delta = delta.filter(|view| view.atom_index == atom_index);
-        bindings = eval_atom(atom, bindings, database, atom_delta, warnings)?;
+        bindings = eval_atom(atom, bindings, database, atom_delta, warnings, options)?;
     }
     Ok(bindings)
 }
@@ -1861,12 +2234,48 @@ fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<
     let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
         return true;
     };
-    graph_anchor_positions(primitive).is_none_or(|positions| {
+    let graph_ready = graph_anchor_positions(primitive).is_none_or(|positions| {
         positions.iter().any(|idx| {
             atom.args
                 .get(*idx)
                 .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
         })
+    });
+    graph_ready && content_primitive_inputs_ready(atom, primitive, bound)
+}
+
+fn content_primitive_inputs_ready(
+    atom: &crate::runtime::ast::DerivedAtom,
+    primitive: PrimitivePredicate,
+    bound: &BTreeSet<Ident>,
+) -> bool {
+    let required: &[usize] = match primitive {
+        PrimitivePredicate::Read => &[0, 1],
+        PrimitivePredicate::ReadFull | PrimitivePredicate::Match => &[0],
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact
+        | PrimitivePredicate::Neighborhood
+        | PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::Flux
+        | PrimitivePredicate::TokenEstimate => return true,
+    };
+    required.iter().all(|idx| {
+        atom.args
+            .get(*idx)
+            .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
     })
 }
 
@@ -1890,7 +2299,10 @@ fn graph_anchor_positions(primitive: PrimitivePredicate) -> Option<&'static [usi
         | PrimitivePredicate::DischargeCount
         | PrimitivePredicate::Freshness
         | PrimitivePredicate::Flux
-        | PrimitivePredicate::TokenEstimate => None,
+        | PrimitivePredicate::TokenEstimate
+        | PrimitivePredicate::Read
+        | PrimitivePredicate::ReadFull
+        | PrimitivePredicate::Match => None,
     }
 }
 
@@ -1989,6 +2401,7 @@ fn eval_atom(
     database: &Database,
     delta: Option<DeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     match atom {
         Atom::Stored(stored) => eval_stored(stored, bindings, database),
@@ -1996,17 +2409,21 @@ fn eval_atom(
             if let Some(view) = delta {
                 eval_derived_from_delta(derived, bindings, view.delta)
             } else {
-                eval_derived(derived, bindings, database)
+                eval_derived(derived, bindings, database, options)
             }
         }
         Atom::Comparison(comparison) => eval_comparison(comparison, bindings),
-        Atom::Aggregation(aggregate) => eval_aggregate(aggregate, bindings, database, warnings),
-        Atom::Negation(negation) => eval_negation(&negation.atom, bindings, database, warnings),
+        Atom::Aggregation(aggregate) => {
+            eval_aggregate(aggregate, bindings, database, warnings, options)
+        }
+        Atom::Negation(negation) => {
+            eval_negation(&negation.atom, bindings, database, warnings, options)
+        }
         Atom::TimeBlock(time_block) => {
             ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
             let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
             push_warnings(warnings, scoped_warnings);
-            eval_body(&time_block.body, bindings, &scoped, warnings)
+            eval_body(&time_block.body, bindings, &scoped, warnings, options)
         }
     }
 }
@@ -2135,6 +2552,7 @@ fn eval_derived(
     atom: &crate::runtime::ast::DerivedAtom,
     bindings: Vec<Binding>,
     database: &Database,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
         if primitive.is_soft() && database.derived.contains_key(&atom.predicate) {
@@ -2145,7 +2563,7 @@ fn eval_derived(
             })?;
             return eval_derived_from_relation(atom, bindings, relation);
         }
-        return eval_primitive(primitive, &atom.args, bindings, database);
+        return eval_primitive(primitive, &atom.args, bindings, database, options);
     }
     let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
         EvalError::UnknownDerivedPredicate {
@@ -2191,17 +2609,61 @@ fn eval_primitive(
     args: &[CallArg],
     bindings: Vec<Binding>,
     database: &Database,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
         let constraints = call_constraints(args, &binding)?;
-        for tuple in database.graph.tuples(primitive, &constraints) {
+        let tuples = primitive_tuples(primitive, &constraints, database, options)?;
+        for tuple in tuples {
             if let Some(next) = unify_call_args(args, &tuple, &binding)? {
                 out.push(next);
             }
         }
     }
     Ok(out)
+}
+
+fn primitive_tuples(
+    primitive: PrimitivePredicate,
+    constraints: &[(usize, Value)],
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<Tuple>, EvalError> {
+    match primitive {
+        PrimitivePredicate::Read => Ok(database.content.read_tuples(constraints)),
+        PrimitivePredicate::ReadFull => {
+            if !options.has_capability(READ_FULL_CAPABILITY) {
+                return Err(EvalError::CapabilityRequired {
+                    primitive: "read_full",
+                    capability: READ_FULL_CAPABILITY,
+                });
+            }
+            database
+                .content
+                .read_full_tuples(constraints, options.read_full_token_limit)
+        }
+        PrimitivePredicate::Match => database.content.match_tuples(constraints),
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact
+        | PrimitivePredicate::Neighborhood
+        | PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::Flux
+        | PrimitivePredicate::TokenEstimate => Ok(database.graph.tuples(primitive, constraints)),
+    }
 }
 
 fn eval_comparison(
@@ -2224,6 +2686,7 @@ fn eval_negation(
     bindings: Vec<Binding>,
     database: &Database,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
@@ -2231,7 +2694,14 @@ fn eval_negation(
             NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
             NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
         };
-        let matches = eval_atom(&atom, vec![binding.clone()], database, None, warnings)?;
+        let matches = eval_atom(
+            &atom,
+            vec![binding.clone()],
+            database,
+            None,
+            warnings,
+            options,
+        )?;
         if matches.is_empty() {
             out.push(binding);
         }
@@ -2244,12 +2714,19 @@ fn eval_aggregate(
     bindings: Vec<Binding>,
     database: &Database,
     warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     validate_aggregate_args(aggregate)?;
 
     let mut out = Vec::new();
     for binding in bindings {
-        let inner = eval_body(&aggregate.body, vec![binding.clone()], database, warnings)?;
+        let inner = eval_body(
+            &aggregate.body,
+            vec![binding.clone()],
+            database,
+            warnings,
+            options,
+        )?;
         if inner.is_empty() {
             if aggregate.function == AggregateFunction::Count
                 && let Some(group) = bind_aggregate_result(
@@ -3104,13 +3581,28 @@ mod tests {
     }
 
     fn content(handle: &str, span_id: &str, tokens: u32) -> ContentFact {
+        content_with_text(handle, span_id, "", tokens)
+    }
+
+    fn content_with_text(handle: &str, span_id: &str, text: &str, tokens: u32) -> ContentFact {
         ContentFact {
             identity: identity(&format!("{handle}#{span_id}")),
             handle: handle.to_string(),
             span_id: span_id.to_string(),
             lines: 1,
-            text: String::new(),
+            text: text.to_string(),
             tokens,
+        }
+    }
+
+    fn span(handle: &str, span_id: &str, start_line: u32, end_line: u32) -> SpanFact {
+        SpanFact {
+            identity: identity(&format!("{handle}#{span_id}:span")),
+            id: span_id.to_string(),
+            handle: handle.to_string(),
+            start_line,
+            end_line,
+            summary: String::new(),
         }
     }
 
@@ -3248,6 +3740,34 @@ mod tests {
             ],
         );
         database
+    }
+
+    fn content_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("alpha.md", "file", "current", "", "core"),
+            handle("beta.md", "file", "current", "", "core"),
+        ];
+        batch.content = vec![
+            content_with_text("alpha.md", "shared", "intro line", 4),
+            content_with_text("alpha.md", "middle", "urgent middle\nplain tail", 5),
+            content_with_text("alpha.md", "late", "final urgent", 8),
+            content_with_text("beta.md", "shared", "beta urgent", 3),
+        ];
+        batch.spans = vec![
+            span("alpha.md", "late", 30, 32),
+            span("alpha.md", "shared", 1, 1),
+            span("alpha.md", "middle", 10, 12),
+            span("beta.md", "shared", 2, 2),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("content fixture merge");
+        Database::from_store(&store)
     }
 
     fn time_travel_database() -> Database {
@@ -3823,6 +4343,32 @@ mod tests {
         evaluator.eval_query(&query).expect_err("query errors")
     }
 
+    fn evaluate_query_output_with_options(
+        input: &str,
+        database: Database,
+        options: EvalOptions,
+    ) -> QueryOutput {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::with_options(analyzed, database, options);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+        evaluator.eval_query(&query).expect("query evaluates")
+    }
+
+    fn evaluate_query_error_with_options(
+        input: &str,
+        database: Database,
+        options: EvalOptions,
+    ) -> EvalError {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::with_options(analyzed, database, options);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+        evaluator.eval_query(&query).expect_err("query errors")
+    }
+
     #[test]
     fn graph_primitives_traverse_edges_relationally() {
         let outputs = evaluate_queries(
@@ -3894,6 +4440,203 @@ mod tests {
             vec![row([("n", n(0))])],
         );
         assert!(rows.next().is_none(), "unexpected extra primitive output");
+    }
+
+    #[test]
+    fn read_returns_spans_in_source_order_within_budget() {
+        let output = evaluate_query_output(
+            r#"? read("alpha.md", 9, span_id, text, start_line, end_line, tokens)."#,
+            content_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![
+                row([
+                    ("span_id", s("shared")),
+                    ("text", s("intro line")),
+                    ("start_line", n(1)),
+                    ("end_line", n(1)),
+                    ("tokens", n(4)),
+                ]),
+                row([
+                    ("span_id", s("middle")),
+                    ("text", s("urgent middle\nplain tail")),
+                    ("start_line", n(10)),
+                    ("end_line", n(12)),
+                    ("tokens", n(5)),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn read_honors_span_id_narrowing_and_handle_scoped_span_ids() {
+        let output = evaluate_query_output(
+            r#"? read("beta.md", 10, "shared", text, start_line, end_line, tokens)."#,
+            content_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![row([
+                ("text", s("beta urgent")),
+                ("start_line", n(2)),
+                ("end_line", n(2)),
+                ("tokens", n(3)),
+            ])],
+        );
+    }
+
+    #[test]
+    fn content_primitives_can_use_later_positive_inputs() {
+        let output = evaluate_query_output(
+            r"
+            budget(9).
+            ? read(h, b, span_id, text, start_line, end_line, tokens),
+              *handle{id: h},
+              budget(b).
+            ",
+            content_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![
+                row([
+                    ("b", n(9)),
+                    ("h", s("alpha.md")),
+                    ("span_id", s("shared")),
+                    ("text", s("intro line")),
+                    ("start_line", n(1)),
+                    ("end_line", n(1)),
+                    ("tokens", n(4)),
+                ]),
+                row([
+                    ("b", n(9)),
+                    ("h", s("alpha.md")),
+                    ("span_id", s("middle")),
+                    ("text", s("urgent middle\nplain tail")),
+                    ("start_line", n(10)),
+                    ("end_line", n(12)),
+                    ("tokens", n(5)),
+                ]),
+                row([
+                    ("b", n(9)),
+                    ("h", s("beta.md")),
+                    ("span_id", s("shared")),
+                    ("text", s("beta urgent")),
+                    ("start_line", n(2)),
+                    ("end_line", n(2)),
+                    ("tokens", n(3)),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn match_uses_regex_over_content_lines() {
+        let output = evaluate_query_output(
+            r#"? match("urgent", handle, line, snippet)."#,
+            content_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_query_rows(
+            &rows,
+            vec![
+                row([
+                    ("handle", s("alpha.md")),
+                    ("line", n(10)),
+                    ("snippet", s("urgent middle")),
+                ]),
+                row([
+                    ("handle", s("alpha.md")),
+                    ("line", n(30)),
+                    ("snippet", s("final urgent")),
+                ]),
+                row([
+                    ("handle", s("beta.md")),
+                    ("line", n(2)),
+                    ("snippet", s("beta urgent")),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn match_reports_invalid_regex() {
+        let err = evaluate_query_error(
+            r#"? match("[", handle, line, snippet)."#,
+            content_database(),
+        );
+
+        assert!(matches!(err, EvalError::InvalidRegex { pattern, .. } if pattern == "["));
+    }
+
+    #[test]
+    fn read_full_is_capability_gated_and_budgeted() {
+        let err = evaluate_query_error(r#"? read_full("alpha.md", content)."#, content_database());
+        assert!(matches!(
+            err,
+            EvalError::CapabilityRequired {
+                primitive: "read_full",
+                capability: READ_FULL_CAPABILITY,
+            }
+        ));
+
+        let output = evaluate_query_output_with_options(
+            r#"? read_full("alpha.md", content)."#,
+            content_database(),
+            EvalOptions::default().with_capability(READ_FULL_CAPABILITY),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+        assert_query_rows(
+            &rows,
+            vec![row([(
+                "content",
+                s("intro line\nurgent middle\nplain tail\nfinal urgent"),
+            )])],
+        );
+
+        let err = evaluate_query_error_with_options(
+            r#"? read_full("alpha.md", content)."#,
+            content_database(),
+            EvalOptions::default()
+                .with_capability(READ_FULL_CAPABILITY)
+                .with_read_full_token_limit(16),
+        );
+        assert!(matches!(
+            err,
+            EvalError::ReadFullBudgetExceeded {
+                handle,
+                tokens: 17,
+                limit: 16,
+            } if handle == "alpha.md"
+        ));
     }
 
     #[test]
