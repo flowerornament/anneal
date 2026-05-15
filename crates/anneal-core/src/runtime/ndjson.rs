@@ -15,6 +15,30 @@ where
     Ok(())
 }
 
+pub fn write_ndjson_with_meta<W, I, T, M>(
+    mut writer: W,
+    meta: Option<&M>,
+    rows: I,
+) -> Result<(), NdjsonError>
+where
+    W: Write,
+    I: IntoIterator<Item = T>,
+    T: Serialize,
+    M: Serialize,
+{
+    if let Some(meta) = meta {
+        serde_json::to_writer(&mut writer, &MetaRecord { meta })?;
+        writer.write_all(b"\n")?;
+    }
+    write_ndjson(writer, rows)
+}
+
+#[derive(Serialize)]
+struct MetaRecord<'a, T> {
+    #[serde(rename = "_meta")]
+    meta: &'a T,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NdjsonError {
     #[error(transparent)]
@@ -37,5 +61,32 @@ mod tests {
         let mut out = Vec::new();
         write_ndjson(&mut out, [row]).expect("write");
         assert_eq!(String::from_utf8(out).expect("utf8"), "{\"h\":\"OQ-22\"}\n");
+    }
+
+    #[test]
+    fn writes_optional_meta_record_before_rows() {
+        #[derive(Serialize)]
+        struct RuntimeMeta<'a> {
+            query: &'a str,
+            prelude_hash: &'a str,
+        }
+
+        let row = Row {
+            fields: BTreeMap::from([("h".to_string(), Value::String("OQ-22".to_string()))]),
+        };
+        let mut out = Vec::new();
+        write_ndjson_with_meta(
+            &mut out,
+            Some(&RuntimeMeta {
+                query: "? blocked(h).",
+                prelude_hash: "abc123",
+            }),
+            [row],
+        )
+        .expect("write");
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "{\"_meta\":{\"query\":\"? blocked(h).\",\"prelude_hash\":\"abc123\"}}\n{\"h\":\"OQ-22\"}\n"
+        );
     }
 }

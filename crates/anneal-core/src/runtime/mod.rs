@@ -8,15 +8,18 @@
 pub mod analysis;
 pub mod ast;
 pub mod eval;
+pub mod loader;
 pub mod ndjson;
 pub mod parser;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
 pub use ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
-    FieldPattern, Head, Ident, Literal, NumberLiteral, PredicateRef, Program, Query, Rule,
-    Statement, StoredAtom, Term, TimeBlock, VerbDecl,
+    FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal, NumberLiteral,
+    PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term, TimeBlock,
+    VerbDecl,
 };
 pub use eval::{Binding, Database, EvalError, Evaluator, QueryOutput, Row, Tuple, Value};
-pub use ndjson::{NdjsonError, write_ndjson};
+pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};
+pub use ndjson::{NdjsonError, write_ndjson, write_ndjson_with_meta};
 pub use parser::{ParseError, parse_program};

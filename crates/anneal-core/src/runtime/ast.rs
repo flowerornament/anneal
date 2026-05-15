@@ -121,16 +121,26 @@ pub enum Statement {
     Fact(Head),
     Rule(Rule),
     Query(Query),
-    Include(String),
-    Import {
-        module: Ident,
-        path: String,
-    },
+    Include(IncludeDirective),
+    Import(ImportDirective),
     AtBlock {
         reference: String,
         statements: Vec<Statement>,
     },
     Verb(VerbDecl),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncludeDirective {
+    pub path: String,
+    pub location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportDirective {
+    pub module: Ident,
+    pub path: String,
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,6 +152,26 @@ pub struct VerbDecl {
 pub struct Rule {
     pub head: Head,
     pub body: Body,
+    #[serde(skip, default = "RuleOrigin::unknown")]
+    pub(crate) origin: RuleOrigin,
+}
+
+impl Rule {
+    pub fn new(head: Head, body: Body) -> Self {
+        Self {
+            head,
+            body,
+            origin: RuleOrigin::unknown(),
+        }
+    }
+
+    pub fn origin(&self) -> &RuleOrigin {
+        &self.origin
+    }
+
+    pub(crate) fn with_origin(head: Head, body: Body, origin: RuleOrigin) -> Self {
+        Self { head, body, origin }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -160,6 +190,70 @@ impl Head {
     pub fn arity(&self) -> usize {
         self.terms.len()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLocation {
+    pub source_name: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl SourceLocation {
+    pub fn new(source_name: impl Into<String>, line: usize, column: usize) -> Self {
+        Self {
+            source_name: source_name.into(),
+            line,
+            column,
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self::new("<unknown>", 0, 0)
+    }
+}
+
+impl fmt::Display for SourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.line == 0 && self.column == 0 {
+            f.write_str(&self.source_name)
+        } else {
+            write!(f, "{}:{}:{}", self.source_name, self.line, self.column)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleOrigin {
+    pub layer: RuleLayer,
+    pub location: SourceLocation,
+}
+
+impl RuleOrigin {
+    pub(crate) fn new(layer: RuleLayer, location: SourceLocation) -> Self {
+        Self { layer, location }
+    }
+
+    pub(crate) fn unknown() -> Self {
+        Self::new(RuleLayer::Unknown, SourceLocation::unknown())
+    }
+
+    pub fn layer(&self) -> RuleLayer {
+        self.layer
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RuleLayer {
+    Unknown,
+    Prelude,
+    Project,
+    Import,
+    Inline,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::runtime::ast::{
-    Aggregate, Atom, Body, Comparison, Head, Ident, NegatedAtom, PredicateRef, Program, Query,
-    Rule, StoredAtom, Term,
+    Aggregate, Atom, Body, Comparison, Expr, Head, Ident, Literal, NegatedAtom, PredicateRef,
+    Program, Query, Rule, RuleLayer, SourceLocation, StoredAtom, Term,
 };
 
 type SignatureMap = BTreeMap<PredicateRef, usize>;
@@ -103,8 +103,24 @@ pub enum StaticError {
     },
     #[error("cyclic negation between {cycle}")]
     CyclicNegation { cycle: NegationCycle },
-    #[error("reserved diagnostic id '{id}' may only be emitted by built-in check rules")]
-    ReservedDiagnosticId { id: String },
+    #[error("{location}: diagnostic id for '{predicate}' must be a string literal first argument")]
+    DiagnosticIdMustBeLiteral {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
+    #[error("{second}: duplicate diagnostic id '{id}' first declared at {first}")]
+    DuplicateDiagnosticId {
+        id: String,
+        first: SourceLocation,
+        second: SourceLocation,
+    },
+    #[error(
+        "{location}: reserved diagnostic id '{id}' may only be emitted by built-in check rules"
+    )]
+    ReservedDiagnosticId {
+        id: String,
+        location: SourceLocation,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +154,7 @@ struct Analyzer {
     program: Program,
     signatures: SignatureMap,
     edges: Vec<DependencyEdge>,
+    diagnostic_ids: BTreeMap<String, SourceLocation>,
 }
 
 impl Analyzer {
@@ -146,6 +163,7 @@ impl Analyzer {
             program,
             signatures: BTreeMap::new(),
             edges: Vec::new(),
+            diagnostic_ids: BTreeMap::new(),
         }
     }
 
@@ -184,7 +202,12 @@ impl Analyzer {
     fn check_rules(&mut self) -> Result<(), StaticError> {
         let rules: Vec<Rule> = self.program.rules().cloned().collect();
         for rule in &rules {
-            check_rule(rule, &self.signatures, &mut self.edges)?;
+            check_rule(
+                rule,
+                &self.signatures,
+                &mut self.edges,
+                &mut self.diagnostic_ids,
+            )?;
         }
         Ok(())
     }
@@ -205,8 +228,9 @@ impl Analyzer {
         }
 
         let mut edges = self.edges.clone();
+        let mut diagnostic_ids = self.diagnostic_ids.clone();
         for rule in &query.local_rules {
-            check_rule(rule, &signatures, &mut edges)?;
+            check_rule(rule, &signatures, &mut edges, &mut diagnostic_ids)?;
         }
         check_body(
             &PredicateRef::new(Ident::new_unchecked("query")),
@@ -272,10 +296,51 @@ fn check_rule(
     rule: &Rule,
     signatures: &SignatureMap,
     edges: &mut Vec<DependencyEdge>,
+    diagnostic_ids: &mut BTreeMap<String, SourceLocation>,
 ) -> Result<(), StaticError> {
+    check_diagnostic_rule(rule, diagnostic_ids)?;
     check_head_safety(rule)?;
     check_body(&rule.head.predicate, &rule.body, signatures, edges)?;
     check_body_safety(&rule.head.predicate, &rule.body)
+}
+
+fn check_diagnostic_rule(
+    rule: &Rule,
+    diagnostic_ids: &mut BTreeMap<String, SourceLocation>,
+) -> Result<(), StaticError> {
+    if rule.head.predicate.name.as_str() != "diagnostic" {
+        return Ok(());
+    }
+
+    let location = rule.origin.location.clone();
+    let Some(Term::Expr(Expr::Literal(Literal::String(id)))) = rule.head.terms.first() else {
+        return Err(StaticError::DiagnosticIdMustBeLiteral {
+            predicate: rule.head.predicate.clone(),
+            location,
+        });
+    };
+
+    if let Some(first) = diagnostic_ids.get(id) {
+        return Err(StaticError::DuplicateDiagnosticId {
+            id: id.clone(),
+            first: first.clone(),
+            second: location,
+        });
+    }
+
+    if is_reserved_diagnostic_id(id) && rule.origin.layer != RuleLayer::Prelude {
+        return Err(StaticError::ReservedDiagnosticId {
+            id: id.clone(),
+            location,
+        });
+    }
+
+    diagnostic_ids.insert(id.clone(), location);
+    Ok(())
+}
+
+fn is_reserved_diagnostic_id(id: &str) -> bool {
+    matches!(id.as_bytes().first(), Some(b'E' | b'W' | b'I' | b'S'))
 }
 
 fn check_head_safety(rule: &Rule) -> Result<(), StaticError> {
@@ -606,6 +671,42 @@ mod tests {
         let program = parse_program("inline", r"bad(h) := missing(h).").unwrap();
         let err = analyze(program).expect_err("unknown predicate rejected");
         assert!(matches!(err, StaticError::UnknownPredicate { .. }));
+    }
+
+    #[test]
+    fn rejects_non_literal_diagnostic_id() {
+        let program = parse_program(
+            "checks.dl",
+            r#"diagnostic(code, "error") := *handle{id: h}."#,
+        )
+        .unwrap();
+        let err = analyze(program).expect_err("diagnostic id rejected");
+        assert!(matches!(err, StaticError::DiagnosticIdMustBeLiteral { .. }));
+    }
+
+    #[test]
+    fn rejects_duplicate_diagnostic_ids() {
+        let program = parse_program(
+            "checks.dl",
+            r#"
+            diagnostic("PROJ-001", "error", h) := *handle{id: h}.
+            diagnostic("PROJ-001", "warning", h) := *handle{id: h}.
+            "#,
+        )
+        .unwrap();
+        let err = analyze(program).expect_err("duplicate diagnostic id rejected");
+        assert!(matches!(err, StaticError::DuplicateDiagnosticId { .. }));
+    }
+
+    #[test]
+    fn rejects_project_reserved_diagnostic_prefixes() {
+        let program = parse_program(
+            "checks.dl",
+            r#"diagnostic("E001", "error", h) := *handle{id: h}."#,
+        )
+        .unwrap();
+        let err = analyze(program).expect_err("reserved diagnostic id rejected");
+        assert!(matches!(err, StaticError::ReservedDiagnosticId { .. }));
     }
 
     #[test]

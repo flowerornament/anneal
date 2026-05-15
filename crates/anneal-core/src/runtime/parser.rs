@@ -1,7 +1,8 @@
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, Comparison, ComparisonOp,
-    DerivedAtom, Expr, FieldPattern, Head, Ident, Literal, NamedArg, NegatedAtom, NumberLiteral,
-    PredicateRef, Program, Query, Rule, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
+    DerivedAtom, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal,
+    NamedArg, NegatedAtom, NumberLiteral, PredicateRef, Program, Query, Rule, RuleLayer,
+    RuleOrigin, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -9,20 +10,16 @@ pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{source_name}:{line}:{column}: {message}")]
+#[error("{location}: {message}")]
 pub struct ParseError {
-    pub source_name: String,
-    pub line: usize,
-    pub column: usize,
+    pub location: SourceLocation,
     pub message: String,
 }
 
 impl ParseError {
     fn new(source: &str, token: &Token, message: impl Into<String>) -> Self {
         Self {
-            source_name: source.to_string(),
-            line: token.line,
-            column: token.column,
+            location: token.location(source),
             message: message.into(),
         }
     }
@@ -52,20 +49,27 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        let statement_start = self.peek().clone();
         if self.eat(&TokenKind::Question) {
             return self.parse_query().map(Statement::Query);
         }
         if self.eat_keyword("include") {
+            let location = statement_start.location(&self.source);
             let path = self.expect_string()?;
             self.expect(&TokenKind::Dot)?;
-            return Ok(Statement::Include(path));
+            return Ok(Statement::Include(IncludeDirective { path, location }));
         }
         if self.eat_keyword("import") {
+            let location = statement_start.location(&self.source);
             let module = self.expect_ident()?;
             self.expect_keyword("from")?;
             let path = self.expect_string()?;
             self.expect(&TokenKind::Dot)?;
-            return Ok(Statement::Import { module, path });
+            return Ok(Statement::Import(ImportDirective {
+                module,
+                path,
+                location,
+            }));
         }
         if self.eat(&TokenKind::AtSign) {
             self.expect_keyword("verb")?;
@@ -96,17 +100,26 @@ impl Parser {
         self.expect(&TokenKind::ColonEq)?;
         let body = self.parse_body_until(&TokenKind::Dot)?;
         self.expect(&TokenKind::Dot)?;
-        Ok(Statement::Rule(Rule { head, body }))
+        Ok(Statement::Rule(Rule::with_origin(
+            head,
+            body,
+            rule_origin(RuleLayer::Unknown, &self.source, &statement_start),
+        )))
     }
 
     fn parse_query(&mut self) -> Result<Query, ParseError> {
         let mut local_rules = Vec::new();
         while self.eat_keyword("where") {
+            let rule_start = self.peek().clone();
             let head = self.parse_head()?;
             self.expect(&TokenKind::ColonEq)?;
             let body = self.parse_body_until(&TokenKind::Dot)?;
             self.expect(&TokenKind::Dot)?;
-            local_rules.push(Rule { head, body });
+            local_rules.push(Rule::with_origin(
+                head,
+                body,
+                rule_origin(RuleLayer::Inline, &self.source, &rule_start),
+            ));
         }
         let body = self.parse_body_until(&TokenKind::Dot)?;
         self.expect(&TokenKind::Dot)?;
@@ -160,7 +173,7 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
             return Ok(Atom::TimeBlock(TimeBlock { reference, body }));
         }
-        if self.at_ident() && self.peek_n(1).kind == TokenKind::LParen {
+        if self.starts_derived_atom() {
             let checkpoint = self.cursor;
             let derived = self.parse_derived_atom()?;
             if !self.starts_comparison_or_aggregation() {
@@ -462,6 +475,14 @@ impl Parser {
         )
     }
 
+    fn starts_derived_atom(&self) -> bool {
+        self.at_ident()
+            && (self.peek_n(1).kind == TokenKind::LParen
+                || (self.peek_n(1).kind == TokenKind::Dot
+                    && matches!(self.peek_n(2).kind, TokenKind::Ident(_))
+                    && self.peek_n(3).kind == TokenKind::LParen))
+    }
+
     fn next_named_arg_before_colon(&self) -> bool {
         matches!(
             (&self.peek().kind, &self.peek_n(1).kind),
@@ -606,11 +627,21 @@ fn aggregate_accepts_args(function: AggregateFunction) -> bool {
     )
 }
 
+fn rule_origin(layer: RuleLayer, source: &str, token: &Token) -> RuleOrigin {
+    RuleOrigin::new(layer, token.location(source))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Token {
     kind: TokenKind,
     line: usize,
     column: usize,
+}
+
+impl Token {
+    fn location(&self, source: &str) -> SourceLocation {
+        SourceLocation::new(source.to_string(), self.line, self.column)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -769,9 +800,7 @@ impl<'a> Lexer<'a> {
                 '>' => tokens.push(self.optional_eq(TokenKind::Gt, TokenKind::Ge)),
                 _ => {
                     return Err(ParseError {
-                        source_name: self.source.to_string(),
-                        line: self.line,
-                        column: self.column,
+                        location: self.location(),
                         message: format!("unexpected character {ch:?}"),
                     });
                 }
@@ -852,9 +881,7 @@ impl<'a> Lexer<'a> {
                 }
                 '\n' => {
                     return Err(ParseError {
-                        source_name: self.source.to_string(),
-                        line: self.line,
-                        column: self.column,
+                        location: self.location(),
                         message: "unterminated string".to_string(),
                     });
                 }
@@ -865,9 +892,7 @@ impl<'a> Lexer<'a> {
             }
         }
         Err(ParseError {
-            source_name: self.source.to_string(),
-            line,
-            column,
+            location: SourceLocation::new(self.source.to_string(), line, column),
             message: "unterminated string".to_string(),
         })
     }
@@ -905,9 +930,7 @@ impl<'a> Lexer<'a> {
             Ok(Token { kind, line, column })
         } else {
             Err(ParseError {
-                source_name: self.source.to_string(),
-                line,
-                column,
+                location: SourceLocation::new(self.source.to_string(), line, column),
                 message: message.to_string(),
             })
         }
@@ -943,6 +966,10 @@ impl<'a> Lexer<'a> {
             self.offset += ch.len_utf8();
             self.column += 1;
         }
+    }
+
+    fn location(&self) -> SourceLocation {
+        SourceLocation::new(self.source.to_string(), self.line, self.column)
     }
 }
 
