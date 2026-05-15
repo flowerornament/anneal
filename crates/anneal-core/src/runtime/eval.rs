@@ -3103,7 +3103,7 @@ fn eval_aggregate_group(
         | AggregateFunction::Avg
         | AggregateFunction::List
         | AggregateFunction::Set => {
-            let values = distinct_aggregate_values(aggregate, rows)?;
+            let values = aggregate_values(aggregate, rows)?;
             let Some(value) = scalar_aggregate_value(aggregate.function, &values)? else {
                 return Ok(Vec::new());
             };
@@ -3117,10 +3117,7 @@ fn eval_aggregate_group(
     }
 }
 
-fn distinct_aggregate_values(
-    aggregate: &Aggregate,
-    rows: &[Binding],
-) -> Result<BTreeSet<Value>, EvalError> {
+fn aggregate_values(aggregate: &Aggregate, rows: &[Binding]) -> Result<Vec<Value>, EvalError> {
     rows.iter()
         .map(|row| eval_expr(&aggregate.value, row))
         .collect()
@@ -3128,29 +3125,33 @@ fn distinct_aggregate_values(
 
 fn scalar_aggregate_value(
     function: AggregateFunction,
-    values: &BTreeSet<Value>,
+    values: &[Value],
 ) -> Result<Option<Value>, EvalError> {
     if values.is_empty() && function != AggregateFunction::Count {
         return Ok(None);
     }
     match function {
         AggregateFunction::Count => Ok(Some(Value::Number(NumberValue::Int(
-            i64::try_from(values.len()).unwrap_or(i64::MAX),
+            i64::try_from(distinct_aggregate_values(values).len()).unwrap_or(i64::MAX),
         )))),
         AggregateFunction::Sum => numeric_sum(values).map(Some),
-        AggregateFunction::Min => Ok(values.first().cloned()),
-        AggregateFunction::Max => Ok(values.last().cloned()),
+        AggregateFunction::Min => Ok(values.iter().min().cloned()),
+        AggregateFunction::Max => Ok(values.iter().max().cloned()),
         AggregateFunction::Avg => numeric_avg(values).map(Some),
-        AggregateFunction::List | AggregateFunction::Set => {
-            Ok(Some(Value::List(values.iter().cloned().collect())))
-        }
+        AggregateFunction::List | AggregateFunction::Set => Ok(Some(Value::List(
+            distinct_aggregate_values(values).into_iter().collect(),
+        ))),
         AggregateFunction::TopK | AggregateFunction::Rank | AggregateFunction::TakeUntil => {
             Err(EvalError::UnsupportedAggregate { function })
         }
     }
 }
 
-fn numeric_sum(values: &BTreeSet<Value>) -> Result<Value, EvalError> {
+fn distinct_aggregate_values(values: &[Value]) -> BTreeSet<Value> {
+    values.iter().cloned().collect()
+}
+
+fn numeric_sum(values: &[Value]) -> Result<Value, EvalError> {
     let mut int_sum = 0_i64;
     let mut float_sum = 0.0_f64;
     let mut has_float = false;
@@ -3178,7 +3179,7 @@ fn numeric_sum(values: &BTreeSet<Value>) -> Result<Value, EvalError> {
     }
 }
 
-fn numeric_avg(values: &BTreeSet<Value>) -> Result<Value, EvalError> {
+fn numeric_avg(values: &[Value]) -> Result<Value, EvalError> {
     let mut total = 0.0_f64;
     for value in values {
         match numeric_value(value)? {
@@ -6243,27 +6244,30 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn scalar_aggregates_compute_distinct_values() {
+    fn scalar_aggregates_use_documented_value_semantics() {
         let outputs = evaluate_queries(
-            r"
-            amount(2).
-            amount(5).
-            ? total = Sum{ value : amount(value) }.
-            ? min = Min{ value : amount(value) }.
-            ? max = Max{ value : amount(value) }.
-            ? avg = Avg{ value : amount(value) }.
-            ? values = List{ value : amount(value) }.
-            ? values = Set{ value : amount(value) }.
-            ",
+            r#"
+            amount("a", 2).
+            amount("b", 2).
+            amount("c", 5).
+            ? total = Sum{ value : amount(id, value) }.
+            ? count = Count{ value : amount(id, value) }.
+            ? min = Min{ value : amount(id, value) }.
+            ? max = Max{ value : amount(id, value) }.
+            ? avg = Avg{ value : amount(id, value) }.
+            ? values = List{ value : amount(id, value) }.
+            ? values = Set{ value : amount(id, value) }.
+            "#,
             Database::default(),
         );
 
-        assert_query_rows(&outputs[0], vec![row([("total", n(7))])]);
-        assert_query_rows(&outputs[1], vec![row([("min", n(2))])]);
-        assert_query_rows(&outputs[2], vec![row([("max", n(5))])]);
-        assert_query_rows(&outputs[3], vec![row([("avg", f(3.5))])]);
-        assert_query_rows(&outputs[4], vec![row([("values", list([n(2), n(5)]))])]);
+        assert_query_rows(&outputs[0], vec![row([("total", n(9))])]);
+        assert_query_rows(&outputs[1], vec![row([("count", n(2))])]);
+        assert_query_rows(&outputs[2], vec![row([("min", n(2))])]);
+        assert_query_rows(&outputs[3], vec![row([("max", n(5))])]);
+        assert_query_rows(&outputs[4], vec![row([("avg", f(3.0))])]);
         assert_query_rows(&outputs[5], vec![row([("values", list([n(2), n(5)]))])]);
+        assert_query_rows(&outputs[6], vec![row([("values", list([n(2), n(5)]))])]);
     }
 
     #[test]

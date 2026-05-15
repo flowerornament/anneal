@@ -905,12 +905,11 @@ read_until_budget(h, span_id, text, start_line, end_line, tokens) :=
   }.
 ```
 
-Standard Datalog aggregation semantics: compute the set of values for
-the contributing variable such that the sub-body holds, then collapse
-with the aggregation function. Free variables outside the
-aggregation form the grouping key. `TopK` and `TakeUntil` are
-first-class — set semantics alone are insufficient for agent
-retrieval workflows.
+Standard Datalog aggregation semantics: compute the contribution rows
+such that the sub-body holds, then collapse them with the aggregation
+function. Free variables outside the aggregation form the grouping
+key. `TopK` and `TakeUntil` are first-class — set semantics alone are
+insufficient for agent retrieval workflows.
 
 **Definition CR-D38 (Non-count aggregation semantics).** `Sum`,
 `Avg`, `Min`, `Max`, `List`, and `Set` are scalar aggregators:
@@ -918,9 +917,11 @@ they produce one value per positively originated group that has at
 least one contribution. `Count` is the only aggregate that emits for
 an originated empty group. `Sum` and `Avg` require numeric
 contribution values; `Avg` returns a float. `Min` and `Max` use the
-runtime's total value ordering. `List` and `Set` return
-deterministic sorted lists of distinct contribution values because
-the runtime has set semantics and no bag type.
+runtime's total value ordering. `Sum` and `Avg` evaluate every
+contribution row, so equal numeric values from distinct bindings still
+contribute. `Count`, `List`, and `Set` operate on distinct
+contribution values; `List` and `Set` return deterministic sorted
+lists because the runtime has no bag value type.
 
 `TopK`, `Rank`, and `TakeUntil` are row-producing aggregators:
 they may emit zero or more rows per group by unifying the aggregate
@@ -1073,7 +1074,7 @@ recorded in every trail entry and snapshot for reproducibility.
 anneal-core/src/prelude/
   graph.dl          # structural shapes (orphan, stub, hub)
   convergence.dl    # potential, entropy, blocked, advancing, weights
-  checks.dl         # E001, E002, W001-W004, I001, S001-S005
+  checks.dl         # standard diagnostics; E001 anchors convergence entropy
   ranking.dl        # search/ranking helper predicates around CR-D42
   views.dl          # the starter verbs as saved queries
 ```
@@ -1127,23 +1128,18 @@ potential_weight("freshness_decay",  2).
 potential_weight("missing_meta",     1).
 potential_weight("orphan_label",     1).
 
-potential_subject(h) := entropy(h, source).
-potential(h, energy) :=
-  potential_subject(h),
-  energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
-
 entropy(h, "undischarged") :=
   obligation(h), not discharged(h), not terminal(h).
 
 entropy(h, "broken_ref") :=
-  diagnostic("E001", _, h, _, _, _).
+  diagnostic("E001", severity, h, file, line, evidence).
 
 entropy(h, "stale_dep") :=
-  *edge{from: h, to: t, kind: "depends_on"},
+  *edge{from: h, to: t, kind: "DependsOn"},
   active(h), terminal(t).
 
 entropy(h, "confidence_gap") :=
-  *edge{from: h, to: t, kind: "depends_on"},
+  *edge{from: h, to: t, kind: "DependsOn"},
   pipeline_position(h, n_h),
   pipeline_position(t, n_t),
   n_h > n_t + 1.
@@ -1162,6 +1158,11 @@ entropy(h, "orphan_label") :=
   cite_count(h, n: 0),
   not discharged(h).
 
+potential_subject(h) := entropy(h, source).
+potential(h, energy) :=
+  potential_subject(h),
+  energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
+
 blocked(h) :=
   active(h),
   potential(h, energy), energy >= 3,
@@ -1171,7 +1172,12 @@ advancing(h) :=
   active(h),
   recently_advanced(h).
 
+snapshot_history_present(count) :=
+  count = Count{ snapshot : *snapshot{snapshot: snapshot} },
+  count > 0.
+
 recently_advanced(h) :=
+  snapshot_history_present(count),
   at("snapshot:last") { *handle{id: h, status: prior} },
   *handle{id: h, status: current},
   pipeline_position_for(prior, p_prior),
@@ -1191,30 +1197,100 @@ Sample lifecycle profiles ship in `views.dl` for inspiration
 (`profile_doc_corpus`, `profile_code_corpus`, `profile_issue_corpus`);
 projects copy the one closest to their shape.
 
+### §27.1 Structural graph vocabulary [CR-D47]
+
+**Definition CR-D47 (Structural graph vocabulary).** Predicates
+defined in `graph.dl` expose source-neutral graph shape without
+giving any adapter a privileged traversal direction.
+
+```
+area_of(h, area) :=
+  *handle{id: h, area: area},
+  area != "".
+
+namespace_of(h, namespace) :=
+  *handle{id: h, namespace: namespace},
+  namespace != "".
+
+status_of(h, status) :=
+  *handle{id: h, status: status},
+  status != null.
+
+incoming_edge(h, from, kind) :=
+  *edge{to: h, from: from, kind: kind}.
+
+outgoing_edge(h, to, kind) :=
+  *edge{from: h, to: to, kind: kind}.
+
+incident(h, other) := incoming_edge(h, other, kind).
+incident(h, other) := outgoing_edge(h, other, kind).
+
+orphan(h) :=
+  *handle{id: h, kind: kind},
+  in_degree(h, 0),
+  kind != "file",
+  kind != "section".
+
+stub(h) :=
+  *handle{id: h, kind: "file"},
+  token_estimate(h, 0).
+
+hub(h, degree) :=
+  *handle{id: h},
+  degree = Count{ other : incident(h, other) },
+  degree >= 10.
+```
+
+`hub/2` counts distinct neighboring handles, not raw edge count. The
+threshold is intentionally small and stable for agent triage; richer
+orientation scoring belongs in `ranking.dl` or project rules.
+
+### §27.2 Work ranking vocabulary [CR-D48]
+
+**Definition CR-D48 (Work ranking vocabulary).** Predicates defined
+in `ranking.dl` provide default convergence-oriented selection over
+the standard library's `potential/2` relation.
+
+```
+work_candidate(h, energy) :=
+  potential(h, energy).
+
+top_work(h, energy) :=
+  (h, energy) = TopK{ k: 25, key: energy :
+    (h, energy) :
+    work_candidate(h, energy)
+  }.
+
+ranked_work(h, energy, rank) :=
+  (h, energy, rank) = Rank{ key: energy, rank: rank :
+    (h, energy, rank) :
+    work_candidate(h, energy)
+  }.
+```
+
+These are starter predicates, not a surface mandate. Surfaces may add
+budgeting, capability checks, or output shaping, but the default
+meaning of "work" remains "highest potential first."
+
 ### §28 Check rules [CR-D23]
 
 **Definition CR-D23 (Check rule).** A rule whose head is
 `diagnostic(...)` deriving a fact representing a consistency
 violation.
 
-The check rules from anneal v1.x — E001 (broken refs), E002
+The v2.0 check catalog mirrors anneal v1.x — E001 (broken refs), E002
 (undischarged), W001-W004 (warnings), I001 (info), S001-S005
-(suggestions) — live in `checks.dl` as Horn clauses. The substrate
-has no hard-coded check logic.
+(suggestions) — as Horn clauses in `checks.dl`. The substrate has no
+hard-coded check logic. E001 is the minimal executable anchor required
+by the convergence vocabulary; the remaining catalog must land before
+Phase 6 check-rule parity closes.
 
 ```
 # checks.dl excerpt
 
-diagnostic("E001", "error", src, file, line, broken_ref(target)) :=
-  *edge{from: src, to: target, kind: _, file, line},
+diagnostic("E001", "error", src, file, line, target) :=
+  *edge{from: src, to: target, file: file, line: line},
   not *handle{id: target}.
-
-diagnostic("W001", "warning", src, file, line,
-           stale_ref(s_status, t_status)) :=
-  *edge{from: src, to: target, kind: "depends_on", file, line},
-  active(src), terminal(target),
-  *handle{id: src, status: s_status},
-  *handle{id: target, status: t_status}.
 ```
 
 ### §29 Diagnostic ID rules [CR-R1, CR-R2, CR-R3]
@@ -1274,8 +1350,10 @@ blocking_oq(q) :=
   upstream(spec, q),
   *handle{id: spec, status: "formal"}.
 
-release_blocker(h, "broken_ref")   := diagnostic("E001", _, h, _, _, _).
-release_blocker(h, "undischarged") := diagnostic("E002", _, h, _, _, _).
+release_blocker(h, "broken_ref") :=
+  diagnostic("E001", severity, h, file, line, evidence).
+release_blocker(h, "undischarged") :=
+  diagnostic("E002", severity, h, file, line, evidence).
 release_blocker(h, "blocking_oq")  :=
   blocking_oq(h),
   *meta{handle: h, key: "milestone", value: "v0.3"}.
@@ -1416,10 +1494,10 @@ Projects override or extend any.
 | `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
-| `anneal work` | where should I work | `(h, e) = TopK{k: 25, key: e : (h, e) : potential(h, e), entropy(h, src)}` |
+| `anneal work` | where should I work | `top_work(h, e)` |
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
-| `anneal broken` | are there errors | `diagnostic(_, "error", ...)` |
+| `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
 
 Plus self-description verbs from §11: `schema`, `predicates`, `verbs`,
 `describe`, `source-of`, `examples`, `sources`.
@@ -2144,6 +2222,8 @@ as data instead of smuggling it through row sequence.
 - CR-D44: Introspection tuple encoding (§43)
 - CR-D45: Executable context lowering (§33.1)
 - CR-D46: Documentation declarations (§43)
+- CR-D47: Structural graph vocabulary (§27.1)
+- CR-D48: Work ranking vocabulary (§27.2)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

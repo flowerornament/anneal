@@ -212,10 +212,18 @@ fn datalog_string_list(values: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
+    use crate::facts::{
+        ConfigFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, SnapshotFact,
+    };
+    use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::runtime::QueryOutput;
     use crate::runtime::ast::Statement;
+    use crate::runtime::eval::NumberValue;
     use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
+    use crate::store::FactStore;
 
     #[test]
     fn context_verb_source_matches_checked_in_views_prelude() {
@@ -260,7 +268,7 @@ mod tests {
 
         let analyzed = analyze(program).expect("prelude with describe query analyzes");
         let queries = analyzed.queries().cloned().collect::<Vec<_>>();
-        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&FactStore::default()));
         evaluator.run_fixpoint().expect("prelude fixpoint runs");
         let outputs = queries
             .iter()
@@ -306,7 +314,7 @@ mod tests {
 
         let analyzed = analyze(program).expect("prelude topic query analyzes");
         let queries = analyzed.queries().cloned().collect::<Vec<_>>();
-        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&FactStore::default()));
         evaluator.run_fixpoint().expect("prelude fixpoint runs");
         let outputs = queries
             .iter()
@@ -333,6 +341,121 @@ mod tests {
                 "source_of({topic}) should have concrete lines"
             );
         }
+    }
+
+    #[test]
+    fn standard_prelude_derives_graph_convergence_and_ranking_rules() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                ("area_of", r#"? area_of("ticket-1", area)."#),
+                ("status_of", r#"? status_of("ticket-1", status)."#),
+                (
+                    "incoming_edge",
+                    r#"? incoming_edge("closed-issue", from, kind)."#,
+                ),
+                ("outgoing_edge", r#"? outgoing_edge("ticket-1", to, kind)."#),
+                ("orphan", r#"? orphan("REQ-1")."#),
+                ("stub", r#"? stub("stub.md")."#),
+                (
+                    "diagnostic",
+                    r#"? diagnostic("E001", severity, "ticket-1", file, line, evidence)."#,
+                ),
+                ("entropy", r#"? entropy("ticket-1", source)."#),
+                ("potential", r#"? potential("ticket-1", energy)."#),
+                ("blocked", r#"? blocked("ticket-1")."#),
+                ("advancing", r#"? advancing("ticket-2")."#),
+                ("ranked_work", r"? ranked_work(h, energy, rank)."),
+                ("top_work", r"? top_work(h, energy)."),
+                ("describe", r#"? describe("potential", doc)."#),
+                ("source_of", r#"? source_of("ranked_work", file, lines)."#),
+            ],
+            standard_library_database(),
+        );
+
+        assert!(has_row(
+            output(&outputs, "area_of"),
+            &[("area", string("host"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "status_of"),
+            &[("status", string("open"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "incoming_edge"),
+            &[("from", string("ticket-1")), ("kind", string("DependsOn"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "outgoing_edge"),
+            &[
+                ("to", string("closed-issue")),
+                ("kind", string("DependsOn"))
+            ]
+        ));
+        assert_eq!(
+            output(&outputs, "orphan").rows.len(),
+            1,
+            "REQ-1 is orphaned"
+        );
+        assert_eq!(
+            output(&outputs, "stub").rows.len(),
+            1,
+            "stub.md is a content stub"
+        );
+        assert!(has_row(
+            output(&outputs, "diagnostic"),
+            &[
+                ("severity", string("error")),
+                ("file", string("ticket-1.md")),
+                ("line", int(7)),
+                ("evidence", string("ghost"))
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "entropy"),
+            &[("source", string("broken_ref"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "entropy"),
+            &[("source", string("stale_dep"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "potential"),
+            &[("energy", int(7))]
+        ));
+        assert_eq!(
+            output(&outputs, "blocked").rows.len(),
+            1,
+            "ticket-1 is blocked"
+        );
+        assert_eq!(
+            output(&outputs, "advancing").rows.len(),
+            1,
+            "ticket-2 advanced"
+        );
+        assert!(
+            has_row(
+                output(&outputs, "ranked_work"),
+                &[
+                    ("h", string("ticket-1")),
+                    ("energy", int(7)),
+                    ("rank", int(1))
+                ]
+            ),
+            "ranked_work rows: {:?}",
+            output(&outputs, "ranked_work").rows
+        );
+        assert!(has_row(
+            output(&outputs, "top_work"),
+            &[("h", string("REQ-1")), ("energy", int(6))]
+        ));
+        assert!(matches!(
+            output(&outputs, "describe").rows[0].fields.get("doc"),
+            Some(Value::String(doc)) if doc.contains("convergence energy")
+        ));
+        assert_eq!(
+            output(&outputs, "source_of").rows[0].fields.get("file"),
+            Some(&Value::String(RANKING_PRELUDE_SOURCE.to_string()))
+        );
     }
 
     #[test]
@@ -422,5 +545,171 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 | Statement::Doc(_) => {}
             }
         }
+    }
+
+    fn evaluate_standard_prelude_queries(source: &str, database: Database) -> Vec<QueryOutput> {
+        let mut program = standard_prelude_program().expect("prelude parses");
+        let query = parse_program("stdlib-test", source).expect("query parses");
+        program.statements.extend(query.statements);
+        let analyzed = analyze(program).expect("prelude query analyzes");
+        let queries = analyzed.queries().cloned().collect::<Vec<_>>();
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect("prelude fixpoint runs");
+        queries
+            .iter()
+            .map(|query| evaluator.eval_query(query).expect("query evaluates"))
+            .collect()
+    }
+
+    fn evaluate_standard_prelude_cases(
+        cases: &[(&'static str, &str)],
+        database: Database,
+    ) -> BTreeMap<&'static str, QueryOutput> {
+        let mut source = String::new();
+        for (_, query) in cases {
+            writeln!(&mut source, "{query}").expect("write query case");
+        }
+
+        let outputs = evaluate_standard_prelude_queries(&source, database);
+        assert_eq!(outputs.len(), cases.len(), "one output per query case");
+        cases.iter().map(|(name, _)| *name).zip(outputs).collect()
+    }
+
+    fn output<'a>(outputs: &'a BTreeMap<&'static str, QueryOutput>, name: &str) -> &'a QueryOutput {
+        outputs.get(name).expect("query case exists")
+    }
+
+    fn standard_library_database() -> Database {
+        let corpus = CorpusId::from("test");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(&scope, "ticket-1", "issue", Some("open"), "", "host"),
+            handle(&scope, "closed-issue", "issue", Some("closed"), "", "host"),
+            handle(&scope, "ticket-2", "issue", Some("review"), "", "host"),
+            handle(&scope, "REQ-1", "label", Some("open"), "REQ", "host"),
+            handle(&scope, "stub.md", "file", Some("open"), "", "host"),
+        ];
+        batch.edges = vec![
+            edge(&scope, "ticket-1", "closed-issue", "DependsOn", 4),
+            edge(&scope, "ticket-1", "ghost", "Cites", 7),
+        ];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge stdlib fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.active", "open", None),
+                    config(&corpus, "convergence.active", "review", None),
+                    config(&corpus, "convergence.terminal", "closed", None),
+                    config(&corpus, "convergence.ordering", "open", Some(0)),
+                    config(&corpus, "convergence.ordering", "review", Some(1)),
+                    config(&corpus, "convergence.ordering", "closed", Some(2)),
+                    config(&corpus, "handles.linear", "REQ", None),
+                ],
+            )
+            .expect("replace stdlib fixture config");
+        store
+            .replace_snapshots(
+                &corpus,
+                vec![SnapshotFact {
+                    corpus: corpus.clone(),
+                    snapshot: "s1".to_string(),
+                    at: "2026-05-01".to_string(),
+                    id: "ticket-2".to_string(),
+                    key: "status".to_string(),
+                    value: "open".to_string(),
+                }],
+            )
+            .expect("replace stdlib fixture snapshots");
+        Database::from_store(&store)
+    }
+
+    struct FixtureScope<'a> {
+        corpus: &'a CorpusId,
+        source: &'a SourceName,
+        generation: Generation,
+    }
+
+    fn handle(
+        scope: &FixtureScope<'_>,
+        id: &str,
+        kind: &str,
+        status: Option<&str>,
+        namespace: &str,
+        area: &str,
+    ) -> HandleFact {
+        HandleFact {
+            identity: identity(scope, id),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: status.map(str::to_string),
+            namespace: namespace.to_string(),
+            file: format!("{id}.md"),
+            line: 1,
+            date: None,
+            area: area.to_string(),
+            summary: String::new(),
+        }
+    }
+
+    fn edge(scope: &FixtureScope<'_>, from: &str, to: &str, kind: &str, line: u32) -> EdgeFact {
+        EdgeFact {
+            identity: identity(scope, &format!("{from}->{to}")),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            file: format!("{from}.md"),
+            line,
+        }
+    }
+
+    fn identity(scope: &FixtureScope<'_>, native_id: &str) -> FactIdentity {
+        FactIdentity::new(
+            scope.corpus.clone(),
+            scope.source.clone(),
+            NativeId::from(native_id),
+            OriginUri::from(format!("fixture://{native_id}")),
+            Revision::from("test"),
+            scope.generation,
+        )
+    }
+
+    fn config(corpus: &CorpusId, key: &str, value: &str, ordinal: Option<u32>) -> ConfigFact {
+        ConfigFact {
+            corpus: corpus.clone(),
+            key: key.to_string(),
+            value: value.to_string(),
+            ordinal,
+        }
+    }
+
+    fn has_row(output: &QueryOutput, expected: &[(&str, Value)]) -> bool {
+        output.rows.iter().any(|row| {
+            expected
+                .iter()
+                .all(|(field, value)| row.fields.get(*field) == Some(value))
+        })
+    }
+
+    fn string(value: &str) -> Value {
+        Value::String(value.to_string())
+    }
+
+    fn int(value: i64) -> Value {
+        Value::Number(NumberValue::Int(value))
     }
 }

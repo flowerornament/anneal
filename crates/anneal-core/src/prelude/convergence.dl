@@ -4,3 +4,107 @@
   name: "convergence",
   doc: "Anneal's convergence vocabulary: potential, entropy, blocked, advancing, lifecycle position, and related predicates that help agents find unsettled work in a source-neutral handle graph."
 ).
+
+potential_weight("undischarged", 5).
+potential_weight("broken_ref", 4).
+potential_weight("stale_dep", 3).
+potential_weight("confidence_gap", 3).
+potential_weight("freshness_decay", 2).
+potential_weight("missing_meta", 1).
+potential_weight("orphan_label", 1).
+
+@doc(
+  name: "potential_weight",
+  doc: "Bind default convergence energy weights by entropy source."
+).
+
+@doc(
+  name: "entropy",
+  doc: "Bind source labels explaining why a handle has convergence energy."
+).
+entropy(h, "undischarged") :=
+  obligation(h),
+  not discharged(h),
+  not terminal(h).
+
+entropy(h, "broken_ref") :=
+  diagnostic("E001", severity, h, file, line, evidence).
+
+entropy(h, "stale_dep") :=
+  *edge{from: h, to: t, kind: "DependsOn"},
+  active(h),
+  terminal(t).
+
+entropy(h, "confidence_gap") :=
+  *edge{from: h, to: t, kind: "DependsOn"},
+  pipeline_position(h, n_h),
+  pipeline_position(t, n_t),
+  n_h > n_t + 1.
+
+entropy(h, "freshness_decay") :=
+  *handle{id: h, kind: "file"},
+  active(h),
+  freshness(h, days),
+  days > 60.
+
+entropy(h, "missing_meta") :=
+  *handle{id: h, kind: "file"},
+  active(h),
+  not *meta{handle: h, key: "status"}.
+
+entropy(h, "orphan_label") :=
+  *handle{id: h, kind: "label"},
+  cite_count(h, 0),
+  not discharged(h).
+
+@doc(
+  name: "potential_subject",
+  doc: "Bind handles with at least one entropy source."
+).
+potential_subject(h) := entropy(h, source).
+
+@doc(
+  name: "potential",
+  doc: "Bind total convergence energy for each handle by summing weighted entropy sources."
+).
+potential(h, energy) :=
+  potential_subject(h),
+  energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
+
+@doc(
+  name: "blocked",
+  doc: "Bind active handles with meaningful potential and no recent flux."
+).
+blocked(h) :=
+  active(h),
+  potential(h, energy),
+  energy >= 3,
+  flux(h, 30, 0).
+
+@doc(
+  name: "advancing",
+  doc: "Bind active handles whose lifecycle position advanced since the last snapshot."
+).
+advancing(h) :=
+  active(h),
+  recently_advanced(h).
+
+@doc(
+  name: "snapshot_history_present",
+  doc: "Bind the count of available historical snapshots when snapshot fallback history exists."
+).
+snapshot_history_present(count) :=
+  count = Count{ snapshot : *snapshot{snapshot: snapshot} },
+  count > 0.
+
+@doc(
+  name: "recently_advanced",
+  doc: "Bind handles whose current status outranks their last snapshot status."
+).
+recently_advanced(h) :=
+  snapshot_history_present(count),
+  at("snapshot:last") { *handle{id: h, status: prior} },
+  *handle{id: h, status: current},
+  pipeline_position_for(prior, p_prior),
+  pipeline_position_for(current, p_current),
+  p_current > p_prior.
