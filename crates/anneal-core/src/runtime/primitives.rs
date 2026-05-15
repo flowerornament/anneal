@@ -32,6 +32,12 @@ pub(crate) struct PrimitiveSignature {
     pub(crate) sealed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RequiredPrimitiveInput {
+    pub(crate) position: usize,
+    pub(crate) argument: &'static str,
+}
+
 impl PrimitiveSignature {
     pub(crate) fn arity(self) -> usize {
         self.parameters.len()
@@ -173,6 +179,79 @@ impl PrimitivePredicate {
 
     pub(crate) fn is_soft(self) -> bool {
         !self.signature().sealed
+    }
+
+    pub(crate) fn graph_anchor_positions(self) -> Option<&'static [usize]> {
+        match self {
+            Self::Upstream | Self::Downstream | Self::Impact => Some(&[0, 1]),
+            Self::Neighborhood => Some(&[0, 2]),
+            Self::Terminal
+            | Self::Active
+            | Self::Settled
+            | Self::PipelinePosition
+            | Self::PipelinePositionFor
+            | Self::Obligation
+            | Self::Discharged
+            | Self::Undischarged
+            | Self::CiteCount
+            | Self::InDegree
+            | Self::OutDegree
+            | Self::DischargeCount
+            | Self::Freshness
+            | Self::Flux
+            | Self::TokenEstimate
+            | Self::Read
+            | Self::ReadFull
+            | Self::Match => None,
+        }
+    }
+
+    pub(crate) fn required_bound_inputs(self) -> &'static [RequiredPrimitiveInput] {
+        match self {
+            Self::Read => &[
+                RequiredPrimitiveInput {
+                    position: 0,
+                    argument: "handle",
+                },
+                RequiredPrimitiveInput {
+                    position: 1,
+                    argument: "budget",
+                },
+            ],
+            Self::ReadFull => &[RequiredPrimitiveInput {
+                position: 0,
+                argument: "handle",
+            }],
+            Self::Match => &[
+                RequiredPrimitiveInput {
+                    position: 0,
+                    argument: "pattern",
+                },
+                RequiredPrimitiveInput {
+                    position: 1,
+                    argument: "handle",
+                },
+            ],
+            Self::Upstream
+            | Self::Downstream
+            | Self::Impact
+            | Self::Neighborhood
+            | Self::Terminal
+            | Self::Active
+            | Self::Settled
+            | Self::PipelinePosition
+            | Self::PipelinePositionFor
+            | Self::Obligation
+            | Self::Discharged
+            | Self::Undischarged
+            | Self::CiteCount
+            | Self::InDegree
+            | Self::OutDegree
+            | Self::DischargeCount
+            | Self::Freshness
+            | Self::Flux
+            | Self::TokenEstimate => &[],
+        }
     }
 }
 

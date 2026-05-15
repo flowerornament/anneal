@@ -26,6 +26,7 @@ pub use history::{
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use source::{
     Action, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
-    SearchInfo, Source, SourceCapabilities, SourceContext, SourceError, SourceInfo, TimeRef,
+    RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
+    SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};

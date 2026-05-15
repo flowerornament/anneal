@@ -21,6 +21,7 @@ use crate::runtime::ast::{
     Term,
 };
 use crate::runtime::primitives::PrimitivePredicate;
+use crate::source::{ActorContext, RuntimeCapability};
 use crate::store::FactStore;
 use crate::time::{
     current_days_since_epoch, iso_days_since_epoch, relative_days_reference,
@@ -58,18 +59,23 @@ pub struct QueryWarning {
     pub relation: Option<String>,
 }
 
-pub const READ_FULL_CAPABILITY: &str = "read_full";
+pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalOptions {
-    capabilities: BTreeSet<String>,
+    actor: ActorContext,
     read_full_token_limit: i64,
 }
 
 impl EvalOptions {
-    pub fn with_capability(mut self, capability: impl Into<String>) -> Self {
-        self.capabilities.insert(capability.into());
+    pub fn with_actor(mut self, actor: ActorContext) -> Self {
+        self.actor = actor;
+        self
+    }
+
+    pub fn with_capability(mut self, capability: RuntimeCapability) -> Self {
+        self.actor = self.actor.with_runtime_capability(capability);
         self
     }
 
@@ -78,15 +84,15 @@ impl EvalOptions {
         self
     }
 
-    fn has_capability(&self, capability: &str) -> bool {
-        self.capabilities.contains(capability)
+    fn has_capability(&self, capability: RuntimeCapability) -> bool {
+        self.actor.has_runtime_capability(capability)
     }
 }
 
 impl Default for EvalOptions {
     fn default() -> Self {
         Self {
-            capabilities: BTreeSet::new(),
+            actor: ActorContext::anonymous_cli(),
             read_full_token_limit: DEFAULT_READ_FULL_TOKEN_LIMIT,
         }
     }
@@ -274,17 +280,14 @@ impl Database {
         self.stored.insert(relation, stored);
     }
 
-    fn rebuild_indexes(&mut self) {
+    fn rebuild_graph(&mut self) {
         let mut graph = GraphIndex::default();
-        let mut content = ContentIndex::default();
         for (relation, stored) in &self.stored {
             for row in &stored.rows {
                 graph.insert_row(relation, row);
-                content.insert_row(relation, row);
             }
         }
         self.graph = Arc::new(graph);
-        self.content = Arc::new(content);
     }
 
     fn scoped_to_time_ref(&self, reference: &str) -> Result<(Self, Vec<QueryWarning>), EvalError> {
@@ -297,7 +300,7 @@ impl Database {
         let mut scoped = self.clone_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
         scoped.apply_handle_snapshot(&selection.rows);
-        scoped.rebuild_indexes();
+        scoped.rebuild_graph();
 
         Ok((
             scoped,
@@ -623,7 +626,7 @@ impl<'a> Iterator for RowCandidates<'a> {
 struct ContentIndex {
     content: BTreeMap<ContentKey, ContentPayload>,
     spans: BTreeMap<ContentKey, SpanPayload>,
-    span_keys_by_handle: BTreeMap<String, BTreeSet<ContentKey>>,
+    span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -668,13 +671,39 @@ struct SpanPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReadSpan {
-    handle: String,
-    span_id: String,
-    text: String,
+struct OrderedSpanKey {
     start_line: i64,
-    end_line: i64,
-    tokens: i64,
+    span_id: String,
+}
+
+impl OrderedSpanKey {
+    fn new(span_id: &str, start_line: i64) -> Self {
+        Self {
+            start_line,
+            span_id: span_id.to_owned(),
+        }
+    }
+}
+
+impl Ord for OrderedSpanKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.start_line
+            .cmp(&other.start_line)
+            .then_with(|| self.span_id.cmp(&other.span_id))
+    }
+}
+
+impl PartialOrd for OrderedSpanKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContentSpan<'a> {
+    key: &'a ContentKey,
+    content: &'a ContentPayload,
+    span: &'a SpanPayload,
 }
 
 impl ContentIndex {
@@ -704,10 +733,6 @@ impl ContentIndex {
             text: text.to_owned(),
             tokens,
         };
-        self.span_keys_by_handle
-            .entry(key.handle.clone())
-            .or_default()
-            .insert(key.clone());
         self.content.insert(key, payload);
     }
 
@@ -725,10 +750,10 @@ impl ContentIndex {
             start_line,
             end_line,
         };
-        self.span_keys_by_handle
-            .entry(key.handle.clone())
+        self.span_order_by_handle
+            .entry(handle.to_owned())
             .or_default()
-            .insert(key.clone());
+            .insert(OrderedSpanKey::new(span_id, start_line));
         self.spans.insert(key, payload);
     }
 
@@ -743,28 +768,24 @@ impl ContentIndex {
             return Vec::new();
         }
         let span_id = string_constraint(constraints, 2);
+        if let ArgConstraint::Exact(span_id) = span_id {
+            return self
+                .content_span(&ContentKey::new(handle, span_id))
+                .filter(|span| span.content.tokens <= budget)
+                .map(|span| read_tuple(span, budget))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .into_iter()
+                .collect();
+        }
         let mut used = 0_i64;
         let mut out = Vec::new();
-        for span in self.read_spans_for_handle(handle) {
-            if let ArgConstraint::Exact(expected) = span_id
-                && span.span_id != expected
-            {
-                continue;
-            }
-            let next = used.saturating_add(span.tokens);
+        for span in self.content_spans_for_handle(handle) {
+            let next = used.saturating_add(span.content.tokens);
             if next > budget {
                 break;
             }
             used = next;
-            let tuple = Tuple(vec![
-                Value::String(span.handle.clone()),
-                Value::Number(NumberValue::Int(budget)),
-                Value::String(span.span_id.clone()),
-                Value::String(span.text.clone()),
-                Value::Number(NumberValue::Int(span.start_line)),
-                Value::Number(NumberValue::Int(span.end_line)),
-                Value::Number(NumberValue::Int(span.tokens)),
-            ]);
+            let tuple = read_tuple(span, budget);
             if tuple_matches_constraints(&tuple, constraints) {
                 out.push(tuple);
             }
@@ -780,53 +801,34 @@ impl ContentIndex {
         let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
             return Ok(Vec::new());
         };
-        let Some((content, tokens)) = self.full_content(handle) else {
+        let Some(content) = self.full_content_under_limit(handle, token_limit)? else {
             return Ok(Vec::new());
         };
-        if tokens > token_limit {
-            return Err(EvalError::ReadFullBudgetExceeded {
-                handle: handle.to_owned(),
-                tokens,
-                limit: token_limit,
-            });
-        }
-        let tuple = Tuple(vec![
-            Value::String(handle.to_owned()),
-            Value::String(content),
-        ]);
+        let tuple = Tuple(vec![string_value(handle), Value::String(content)]);
         Ok(tuple_matches_constraints(&tuple, constraints)
             .then_some(tuple)
             .into_iter()
             .collect())
     }
 
-    fn match_tuples(&self, constraints: &[(usize, Value)]) -> Result<Vec<Tuple>, EvalError> {
+    fn match_tuples(&self, constraints: &[(usize, Value)], regex: &Regex) -> Vec<Tuple> {
         let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
-        let regex = Regex::new(pattern).map_err(|source| EvalError::InvalidRegex {
-            pattern: pattern.to_owned(),
-            source,
-        })?;
-        let handle = string_constraint(constraints, 1);
-        let spans = match handle {
-            ArgConstraint::Exact(handle) => self.read_spans_for_handle(handle),
-            ArgConstraint::Any => self.all_read_spans(),
-            ArgConstraint::Impossible => return Ok(Vec::new()),
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 1) else {
+            return Vec::new();
         };
         let mut out = Vec::new();
-        for span in spans {
-            for (line_offset, line) in span.text.lines().enumerate() {
+        for span in self.content_spans_for_handle(handle) {
+            for (line_offset, line) in span.content.text.lines().enumerate() {
                 if !regex.is_match(line) {
                     continue;
                 }
                 let line_offset = i64::try_from(line_offset).unwrap_or(i64::MAX);
                 let tuple = Tuple(vec![
-                    Value::String(pattern.to_owned()),
-                    Value::String(span.handle.clone()),
-                    Value::Number(NumberValue::Int(
-                        span.start_line.saturating_add(line_offset),
-                    )),
+                    string_value(pattern),
+                    string_value(&span.key.handle),
+                    int_value(span.span.start_line.saturating_add(line_offset)),
                     Value::String(line.to_owned()),
                 ]);
                 if tuple_matches_constraints(&tuple, constraints) {
@@ -834,61 +836,68 @@ impl ContentIndex {
                 }
             }
         }
-        Ok(out)
+        out
     }
 
-    fn all_read_spans(&self) -> Vec<ReadSpan> {
-        self.span_keys_by_handle
-            .keys()
-            .flat_map(|handle| self.read_spans_for_handle(handle))
-            .collect()
-    }
-
-    fn read_spans_for_handle(&self, handle: &str) -> Vec<ReadSpan> {
-        let Some(span_keys) = self.span_keys_by_handle.get(handle) else {
-            return Vec::new();
-        };
-        let mut spans = span_keys
-            .iter()
-            .filter_map(|span_key| self.read_span(span_key))
-            .collect::<Vec<_>>();
-        spans.sort_by(|left, right| {
-            left.start_line
-                .cmp(&right.start_line)
-                .then_with(|| left.span_id.cmp(&right.span_id))
-        });
-        spans
-    }
-
-    fn read_span(&self, key: &ContentKey) -> Option<ReadSpan> {
-        let content = self.content.get(key)?;
+    fn content_span(&self, key: &ContentKey) -> Option<ContentSpan<'_>> {
+        let (key, content) = self.content.get_key_value(key)?;
         let span = self.spans.get(key)?;
-        Some(ReadSpan {
-            handle: key.handle.clone(),
-            span_id: key.span_id.clone(),
-            text: content.text.clone(),
-            start_line: span.start_line,
-            end_line: span.end_line,
-            tokens: content.tokens,
-        })
+        Some(ContentSpan { key, content, span })
     }
 
-    fn full_content(&self, handle: &str) -> Option<(String, i64)> {
-        let spans = self.read_spans_for_handle(handle);
-        if spans.is_empty() {
-            return None;
+    fn content_spans_for_handle(&self, handle: &str) -> impl Iterator<Item = ContentSpan<'_>> {
+        self.span_order_by_handle
+            .get(handle)
+            .into_iter()
+            .flat_map(move |ordered_keys| {
+                ordered_keys.iter().filter_map(move |ordered_key| {
+                    self.content_span(&ContentKey::new(handle, &ordered_key.span_id))
+                })
+            })
+    }
+
+    fn full_content_under_limit(
+        &self,
+        handle: &str,
+        token_limit: i64,
+    ) -> Result<Option<String>, EvalError> {
+        let mut tokens = 0_i64;
+        let mut has_content = false;
+        for span in self.content_spans_for_handle(handle) {
+            has_content = true;
+            tokens = tokens.saturating_add(span.content.tokens);
+            if tokens > token_limit {
+                return Err(EvalError::ReadFullBudgetExceeded {
+                    handle: handle.to_owned(),
+                    tokens,
+                    limit: token_limit,
+                });
+            }
+        }
+        if !has_content {
+            return Ok(None);
         }
         let mut content = String::new();
-        let mut tokens = 0_i64;
-        for span in spans {
+        for span in self.content_spans_for_handle(handle) {
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
             }
-            content.push_str(&span.text);
-            tokens = tokens.saturating_add(span.tokens);
+            content.push_str(&span.content.text);
         }
-        Some((content, tokens))
+        Ok(Some(content))
     }
+}
+
+fn read_tuple(span: ContentSpan<'_>, budget: i64) -> Tuple {
+    Tuple(vec![
+        string_value(&span.key.handle),
+        int_value(budget),
+        string_value(&span.key.span_id),
+        Value::String(span.content.text.clone()),
+        int_value(span.span.start_line),
+        int_value(span.span.end_line),
+        int_value(span.content.tokens),
+    ])
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1113,13 +1122,13 @@ impl GraphIndex {
             (ArgConstraint::Exact(start), _) => self
                 .reachable_from(start, from_direction, None)
                 .into_iter()
-                .map(|step| Tuple(vec![graph_string(start), graph_string(&step.node)]))
+                .map(|step| Tuple(vec![string_value(start), string_value(&step.node)]))
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
             (ArgConstraint::Any, ArgConstraint::Exact(end)) => self
                 .reachable_from(end, to_direction, None)
                 .into_iter()
-                .map(|step| Tuple(vec![graph_string(&step.node), graph_string(end)]))
+                .map(|step| Tuple(vec![string_value(&step.node), string_value(end)]))
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
             (ArgConstraint::Any, ArgConstraint::Any) => self
@@ -1128,7 +1137,7 @@ impl GraphIndex {
                 .flat_map(|start| {
                     self.reachable_from(start, from_direction, None)
                         .into_iter()
-                        .map(|step| Tuple(vec![graph_string(start), graph_string(&step.node)]))
+                        .map(|step| Tuple(vec![string_value(start), string_value(&step.node)]))
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
@@ -1151,9 +1160,9 @@ impl GraphIndex {
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
-                        graph_string(start),
-                        graph_string(&step.node),
-                        graph_int(step.depth),
+                        string_value(start),
+                        string_value(&step.node),
+                        int_value(step.depth),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1163,9 +1172,9 @@ impl GraphIndex {
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
-                        graph_string(&step.node),
-                        graph_string(end),
-                        graph_int(step.depth),
+                        string_value(&step.node),
+                        string_value(end),
+                        int_value(step.depth),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1178,9 +1187,9 @@ impl GraphIndex {
                         .into_iter()
                         .map(|step| {
                             Tuple(vec![
-                                graph_string(start),
-                                graph_string(&step.node),
-                                graph_int(step.depth),
+                                string_value(start),
+                                string_value(&step.node),
+                                int_value(step.depth),
                             ])
                         })
                 })
@@ -1205,9 +1214,9 @@ impl GraphIndex {
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
-                        graph_string(start),
-                        graph_int(step.depth),
-                        graph_string(&step.node),
+                        string_value(start),
+                        int_value(step.depth),
+                        string_value(&step.node),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1217,9 +1226,9 @@ impl GraphIndex {
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
-                        graph_string(&step.node),
-                        graph_int(step.depth),
-                        graph_string(end),
+                        string_value(&step.node),
+                        int_value(step.depth),
+                        string_value(end),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1232,9 +1241,9 @@ impl GraphIndex {
                         .into_iter()
                         .map(|step| {
                             Tuple(vec![
-                                graph_string(start),
-                                graph_int(step.depth),
-                                graph_string(&step.node),
+                                string_value(start),
+                                int_value(step.depth),
+                                string_value(&step.node),
                             ])
                         })
                 })
@@ -1255,13 +1264,13 @@ impl GraphIndex {
                 .handles
                 .get(id)
                 .filter(|state| predicate(self, id, state))
-                .map(|_| vec![Tuple(vec![graph_string(id)])])
+                .map(|_| vec![Tuple(vec![string_value(id)])])
                 .unwrap_or_default(),
             ArgConstraint::Any => self
                 .handles
                 .iter()
                 .filter(|(id, state)| predicate(self, id, state))
-                .map(|(id, _)| Tuple(vec![graph_string(id)]))
+                .map(|(id, _)| Tuple(vec![string_value(id)]))
                 .collect(),
         }
     }
@@ -1276,7 +1285,7 @@ impl GraphIndex {
                 .get(id)
                 .and_then(|state| state.status.as_deref())
                 .and_then(|status| self.pipeline_position(status))
-                .map(|position| Tuple(vec![graph_string(id), graph_int(position)]))
+                .map(|position| Tuple(vec![string_value(id), int_value(position)]))
                 .into_iter()
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
@@ -1288,7 +1297,7 @@ impl GraphIndex {
                         .status
                         .as_deref()
                         .and_then(|status| self.pipeline_position(status))
-                        .map(|position| Tuple(vec![graph_string(id), graph_int(position)]))
+                        .map(|position| Tuple(vec![string_value(id), int_value(position)]))
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
@@ -1302,14 +1311,14 @@ impl GraphIndex {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(status), _) => self
                 .pipeline_position(status)
-                .map(|position| Tuple(vec![graph_string(status), graph_int(position)]))
+                .map(|position| Tuple(vec![string_value(status), int_value(position)]))
                 .into_iter()
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
             (ArgConstraint::Any, _) => self
                 .pipeline_ordering()
                 .into_iter()
-                .map(|(status, position)| Tuple(vec![graph_string(status), graph_int(position)]))
+                .map(|(status, position)| Tuple(vec![string_value(status), int_value(position)]))
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
@@ -1326,7 +1335,7 @@ impl GraphIndex {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(handle), _) if self.handles.contains_key(handle) => {
                 let count = i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX);
-                vec![Tuple(vec![graph_string(handle), graph_int(count)])]
+                vec![Tuple(vec![string_value(handle), int_value(count)])]
                     .into_iter()
                     .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                     .collect()
@@ -1338,7 +1347,7 @@ impl GraphIndex {
                 .map(|handle| {
                     let count =
                         i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX);
-                    Tuple(vec![graph_string(handle), graph_int(count)])
+                    Tuple(vec![string_value(handle), int_value(count)])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
@@ -1356,8 +1365,8 @@ impl GraphIndex {
                 .get(handle)
                 .map(|state| {
                     Tuple(vec![
-                        graph_string(handle),
-                        graph_int(freshness_days(state, today)),
+                        string_value(handle),
+                        int_value(freshness_days(state, today)),
                     ])
                 })
                 .into_iter()
@@ -1368,8 +1377,8 @@ impl GraphIndex {
                 .iter()
                 .map(|(handle, state)| {
                     Tuple(vec![
-                        graph_string(handle),
-                        graph_int(freshness_days(state, today)),
+                        string_value(handle),
+                        int_value(freshness_days(state, today)),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1394,9 +1403,9 @@ impl GraphIndex {
                 .get(handle)
                 .map(|state| {
                     Tuple(vec![
-                        graph_string(handle),
-                        graph_int(days),
-                        graph_int(self.flux_delta(handle, state, days, today)),
+                        string_value(handle),
+                        int_value(days),
+                        int_value(self.flux_delta(handle, state, days, today)),
                     ])
                 })
                 .into_iter()
@@ -1407,9 +1416,9 @@ impl GraphIndex {
                 .iter()
                 .map(|(handle, state)| {
                     Tuple(vec![
-                        graph_string(handle),
-                        graph_int(days),
-                        graph_int(self.flux_delta(handle, state, days, today)),
+                        string_value(handle),
+                        int_value(days),
+                        int_value(self.flux_delta(handle, state, days, today)),
                     ])
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1427,8 +1436,8 @@ impl GraphIndex {
         match (handle, count) {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(handle), _) if self.nodes.contains(handle) => vec![Tuple(vec![
-                graph_string(handle),
-                graph_int(i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX)),
+                string_value(handle),
+                int_value(i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX)),
             ])]
             .into_iter()
             .filter(|tuple| tuple_matches_constraints(tuple, constraints))
@@ -1439,8 +1448,8 @@ impl GraphIndex {
                 .iter()
                 .map(|handle| {
                     Tuple(vec![
-                        graph_string(handle),
-                        graph_int(
+                        string_value(handle),
+                        int_value(
                             i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX),
                         ),
                     ])
@@ -1799,11 +1808,11 @@ fn tuple_matches_constraints(tuple: &Tuple, constraints: &[(usize, Value)]) -> b
         .all(|(idx, value)| tuple.0.get(*idx) == Some(value))
 }
 
-fn graph_string(value: &str) -> Value {
+fn string_value(value: &str) -> Value {
     Value::String(value.to_owned())
 }
 
-fn graph_int(value: i64) -> Value {
+fn int_value(value: i64) -> Value {
     Value::Number(NumberValue::Int(value))
 }
 
@@ -1929,7 +1938,7 @@ pub enum EvalError {
     #[error("primitive '{primitive}' requires capability '{capability}'")]
     CapabilityRequired {
         primitive: &'static str,
-        capability: &'static str,
+        capability: RuntimeCapability,
     },
     #[error("read_full({handle:?}) would return {tokens} tokens, exceeding the hard limit {limit}")]
     ReadFullBudgetExceeded {
@@ -2234,7 +2243,7 @@ fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<
     let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
         return true;
     };
-    let graph_ready = graph_anchor_positions(primitive).is_none_or(|positions| {
+    let graph_ready = primitive.graph_anchor_positions().is_none_or(|positions| {
         positions.iter().any(|idx| {
             atom.args
                 .get(*idx)
@@ -2249,61 +2258,11 @@ fn content_primitive_inputs_ready(
     primitive: PrimitivePredicate,
     bound: &BTreeSet<Ident>,
 ) -> bool {
-    let required: &[usize] = match primitive {
-        PrimitivePredicate::Read => &[0, 1],
-        PrimitivePredicate::ReadFull | PrimitivePredicate::Match => &[0],
-        PrimitivePredicate::Upstream
-        | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact
-        | PrimitivePredicate::Neighborhood
-        | PrimitivePredicate::Terminal
-        | PrimitivePredicate::Active
-        | PrimitivePredicate::Settled
-        | PrimitivePredicate::PipelinePosition
-        | PrimitivePredicate::PipelinePositionFor
-        | PrimitivePredicate::Obligation
-        | PrimitivePredicate::Discharged
-        | PrimitivePredicate::Undischarged
-        | PrimitivePredicate::CiteCount
-        | PrimitivePredicate::InDegree
-        | PrimitivePredicate::OutDegree
-        | PrimitivePredicate::DischargeCount
-        | PrimitivePredicate::Freshness
-        | PrimitivePredicate::Flux
-        | PrimitivePredicate::TokenEstimate => return true,
-    };
-    required.iter().all(|idx| {
+    primitive.required_bound_inputs().iter().all(|input| {
         atom.args
-            .get(*idx)
+            .get(input.position)
             .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
     })
-}
-
-fn graph_anchor_positions(primitive: PrimitivePredicate) -> Option<&'static [usize]> {
-    match primitive {
-        PrimitivePredicate::Upstream
-        | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact => Some(&[0, 1]),
-        PrimitivePredicate::Neighborhood => Some(&[0, 2]),
-        PrimitivePredicate::Terminal
-        | PrimitivePredicate::Active
-        | PrimitivePredicate::Settled
-        | PrimitivePredicate::PipelinePosition
-        | PrimitivePredicate::PipelinePositionFor
-        | PrimitivePredicate::Obligation
-        | PrimitivePredicate::Discharged
-        | PrimitivePredicate::Undischarged
-        | PrimitivePredicate::CiteCount
-        | PrimitivePredicate::InDegree
-        | PrimitivePredicate::OutDegree
-        | PrimitivePredicate::DischargeCount
-        | PrimitivePredicate::Freshness
-        | PrimitivePredicate::Flux
-        | PrimitivePredicate::TokenEstimate
-        | PrimitivePredicate::Read
-        | PrimitivePredicate::ReadFull
-        | PrimitivePredicate::Match => None,
-    }
 }
 
 fn aggregate_atom_ready(
@@ -2612,9 +2571,11 @@ fn eval_primitive(
     options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut out = Vec::new();
+    let mut regex_cache = BTreeMap::<String, Regex>::new();
     for binding in bindings {
         let constraints = call_constraints(args, &binding)?;
-        let tuples = primitive_tuples(primitive, &constraints, database, options)?;
+        let tuples =
+            primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
         for tuple in tuples {
             if let Some(next) = unify_call_args(args, &tuple, &binding)? {
                 out.push(next);
@@ -2629,6 +2590,7 @@ fn primitive_tuples(
     constraints: &[(usize, Value)],
     database: &Database,
     options: &EvalOptions,
+    regex_cache: &mut BTreeMap<String, Regex>,
 ) -> Result<Vec<Tuple>, EvalError> {
     match primitive {
         PrimitivePredicate::Read => Ok(database.content.read_tuples(constraints)),
@@ -2643,7 +2605,22 @@ fn primitive_tuples(
                 .content
                 .read_full_tuples(constraints, options.read_full_token_limit)
         }
-        PrimitivePredicate::Match => database.content.match_tuples(constraints),
+        PrimitivePredicate::Match => {
+            let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
+                return Ok(Vec::new());
+            };
+            if !regex_cache.contains_key(pattern) {
+                let regex = Regex::new(pattern).map_err(|source| EvalError::InvalidRegex {
+                    pattern: pattern.to_owned(),
+                    source,
+                })?;
+                regex_cache.insert(pattern.to_owned(), regex);
+            }
+            let regex = regex_cache
+                .get(pattern)
+                .expect("regex was inserted before lookup");
+            Ok(database.content.match_tuples(constraints, regex))
+        }
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact
@@ -4552,7 +4529,7 @@ mod tests {
     #[test]
     fn match_uses_regex_over_content_lines() {
         let output = evaluate_query_output(
-            r#"? match("urgent", handle, line, snippet)."#,
+            r#"? *handle{id: handle}, match("urgent", handle, line, snippet)."#,
             content_database(),
         );
         let rows = output
@@ -4586,7 +4563,7 @@ mod tests {
     #[test]
     fn match_reports_invalid_regex() {
         let err = evaluate_query_error(
-            r#"? match("[", handle, line, snippet)."#,
+            r#"? match("[", "alpha.md", line, snippet)."#,
             content_database(),
         );
 

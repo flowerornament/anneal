@@ -446,11 +446,13 @@ silent corpus-wide graph expansion.
 primitives require their control arguments to be ground by a literal
 or by a positive atom outside the primitive call. `read` requires
 `handle` and `budget`; `read_full` requires `handle` and the
-`read_full` capability; `match` requires `pattern`. `read` treats
+`read_full` capability; `match` requires `pattern` and `handle`.
+`read` treats
 `span_id` as an optional narrowing constraint and emits spans in
 `start_line`, `span_id` order while the cumulative `tokens` remain
-within `budget`. `match` may scan the corpus when only `pattern` is
-ground, but a bound `handle` narrows it. Rationale: content access is
+within `budget`. `match` scans only the bound handle's stored content
+spans; corpus-wide regex search belongs in `search`/ranking or behind
+an explicit future budgeted primitive. Rationale: content access is
 the substrate's context-loading valve; agents need predictable bounded
 reads instead of accidental full-corpus dumps.
 

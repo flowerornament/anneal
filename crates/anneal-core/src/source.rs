@@ -120,12 +120,45 @@ pub struct ActorContext {
     pub capabilities: BTreeSet<String>,
 }
 
+/// Built-in runtime capabilities recognized by the substrate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum RuntimeCapability {
+    ReadFull,
+    Eval,
+    TrailPrivate,
+}
+
+impl RuntimeCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadFull => "read_full",
+            Self::Eval => "eval",
+            Self::TrailPrivate => "trail_private",
+        }
+    }
+}
+
+impl fmt::Display for RuntimeCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl ActorContext {
     pub fn anonymous_cli() -> Self {
         Self {
             actor: "anonymous-cli".to_string(),
             capabilities: BTreeSet::new(),
         }
+    }
+
+    pub fn with_runtime_capability(mut self, capability: RuntimeCapability) -> Self {
+        self.capabilities.insert(capability.as_str().to_string());
+        self
+    }
+
+    pub fn has_runtime_capability(&self, capability: RuntimeCapability) -> bool {
+        self.has_capability(capability.as_str())
     }
 
     pub fn has_capability(&self, capability: &str) -> bool {

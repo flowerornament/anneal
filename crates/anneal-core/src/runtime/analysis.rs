@@ -959,7 +959,7 @@ fn check_graph_primitive_anchor_safety(
     primitive: PrimitivePredicate,
     outside_bound: &BTreeSet<Ident>,
 ) -> Result<(), StaticError> {
-    let Some(anchor_positions) = graph_anchor_positions(primitive) else {
+    let Some(anchor_positions) = primitive.graph_anchor_positions() else {
         return Ok(());
     };
     if anchor_positions.iter().any(|idx| {
@@ -975,70 +975,19 @@ fn check_graph_primitive_anchor_safety(
     })
 }
 
-fn graph_anchor_positions(primitive: PrimitivePredicate) -> Option<&'static [usize]> {
-    match primitive {
-        PrimitivePredicate::Upstream
-        | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact => Some(&[0, 1]),
-        PrimitivePredicate::Neighborhood => Some(&[0, 2]),
-        PrimitivePredicate::Terminal
-        | PrimitivePredicate::Active
-        | PrimitivePredicate::Settled
-        | PrimitivePredicate::PipelinePosition
-        | PrimitivePredicate::PipelinePositionFor
-        | PrimitivePredicate::Obligation
-        | PrimitivePredicate::Discharged
-        | PrimitivePredicate::Undischarged
-        | PrimitivePredicate::CiteCount
-        | PrimitivePredicate::InDegree
-        | PrimitivePredicate::OutDegree
-        | PrimitivePredicate::DischargeCount
-        | PrimitivePredicate::Freshness
-        | PrimitivePredicate::Flux
-        | PrimitivePredicate::TokenEstimate
-        | PrimitivePredicate::Read
-        | PrimitivePredicate::ReadFull
-        | PrimitivePredicate::Match => None,
-    }
-}
-
 fn check_content_primitive_input_safety(
     atom: &DerivedAtom,
     primitive: PrimitivePredicate,
     outside_bound: &BTreeSet<Ident>,
 ) -> Result<(), StaticError> {
-    let required: &[(usize, &'static str)] = match primitive {
-        PrimitivePredicate::Read => &[(0, "handle"), (1, "budget")],
-        PrimitivePredicate::ReadFull => &[(0, "handle")],
-        PrimitivePredicate::Match => &[(0, "pattern")],
-        PrimitivePredicate::Upstream
-        | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact
-        | PrimitivePredicate::Neighborhood
-        | PrimitivePredicate::Terminal
-        | PrimitivePredicate::Active
-        | PrimitivePredicate::Settled
-        | PrimitivePredicate::PipelinePosition
-        | PrimitivePredicate::PipelinePositionFor
-        | PrimitivePredicate::Obligation
-        | PrimitivePredicate::Discharged
-        | PrimitivePredicate::Undischarged
-        | PrimitivePredicate::CiteCount
-        | PrimitivePredicate::InDegree
-        | PrimitivePredicate::OutDegree
-        | PrimitivePredicate::DischargeCount
-        | PrimitivePredicate::Freshness
-        | PrimitivePredicate::Flux
-        | PrimitivePredicate::TokenEstimate => return Ok(()),
-    };
-    for (position, argument) in required {
-        let Some(arg) = atom.args.get(*position) else {
+    for input in primitive.required_bound_inputs() {
+        let Some(arg) = atom.args.get(input.position) else {
             continue;
         };
         if !expr_is_bound_by(arg.expr(), outside_bound) {
             return Err(StaticError::UnboundPrimitiveInput {
                 predicate: atom.predicate.clone(),
-                argument,
+                argument: input.argument,
                 location: atom.location.clone(),
             });
         }
@@ -1478,6 +1427,7 @@ mod tests {
                 "match",
                 "pattern",
             ),
+            (r#"? match(".", handle, line, snippet)."#, "match", "handle"),
         ] {
             let err = analyze_err("inline", input);
             assert!(
@@ -1503,7 +1453,7 @@ mod tests {
             pattern("urgent").
             ? *handle{id: h}, budget(b), read(h, b, span_id, text, start_line, end_line, tokens).
             ? read_full("doc.md", content).
-            ? pattern(p), match(p, handle, line, snippet).
+            ? *handle{id: h}, pattern(p), match(p, h, line, snippet).
             "#,
         )
         .expect("program parses");
