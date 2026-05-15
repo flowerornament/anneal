@@ -20,7 +20,9 @@ pub use ast::{
     NumberLiteral, PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term,
     TimeBlock, VerbDecl,
 };
-pub use eval::{Binding, Database, EvalError, Evaluator, QueryOutput, Row, Tuple, Value};
+pub use eval::{
+    Binding, Database, EvalError, Evaluator, QueryOutput, QueryWarning, Row, Tuple, Value,
+};
 pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};
 pub use ndjson::{NdjsonError, write_ndjson, write_ndjson_with_meta};
 pub use parser::{ParseError, parse_program};

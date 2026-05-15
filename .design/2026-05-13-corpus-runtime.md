@@ -343,7 +343,7 @@ populates and every rule may join on.
 *concern{name, member, source, corpus, generation}
 
 *config{key, value, corpus}               // from anneal.toml; runtime-populated
-*snapshot{at, id, key, value, corpus}
+*snapshot{snapshot, at, id, key, value, corpus}
 *trail{...}                                // see §13
 *generation{corpus, source, current}       // current generation per (corpus, source)
 ```
@@ -637,6 +637,33 @@ Reference forms:
 | `at("snapshot:last")` / `at("snapshot:<id>")` | read `.anneal/history.jsonl` | <100ms |
 | `at("--7days")` / `at("2026-04-01")` | resolve to nearest snapshot | <100ms |
 | `at("HEAD~3")` / `at("v0.2.1")` / `at("<sha>")` | git ref: re-run Sources with `supports_git_ref` | O(corpus) per supporting source |
+
+**Definition CR-D39 (Snapshot identity and fallback history
+semantics).** `*snapshot.snapshot` is the point-in-time snapshot id;
+`*snapshot.id` is the handle id whose historical key/value pair was
+recorded. `.anneal/history.jsonl` stores one JSON object per snapshot:
+`{snapshot, at, corpus, facts:[{id,key,value}]}`. `snapshot:last`
+selects the parseable entry with the latest `at` timestamp;
+`snapshot:<id>` selects by `snapshot`; ISO and relative date refs
+select the nearest parseable `at` timestamp. Ties choose the later
+snapshot so replay is monotonic as history grows. The runtime reads
+history through the core history reader and hydrates it into
+`*snapshot` rows before evaluation; the evaluator consumes relations
+and does not open project files directly.
+
+Snapshot history is the v2.0 fallback for handle-state time travel, not
+an implicit full-corpus replay. When a `Source` cannot re-extract full
+facts for a historical reference, snapshot-backed `at()` applies the
+selected `*snapshot` handle key/value rows to current handles and
+reports a structured partial-history warning for relations not backed
+by that source. Rows for handles absent from the current extraction are
+not synthesized from key/value snapshots alone. Snapshot fallback
+supports stored facts plus engine primitives recomputed from the
+historical handle overlay; derived predicates inside fallback `at()`
+blocks require full historical rule evaluation and are rejected in
+v2.0. Rationale: SP-Q6 needs stable status comparisons now, while full
+historical fact replay belongs behind explicit source capabilities
+rather than accidental current-state mixing.
 
 ### §16 `read_full` and capability gating [CR-D14]
 
@@ -1971,6 +1998,7 @@ round-trip contract before persisted/federated config facts ship.
 - CR-D36: Soft lifecycle primitives (§11)
 - CR-D37: Default scalar lifecycle metrics (§11)
 - CR-D38: Non-count aggregation semantics (§20)
+- CR-D39: Snapshot identity and fallback history semantics (§15)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

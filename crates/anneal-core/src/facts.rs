@@ -110,6 +110,7 @@ pub struct ConfigFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotFact {
     pub corpus: CorpusId,
+    pub snapshot: String,
     pub at: String,
     pub id: String,
     pub key: String,

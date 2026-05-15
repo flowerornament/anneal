@@ -7,6 +7,7 @@
 
 pub mod facts;
 pub mod hash;
+pub mod history;
 pub mod ids;
 pub mod runtime;
 pub mod source;
@@ -17,6 +18,10 @@ pub use facts::{
     HandleFact, MetaFact, SnapshotFact, SpanFact,
 };
 pub use hash::fnv1a_64;
+pub use history::{
+    HistoryError, HistoryWarning, SnapshotEntry, SnapshotEntryFact, SnapshotHistory,
+    append_snapshot_entry, read_snapshot_history, repo_history_path,
+};
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use source::{
     Action, ActorContext, CancellationToken, ConfigFacts, ConfigKey, Pattern, SearchInfo, Source,

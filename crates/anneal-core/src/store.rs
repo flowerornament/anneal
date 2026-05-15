@@ -5,6 +5,7 @@ use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
     HandleFact, MetaFact, SnapshotFact, SpanFact,
 };
+use crate::history::SnapshotHistory;
 use crate::ids::{CorpusId, Generation, NativeId, SourceName};
 
 /// In-memory stored-fact relation set with runtime-owned generation swaps.
@@ -90,6 +91,39 @@ impl FactStore {
 
     pub fn generations(&self) -> &[GenerationFact] {
         &self.generations
+    }
+
+    /// Replace runtime snapshot facts for one corpus.
+    ///
+    /// Snapshot rows are runtime-owned historical state, so source generation
+    /// swaps do not retract them.
+    pub fn replace_snapshots(
+        &mut self,
+        corpus: &CorpusId,
+        snapshots: Vec<SnapshotFact>,
+    ) -> Result<(), StoreError> {
+        if snapshots.iter().any(|fact| &fact.corpus != corpus) {
+            return Err(StoreError::MixedSnapshotCorpus);
+        }
+        self.snapshots.retain(|fact| &fact.corpus != corpus);
+        self.snapshots.extend(snapshots);
+        Ok(())
+    }
+
+    /// Load parsed history entries into runtime `*snapshot` rows.
+    ///
+    /// One history file may contain entries for multiple corpora, so this
+    /// replaces every corpus represented in the parsed history atomically
+    /// within the in-memory store.
+    pub fn replace_snapshot_history(&mut self, history: &SnapshotHistory) {
+        let snapshots = history.snapshot_facts();
+        let corpora = snapshots
+            .iter()
+            .map(|fact| fact.corpus.clone())
+            .collect::<BTreeSet<_>>();
+        self.snapshots
+            .retain(|fact| !corpora.contains(&fact.corpus));
+        self.snapshots.extend(snapshots);
     }
 
     /// Replace runtime config facts for one corpus.
@@ -203,6 +237,7 @@ pub enum StoreError {
     MixedSourceBatch,
     MismatchedGeneration,
     MixedConfigCorpus,
+    MixedSnapshotCorpus,
 }
 
 impl fmt::Display for StoreError {
@@ -215,6 +250,9 @@ impl fmt::Display for StoreError {
                 f.write_str("FactBatch fact identity generation does not match batch generation")
             }
             Self::MixedConfigCorpus => f.write_str("config facts contain multiple corpus scopes"),
+            Self::MixedSnapshotCorpus => {
+                f.write_str("snapshot facts contain multiple corpus scopes")
+            }
         }
     }
 }
@@ -237,6 +275,7 @@ fn all_identities(batch: &FactBatch) -> impl Iterator<Item = &FactIdentity> {
 mod tests {
     use super::*;
     use crate::facts::{ConfigFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact};
+    use crate::history::{SnapshotEntry, SnapshotEntryFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 
     fn identity(native_id: &str, generation: Generation) -> FactIdentity {
@@ -279,6 +318,17 @@ mod tests {
             corpus: CorpusId::from(corpus),
             key: key.to_string(),
             value: value.to_string(),
+        }
+    }
+
+    fn snapshot(corpus: &str, snapshot: &str, id: &str) -> SnapshotFact {
+        SnapshotFact {
+            corpus: CorpusId::from(corpus),
+            snapshot: snapshot.to_string(),
+            at: "2026-05-13".to_string(),
+            id: id.to_string(),
+            key: "status".to_string(),
+            value: "draft".to_string(),
         }
     }
 
@@ -447,5 +497,90 @@ mod tests {
             )
             .expect_err("mixed config corpus rejected");
         assert_eq!(err, StoreError::MixedConfigCorpus);
+    }
+
+    #[test]
+    fn replace_snapshots_updates_one_corpus_scope() {
+        let mut store = FactStore::default();
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot("test", "s1", "a.md")],
+            )
+            .expect("initial snapshot replace");
+        store
+            .replace_snapshots(
+                &CorpusId::from("other"),
+                vec![snapshot("other", "s1", "b.md")],
+            )
+            .expect("other snapshot replace");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot("test", "s2", "c.md")],
+            )
+            .expect("second snapshot replace");
+
+        assert_eq!(store.snapshots().len(), 2);
+        assert!(
+            store
+                .snapshots()
+                .iter()
+                .any(|fact| fact.corpus == CorpusId::from("test") && fact.snapshot == "s2")
+        );
+        assert!(
+            store
+                .snapshots()
+                .iter()
+                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id == "b.md")
+        );
+    }
+
+    #[test]
+    fn replace_snapshots_rejects_mixed_corpus_rows() {
+        let mut store = FactStore::default();
+        let err = store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot("other", "s1", "a.md")],
+            )
+            .expect_err("mixed snapshot corpus rejected");
+        assert_eq!(err, StoreError::MixedSnapshotCorpus);
+    }
+
+    #[test]
+    fn replace_snapshot_history_loads_all_history_corpora() {
+        let mut store = FactStore::default();
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot("test", "old", "old.md")],
+            )
+            .expect("initial snapshots");
+        let history = SnapshotHistory::from_entries(vec![
+            SnapshotEntry::new(
+                "s1",
+                "2026-05-13",
+                CorpusId::from("test"),
+                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            ),
+            SnapshotEntry::new(
+                "s1",
+                "2026-05-13",
+                CorpusId::from("other"),
+                vec![SnapshotEntryFact::new("b.md", "status", "current")],
+            ),
+        ]);
+
+        store.replace_snapshot_history(&history);
+
+        assert_eq!(store.snapshots().len(), 2);
+        assert!(!store.snapshots().iter().any(|fact| fact.snapshot == "old"));
+        assert!(
+            store
+                .snapshots()
+                .iter()
+                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id == "b.md")
+        );
     }
 }

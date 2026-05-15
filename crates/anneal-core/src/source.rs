@@ -126,6 +126,21 @@ pub enum TimeRef {
     Date(String),
 }
 
+impl TimeRef {
+    pub fn parse(reference: impl Into<String>) -> Self {
+        let reference = reference.into();
+        if reference == "snapshot:last"
+            || (reference.starts_with("snapshot:") && reference != "snapshot:")
+        {
+            Self::Snapshot(reference)
+        } else if is_date_reference(&reference) {
+            Self::Date(reference)
+        } else {
+            Self::GitRef(reference)
+        }
+    }
+}
+
 /// Source self-description.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SourceInfo {
@@ -177,6 +192,15 @@ pub struct SourceCapabilities {
     pub supports_time_snapshot: bool,
     pub supports_incremental: bool,
     pub live_only: bool,
+}
+
+impl SourceCapabilities {
+    pub fn supports_time_ref(&self, time_ref: &TimeRef) -> bool {
+        match time_ref {
+            TimeRef::Snapshot(_) | TimeRef::Date(_) => self.supports_time_snapshot,
+            TimeRef::GitRef(_) => self.supports_git_ref,
+        }
+    }
 }
 
 /// Search scoring metadata advertised by a source.
@@ -243,5 +267,83 @@ impl std::error::Error for SourceError {
             Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+fn is_date_reference(reference: &str) -> bool {
+    if let Some(days) = reference
+        .strip_prefix("--")
+        .and_then(|value| value.strip_suffix("days"))
+    {
+        return !days.is_empty() && days.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    parse_iso_date_prefix(reference).is_some()
+}
+
+fn parse_iso_date_prefix(reference: &str) -> Option<(i32, u32, u32)> {
+    let date = reference.get(0.."YYYY-MM-DD".len())?;
+    let bytes = date.as_bytes();
+    if bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, byte)| matches!(idx, 4 | 7) || byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let year = date.get(0..4)?.parse::<i32>().ok()?;
+    let month = date.get(5..7)?.parse::<u32>().ok()?;
+    let day = date.get(8..10)?.parse::<u32>().ok()?;
+    (1..=12).contains(&month).then_some(()).and_then(|()| {
+        (1..=days_in_month(year, month))
+            .contains(&day)
+            .then_some(())
+    })?;
+    Some((year, month, day))
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_ref_parse_classifies_snapshot_date_and_git_refs() {
+        assert!(matches!(
+            TimeRef::parse("snapshot:last"),
+            TimeRef::Snapshot(_)
+        ));
+        assert!(matches!(TimeRef::parse("snapshot:"), TimeRef::GitRef(_)));
+        assert!(matches!(TimeRef::parse("2026-05-13"), TimeRef::Date(_)));
+        assert!(matches!(TimeRef::parse("--7days"), TimeRef::Date(_)));
+        assert!(matches!(TimeRef::parse("HEAD~3"), TimeRef::GitRef(_)));
+        assert!(matches!(TimeRef::parse("--days"), TimeRef::GitRef(_)));
+        assert!(matches!(TimeRef::parse("2026-99-99"), TimeRef::GitRef(_)));
+    }
+
+    #[test]
+    fn source_capabilities_report_time_ref_support() {
+        let caps = SourceCapabilities {
+            supports_git_ref: true,
+            supports_time_snapshot: false,
+            supports_incremental: false,
+            live_only: false,
+        };
+        assert!(caps.supports_time_ref(&TimeRef::GitRef("HEAD~3".to_string())));
+        assert!(!caps.supports_time_ref(&TimeRef::Snapshot("snapshot:last".to_string())));
     }
 }

@@ -38,6 +38,20 @@ pub struct Row {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct QueryOutput {
     pub rows: Vec<Row>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<QueryWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct QueryWarning {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -204,6 +218,273 @@ impl Database {
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
             stored.push(row);
         }
+    }
+
+    fn set_stored_relation_rows(
+        &mut self,
+        relation: &str,
+        rows: impl IntoIterator<Item = NamedRow>,
+    ) {
+        let relation = Ident::new_unchecked(relation);
+        let mut stored = StoredRelation::new(relation.clone());
+        for row in rows {
+            stored.push(row);
+        }
+        self.stored.insert(relation, stored);
+    }
+
+    fn rebuild_graph(&mut self) {
+        let mut graph = GraphIndex::default();
+        for (relation, stored) in &self.stored {
+            for row in &stored.rows {
+                graph.insert_row(relation, row);
+            }
+        }
+        self.graph = Arc::new(graph);
+    }
+
+    fn scoped_to_time_ref(&self, reference: &str) -> Result<(Self, Vec<QueryWarning>), EvalError> {
+        let Some(selection) = self.resolve_snapshot_selection(reference) else {
+            return Err(EvalError::UnsupportedTimeRef {
+                reference: reference.to_string(),
+            });
+        };
+
+        let mut scoped = self.clone_for_time_scope();
+        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
+        scoped.apply_handle_snapshot(&selection.rows);
+        scoped.rebuild_graph();
+
+        Ok((
+            scoped,
+            self.snapshot_partial_history_warnings(reference, &selection.snapshot),
+        ))
+    }
+
+    fn resolve_snapshot_selection(&self, reference: &str) -> Option<SnapshotSelection> {
+        let relation = self.stored.get(&Ident::new_unchecked(SNAPSHOT_RELATION))?;
+        let candidates = snapshot_candidates(&relation.rows);
+        match snapshot_reference(reference)? {
+            SnapshotReference::Last => latest_snapshot_candidate(candidates.into_values()),
+            SnapshotReference::Snapshot(id) => candidates.get(&id).cloned().map(Into::into),
+            SnapshotReference::Day(target_day) => {
+                nearest_snapshot_candidate(candidates.into_values(), target_day)
+            }
+        }
+    }
+
+    fn clone_for_time_scope(&self) -> Self {
+        Self {
+            stored: self.stored.clone(),
+            derived: BTreeMap::new(),
+            graph: Arc::clone(&self.graph),
+        }
+    }
+
+    fn apply_handle_snapshot(&mut self, snapshot_rows: &[NamedRow]) {
+        let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
+            return;
+        };
+        let patches = handle_snapshot_patches(snapshot_rows);
+        if patches.is_empty() {
+            return;
+        }
+        let rows = handles
+            .rows
+            .iter()
+            .map(|row| apply_handle_snapshot_patch(row, &patches))
+            .collect::<Vec<_>>();
+        self.set_stored_relation_rows(HANDLE_RELATION, rows);
+    }
+
+    fn snapshot_partial_history_warnings(
+        &self,
+        reference: &str,
+        snapshot: &str,
+    ) -> Vec<QueryWarning> {
+        let sources = self
+            .stored
+            .get(&Ident::new_unchecked(HANDLE_RELATION))
+            .into_iter()
+            .flat_map(|relation| relation.rows.iter())
+            .filter_map(|row| row_string(row, SOURCE_FIELD).map(str::to_string))
+            .collect::<BTreeSet<_>>();
+        if sources.is_empty() {
+            return vec![snapshot_partial_history_warning(reference, snapshot, None)];
+        }
+        sources
+            .into_iter()
+            .map(|source| snapshot_partial_history_warning(reference, snapshot, Some(source)))
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SnapshotSelection {
+    snapshot: String,
+    day: i64,
+    rows: Vec<NamedRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SnapshotCandidate {
+    snapshot: String,
+    day: i64,
+    sort_at: String,
+    rows: Vec<NamedRow>,
+}
+
+enum SnapshotReference {
+    Last,
+    Snapshot(String),
+    Day(i64),
+}
+
+fn snapshot_reference(reference: &str) -> Option<SnapshotReference> {
+    if reference == "snapshot:last" {
+        return Some(SnapshotReference::Last);
+    }
+    if let Some(snapshot) = reference.strip_prefix("snapshot:") {
+        return (!snapshot.is_empty()).then(|| SnapshotReference::Snapshot(snapshot.to_string()));
+    }
+    if let Some(day) = snapshot_days_since_epoch(reference) {
+        return Some(SnapshotReference::Day(day));
+    }
+    relative_days_reference(reference).map(SnapshotReference::Day)
+}
+
+fn snapshot_candidates(rows: &[NamedRow]) -> BTreeMap<String, SnapshotCandidate> {
+    let mut candidates = BTreeMap::<String, SnapshotCandidate>::new();
+    for row in rows {
+        let Some(at) = row_string(row, AT_FIELD) else {
+            continue;
+        };
+        let Some(day) = snapshot_days_since_epoch(at) else {
+            continue;
+        };
+        let snapshot = row_string(row, SNAPSHOT_FIELD).unwrap_or(at).to_string();
+        candidates
+            .entry(snapshot.clone())
+            .or_insert_with(|| SnapshotCandidate {
+                snapshot,
+                day,
+                sort_at: at.to_string(),
+                rows: Vec::new(),
+            })
+            .rows
+            .push(row.clone());
+    }
+    candidates
+}
+
+fn latest_snapshot_candidate(
+    candidates: impl Iterator<Item = SnapshotCandidate>,
+) -> Option<SnapshotSelection> {
+    candidates
+        .max_by(|left, right| {
+            left.day
+                .cmp(&right.day)
+                .then_with(|| left.sort_at.cmp(&right.sort_at))
+                .then_with(|| left.snapshot.cmp(&right.snapshot))
+        })
+        .map(SnapshotSelection::from)
+}
+
+fn nearest_snapshot_candidate(
+    candidates: impl Iterator<Item = SnapshotCandidate>,
+    target_day: i64,
+) -> Option<SnapshotSelection> {
+    candidates
+        .min_by(|left, right| {
+            let left_distance = left.day.abs_diff(target_day);
+            let right_distance = right.day.abs_diff(target_day);
+            left_distance
+                .cmp(&right_distance)
+                .then_with(|| right.day.cmp(&left.day))
+                .then_with(|| right.sort_at.cmp(&left.sort_at))
+                .then_with(|| right.snapshot.cmp(&left.snapshot))
+        })
+        .map(SnapshotSelection::from)
+}
+
+impl From<SnapshotCandidate> for SnapshotSelection {
+    fn from(candidate: SnapshotCandidate) -> Self {
+        Self {
+            snapshot: candidate.snapshot,
+            day: candidate.day,
+            rows: candidate.rows,
+        }
+    }
+}
+
+fn handle_snapshot_patches(
+    snapshot_rows: &[NamedRow],
+) -> BTreeMap<(String, String), Vec<(String, String)>> {
+    let mut patches = BTreeMap::<(String, String), Vec<(String, String)>>::new();
+    for row in snapshot_rows {
+        let (Some(corpus), Some(id), Some(key), Some(value)) = (
+            row_string(row, CORPUS_FIELD),
+            row_string(row, ID_FIELD),
+            row_string(row, KEY_FIELD),
+            row_string(row, VALUE_FIELD),
+        ) else {
+            continue;
+        };
+        patches
+            .entry((corpus.to_string(), id.to_string()))
+            .or_default()
+            .push((key.to_string(), value.to_string()));
+    }
+    patches
+}
+
+fn apply_handle_snapshot_patch(
+    row: &NamedRow,
+    patches: &BTreeMap<(String, String), Vec<(String, String)>>,
+) -> NamedRow {
+    let Some(corpus) = row_string(row, CORPUS_FIELD) else {
+        return row.clone();
+    };
+    let Some(id) = row_string(row, ID_FIELD) else {
+        return row.clone();
+    };
+    let Some(values) = patches.get(&(corpus.to_string(), id.to_string())) else {
+        return row.clone();
+    };
+
+    let mut row = row.clone();
+    for (key, value) in values {
+        if let Ok(field) = Ident::new(key.clone()) {
+            row.insert(field, Value::String(value.clone()));
+        }
+    }
+    row
+}
+
+fn push_warnings(out: &mut Vec<QueryWarning>, warnings: Vec<QueryWarning>) {
+    for warning in warnings {
+        if !out.contains(&warning) {
+            out.push(warning);
+        }
+    }
+}
+
+fn snapshot_partial_history_warning(
+    reference: &str,
+    snapshot: &str,
+    source: Option<String>,
+) -> QueryWarning {
+    let source_clause = source
+        .as_deref()
+        .map_or_else(String::new, |source| format!(" for source {source}"));
+    QueryWarning {
+        code: "partial_history".to_string(),
+        message: format!(
+            "at({reference:?}) used snapshot fallback {snapshot}{source_clause}; only snapshot-backed handle fields are historical"
+        ),
+        reference: Some(reference.to_string()),
+        source,
+        relation: Some(HANDLE_RELATION.to_string()),
     }
 }
 
@@ -386,7 +667,7 @@ impl GraphIndex {
                     row_string(row, ID_FIELD),
                     row_string(row, KEY_FIELD),
                     row_string(row, VALUE_FIELD),
-                    row_string(row, AT_FIELD).and_then(iso_days_since_epoch),
+                    row_string(row, AT_FIELD).and_then(snapshot_days_since_epoch),
                 ) else {
                     return;
                 };
@@ -1065,6 +1346,9 @@ const CONFIG_RELATION: &str = "config";
 const CONTENT_RELATION: &str = "content";
 const SNAPSHOT_RELATION: &str = "snapshot";
 const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
+const CORPUS_FIELD: &str = "corpus";
+const SOURCE_FIELD: &str = "source";
+const SNAPSHOT_FIELD: &str = "snapshot";
 const ID_FIELD: &str = "id";
 const FROM_FIELD: &str = "from";
 const TO_FIELD: &str = "to";
@@ -1144,6 +1428,23 @@ fn freshness_days(state: &HandleState, today: Option<i64>) -> i64 {
 fn current_days_since_epoch() -> Option<i64> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     i64::try_from(duration.as_secs() / 86_400).ok()
+}
+
+fn snapshot_days_since_epoch(value: &str) -> Option<i64> {
+    let date = value.get(0.."YYYY-MM-DD".len())?;
+    iso_days_since_epoch(date)
+}
+
+fn relative_days_reference(reference: &str) -> Option<i64> {
+    let days = reference
+        .strip_prefix("--")?
+        .strip_suffix("days")?
+        .parse::<i64>()
+        .ok()?;
+    if days < 0 {
+        return None;
+    }
+    current_days_since_epoch().map(|today| today.saturating_sub(days))
 }
 
 fn iso_days_since_epoch(value: &str) -> Option<i64> {
@@ -1336,6 +1637,13 @@ pub enum EvalError {
     },
     #[error("unsupported time reference '{reference}'")]
     UnsupportedTimeRef { reference: String },
+    #[error(
+        "time reference '{reference}' cannot evaluate derived predicate '{predicate}' with snapshot fallback"
+    )]
+    UnsupportedTimeScopedDerivedPredicate {
+        reference: String,
+        predicate: PredicateRef,
+    },
     #[error("unsupported expression")]
     UnsupportedExpression,
     #[error("division by zero")]
@@ -1348,6 +1656,7 @@ pub struct Evaluator {
     program: AnalyzedProgram,
     database: Database,
     facts_seeded: bool,
+    warnings: Vec<QueryWarning>,
 }
 
 impl Evaluator {
@@ -1357,6 +1666,7 @@ impl Evaluator {
             program,
             database,
             facts_seeded: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -1370,17 +1680,24 @@ impl Evaluator {
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
-            run_rule_group(&mut self.database, &rules)?;
+            run_rule_group(&mut self.database, &rules, &mut self.warnings)?;
         }
         Ok(())
     }
 
     pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
         let query_ast = query.query();
+        let mut warnings = self.warnings.clone();
         if query_ast.local_rules.is_empty() {
-            let bindings = eval_body(&query_ast.body, vec![Binding::new()], &self.database)?;
+            let bindings = eval_body(
+                &query_ast.body,
+                vec![Binding::new()],
+                &self.database,
+                &mut warnings,
+            )?;
             return Ok(QueryOutput {
                 rows: bindings.into_iter().map(binding_to_row).collect(),
+                warnings,
             });
         }
 
@@ -1393,11 +1710,16 @@ impl Evaluator {
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
-            run_rule_group(&mut database, &rules)?;
+            run_rule_group(&mut database, &rules, &mut warnings)?;
         }
-        let bindings = eval_body(&query_ast.body, vec![Binding::new()], &database)?;
+        let bindings = eval_body(
+            &query_ast.body,
+            vec![Binding::new()],
+            &database,
+            &mut warnings,
+        )?;
         let rows = bindings.into_iter().map(binding_to_row).collect();
-        Ok(QueryOutput { rows })
+        Ok(QueryOutput { rows, warnings })
     }
 
     pub fn database(&self) -> &Database {
@@ -1421,7 +1743,11 @@ impl Evaluator {
     }
 }
 
-fn run_rule_group(database: &mut Database, rules: &[Rule]) -> Result<(), EvalError> {
+fn run_rule_group(
+    database: &mut Database,
+    rules: &[Rule],
+    warnings: &mut Vec<QueryWarning>,
+) -> Result<(), EvalError> {
     let stratum_predicates = rules
         .iter()
         .map(|rule| rule.head.predicate.clone())
@@ -1430,7 +1756,7 @@ fn run_rule_group(database: &mut Database, rules: &[Rule]) -> Result<(), EvalErr
 
     let mut delta = DeltaMap::new();
     for rule in rules {
-        let tuples = eval_rule(rule, database)?;
+        let tuples = eval_rule(rule, database, warnings)?;
         insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
     }
 
@@ -1439,7 +1765,8 @@ fn run_rule_group(database: &mut Database, rules: &[Rule]) -> Result<(), EvalErr
         delta = DeltaMap::new();
         for rule in rules {
             for atom_index in recursive_atom_indexes(&rule.body, &stratum_predicates) {
-                let tuples = eval_rule_with_delta(rule, database, &previous_delta, atom_index)?;
+                let tuples =
+                    eval_rule_with_delta(rule, database, &previous_delta, atom_index, warnings)?;
                 insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
             }
         }
@@ -1447,8 +1774,12 @@ fn run_rule_group(database: &mut Database, rules: &[Rule]) -> Result<(), EvalErr
     Ok(())
 }
 
-fn eval_rule(rule: &Rule, database: &Database) -> Result<Vec<Tuple>, EvalError> {
-    let bindings = eval_body(&rule.body, vec![Binding::new()], database)?;
+fn eval_rule(
+    rule: &Rule,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+) -> Result<Vec<Tuple>, EvalError> {
+    let bindings = eval_body(&rule.body, vec![Binding::new()], database, warnings)?;
     bindings
         .into_iter()
         .map(|binding| project_head(&rule.head, &binding))
@@ -1460,12 +1791,14 @@ fn eval_rule_with_delta(
     database: &Database,
     delta: &DeltaMap,
     atom_index: usize,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Tuple>, EvalError> {
     let bindings = eval_body_with_delta(
         &rule.body,
         vec![Binding::new()],
         database,
         Some(DeltaView { delta, atom_index }),
+        warnings,
     )?;
     bindings
         .into_iter()
@@ -1511,8 +1844,9 @@ fn eval_body(
     body: &Body,
     bindings: Vec<Binding>,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
-    eval_body_with_delta(body, bindings, database, None)
+    eval_body_with_delta(body, bindings, database, None, warnings)
 }
 
 fn eval_body_with_delta(
@@ -1520,10 +1854,11 @@ fn eval_body_with_delta(
     mut bindings: Vec<Binding>,
     database: &Database,
     delta: Option<DeltaView<'_>>,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
     for (atom_index, atom) in body.atoms.iter().enumerate() {
         let atom_delta = delta.filter(|view| view.atom_index == atom_index);
-        bindings = eval_atom(atom, bindings, database, atom_delta)?;
+        bindings = eval_atom(atom, bindings, database, atom_delta, warnings)?;
     }
     Ok(bindings)
 }
@@ -1533,6 +1868,7 @@ fn eval_atom(
     bindings: Vec<Binding>,
     database: &Database,
     delta: Option<DeltaView<'_>>,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
     match atom {
         Atom::Stored(stored) => eval_stored(stored, bindings, database),
@@ -1544,11 +1880,66 @@ fn eval_atom(
             }
         }
         Atom::Comparison(comparison) => eval_comparison(comparison, bindings),
-        Atom::Aggregation(aggregate) => eval_aggregate(aggregate, bindings, database),
-        Atom::Negation(negation) => eval_negation(&negation.atom, bindings, database),
-        Atom::TimeBlock(time_block) => Err(EvalError::UnsupportedTimeRef {
-            reference: time_block.reference.clone(),
-        }),
+        Atom::Aggregation(aggregate) => eval_aggregate(aggregate, bindings, database, warnings),
+        Atom::Negation(negation) => eval_negation(&negation.atom, bindings, database, warnings),
+        Atom::TimeBlock(time_block) => {
+            ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
+            let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
+            push_warnings(warnings, scoped_warnings);
+            eval_body(&time_block.body, bindings, &scoped, warnings)
+        }
+    }
+}
+
+fn ensure_snapshot_time_body_supported(
+    reference: &str,
+    body: &Body,
+    database: &Database,
+) -> Result<(), EvalError> {
+    for atom in &body.atoms {
+        match atom {
+            Atom::Stored(_) | Atom::Comparison(_) => {}
+            Atom::Derived(derived) => {
+                ensure_snapshot_time_derived_supported(reference, &derived.predicate, database)?;
+            }
+            Atom::Negation(negation) => {
+                if let NegatedAtom::Derived(derived) = &negation.atom {
+                    ensure_snapshot_time_derived_supported(
+                        reference,
+                        &derived.predicate,
+                        database,
+                    )?;
+                }
+            }
+            Atom::Aggregation(aggregate) => {
+                ensure_snapshot_time_body_supported(reference, &aggregate.body, database)?;
+            }
+            Atom::TimeBlock(time_block) => {
+                ensure_snapshot_time_body_supported(
+                    &time_block.reference,
+                    &time_block.body,
+                    database,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_snapshot_time_derived_supported(
+    reference: &str,
+    predicate: &PredicateRef,
+    database: &Database,
+) -> Result<(), EvalError> {
+    let is_unshadowed_primitive = PrimitivePredicate::from_predicate(predicate).is_some()
+        && !database.derived.contains_key(predicate);
+    if is_unshadowed_primitive {
+        Ok(())
+    } else {
+        Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+            reference: reference.to_string(),
+            predicate: predicate.clone(),
+        })
     }
 }
 
@@ -1668,6 +2059,7 @@ fn eval_negation(
     negated: &NegatedAtom,
     bindings: Vec<Binding>,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
@@ -1675,7 +2067,7 @@ fn eval_negation(
             NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
             NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
         };
-        let matches = eval_atom(&atom, vec![binding.clone()], database, None)?;
+        let matches = eval_atom(&atom, vec![binding.clone()], database, None, warnings)?;
         if matches.is_empty() {
             out.push(binding);
         }
@@ -1687,12 +2079,13 @@ fn eval_aggregate(
     aggregate: &Aggregate,
     bindings: Vec<Binding>,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
     validate_aggregate_args(aggregate)?;
 
     let mut out = Vec::new();
     for binding in bindings {
-        let inner = eval_body(&aggregate.body, vec![binding.clone()], database)?;
+        let inner = eval_body(&aggregate.body, vec![binding.clone()], database, warnings)?;
         if inner.is_empty() {
             if aggregate.function == AggregateFunction::Count
                 && let Some(group) = bind_aggregate_result(
@@ -2467,6 +2860,7 @@ fn config_row(fact: &ConfigFact) -> NamedRow {
 fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
+        ("snapshot", Value::String(fact.snapshot.clone())),
         ("at", Value::String(fact.at.clone())),
         ("id", Value::String(fact.id.clone())),
         ("key", Value::String(fact.key.clone())),
@@ -2486,7 +2880,7 @@ mod tests {
     use std::fmt::Write as _;
     use std::sync::OnceLock;
 
-    use crate::facts::{FactBatch, FactBatchMode, FactIdentity};
+    use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::ast::{RuleLayer, Statement};
     use crate::runtime::{StaticError, analyze, parse_program};
@@ -2553,6 +2947,17 @@ mod tests {
     fn config(key: &str, value: &str) -> ConfigFact {
         ConfigFact {
             corpus: CorpusId::from("test"),
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn snapshot_fact(snapshot: &str, at: &str, id: &str, key: &str, value: &str) -> SnapshotFact {
+        SnapshotFact {
+            corpus: CorpusId::from("test"),
+            snapshot: snapshot.to_string(),
+            at: at.to_string(),
+            id: id.to_string(),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -2663,6 +3068,54 @@ mod tests {
             ],
         );
         database
+    }
+
+    fn time_travel_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("draft.md", "file", "current", "", "core"),
+            handle("plan.md", "file", "plan", "", "core"),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("time travel fixture merge");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "2026-05-01T00:00:00Z", "draft.md", "status", "raw"),
+                    snapshot_fact("s2", "2026-05-10T00:00:00Z", "draft.md", "status", "draft"),
+                    snapshot_fact("s2", "2026-05-10T00:00:00Z", "plan.md", "status", "plan"),
+                ],
+            )
+            .expect("replace snapshots");
+        Database::from_store(&store)
+    }
+
+    fn tie_time_travel_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle("draft.md", "file", "current", "", "core")];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("tie fixture merge");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "2026-05-01T00:00:00Z", "draft.md", "status", "raw"),
+                    snapshot_fact("s2", "2026-05-09T00:00:00Z", "draft.md", "status", "draft"),
+                ],
+            )
+            .expect("replace snapshots");
+        Database::from_store(&store)
     }
 
     fn mvs_database() -> Database {
@@ -3143,6 +3596,15 @@ mod tests {
             .collect()
     }
 
+    fn evaluate_query_output(input: &str, database: Database) -> QueryOutput {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+        evaluator.eval_query(&query).expect("query evaluates")
+    }
+
     #[test]
     fn graph_primitives_traverse_edges_relationally() {
         let outputs = evaluate_queries(
@@ -3349,6 +3811,176 @@ mod tests {
         for output in outputs {
             assert_query_rows(&output, Vec::new());
         }
+    }
+
+    #[test]
+    fn at_snapshot_last_overlays_handle_status_and_warns_partial_history() {
+        let output = evaluate_query_output(
+            r#"
+            ? *handle{id: h, status: current},
+              at("snapshot:last") { *handle{id: h, status: prior} },
+              prior != current.
+            "#,
+            time_travel_database(),
+        );
+        let mut rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+        rows.sort();
+        assert_query_rows(
+            &rows,
+            vec![row([
+                ("current", s("current")),
+                ("h", s("draft.md")),
+                ("prior", s("draft")),
+            ])],
+        );
+        assert_eq!(output.warnings.len(), 1);
+        assert_eq!(output.warnings[0].code, "partial_history");
+        assert_eq!(
+            output.warnings[0].reference.as_deref(),
+            Some("snapshot:last")
+        );
+    }
+
+    #[test]
+    fn at_iso_date_uses_nearest_snapshot() {
+        let output = evaluate_query_output(
+            r#"
+            ? at("2026-05-02") { *handle{id: "draft.md", status: prior} }.
+            "#,
+            time_travel_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("prior", s("raw"))])],
+        );
+    }
+
+    #[test]
+    fn at_snapshot_id_selects_named_snapshot() {
+        let output = evaluate_query_output(
+            r#"
+            ? at("snapshot:s2") { *handle{id: "draft.md", status: prior} }.
+            "#,
+            time_travel_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("prior", s("draft"))])],
+        );
+    }
+
+    #[test]
+    fn at_iso_date_ties_choose_later_snapshot() {
+        let output = evaluate_query_output(
+            r#"
+            ? at("2026-05-05") { *handle{id: "draft.md", status: prior} }.
+            "#,
+            tie_time_travel_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("prior", s("draft"))])],
+        );
+    }
+
+    #[test]
+    fn at_inside_rule_preserves_partial_history_warning() {
+        let output = evaluate_query_output(
+            r#"
+            prior_status(h, prior) :=
+              at("snapshot:last") { *handle{id: h, status: prior} }.
+            ? prior_status("draft.md", prior).
+            "#,
+            time_travel_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("prior", s("draft"))])],
+        );
+        assert_eq!(output.warnings.len(), 1);
+        assert_eq!(output.warnings[0].code, "partial_history");
+    }
+
+    #[test]
+    fn at_snapshot_fallback_rejects_current_derived_predicates() {
+        let program = parse_program(
+            "inline",
+            r#"
+            historical_current(h) := *handle{id: h, status: "current"}.
+            ? at("snapshot:last") { historical_current("draft.md") }.
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::new(analyzed, time_travel_database());
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+
+        let err = evaluator
+            .eval_query(&query)
+            .expect_err("derived predicate is rejected in snapshot fallback");
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedDerivedPredicate { .. }
+        ));
+    }
+
+    #[test]
+    fn flux_counts_rfc3339_snapshot_rows() {
+        let outputs = evaluate_queries(
+            r#"? flux("draft.md", 1000000, delta)."#,
+            time_travel_database(),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("delta", n(2))])]);
+    }
+
+    #[test]
+    fn at_does_not_synthesize_handles_from_snapshot_key_values() {
+        let mut store = FactStore::default();
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot_fact(
+                    "s1",
+                    "2026-05-01",
+                    "deleted.md",
+                    "status",
+                    "draft",
+                )],
+            )
+            .expect("replace snapshots");
+        let output = evaluate_query_output(
+            r#"? at("snapshot:last") { *handle{id: h, status: s} }."#,
+            Database::from_store(&store),
+        );
+
+        assert!(output.rows.is_empty());
+        assert_eq!(output.warnings[0].code, "partial_history");
     }
 
     #[test]
