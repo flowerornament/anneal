@@ -431,6 +431,17 @@ examples(name, example)
 sources(name, recognizes, capabilities, doc)
 ```
 
+**Rule CR-R7 (Bounded graph primitive anchors).** Graph traversal
+primitives must have at least one endpoint argument bound by a
+literal or by a positive atom outside the primitive call. `upstream`
+and `downstream` require `h` or `anc`/`desc`; `impact` requires `h`
+or `x`; `neighborhood` requires `h` or `member`. `depth` narrows a
+bound traversal but is not itself an endpoint anchor. Fully unbound
+all-pairs traversal is rejected at analysis time. Rationale:
+unanchored traversal is a physical execution strategy disguised as a
+relation; agents need explicit bounded entry points rather than
+silent corpus-wide graph expansion.
+
 **Definition CR-D35 (Sealed engine primitives).** Substrate-only
 engine primitive predicate names in CR-D9 are sealed. Prelude,
 project, import, inline, and fact clauses may call them but must not
@@ -1968,6 +1979,7 @@ round-trip contract before persisted/federated config facts ship.
 - CR-R4: Verb extensibility / Steele's criterion (§31)
 - CR-R5: Workflow gates with pinned fixtures (§49)
 - CR-R6: Edge closure (§10)
+- CR-R7: Bounded graph primitive anchors (§11)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)

@@ -6,7 +6,7 @@ use crate::runtime::ast::{
     Literal, NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
     Statement, StoredAtom, Term,
 };
-use crate::runtime::primitives::{PrimitiveSignature, primitive_signatures};
+use crate::runtime::primitives::{PrimitivePredicate, PrimitiveSignature, primitive_signatures};
 
 type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
 
@@ -177,6 +177,11 @@ pub enum StaticError {
     },
     #[error("{location}: engine primitive '{predicate}' cannot be defined by corpus rules")]
     PrimitiveRedefinition {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
+    #[error("{location}: graph primitive '{predicate}' requires a bound endpoint argument")]
+    UnboundGraphPrimitiveAnchor {
         predicate: PredicateRef,
         location: SourceLocation,
     },
@@ -885,7 +890,11 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
 
     for (atom_index, atom) in body.atoms.iter().enumerate() {
         match atom {
-            Atom::Stored(_) | Atom::Derived(_) => {}
+            Atom::Stored(_) => {}
+            Atom::Derived(derived) => {
+                let outside_bound = positive_vars_outside(body, atom_index);
+                check_graph_primitive_anchor_safety(derived, &outside_bound)?;
+            }
             Atom::Comparison(comparison) => {
                 let mut vars = BTreeSet::new();
                 comparison_vars(comparison, &mut vars);
@@ -907,12 +916,7 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
                 )?;
             }
             Atom::Aggregation(aggregate) => {
-                let mut outside_bound = BTreeSet::new();
-                for (other_index, other) in body.atoms.iter().enumerate() {
-                    if other_index != atom_index {
-                        collect_positive_atom_vars(other, &mut outside_bound);
-                    }
-                }
+                let outside_bound = positive_vars_outside(body, atom_index);
                 check_aggregate_safety(predicate, aggregate, &outside_bound)?;
             }
             Atom::TimeBlock(time_block) => {
@@ -921,6 +925,63 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
         }
     }
     Ok(())
+}
+
+fn positive_vars_outside(body: &Body, excluded_index: usize) -> BTreeSet<Ident> {
+    let mut outside_bound = BTreeSet::new();
+    for (other_index, other) in body.atoms.iter().enumerate() {
+        if other_index != excluded_index {
+            collect_positive_atom_vars(other, &mut outside_bound);
+        }
+    }
+    outside_bound
+}
+
+fn check_graph_primitive_anchor_safety(
+    atom: &DerivedAtom,
+    outside_bound: &BTreeSet<Ident>,
+) -> Result<(), StaticError> {
+    let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
+        return Ok(());
+    };
+    let anchor_positions: &[usize] = match primitive {
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact => &[0, 1],
+        PrimitivePredicate::Neighborhood => &[0, 2],
+        PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::Flux
+        | PrimitivePredicate::TokenEstimate => return Ok(()),
+    };
+    if anchor_positions.iter().any(|idx| {
+        atom.args
+            .get(*idx)
+            .is_some_and(|arg| expr_is_bound_by(arg.expr(), outside_bound))
+    }) {
+        return Ok(());
+    }
+    Err(StaticError::UnboundGraphPrimitiveAnchor {
+        predicate: atom.predicate.clone(),
+        location: atom.location.clone(),
+    })
+}
+
+fn expr_is_bound_by(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
+    let mut vars = BTreeSet::new();
+    expr.variables(&mut vars);
+    vars.iter().all(|var| bound.contains(var))
 }
 
 fn check_aggregate_safety(
@@ -1270,6 +1331,45 @@ mod tests {
             err.to_string()
                 .contains(&location("inline", input, "missing(h)").to_string())
         );
+    }
+
+    #[test]
+    fn rejects_unanchored_graph_primitive_traversal() {
+        let input = r"? upstream(h, anc).";
+        let err = analyze_err("inline", input);
+        let StaticError::UnboundGraphPrimitiveAnchor {
+            predicate,
+            location: actual,
+        } = &err
+        else {
+            panic!("expected unbound graph primitive anchor");
+        };
+        assert_eq!(predicate.name.as_str(), "upstream");
+        assert_eq!(actual, &location("inline", input, "upstream(h, anc)"));
+    }
+
+    #[test]
+    fn graph_primitive_depth_does_not_count_as_anchor() {
+        let input = r"? neighborhood(h, 1, member).";
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnboundGraphPrimitiveAnchor { predicate, .. }
+                if predicate.name.as_str() == "neighborhood"
+        ));
+    }
+
+    #[test]
+    fn accepts_graph_primitive_with_bound_reverse_endpoint() {
+        let program = parse_program(
+            "inline",
+            r#"
+            target("OQ-22").
+            ? target(anc), upstream(h, anc).
+            "#,
+        )
+        .expect("program parses");
+        analyze(program).expect("reverse endpoint anchors graph traversal");
     }
 
     #[test]
