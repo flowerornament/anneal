@@ -761,6 +761,19 @@ aggregation form the grouping key. `TopK` and `TakeUntil` are
 first-class — set semantics alone are insufficient for agent
 retrieval workflows.
 
+**Definition CR-D33 (Aggregate result unification).** The left-hand
+side of an aggregation form participates in normal equality
+unification. If the result variable is already bound, the aggregate
+row survives only when the computed aggregate value equals the bound
+value. Aggregate evaluation never overwrites an existing binding.
+
+**Definition CR-D34 (Empty-group origination).** A grouping key exists
+only when it is positively bound elsewhere in the rule body outside
+the aggregation form. For every such group, `Count` emits a value,
+including `0` when the aggregate sub-body contributes no rows. Groups
+that are not reachable from a non-aggregate body atom are not
+synthesized from the value universe.
+
 ### §21 Negation, recursion, stratification [CR-D18]
 
 **Definition CR-D18 (Stratified negation).** The runtime partitions
@@ -1840,6 +1853,8 @@ cold-agent gate depends on it.
 - CR-D30: Context verb (§33.1)
 - CR-D31: Diagnostic evidence facts (§32.1)
 - CR-D32: Transition-only legacy boundary (§8, §47)
+- CR-D33: Aggregate result unification (§20)
+- CR-D34: Empty-group origination (§20)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
