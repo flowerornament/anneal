@@ -354,16 +354,6 @@ impl Database {
         self.stored.insert(relation, stored);
     }
 
-    fn rebuild_graph(&mut self) {
-        let mut graph = GraphIndex::default();
-        for (relation, stored) in &self.stored {
-            for row in &stored.rows {
-                graph.insert_row(relation, row);
-            }
-        }
-        self.graph = Arc::new(graph);
-    }
-
     fn scoped_to_time_ref(&self, reference: &str) -> Result<(Self, Vec<QueryWarning>), EvalError> {
         let Some(selection) = self.resolve_snapshot_selection(reference) else {
             return Err(EvalError::UnsupportedTimeRef {
@@ -374,7 +364,7 @@ impl Database {
         let mut scoped = self.clone_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
         scoped.apply_handle_snapshot(&selection.rows);
-        scoped.rebuild_graph();
+        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(&selection));
 
         Ok((
             scoped,
@@ -1073,6 +1063,7 @@ struct GraphIndex {
     pipeline_positions: BTreeMap<String, i64>,
     linear_namespaces: BTreeSet<String>,
     status_snapshots: BTreeMap<String, Vec<SnapshotStatus>>,
+    evaluation_day: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1189,6 +1180,30 @@ impl GraphIndex {
             })
             .unwrap_or_else(|idx| idx);
         snapshots.insert(idx, snapshot);
+    }
+
+    fn scoped_to_snapshot(&self, selection: &SnapshotSelection) -> Self {
+        let mut graph = self.clone();
+        graph.evaluation_day = Some(selection.day);
+        graph.apply_snapshot_rows(&selection.rows);
+        graph
+    }
+
+    fn apply_snapshot_rows(&mut self, snapshot_rows: &[NamedRow]) {
+        for ((_corpus, id), values) in handle_snapshot_patches(snapshot_rows) {
+            let Some(state) = self.handles.get_mut(&id) else {
+                continue;
+            };
+            for (key, value) in values {
+                match key.as_str() {
+                    KIND_FIELD => state.kind = value,
+                    STATUS_FIELD => state.status = Some(value),
+                    NAMESPACE_FIELD => state.namespace = value,
+                    DATE_FIELD => state.date = iso_days_since_epoch(&value),
+                    _ => {}
+                }
+            }
+        }
     }
 
     fn insert_config(&mut self, row: &NamedRow) {
@@ -1514,7 +1529,7 @@ impl GraphIndex {
     fn freshness_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
         let handle = string_constraint(constraints, 0);
         let days = i64_constraint(constraints, 1);
-        let today = current_days_since_epoch();
+        let today = self.evaluation_day.or_else(current_days_since_epoch);
         match (handle, days) {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(handle), _) => self
@@ -1552,7 +1567,7 @@ impl GraphIndex {
             }
         };
         let delta = i64_constraint(constraints, 2);
-        let today = current_days_since_epoch();
+        let today = self.evaluation_day.or_else(current_days_since_epoch);
         match (handle, delta) {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(handle), _) => self
@@ -4174,6 +4189,37 @@ mod tests {
         Database::from_store(&store)
     }
 
+    fn time_travel_metric_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle_with_options(
+            "draft.md",
+            "file",
+            Some("current"),
+            "",
+            "core",
+            Some("2026-05-01"),
+        )];
+        let mut store = FactStore::default();
+        store
+            .merge(batch)
+            .expect("time travel metric fixture merge");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "2026-05-01T00:00:00Z", "draft.md", "status", "raw"),
+                    snapshot_fact("s2", "2026-05-10T00:00:00Z", "draft.md", "status", "draft"),
+                ],
+            )
+            .expect("replace snapshots");
+        Database::from_store(&store)
+    }
+
     fn tie_time_travel_database() -> Database {
         let mut batch = FactBatch::new(
             CorpusId::from("test"),
@@ -5463,6 +5509,44 @@ mod tests {
         );
         assert_eq!(output.warnings.len(), 1);
         assert_eq!(output.warnings[0].code, "partial_history");
+    }
+
+    #[test]
+    fn at_snapshot_freshness_uses_selected_snapshot_day() {
+        let output = evaluate_query_output(
+            r#"
+            ? at("snapshot:s2") { freshness("draft.md", days) }.
+            "#,
+            time_travel_metric_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("days", n(9))])],
+        );
+    }
+
+    #[test]
+    fn at_snapshot_flux_uses_full_status_history() {
+        let output = evaluate_query_output(
+            r#"
+            ? at("snapshot:s2") { flux("draft.md", 20, delta) }.
+            "#,
+            time_travel_metric_database(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("delta", n(1))])],
+        );
     }
 
     #[test]
