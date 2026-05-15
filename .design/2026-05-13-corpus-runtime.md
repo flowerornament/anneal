@@ -1454,24 +1454,36 @@ Underlying composition contract (from `views.dl`):
 @verb(
   name: "context",
   query: "
-    ? (h, span_id, score, reason, field) = TopK{ k: hits, key: score :
-        (h, span_id, score, reason, field) :
-        search(goal, h, span_id, score, reason, field, low_confidence),
-        low_confidence = false
-      },
-      per_hit_budget = budget * 0.6 / hits,
+    context_readable(h) :=
+      *content{handle: h, tokens}, tokens <= per_hit_budget.
+
+    context_hit(h, hit_span_id, score, reason, field) :=
+      (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :
+        (h, hit_span_id, score, reason, field) :
+        search(goal, h, hit_span_id, score, reason, field, low_confidence),
+        low_confidence = false,
+        context_readable(h)
+      }.
+
+    context_neighbor(h, h) := context_hit(h, hit_span_id, score, reason, field).
+    context_neighbor(h, neighbor) :=
+      context_hit(h, hit_span_id, score, reason, field),
+      neighborhood(h, neighborhood_depth, neighbor).
+
+    ?
+      context_hit(h, hit_span_id, score, reason, field),
       (span_id, text, start_line, end_line, tokens) = TakeUntil{
         budget: per_hit_budget, sum: tokens, key: start_line :
         (span_id, text, start_line, end_line, tokens) :
           read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)
       },
-      neighborhood_or_self(h, neighborhood_depth, neighbor).
+      context_neighbor(h, neighbor).
   ",
   output_schema: {
     goal: String,
-    hits: List<{h, span_id, score, reason, field}>,
-    spans: List<{h, span_id, start_line, end_line, tokens, text}>,
-    neighborhood: List<{h, neighbor}>
+    hits: List<{handle, span_id, score, reason, field}>,
+    spans: List<{handle, span_id, start_line, end_line, tokens, text}>,
+    neighborhood: List<{handle, neighbor}>
   },
   capabilities: ["read"]
 )
@@ -1493,6 +1505,38 @@ or D-depth neighborhood don't exist; it never overruns.
 Cold-agent test (§49 large-corpus fixture) targets a single `context`
 call after an optional `anneal` dashboard — total tool calls ≤2,
 counted including any required follow-ups.
+
+**Definition CR-D45 (Executable context lowering).** Until Phase 7
+ships typed `@verb` validation, the executable `context` contract is
+the lowered Datalog program used by `views.dl` and `anneal-cli`: the
+surface introduces parameter facts (`context_goal`,
+`context_hits`, `context_read_budget`, `context_neighborhood_depth`).
+`context_read_budget` is the already-allocated per-hit span budget,
+not the total invocation budget. The query then runs over `TopK`,
+`TakeUntil`, `read`, and `context_neighbor`. The `TopK` result is
+first materialized as `context_hit` before joining reads or neighbors;
+otherwise later positive atoms can bind `h` early and accidentally
+turn the query into top-K-per-handle. `context_hit` also requires
+`context_readable(h)`, meaning `*content{handle: h, tokens}` has at
+least one span under the per-hit budget before the handle can win
+TopK; a searchable but unreadably large handle must not starve the
+context result. This check must use content metadata, not `read`,
+because `read` constructs text-bearing rows and would do full-corpus
+read work before ranking. `context_neighbor(h, h)` is always emitted
+from `context_hit` so isolated top hits keep their read spans;
+additional neighbors come from `neighborhood(h, depth, neighbor)`
+anchored on `context_hit`, never from the full `*handle` universe. The
+search hit's raw `hit_span_id` is preserved as hit metadata but `read`
+binds a fresh content span variable, because summary/meta search hits
+legitimately have `span_id = null` and must still yield readable
+context. The declared `output_schema` is encoded as a canonical JSON
+string in the parser-accepted fixture and grouped by the surface into
+`hits`, `spans`, and `neighborhood`; raw row fields such as `h` and
+`hit_span_id` are mapped to public grouped fields `handle` and
+`span_id`, while invocation fields such as `goal` come from the verb
+arguments rather than being duplicated into every relation row.
+Rationale: this pins the agent-visible behavior with today's parser
+while preserving CR-R4's stronger typed verb contract for Phase 7.
 
 ### §34 Query echo behavior [CR-D24]
 
@@ -2082,6 +2126,7 @@ as data instead of smuggling it through row sequence.
 - CR-D42: Default lexical Ranker (§12)
 - CR-D43: Search selection policy (§12)
 - CR-D44: Introspection tuple encoding (§43)
+- CR-D45: Executable context lowering (§33.1)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

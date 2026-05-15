@@ -28,3 +28,7 @@ struct_excessive_bools = "allow"
 [dependencies]
 anneal-core = { path = "../anneal-core" }
 anneal-md = { path = "../anneal-md" }
+
+[dev-dependencies]
+camino = "1.2.2"
+serde_json = "1.0.149"

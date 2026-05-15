@@ -12,6 +12,7 @@ mod introspection;
 pub mod loader;
 pub mod ndjson;
 pub mod parser;
+pub mod prelude;
 mod primitives;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};

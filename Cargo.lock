@@ -33,6 +33,8 @@ version = "0.10.1"
 dependencies = [
  "anneal-core",
  "anneal-md",
+ "camino",
+ "serde_json",
 ]
 
 [[package]]

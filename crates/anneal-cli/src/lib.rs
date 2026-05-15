@@ -4,6 +4,16 @@
 //! foundation checkpoint. This crate is the destination for the v2
 //! surface once the shared runtime is wired.
 
+mod context;
+
+pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
+use anneal_core::runtime::prelude::{datalog_string_literal, low_confidence_filter};
+
+pub use context::{
+    ContextCommand, ContextGroupError, ContextHit, ContextNeighbor, ContextOutput, ContextSpan,
+    DEFAULT_CONTEXT_BUDGET, DEFAULT_CONTEXT_HITS, DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH,
+};
+
 pub const SURFACE_NAME: &str = "anneal-cli";
 
 pub const DEFAULT_SEARCH_LIMIT: usize = 25;
@@ -36,12 +46,8 @@ impl SearchCommand {
     }
 
     pub fn datalog(&self) -> String {
-        let query = datalog_string(&self.query);
-        let confidence_filter = if self.include_low_confidence {
-            String::new()
-        } else {
-            ",\n        low_confidence = false".to_string()
-        };
+        let query = datalog_string_literal(&self.query);
+        let confidence_filter = low_confidence_filter(self.include_low_confidence);
         format!(
             "\
 ? (h, span_id, score, reason, field, low_confidence) = TopK{{ k: {limit}, key: score :
@@ -75,7 +81,7 @@ impl ReadCommand {
     pub fn datalog(&self) -> String {
         format!(
             "? read({}, {}, span_id, text, start_line, end_line, tokens).",
-            datalog_string(&self.handle),
+            datalog_string_literal(&self.handle),
             self.budget,
         )
     }
@@ -96,7 +102,7 @@ impl DescribeCommand {
     }
 
     pub fn datalog(&self) -> String {
-        format!("? describe({}, doc).", datalog_string(&self.name))
+        format!("? describe({}, doc).", datalog_string_literal(&self.name))
     }
 }
 
@@ -107,24 +113,6 @@ impl SourcesCommand {
     pub fn datalog(self) -> &'static str {
         "? sources(name, recognizes, capabilities, doc)."
     }
-}
-
-fn datalog_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => out.push(' '),
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
 }
 
 #[cfg(test)]

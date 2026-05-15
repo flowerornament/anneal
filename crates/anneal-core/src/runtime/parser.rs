@@ -1020,6 +1020,9 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
     use crate::runtime::ast::{AggregateFunction, Atom, CallArg, Literal};
+    use crate::runtime::prelude::{
+        CONTEXT_OUTPUT_SCHEMA, CONTEXT_VERB_NAME, VIEWS_PRELUDE, context_verb_source,
+    };
 
     #[test]
     fn parses_stored_query_with_negation_and_comparison() {
@@ -1093,6 +1096,32 @@ mod tests {
         )
         .expect("program parses");
         assert_eq!(program.statements.len(), 4);
+    }
+
+    #[test]
+    fn parses_embedded_views_prelude() {
+        assert_eq!(VIEWS_PRELUDE, context_verb_source());
+
+        let program = parse_program("views.dl", VIEWS_PRELUDE).expect("views.dl parses");
+        let Some(Statement::Verb(verb)) = program.statements.first() else {
+            panic!("expected context @verb");
+        };
+
+        assert_eq!(verb.string_arg("name"), Some(CONTEXT_VERB_NAME));
+        let query = verb.string_arg("query").expect("context query arg");
+        assert!(query.contains("context_hit"));
+        assert!(query.contains("TakeUntil"));
+        parse_program("views.dl:context.query", query).expect("context query parses");
+
+        let output_schema = verb
+            .string_arg("output_schema")
+            .expect("context output schema");
+        assert_eq!(output_schema, CONTEXT_OUTPUT_SCHEMA);
+        let schema: serde_json::Value =
+            serde_json::from_str(output_schema).expect("context schema is json");
+        assert_eq!(schema["goal"], "String");
+        assert_eq!(schema["hits"][0]["handle"], "HandleId");
+        assert_eq!(schema["hits"][0]["span_id"], "String|null");
     }
 
     #[test]

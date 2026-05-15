@@ -4,10 +4,8 @@ use crate::facts::STORED_RELATION_DESCRIPTORS;
 use crate::source::{SourceCapabilities, SourceInfo};
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
-use super::ast::{
-    Expr, Head, Literal, NumberLiteral, Program, RuleLayer, SourceLocation, Statement, VerbDecl,
-};
-use super::eval::{Tuple, Value, value_from_literal};
+use super::ast::{Expr, Head, Program, RuleLayer, SourceLocation, Statement, VerbDecl};
+use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
 
 #[derive(Clone, Debug, Default)]
@@ -548,49 +546,11 @@ struct VerbInfo {
 impl VerbInfo {
     fn from_decl(verb: &VerbDecl) -> Option<Self> {
         Some(Self {
-            name: verb_string_arg(verb, "name")?,
-            query: verb_string_arg(verb, "query")?,
-            doc: verb_string_arg(verb, "doc")?,
-            output_schema: verb_arg_text(verb, "output_schema")?,
+            name: verb.string_arg("name")?.to_string(),
+            query: verb.string_arg("query")?.to_string(),
+            doc: verb.string_arg("doc")?.to_string(),
+            output_schema: verb.string_arg("output_schema")?.to_string(),
         })
-    }
-}
-
-fn verb_string_arg(verb: &VerbDecl, name: &str) -> Option<String> {
-    verb.args.iter().find_map(|arg| {
-        if arg.name.as_str() != name {
-            return None;
-        }
-        match &arg.expr {
-            Expr::Literal(Literal::String(value)) => Some(value.clone()),
-            _ => None,
-        }
-    })
-}
-
-fn verb_arg_text(verb: &VerbDecl, name: &str) -> Option<String> {
-    verb.args.iter().find_map(|arg| {
-        if arg.name.as_str() != name {
-            return None;
-        }
-        match &arg.expr {
-            Expr::Literal(literal) => Some(literal_text(literal)),
-            _ => Some(String::new()),
-        }
-    })
-}
-
-fn literal_text(literal: &Literal) -> String {
-    match literal {
-        Literal::String(value) => value.clone(),
-        Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
-        Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
-        Literal::Bool(value) => value.to_string(),
-        Literal::Null => "null".to_string(),
-        Literal::List(items) => {
-            let values = items.iter().map(value_from_literal).collect::<Vec<_>>();
-            serde_json::to_string(&Value::List(values)).unwrap_or_else(|_| "[]".to_string())
-        }
     }
 }
 

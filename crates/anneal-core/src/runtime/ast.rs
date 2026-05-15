@@ -150,6 +150,20 @@ pub struct VerbDecl {
     pub location: SourceLocation,
 }
 
+impl VerbDecl {
+    pub fn string_arg(&self, name: &str) -> Option<&str> {
+        self.args.iter().find_map(|arg| {
+            if arg.name.as_str() != name {
+                return None;
+            }
+            let Expr::Literal(Literal::String(value)) = &arg.expr else {
+                return None;
+            };
+            Some(value.as_str())
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rule {
     pub head: Head,
