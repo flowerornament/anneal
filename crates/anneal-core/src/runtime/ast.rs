@@ -524,4 +524,38 @@ impl Expr {
             }
         }
     }
+
+    pub(crate) fn binding_variables(&self, out: &mut BTreeSet<Ident>) {
+        match self {
+            Self::Var(var) => {
+                out.insert(var.clone());
+            }
+            Self::Tuple(items) => {
+                for item in items {
+                    item.binding_variables(out);
+                }
+            }
+            Self::Literal(_) | Self::FunctionCall { .. } | Self::Binary { .. } => {}
+        }
+    }
+
+    pub(crate) fn input_variables(&self, out: &mut BTreeSet<Ident>) {
+        match self {
+            Self::Var(_) | Self::Literal(_) => {}
+            Self::FunctionCall { args, .. } => {
+                for arg in args {
+                    arg.expr().variables(out);
+                }
+            }
+            Self::Binary { left, right, .. } => {
+                left.variables(out);
+                right.variables(out);
+            }
+            Self::Tuple(items) => {
+                for item in items {
+                    item.input_variables(out);
+                }
+            }
+        }
+    }
 }

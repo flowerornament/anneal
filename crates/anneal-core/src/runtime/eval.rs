@@ -2392,7 +2392,11 @@ fn common_bound_variables(bindings: &[Binding]) -> BTreeSet<Ident> {
 
 fn atom_ready(body: &Body, atom_index: usize, atom: &Atom, bound: &BTreeSet<Ident>) -> bool {
     match atom {
-        Atom::Stored(_) | Atom::TimeBlock(_) => true,
+        Atom::Stored(stored) => variables_are_bound(&stored_atom_input_variables(stored), bound),
+        Atom::TimeBlock(time_block) => variables_are_bound(
+            &positive_body_outer_input_variables(&time_block.body),
+            bound,
+        ),
         Atom::Derived(derived) => derived_atom_ready(derived, bound),
         Atom::Comparison(comparison) => {
             expr_variables_are_bound(&comparison.left, bound)
@@ -2404,6 +2408,9 @@ fn atom_ready(body: &Body, atom_index: usize, atom: &Atom, bound: &BTreeSet<Iden
 }
 
 fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<Ident>) -> bool {
+    if !variables_are_bound(&derived_atom_input_variables(atom), bound) {
+        return false;
+    }
     let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
         return true;
     };
@@ -2449,19 +2456,62 @@ fn aggregate_atom_ready(
         .intersection(&outside)
         .cloned()
         .collect::<BTreeSet<_>>();
-    collect_ground_aggregate_arg_variables(aggregate, &mut required);
+    required.extend(
+        positive_body_input_variables(&aggregate.body)
+            .into_iter()
+            .filter(|var| !inner.contains(var)),
+    );
+    collect_aggregate_outer_input_variables(aggregate, &inner, &mut required);
     required.iter().all(|var| bound.contains(var))
 }
 
-fn collect_ground_aggregate_arg_variables(aggregate: &Aggregate, out: &mut BTreeSet<Ident>) {
+fn collect_aggregate_outer_input_variables(
+    aggregate: &Aggregate,
+    inner_bound: &BTreeSet<Ident>,
+    out: &mut BTreeSet<Ident>,
+) {
+    let rank_var = rank_arg_variable(aggregate);
+    let mut value_vars = BTreeSet::new();
+    aggregate.value.variables(&mut value_vars);
+    if let Some(rank_var) = &rank_var {
+        value_vars.remove(rank_var);
+    }
+    out.extend(
+        value_vars
+            .into_iter()
+            .filter(|var| !inner_bound.contains(var)),
+    );
+
     for arg in &aggregate.args {
+        if aggregate.function == AggregateFunction::Rank && arg.name.as_str() == "rank" {
+            continue;
+        }
+        let mut arg_vars = BTreeSet::new();
         if matches!(
             (aggregate.function, arg.name.as_str()),
             (AggregateFunction::TopK, "k") | (AggregateFunction::TakeUntil, "budget")
         ) {
-            arg.expr.variables(out);
+            arg.expr.variables(&mut arg_vars);
+        } else {
+            arg.expr.variables(&mut arg_vars);
+            arg_vars.retain(|var| !inner_bound.contains(var));
         }
+        out.extend(arg_vars);
     }
+}
+
+fn rank_arg_variable(aggregate: &Aggregate) -> Option<Ident> {
+    if aggregate.function != AggregateFunction::Rank {
+        return None;
+    }
+    aggregate
+        .args
+        .iter()
+        .find(|arg| arg.name.as_str() == "rank")
+        .and_then(|arg| match &arg.expr {
+            Expr::Var(var) => Some(var.clone()),
+            _ => None,
+        })
 }
 
 fn negated_atom_variables_are_bound(atom: &NegatedAtom, bound: &BTreeSet<Ident>) -> bool {
@@ -2473,13 +2523,17 @@ fn negated_atom_variables_are_bound(atom: &NegatedAtom, bound: &BTreeSet<Ident>)
 fn expr_variables_are_bound(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
     let mut vars = BTreeSet::new();
     expr.variables(&mut vars);
+    variables_are_bound(&vars, bound)
+}
+
+fn variables_are_bound(vars: &BTreeSet<Ident>, bound: &BTreeSet<Ident>) -> bool {
     vars.iter().all(|var| bound.contains(var))
 }
 
 fn collect_non_aggregate_positive_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
     match atom {
-        Atom::Stored(stored) => collect_stored_atom_variables(stored, out),
-        Atom::Derived(derived) => collect_derived_atom_variables(derived, out),
+        Atom::Stored(stored) => collect_stored_atom_binding_variables(stored, out),
+        Atom::Derived(derived) => collect_derived_atom_binding_variables(derived, out),
         Atom::TimeBlock(time_block) => collect_positive_body_variables(&time_block.body, out),
         Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
     }
@@ -2488,7 +2542,7 @@ fn collect_non_aggregate_positive_atom_variables(atom: &Atom, out: &mut BTreeSet
 fn collect_positive_body_variables(body: &Body, out: &mut BTreeSet<Ident>) {
     for atom in &body.atoms {
         match atom {
-            Atom::Aggregation(aggregate) => aggregate.result.variables(out),
+            Atom::Aggregation(aggregate) => aggregate.result.binding_variables(out),
             _ => collect_non_aggregate_positive_atom_variables(atom, out),
         }
     }
@@ -2516,6 +2570,64 @@ fn collect_derived_atom_variables(
     for arg in &atom.args {
         arg.expr().variables(out);
     }
+}
+
+fn collect_stored_atom_binding_variables(atom: &StoredAtom, out: &mut BTreeSet<Ident>) {
+    for field in &atom.fields {
+        if let Some(expr) = field.term.expr() {
+            expr.binding_variables(out);
+        }
+    }
+}
+
+fn collect_derived_atom_binding_variables(
+    atom: &crate::runtime::ast::DerivedAtom,
+    out: &mut BTreeSet<Ident>,
+) {
+    for arg in &atom.args {
+        arg.expr().binding_variables(out);
+    }
+}
+
+fn stored_atom_input_variables(atom: &StoredAtom) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for field in &atom.fields {
+        if let Some(expr) = field.term.expr() {
+            expr.input_variables(&mut vars);
+        }
+    }
+    vars
+}
+
+fn derived_atom_input_variables(atom: &crate::runtime::ast::DerivedAtom) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for arg in &atom.args {
+        arg.expr().input_variables(&mut vars);
+    }
+    vars
+}
+
+fn positive_body_input_variables(body: &Body) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for atom in &body.atoms {
+        match atom {
+            Atom::Stored(stored) => vars.extend(stored_atom_input_variables(stored)),
+            Atom::Derived(derived) => vars.extend(derived_atom_input_variables(derived)),
+            Atom::TimeBlock(time_block) => {
+                vars.extend(positive_body_input_variables(&time_block.body));
+            }
+            Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
+        }
+    }
+    vars
+}
+
+fn positive_body_outer_input_variables(body: &Body) -> BTreeSet<Ident> {
+    let mut inputs = positive_body_input_variables(body);
+    let mut binders = BTreeSet::new();
+    collect_positive_body_variables(body, &mut binders);
+    inputs.retain(|var| !binders.contains(var));
+    inputs
 }
 
 fn eval_atom(
@@ -6103,6 +6215,81 @@ mod tests {
             output.rows[0].fields.get("x"),
             Some(&Value::Number(NumberValue::Int(1)))
         );
+    }
+
+    #[test]
+    fn stored_atoms_wait_for_later_bound_expression_inputs() {
+        let program = parse_program("fixture", r"? *pair{next: x + 1}, *pair{n: x}.")
+            .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut database = Database::default();
+        database.insert_stored_rows(
+            "pair",
+            [
+                named_row([
+                    ("n", Value::Number(NumberValue::Int(1))),
+                    ("next", Value::Number(NumberValue::Int(2))),
+                ]),
+                named_row([
+                    ("n", Value::Number(NumberValue::Int(2))),
+                    ("next", Value::Number(NumberValue::Int(3))),
+                ]),
+            ],
+        );
+        let evaluator = Evaluator::new(analyzed, database);
+        let mut rows = evaluator
+            .eval_query(&query)
+            .expect("query")
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+        rows.sort();
+        assert_eq!(rows, vec![row([("x", n(1))]), row([("x", n(2))])]);
+    }
+
+    #[test]
+    fn derived_atoms_wait_for_later_bound_expression_inputs() {
+        let outputs = evaluate_queries(
+            r"
+            seed(1, 2).
+            seed(2, 4).
+            binder(1).
+            ? seed(x, x + 1), binder(x).
+            ",
+            Database::default(),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("x", n(1))])]);
+    }
+
+    #[test]
+    fn aggregates_wait_for_outer_expression_inputs() {
+        let outputs = evaluate_queries(
+            r#"
+            score("a", 5).
+            factor(10).
+            offset_for_key(10).
+            offset_for_pair(1).
+            pair(2, "a").
+            ? total = Sum{ score + factor : score(h, score) }, factor(factor).
+            ? (h, score) = TopK{ k: 1, key: score + offset : (h, score) : score(h, score) },
+              offset_for_key(offset).
+            ? n = Count{ item : pair(offset + 1, item) }, offset_for_pair(offset).
+            "#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([("factor", n(10)), ("total", n(15))])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![row([("h", s("a")), ("offset", n(10)), ("score", n(5))])],
+        );
+        assert_query_rows(&outputs[2], vec![row([("n", n(1)), ("offset", n(1))])]);
     }
 
     #[test]

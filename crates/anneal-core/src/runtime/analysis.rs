@@ -891,14 +891,37 @@ fn check_derived_call(
 }
 
 fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), StaticError> {
-    let mut bound = BTreeSet::new();
+    check_body_safety_with_outer(predicate, body, &BTreeSet::new())
+}
+
+fn check_body_safety_with_outer(
+    predicate: &PredicateRef,
+    body: &Body,
+    outer_bound: &BTreeSet<Ident>,
+) -> Result<(), StaticError> {
+    let mut bound = outer_bound.clone();
     collect_positive_body_vars(body, &mut bound);
 
     for (atom_index, atom) in body.atoms.iter().enumerate() {
         match atom {
-            Atom::Stored(_) => {}
+            Atom::Stored(stored) => {
+                ensure_bound(
+                    predicate,
+                    stored_input_vars(stored),
+                    &bound,
+                    SafetyContext::Expression,
+                    &stored.location,
+                )?;
+            }
             Atom::Derived(derived) => {
-                let outside_bound = positive_vars_outside(body, atom_index);
+                ensure_bound(
+                    predicate,
+                    derived_input_vars(derived),
+                    &bound,
+                    SafetyContext::Expression,
+                    &derived.location,
+                )?;
+                let outside_bound = positive_vars_outside(body, atom_index, outer_bound);
                 check_primitive_input_safety(derived, &outside_bound)?;
             }
             Atom::Comparison(comparison) => {
@@ -922,19 +945,31 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
                 )?;
             }
             Atom::Aggregation(aggregate) => {
-                let outside_bound = positive_vars_outside(body, atom_index);
+                let outside_bound = positive_vars_outside(body, atom_index, outer_bound);
                 check_aggregate_safety(predicate, aggregate, &outside_bound)?;
             }
             Atom::TimeBlock(time_block) => {
-                check_body_safety(predicate, &time_block.body)?;
+                let outside_bound = positive_vars_outside(body, atom_index, outer_bound);
+                ensure_bound(
+                    predicate,
+                    positive_body_input_vars(&time_block.body),
+                    &bound,
+                    SafetyContext::Expression,
+                    &time_block.location,
+                )?;
+                check_body_safety_with_outer(predicate, &time_block.body, &outside_bound)?;
             }
         }
     }
     Ok(())
 }
 
-fn positive_vars_outside(body: &Body, excluded_index: usize) -> BTreeSet<Ident> {
-    let mut outside_bound = BTreeSet::new();
+fn positive_vars_outside(
+    body: &Body,
+    excluded_index: usize,
+    outer_bound: &BTreeSet<Ident>,
+) -> BTreeSet<Ident> {
+    let mut outside_bound = outer_bound.clone();
     for (other_index, other) in body.atoms.iter().enumerate() {
         if other_index != excluded_index {
             collect_positive_atom_vars(other, &mut outside_bound);
@@ -1048,7 +1083,7 @@ fn check_aggregate_safety(
             &aggregate.location,
         )?;
     }
-    check_body_safety(predicate, &aggregate.body)
+    check_body_safety_with_outer(predicate, &aggregate.body, outside_bound)
 }
 
 fn rank_arg_variable(aggregate: &Aggregate) -> Option<Ident> {
@@ -1196,15 +1231,13 @@ fn negated_vars(negated: &NegatedAtom) -> BTreeSet<Ident> {
 
 fn collect_positive_atom_vars(atom: &Atom, out: &mut BTreeSet<Ident>) {
     match atom {
-        Atom::Stored(stored) => out.extend(stored_vars(stored)),
+        Atom::Stored(stored) => stored_binding_vars(stored, out),
         Atom::Derived(derived) => {
-            for arg in &derived.args {
-                arg.expr().variables(out);
-            }
+            derived_binding_vars(derived, out);
         }
         Atom::Comparison(_) | Atom::Negation(_) => {}
         Atom::Aggregation(aggregate) => {
-            aggregate.result.variables(out);
+            aggregate.result.binding_variables(out);
         }
         Atom::TimeBlock(time_block) => collect_positive_body_vars(&time_block.body, out),
     }
@@ -1221,6 +1254,51 @@ fn stored_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
     for field in &stored.fields {
         if let Term::Expr(expr) = &field.term {
             expr.variables(&mut vars);
+        }
+    }
+    vars
+}
+
+fn stored_binding_vars(stored: &StoredAtom, out: &mut BTreeSet<Ident>) {
+    for field in &stored.fields {
+        if let Term::Expr(expr) = &field.term {
+            expr.binding_variables(out);
+        }
+    }
+}
+
+fn stored_input_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for field in &stored.fields {
+        if let Term::Expr(expr) = &field.term {
+            expr.input_variables(&mut vars);
+        }
+    }
+    vars
+}
+
+fn derived_binding_vars(derived: &DerivedAtom, out: &mut BTreeSet<Ident>) {
+    for arg in &derived.args {
+        arg.expr().binding_variables(out);
+    }
+}
+
+fn derived_input_vars(derived: &DerivedAtom) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for arg in &derived.args {
+        arg.expr().input_variables(&mut vars);
+    }
+    vars
+}
+
+fn positive_body_input_vars(body: &Body) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    for atom in &body.atoms {
+        match atom {
+            Atom::Stored(stored) => vars.extend(stored_input_vars(stored)),
+            Atom::Derived(derived) => vars.extend(derived_input_vars(derived)),
+            Atom::TimeBlock(time_block) => vars.extend(positive_body_input_vars(&time_block.body)),
+            Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
         }
     }
     vars
@@ -1301,6 +1379,28 @@ mod tests {
             err.to_string()
                 .contains(&location("inline", input, "h = missing").to_string())
         );
+    }
+
+    #[test]
+    fn expression_inputs_do_not_satisfy_positive_binding_safety() {
+        let input = r"bad(x) := *pair{next: x + 1}.";
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnboundHeadVariable { variable, .. } if variable.as_str() == "x"
+        ));
+    }
+
+    #[test]
+    fn positive_expression_inputs_may_be_bound_later() {
+        let program = parse_program(
+            "inline",
+            r"
+            ok(x) := *pair{next: x + 1}, *pair{n: x}.
+            ",
+        )
+        .expect("program parses");
+        analyze(program).expect("expression input is bound elsewhere in the body");
     }
 
     #[test]
