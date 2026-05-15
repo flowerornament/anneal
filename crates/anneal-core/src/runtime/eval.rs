@@ -900,12 +900,8 @@ fn unify_call_args(
 ) -> Result<Option<Binding>, EvalError> {
     let mut next = None;
     for (arg, value) in args.iter().zip(&tuple.0) {
-        match arg {
-            CallArg::Positional(expr) => {
-                if !unify_expr(expr, value, binding, &mut next)? {
-                    return Ok(None);
-                }
-            }
+        if !unify_expr(arg.expr(), value, binding, &mut next)? {
+            return Ok(None);
         }
     }
     Ok(Some(next.unwrap_or_else(|| binding.clone())))
@@ -2237,6 +2233,73 @@ mod tests {
         let evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 2);
+    }
+
+    #[test]
+    fn named_derived_call_arguments_evaluate_in_signature_order() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            left("a").
+            right("b").
+            pair(left, right) := left(left), right(right).
+            ? pair(right: r, left: l).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].fields.get("l"), Some(&s("a")));
+        assert_eq!(output.rows[0].fields.get("r"), Some(&s("b")));
+    }
+
+    #[test]
+    fn mixed_positional_and_named_call_arguments_evaluate_in_signature_order() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            left("a").
+            right("b").
+            pair(left, right) := left(left), right(right).
+            ? pair(l, right: r).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].fields.get("l"), Some(&s("a")));
+        assert_eq!(output.rows[0].fields.get("r"), Some(&s("b")));
+    }
+
+    #[test]
+    fn named_query_local_call_arguments_evaluate_in_signature_order() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            left("a").
+            right("b").
+            ?
+              where pair(left, right) := left(left), right(right).
+              pair(right: r, left: l).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].fields.get("l"), Some(&s("a")));
+        assert_eq!(output.rows[0].fields.get("r"), Some(&s("b")));
     }
 
     #[test]

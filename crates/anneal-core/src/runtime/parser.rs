@@ -285,7 +285,21 @@ impl Parser {
     }
 
     fn parse_call_arg(&mut self) -> Result<CallArg, ParseError> {
-        self.parse_expr().map(CallArg::Positional)
+        let location = self.peek().location(&self.source);
+        if matches!(self.peek().kind, TokenKind::Ident(_))
+            && self.peek_n(1).kind == TokenKind::Colon
+        {
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let expr = self.parse_expr()?;
+            return Ok(CallArg::Named {
+                name,
+                expr,
+                location,
+            });
+        }
+        let expr = self.parse_expr()?;
+        Ok(CallArg::Positional { expr, location })
     }
 
     fn parse_named_args(&mut self, end: &TokenKind) -> Result<Vec<NamedArg>, ParseError> {
@@ -1004,7 +1018,7 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::ast::{Atom, Literal};
+    use crate::runtime::ast::{Atom, CallArg, Literal};
 
     #[test]
     fn parses_stored_query_with_negation_and_comparison() {
@@ -1088,6 +1102,30 @@ mod tests {
             query.body.atoms[1].location(),
             &SourceLocation::new("inline", 2, 16)
         );
+    }
+
+    #[test]
+    fn parses_named_call_site_arguments() {
+        let program = parse_program(
+            "inline",
+            r#"? pair(right: r, left: lower("A")), lower(value: "A") = "a"."#,
+        )
+        .expect("program parses");
+        let query = program.queries().next().expect("query");
+        let Atom::Derived(derived) = &query.body.atoms[0] else {
+            panic!("expected derived atom");
+        };
+        assert_eq!(derived.args.len(), 2);
+        assert!(matches!(derived.args[0], CallArg::Named { .. }));
+        assert!(matches!(derived.args[1], CallArg::Named { .. }));
+
+        let Atom::Comparison(comparison) = &query.body.atoms[1] else {
+            panic!("expected comparison");
+        };
+        let Expr::FunctionCall { args, .. } = &comparison.left else {
+            panic!("expected function call");
+        };
+        assert!(matches!(args[0], CallArg::Named { .. }));
     }
 
     #[test]

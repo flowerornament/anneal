@@ -2,11 +2,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::runtime::ast::{
-    Aggregate, Atom, Body, Comparison, DerivedAtom, Expr, Head, Ident, Literal, NegatedAtom,
-    Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation, StoredAtom, Term,
+    Aggregate, Atom, Body, CallArg, Comparison, DerivedAtom, Expr, Head, Ident, Literal,
+    NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
+    Statement, StoredAtom, Term,
 };
 
-type SignatureMap = BTreeMap<PredicateRef, usize>;
+type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PredicateSignature {
+    arity: usize,
+    parameters: ParameterNames,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ParameterNames {
+    Unknown,
+    Named(Vec<Ident>),
+    Ambiguous,
+}
 
 pub fn analyze(program: Program) -> Result<AnalyzedProgram, StaticError> {
     Analyzer::new(program).analyze()
@@ -117,6 +131,34 @@ pub enum StaticError {
         cycle: NegationCycle,
         location: SourceLocation,
     },
+    #[error("{location}: named call to '{predicate}' requires a named predicate signature")]
+    NamedCallRequiresSignature {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
+    #[error("{location}: unknown named argument '{argument}' for '{predicate}'")]
+    UnknownNamedArgument {
+        predicate: PredicateRef,
+        argument: Ident,
+        location: SourceLocation,
+    },
+    #[error("{location}: duplicate argument '{argument}' for '{predicate}'")]
+    DuplicateNamedArgument {
+        predicate: PredicateRef,
+        argument: Ident,
+        location: SourceLocation,
+    },
+    #[error("{location}: positional arguments must precede named arguments in '{predicate}'")]
+    PositionalAfterNamedArgument {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
+    #[error("{location}: named argument '{argument}' is not supported for function '{function}'")]
+    UnsupportedNamedFunctionArgument {
+        function: Ident,
+        argument: Ident,
+        location: SourceLocation,
+    },
     #[error("{location}: diagnostic id for '{predicate}' must be a string literal first argument")]
     DiagnosticIdMustBeLiteral {
         predicate: PredicateRef,
@@ -183,6 +225,7 @@ impl Analyzer {
 
     fn analyze(mut self) -> Result<AnalyzedProgram, StaticError> {
         self.collect_global_signatures()?;
+        normalize_global_named_calls(&mut self.program, &self.signatures)?;
         self.check_facts()?;
         self.check_rules()?;
         check_cyclic_negation(&self.edges)?;
@@ -234,12 +277,14 @@ impl Analyzer {
     }
 
     fn check_query(&self, query: &Query) -> Result<AnalyzedQuery, StaticError> {
+        let mut query = query.clone();
         let mut signatures = self.signatures.clone();
         let mut local_predicates = BTreeSet::new();
         for rule in &query.local_rules {
             collect_signature(&mut signatures, &rule.head)?;
             local_predicates.insert(rule.head.predicate.clone());
         }
+        normalize_query_named_calls(&mut query, &signatures)?;
 
         let mut edges = self.edges.clone();
         let mut diagnostic_ids = self.diagnostic_ids.clone();
@@ -260,7 +305,7 @@ impl Analyzer {
         let local_strata = compute_strata(&signatures, &edges, Some(&local_predicates));
 
         Ok(AnalyzedQuery {
-            query: query.clone(),
+            query,
             local_strata,
             local_predicates,
         })
@@ -277,17 +322,52 @@ struct DependencyEdge {
 
 fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), StaticError> {
     let arity = head.arity();
-    match signatures.get(&head.predicate) {
-        Some(expected) if *expected != arity => Err(StaticError::ArityMismatch {
+    let parameters = head_parameter_names(head);
+    match signatures.get_mut(&head.predicate) {
+        Some(signature) if signature.arity != arity => Err(StaticError::ArityMismatch {
             predicate: head.predicate.clone(),
-            expected: *expected,
+            expected: signature.arity,
             actual: arity,
             location: head.location.clone(),
         }),
-        Some(_) => Ok(()),
-        None => {
-            signatures.insert(head.predicate.clone(), arity);
+        Some(signature) => {
+            signature.parameters.merge(parameters);
             Ok(())
+        }
+        None => {
+            signatures.insert(
+                head.predicate.clone(),
+                PredicateSignature { arity, parameters },
+            );
+            Ok(())
+        }
+    }
+}
+
+fn head_parameter_names(head: &Head) -> ParameterNames {
+    let mut names = Vec::with_capacity(head.terms.len());
+    let mut seen = BTreeSet::new();
+    for term in &head.terms {
+        let Term::Expr(Expr::Var(name)) = term else {
+            return ParameterNames::Unknown;
+        };
+        if !seen.insert(name.clone()) {
+            return ParameterNames::Ambiguous;
+        }
+        names.push(name.clone());
+    }
+    ParameterNames::Named(names)
+}
+
+impl ParameterNames {
+    fn merge(&mut self, incoming: Self) {
+        match (&*self, incoming) {
+            (Self::Ambiguous, _) | (_, Self::Ambiguous) => *self = Self::Ambiguous,
+            (Self::Unknown, Self::Named(names)) => *self = Self::Named(names),
+            (Self::Named(existing), Self::Named(incoming)) if existing != &incoming => {
+                *self = Self::Ambiguous;
+            }
+            _ => {}
         }
     }
 }
@@ -307,6 +387,260 @@ fn check_fact(head: &Head) -> Result<(), StaticError> {
         }
     }
     Ok(())
+}
+
+fn normalize_global_named_calls(
+    program: &mut Program,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    for statement in &mut program.statements {
+        normalize_global_statement_named_calls(statement, signatures)?;
+    }
+    Ok(())
+}
+
+fn normalize_global_statement_named_calls(
+    statement: &mut Statement,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    match statement {
+        Statement::Fact(head) => normalize_head_named_calls(head),
+        Statement::Rule(rule) => normalize_rule_named_calls(rule, signatures),
+        Statement::AtBlock { .. } => Ok(()),
+        Statement::Query(_) | Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) => {
+            Ok(())
+        }
+    }
+}
+
+fn normalize_query_named_calls(
+    query: &mut Query,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    for rule in &mut query.local_rules {
+        normalize_rule_named_calls(rule, signatures)?;
+    }
+    normalize_body_named_calls(&mut query.body, signatures)
+}
+
+fn normalize_rule_named_calls(
+    rule: &mut Rule,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    normalize_head_named_calls(&mut rule.head)?;
+    normalize_body_named_calls(&mut rule.body, signatures)
+}
+
+fn normalize_head_named_calls(head: &mut Head) -> Result<(), StaticError> {
+    for term in &mut head.terms {
+        if let Some(expr) = term.expr_mut() {
+            normalize_expr_named_calls(expr)?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_body_named_calls(
+    body: &mut Body,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    for atom in &mut body.atoms {
+        normalize_atom_named_calls(atom, signatures)?;
+    }
+    Ok(())
+}
+
+fn normalize_atom_named_calls(
+    atom: &mut Atom,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    match atom {
+        Atom::Stored(stored) => {
+            normalize_stored_named_calls(stored)?;
+        }
+        Atom::Derived(derived) => normalize_derived_named_args(derived, signatures)?,
+        Atom::Comparison(comparison) => {
+            normalize_expr_named_calls(&mut comparison.left)?;
+            normalize_expr_named_calls(&mut comparison.right)?;
+        }
+        Atom::Aggregation(aggregate) => normalize_aggregate_named_calls(aggregate, signatures)?,
+        Atom::Negation(negation) => match &mut negation.atom {
+            NegatedAtom::Stored(stored) => {
+                normalize_stored_named_calls(stored)?;
+            }
+            NegatedAtom::Derived(derived) => normalize_derived_named_args(derived, signatures)?,
+        },
+        Atom::TimeBlock(time_block) => {
+            normalize_body_named_calls(&mut time_block.body, signatures)?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_stored_named_calls(stored: &mut StoredAtom) -> Result<(), StaticError> {
+    for field in &mut stored.fields {
+        if let Some(expr) = field.term.expr_mut() {
+            normalize_expr_named_calls(expr)?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_aggregate_named_calls(
+    aggregate: &mut Aggregate,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    normalize_expr_named_calls(&mut aggregate.result)?;
+    normalize_expr_named_calls(&mut aggregate.value)?;
+    for arg in &mut aggregate.args {
+        normalize_expr_named_calls(&mut arg.expr)?;
+    }
+    normalize_body_named_calls(&mut aggregate.body, signatures)
+}
+
+fn normalize_expr_named_calls(expr: &mut Expr) -> Result<(), StaticError> {
+    match expr {
+        Expr::Var(_) | Expr::Literal(_) => Ok(()),
+        Expr::FunctionCall { function, args } => {
+            for arg in args {
+                if let CallArg::Named { name, location, .. } = arg {
+                    return Err(StaticError::UnsupportedNamedFunctionArgument {
+                        function: function.clone(),
+                        argument: name.clone(),
+                        location: location.clone(),
+                    });
+                }
+                normalize_expr_named_calls(arg.expr_mut())?;
+            }
+            Ok(())
+        }
+        Expr::Binary { left, right, .. } => {
+            normalize_expr_named_calls(left)?;
+            normalize_expr_named_calls(right)
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                normalize_expr_named_calls(item)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn normalize_derived_named_args(
+    derived: &mut DerivedAtom,
+    signatures: &SignatureMap,
+) -> Result<(), StaticError> {
+    if !derived
+        .args
+        .iter()
+        .any(|arg| matches!(arg, CallArg::Named { .. }))
+    {
+        for arg in &mut derived.args {
+            normalize_expr_named_calls(arg.expr_mut())?;
+        }
+        return Ok(());
+    }
+
+    let signature =
+        signatures
+            .get(&derived.predicate)
+            .ok_or_else(|| StaticError::UnknownPredicate {
+                predicate: derived.predicate.clone(),
+                arity: derived.args.len(),
+                location: derived.location.clone(),
+            })?;
+    let normalized = normalize_call_args(&derived.predicate, &derived.args, signature)?;
+    derived.args = normalized;
+    for arg in &mut derived.args {
+        normalize_expr_named_calls(arg.expr_mut())?;
+    }
+    Ok(())
+}
+
+fn normalize_call_args(
+    predicate: &PredicateRef,
+    args: &[CallArg],
+    signature: &PredicateSignature,
+) -> Result<Vec<CallArg>, StaticError> {
+    let ParameterNames::Named(parameters) = &signature.parameters else {
+        return Err(StaticError::NamedCallRequiresSignature {
+            predicate: predicate.clone(),
+            location: named_call_location(args),
+        });
+    };
+
+    let mut values = vec![None; signature.arity];
+    let mut seen_named = false;
+    for (position, arg) in args.iter().enumerate() {
+        match arg {
+            CallArg::Positional { expr, location } => {
+                if seen_named {
+                    return Err(StaticError::PositionalAfterNamedArgument {
+                        predicate: predicate.clone(),
+                        location: location.clone(),
+                    });
+                }
+                if position >= signature.arity {
+                    return Err(StaticError::ArityMismatch {
+                        predicate: predicate.clone(),
+                        expected: signature.arity,
+                        actual: args.len(),
+                        location: named_call_location(args),
+                    });
+                }
+                values[position] = Some(expr.clone());
+            }
+            CallArg::Named {
+                name,
+                expr,
+                location,
+            } => {
+                seen_named = true;
+                let Some(index) = parameters.iter().position(|parameter| parameter == name) else {
+                    return Err(StaticError::UnknownNamedArgument {
+                        predicate: predicate.clone(),
+                        argument: name.clone(),
+                        location: location.clone(),
+                    });
+                };
+                if values[index].is_some() {
+                    return Err(StaticError::DuplicateNamedArgument {
+                        predicate: predicate.clone(),
+                        argument: name.clone(),
+                        location: location.clone(),
+                    });
+                }
+                values[index] = Some(expr.clone());
+            }
+        }
+    }
+
+    if values.iter().any(Option::is_none) {
+        return Err(StaticError::ArityMismatch {
+            predicate: predicate.clone(),
+            expected: signature.arity,
+            actual: args.len(),
+            location: named_call_location(args),
+        });
+    }
+
+    Ok(values
+        .into_iter()
+        .map(|expr| CallArg::Positional {
+            expr: expr.expect("all arguments filled"),
+            location: named_call_location(args),
+        })
+        .collect())
+}
+
+fn named_call_location(args: &[CallArg]) -> SourceLocation {
+    args.iter()
+        .find_map(|arg| match arg {
+            CallArg::Named { location, .. } => Some(location.clone()),
+            CallArg::Positional { .. } => None,
+        })
+        .unwrap_or_else(SourceLocation::unknown)
 }
 
 fn check_rule(
@@ -459,10 +793,10 @@ fn check_derived_call(
     location: &SourceLocation,
 ) -> Result<(), StaticError> {
     match signatures.get(predicate) {
-        Some(expected) if *expected == arity => Ok(()),
-        Some(expected) => Err(StaticError::ArityMismatch {
+        Some(signature) if signature.arity == arity => Ok(()),
+        Some(signature) => Err(StaticError::ArityMismatch {
             predicate: predicate.clone(),
-            expected: *expected,
+            expected: signature.arity,
             actual: arity,
             location: location.clone(),
         }),
@@ -801,6 +1135,98 @@ mod tests {
             err.to_string()
                 .contains(&location("inline", input, "known(h, h)").to_string())
         );
+    }
+
+    #[test]
+    fn rejects_unknown_named_call_arguments() {
+        let input = r#"left("a"). right("b"). pair(left, right) := left(left), right(right). ? pair(missing: x, left: y)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::UnknownNamedArgument {
+            argument,
+            location: actual,
+            ..
+        } = &err
+        else {
+            panic!("expected unknown named argument");
+        };
+        assert_eq!(argument.as_str(), "missing");
+        assert_eq!(actual, &location("inline", input, "missing: x"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "missing: x").to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_named_calls_without_named_signature() {
+        let input = r#"pair("a", "b"). ? pair(left: x, right: y)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::NamedCallRequiresSignature {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected missing named signature");
+        };
+        assert_eq!(actual, &location("inline", input, "left: x"));
+    }
+
+    #[test]
+    fn rejects_named_calls_to_ambiguous_signatures() {
+        let input = r#"seed("a", "b"). pair(left, right) := seed(left, right). pair(src, dst) := seed(src, dst). ? pair(left: x, right: y)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::NamedCallRequiresSignature {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected ambiguous named signature");
+        };
+        assert_eq!(actual, &location("inline", input, "left: x"));
+    }
+
+    #[test]
+    fn rejects_positional_arguments_after_named_arguments() {
+        let input = r#"left("a"). right("b"). pair(left, right) := left(left), right(right). ? pair(right: r, l)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::PositionalAfterNamedArgument {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected positional-after-named error");
+        };
+        let column = input.find("right: r, l").expect("needle appears") + "right: r, ".len() + 1;
+        assert_eq!(actual, &SourceLocation::new("inline", 1, column));
+    }
+
+    #[test]
+    fn rejects_named_argument_that_duplicates_positional_slot() {
+        let input = r#"left("a"). right("b"). pair(left, right) := left(left), right(right). ? pair(l, left: x)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::DuplicateNamedArgument {
+            argument,
+            location: actual,
+            ..
+        } = &err
+        else {
+            panic!("expected duplicate named argument");
+        };
+        assert_eq!(argument.as_str(), "left");
+        assert_eq!(actual, &location("inline", input, "left: x"));
+    }
+
+    #[test]
+    fn rejects_named_function_arguments_with_location() {
+        let input = r#"bad(h) := *handle{id: h}, lower(value: h) = "x"."#;
+        let err = analyze_err("inline", input);
+        let StaticError::UnsupportedNamedFunctionArgument {
+            argument,
+            location: actual,
+            ..
+        } = &err
+        else {
+            panic!("expected named function argument error");
+        };
+        assert_eq!(argument.as_str(), "value");
+        assert_eq!(actual, &location("inline", input, "value: h"));
     }
 
     #[test]

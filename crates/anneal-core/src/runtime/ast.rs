@@ -406,13 +406,35 @@ pub struct TimeBlock {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CallArg {
-    Positional(Expr),
+    Positional {
+        expr: Expr,
+        #[serde(default, skip_serializing)]
+        location: SourceLocation,
+    },
+    Named {
+        name: Ident,
+        expr: Expr,
+        #[serde(default, skip_serializing)]
+        location: SourceLocation,
+    },
 }
 
 impl CallArg {
     pub fn expr(&self) -> &Expr {
         match self {
-            Self::Positional(expr) => expr,
+            Self::Positional { expr, .. } | Self::Named { expr, .. } => expr,
+        }
+    }
+
+    pub fn expr_mut(&mut self) -> &mut Expr {
+        match self {
+            Self::Positional { expr, .. } | Self::Named { expr, .. } => expr,
+        }
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        match self {
+            Self::Positional { location, .. } | Self::Named { location, .. } => location,
         }
     }
 }
@@ -425,6 +447,13 @@ pub enum Term {
 
 impl Term {
     pub fn expr(&self) -> Option<&Expr> {
+        match self {
+            Self::Expr(expr) => Some(expr),
+            Self::Wildcard => None,
+        }
+    }
+
+    pub fn expr_mut(&mut self) -> Option<&mut Expr> {
         match self {
             Self::Expr(expr) => Some(expr),
             Self::Wildcard => None,
