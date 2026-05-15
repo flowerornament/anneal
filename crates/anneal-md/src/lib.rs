@@ -57,7 +57,7 @@ impl Source for MarkdownSource {
         );
         for root in cx.roots {
             cx.cancellation.check()?;
-            let batch = anneal::v2_adapter::extract_markdown_facts(
+            let batch = anneal_legacy::v2_adapter::extract_markdown_facts(
                 root,
                 cx.corpus.clone(),
                 SourceName::from(SOURCE_NAME),

@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 mod analysis;
+mod app;
 mod area;
 mod checks;
 mod cli;
@@ -21,12 +22,18 @@ mod snapshot;
 
 pub mod v2_adapter;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub use app::main_entry;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MapRender {
     Summary,
     Text,
     Dot,
+    /// Printer-based focused-neighborhood rendering used by default for
+    /// `--around`/`--concern` without an explicit `--render`. Not
+    /// intended as a user-facing choice.
+    #[clap(hide = true)]
     Around,
 }
 

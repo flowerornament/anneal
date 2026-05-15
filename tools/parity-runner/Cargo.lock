@@ -21,7 +21,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "anneal"
+name = "anneal-core"
+version = "0.10.1"
+dependencies = [
+ "camino",
+ "serde",
+]
+
+[[package]]
+name = "anneal-legacy"
 version = "0.10.1"
 dependencies = [
  "anneal-core",
@@ -41,19 +49,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "anneal-core"
-version = "0.10.1"
-dependencies = [
- "camino",
- "serde",
-]
-
-[[package]]
 name = "anneal-md"
 version = "0.10.1"
 dependencies = [
- "anneal",
  "anneal-core",
+ "anneal-legacy",
  "camino",
 ]
 
@@ -410,8 +410,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "parity-runner"
 version = "0.1.0"
 dependencies = [
- "anneal",
  "anneal-core",
+ "anneal-legacy",
  "anneal-md",
  "anyhow",
  "camino",

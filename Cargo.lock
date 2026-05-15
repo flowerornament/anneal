@@ -24,21 +24,7 @@ dependencies = [
 name = "anneal"
 version = "0.10.1"
 dependencies = [
- "anneal-core",
- "anyhow",
- "camino",
- "chrono",
- "clap",
- "console",
- "globset",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tempfile",
- "toml",
- "walkdir",
+ "anneal-legacy",
 ]
 
 [[package]]
@@ -58,6 +44,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "anneal-legacy"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+ "anyhow",
+ "camino",
+ "chrono",
+ "clap",
+ "console",
+ "globset",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "anneal-mcp"
 version = "0.10.1"
 dependencies = [
@@ -68,8 +75,8 @@ dependencies = [
 name = "anneal-md"
 version = "0.10.1"
 dependencies = [
- "anneal",
  "anneal-core",
+ "anneal-legacy",
  "camino",
  "tempfile",
 ]

@@ -251,6 +251,7 @@ because a Delta batch lists its `native_id` in `retractions`.
 anneal/
 ├── crates/
 │   ├── anneal-core/             # the substrate
+│   ├── anneal-legacy/           # transition-only v1 parser/config bridge
 │   ├── anneal-md/               # markdown adapter
 │   ├── anneal-cli/              # the binary; links core + md
 │   └── anneal-mcp/              # MCP server; links core + md
@@ -261,7 +262,12 @@ anneal/
 └── .design/
 ```
 
-`anneal-core` is the only crate other anneal crates depend on.
+**Definition CR-D32 (Transition-only legacy boundary).**
+`anneal-core` is the only permanent crate other anneal crates depend
+on. During the v1-to-v2 migration, `anneal-legacy` is allowed as a
+transition-only parser/config boundary so adapters can preserve
+v1 parity without depending on the root CLI package; it must not
+become a substrate extension point.
 Adapters are siblings. A consumer can link any combination of
 adapters into their own binary; the CLI ships markdown by default.
 
@@ -1604,7 +1610,10 @@ Every v1.x command is reachable in v2.0:
 
 1. **`anneal-core`.** Datalog runtime, primitives, IR, embedded
    prelude.
-2. **`anneal-md`.** Refactor v1.x parse pipeline behind `Source`.
+2. **`anneal-md`.** Refactor v1.x parse pipeline behind `Source`;
+   while parity is being proven, shared v1 parser/config behavior may
+   live in `anneal-legacy` as a transition-only library boundary
+   instead of the root CLI package.
 3. **`anneal-cli` + `anneal-mcp`.** Surfaces over the shared core.
 4. **Dual ship.** v1.x and v2.0 binaries in parallel for one minor
    release; v1.x prints deprecation warnings.
@@ -1830,6 +1839,7 @@ cold-agent gate depends on it.
 - CR-D29: Agent loop (§40)
 - CR-D30: Context verb (§33.1)
 - CR-D31: Diagnostic evidence facts (§32.1)
+- CR-D32: Transition-only legacy boundary (§8, §47)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

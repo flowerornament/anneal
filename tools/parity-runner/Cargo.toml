@@ -17,7 +17,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [dependencies]
-anneal = { version = "0.10.1", path = "../.." }
+anneal-legacy = { version = "0.10.1", path = "../../crates/anneal-legacy" }
 anneal-core = { version = "0.10.1", path = "../../crates/anneal-core" }
 anneal-md = { version = "0.10.1", path = "../../crates/anneal-md" }
 anyhow = "1.0.102"

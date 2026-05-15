@@ -122,16 +122,18 @@ impl FactRight {
     fn run(&self, args: &[&str]) -> Result<CommandResult> {
         let stdout = match args {
             ["status", "--json"] => {
-                anneal::v2_adapter::status_json_from_facts(self.root.as_path(), &self.batch)?
+                anneal_legacy::v2_adapter::status_json_from_facts(self.root.as_path(), &self.batch)?
             }
             ["check", "--scope=active", "--json"] => {
-                anneal::v2_adapter::check_json_from_facts(self.root.as_path(), &self.batch)?
+                anneal_legacy::v2_adapter::check_json_from_facts(self.root.as_path(), &self.batch)?
             }
-            ["get", handle, "--refs", "--json"] => anneal::v2_adapter::get_refs_json_from_facts(
-                self.root.as_path(),
-                &self.batch,
-                handle,
-            )?,
+            ["get", handle, "--refs", "--json"] => {
+                anneal_legacy::v2_adapter::get_refs_json_from_facts(
+                    self.root.as_path(),
+                    &self.batch,
+                    handle,
+                )?
+            }
             _ => bail!(
                 "anneal-md fact runner does not implement {}",
                 command_string(args)

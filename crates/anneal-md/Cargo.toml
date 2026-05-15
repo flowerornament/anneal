@@ -26,7 +26,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal = { version = "0.10.1", path = "../.." }
+anneal-legacy = { version = "0.10.1", path = "../anneal-legacy" }
 anneal-core = { path = "../anneal-core" }
 camino = "1.2.2"
 
