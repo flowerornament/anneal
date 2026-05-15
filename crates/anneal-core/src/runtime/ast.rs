@@ -178,12 +178,16 @@ impl Rule {
 pub struct Query {
     pub local_rules: Vec<Rule>,
     pub body: Body,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Head {
     pub predicate: PredicateRef,
     pub terms: Vec<Term>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 impl Head {
@@ -210,6 +214,12 @@ impl SourceLocation {
 
     pub fn unknown() -> Self {
         Self::new("<unknown>", 0, 0)
+    }
+}
+
+impl Default for SourceLocation {
+    fn default() -> Self {
+        Self::unknown()
     }
 }
 
@@ -273,14 +283,29 @@ pub enum Atom {
     Derived(DerivedAtom),
     Comparison(Comparison),
     Aggregation(Aggregate),
-    Negation(NegatedAtom),
+    Negation(Negation),
     TimeBlock(TimeBlock),
+}
+
+impl Atom {
+    pub fn location(&self) -> &SourceLocation {
+        match self {
+            Self::Stored(atom) => &atom.location,
+            Self::Derived(atom) => &atom.location,
+            Self::Comparison(atom) => &atom.location,
+            Self::Aggregation(atom) => &atom.location,
+            Self::Negation(atom) => &atom.location,
+            Self::TimeBlock(atom) => &atom.location,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StoredAtom {
     pub relation: Ident,
     pub fields: Vec<FieldPattern>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -293,6 +318,8 @@ pub struct FieldPattern {
 pub struct DerivedAtom {
     pub predicate: PredicateRef,
     pub args: Vec<CallArg>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -302,10 +329,25 @@ pub enum NegatedAtom {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Negation {
+    pub atom: NegatedAtom,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+impl Negation {
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Comparison {
     pub left: Expr,
     pub op: ComparisonOp,
     pub right: Expr,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +372,8 @@ pub struct Aggregate {
     pub args: Vec<NamedArg>,
     pub value: Expr,
     pub body: Body,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +400,8 @@ pub struct NamedArg {
 pub struct TimeBlock {
     pub reference: String,
     pub body: Body,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, Comparison, ComparisonOp,
     DerivedAtom, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal,
-    NamedArg, NegatedAtom, NumberLiteral, PredicateRef, Program, Query, Rule, RuleLayer,
+    NamedArg, NegatedAtom, Negation, NumberLiteral, PredicateRef, Program, Query, Rule, RuleLayer,
     RuleOrigin, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
 };
 
@@ -51,7 +51,9 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         let statement_start = self.peek().clone();
         if self.eat(&TokenKind::Question) {
-            return self.parse_query().map(Statement::Query);
+            return self
+                .parse_query(statement_start.location(&self.source))
+                .map(Statement::Query);
         }
         if self.eat_keyword("include") {
             let location = statement_start.location(&self.source);
@@ -107,7 +109,7 @@ impl Parser {
         )))
     }
 
-    fn parse_query(&mut self) -> Result<Query, ParseError> {
+    fn parse_query(&mut self, location: SourceLocation) -> Result<Query, ParseError> {
         let mut local_rules = Vec::new();
         while self.eat_keyword("where") {
             let rule_start = self.peek().clone();
@@ -123,10 +125,15 @@ impl Parser {
         }
         let body = self.parse_body_until(&TokenKind::Dot)?;
         self.expect(&TokenKind::Dot)?;
-        Ok(Query { local_rules, body })
+        Ok(Query {
+            local_rules,
+            body,
+            location,
+        })
     }
 
     fn parse_head(&mut self) -> Result<Head, ParseError> {
+        let location = self.peek().location(&self.source);
         let predicate = self.parse_predicate_ref()?;
         self.expect(&TokenKind::LParen)?;
         let terms = if self.at(&TokenKind::RParen) {
@@ -135,7 +142,11 @@ impl Parser {
             self.parse_comma_list(&TokenKind::RParen, Parser::parse_term)?
         };
         self.expect(&TokenKind::RParen)?;
-        Ok(Head { predicate, terms })
+        Ok(Head {
+            predicate,
+            terms,
+            location,
+        })
     }
 
     fn parse_body_until(&mut self, end: &TokenKind) -> Result<Body, ParseError> {
@@ -150,17 +161,14 @@ impl Parser {
     }
 
     fn parse_atom(&mut self) -> Result<Atom, ParseError> {
+        let location = self.peek().location(&self.source);
         if self.eat_keyword("not") {
-            if self.at(&TokenKind::Star) {
-                return self
-                    .parse_stored_atom()
-                    .map(NegatedAtom::Stored)
-                    .map(Atom::Negation);
-            }
-            return self
-                .parse_derived_atom()
-                .map(NegatedAtom::Derived)
-                .map(Atom::Negation);
+            let atom = if self.at(&TokenKind::Star) {
+                self.parse_stored_atom().map(NegatedAtom::Stored)
+            } else {
+                self.parse_derived_atom().map(NegatedAtom::Derived)
+            }?;
+            return Ok(Atom::Negation(Negation { atom, location }));
         }
         if self.at(&TokenKind::Star) {
             return self.parse_stored_atom().map(Atom::Stored);
@@ -171,7 +179,11 @@ impl Parser {
             self.expect(&TokenKind::LBrace)?;
             let body = self.parse_body_until(&TokenKind::RBrace)?;
             self.expect(&TokenKind::RBrace)?;
-            return Ok(Atom::TimeBlock(TimeBlock { reference, body }));
+            return Ok(Atom::TimeBlock(TimeBlock {
+                reference,
+                body,
+                location,
+            }));
         }
         if self.starts_derived_atom() {
             let checkpoint = self.cursor;
@@ -204,14 +216,21 @@ impl Parser {
                 args,
                 value,
                 body,
+                location,
             }));
         }
         let op = self.parse_comparison_op()?;
         let right = self.parse_expr()?;
-        Ok(Atom::Comparison(Comparison { left, op, right }))
+        Ok(Atom::Comparison(Comparison {
+            left,
+            op,
+            right,
+            location,
+        }))
     }
 
     fn parse_stored_atom(&mut self) -> Result<StoredAtom, ParseError> {
+        let location = self.peek().location(&self.source);
         self.expect(&TokenKind::Star)?;
         let relation = self.expect_ident()?;
         self.expect(&TokenKind::LBrace)?;
@@ -221,7 +240,11 @@ impl Parser {
             self.parse_comma_list(&TokenKind::RBrace, Parser::parse_field_pattern)?
         };
         self.expect(&TokenKind::RBrace)?;
-        Ok(StoredAtom { relation, fields })
+        Ok(StoredAtom {
+            relation,
+            fields,
+            location,
+        })
     }
 
     fn parse_field_pattern(&mut self) -> Result<FieldPattern, ParseError> {
@@ -235,6 +258,7 @@ impl Parser {
     }
 
     fn parse_derived_atom(&mut self) -> Result<DerivedAtom, ParseError> {
+        let location = self.peek().location(&self.source);
         let predicate = self.parse_predicate_ref()?;
         self.expect(&TokenKind::LParen)?;
         let args = if self.at(&TokenKind::RParen) {
@@ -243,7 +267,11 @@ impl Parser {
             self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
         };
         self.expect(&TokenKind::RParen)?;
-        Ok(DerivedAtom { predicate, args })
+        Ok(DerivedAtom {
+            predicate,
+            args,
+            location,
+        })
     }
 
     fn parse_predicate_ref(&mut self) -> Result<PredicateRef, ParseError> {
@@ -1022,6 +1050,44 @@ mod tests {
         )
         .expect("program parses");
         assert_eq!(program.statements.len(), 4);
+    }
+
+    #[test]
+    fn parses_source_locations_for_heads_queries_and_atoms() {
+        let program =
+            parse_program("inline", "fact(\"a\").\n? fact(h), h = \"a\".").expect("program parses");
+        let Statement::Fact(head) = &program.statements[0] else {
+            panic!("expected fact");
+        };
+        assert_eq!(head.location, SourceLocation::new("inline", 1, 1));
+
+        let Statement::Query(query) = &program.statements[1] else {
+            panic!("expected query");
+        };
+        assert_eq!(query.location, SourceLocation::new("inline", 2, 1));
+        assert_eq!(
+            query.body.atoms[0].location(),
+            &SourceLocation::new("inline", 2, 3)
+        );
+        assert_eq!(
+            query.body.atoms[1].location(),
+            &SourceLocation::new("inline", 2, 12)
+        );
+    }
+
+    #[test]
+    fn parses_negation_location_at_not_keyword() {
+        let program = parse_program("inline", "fact(\"a\").\n? not fact(h), h = \"a\".")
+            .expect("program parses");
+        let query = program.queries().next().expect("query");
+        assert_eq!(
+            query.body.atoms[0].location(),
+            &SourceLocation::new("inline", 2, 3)
+        );
+        assert_eq!(
+            query.body.atoms[1].location(),
+            &SourceLocation::new("inline", 2, 16)
+        );
     }
 
     #[test]

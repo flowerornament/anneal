@@ -359,14 +359,19 @@ fn qualify_body(body: &mut Body, module: &Ident, local_definitions: &BTreeSet<Id
 
 fn qualify_atom(atom: &mut Atom, module: &Ident, local_definitions: &BTreeSet<Ident>) {
     match atom {
-        Atom::Derived(derived) | Atom::Negation(NegatedAtom::Derived(derived)) => {
+        Atom::Derived(derived) => {
             qualify_predicate(&mut derived.predicate, module, local_definitions);
+        }
+        Atom::Negation(negation) => {
+            if let NegatedAtom::Derived(derived) = &mut negation.atom {
+                qualify_predicate(&mut derived.predicate, module, local_definitions);
+            }
         }
         Atom::Aggregation(aggregate) => {
             qualify_body(&mut aggregate.body, module, local_definitions);
         }
         Atom::TimeBlock(TimeBlock { body, .. }) => qualify_body(body, module, local_definitions),
-        Atom::Stored(_) | Atom::Comparison(_) | Atom::Negation(NegatedAtom::Stored(_)) => {}
+        Atom::Stored(_) | Atom::Comparison(_) => {}
     }
 }
 
@@ -436,6 +441,27 @@ mod tests {
 
         let program = load_program(&root, "anneal.dl").expect("program loads");
         analyze(program).expect("imported rule can call global predicate");
+    }
+
+    #[test]
+    fn loaded_rules_preserve_child_file_source_locations() {
+        let root = test_root("child-source-location");
+        fs::create_dir_all(root.join("checks")).expect("checks dir");
+        write(&root.join("anneal.dl"), r#"include "checks/bad.dl"."#);
+        write(&root.join("checks/bad.dl"), r"bad(h) := missing(h).");
+
+        let program = load_program(&root, "anneal.dl").expect("program loads");
+        let err = analyze(program).expect_err("unknown predicate rejected");
+        let StaticError::UnknownPredicate {
+            location: actual, ..
+        } = err
+        else {
+            panic!("expected unknown predicate");
+        };
+        assert_eq!(
+            actual,
+            SourceLocation::new("checks/bad.dl", 1, "bad(h) := ".len() + 1)
+        );
     }
 
     #[test]

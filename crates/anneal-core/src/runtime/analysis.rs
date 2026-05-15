@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::runtime::ast::{
-    Aggregate, Atom, Body, Comparison, Expr, Head, Ident, Literal, NegatedAtom, PredicateRef,
-    Program, Query, Rule, RuleLayer, SourceLocation, StoredAtom, Term,
+    Aggregate, Atom, Body, Comparison, DerivedAtom, Expr, Head, Ident, Literal, NegatedAtom,
+    Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation, StoredAtom, Term,
 };
 
 type SignatureMap = BTreeMap<PredicateRef, usize>;
@@ -75,34 +75,48 @@ pub struct Stratum {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StaticError {
-    #[error("unknown predicate '{predicate}/{arity}'")]
+    #[error("{location}: unknown predicate '{predicate}/{arity}'")]
     UnknownPredicate {
         predicate: PredicateRef,
         arity: usize,
+        location: SourceLocation,
     },
-    #[error("predicate '{predicate}' used with arity {actual}, expected {expected}")]
+    #[error("{location}: predicate '{predicate}' used with arity {actual}, expected {expected}")]
     ArityMismatch {
         predicate: PredicateRef,
         expected: usize,
         actual: usize,
+        location: SourceLocation,
     },
-    #[error("unsafe rule '{predicate}': head variable '{variable}' is not bound positively")]
+    #[error(
+        "{location}: unsafe rule '{predicate}': head variable '{variable}' is not bound positively"
+    )]
     UnboundHeadVariable {
         predicate: PredicateRef,
         variable: Ident,
+        location: SourceLocation,
     },
-    #[error("unsafe expression in '{predicate}': variable '{variable}' is not bound positively")]
+    #[error(
+        "{location}: unsafe expression in '{predicate}': variable '{variable}' is not bound positively"
+    )]
     UnboundExpressionVariable {
         predicate: PredicateRef,
         variable: Ident,
+        location: SourceLocation,
     },
-    #[error("unsafe negation in '{predicate}': variable '{variable}' is not bound positively")]
+    #[error(
+        "{location}: unsafe negation in '{predicate}': variable '{variable}' is not bound positively"
+    )]
     UnboundNegationVariable {
         predicate: PredicateRef,
         variable: Ident,
+        location: SourceLocation,
     },
-    #[error("cyclic negation between {cycle}")]
-    CyclicNegation { cycle: NegationCycle },
+    #[error("{location}: cyclic negation between {cycle}")]
+    CyclicNegation {
+        cycle: NegationCycle,
+        location: SourceLocation,
+    },
     #[error("{location}: diagnostic id for '{predicate}' must be a string literal first argument")]
     DiagnosticIdMustBeLiteral {
         predicate: PredicateRef,
@@ -258,6 +272,7 @@ struct DependencyEdge {
     from: PredicateRef,
     to: PredicateRef,
     negative: bool,
+    location: SourceLocation,
 }
 
 fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), StaticError> {
@@ -267,6 +282,7 @@ fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), S
             predicate: head.predicate.clone(),
             expected: *expected,
             actual: arity,
+            location: head.location.clone(),
         }),
         Some(_) => Ok(()),
         None => {
@@ -285,6 +301,7 @@ fn check_fact(head: &Head) -> Result<(), StaticError> {
                 return Err(StaticError::UnboundHeadVariable {
                     predicate: head.predicate.clone(),
                     variable,
+                    location: head.location.clone(),
                 });
             }
         }
@@ -356,6 +373,7 @@ fn check_head_safety(rule: &Rule) -> Result<(), StaticError> {
                     return Err(StaticError::UnboundHeadVariable {
                         predicate: rule.head.predicate.clone(),
                         variable,
+                        location: rule.head.location.clone(),
                     });
                 }
             }
@@ -372,22 +390,33 @@ fn check_body(
 ) -> Result<(), StaticError> {
     for atom in &body.atoms {
         match atom {
-            Atom::Stored(_) | Atom::Comparison(_) | Atom::Negation(NegatedAtom::Stored(_)) => {}
+            Atom::Stored(_)
+            | Atom::Comparison(_)
+            | Atom::Negation(Negation {
+                atom: NegatedAtom::Stored(_),
+                ..
+            }) => {}
             Atom::Derived(derived) => {
-                check_derived_call(signatures, &derived.predicate, derived.args.len())?;
-                edges.push(DependencyEdge {
-                    from: head.clone(),
-                    to: derived.predicate.clone(),
-                    negative: false,
-                });
+                check_derived_dependency(
+                    head,
+                    derived,
+                    false,
+                    &derived.location,
+                    signatures,
+                    edges,
+                )?;
             }
-            Atom::Negation(NegatedAtom::Derived(derived)) => {
-                check_derived_call(signatures, &derived.predicate, derived.args.len())?;
-                edges.push(DependencyEdge {
-                    from: head.clone(),
-                    to: derived.predicate.clone(),
-                    negative: true,
-                });
+            Atom::Negation(negation) => {
+                if let NegatedAtom::Derived(derived) = &negation.atom {
+                    check_derived_dependency(
+                        head,
+                        derived,
+                        true,
+                        &negation.location,
+                        signatures,
+                        edges,
+                    )?;
+                }
             }
             Atom::Aggregation(aggregate) => {
                 check_body(head, &aggregate.body, signatures, edges)?;
@@ -400,10 +429,34 @@ fn check_body(
     Ok(())
 }
 
+fn check_derived_dependency(
+    head: &PredicateRef,
+    derived: &DerivedAtom,
+    negative: bool,
+    edge_location: &SourceLocation,
+    signatures: &SignatureMap,
+    edges: &mut Vec<DependencyEdge>,
+) -> Result<(), StaticError> {
+    check_derived_call(
+        signatures,
+        &derived.predicate,
+        derived.args.len(),
+        &derived.location,
+    )?;
+    edges.push(DependencyEdge {
+        from: head.clone(),
+        to: derived.predicate.clone(),
+        negative,
+        location: edge_location.clone(),
+    });
+    Ok(())
+}
+
 fn check_derived_call(
     signatures: &SignatureMap,
     predicate: &PredicateRef,
     arity: usize,
+    location: &SourceLocation,
 ) -> Result<(), StaticError> {
     match signatures.get(predicate) {
         Some(expected) if *expected == arity => Ok(()),
@@ -411,10 +464,12 @@ fn check_derived_call(
             predicate: predicate.clone(),
             expected: *expected,
             actual: arity,
+            location: location.clone(),
         }),
         None => Err(StaticError::UnknownPredicate {
             predicate: predicate.clone(),
             arity,
+            location: location.clone(),
         }),
     }
 }
@@ -429,14 +484,21 @@ fn check_body_safety(predicate: &PredicateRef, body: &Body) -> Result<(), Static
             Atom::Comparison(comparison) => {
                 let mut vars = BTreeSet::new();
                 comparison_vars(comparison, &mut vars);
-                ensure_bound(predicate, vars, &bound, SafetyContext::Expression)?;
+                ensure_bound(
+                    predicate,
+                    vars,
+                    &bound,
+                    SafetyContext::Expression,
+                    &comparison.location,
+                )?;
             }
             Atom::Negation(negated) => {
                 ensure_bound(
                     predicate,
-                    negated_vars(negated),
+                    negated_vars(&negated.atom),
                     &bound,
                     SafetyContext::Negation,
+                    negated.location(),
                 )?;
             }
             Atom::Aggregation(aggregate) => {
@@ -460,7 +522,13 @@ fn check_aggregate_safety(
     for arg in &aggregate.args {
         arg.expr.variables(&mut vars);
     }
-    ensure_bound(predicate, vars, outer_bound, SafetyContext::Expression)?;
+    ensure_bound(
+        predicate,
+        vars,
+        outer_bound,
+        SafetyContext::Expression,
+        &aggregate.location,
+    )?;
     check_body_safety(predicate, &aggregate.body)
 }
 
@@ -475,6 +543,7 @@ fn ensure_bound(
     vars: BTreeSet<Ident>,
     bound: &BTreeSet<Ident>,
     context: SafetyContext,
+    location: &SourceLocation,
 ) -> Result<(), StaticError> {
     for variable in vars {
         if !bound.contains(&variable) {
@@ -482,10 +551,12 @@ fn ensure_bound(
                 SafetyContext::Expression => Err(StaticError::UnboundExpressionVariable {
                     predicate: predicate.clone(),
                     variable,
+                    location: location.clone(),
                 }),
                 SafetyContext::Negation => Err(StaticError::UnboundNegationVariable {
                     predicate: predicate.clone(),
                     variable,
+                    location: location.clone(),
                 }),
             };
         }
@@ -501,6 +572,7 @@ fn check_cyclic_negation(edges: &[DependencyEdge]) -> Result<(), StaticError> {
             path.dedup();
             return Err(StaticError::CyclicNegation {
                 cycle: NegationCycle::new(path),
+                location: edge.location.clone(),
             });
         }
     }
@@ -625,25 +697,46 @@ mod tests {
     use super::*;
     use crate::runtime::parser::parse_program;
 
+    fn analyze_err(source: &str, input: &str) -> StaticError {
+        let program = parse_program(source, input).expect("program parses");
+        analyze(program).expect_err("program rejected")
+    }
+
+    fn location(source: &str, input: &str, needle: &str) -> SourceLocation {
+        let column = input.find(needle).expect("needle appears") + 1;
+        SourceLocation::new(source, 1, column)
+    }
+
     #[test]
     fn rejects_unbound_head_variable() {
-        let program = parse_program("inline", r"bad(h) := *handle{id: other}.").unwrap();
-        let err = analyze(program).expect_err("unsafe rule rejected");
-        assert!(matches!(err, StaticError::UnboundHeadVariable { .. }));
+        let input = r"bad(h) := *handle{id: other}.";
+        let err = analyze_err("inline", input);
+        let StaticError::UnboundHeadVariable {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected unbound head variable");
+        };
+        assert_eq!(actual, &location("inline", input, "bad(h)"));
+        assert!(err.to_string().contains("inline:1:1"));
     }
 
     #[test]
     fn rejects_unbound_negation_variable() {
-        let program = parse_program(
-            "inline",
-            r#"
-            terminal(h) := *handle{id: h, status: "resolved"}.
-            bad(h) := *handle{id: h}, not terminal(missing).
-            "#,
-        )
-        .unwrap();
-        let err = analyze(program).expect_err("unsafe negation rejected");
-        assert!(matches!(err, StaticError::UnboundNegationVariable { .. }));
+        let input =
+            r"terminal(h) := *handle{id: h}. bad(h) := *handle{id: h}, not terminal(missing).";
+        let err = analyze_err("inline", input);
+        let StaticError::UnboundNegationVariable {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected unbound negation variable");
+        };
+        assert_eq!(actual, &location("inline", input, "not terminal(missing)"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "not terminal(missing)").to_string())
+        );
     }
 
     #[test]
@@ -661,16 +754,53 @@ mod tests {
 
     #[test]
     fn rejects_unbound_comparison_variable() {
-        let program = parse_program("inline", r"bad(h) := *handle{id: h}, h = missing.").unwrap();
-        let err = analyze(program).expect_err("unsafe comparison rejected");
-        assert!(matches!(err, StaticError::UnboundExpressionVariable { .. }));
+        let input = r"bad(h) := *handle{id: h}, h = missing.";
+        let err = analyze_err("inline", input);
+        let StaticError::UnboundExpressionVariable {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected unbound expression variable");
+        };
+        assert_eq!(actual, &location("inline", input, "h = missing"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "h = missing").to_string())
+        );
     }
 
     #[test]
     fn rejects_unknown_predicates() {
-        let program = parse_program("inline", r"bad(h) := missing(h).").unwrap();
-        let err = analyze(program).expect_err("unknown predicate rejected");
-        assert!(matches!(err, StaticError::UnknownPredicate { .. }));
+        let input = r"bad(h) := missing(h).";
+        let err = analyze_err("inline", input);
+        let StaticError::UnknownPredicate {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected unknown predicate");
+        };
+        assert_eq!(actual, &location("inline", input, "missing(h)"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "missing(h)").to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_arity_mismatch_with_call_location() {
+        let input = r#"known("a"). bad(h) := known(h, h)."#;
+        let err = analyze_err("inline", input);
+        let StaticError::ArityMismatch {
+            location: actual, ..
+        } = &err
+        else {
+            panic!("expected arity mismatch");
+        };
+        assert_eq!(actual, &location("inline", input, "known(h, h)"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "known(h, h)").to_string())
+        );
     }
 
     #[test]
@@ -738,18 +868,16 @@ mod tests {
 
     #[test]
     fn rejects_cyclic_negation_with_both_predicates_named() {
-        let program = parse_program(
-            "anneal.dl",
-            r"
-            blocked(h) := *handle{id: h}, not advancing(h).
-            advancing(h) := *handle{id: h}, not blocked(h).
-            ",
-        )
-        .unwrap();
-        let err = analyze(program).expect_err("cyclic negation rejected");
-        let StaticError::CyclicNegation { cycle } = err else {
+        let input = r"blocked(h) := *handle{id: h}, not advancing(h). advancing(h) := *handle{id: h}, not blocked(h).";
+        let err = analyze_err("anneal.dl", input);
+        let StaticError::CyclicNegation {
+            cycle,
+            location: actual,
+        } = &err
+        else {
             panic!("expected cyclic negation");
         };
+        assert_eq!(actual, &location("anneal.dl", input, "not advancing(h)"));
         let names = cycle
             .predicates()
             .iter()

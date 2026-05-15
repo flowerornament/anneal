@@ -15,9 +15,9 @@ pub mod parser;
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
 pub use ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
-    FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal, NumberLiteral,
-    PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term, TimeBlock,
-    VerbDecl,
+    FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal, NegatedAtom, Negation,
+    NumberLiteral, PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term,
+    TimeBlock, VerbDecl,
 };
 pub use eval::{Binding, Database, EvalError, Evaluator, QueryOutput, Row, Tuple, Value};
 pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};

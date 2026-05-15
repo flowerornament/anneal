@@ -590,7 +590,7 @@ fn eval_atom(
         }
         Atom::Comparison(comparison) => eval_comparison(comparison, bindings),
         Atom::Aggregation(aggregate) => eval_aggregate(aggregate, bindings, database),
-        Atom::Negation(negated) => eval_negation(negated, bindings, database),
+        Atom::Negation(negation) => eval_negation(&negation.atom, bindings, database),
         Atom::TimeBlock(time_block) => Err(EvalError::UnsupportedTimeRef {
             reference: time_block.reference.clone(),
         }),
@@ -809,7 +809,7 @@ fn collect_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
             comparison.left.variables(out);
             comparison.right.variables(out);
         }
-        Atom::Negation(negated) => match negated {
+        Atom::Negation(negation) => match &negation.atom {
             NegatedAtom::Stored(stored) => {
                 for field in &stored.fields {
                     if let Some(expr) = field.term.expr() {
