@@ -4,7 +4,7 @@ use crate::facts::STORED_RELATION_DESCRIPTORS;
 use crate::source::{SourceCapabilities, SourceInfo};
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
-use super::ast::{Expr, Head, Program, RuleLayer, SourceLocation, Statement, VerbDecl};
+use super::ast::{DocDecl, Expr, Head, Program, RuleLayer, SourceLocation, Statement, VerbDecl};
 use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
 
@@ -254,13 +254,11 @@ impl IntrospectionBuilder {
     }
 
     fn add_program(&mut self, program: &Program) {
-        let mut predicates = BTreeMap::<String, PredicateInfo>::new();
-        collect_program_predicates(program, &mut predicates);
-        self.add_predicates(predicates);
+        let scanned = ProgramScanner::scan(program);
+        self.add_predicates(scanned.predicates, &scanned.docs);
+        self.add_docs(&scanned.docs);
 
-        let mut verbs = Vec::new();
-        collect_verbs(program, &mut verbs);
-        for verb in verbs {
+        for verb in scanned.verbs {
             let Some(info) = VerbInfo::from_decl(verb) else {
                 continue;
             };
@@ -276,8 +274,8 @@ impl IntrospectionBuilder {
             ]));
             self.source_of.insert(Tuple(vec![
                 string_value(&info.name),
-                string_value(&verb.location.source_name),
-                string_value(&source_line_text(&verb.location)),
+                string_value(&verb.location().source_name),
+                string_value(&source_line_text(verb.location())),
             ]));
             self.examples.insert(Tuple(vec![
                 string_value(&info.name),
@@ -296,11 +294,32 @@ impl IntrospectionBuilder {
                 rule.origin().location(),
             );
         }
-        self.add_predicates(predicates);
+        self.add_predicates(predicates, &BTreeMap::new());
     }
 
-    fn add_predicates(&mut self, predicates: BTreeMap<String, PredicateInfo>) {
+    fn add_docs(&mut self, docs: &BTreeMap<String, DocInfo>) {
+        for (name, info) in docs {
+            self.describe
+                .insert(Tuple(vec![string_value(name), string_value(&info.doc)]));
+            for (file, line_text) in info.source_lines.iter_line_text() {
+                self.source_of.insert(Tuple(vec![
+                    string_value(name),
+                    string_value(file),
+                    string_value(&line_text),
+                ]));
+            }
+        }
+    }
+
+    fn add_predicates(
+        &mut self,
+        predicates: BTreeMap<String, PredicateInfo>,
+        docs: &BTreeMap<String, DocInfo>,
+    ) {
         for (name, info) in predicates {
+            let doc = docs
+                .get(&name)
+                .map_or(info.doc.as_str(), |doc| doc.doc.as_str());
             self.schema.insert(schema_tuple(
                 &name,
                 "derived",
@@ -308,11 +327,10 @@ impl IntrospectionBuilder {
                 "deterministic",
                 &info.provenance(),
             ));
-            for (file, lines) in &info.source_lines {
-                let line_text = line_list(lines);
+            for (file, line_text) in info.source_lines.iter_line_text() {
                 self.predicates.insert(Tuple(vec![
                     string_value(&name),
-                    string_value(&info.doc),
+                    string_value(doc),
                     string_value(file),
                     string_value(&line_text),
                 ]));
@@ -323,7 +341,7 @@ impl IntrospectionBuilder {
                 ]));
             }
             self.describe
-                .insert(Tuple(vec![string_value(&name), string_value(&info.doc)]));
+                .insert(Tuple(vec![string_value(&name), string_value(doc)]));
         }
     }
 
@@ -345,7 +363,7 @@ struct PredicateInfo {
     parameters: Vec<ParameterName>,
     doc: String,
     layers: BTreeSet<RuleLayer>,
-    source_lines: BTreeMap<String, BTreeSet<usize>>,
+    source_lines: SourceLines,
 }
 
 impl PredicateInfo {
@@ -356,7 +374,7 @@ impl PredicateInfo {
             parameters: head_parameter_names(head),
             doc: format!("Rule-defined predicate {name}."),
             layers: BTreeSet::new(),
-            source_lines: BTreeMap::new(),
+            source_lines: SourceLines::default(),
         };
         info.add_source(layer, location);
         info
@@ -369,16 +387,7 @@ impl PredicateInfo {
 
     fn add_source(&mut self, layer: RuleLayer, location: &SourceLocation) {
         self.layers.insert(layer);
-        if location.line > 0 {
-            self.source_lines
-                .entry(location.source_name.clone())
-                .or_default()
-                .insert(location.line);
-        } else {
-            self.source_lines
-                .entry(location.source_name.clone())
-                .or_default();
-        }
+        self.source_lines.add(location);
     }
 
     fn provenance(&self) -> String {
@@ -409,6 +418,59 @@ impl PredicateInfo {
     }
 }
 
+#[derive(Clone, Debug)]
+struct DocInfo {
+    doc: String,
+    source_lines: SourceLines,
+}
+
+impl DocInfo {
+    fn from_decl(decl: &DocDecl) -> Self {
+        let mut info = Self {
+            doc: decl.doc().to_string(),
+            source_lines: SourceLines::default(),
+        };
+        info.add_source(decl.location());
+        info
+    }
+
+    fn replace_from_decl(&mut self, decl: &DocDecl) {
+        self.doc = decl.doc().to_string();
+        self.source_lines.replace_with(decl.location());
+    }
+
+    fn add_source(&mut self, location: &SourceLocation) {
+        self.source_lines.add(location);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SourceLines(BTreeMap<String, BTreeSet<usize>>);
+
+impl SourceLines {
+    fn add(&mut self, location: &SourceLocation) {
+        if location.line > 0 {
+            self.0
+                .entry(location.source_name.clone())
+                .or_default()
+                .insert(location.line);
+        } else {
+            self.0.entry(location.source_name.clone()).or_default();
+        }
+    }
+
+    fn replace_with(&mut self, location: &SourceLocation) {
+        self.0.clear();
+        self.add(location);
+    }
+
+    fn iter_line_text(&self) -> impl Iterator<Item = (&str, String)> {
+        self.0
+            .iter()
+            .map(|(file, lines)| (file.as_str(), line_list(lines)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ParameterName {
     Unknown,
@@ -432,34 +494,53 @@ fn merge_parameter_names(existing: &mut [ParameterName], observed: &[ParameterNa
     }
 }
 
-fn collect_program_predicates(program: &Program, out: &mut BTreeMap<String, PredicateInfo>) {
-    collect_statement_predicates(&program.statements, out);
+#[derive(Default)]
+struct ProgramScanner<'a> {
+    docs: BTreeMap<String, DocInfo>,
+    predicates: BTreeMap<String, PredicateInfo>,
+    verbs: Vec<&'a VerbDecl>,
 }
 
-fn collect_statement_predicates(
-    statements: &[Statement],
-    out: &mut BTreeMap<String, PredicateInfo>,
-) {
-    for statement in statements {
-        match statement {
-            Statement::Fact(head) => {
-                add_predicate_head(out, head, RuleLayer::Unknown, &head.location);
+impl<'a> ProgramScanner<'a> {
+    fn scan(program: &'a Program) -> Self {
+        let mut scanner = Self::default();
+        scanner.scan_statements(&program.statements);
+        scanner
+    }
+
+    fn scan_statements(&mut self, statements: &'a [Statement]) {
+        for statement in statements {
+            match statement {
+                Statement::Fact(head) => {
+                    add_predicate_head(
+                        &mut self.predicates,
+                        head,
+                        RuleLayer::Unknown,
+                        &head.location,
+                    );
+                }
+                Statement::Rule(rule) => {
+                    add_predicate_head(
+                        &mut self.predicates,
+                        &rule.head,
+                        rule.origin().layer(),
+                        rule.origin().location(),
+                    );
+                }
+                Statement::AtBlock { statements, .. } => {
+                    self.scan_statements(statements);
+                }
+                Statement::Verb(verb) => self.verbs.push(verb),
+                Statement::Doc(doc) => {
+                    if let Some(existing) = self.docs.get_mut(doc.name()) {
+                        existing.replace_from_decl(doc);
+                    } else {
+                        self.docs
+                            .insert(doc.name().to_string(), DocInfo::from_decl(doc));
+                    }
+                }
+                Statement::Query(_) | Statement::Include(_) | Statement::Import(_) => {}
             }
-            Statement::Rule(rule) => {
-                add_predicate_head(
-                    out,
-                    &rule.head,
-                    rule.origin().layer(),
-                    rule.origin().location(),
-                );
-            }
-            Statement::AtBlock { statements, .. } => {
-                collect_statement_predicates(statements, out);
-            }
-            Statement::Query(_)
-            | Statement::Include(_)
-            | Statement::Import(_)
-            | Statement::Verb(_) => {}
         }
     }
 }
@@ -474,26 +555,6 @@ fn add_predicate_head(
     out.entry(name)
         .and_modify(|info| info.add_head(head, layer, location))
         .or_insert_with(|| PredicateInfo::new(head, layer, location));
-}
-
-fn collect_verbs<'a>(program: &'a Program, out: &mut Vec<&'a VerbDecl>) {
-    collect_statement_verbs(&program.statements, out);
-}
-
-fn collect_statement_verbs<'a>(statements: &'a [Statement], out: &mut Vec<&'a VerbDecl>) {
-    for statement in statements {
-        match statement {
-            Statement::Verb(verb) => out.push(verb),
-            Statement::AtBlock { statements, .. } => {
-                collect_statement_verbs(statements, out);
-            }
-            Statement::Fact(_)
-            | Statement::Rule(_)
-            | Statement::Query(_)
-            | Statement::Include(_)
-            | Statement::Import(_) => {}
-        }
-    }
 }
 
 fn head_parameter_names(head: &Head) -> Vec<ParameterName> {

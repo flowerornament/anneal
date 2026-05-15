@@ -488,10 +488,12 @@ fn normalize_global_statement_named_calls(
     match statement {
         Statement::Fact(head) => normalize_head_named_calls(head),
         Statement::Rule(rule) => normalize_rule_named_calls(rule, signatures),
-        Statement::AtBlock { .. } => Ok(()),
-        Statement::Query(_) | Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) => {
-            Ok(())
-        }
+        Statement::AtBlock { .. }
+        | Statement::Query(_)
+        | Statement::Include(_)
+        | Statement::Import(_)
+        | Statement::Verb(_)
+        | Statement::Doc(_) => Ok(()),
     }
 }
 

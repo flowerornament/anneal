@@ -759,6 +759,7 @@ query       := '?' [local_rules] body '.'
 directive   := 'include' string '.'
              | 'at' '(' string ')' '{' statement* '}'
              | '@verb' '(' verb_args ')'
+             | '@doc' '(' doc_args ')'
              | 'import' ident 'from' string '.'   // see §28
 
 head        := ident '(' positional_arg_list ')'
@@ -780,6 +781,7 @@ call_arg_list := call_arg (',' call_arg)*
 call_arg    := expr                         # positional
              | ident ':' expr               # named call-site sugar
 agg_args    := named_arg (',' named_arg)*
+doc_args    := 'name' ':' string ',' 'doc' ':' string
 named_arg   := ident ':' expr
 value_or_tuple := expr | tuple
 tuple       := '(' expr (',' expr)+ ')'
@@ -1786,6 +1788,20 @@ doc and rely on `source_of` for precise context. Rationale: agents need
 one stable relational shape across CLI, MCP, and library surfaces
 without a second decoding convention for introspection rows.
 
+**Definition CR-D46 (Documentation declarations).** `@doc(name:
+"...", doc: "...").` is a non-evaluating prelude or project
+annotation with required string `name` and `doc` arguments. Malformed
+or missing arguments are load errors. It contributes `describe(name, doc)` and
+`source_of(name, file, lines)` rows using the annotation's source
+location. When the same name is also a rule-defined predicate, the
+`@doc` text is the predicate documentation and the predicate's rule
+locations remain visible through `predicates(...)` and `source_of(...)`.
+Later `@doc` declarations for the same name replace earlier
+declarations by load order. Rationale: source-backed topic
+documentation lets agents jump from runtime vocabulary such as
+`convergence` to the canonical prelude source without creating dummy
+relations.
+
 ```
 # 1. Counts by kind
 anneal -e '? *handle{kind: k}, c = Count{ h : *handle{id: h, kind: k} }.'
@@ -2127,6 +2143,7 @@ as data instead of smuggling it through row sequence.
 - CR-D43: Search selection policy (§12)
 - CR-D44: Introspection tuple encoding (§43)
 - CR-D45: Executable context lowering (§33.1)
+- CR-D46: Documentation declarations (§43)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -1,0 +1,6 @@
+# Source-backed topic documentation for the convergence standard library.
+
+@doc(
+  name: "convergence",
+  doc: "Anneal's convergence vocabulary: potential, entropy, blocked, advancing, lifecycle position, and related predicates that help agents find unsettled work in a source-neutral handle graph."
+).

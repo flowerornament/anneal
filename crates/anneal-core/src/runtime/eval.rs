@@ -3876,7 +3876,7 @@ mod tests {
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::ranking::{SearchHit, default_lexical_search_info};
-    use crate::runtime::ast::{RuleLayer, Statement};
+    use crate::runtime::ast::RuleLayer;
     use crate::runtime::{StaticError, analyze, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
 
@@ -4716,7 +4716,7 @@ mod tests {
             "#,
         )
         .expect("mvs program parses");
-        mark_prelude(&mut program);
+        program.assign_rule_layer(RuleLayer::Prelude);
         let analyzed = analyze(program).expect("mvs program analyzes");
         let queries = analyzed.queries().cloned().collect::<Vec<_>>();
         let mut evaluator = Evaluator::new(analyzed, mvs_database());
@@ -4746,32 +4746,6 @@ mod tests {
         };
         assert!(rows.next().is_none(), "unexpected extra mvs query output");
         outputs
-    }
-
-    fn mark_prelude(program: &mut crate::runtime::Program) {
-        for statement in &mut program.statements {
-            mark_statement_prelude(statement);
-        }
-    }
-
-    fn mark_statement_prelude(statement: &mut Statement) {
-        match statement {
-            Statement::Rule(rule) => rule.origin.layer = RuleLayer::Prelude,
-            Statement::Query(query) => {
-                for rule in &mut query.local_rules {
-                    rule.origin.layer = RuleLayer::Inline;
-                }
-            }
-            Statement::AtBlock { statements, .. } => {
-                for statement in statements {
-                    mark_statement_prelude(statement);
-                }
-            }
-            Statement::Fact(_)
-            | Statement::Include(_)
-            | Statement::Import(_)
-            | Statement::Verb(_) => {}
-        }
     }
 
     fn row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {

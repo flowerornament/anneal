@@ -1,8 +1,8 @@
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, Comparison, ComparisonOp,
-    DerivedAtom, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal,
-    NamedArg, NegatedAtom, Negation, NumberLiteral, PredicateRef, Program, Query, Rule, RuleLayer,
-    RuleOrigin, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
+    DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective,
+    Literal, NamedArg, NegatedAtom, Negation, NumberLiteral, PredicateRef, Program, Query, Rule,
+    RuleLayer, RuleOrigin, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -75,12 +75,22 @@ impl Parser {
         }
         if self.eat(&TokenKind::AtSign) {
             let location = statement_start.location(&self.source);
-            self.expect_keyword("verb")?;
+            let annotation = self.expect_ident()?;
             self.expect(&TokenKind::LParen)?;
             let args = self.parse_named_args(&TokenKind::RParen)?;
             self.expect(&TokenKind::RParen)?;
             self.eat(&TokenKind::Dot);
-            return Ok(Statement::Verb(VerbDecl { args, location }));
+            return match annotation.as_str() {
+                "verb" => Ok(Statement::Verb(VerbDecl::new(args, location))),
+                "doc" => self
+                    .parse_doc_annotation(&args, location, &statement_start)
+                    .map(Statement::Doc),
+                other => Err(ParseError::new(
+                    &self.source,
+                    &statement_start,
+                    format!("unknown annotation @{other}"),
+                )),
+            };
         }
         if self.peek_keyword("at") && self.peek_n(1).kind == TokenKind::LParen {
             self.bump();
@@ -108,6 +118,29 @@ impl Parser {
             body,
             rule_origin(RuleLayer::Unknown, &self.source, &statement_start),
         )))
+    }
+
+    fn parse_doc_annotation(
+        &self,
+        args: &[NamedArg],
+        location: SourceLocation,
+        annotation_start: &Token,
+    ) -> Result<DocDecl, ParseError> {
+        let name = required_annotation_string(args, "name").ok_or_else(|| {
+            ParseError::new(
+                &self.source,
+                annotation_start,
+                "@doc requires string argument name",
+            )
+        })?;
+        let doc = required_annotation_string(args, "doc").ok_or_else(|| {
+            ParseError::new(
+                &self.source,
+                annotation_start,
+                "@doc requires string argument doc",
+            )
+        })?;
+        Ok(DocDecl::new(name, doc, location))
     }
 
     fn parse_query(&mut self, location: SourceLocation) -> Result<Query, ParseError> {
@@ -674,6 +707,18 @@ fn rule_origin(layer: RuleLayer, source: &str, token: &Token) -> RuleOrigin {
     RuleOrigin::new(layer, token.location(source))
 }
 
+fn required_annotation_string<'a>(args: &'a [NamedArg], name: &str) -> Option<&'a str> {
+    args.iter().find_map(|arg| {
+        if arg.name.as_str() != name {
+            return None;
+        }
+        let Expr::Literal(Literal::String(value)) = &arg.expr else {
+            return None;
+        };
+        Some(value.as_str())
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Token {
     kind: TokenKind,
@@ -1091,11 +1136,29 @@ mod tests {
             include "checks/release.dl".
             import strict_checks from "checks/release.dl".
             @verb(name: "broken", query: "diagnostic(code)").
+            @doc(name: "convergence", doc: "Convergence vocabulary.").
             at("HEAD~1") { old(h) := *handle{id: h}. }
             "#,
         )
         .expect("program parses");
-        assert_eq!(program.statements.len(), 4);
+        assert_eq!(program.statements.len(), 5);
+        let Statement::Doc(doc) = &program.statements[3] else {
+            panic!("expected @doc");
+        };
+        assert_eq!(doc.name(), "convergence");
+        assert_eq!(doc.doc(), "Convergence vocabulary.");
+    }
+
+    #[test]
+    fn rejects_malformed_doc_annotations() {
+        let err = parse_program(
+            "anneal.dl",
+            r#"@doc(name: convergence, doc: "Convergence vocabulary.")."#,
+        )
+        .expect_err("name must be a string");
+
+        assert_eq!(err.location, SourceLocation::new("anneal.dl", 1, 1));
+        assert!(err.message.contains("@doc requires string argument name"));
     }
 
     #[test]

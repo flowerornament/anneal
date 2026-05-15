@@ -88,6 +88,12 @@ pub struct Program {
 }
 
 impl Program {
+    pub(crate) fn assign_rule_layer(&mut self, layer: RuleLayer) {
+        for statement in &mut self.statements {
+            statement.assign_rule_layer(layer);
+        }
+    }
+
     pub fn facts(&self) -> impl Iterator<Item = &Head> {
         self.statements
             .iter()
@@ -116,6 +122,27 @@ impl Program {
     }
 }
 
+impl Statement {
+    pub(crate) fn assign_rule_layer(&mut self, layer: RuleLayer) {
+        match self {
+            Self::Rule(rule) => {
+                rule.origin.layer = layer;
+            }
+            Self::Query(query) => {
+                for rule in &mut query.local_rules {
+                    rule.origin.layer = RuleLayer::Inline;
+                }
+            }
+            Self::AtBlock { statements, .. } => {
+                for statement in statements {
+                    statement.assign_rule_layer(layer);
+                }
+            }
+            Self::Fact(_) | Self::Include(_) | Self::Import(_) | Self::Verb(_) | Self::Doc(_) => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     Fact(Head),
@@ -128,6 +155,7 @@ pub enum Statement {
         statements: Vec<Statement>,
     },
     Verb(VerbDecl),
+    Doc(DocDecl),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,22 +173,74 @@ pub struct ImportDirective {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerbDecl {
+    #[serde(flatten)]
+    pub annotation: AnnotationDecl,
+}
+
+impl VerbDecl {
+    pub fn new(args: Vec<NamedArg>, location: SourceLocation) -> Self {
+        Self {
+            annotation: AnnotationDecl::new(args, location),
+        }
+    }
+
+    pub fn string_arg(&self, name: &str) -> Option<&str> {
+        self.annotation.string_arg(name)
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        self.annotation.location()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocDecl {
+    pub name: String,
+    pub doc: String,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+impl DocDecl {
+    pub fn new(name: impl Into<String>, doc: impl Into<String>, location: SourceLocation) -> Self {
+        Self {
+            name: name.into(),
+            doc: doc.into(),
+            location,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn doc(&self) -> &str {
+        &self.doc
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnnotationDecl {
     pub args: Vec<NamedArg>,
     #[serde(default, skip_serializing)]
     pub location: SourceLocation,
 }
 
-impl VerbDecl {
+impl AnnotationDecl {
+    pub fn new(args: Vec<NamedArg>, location: SourceLocation) -> Self {
+        Self { args, location }
+    }
+
     pub fn string_arg(&self, name: &str) -> Option<&str> {
-        self.args.iter().find_map(|arg| {
-            if arg.name.as_str() != name {
-                return None;
-            }
-            let Expr::Literal(Literal::String(value)) = &arg.expr else {
-                return None;
-            };
-            Some(value.as_str())
-        })
+        string_arg(&self.args, name)
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
     }
 }
 
@@ -410,6 +490,18 @@ pub enum AggregateFunction {
 pub struct NamedArg {
     pub name: Ident,
     pub expr: Expr,
+}
+
+fn string_arg<'a>(args: &'a [NamedArg], name: &str) -> Option<&'a str> {
+    args.iter().find_map(|arg| {
+        if arg.name.as_str() != name {
+            return None;
+        }
+        let Expr::Literal(Literal::String(value)) = &arg.expr else {
+            return None;
+        };
+        Some(value.as_str())
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -100,7 +100,7 @@ impl ProgramLoader {
                     statements.extend(self.load_import(base, &directive, context)?);
                 }
                 mut statement => {
-                    set_statement_layer(&mut statement, scope.layer());
+                    statement.assign_rule_layer(scope.layer());
                     statements.push(statement);
                 }
             }
@@ -256,27 +256,6 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, LoadError> {
     })
 }
 
-fn set_statement_layer(statement: &mut Statement, layer: RuleLayer) {
-    match statement {
-        Statement::Rule(rule) => set_rule_layer(rule, layer),
-        Statement::Query(query) => {
-            for rule in &mut query.local_rules {
-                set_rule_layer(rule, RuleLayer::Inline);
-            }
-        }
-        Statement::AtBlock { statements, .. } => {
-            for statement in statements {
-                set_statement_layer(statement, layer);
-            }
-        }
-        Statement::Fact(_) | Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) => {}
-    }
-}
-
-fn set_rule_layer(rule: &mut Rule, layer: RuleLayer) {
-    rule.origin.layer = layer;
-}
-
 fn collect_unqualified_definitions(statements: &[Statement]) -> BTreeSet<Ident> {
     let mut definitions = BTreeSet::new();
     for statement in statements {
@@ -299,7 +278,7 @@ fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeS
                 collect_statement_definitions(statement, definitions);
             }
         }
-        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) => {}
+        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) | Statement::Doc(_) => {}
     }
 }
 
@@ -331,7 +310,7 @@ fn qualify_statement(
         Statement::AtBlock { statements, .. } => {
             qualify_statements(statements, module, local_definitions);
         }
-        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) => {}
+        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) | Statement::Doc(_) => {}
     }
 }
 

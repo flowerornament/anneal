@@ -17,7 +17,7 @@ mod primitives;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
 pub use ast::{
-    Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
+    Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, DocDecl, Expr,
     FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal, NegatedAtom, Negation,
     NumberLiteral, PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term,
     TimeBlock, VerbDecl,
