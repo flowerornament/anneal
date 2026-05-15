@@ -112,9 +112,9 @@ tolerances.
 
 **Definition CR-D4 (Source trait).** The contract every adapter
 implements. Sources are the only data-ingestion extensibility point.
-*Other* extension seams (ranking/scoring, authorization policy, trail
-summarization, MCP tool registration) are separate plugin surfaces
-declared in Part VII.
+*Other* extension seams (source orchestration, retrieval,
+ranking/scoring, authorization policy, trail privacy, MCP tool
+registration) are separate plugin surfaces declared in Part VII.
 
 ```rust
 pub trait Source {
@@ -161,7 +161,7 @@ pub struct SourceInfo {
     pub doc: &'static str,
     pub config_keys: Vec<ConfigKey>,       // adapter-qualified discovery facts consumed
     pub capabilities: SourceCapabilities,  // see §11
-    pub search: Option<SearchInfo>,        // search scoring contract if the Source contributes hits
+    pub search: Option<SearchInfo>,        // search scoring contract if the source/provider contributes hits
 }
 
 pub struct SourceCapabilities {
@@ -178,6 +178,20 @@ pub struct SearchInfo {
 }
 ```
 
+**Definition CR-D57 (Source driver boundary).** `Source` is a
+bounded extraction interface, not a scheduler. File watching,
+remote polling, retry policy, cache invalidation, debounce, and
+long-running MCP/host refresh loops belong to a runtime-owned
+`SourceDriver` or to the embedding host. A driver decides *when* to
+call `Source::extract`; the `Source` decides *what facts* the current
+context yields.
+
+Rationale: extraction should be testable as a pure-ish snapshot
+operation. Mixing orchestration into `Source` would make every
+adapter invent its own refresh semantics and would couple markdown
+directory walking, host runtime polling, and remote issue trackers
+to one trait.
+
 A `Source` is one of: a directory walker (markdown, MDX, AsciiDoc),
 a source-code analyzer (anneal-code), an external-system reader
 (GitHub issues, CI events), or a host application's runtime
@@ -188,21 +202,42 @@ The runtime is identical across sources. Only the extraction differs.
 
 ### §6 Other extension seams [CR-D5]
 
-**Definition CR-D5 (Plugin surfaces).** v2.0 names four extension
-seams beyond `Source` so adapter authors don't contort everything
-into fact-emission:
+**Definition CR-D5 (Plugin surfaces).** v2.0 names extension seams
+beyond `Source` so adapter authors don't contort everything into
+fact-emission:
 
 | Surface | Trait | Purpose |
 |---|---|---|
-| Data ingestion | `Source` | Emit handle/edge/content facts |
+| Data ingestion | `Source` | Emit handle/edge/meta/content facts for a snapshot |
+| Source orchestration | `SourceDriver` | Watch, poll, debounce, retry, and schedule extraction |
+| Content retrieval | `ContentProvider` | Resolve bounded `read`/`read_full` chunks by handle/span |
+| Search candidates | `SearchProvider` | Produce raw `SearchHit` rows from facts or adapter indexes |
 | Ranking and scoring | `Ranker` | Per-adapter `search` score calibration; tie-break policy |
 | Authorization policy | `Policy` | Actor → allow/deny on read/search/eval; scoped to MCP and host-embed |
-| Trail summarization | `TrailSummarizer` | Engine-generated trail-entry summaries with privacy-aware redaction |
+| Trail capture/privacy | `TrailRecorder`, `TrailRedactor`, `TrailSummarizer`, `TrailStore` | Capture, redact, summarize, retain, and replay trail entries |
 
-`Ranker` and `Policy` ship default implementations in `anneal-core`.
-Adapters and hosts override them; the runtime uses the most-specific
-one. `TrailSummarizer` is mandatory per §13 because trail privacy
-needs explicit per-corpus configuration.
+Default implementations ship in `anneal-core`. Adapters and hosts
+override the narrow surface they own; the runtime composes the
+most-specific implementations.
+
+**Definition CR-D52 (Retrieval provider boundary).**
+`ContentProvider` and `SearchProvider` are distinct from `Source`.
+`Source` emits durable facts. `ContentProvider` retrieves bounded
+content for `read` and `read_full`. `SearchProvider` emits raw
+candidate hits for `search`. `Ranker` calibrates and orders those
+hits; it does not fetch content.
+
+The default providers are fact-store backed: `ContentProvider` reads
+`*content` and `*span`; `SearchProvider` scans handle ids,
+summaries, meta fields, and content spans. Large or host-backed
+adapters may provide lazy content retrieval or indexed search without
+changing the public `search(...)` and `read(...)` relation shapes.
+Providers still emit enough provenance for `source_of`, trails, and
+`--explain` to name the underlying handle/span/source.
+
+Rationale: markdown can eagerly load content, but code indexes, issue
+trackers, and host runtimes often cannot. Retrieval is an access-path
+and performance decision; relation shape is the logical contract.
 
 ### §7 Ingestion lifecycle [CR-D6]
 
@@ -553,15 +588,16 @@ place.
 
 ### §12 Search scoring contract [CR-D10]
 
-**Definition CR-D10 (Search contract).** Every adapter that
-contributes search results emits raw `SearchHit` candidates. The
-runtime passes candidates through the active `Ranker` before exposing
-the public `search(...)` relation, so the `score` column agents see
-is calibrated for the loaded adapter set.
+**Definition CR-D10 (Search contract).** Every linked
+`SearchProvider` that contributes search results emits raw
+`SearchHit` candidates. The runtime passes candidates through the
+active `Ranker` before exposing the public `search(...)` relation, so
+the `score` column agents see is calibrated for the loaded adapter
+set.
 
 - Public `score` is a calibrated float in `[0.0, 1.0]`. 1.0 means
   "strongest match after the active Ranker"; 0.0 means "no signal."
-- Adapter raw scores are **not** directly comparable. Provenance may
+- Provider raw scores are **not** directly comparable. Provenance may
   expose both `raw_score` and calibrated `score`; ordinary queries
   see only calibrated `score`. The default `Ranker` ships with
   documented calibration; projects override via `[ranking]` in
@@ -575,9 +611,10 @@ is calibrated for the loaded adapter set.
   to decide whether a hit is structural or content-based.
 - Ordering by `score` is deterministic given a fixed corpus state and
   query; tie-breakers documented per `Ranker`.
-- **Confidence threshold.** Each adapter declares a
-  `low_confidence_threshold: f32` in `SourceInfo.search` (default
-  `0.5`). Hits with calibrated `score < threshold` carry
+- **Confidence threshold.** Each search provider declares a
+  `low_confidence_threshold: f32` through the source or provider
+  registration (default `0.5`). Hits with calibrated
+  `score < threshold` carry
   `low_confidence: true` in the relation, signalling agents that
   the hit is plausible but uncertain. The relation shape:
 
@@ -648,7 +685,7 @@ output stream contained. `consumed_refs` is the subset the agent
 referenced in a later query, handles selected via `run_verb`
 follow-up. The runtime infers `consumed_refs` from observed
 verb-to-verb dataflow within the session; explicit selection is
-also possible via the `TrailSummarizer.note_consumed(handle)`
+also possible via the `TrailRecorder.note_consumed(handle)`
 callback from a host application.
 
 This distinction matters for trail replay (v2.1): a replay agent
@@ -658,14 +695,34 @@ surfaced — context verb surfaces 6 hits + 4 spans + 2 edges, agent
 uses 1 — is resolved by recording both sets and treating consumed
 as the load-bearing path.
 
-A `TrailSummarizer` (Part VI extension seam) produces the
+A `TrailRedactor` (§38 extension seam) produces the
 `redacted_expr` and may strip surfaced/consumed refs for handles
-whose `visibility` is `private`. Default summarizer redacts values
+whose `visibility` is `private`. The default redactor removes values
 inside string literals and meta-key values matching configured
 patterns (`secret`, `password`, customer ids).
 
 Trails persist to `.anneal/trails/<session-id>.jsonl` on session end.
 Replay/diff workflows are forward-looking (v2.1; §47).
+
+**Definition CR-D54 (Trail privacy boundary).** Trail capture is four
+separate responsibilities:
+
+- `TrailRecorder` observes evaluated queries, surfaced rows, consumed
+  refs, prelude hash, actor, and generation set.
+- `TrailRedactor` removes or hashes sensitive expression values,
+  refs, and payloads before persistence or display.
+- `TrailSummarizer` turns a recorded path into a human/agent digest.
+- `TrailStore` owns persistence, retention, replay input, and diff
+  input.
+
+`TrailSummarizer` must not be the only privacy boundary. Redaction
+happens before persistence unless policy explicitly permits raw trail
+storage for the actor and corpus. Replay/diff consume recorded
+entries through `TrailStore`, not by reading private raw buffers.
+
+Rationale: summarization, redaction, retention, and replay are
+different decisions. Combining them into one trait would make privacy
+bugs look like formatting or digest bugs.
 
 ### §14 Provenance contract [CR-D12]
 
@@ -781,6 +838,33 @@ dangerous in unattended-agent contexts. The runtime distinguishes:
 all capabilities; MCP starts with a conservative default; host-embed
 sets explicitly. The `Policy` trait (§6) overrides any of the above
 per project.
+
+**Definition CR-D53 (Fact visibility boundary).** Authorization is
+not only a surface action gate. The fact store carries an evaluation
+visibility envelope for source-derived rows. Relation schemas do not
+expose that envelope as ordinary user data; it is the runtime's
+filter for actor-scoped evaluation, search, read, provenance, and
+trail capture. Sources may attach visibility at extraction time;
+missing visibility defaults to `public`.
+
+Visibility values are at least `public`, `team`, and `private`.
+Hosts may define narrower labels as policy inputs, but the default
+runtime only promises the three-level ordering. Derived rows inherit
+the most restrictive visibility of the facts and primitive rows used
+to derive them.
+
+**Rule CR-R10 (Visibility before derivation).** For actor-scoped
+evaluation, the runtime filters hidden facts before any rule,
+primitive, aggregate, search, read, diagnostic, trail, or provenance
+step can observe them. Hidden rows are absent from the actor's
+logical database; they are not filtered only after query output.
+
+This prevents leaks through counts, low-confidence scores, diagnostic
+presence, `schema`/`source_of` examples, trail refs, and aggregate
+zero/nonzero differences. `schema`, `describe`, and `sources` may
+describe relation shapes and linked adapters, but they must not reveal
+private values, private row counts, or private handle identifiers
+without policy approval.
 
 ---
 
@@ -1127,6 +1211,22 @@ convergence vocabulary lives. `ANNEAL_PRELUDE_PATH` overrides the
 embedded prelude; doing so changes the `prelude_hash` and is
 recorded in trails — agents replaying a trail later see whether the
 prelude differs.
+
+**Definition CR-D55 (Versioned prelude package).** The standard
+library is an internal `PreludeSet`, not loose embedded text. A
+`PreludeSet` has a version, ordered file list, content hash, and
+source map. `anneal-core` loads the checked-in v2.0 set by default;
+`ANNEAL_PRELUDE_PATH` creates a custom set with its own hash and no
+compatibility promise beyond the public language/runtime contracts.
+
+`prelude_hash` remains the reproducibility key recorded in trails,
+snapshots, and query echo. The version exists for human compatibility
+and migration messages; the hash is what replay uses to detect exact
+drift.
+
+Rationale: the prelude is now a standard library compatibility
+surface. Treating it as a package hides file layout and embedding
+details while preserving `source_of` line-level introspection.
 
 ### §26 Load order and shadowing [CR-D21]
 
@@ -1819,6 +1919,22 @@ flooding the top-level tool list. `tools/list` returns the ~10 tools
 above; the agent discovers project verbs via `verbs` then calls them
 via `run_verb`.
 
+**Definition CR-D56 (Verb projection boundary).** `anneal-core` owns
+the resolved `VerbRegistry`: verb name, source, query AST, output
+schema, docs, capabilities, examples, and shadowing result. Surfaces
+own `VerbProjection`: how a resolved verb becomes a CLI shorthand,
+an MCP `run_verb` target, help text, or host-library call.
+
+Surfaces must not parse raw `@verb` strings or reconstruct load-order
+semantics. They ask the registry for the resolved verb set. Project
+verbs shadow prelude verbs according to CR-D21 and CR-R4 before any
+surface projection occurs. MCP exposes only the resolved name through
+`verbs`/`run_verb`; it does not list both the shadowed and shadowing
+definitions as tools.
+
+Rationale: a verb is a runtime language object. A command or MCP tool
+is a policy- and transport-specific projection of that object.
+
 Server instructions include the standard-library prelude content
 under a *trusted prelude* heading, separated from any *untrusted
 corpus content* an agent might subsequently see via `search` or
@@ -1828,9 +1944,22 @@ instruction frames.
 ### §38 Plugin surfaces [CR-D27]
 
 **Definition CR-D27 (Pluggable extension seams).** Beyond `Source`,
-the runtime exposes three extension surfaces:
+the runtime exposes narrow extension surfaces. Each surface hides one
+decision that will vary across adapters or hosts:
 
 ```rust
+pub trait SourceDriver {
+    fn refresh(&self, cx: &SourceContext) -> Result<FactBatch, SourceError>;
+}
+
+pub trait ContentProvider {
+    fn read(&self, request: &ReadRequest, ctx: &ReadContext) -> Result<Vec<ReadChunk>, ReadError>;
+}
+
+pub trait SearchProvider {
+    fn search(&self, request: &SearchRequest, ctx: &SearchContext) -> Result<Vec<SearchHit>, SearchError>;
+}
+
 pub trait Ranker {
     fn calibrate(&self, hit: &SearchHit, ctx: &RankingContext) -> f32;
     fn tie_break(&self, a: &SearchHit, b: &SearchHit) -> Ordering;
@@ -1840,16 +1969,30 @@ pub trait Policy {
     fn check(&self, actor: &ActorContext, action: &Action) -> PolicyDecision;
 }
 
+pub trait TrailRecorder {
+    fn record(&self, entry: TrailEntryInProgress, ctx: &TrailContext) -> Result<(), TrailError>;
+    fn note_consumed(&self, reference: TrailReference, ctx: &TrailContext);
+}
+
+pub trait TrailRedactor {
+    fn redact(&self, entry: TrailEntryInProgress, ctx: &TrailContext) -> TrailEntryRedacted;
+}
+
 pub trait TrailSummarizer {
-    fn summarize(&self, entry: &TrailEntryInProgress, ctx: &TrailContext) -> TrailSummary;
-    fn redact(&self, expr: &str, ctx: &TrailContext) -> String;
+    fn summarize(&self, entry: &TrailEntryRedacted, ctx: &TrailContext) -> TrailSummary;
+}
+
+pub trait TrailStore {
+    fn append(&self, entry: TrailEntryRedacted, ctx: &TrailContext) -> Result<(), TrailError>;
+    fn query(&self, request: TrailQuery, ctx: &TrailContext) -> Result<Vec<TrailEntryRedacted>, TrailError>;
 }
 ```
 
-Default impls ship in `anneal-core`. Adapters override `Ranker` for
-their hit shapes; hosts override `Policy` for actor-based
-authorization; projects override `TrailSummarizer` to control what
-gets recorded.
+Default impls ship in `anneal-core`. Adapters override
+`SearchProvider` or `ContentProvider` for index-backed retrieval;
+hosts override `Policy` for actor-based authorization; projects
+override trail components to control what gets captured, redacted,
+retained, and summarized.
 
 ---
 
@@ -2232,9 +2375,9 @@ ranker is a deterministic lexical baseline with documented
 tie-breaks, and surfaced search templates apply the executable
 low-confidence predicate before `TopK`.
 
-### §58 Default trail summarizer redaction patterns
+### §58 Default trail redaction patterns
 
-§13 says default summarizer redacts values in string literals and
+§13 says default redactor redacts values in string literals and
 meta-key values matching configured patterns. The default pattern
 set (`secret`, `password`, etc.) needs review; probably project-
 overridable via `[trail]` in `anneal.toml`.
@@ -2251,10 +2394,9 @@ verb's input within the same session`.
 
 ### §60 MCP run_verb routing
 
-§37's `run_verb` dispatches by verb name. Naming collisions across
-shadowed verbs (prelude vs project) need a documented resolution:
-project verbs win over prelude verbs (per CR-R4), but MCP must
-expose only the resolved name, not both.
+Resolved by CR-D56: `run_verb` dispatches through the core
+`VerbRegistry`. Project verbs win over prelude verbs per CR-D21 and
+CR-R4 before MCP projection, and MCP exposes only the resolved name.
 
 ### §61 Performance ceiling
 
@@ -2347,6 +2489,12 @@ as data instead of smuggling it through row sequence.
 - CR-D49: Relational diagnostic contract (§28.1)
 - CR-D50: S005 confirmed namespace scope (§28.2)
 - CR-D51: Embeddable language boundary (§8.1)
+- CR-D52: Retrieval provider boundary (§6)
+- CR-D53: Fact visibility boundary (§16)
+- CR-D54: Trail privacy boundary (§13)
+- CR-D55: Versioned prelude package (§25)
+- CR-D56: Verb projection boundary (§37)
+- CR-D57: Source driver boundary (§5)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2358,6 +2506,7 @@ as data instead of smuggling it through row sequence.
 - CR-R7: Bounded graph primitive anchors (§11)
 - CR-R8: Bounded content primitive inputs (§11)
 - CR-R9: Language API stabilization gate (§8.1)
+- CR-R10: Visibility before derivation (§16)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
