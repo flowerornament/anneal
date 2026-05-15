@@ -89,43 +89,6 @@ pub fn render_context_query(args: &ContextQueryArgs<'_>) -> String {
     )
 }
 
-pub fn context_query_template() -> String {
-    render_context_query_terms("goal", "hits", "per_hit_budget", "depth", false)
-}
-
-pub fn context_verb_source() -> String {
-    format!(
-        "\
-# Starter verb declarations for the v2 surface.
-#
-# Phase 6 will add the full standard library. This file starts with the
-# executable context contract because cold-agent localization depends on
-# its exact query shape.
-
-@doc(
-  name: \"views\",
-  doc: {views_doc}
-).
-
-@verb(
-  name: {name},
-  query: {query},
-  doc: {doc},
-  output_schema: {output_schema},
-  default_args: {default_args},
-  capabilities: {capabilities}
-).
-",
-        views_doc = datalog_string_literal(VIEWS_PRELUDE_DOC),
-        name = datalog_string_literal(CONTEXT_VERB_NAME),
-        query = datalog_string_literal(&context_query_template()),
-        doc = datalog_string_literal(CONTEXT_VERB_DOC),
-        output_schema = datalog_string_literal(CONTEXT_OUTPUT_SCHEMA),
-        default_args = datalog_string_list(CONTEXT_DEFAULT_ARGS),
-        capabilities = datalog_string_list(CONTEXT_CAPABILITIES),
-    )
-}
-
 pub fn low_confidence_filter(include_low_confidence: bool) -> &'static str {
     if include_low_confidence {
         ""
@@ -188,48 +151,60 @@ context_neighbor(h, neighbor) :=
   context_neighborhood_depth(depth),
   neighborhood(h, depth, neighbor).
 
-?
+context_span(h, span_id, text, start_line, end_line, tokens) :=
   context_hit(h, hit_span_id, score, reason, field),
   context_read_budget(per_hit_budget),
   (span_id, text, start_line, end_line, tokens) = TakeUntil{{
     budget: per_hit_budget, sum: tokens, key: start_line :
     (span_id, text, start_line, end_line, tokens) :
       read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)
-  }},
+  }}.
+
+?
+  context_hit(h, hit_span_id, score, reason, field),
+  context_span(h, span_id, text, start_line, end_line, tokens),
   context_neighbor(h, neighbor).",
     )
-}
-
-fn datalog_string_list(values: &[&str]) -> String {
-    let values = values
-        .iter()
-        .map(|value| datalog_string_literal(value))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{values}]")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fmt::Write as _;
 
     use crate::facts::{
-        ConfigFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact,
-        SnapshotFact,
+        ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact,
+        MetaFact, SnapshotFact, SpanFact,
     };
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::QueryOutput;
     use crate::runtime::ast::Statement;
+    use crate::runtime::ast::{Expr, Literal, NumberLiteral, Program};
     use crate::runtime::eval::NumberValue;
     use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
+    use crate::source::{ConfigKey, Pattern, SourceCapabilities, SourceInfo};
     use crate::store::FactStore;
 
-    #[test]
-    fn context_verb_source_matches_checked_in_views_prelude() {
-        assert_eq!(VIEWS_PRELUDE, context_verb_source());
-    }
+    const REQUIRED_VIEW_VERBS: &[&str] = &[
+        "anneal",
+        "handle",
+        "find",
+        "search",
+        CONTEXT_VERB_NAME,
+        "read",
+        "work",
+        "blocked",
+        "trend",
+        "broken",
+        "schema",
+        "predicates",
+        "verbs",
+        "describe",
+        "source-of",
+        "examples",
+        "sources",
+    ];
 
     #[test]
     fn standard_prelude_file_set_matches_spec_layout() {
@@ -252,6 +227,366 @@ mod tests {
             parse_program(file.source_name, file.contents).is_ok()
                 && !file.contents.trim().is_empty()
         }));
+    }
+
+    #[test]
+    fn views_prelude_declares_required_verbs_and_profiles() {
+        let program = parse_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE).expect("views.dl parses");
+        let verbs = program
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Verb(verb) => {
+                    let name = verb.string_arg("name").expect("@verb has name");
+                    Some((name, verb))
+                }
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            verbs.keys().copied().collect::<BTreeSet<_>>(),
+            REQUIRED_VIEW_VERBS.iter().copied().collect::<BTreeSet<_>>()
+        );
+
+        for &name in REQUIRED_VIEW_VERBS {
+            let verb = verbs.get(name).expect("required verb present");
+            let query = verb.string_arg("query").expect("@verb has query");
+            let schema = verb
+                .string_arg("output_schema")
+                .expect("@verb has output_schema");
+            serde_json::from_str::<serde_json::Value>(schema)
+                .unwrap_or_else(|err| panic!("{name} output_schema should be json: {err}"));
+
+            let executable_query = lower_verb_query(name, query);
+            let mut loaded = standard_prelude_program().expect("standard prelude parses");
+            loaded.statements.extend(executable_query.statements);
+            analyze(loaded).unwrap_or_else(|err| panic!("{name} query should analyze: {err}"));
+        }
+
+        let context = verbs.get(CONTEXT_VERB_NAME).expect("context verb present");
+        assert_eq!(
+            context.string_arg("output_schema"),
+            Some(CONTEXT_OUTPUT_SCHEMA)
+        );
+        assert_eq!(context.string_arg("doc"), Some(CONTEXT_VERB_DOC));
+
+        let verb_rows = evaluate_standard_prelude_queries(
+            "? verbs(name, query, doc, output_schema).",
+            Database::from_store(&FactStore::default()),
+        );
+        let introspected_names = verb_rows[0]
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("name") {
+                Some(Value::String(name)) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            introspected_names,
+            REQUIRED_VIEW_VERBS.iter().copied().collect::<BTreeSet<_>>()
+        );
+
+        for profile in [
+            "profile_doc_corpus",
+            "profile_code_corpus",
+            "profile_issue_corpus",
+        ] {
+            let query = format!("? {profile}(snippet).");
+            let outputs = evaluate_standard_prelude_queries(
+                &query,
+                Database::from_store(&FactStore::default()),
+            );
+            assert_eq!(outputs[0].rows.len(), 1, "{profile} should be queryable");
+            assert!(
+                matches!(
+                    outputs[0].rows[0].fields.get("snippet"),
+                    Some(Value::String(snippet)) if snippet.contains("pipeline_position_for")
+                ),
+                "{profile} should return a copyable lifecycle snippet"
+            );
+            let snippet = string_row_field(&outputs[0], "snippet");
+            let mut loaded = standard_prelude_program().expect("standard prelude parses");
+            let profile_program = parse_program(profile, &snippet)
+                .unwrap_or_else(|err| panic!("{profile} snippet should parse: {err}"));
+            loaded.statements.extend(profile_program.statements);
+            analyze(loaded).unwrap_or_else(|err| panic!("{profile} snippet should analyze: {err}"));
+        }
+    }
+
+    #[test]
+    fn views_prelude_verbs_evaluate_against_declared_schemas() {
+        let verbs = views_verb_declarations();
+        let database = standard_library_database();
+
+        for &name in REQUIRED_VIEW_VERBS {
+            let verb = verbs.get(name).expect("verb is declared");
+            let query = verb.string_arg("query").expect("@verb has query");
+            let output = evaluate_verb_query(name, query, database.clone());
+            assert!(
+                !output.rows.is_empty(),
+                "{name} should produce at least one fixture row"
+            );
+            if name == CONTEXT_VERB_NAME {
+                assert_output_fields(
+                    &output,
+                    &[
+                        "field",
+                        "h",
+                        "hit_span_id",
+                        "neighbor",
+                        "reason",
+                        "score",
+                        "span_id",
+                        "start_line",
+                        "end_line",
+                        "text",
+                        "tokens",
+                    ],
+                );
+            } else {
+                assert_output_matches_schema(verb, &output);
+            }
+        }
+    }
+
+    fn views_verb_declarations() -> BTreeMap<String, crate::runtime::ast::VerbDecl> {
+        let program = parse_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE).expect("views.dl parses");
+        program
+            .statements
+            .into_iter()
+            .filter_map(|statement| match statement {
+                Statement::Verb(verb) => {
+                    let name = verb.string_arg("name").expect("@verb has name").to_string();
+                    Some((name, verb))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn lower_verb_query(name: &str, query: &str) -> Program {
+        let mut program = parse_program(&format!("views.dl:{name}.query"), query)
+            .unwrap_or_else(|err| panic!("{name} query should parse: {err}"));
+        match name {
+            "handle" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("handle_focus", "h", "ticket-1"),
+            ),
+            "find" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("find_text", "text", "ticket"),
+            ),
+            "search" => {
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::string("search_query", "query", "ticket"),
+                );
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::int("search_limit", "limit", 10),
+                );
+            }
+            CONTEXT_VERB_NAME => {
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::string("context_goal", "goal", "ticket"),
+                );
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::int("context_hits", "hits", 3),
+                );
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::int("context_read_budget", "per_hit_budget", 800),
+                );
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::int("context_neighborhood_depth", "depth", 1),
+                );
+            }
+            "read" => {
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::string("read_handle", "h", "ticket-1"),
+                );
+                bind_parameter_fact(
+                    &mut program,
+                    ParameterBinding::int("read_budget", "budget", 4000),
+                );
+            }
+            "blocked" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("blocked_focus", "h", "ticket-1"),
+            ),
+            "describe" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("describe_name", "name", "runtime"),
+            ),
+            "source-of" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("source_of_name", "name", "ranked_work"),
+            ),
+            "examples" => bind_parameter_fact(
+                &mut program,
+                ParameterBinding::string("examples_name", "name", "search"),
+            ),
+            _ => {}
+        }
+        program
+    }
+
+    #[derive(Clone, Debug)]
+    struct ParameterBinding {
+        predicate: &'static str,
+        variable: &'static str,
+        value: Literal,
+    }
+
+    impl ParameterBinding {
+        fn string(predicate: &'static str, variable: &'static str, value: &str) -> Self {
+            Self {
+                predicate,
+                variable,
+                value: Literal::String(value.to_string()),
+            }
+        }
+
+        fn int(predicate: &'static str, variable: &'static str, value: i64) -> Self {
+            Self {
+                predicate,
+                variable,
+                value: Literal::Number(NumberLiteral::Int(value)),
+            }
+        }
+    }
+
+    fn bind_parameter_fact(program: &mut Program, binding: ParameterBinding) {
+        let ParameterBinding {
+            predicate,
+            variable,
+            value,
+        } = binding;
+        let mut matched = false;
+        for statement in &mut program.statements {
+            let Statement::Fact(head) = statement else {
+                continue;
+            };
+            if head.predicate.module.is_some() || head.predicate.name.as_str() != predicate {
+                continue;
+            }
+            assert_eq!(head.terms.len(), 1, "{predicate} arity");
+            let Some(expr) = head.terms[0].expr_mut() else {
+                panic!("{predicate} parameter fact must bind a variable");
+            };
+            match expr {
+                Expr::Var(var) if var.as_str() == variable => {
+                    *expr = Expr::Literal(value.clone());
+                    matched = true;
+                }
+                Expr::Var(var) => panic!("{predicate} expected variable {variable}, found {var}"),
+                Expr::Literal(_)
+                | Expr::FunctionCall { .. }
+                | Expr::Binary { .. }
+                | Expr::Tuple(_) => {
+                    panic!("{predicate} parameter fact was already lowered")
+                }
+            }
+        }
+        assert!(matched, "missing parameter fact {predicate}");
+    }
+
+    fn evaluate_verb_query(name: &str, query: &str, database: Database) -> QueryOutput {
+        let query_program = lower_verb_query(name, query);
+        let mut program = standard_prelude_program().expect("standard prelude parses");
+        program.statements.extend(query_program.statements);
+        let analyzed = analyze(program).unwrap_or_else(|err| panic!("{name} analyzes: {err}"));
+        let query = analyzed
+            .queries()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} should contain a query"));
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator
+            .run_fixpoint()
+            .unwrap_or_else(|err| panic!("{name} fixpoint runs: {err}"));
+        evaluator
+            .eval_query(&query)
+            .unwrap_or_else(|err| panic!("{name} evaluates: {err}"))
+    }
+
+    fn assert_output_matches_schema(verb: &crate::runtime::ast::VerbDecl, output: &QueryOutput) {
+        let schema: serde_json::Value = serde_json::from_str(
+            verb.string_arg("output_schema")
+                .expect("@verb schema is present"),
+        )
+        .expect("schema parses");
+        let fields = schema
+            .as_object()
+            .expect("simple verb output_schema is an object");
+        let expected = fields.keys().map(String::as_str).collect::<Vec<_>>();
+        assert_output_fields(output, &expected);
+
+        let row = &output.rows[0];
+        for (field, expected_type) in fields {
+            let value = row
+                .fields
+                .get(field)
+                .unwrap_or_else(|| panic!("row missing field {field}"));
+            assert_schema_type(
+                field,
+                value,
+                expected_type.as_str().expect("type is a string"),
+            );
+        }
+    }
+
+    fn assert_output_fields(output: &QueryOutput, expected: &[&str]) {
+        let actual = output.rows[0]
+            .fields
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_schema_type(field: &str, value: &Value, expected: &str) {
+        match expected {
+            "Bool" => assert!(matches!(value, Value::Bool(_)), "{field} should be bool"),
+            "HandleId" | "String" => {
+                assert!(
+                    matches!(value, Value::String(_)),
+                    "{field} should be string"
+                );
+            }
+            "Number" => assert!(
+                matches!(value, Value::Number(_)),
+                "{field} should be numeric"
+            ),
+            "String|null" => assert!(
+                matches!(value, Value::String(_) | Value::Null),
+                "{field} should be string or null"
+            ),
+            "Number|null" => assert!(
+                matches!(value, Value::Number(_) | Value::Null),
+                "{field} should be numeric or null"
+            ),
+            "Value" => {}
+            "List<String>" => assert!(
+                matches!(value, Value::List(values) if values.iter().all(|v| matches!(v, Value::String(_)))),
+                "{field} should be a string list"
+            ),
+            other => panic!("unsupported schema type {other:?} for field {field}"),
+        }
+    }
+
+    fn string_row_field(output: &QueryOutput, field: &str) -> String {
+        match output.rows[0].fields.get(field) {
+            Some(Value::String(value)) => value.clone(),
+            other => panic!("expected string field {field}, got {other:?}"),
+        }
     }
 
     #[test]
@@ -832,6 +1167,26 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "REQ-1", "label", Some("open"), "REQ", "host"),
             handle(&scope, "stub.md", "file", Some("open"), "", "host"),
         ];
+        batch.content = vec![
+            content(
+                &scope,
+                "ticket-1",
+                "intro",
+                "ticket-1 urgent broken reference to ghost",
+                6,
+            ),
+            content(
+                &scope,
+                "ticket-2",
+                "intro",
+                "ticket-2 recently advanced review work",
+                5,
+            ),
+        ];
+        batch.spans = vec![
+            span(&scope, "ticket-1", "intro", 1, 3),
+            span(&scope, "ticket-2", "intro", 1, 2),
+        ];
         batch.edges = vec![
             edge(&scope, "ticket-1", "closed-issue", "DependsOn", 4),
             edge(&scope, "ticket-1", "ghost", "Cites", 7),
@@ -866,7 +1221,26 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 }],
             )
             .expect("replace stdlib fixture snapshots");
-        Database::from_store(&store)
+        Database::from_store(&store).with_sources([fixture_source_info()])
+    }
+
+    fn fixture_source_info() -> SourceInfo {
+        SourceInfo {
+            name: "fixture",
+            recognizes: vec![Pattern::new("*.md")],
+            doc: "Fixture source used by standard-library tests.",
+            config_keys: vec![
+                ConfigKey::required("md.file_extension"),
+                ConfigKey::optional("md.scan_exclude"),
+            ],
+            capabilities: SourceCapabilities {
+                supports_git_ref: false,
+                supports_time_snapshot: true,
+                supports_incremental: true,
+                live_only: false,
+            },
+            search: Some(crate::ranking::default_lexical_search_info()),
+        }
     }
 
     fn diagnostic_catalog_database() -> Database {
@@ -1006,6 +1380,40 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle: handle.to_string(),
             key: key.to_string(),
             value: value.to_string(),
+        }
+    }
+
+    fn content(
+        scope: &FixtureScope<'_>,
+        handle: &str,
+        span_id: &str,
+        text: &str,
+        tokens: u32,
+    ) -> ContentFact {
+        ContentFact {
+            identity: identity(scope, &format!("{handle}#{span_id}")),
+            handle: handle.to_string(),
+            span_id: span_id.to_string(),
+            lines: 1,
+            text: text.to_string(),
+            tokens,
+        }
+    }
+
+    fn span(
+        scope: &FixtureScope<'_>,
+        handle: &str,
+        span_id: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> SpanFact {
+        SpanFact {
+            identity: identity(scope, &format!("{handle}#{span_id}")),
+            id: span_id.to_string(),
+            handle: handle.to_string(),
+            start_line,
+            end_line,
+            summary: String::new(),
         }
     }
 

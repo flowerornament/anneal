@@ -1340,6 +1340,18 @@ Sample lifecycle profiles ship in `views.dl` for inspiration
 (`profile_doc_corpus`, `profile_code_corpus`, `profile_issue_corpus`);
 projects copy the one closest to their shape.
 
+**Definition CR-D58 (Lifecycle profile examples).** Sample lifecycle
+profiles are executable prelude data, not comments. `views.dl`
+declares each profile as a unary predicate whose single string value
+is a copyable `anneal.dl` snippet, and documents it with `@doc`.
+Agents discover them with `describe("profile_doc_corpus", doc)` and
+copy them with `? profile_doc_corpus(snippet).`.
+
+Rationale: starter profiles are onboarding affordances. Representing
+them as queryable data keeps them visible through the same
+self-description channel as verbs and predicates, without making them
+engine behavior.
+
 ### §27.1 Structural graph vocabulary [CR-D47]
 
 **Definition CR-D47 (Structural graph vocabulary).** Predicates
@@ -2495,6 +2507,7 @@ as data instead of smuggling it through row sequence.
 - CR-D55: Versioned prelude package (§25)
 - CR-D56: Verb projection boundary (§37)
 - CR-D57: Source driver boundary (§5)
+- CR-D58: Lifecycle profile examples (§27)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

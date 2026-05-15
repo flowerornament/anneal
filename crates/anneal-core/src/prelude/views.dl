@@ -1,19 +1,177 @@
-# Starter verb declarations for the v2 surface.
-#
-# Phase 6 will add the full standard library. This file starts with the
-# executable context contract because cold-agent localization depends on
-# its exact query shape.
+# Starter verb declarations and lifecycle profile examples for the v2 surface.
 
 @doc(
   name: "views",
   doc: "Saved verb declarations and lifecycle profile examples for the v2 surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude."
 ).
 
+@doc(
+  name: "profile_doc_corpus",
+  doc: "Copyable anneal.dl lifecycle profile for markdown/design corpora that use frontmatter statuses."
+).
+profile_doc_corpus("# Document corpus lifecycle\npipeline_position_for(\"draft\", 0).\npipeline_position_for(\"review\", 1).\npipeline_position_for(\"stable\", 2).\nterminal(h) := status_of(h, \"archived\").\nactive(h) := status_of(h, \"draft\").\nactive(h) := status_of(h, \"review\").\nsettled(h) := status_of(h, \"stable\").").
+
+@doc(
+  name: "profile_code_corpus",
+  doc: "Copyable anneal.dl lifecycle profile for code corpora that model symbols by visibility and deprecation state."
+).
+profile_code_corpus("# Code corpus lifecycle\npipeline_position_for(\"private\", 0).\npipeline_position_for(\"public\", 1).\npipeline_position_for(\"deprecated\", 2).\nterminal(h) := *meta{handle: h, key: \"code.deprecated\", value: \"true\"}.\nactive(h) := *meta{handle: h, key: \"code.visibility\", value: \"private\"}.\nactive(h) := *meta{handle: h, key: \"code.visibility\", value: \"public\"}.\nsettled(h) := *meta{handle: h, key: \"code.visibility\", value: \"public\"}, not terminal(h).").
+
+@doc(
+  name: "profile_issue_corpus",
+  doc: "Copyable anneal.dl lifecycle profile for issue/task corpora with open, blocked, review, and closed states."
+).
+profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 0).\npipeline_position_for(\"blocked\", 0).\npipeline_position_for(\"review\", 1).\npipeline_position_for(\"closed\", 2).\nterminal(h) := status_of(h, \"closed\").\nactive(h) := status_of(h, \"open\").\nactive(h) := status_of(h, \"blocked\").\nactive(h) := status_of(h, \"review\").\nsettled(h) := terminal(h).").
+
+@verb(
+  name: "anneal",
+  query: "anneal_item(\"work\", h, energy, \"potential\") :=\n  top_work(h, energy).\n\nanneal_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  entropy(h, source).\n\nanneal_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nanneal_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? anneal_item(section, h, score, why).",
+  doc: "Show the compact corpus dashboard an agent should read first: work candidates, blocked handles, advancing handles, and broken diagnostics.",
+  output_schema: "{\"section\":\"String\",\"h\":\"HandleId\",\"score\":\"Number\",\"why\":\"String\"}",
+  default_args: [],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "handle",
+  query: "handle_focus(h).\n\nhandle_row(h, \"self\", h, kind, status, file, line, summary) :=\n  handle_focus(h),\n  *handle{id: h, kind: kind, status: status, file: file, line: line, summary: summary}.\n\nhandle_row(h, \"out\", other, kind, null, file, line, \"\") :=\n  handle_focus(h),\n  *edge{from: h, to: other, kind: kind, file: file, line: line}.\n\nhandle_row(h, \"in\", other, kind, null, file, line, \"\") :=\n  handle_focus(h),\n  *edge{to: h, from: other, kind: kind, file: file, line: line}.\n\n? handle_row(h, relation, other, kind, status, file, line, summary).",
+  doc: "Show one handle and its immediate incoming and outgoing edges. The CLI projects bare `anneal H` to this verb.",
+  output_schema: "{\"h\":\"HandleId\",\"relation\":\"String\",\"other\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
+  default_args: ["h"],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "find",
+  query: "find_text(text).\n\nfind_row(h, kind, status, namespace, file, line, summary) :=\n  find_text(text),\n  *handle{id: h, kind: kind, status: status, namespace: namespace, file: file, line: line, summary: summary},\n  h contains text.\n\n? find_row(h, kind, status, namespace, file, line, summary).",
+  doc: "Find handles by identity substring.",
+  output_schema: "{\"h\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"namespace\":\"String\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
+  default_args: ["text"],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "search",
+  query: "search_query(query).\nsearch_limit(limit).\n\nsearch_row(h, span_id, score, reason, field, low_confidence) :=\n  search_query(query),\n  search_limit(limit),\n  (h, span_id, score, reason, field, low_confidence) = TopK{ k: limit, key: score :\n    (h, span_id, score, reason, field, low_confidence) :\n      search(query, h, span_id, score, reason, field, low_confidence),\n      low_confidence = false\n  }.\n\n? search_row(h, span_id, score, reason, field, low_confidence).",
+  doc: "Search handle, metadata, and content text with source-calibrated ranking.",
+  output_schema: "{\"h\":\"HandleId\",\"span_id\":\"String|null\",\"score\":\"Number\",\"reason\":\"String\",\"field\":\"String\",\"low_confidence\":\"Bool\"}",
+  default_args: ["query", "limit"],
+  capabilities: ["read"]
+).
+
 @verb(
   name: "context",
-  query: "context_goal(goal).\ncontext_hits(hits).\ncontext_read_budget(per_hit_budget).\ncontext_neighborhood_depth(depth).\n\ncontext_readable(h) :=\n  *handle{id: h},\n  context_read_budget(per_hit_budget),\n  *content{handle: h, tokens},\n  tokens <= per_hit_budget.\n\ncontext_hit(h, hit_span_id, score, reason, field) :=\n  context_goal(goal),\n  context_hits(hits),\n  (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :\n    (h, hit_span_id, score, reason, field) :\n      search(goal, h, hit_span_id, score, reason, field, low_confidence),\n        low_confidence = false,\n      context_readable(h)\n  }.\n\ncontext_neighbor(h, h) := context_hit(h, hit_span_id, score, reason, field).\ncontext_neighbor(h, neighbor) :=\n  context_hit(h, hit_span_id, score, reason, field),\n  context_neighborhood_depth(depth),\n  neighborhood(h, depth, neighbor).\n\n?\n  context_hit(h, hit_span_id, score, reason, field),\n  context_read_budget(per_hit_budget),\n  (span_id, text, start_line, end_line, tokens) = TakeUntil{\n    budget: per_hit_budget, sum: tokens, key: start_line :\n    (span_id, text, start_line, end_line, tokens) :\n      read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)\n  },\n  context_neighbor(h, neighbor).",
+  query: "context_goal(goal).\ncontext_hits(hits).\ncontext_read_budget(per_hit_budget).\ncontext_neighborhood_depth(depth).\n\ncontext_readable(h) :=\n  *handle{id: h},\n  context_read_budget(per_hit_budget),\n  *content{handle: h, tokens},\n  tokens <= per_hit_budget.\n\ncontext_hit(h, hit_span_id, score, reason, field) :=\n  context_goal(goal),\n  context_hits(hits),\n  (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :\n    (h, hit_span_id, score, reason, field) :\n      search(goal, h, hit_span_id, score, reason, field, low_confidence),\n        low_confidence = false,\n      context_readable(h)\n  }.\n\ncontext_neighbor(h, h) := context_hit(h, hit_span_id, score, reason, field).\ncontext_neighbor(h, neighbor) :=\n  context_hit(h, hit_span_id, score, reason, field),\n  context_neighborhood_depth(depth),\n  neighborhood(h, depth, neighbor).\n\ncontext_span(h, span_id, text, start_line, end_line, tokens) :=\n  context_hit(h, hit_span_id, score, reason, field),\n  context_read_budget(per_hit_budget),\n  (span_id, text, start_line, end_line, tokens) = TakeUntil{\n    budget: per_hit_budget, sum: tokens, key: start_line :\n    (span_id, text, start_line, end_line, tokens) :\n      read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)\n  }.\n\n?\n  context_hit(h, hit_span_id, score, reason, field),\n  context_span(h, span_id, text, start_line, end_line, tokens),\n  context_neighbor(h, neighbor).",
   doc: "Find the most relevant handles for a goal, read bounded spans, and include a small neighborhood so a cold agent can localize work in one call.",
   output_schema: "{\"goal\":\"String\",\"hits\":[{\"handle\":\"HandleId\",\"span_id\":\"String|null\",\"score\":\"Number\",\"reason\":\"String\",\"field\":\"String\"}],\"spans\":[{\"handle\":\"HandleId\",\"span_id\":\"String\",\"start_line\":\"Number\",\"end_line\":\"Number\",\"tokens\":\"Number\",\"text\":\"String\"}],\"neighborhood\":[{\"handle\":\"HandleId\",\"neighbor\":\"HandleId\"}]}",
   default_args: ["goal", "budget", "neighborhood_depth", "hits"],
   capabilities: ["read"]
+).
+
+@verb(
+  name: "read",
+  query: "read_handle(h).\nread_budget(budget).\n\nread_row(span_id, text, start_line, end_line, tokens) :=\n  read_handle(h),\n  read_budget(budget),\n  read(h, budget, span_id, text, start_line, end_line, tokens).\n\n? read_row(span_id, text, start_line, end_line, tokens).",
+  doc: "Read bounded content spans for a handle.",
+  output_schema: "{\"span_id\":\"String\",\"text\":\"String\",\"start_line\":\"Number\",\"end_line\":\"Number\",\"tokens\":\"Number\"}",
+  default_args: ["h", "budget"],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "work",
+  query: "? top_work(h, energy), *handle{id: h, kind: kind, status: status, file: file, summary: summary}.",
+  doc: "List the highest-potential work candidates from the convergence standard library.",
+  output_schema: "{\"h\":\"HandleId\",\"energy\":\"Number\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\",\"summary\":\"String\"}",
+  default_args: [],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "blocked",
+  query: "blocked_focus(h).\n\nblocked_row(h, energy, source, kind, status, file) :=\n  blocked_focus(h),\n  potential(h, energy),\n  entropy(h, source),\n  *handle{id: h, kind: kind, status: status, file: file}.\n\n? blocked_row(h, energy, source, kind, status, file).",
+  doc: "Show the entropy sources explaining what is blocking one handle.",
+  output_schema: "{\"h\":\"HandleId\",\"energy\":\"Number\",\"source\":\"String\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\"}",
+  default_args: ["h"],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "trend",
+  query: "trend_row(h, prior_status, current_status) :=\n  at(\"snapshot:last\") { *handle{id: h, status: prior_status} },\n  *handle{id: h, status: current_status},\n  prior_status != current_status.\n\n? trend_row(h, prior_status, current_status).",
+  doc: "Show handle status changes between the latest snapshot fallback and the current corpus.",
+  output_schema: "{\"h\":\"HandleId\",\"prior_status\":\"String|null\",\"current_status\":\"String|null\"}",
+  default_args: [],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "broken",
+  query: "? diagnostic(code, \"error\", subject, file, line, evidence).",
+  doc: "Show standard-library error diagnostics.",
+  output_schema: "{\"code\":\"String\",\"subject\":\"HandleId\",\"file\":\"String|null\",\"line\":\"Number|null\",\"evidence\":\"Value\"}",
+  default_args: [],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "schema",
+  query: "? schema(name, kind, signature, determinism, provenance).",
+  doc: "List queryable stored relations, derived predicates, and engine primitives.",
+  output_schema: "{\"name\":\"String\",\"kind\":\"String\",\"signature\":\"String\",\"determinism\":\"String\",\"provenance\":\"String\"}",
+  default_args: [],
+  capabilities: []
+).
+
+@verb(
+  name: "predicates",
+  query: "? predicates(name, doc, file, lines).",
+  doc: "List rule-defined predicates with documentation and source locations.",
+  output_schema: "{\"name\":\"String\",\"doc\":\"String\",\"file\":\"String\",\"lines\":\"String\"}",
+  default_args: [],
+  capabilities: []
+).
+
+@verb(
+  name: "verbs",
+  query: "? verbs(name, query, doc, output_schema).",
+  doc: "List declared verbs with query, documentation, and output schema.",
+  output_schema: "{\"name\":\"String\",\"query\":\"String\",\"doc\":\"String\",\"output_schema\":\"String\"}",
+  default_args: [],
+  capabilities: []
+).
+
+@verb(
+  name: "describe",
+  query: "describe_name(name).\n\ndescribe_row(name, doc) :=\n  describe_name(name),\n  describe(name, doc).\n\n? describe_row(name, doc).",
+  doc: "Return documentation for runtime names.",
+  output_schema: "{\"name\":\"String\",\"doc\":\"String\"}",
+  default_args: ["name"],
+  capabilities: []
+).
+
+@verb(
+  name: "source-of",
+  query: "source_of_name(name).\n\nsource_of_row(name, file, lines) :=\n  source_of_name(name),\n  source_of(name, file, lines).\n\n? source_of_row(name, file, lines).",
+  doc: "Return source file and line information for queryable runtime names.",
+  output_schema: "{\"name\":\"String\",\"file\":\"String\",\"lines\":\"String\"}",
+  default_args: ["name"],
+  capabilities: []
+).
+
+@verb(
+  name: "examples",
+  query: "examples_name(name).\n\nexamples_row(name, example) :=\n  examples_name(name),\n  examples(name, example).\n\n? examples_row(name, example).",
+  doc: "Return worked query examples for runtime names.",
+  output_schema: "{\"name\":\"String\",\"example\":\"String\"}",
+  default_args: ["name"],
+  capabilities: []
+).
+
+@verb(
+  name: "sources",
+  query: "? sources(name, recognizes, capabilities, doc).",
+  doc: "List linked adapters with recognition patterns, capabilities, and documentation.",
+  output_schema: "{\"name\":\"String\",\"recognizes\":\"List<String>\",\"capabilities\":\"List<String>\",\"doc\":\"String\"}",
+  default_args: [],
+  capabilities: []
 ).

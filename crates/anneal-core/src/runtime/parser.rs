@@ -1065,9 +1065,7 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
     use crate::runtime::ast::{AggregateFunction, Atom, CallArg, Literal};
-    use crate::runtime::prelude::{
-        CONTEXT_OUTPUT_SCHEMA, CONTEXT_VERB_NAME, VIEWS_PRELUDE, context_verb_source,
-    };
+    use crate::runtime::prelude::{CONTEXT_OUTPUT_SCHEMA, CONTEXT_VERB_NAME, VIEWS_PRELUDE};
 
     #[test]
     fn parses_stored_query_with_negation_and_comparison() {
@@ -1163,13 +1161,16 @@ mod tests {
 
     #[test]
     fn parses_embedded_views_prelude() {
-        assert_eq!(VIEWS_PRELUDE, context_verb_source());
-
         let program = parse_program("views.dl", VIEWS_PRELUDE).expect("views.dl parses");
-        let Some(Statement::Verb(verb)) = program
+        let Some(verb) = program
             .statements
             .iter()
-            .find(|statement| matches!(statement, Statement::Verb(_)))
+            .find_map(|statement| match statement {
+                Statement::Verb(verb) if verb.string_arg("name") == Some(CONTEXT_VERB_NAME) => {
+                    Some(verb)
+                }
+                _ => None,
+            })
         else {
             panic!("expected context @verb");
         };
