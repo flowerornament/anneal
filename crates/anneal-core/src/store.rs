@@ -318,6 +318,7 @@ mod tests {
             corpus: CorpusId::from(corpus),
             key: key.to_string(),
             value: value.to_string(),
+            ordinal: None,
         }
     }
 

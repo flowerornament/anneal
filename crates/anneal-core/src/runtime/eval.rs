@@ -719,9 +719,12 @@ impl GraphIndex {
                 self.settled_statuses.insert(value.to_owned());
             }
             CONFIG_PIPELINE_ORDERING => {
-                let position = i64::try_from(self.pipeline_positions.len()).unwrap_or(i64::MAX);
+                let position = row_i64(row, ORDINAL_FIELD).unwrap_or_else(|| {
+                    i64::try_from(self.pipeline_positions.len()).unwrap_or(i64::MAX)
+                });
                 self.pipeline_positions
                     .entry(value.to_owned())
+                    .and_modify(|existing| *existing = (*existing).min(position))
                     .or_insert(position);
             }
             CONFIG_LINEAR_NAMESPACE => {
@@ -1360,6 +1363,7 @@ const HANDLE_FIELD: &str = "handle";
 const TOKENS_FIELD: &str = "tokens";
 const KEY_FIELD: &str = "key";
 const VALUE_FIELD: &str = "value";
+const ORDINAL_FIELD: &str = "ordinal";
 const AT_FIELD: &str = "at";
 const LABEL_KIND: &str = "label";
 const CITES_EDGE_KIND: &str = "Cites";
@@ -2854,6 +2858,12 @@ fn config_row(fact: &ConfigFact) -> NamedRow {
         ("corpus", Value::String(fact.corpus.to_string())),
         ("key", Value::String(fact.key.clone())),
         ("value", Value::String(fact.value.clone())),
+        (
+            "ordinal",
+            fact.ordinal.map_or(Value::Null, |ordinal| {
+                Value::Number(NumberValue::Int(i64::from(ordinal)))
+            }),
+        ),
     ])
 }
 
@@ -2949,6 +2959,16 @@ mod tests {
             corpus: CorpusId::from("test"),
             key: key.to_string(),
             value: value.to_string(),
+            ordinal: None,
+        }
+    }
+
+    fn ordered_config(key: &str, value: &str, ordinal: u32) -> ConfigFact {
+        ConfigFact {
+            corpus: CorpusId::from("test"),
+            key: key.to_string(),
+            value: value.to_string(),
+            ordinal: Some(ordinal),
         }
     }
 
@@ -3039,9 +3059,9 @@ mod tests {
                     config("convergence.active", "draft"),
                     config("convergence.terminal", "done"),
                     config("convergence.settled", "stable"),
-                    config("convergence.ordering", "raw"),
-                    config("convergence.ordering", "draft"),
-                    config("convergence.ordering", "stable"),
+                    ordered_config("convergence.ordering", "stable", 2),
+                    ordered_config("convergence.ordering", "raw", 0),
+                    ordered_config("convergence.ordering", "draft", 1),
                     config("handles.linear", "OQ"),
                 ],
             )

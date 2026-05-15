@@ -342,7 +342,7 @@ populates and every rule may join on.
 
 *concern{name, member, source, corpus, generation}
 
-*config{key, value, corpus}               // from anneal.toml; runtime-populated
+*config{key, value, ordinal, corpus}      // from anneal.toml; runtime-populated
 *snapshot{snapshot, at, id, key, value, corpus}
 *trail{...}                                // see §13
 *generation{corpus, source, current}       // current generation per (corpus, source)
@@ -356,7 +356,7 @@ populates and every rule may join on.
 | `*content` | Bounded text spans of a handle; the read-substrate |
 | `*span` | Citable region with line range and engine-generated summary |
 | `*concern` | Cross-cutting groupings: any handle can belong to any concern |
-| `*config` | Runtime configuration as queryable facts (lattice, namespaces) |
+| `*config` | Runtime configuration as queryable facts (lattice, namespaces); `ordinal` is null except for ordered list entries |
 | `*snapshot` | Historical handle state from snapshot history |
 | `*trail` | Session paths (§13) |
 | `*generation` | Per-source generation tracker (§7); supports retraction |
@@ -1941,15 +1941,20 @@ the exact executable `views.dl` form and the row-to-group
 verb. This is a contract question, not a UX polish item, because the
 cold-agent gate depends on it.
 
-### §63 Ordered config fact representation
+### §63 Ordered config fact representation [CR-D40]
 
-§10 models runtime configuration as `*config{key, value, corpus}`.
-That is sufficient for scalar settings and unordered sets, but
-`[convergence] ordering = [...]` is list-valued and the current
-relational shape relies on fact insertion order to preserve ordinals.
-Phase 3 must decide whether ordered config uses an explicit ordinal
-field, a separate relation, or a value encoding with a stable
-round-trip contract before persisted/federated config facts ship.
+**Definition CR-D40 (Ordered config facts).** `*config` rows carry an
+explicit `ordinal` field. Scalar settings and unordered sets emit
+`ordinal = null`. Ordered list settings, including
+`convergence.ordering`, emit zero-based ordinals that are stable
+across in-memory extraction, persistence, replay, and federation.
+
+The runtime MUST interpret ordered config from the explicit ordinal,
+not from fact insertion order. If compatibility rows omit `ordinal`,
+the runtime MAY preserve legacy insertion-order behavior only for
+transient local evaluation; persisted or federated config facts MUST
+not omit `ordinal` for ordered lists. This keeps list order visible
+as data instead of smuggling it through row sequence.
 
 ---
 
@@ -1999,6 +2004,7 @@ round-trip contract before persisted/federated config facts ship.
 - CR-D37: Default scalar lifecycle metrics (§11)
 - CR-D38: Non-count aggregation semantics (§20)
 - CR-D39: Snapshot identity and fallback history semantics (§15)
+- CR-D40: Ordered config facts (§63)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2036,7 +2042,6 @@ round-trip contract before persisted/federated config facts ship.
 - CR-OQ5: MCP run_verb routing under shadowed names (§60)
 - CR-OQ6: Performance ceiling (§61)
 - CR-OQ7: Context verb executable contract (§62)
-- CR-OQ8: Ordered config fact representation (§63)
 
 ---
 

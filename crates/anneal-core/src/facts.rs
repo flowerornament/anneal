@@ -104,6 +104,7 @@ pub struct ConfigFact {
     pub corpus: CorpusId,
     pub key: String,
     pub value: String,
+    pub ordinal: Option<u32>,
 }
 
 /// Runtime-populated `*snapshot` row.
