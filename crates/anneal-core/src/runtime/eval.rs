@@ -5,7 +5,6 @@ use std::fmt;
 use std::io;
 use std::slice;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -22,6 +21,10 @@ use crate::runtime::ast::{
 };
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::store::FactStore;
+use crate::time::{
+    current_days_since_epoch, iso_days_since_epoch, relative_days_reference,
+    snapshot_days_since_epoch,
+};
 
 pub type Binding = BTreeMap<Ident, Value>;
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
@@ -603,7 +606,8 @@ struct HandleState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SnapshotStatus {
-    at: i64,
+    day: i64,
+    sort_at: String,
     status: String,
 }
 
@@ -667,15 +671,19 @@ impl GraphIndex {
                     row_string(row, ID_FIELD),
                     row_string(row, KEY_FIELD),
                     row_string(row, VALUE_FIELD),
-                    row_string(row, AT_FIELD).and_then(snapshot_days_since_epoch),
+                    row_string(row, AT_FIELD),
                 ) else {
+                    return;
+                };
+                let Some(day) = snapshot_days_since_epoch(at) else {
                     return;
                 };
                 if key == STATUS_FIELD {
                     self.insert_status_snapshot(
                         id,
                         SnapshotStatus {
-                            at,
+                            day,
+                            sort_at: at.to_owned(),
                             status: status.to_owned(),
                         },
                     );
@@ -695,8 +703,9 @@ impl GraphIndex {
         let idx = snapshots
             .binary_search_by(|probe| {
                 probe
-                    .at
-                    .cmp(&snapshot.at)
+                    .day
+                    .cmp(&snapshot.day)
+                    .then_with(|| probe.sort_at.cmp(&snapshot.sort_at))
                     .then_with(|| probe.status.cmp(&snapshot.status))
             })
             .unwrap_or_else(|idx| idx);
@@ -1202,8 +1211,8 @@ impl GraphIndex {
             .get(handle)
             .into_iter()
             .flat_map(|snapshots| snapshots.iter())
-            .filter(|snapshot| snapshot.at >= start && snapshot.at <= today)
-            .map(|snapshot| (snapshot.at, snapshot.status.as_str()))
+            .filter(|snapshot| snapshot.day >= start && snapshot.day <= today)
+            .map(|snapshot| (snapshot.day, snapshot.status.as_str()))
             .collect::<Vec<_>>();
         if let Some(status) = state.status.as_deref() {
             statuses.push((today, status));
@@ -1429,70 +1438,6 @@ fn freshness_days(state: &HandleState, today: Option<i64>) -> i64 {
     today.saturating_sub(date).max(0)
 }
 
-fn current_days_since_epoch() -> Option<i64> {
-    let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_secs() / 86_400).ok()
-}
-
-fn snapshot_days_since_epoch(value: &str) -> Option<i64> {
-    let date = value.get(0.."YYYY-MM-DD".len())?;
-    iso_days_since_epoch(date)
-}
-
-fn relative_days_reference(reference: &str) -> Option<i64> {
-    let days = reference
-        .strip_prefix("--")?
-        .strip_suffix("days")?
-        .parse::<i64>()
-        .ok()?;
-    if days < 0 {
-        return None;
-    }
-    current_days_since_epoch().map(|today| today.saturating_sub(days))
-}
-
-fn iso_days_since_epoch(value: &str) -> Option<i64> {
-    if value.len() != "YYYY-MM-DD".len() {
-        return None;
-    }
-    let year = value.get(0..4)?.parse::<i32>().ok()?;
-    let month = value.get(5..7)?.parse::<u32>().ok()?;
-    let day = value.get(8..10)?.parse::<u32>().ok()?;
-    if value.as_bytes().get(4) != Some(&b'-') || value.as_bytes().get(7) != Some(&b'-') {
-        return None;
-    }
-    days_from_civil(year, month, day)
-}
-
-fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
-        return None;
-    }
-    let month = i64::from(month);
-    let day = i64::from(day);
-    let year = i64::from(year) - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let month_prime = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * 146_097 + day_of_era - 719_468)
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
 fn string_constraint(constraints: &[(usize, Value)], position: usize) -> ArgConstraint<&str> {
     value_constraint(constraints, position, |value| match value {
         Value::String(value) => Some(value.as_str()),
@@ -1645,6 +1590,17 @@ pub enum EvalError {
         "time reference '{reference}' cannot evaluate derived predicate '{predicate}' with snapshot fallback"
     )]
     UnsupportedTimeScopedDerivedPredicate {
+        reference: String,
+        predicate: PredicateRef,
+    },
+    #[error(
+        "time reference '{reference}' cannot evaluate stored relation '*{relation}' with snapshot fallback"
+    )]
+    UnsupportedTimeScopedStoredRelation { reference: String, relation: Ident },
+    #[error(
+        "time reference '{reference}' cannot evaluate primitive '{predicate}' with snapshot fallback"
+    )]
+    UnsupportedTimeScopedPrimitive {
         reference: String,
         predicate: PredicateRef,
     },
@@ -1860,11 +1816,171 @@ fn eval_body_with_delta(
     delta: Option<DeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
 ) -> Result<Vec<Binding>, EvalError> {
-    for (atom_index, atom) in body.atoms.iter().enumerate() {
+    let mut remaining = body.atoms.iter().enumerate().collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        if bindings.is_empty() {
+            break;
+        }
+        let bound = common_bound_variables(&bindings);
+        let next_index = remaining
+            .iter()
+            .position(|(atom_index, atom)| atom_ready(body, *atom_index, atom, &bound))
+            .unwrap_or(0);
+        let (atom_index, atom) = remaining.remove(next_index);
         let atom_delta = delta.filter(|view| view.atom_index == atom_index);
         bindings = eval_atom(atom, bindings, database, atom_delta, warnings)?;
     }
     Ok(bindings)
+}
+
+fn common_bound_variables(bindings: &[Binding]) -> BTreeSet<Ident> {
+    let Some((first, rest)) = bindings.split_first() else {
+        return BTreeSet::new();
+    };
+    let mut common = first.keys().cloned().collect::<BTreeSet<_>>();
+    for binding in rest {
+        common.retain(|var| binding.contains_key(var));
+    }
+    common
+}
+
+fn atom_ready(body: &Body, atom_index: usize, atom: &Atom, bound: &BTreeSet<Ident>) -> bool {
+    match atom {
+        Atom::Stored(_) | Atom::TimeBlock(_) => true,
+        Atom::Derived(derived) => derived_atom_ready(derived, bound),
+        Atom::Comparison(comparison) => {
+            expr_variables_are_bound(&comparison.left, bound)
+                && expr_variables_are_bound(&comparison.right, bound)
+        }
+        Atom::Aggregation(aggregate) => aggregate_atom_ready(body, atom_index, aggregate, bound),
+        Atom::Negation(negation) => negated_atom_variables_are_bound(&negation.atom, bound),
+    }
+}
+
+fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<Ident>) -> bool {
+    let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
+        return true;
+    };
+    graph_anchor_positions(primitive).is_none_or(|positions| {
+        positions.iter().any(|idx| {
+            atom.args
+                .get(*idx)
+                .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
+        })
+    })
+}
+
+fn graph_anchor_positions(primitive: PrimitivePredicate) -> Option<&'static [usize]> {
+    match primitive {
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact => Some(&[0, 1]),
+        PrimitivePredicate::Neighborhood => Some(&[0, 2]),
+        PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::Flux
+        | PrimitivePredicate::TokenEstimate => None,
+    }
+}
+
+fn aggregate_atom_ready(
+    body: &Body,
+    atom_index: usize,
+    aggregate: &Aggregate,
+    bound: &BTreeSet<Ident>,
+) -> bool {
+    let mut outside = BTreeSet::new();
+    for (other_index, atom) in body.atoms.iter().enumerate() {
+        if other_index != atom_index {
+            collect_non_aggregate_positive_atom_variables(atom, &mut outside);
+        }
+    }
+
+    let mut inner = BTreeSet::new();
+    collect_positive_body_variables(&aggregate.body, &mut inner);
+
+    let mut required = inner
+        .intersection(&outside)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    collect_ground_aggregate_arg_variables(aggregate, &mut required);
+    required.iter().all(|var| bound.contains(var))
+}
+
+fn collect_ground_aggregate_arg_variables(aggregate: &Aggregate, out: &mut BTreeSet<Ident>) {
+    for arg in &aggregate.args {
+        if matches!(
+            (aggregate.function, arg.name.as_str()),
+            (AggregateFunction::TopK, "k") | (AggregateFunction::TakeUntil, "budget")
+        ) {
+            arg.expr.variables(out);
+        }
+    }
+}
+
+fn negated_atom_variables_are_bound(atom: &NegatedAtom, bound: &BTreeSet<Ident>) -> bool {
+    let mut vars = BTreeSet::new();
+    collect_negated_atom_variables(atom, &mut vars);
+    vars.iter().all(|var| bound.contains(var))
+}
+
+fn expr_variables_are_bound(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
+    let mut vars = BTreeSet::new();
+    expr.variables(&mut vars);
+    vars.iter().all(|var| bound.contains(var))
+}
+
+fn collect_non_aggregate_positive_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
+    match atom {
+        Atom::Stored(stored) => collect_stored_atom_variables(stored, out),
+        Atom::Derived(derived) => collect_derived_atom_variables(derived, out),
+        Atom::TimeBlock(time_block) => collect_positive_body_variables(&time_block.body, out),
+        Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
+    }
+}
+
+fn collect_positive_body_variables(body: &Body, out: &mut BTreeSet<Ident>) {
+    for atom in &body.atoms {
+        match atom {
+            Atom::Aggregation(aggregate) => aggregate.result.variables(out),
+            _ => collect_non_aggregate_positive_atom_variables(atom, out),
+        }
+    }
+}
+
+fn collect_negated_atom_variables(atom: &NegatedAtom, out: &mut BTreeSet<Ident>) {
+    match atom {
+        NegatedAtom::Stored(stored) => collect_stored_atom_variables(stored, out),
+        NegatedAtom::Derived(derived) => collect_derived_atom_variables(derived, out),
+    }
+}
+
+fn collect_stored_atom_variables(atom: &StoredAtom, out: &mut BTreeSet<Ident>) {
+    for field in &atom.fields {
+        if let Some(expr) = field.term.expr() {
+            expr.variables(out);
+        }
+    }
+}
+
+fn collect_derived_atom_variables(
+    atom: &crate::runtime::ast::DerivedAtom,
+    out: &mut BTreeSet<Ident>,
+) {
+    for arg in &atom.args {
+        arg.expr().variables(out);
+    }
 }
 
 fn eval_atom(
@@ -1902,19 +2018,35 @@ fn ensure_snapshot_time_body_supported(
 ) -> Result<(), EvalError> {
     for atom in &body.atoms {
         match atom {
-            Atom::Stored(_) | Atom::Comparison(_) => {}
+            Atom::Stored(stored) => {
+                if !time_scoped_stored_relation_supported(&stored.relation) {
+                    return Err(EvalError::UnsupportedTimeScopedStoredRelation {
+                        reference: reference.to_string(),
+                        relation: stored.relation.clone(),
+                    });
+                }
+            }
+            Atom::Comparison(_) => {}
             Atom::Derived(derived) => {
                 ensure_snapshot_time_derived_supported(reference, &derived.predicate, database)?;
             }
-            Atom::Negation(negation) => {
-                if let NegatedAtom::Derived(derived) = &negation.atom {
+            Atom::Negation(negation) => match &negation.atom {
+                NegatedAtom::Stored(stored) => {
+                    if !time_scoped_stored_relation_supported(&stored.relation) {
+                        return Err(EvalError::UnsupportedTimeScopedStoredRelation {
+                            reference: reference.to_string(),
+                            relation: stored.relation.clone(),
+                        });
+                    }
+                }
+                NegatedAtom::Derived(derived) => {
                     ensure_snapshot_time_derived_supported(
                         reference,
                         &derived.predicate,
                         database,
                     )?;
                 }
-            }
+            },
             Atom::Aggregation(aggregate) => {
                 ensure_snapshot_time_body_supported(reference, &aggregate.body, database)?;
             }
@@ -1930,21 +2062,49 @@ fn ensure_snapshot_time_body_supported(
     Ok(())
 }
 
+fn time_scoped_stored_relation_supported(relation: &Ident) -> bool {
+    matches!(relation.as_str(), HANDLE_RELATION | SNAPSHOT_RELATION)
+}
+
 fn ensure_snapshot_time_derived_supported(
     reference: &str,
     predicate: &PredicateRef,
     database: &Database,
 ) -> Result<(), EvalError> {
-    let is_unshadowed_primitive = PrimitivePredicate::from_predicate(predicate).is_some()
-        && !database.derived.contains_key(predicate);
-    if is_unshadowed_primitive {
+    let Some(primitive) = PrimitivePredicate::from_predicate(predicate) else {
+        return Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+            reference: reference.to_string(),
+            predicate: predicate.clone(),
+        });
+    };
+    if database.derived.contains_key(predicate) {
+        return Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+            reference: reference.to_string(),
+            predicate: predicate.clone(),
+        });
+    }
+    if time_scoped_primitive_supported(primitive) {
         Ok(())
     } else {
-        Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+        Err(EvalError::UnsupportedTimeScopedPrimitive {
             reference: reference.to_string(),
             predicate: predicate.clone(),
         })
     }
+}
+
+fn time_scoped_primitive_supported(primitive: PrimitivePredicate) -> bool {
+    matches!(
+        primitive,
+        PrimitivePredicate::Terminal
+            | PrimitivePredicate::Active
+            | PrimitivePredicate::Settled
+            | PrimitivePredicate::PipelinePosition
+            | PrimitivePredicate::PipelinePositionFor
+            | PrimitivePredicate::Obligation
+            | PrimitivePredicate::Freshness
+            | PrimitivePredicate::Flux
+    )
 }
 
 fn eval_stored(
@@ -3138,6 +3298,35 @@ mod tests {
         Database::from_store(&store)
     }
 
+    fn same_day_flux_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle("draft.md", "file", "current", "", "core")];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("same-day fixture merge");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "1970-01-01T00:00:00Z", "draft.md", "status", "raw"),
+                    snapshot_fact("s2", "1970-01-01T12:00:00Z", "draft.md", "status", "draft"),
+                    snapshot_fact(
+                        "s3",
+                        "1970-01-01T18:00:00Z",
+                        "draft.md",
+                        "status",
+                        "current",
+                    ),
+                ],
+            )
+            .expect("replace snapshots");
+        Database::from_store(&store)
+    }
+
     fn mvs_database() -> Database {
         let mut batch = FactBatch::new(
             CorpusId::from("test"),
@@ -3625,6 +3814,15 @@ mod tests {
         evaluator.eval_query(&query).expect("query evaluates")
     }
 
+    fn evaluate_query_error(input: &str, database: Database) -> EvalError {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+        evaluator.eval_query(&query).expect_err("query errors")
+    }
+
     #[test]
     fn graph_primitives_traverse_edges_relationally() {
         let outputs = evaluate_queries(
@@ -3816,6 +4014,33 @@ mod tests {
     }
 
     #[test]
+    fn config_rows_expose_explicit_ordinals_and_null_for_scalars() {
+        let mut store = FactStore::default();
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![
+                    config("convergence.active", "draft"),
+                    ordered_config("convergence.ordering", "draft", 1),
+                ],
+            )
+            .expect("replace config");
+        let outputs = evaluate_queries(
+            r#"
+            ? *config{key: "convergence.active", ordinal}.
+            ? *config{key: "convergence.ordering", value, ordinal}.
+            "#,
+            Database::from_store(&store),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("ordinal", Value::Null)])]);
+        assert_query_rows(
+            &outputs[1],
+            vec![row([("ordinal", n(1)), ("value", s("draft"))])],
+        );
+    }
+
+    #[test]
     fn lifecycle_metrics_do_not_invent_unknown_handles_or_unbound_flux_windows() {
         let outputs = evaluate_queries(
             r#"
@@ -3946,6 +4171,49 @@ mod tests {
     }
 
     #[test]
+    fn at_snapshot_fallback_rejects_current_non_handle_stored_relations() {
+        let err = evaluate_query_error(
+            r#"
+            ? at("snapshot:last") { *edge{from: "draft.md", to, kind} }.
+            "#,
+            time_travel_database(),
+        );
+
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedStoredRelation { relation, .. }
+                if relation.as_str() == "edge"
+        ));
+    }
+
+    #[test]
+    fn at_snapshot_fallback_rejects_current_edge_and_content_primitives() {
+        let graph_err = evaluate_query_error(
+            r#"
+            ? at("snapshot:last") { upstream("draft.md", h) }.
+            "#,
+            time_travel_database(),
+        );
+        assert!(matches!(
+            graph_err,
+            EvalError::UnsupportedTimeScopedPrimitive { predicate, .. }
+                if predicate.display_name() == "upstream"
+        ));
+
+        let content_err = evaluate_query_error(
+            r#"
+            ? at("snapshot:last") { token_estimate("draft.md", tokens) }.
+            "#,
+            time_travel_database(),
+        );
+        assert!(matches!(
+            content_err,
+            EvalError::UnsupportedTimeScopedPrimitive { predicate, .. }
+                if predicate.display_name() == "token_estimate"
+        ));
+    }
+
+    #[test]
     fn at_snapshot_fallback_rejects_current_derived_predicates() {
         let program = parse_program(
             "inline",
@@ -3974,6 +4242,16 @@ mod tests {
         let outputs = evaluate_queries(
             r#"? flux("draft.md", 1000000, delta)."#,
             time_travel_database(),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("delta", n(2))])]);
+    }
+
+    #[test]
+    fn flux_orders_same_day_snapshots_by_full_timestamp() {
+        let outputs = evaluate_queries(
+            r#"? flux("draft.md", 1000000, delta)."#,
+            same_day_flux_database(),
         );
 
         assert_query_rows(&outputs[0], vec![row([("delta", n(2))])]);
@@ -4358,6 +4636,48 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_groups_can_be_originated_by_later_positive_atoms() {
+        let outputs = evaluate_queries(
+            r#"
+            open_oq(h) := *handle{id: h, kind: "label", namespace: "OQ", status: "open"}.
+            oq_area(area) := *handle{kind: "label", namespace: "OQ", area}.
+            oq_per_area(area, n) :=
+              n = Count{ h : open_oq(h), *handle{id: h, area} },
+              oq_area(area).
+            ? oq_per_area(area, n).
+            "#,
+            Database::from_store(&fixture_store()),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("area", s("compiler")), ("n", n(0))]),
+                row([("area", s("formal-model")), ("n", n(1))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn graph_primitives_can_use_later_positive_anchors() {
+        let outputs = evaluate_queries(
+            r#"
+            ? downstream(h, desc),
+              *handle{id: h, kind: "label", namespace: "OQ"}.
+            "#,
+            Database::from_store(&fixture_store()),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("desc", s("jit")), ("h", s("OQ-22"))]),
+                row([("desc", s("v17")), ("h", s("OQ-22"))]),
+            ],
+        );
+    }
+
+    #[test]
     fn scalar_aggregates_compute_distinct_values() {
         let outputs = evaluate_queries(
             r"
@@ -4391,6 +4711,7 @@ mod tests {
             ? (h, score) = TopK{ k: 2, key: score : (h, score) : score(h, score) }.
             wanted("b", 9).
             ? wanted(h, score), (h, score) = TopK{ k: 1, key: score : (h, score) : score(h, score) }.
+            ? (h, score) = TopK{ k: 1, key: score : (h, score) : score(h, score) }.
             "#,
             Database::default(),
         );
@@ -4403,6 +4724,7 @@ mod tests {
             ],
         );
         assert_query_rows(&outputs[1], vec![row([("h", s("b")), ("score", n(9))])]);
+        assert_query_rows(&outputs[2], vec![row([("h", s("b")), ("score", n(9))])]);
     }
 
     #[test]

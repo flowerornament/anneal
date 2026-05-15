@@ -1360,6 +1360,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unanchored_downstream_and_impact_traversal() {
+        for (name, input) in [
+            ("downstream", r"? downstream(h, desc)."),
+            ("impact", r"? impact(h, x, depth)."),
+            ("impact", r"? impact(h, x, 1)."),
+        ] {
+            let err = analyze_err("inline", input);
+            assert!(
+                matches!(
+                    err,
+                    StaticError::UnboundGraphPrimitiveAnchor { ref predicate, .. }
+                        if predicate.name.as_str() == name
+                ),
+                "{input} should reject with unbound graph primitive anchor, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn accepts_graph_primitive_with_bound_reverse_endpoint() {
         let program = parse_program(
             "inline",

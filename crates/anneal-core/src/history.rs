@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::SnapshotFact;
 use crate::ids::CorpusId;
+use crate::time::snapshot_days_since_epoch;
 
 /// One append-only v2 snapshot entry in `.anneal/history.jsonl`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,10 +74,14 @@ pub struct SnapshotHistory {
 
 impl SnapshotHistory {
     pub fn from_entries(entries: Vec<SnapshotEntry>) -> Self {
-        Self {
-            entries,
-            warnings: Vec::new(),
+        let mut history = Self::default();
+        for entry in entries {
+            match validate_snapshot_entry(&entry) {
+                Ok(()) => history.entries.push(entry),
+                Err(message) => history.warnings.push(HistoryWarning { line: 0, message }),
+            }
         }
+        history
     }
 
     pub fn entries(&self) -> &[SnapshotEntry] {
@@ -166,7 +171,13 @@ pub fn read_snapshot_history(root: &Utf8Path) -> Result<SnapshotHistory, History
             continue;
         }
         match serde_json::from_str::<SnapshotEntry>(&line) {
-            Ok(entry) => history.entries.push(entry),
+            Ok(entry) => match validate_snapshot_entry(&entry) {
+                Ok(()) => history.entries.push(entry),
+                Err(message) => history.warnings.push(HistoryWarning {
+                    line: line_number,
+                    message,
+                }),
+            },
             Err(err) => history.warnings.push(HistoryWarning {
                 line: line_number,
                 message: err.to_string(),
@@ -174,6 +185,27 @@ pub fn read_snapshot_history(root: &Utf8Path) -> Result<SnapshotHistory, History
         }
     }
     Ok(history)
+}
+
+fn validate_snapshot_entry(entry: &SnapshotEntry) -> Result<(), String> {
+    if entry.snapshot.is_empty() {
+        return Err("snapshot id is empty".to_string());
+    }
+    if snapshot_days_since_epoch(&entry.at).is_none() {
+        return Err(format!(
+            "snapshot timestamp {:?} is not parseable",
+            entry.at
+        ));
+    }
+    for fact in &entry.facts {
+        if fact.id.is_empty() {
+            return Err("snapshot fact id is empty".to_string());
+        }
+        if fact.key.is_empty() {
+            return Err(format!("snapshot fact for {:?} has empty key", fact.id));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -241,6 +273,67 @@ mod tests {
         assert_eq!(history.entries(), &[entry]);
         assert_eq!(history.warnings().len(), 1);
         assert_eq!(history.warnings()[0].line, 2);
+    }
+
+    #[test]
+    fn read_snapshot_history_skips_invalid_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        append_snapshot_entry(
+            &root,
+            &SnapshotEntry::new(
+                "s1",
+                "2026-05-13T10:00:00Z",
+                CorpusId::from("test"),
+                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            ),
+        )
+        .expect("append valid entry");
+        {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(repo_history_path(&root).as_std_path())
+                .expect("open history");
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "snapshot": "bad",
+                    "at": "2026-99-99",
+                    "corpus": "test",
+                    "facts": [{"id": "a.md", "key": "status", "value": "current"}]
+                })
+            )
+            .expect("append invalid entry");
+        }
+
+        let history = read_snapshot_history(&root).expect("read history");
+
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.warnings().len(), 1);
+        assert_eq!(history.warnings()[0].line, 2);
+    }
+
+    #[test]
+    fn from_entries_validates_snapshot_entries() {
+        let history = SnapshotHistory::from_entries(vec![
+            SnapshotEntry::new(
+                "",
+                "2026-05-13",
+                CorpusId::from("test"),
+                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            ),
+            SnapshotEntry::new(
+                "s1",
+                "2026-05-13",
+                CorpusId::from("test"),
+                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            ),
+        ]);
+
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.warnings().len(), 1);
+        assert_eq!(history.warnings()[0].line, 0);
     }
 
     #[test]

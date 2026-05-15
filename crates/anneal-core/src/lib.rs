@@ -12,6 +12,7 @@ pub mod ids;
 pub mod runtime;
 pub mod source;
 pub mod store;
+mod time;
 
 pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
@@ -24,7 +25,7 @@ pub use history::{
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use source::{
-    Action, ActorContext, CancellationToken, ConfigFacts, ConfigKey, Pattern, SearchInfo, Source,
-    SourceCapabilities, SourceContext, SourceError, SourceInfo, TimeRef,
+    Action, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
+    SearchInfo, Source, SourceCapabilities, SourceContext, SourceError, SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};

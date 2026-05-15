@@ -104,6 +104,7 @@ pub struct ConfigFact {
     pub corpus: CorpusId,
     pub key: String,
     pub value: String,
+    #[serde(default)]
     pub ordinal: Option<u32>,
 }
 
@@ -163,5 +164,34 @@ impl FactBatch {
             concerns: Vec::new(),
             retractions: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_fact_missing_ordinal_deserializes_as_none() {
+        let fact: ConfigFact =
+            serde_json::from_str(r#"{"corpus":"test","key":"convergence.active","value":"draft"}"#)
+                .expect("missing ordinal defaults");
+
+        assert_eq!(fact.ordinal, None);
+    }
+
+    #[test]
+    fn config_fact_null_and_numeric_ordinals_deserialize() {
+        let null_fact: ConfigFact = serde_json::from_str(
+            r#"{"corpus":"test","key":"convergence.active","value":"draft","ordinal":null}"#,
+        )
+        .expect("null ordinal parses");
+        let ordered_fact: ConfigFact = serde_json::from_str(
+            r#"{"corpus":"test","key":"convergence.ordering","value":"draft","ordinal":1}"#,
+        )
+        .expect("numeric ordinal parses");
+
+        assert_eq!(null_fact.ordinal, None);
+        assert_eq!(ordered_fact.ordinal, Some(1));
     }
 }

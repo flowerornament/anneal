@@ -43,26 +43,69 @@ impl SourceContext<'_> {
 /// Discovery facts available to sources during Phase B extraction.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigFacts {
-    entries: Vec<(String, String)>,
+    entries: Vec<ConfigEntry>,
+}
+
+/// One adapter-visible discovery/config fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigEntry {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub ordinal: Option<u32>,
+}
+
+impl ConfigEntry {
+    pub fn scalar(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+            ordinal: None,
+        }
+    }
+
+    pub fn ordered(key: impl Into<String>, value: impl Into<String>, ordinal: u32) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+            ordinal: Some(ordinal),
+        }
+    }
+}
+
+impl From<(String, String)> for ConfigEntry {
+    fn from((key, value): (String, String)) -> Self {
+        Self::scalar(key, value)
+    }
 }
 
 impl ConfigFacts {
     pub fn new(entries: Vec<(String, String)>) -> Self {
+        Self {
+            entries: entries.into_iter().map(ConfigEntry::from).collect(),
+        }
+    }
+
+    pub fn from_entries(entries: Vec<ConfigEntry>) -> Self {
         Self { entries }
+    }
+
+    pub fn entries(&self) -> &[ConfigEntry] {
+        &self.entries
     }
 
     pub fn values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.entries
             .iter()
-            .filter(move |(entry_key, _)| entry_key == key)
-            .map(|(_, value)| value.as_str())
+            .filter(move |entry| entry.key == key)
+            .map(|entry| entry.value.as_str())
     }
 
     pub fn first(&self, key: &str) -> Option<&str> {
         self.entries
             .iter()
-            .find(|(entry_key, _)| entry_key == key)
-            .map(|(_, value)| value.as_str())
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.value.as_str())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -345,5 +388,23 @@ mod tests {
         };
         assert!(caps.supports_time_ref(&TimeRef::GitRef("HEAD~3".to_string())));
         assert!(!caps.supports_time_ref(&TimeRef::Snapshot("snapshot:last".to_string())));
+    }
+
+    #[test]
+    fn config_facts_preserve_explicit_ordinals() {
+        let facts = ConfigFacts::from_entries(vec![
+            ConfigEntry::ordered("convergence.ordering", "draft", 1),
+            ConfigEntry::scalar("md.file_extension", ".md"),
+        ]);
+
+        assert_eq!(facts.first("md.file_extension"), Some(".md"));
+        assert_eq!(
+            facts
+                .entries()
+                .iter()
+                .find(|entry| entry.key == "convergence.ordering")
+                .and_then(|entry| entry.ordinal),
+            Some(1)
+        );
     }
 }

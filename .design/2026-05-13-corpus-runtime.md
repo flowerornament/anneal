@@ -297,8 +297,8 @@ not a public contract.
 
 **Definition CR-D7 (Identity).** Every fact carries enough origin to
 distinguish it across corpora, sources, and adapter combinations.
-Internal identity is `(corpus, source, kind, native_id)`; display
-identity is the user-friendly id the adapter chose.
+Internal identity is `(corpus, source, kind, native_id)`; handle id is
+the stable, user-facing query identity the adapter chose.
 
 This applies from v2.0, not v2.2, because adding fields later forces
 a query-breaking schema migration. Federation UI can defer; the
@@ -311,7 +311,7 @@ populates and every rule may join on.
 
 ```
 *handle{
-  id,           // display id, locally unique within (corpus, source)
+  id,           // stable query id, unique within corpus
   kind,         // "file" | "section" | "label" | "version" | "external"
   status,       // string in the project lattice; may be null
   namespace,    // string; "" if not labeled
@@ -640,9 +640,12 @@ Reference forms:
 
 **Definition CR-D39 (Snapshot identity and fallback history
 semantics).** `*snapshot.snapshot` is the point-in-time snapshot id;
-`*snapshot.id` is the handle id whose historical key/value pair was
-recorded. `.anneal/history.jsonl` stores one JSON object per snapshot:
-`{snapshot, at, corpus, facts:[{id,key,value}]}`. `snapshot:last`
+`*snapshot.id` is the corpus-unique handle id whose historical
+key/value pair was recorded. `.anneal/history.jsonl` stores one JSON
+object per snapshot:
+`{snapshot, at, corpus, facts:[{id,key,value}]}`. Empty snapshot ids,
+empty fact ids/keys, and unparseable `at` timestamps are recoverable
+history read warnings; invalid entries are skipped. `snapshot:last`
 selects the parseable entry with the latest `at` timestamp;
 `snapshot:<id>` selects by `snapshot`; ISO and relative date refs
 select the nearest parseable `at` timestamp. Ties choose the later
@@ -658,12 +661,29 @@ selected `*snapshot` handle key/value rows to current handles and
 reports a structured partial-history warning for relations not backed
 by that source. Rows for handles absent from the current extraction are
 not synthesized from key/value snapshots alone. Snapshot fallback
-supports stored facts plus engine primitives recomputed from the
-historical handle overlay; derived predicates inside fallback `at()`
-blocks require full historical rule evaluation and are rejected in
-v2.0. Rationale: SP-Q6 needs stable status comparisons now, while full
-historical fact replay belongs behind explicit source capabilities
-rather than accidental current-state mixing.
+supports `*handle`, selected `*snapshot` rows, and only handle-state
+engine primitives recomputed from the historical handle overlay:
+`terminal`, `active`, `settled`, `pipeline_position`,
+`pipeline_position_for`, `obligation`, `freshness`, and `flux`.
+Snapshot fallback rejects stored relations without snapshot backing,
+edge/content-derived primitives, graph traversal primitives, and
+derived predicates inside fallback `at()` blocks. Those require full
+historical rule evaluation and remain v2.0 errors. Rationale: SP-Q6
+needs stable status comparisons now, while full historical fact replay
+belongs behind explicit source capabilities rather than accidental
+current-state mixing.
+
+**Definition CR-D41 (Corpus-unique handle ids).** `*handle.id` is
+unique within a corpus across all loaded sources. `source` and
+`native_id` preserve adapter-local identity for generation retraction,
+origin tracking, and host integration, but graph endpoints
+(`*edge.from`, `*edge.to`), content handles, snapshot handle state, and
+public query predicates all use the corpus-unique `id`. If an
+adapter's native ids can collide with another source, the adapter must
+qualify the public id (for example with a source or URI prefix) while
+leaving `native_id` unchanged. Rationale: graph traversal and snapshot
+fallback cannot be deterministic if endpoint identity is only locally
+unique to `(corpus, source)`.
 
 ### §16 `read_full` and capability gating [CR-D14]
 
@@ -1642,9 +1662,8 @@ Five handle kinds are substrate-shaped:
 | `version` | versioned spec (`formal-model-v17.md`), semver-tagged release |
 | `external` | URL, external API reference, dependency |
 
-The Source decides the mapping. Display id is locally unique within
-`(corpus, source)`; internal identity is
-`(corpus, source, kind, native_id)`.
+The Source decides the mapping. Handle id is unique within the corpus
+per CR-D41; internal identity is `(corpus, source, kind, native_id)`.
 
 ### §42 Discovery configuration
 
@@ -2005,6 +2024,7 @@ as data instead of smuggling it through row sequence.
 - CR-D38: Non-count aggregation semantics (§20)
 - CR-D39: Snapshot identity and fallback history semantics (§15)
 - CR-D40: Ordered config facts (§63)
+- CR-D41: Corpus-unique handle ids (§15)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
