@@ -715,10 +715,25 @@ fn eval_aggregate(
     let Expr::Var(value_var) = &aggregate.value else {
         return Err(EvalError::UnsupportedExpression);
     };
+    let group_vars = aggregate_group_vars(aggregate, value_var, result_var);
 
     let mut out = Vec::new();
     for binding in bindings {
+        let expected_result = binding.get(result_var).cloned();
         let inner = eval_body(&aggregate.body, vec![binding.clone()], database)?;
+        if inner.is_empty() {
+            let mut group = binding;
+            group.remove(value_var);
+            if !group_vars.iter().all(|var| group.contains_key(var)) {
+                continue;
+            }
+            if let Some(group) =
+                bind_aggregate_count(group, result_var, 0, expected_result.as_ref())
+            {
+                out.push(group);
+            }
+            continue;
+        }
         let mut groups: BTreeMap<Binding, BTreeSet<Value>> = BTreeMap::new();
         for mut row in inner {
             let Some(value) = row.remove(value_var) else {
@@ -729,17 +744,92 @@ fn eval_aggregate(
             row.remove(result_var);
             groups.entry(row).or_default().insert(value);
         }
-        for (mut group, values) in groups {
-            group.insert(
-                result_var.clone(),
-                Value::Number(NumberValue::Int(
-                    i64::try_from(values.len()).unwrap_or(i64::MAX),
-                )),
-            );
-            out.push(group);
+        for (group, values) in groups {
+            if let Some(group) =
+                bind_aggregate_count(group, result_var, values.len(), expected_result.as_ref())
+            {
+                out.push(group);
+            }
         }
     }
     Ok(out)
+}
+
+fn bind_aggregate_count(
+    mut group: Binding,
+    result_var: &Ident,
+    count: usize,
+    expected_result: Option<&Value>,
+) -> Option<Binding> {
+    let count = Value::Number(NumberValue::Int(i64::try_from(count).unwrap_or(i64::MAX)));
+    if expected_result.is_some_and(|expected| expected != &count) {
+        return None;
+    }
+    group.remove(result_var);
+    group.insert(result_var.clone(), count);
+    Some(group)
+}
+
+fn aggregate_group_vars(
+    aggregate: &Aggregate,
+    value_var: &Ident,
+    result_var: &Ident,
+) -> BTreeSet<Ident> {
+    let mut vars = BTreeSet::new();
+    collect_body_variables(&aggregate.body, &mut vars);
+    for arg in &aggregate.args {
+        arg.expr.variables(&mut vars);
+    }
+    vars.remove(value_var);
+    vars.remove(result_var);
+    vars
+}
+
+fn collect_body_variables(body: &Body, out: &mut BTreeSet<Ident>) {
+    for atom in &body.atoms {
+        collect_atom_variables(atom, out);
+    }
+}
+
+fn collect_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
+    match atom {
+        Atom::Stored(stored) => {
+            for field in &stored.fields {
+                if let Some(expr) = field.term.expr() {
+                    expr.variables(out);
+                }
+            }
+        }
+        Atom::Derived(derived) => {
+            for arg in &derived.args {
+                arg.expr().variables(out);
+            }
+        }
+        Atom::Comparison(comparison) => {
+            comparison.left.variables(out);
+            comparison.right.variables(out);
+        }
+        Atom::Negation(negated) => match negated {
+            NegatedAtom::Stored(stored) => {
+                for field in &stored.fields {
+                    if let Some(expr) = field.term.expr() {
+                        expr.variables(out);
+                    }
+                }
+            }
+            NegatedAtom::Derived(derived) => {
+                for arg in &derived.args {
+                    arg.expr().variables(out);
+                }
+            }
+        },
+        Atom::Aggregation(nested) => {
+            nested.result.variables(out);
+            nested.value.variables(out);
+            collect_body_variables(&nested.body, out);
+        }
+        Atom::TimeBlock(time_block) => collect_body_variables(&time_block.body, out),
+    }
 }
 
 fn stored_constraints(
@@ -1131,8 +1221,11 @@ fn generation_value(generation: Generation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::runtime::ast::{RuleLayer, Statement};
     use crate::runtime::{analyze, parse_program};
 
     fn identity(native_id: &str) -> FactIdentity {
@@ -1211,6 +1304,681 @@ mod tests {
         store
     }
 
+    fn mvs_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            mvs_handle(
+                "formal-model/v17.md",
+                "file",
+                "authoritative",
+                "",
+                "formal-model/v17.md",
+                "formal-model",
+                Some("2026-03-25"),
+            ),
+            mvs_handle(
+                "formal-model/v16.md",
+                "file",
+                "superseded",
+                "",
+                "formal-model/v16.md",
+                "formal-model",
+                Some("2026-03-10"),
+            ),
+            mvs_handle(
+                "formal-model/v15.md",
+                "file",
+                "superseded",
+                "",
+                "formal-model/v15.md",
+                "formal-model",
+                Some("2026-02-15"),
+            ),
+            mvs_handle(
+                "formal-model/v14.md",
+                "file",
+                "superseded",
+                "",
+                "formal-model/v14.md",
+                "formal-model",
+                Some("2026-02-01"),
+            ),
+            mvs_handle(
+                "compiler/jit-spec.md",
+                "file",
+                "draft",
+                "",
+                "compiler/jit-spec.md",
+                "compiler",
+                Some("2026-04-10"),
+            ),
+            mvs_handle(
+                "compiler/jit-stale.md",
+                "file",
+                "superseded",
+                "",
+                "compiler/jit-stale.md",
+                "compiler",
+                Some("2026-02-20"),
+            ),
+            mvs_handle(
+                "compiler/exec.md",
+                "file",
+                "current",
+                "",
+                "compiler/exec.md",
+                "compiler",
+                Some("2026-04-22"),
+            ),
+            mvs_handle(
+                "research-log/2026-04-jit.md",
+                "file",
+                "research",
+                "",
+                "research-log/2026-04-jit.md",
+                "research-log",
+                Some("2026-04-29"),
+            ),
+            mvs_handle(
+                "synthesis/2026-04-discharge.md",
+                "file",
+                "current",
+                "",
+                "synthesis/2026-04-discharge.md",
+                "synthesis",
+                Some("2026-04-15"),
+            ),
+            mvs_handle(
+                "OQ-22",
+                "label",
+                "open",
+                "OQ",
+                "formal-model/v17.md",
+                "formal-model",
+                None,
+            ),
+            mvs_handle(
+                "OQ-23",
+                "label",
+                "open",
+                "OQ",
+                "formal-model/v17.md",
+                "formal-model",
+                None,
+            ),
+            mvs_handle(
+                "OQ-60",
+                "label",
+                "open",
+                "OQ",
+                "compiler/jit-spec.md",
+                "compiler",
+                None,
+            ),
+            mvs_handle(
+                "OQ-77",
+                "label",
+                "open",
+                "OQ",
+                "research-log/2026-04-jit.md",
+                "research-log",
+                None,
+            ),
+            mvs_handle(
+                "OQ-88",
+                "label",
+                "open",
+                "OQ",
+                "compiler/jit-spec.md",
+                "compiler",
+                None,
+            ),
+            mvs_handle(
+                "OQ-99",
+                "label",
+                "resolved",
+                "OQ",
+                "formal-model/v16.md",
+                "formal-model",
+                None,
+            ),
+        ];
+        batch.edges = vec![
+            mvs_edge(
+                "formal-model/v17.md",
+                "OQ-22",
+                "DependsOn",
+                "formal-model/v17.md",
+                14,
+            ),
+            mvs_edge(
+                "formal-model/v17.md",
+                "OQ-23",
+                "DependsOn",
+                "formal-model/v17.md",
+                14,
+            ),
+            mvs_edge(
+                "formal-model/v17.md",
+                "OQ-60",
+                "DependsOn",
+                "formal-model/v17.md",
+                18,
+            ),
+            mvs_edge(
+                "formal-model/v17.md",
+                "formal-model/v16.md",
+                "Supersedes",
+                "formal-model/v17.md",
+                6,
+            ),
+            mvs_edge(
+                "formal-model/v16.md",
+                "formal-model/v15.md",
+                "Supersedes",
+                "formal-model/v16.md",
+                6,
+            ),
+            mvs_edge(
+                "formal-model/v15.md",
+                "formal-model/v14.md",
+                "Supersedes",
+                "formal-model/v15.md",
+                6,
+            ),
+            mvs_edge(
+                "compiler/jit-spec.md",
+                "OQ-22",
+                "DependsOn",
+                "compiler/jit-spec.md",
+                22,
+            ),
+            mvs_edge(
+                "compiler/jit-spec.md",
+                "compiler/jit-stale.md",
+                "DependsOn",
+                "compiler/jit-spec.md",
+                30,
+            ),
+            mvs_edge(
+                "compiler/exec.md",
+                "compiler/jit-spec.md",
+                "DependsOn",
+                "compiler/exec.md",
+                8,
+            ),
+            mvs_edge(
+                "research-log/2026-04-jit.md",
+                "formal-model/v17.md",
+                "Cites",
+                "research-log/2026-04-jit.md",
+                3,
+            ),
+            mvs_edge(
+                "synthesis/2026-04-discharge.md",
+                "OQ-77",
+                "Discharges",
+                "synthesis/2026-04-discharge.md",
+                12,
+            ),
+            mvs_edge(
+                "compiler/jit-spec.md",
+                "OQ-22",
+                "Verifies",
+                "compiler/jit-spec.md",
+                44,
+            ),
+        ];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("mvs fixture merge");
+        let mut database = Database::from_store(&store);
+        database.insert_stored_rows(
+            "pending_edge",
+            [named_row([
+                ("from", s("compiler/jit-spec.md")),
+                ("target", s("OQ-9999")),
+                ("kind", s("DependsOn")),
+                ("file", s("compiler/jit-spec.md")),
+                ("line", n(51)),
+            ])],
+        );
+        database.insert_stored_rows("linear_namespace", [named_row([("namespace", s("OQ"))])]);
+        database
+    }
+
+    fn mvs_handle(
+        id: &str,
+        kind: &str,
+        status: &str,
+        namespace: &str,
+        file: &str,
+        area: &str,
+        date: Option<&str>,
+    ) -> HandleFact {
+        HandleFact {
+            identity: identity(id),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: Some(status.to_string()),
+            namespace: namespace.to_string(),
+            file: file.to_string(),
+            line: 1,
+            date: date.map(str::to_string),
+            area: area.to_string(),
+            summary: String::new(),
+        }
+    }
+
+    fn mvs_edge(from: &str, to: &str, kind: &str, file: &str, line: u32) -> EdgeFact {
+        EdgeFact {
+            identity: identity(&format!("{from}->{to}:{kind}:{line}")),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            file: file.to_string(),
+            line,
+        }
+    }
+
+    type QueryRows = Vec<BTreeMap<String, Value>>;
+
+    #[derive(Debug)]
+    struct MvsOutputs {
+        handles: QueryRows,
+        release_blockers: QueryRows,
+        supersedes_chain: QueryRows,
+        open_oqs: QueryRows,
+        oq_pressure: QueryRows,
+        oq_per_area: QueryRows,
+    }
+
+    fn mvs_outputs() -> &'static MvsOutputs {
+        static OUTPUTS: OnceLock<MvsOutputs> = OnceLock::new();
+        OUTPUTS.get_or_init(compute_mvs_outputs)
+    }
+
+    fn compute_mvs_outputs() -> MvsOutputs {
+        let mut program = parse_program(
+            "mvs.dl",
+            r#"
+            terminal(h) := *handle{id: h, status: "superseded"}.
+            terminal(h) := *handle{id: h, status: "resolved"}.
+            active(h) := *handle{id: h}, not terminal(h).
+            settled(h) := *handle{id: h, status: "authoritative"}.
+            settled(h) := *handle{id: h, status: "current"}.
+
+            supersedes_chain(s, t, 1) := *edge{from: s, to: t, kind: "Supersedes"}.
+            supersedes_chain(s, t, d + 1) :=
+              *edge{from: s, to: mid, kind: "Supersedes"},
+              supersedes_chain(mid, t, d).
+
+            obligation(h) :=
+              *handle{id: h, kind: "label", namespace: ns},
+              *linear_namespace{namespace: ns}.
+            discharged(h) := *edge{to: h, kind: "Discharges"}.
+            undischarged(h) := obligation(h), not discharged(h), not terminal(h).
+
+            diagnostic("E001", "error", src, file, line) :=
+              *pending_edge{from: src, target: target, file: file, line: line},
+              not *handle{id: target}.
+            diagnostic("E002", "error", h, file, 1) :=
+              undischarged(h),
+              *handle{id: h, file: file}.
+            diagnostic("W001", "warning", src, file, line) :=
+              *edge{from: src, to: target, kind: "DependsOn", file: file, line: line},
+              active(src),
+              terminal(target).
+
+            release_blocker(h, "broken_ref", file, line, null) :=
+              diagnostic("E001", severity, h, file, line).
+            release_blocker(h, "undischarged", null, null, null) :=
+              diagnostic("E002", severity, h, file, line).
+            release_blocker(h, "stale_dep", null, null, target) :=
+              *edge{from: h, to: target, kind: "DependsOn"},
+              active(h),
+              terminal(target).
+
+            open_oq(q) :=
+              *handle{id: q, kind: "label", namespace: "OQ"},
+              not terminal(q).
+            downstream_settled(q, x) :=
+              open_oq(q),
+              *edge{from: x, to: q, kind: "DependsOn"},
+              settled(x).
+            oq_pressure(q, n) :=
+              open_oq(q),
+              n = Count{ x : downstream_settled(q, x) }.
+            oq_in_area(area, q) :=
+              *handle{id: q, kind: "label", namespace: "OQ", area: area},
+              not terminal(q).
+            oq_per_area(area, n) :=
+              n = Count{ q : oq_in_area(area, q) }.
+
+            ? *handle{id, kind, status, namespace, area}.
+            ? release_blocker(h, kind, file, line, target).
+            ? supersedes_chain(start, target, depth), start = "formal-model/v17.md".
+            ? open_oq(q).
+            ? oq_pressure(q, n).
+            ? oq_per_area(area, n).
+            "#,
+        )
+        .expect("mvs program parses");
+        mark_prelude(&mut program);
+        let analyzed = analyze(program).expect("mvs program analyzes");
+        let queries = analyzed.queries().cloned().collect::<Vec<_>>();
+        let mut evaluator = Evaluator::new(analyzed, mvs_database());
+        evaluator.run_fixpoint().expect("mvs fixpoint");
+        let mut rows = queries
+            .iter()
+            .map(|query| {
+                let mut rows = evaluator
+                    .eval_query(query)
+                    .expect("mvs query evaluates")
+                    .rows
+                    .into_iter()
+                    .map(|row| row.fields)
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let outputs = MvsOutputs {
+            handles: rows.next().expect("mvs-1 query output"),
+            release_blockers: rows.next().expect("mvs-2 query output"),
+            supersedes_chain: rows.next().expect("mvs-3 query output"),
+            open_oqs: rows.next().expect("mvs-4 query output"),
+            oq_pressure: rows.next().expect("mvs-5a query output"),
+            oq_per_area: rows.next().expect("mvs-5b query output"),
+        };
+        assert!(rows.next().is_none(), "unexpected extra mvs query output");
+        outputs
+    }
+
+    fn mark_prelude(program: &mut crate::runtime::Program) {
+        for statement in &mut program.statements {
+            mark_statement_prelude(statement);
+        }
+    }
+
+    fn mark_statement_prelude(statement: &mut Statement) {
+        match statement {
+            Statement::Rule(rule) => rule.origin.layer = RuleLayer::Prelude,
+            Statement::Query(query) => {
+                for rule in &mut query.local_rules {
+                    rule.origin.layer = RuleLayer::Inline;
+                }
+            }
+            Statement::AtBlock { statements, .. } => {
+                for statement in statements {
+                    mark_statement_prelude(statement);
+                }
+            }
+            Statement::Fact(_)
+            | Statement::Include(_)
+            | Statement::Import(_)
+            | Statement::Verb(_) => {}
+        }
+    }
+
+    fn row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    fn assert_query_rows(
+        actual: &[BTreeMap<String, Value>],
+        mut expected: Vec<BTreeMap<String, Value>>,
+    ) {
+        expected.sort();
+        assert_eq!(actual, expected.as_slice());
+    }
+
+    fn s(value: &str) -> Value {
+        Value::String(value.to_string())
+    }
+
+    fn n(value: i64) -> Value {
+        Value::Number(NumberValue::Int(value))
+    }
+
+    #[test]
+    fn mvs1_matches_spike_handle_rows() {
+        assert_query_rows(
+            &mvs_outputs().handles,
+            vec![
+                row([
+                    ("area", s("compiler")),
+                    ("id", s("OQ-60")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("open")),
+                ]),
+                row([
+                    ("area", s("compiler")),
+                    ("id", s("OQ-88")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("open")),
+                ]),
+                row([
+                    ("area", s("compiler")),
+                    ("id", s("compiler/exec.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("current")),
+                ]),
+                row([
+                    ("area", s("compiler")),
+                    ("id", s("compiler/jit-spec.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("draft")),
+                ]),
+                row([
+                    ("area", s("compiler")),
+                    ("id", s("compiler/jit-stale.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("superseded")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("OQ-22")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("open")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("OQ-23")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("open")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("OQ-99")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("resolved")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("formal-model/v14.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("superseded")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("formal-model/v15.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("superseded")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("formal-model/v16.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("superseded")),
+                ]),
+                row([
+                    ("area", s("formal-model")),
+                    ("id", s("formal-model/v17.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("authoritative")),
+                ]),
+                row([
+                    ("area", s("research-log")),
+                    ("id", s("OQ-77")),
+                    ("kind", s("label")),
+                    ("namespace", s("OQ")),
+                    ("status", s("open")),
+                ]),
+                row([
+                    ("area", s("research-log")),
+                    ("id", s("research-log/2026-04-jit.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("research")),
+                ]),
+                row([
+                    ("area", s("synthesis")),
+                    ("id", s("synthesis/2026-04-discharge.md")),
+                    ("kind", s("file")),
+                    ("namespace", s("")),
+                    ("status", s("current")),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn mvs2_matches_spike_release_blocker_rows() {
+        assert_query_rows(
+            &mvs_outputs().release_blockers,
+            vec![
+                row([
+                    ("file", Value::Null),
+                    ("h", s("OQ-22")),
+                    ("kind", s("undischarged")),
+                    ("line", Value::Null),
+                    ("target", Value::Null),
+                ]),
+                row([
+                    ("file", Value::Null),
+                    ("h", s("OQ-23")),
+                    ("kind", s("undischarged")),
+                    ("line", Value::Null),
+                    ("target", Value::Null),
+                ]),
+                row([
+                    ("file", Value::Null),
+                    ("h", s("OQ-60")),
+                    ("kind", s("undischarged")),
+                    ("line", Value::Null),
+                    ("target", Value::Null),
+                ]),
+                row([
+                    ("file", Value::Null),
+                    ("h", s("OQ-88")),
+                    ("kind", s("undischarged")),
+                    ("line", Value::Null),
+                    ("target", Value::Null),
+                ]),
+                row([
+                    ("file", s("compiler/jit-spec.md")),
+                    ("h", s("compiler/jit-spec.md")),
+                    ("kind", s("broken_ref")),
+                    ("line", n(51)),
+                    ("target", Value::Null),
+                ]),
+                row([
+                    ("file", Value::Null),
+                    ("h", s("compiler/jit-spec.md")),
+                    ("kind", s("stale_dep")),
+                    ("line", Value::Null),
+                    ("target", s("compiler/jit-stale.md")),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn mvs3_matches_spike_supersedes_chain_rows() {
+        assert_query_rows(
+            &mvs_outputs().supersedes_chain,
+            vec![
+                row([
+                    ("depth", n(1)),
+                    ("start", s("formal-model/v17.md")),
+                    ("target", s("formal-model/v16.md")),
+                ]),
+                row([
+                    ("depth", n(2)),
+                    ("start", s("formal-model/v17.md")),
+                    ("target", s("formal-model/v15.md")),
+                ]),
+                row([
+                    ("depth", n(3)),
+                    ("start", s("formal-model/v17.md")),
+                    ("target", s("formal-model/v14.md")),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn mvs4_matches_spike_open_oq_rows() {
+        assert_query_rows(
+            &mvs_outputs().open_oqs,
+            vec![
+                row([("q", s("OQ-22"))]),
+                row([("q", s("OQ-23"))]),
+                row([("q", s("OQ-60"))]),
+                row([("q", s("OQ-77"))]),
+                row([("q", s("OQ-88"))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn mvs5a_matches_spike_oq_pressure_rows_including_zero_counts() {
+        assert_query_rows(
+            &mvs_outputs().oq_pressure,
+            vec![
+                row([("n", n(1)), ("q", s("OQ-22"))]),
+                row([("n", n(1)), ("q", s("OQ-23"))]),
+                row([("n", n(1)), ("q", s("OQ-60"))]),
+                row([("n", n(0)), ("q", s("OQ-77"))]),
+                row([("n", n(0)), ("q", s("OQ-88"))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn mvs5b_matches_spike_oq_per_area_rows() {
+        assert_query_rows(
+            &mvs_outputs().oq_per_area,
+            vec![
+                row([("area", s("compiler")), ("n", n(2))]),
+                row([("area", s("formal-model")), ("n", n(2))]),
+                row([("area", s("research-log")), ("n", n(1))]),
+            ],
+        );
+    }
+
     #[test]
     fn stored_relation_uses_bound_field_candidates() {
         let database = Database::from_store(&fixture_store());
@@ -1261,6 +2029,64 @@ mod tests {
 
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 1);
+    }
+
+    #[test]
+    fn count_aggregate_unifies_prebound_result_variable() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            seed(0, 0).
+            seed(1, 1).
+            empty(x) := *handle{id: x, kind: "missing"}.
+            matches(seed_value, n) :=
+              seed(seed_value, n),
+              n = Count{ x : empty(x) }.
+            ? matches(seed_value, n).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
+        evaluator.run_fixpoint().expect("fixpoint");
+        assert_query_rows(
+            &evaluator
+                .eval_query(&query)
+                .expect("query evaluates")
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("n", n(0)), ("seed_value", n(0))])],
+        );
+    }
+
+    #[test]
+    fn count_aggregate_does_not_invent_empty_groups() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            empty(area, h) := *handle{id: h, kind: "missing", area: area}.
+            count_by_area(area, n) := n = Count{ h : empty(area, h) }.
+            ? count_by_area(area, n).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
+        evaluator.run_fixpoint().expect("fixpoint");
+        assert_query_rows(
+            &evaluator
+                .eval_query(&query)
+                .expect("query evaluates")
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            Vec::new(),
+        );
     }
 
     #[test]
