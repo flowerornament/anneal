@@ -20,7 +20,13 @@ struct PredicateSignature {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PredicateKind {
     Derived,
-    Primitive,
+    Primitive { sealed: bool },
+}
+
+impl PredicateKind {
+    fn is_derived(self) -> bool {
+        matches!(self, Self::Derived)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,9 +70,9 @@ impl AnalyzedProgram {
     }
 
     pub fn predicates(&self) -> impl Iterator<Item = &PredicateRef> {
-        self.signatures.iter().filter_map(|(predicate, signature)| {
-            (signature.kind == PredicateKind::Derived).then_some(predicate)
-        })
+        self.signatures
+            .iter()
+            .filter_map(|(predicate, signature)| signature.kind.is_derived().then_some(predicate))
     }
 }
 
@@ -339,11 +345,24 @@ fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), S
     let arity = head.arity();
     let parameters = head_parameter_names(head);
     match signatures.get_mut(&head.predicate) {
-        Some(signature) if signature.kind == PredicateKind::Primitive => {
+        Some(signature) if matches!(signature.kind, PredicateKind::Primitive { sealed: true }) => {
             Err(StaticError::PrimitiveRedefinition {
                 predicate: head.predicate.clone(),
                 location: head.location.clone(),
             })
+        }
+        Some(signature) if matches!(signature.kind, PredicateKind::Primitive { sealed: false }) => {
+            if signature.arity != arity {
+                return Err(StaticError::ArityMismatch {
+                    predicate: head.predicate.clone(),
+                    expected: signature.arity,
+                    actual: arity,
+                    location: head.location.clone(),
+                });
+            }
+            signature.parameters = parameters;
+            signature.kind = PredicateKind::Derived;
+            Ok(())
         }
         Some(signature) if signature.arity != arity => Err(StaticError::ArityMismatch {
             predicate: head.predicate.clone(),
@@ -377,7 +396,9 @@ fn builtin_signatures() -> SignatureMap {
                 PredicateSignature {
                     arity: signature.arity(),
                     parameters: parameter_names(signature),
-                    kind: PredicateKind::Primitive,
+                    kind: PredicateKind::Primitive {
+                        sealed: signature.sealed,
+                    },
                 },
             )
         })
@@ -993,7 +1014,7 @@ fn compute_strata(
 ) -> Vec<Stratum> {
     let mut levels: BTreeMap<PredicateRef, usize> = signatures
         .iter()
-        .filter(|(_, signature)| signature.kind == PredicateKind::Derived)
+        .filter(|(_, signature)| signature.kind.is_derived())
         .map(|(predicate, _)| predicate)
         .filter(|predicate| only.is_none_or(|wanted| wanted.contains(*predicate)))
         .map(|predicate| (predicate.clone(), 0))
@@ -1200,6 +1221,26 @@ mod tests {
             err.to_string()
                 .contains("engine primitive 'upstream' cannot be defined")
         );
+    }
+
+    #[test]
+    fn accepts_soft_lifecycle_primitive_rule_definitions() {
+        let program = parse_program(
+            "inline",
+            r#"
+            terminal(handle) := *handle{id: handle, status: "done"}.
+            ? terminal(handle: h).
+            "#,
+        )
+        .unwrap();
+        analyze(program).expect("soft lifecycle primitives can be shadowed");
+    }
+
+    #[test]
+    fn rejects_soft_lifecycle_primitive_arity_mismatch() {
+        let input = r"terminal(h, reason) := *handle{id: h}.";
+        let err = analyze_err("inline", input);
+        assert!(matches!(err, StaticError::ArityMismatch { .. }));
     }
 
     #[test]

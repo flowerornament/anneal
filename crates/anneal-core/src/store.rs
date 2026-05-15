@@ -92,6 +92,23 @@ impl FactStore {
         &self.generations
     }
 
+    /// Replace runtime config facts for one corpus.
+    ///
+    /// Config rows are runtime-owned, so source generation swaps do not
+    /// retract them.
+    pub fn replace_configs(
+        &mut self,
+        corpus: &CorpusId,
+        configs: Vec<ConfigFact>,
+    ) -> Result<(), StoreError> {
+        if configs.iter().any(|fact| &fact.corpus != corpus) {
+            return Err(StoreError::MixedConfigCorpus);
+        }
+        self.configs.retain(|fact| &fact.corpus != corpus);
+        self.configs.extend(configs);
+        Ok(())
+    }
+
     fn set_generation(&mut self, corpus: CorpusId, source: SourceName, current: Generation) {
         if let Some(existing) = self
             .generations
@@ -185,6 +202,7 @@ impl BatchScope {
 pub enum StoreError {
     MixedSourceBatch,
     MismatchedGeneration,
+    MixedConfigCorpus,
 }
 
 impl fmt::Display for StoreError {
@@ -196,6 +214,7 @@ impl fmt::Display for StoreError {
             Self::MismatchedGeneration => {
                 f.write_str("FactBatch fact identity generation does not match batch generation")
             }
+            Self::MixedConfigCorpus => f.write_str("config facts contain multiple corpus scopes"),
         }
     }
 }
@@ -217,7 +236,7 @@ fn all_identities(batch: &FactBatch) -> impl Iterator<Item = &FactIdentity> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact};
+    use crate::facts::{ConfigFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 
     fn identity(native_id: &str, generation: Generation) -> FactIdentity {
@@ -252,6 +271,14 @@ mod tests {
             handle: native_id.to_string(),
             key: key.to_string(),
             value: "value".to_string(),
+        }
+    }
+
+    fn config(corpus: &str, key: &str, value: &str) -> ConfigFact {
+        ConfigFact {
+            corpus: CorpusId::from(corpus),
+            key: key.to_string(),
+            value: value.to_string(),
         }
     }
 
@@ -371,5 +398,54 @@ mod tests {
 
         assert!(store.handles().is_empty());
         assert_eq!(store.generations()[0].current, Generation::new(2));
+    }
+
+    #[test]
+    fn replace_configs_updates_one_corpus_scope() {
+        let mut store = FactStore::default();
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![config("test", "convergence.ordering", "draft")],
+            )
+            .expect("initial config replace");
+        store
+            .replace_configs(
+                &CorpusId::from("other"),
+                vec![config("other", "convergence.ordering", "raw")],
+            )
+            .expect("other config replace");
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![config("test", "convergence.ordering", "current")],
+            )
+            .expect("second config replace");
+
+        assert_eq!(store.configs().len(), 2);
+        assert!(
+            store
+                .configs()
+                .iter()
+                .any(|fact| fact.corpus == CorpusId::from("test") && fact.value == "current")
+        );
+        assert!(
+            store
+                .configs()
+                .iter()
+                .any(|fact| fact.corpus == CorpusId::from("other") && fact.value == "raw")
+        );
+    }
+
+    #[test]
+    fn replace_configs_rejects_mixed_corpus_rows() {
+        let mut store = FactStore::default();
+        let err = store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![config("other", "convergence.ordering", "raw")],
+            )
+            .expect_err("mixed config corpus rejected");
+        assert_eq!(err, StoreError::MixedConfigCorpus);
     }
 }

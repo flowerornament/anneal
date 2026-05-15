@@ -431,15 +431,50 @@ examples(name, example)
 sources(name, recognizes, capabilities, doc)
 ```
 
-**Definition CR-D35 (Engine primitive sealing).** Engine-derived
-primitive predicate names in CR-D9 are sealed substrate predicates.
-Prelude, project, import, inline, and fact clauses may call them but
-must not define, shadow, or union with them. Projects that need
-domain-specific variants wrap primitives in separately named derived
-predicates. Rationale: primitive semantics are part of the
+**Definition CR-D35 (Sealed engine primitives).** Substrate-only
+engine primitive predicate names in CR-D9 are sealed. Prelude,
+project, import, inline, and fact clauses may call them but must not
+define, shadow, or union with them. Projects that need domain-specific
+variants wrap sealed primitives in separately named derived
+predicates. Rationale: sealed primitive semantics are part of the
 engine-replaceability contract; letting corpus rules redefine them
 would make runtime behavior depend on load order rather than the
 substrate contract.
+
+**Definition CR-D36 (Soft lifecycle primitives).** Lifecycle
+predicates whose semantics are corpus-specific (`terminal/1`,
+`active/1`, `settled/1`, `pipeline_position/2`,
+`pipeline_position_for/2`, `obligation/1`, `discharged/1`,
+`undischarged/1`) are runtime-provided defaults, not sealed
+substrate contracts. If no loaded unqualified rule defines the
+predicate, the default primitive relation is available. If the
+prelude, project, include, or inline layer defines the same
+unqualified predicate, CR-D21 shadowing applies and the rule
+definition replaces the default. Module-qualified imports do not
+shadow unqualified soft defaults unless a project explicitly re-exports
+them under the unqualified name. Rationale: code, host, issue, and
+markdown corpora need a common lifecycle vocabulary without forcing
+markdown's status model into every adapter.
+
+All other CR-D9 primitives are sealed unless a later CR-D* explicitly
+marks them soft.
+
+**Definition CR-D37 (Default scalar lifecycle metrics).**
+`discharge_count(h, n)` counts incoming `Discharges` edges for known
+handle `h`. `freshness(h, days)` returns whole days since
+`*handle.date` when present and parseable as an ISO date, clamped at
+`0` for future dates; missing or unparseable dates yield `0` so
+fresh-but-undated handles remain queryable. `token_estimate(h, n)`
+returns the sum of `*content.tokens` for `h`, or `0` when no content
+spans exist. Unknown handles produce no rows for these relations.
+`flux(h, days, delta)` requires `h` to be a known handle and `days` to
+be ground and non-negative; otherwise it produces no rows. It counts
+status transitions for `h` across `*snapshot{id: h, key: "status"}`
+rows within the window plus the current `*handle.status`. With no
+matching history, `delta` is `0`. Rationale: these metrics must be
+total over known handles so agent queries can distinguish "no signal"
+from "relation missing"; snapshot-backed precision can improve
+without changing the relational shape.
 
 The aggregation form `TopK{k: N, key: score : body}` (Part IV §17) provides
 bounded selection. There is no parallel `top_k` function primitive
@@ -1822,6 +1857,16 @@ the exact executable `views.dl` form and the row-to-group
 verb. This is a contract question, not a UX polish item, because the
 cold-agent gate depends on it.
 
+### §63 Ordered config fact representation
+
+§10 models runtime configuration as `*config{key, value, corpus}`.
+That is sufficient for scalar settings and unordered sets, but
+`[convergence] ordering = [...]` is list-valued and the current
+relational shape relies on fact insertion order to preserve ordinals.
+Phase 3 must decide whether ordered config uses an explicit ordinal
+field, a separate relation, or a value encoding with a stable
+round-trip contract before persisted/federated config facts ship.
+
 ---
 
 ## Part XV: Labels [CR-Labels]
@@ -1865,7 +1910,9 @@ cold-agent gate depends on it.
 - CR-D32: Transition-only legacy boundary (§8, §47)
 - CR-D33: Aggregate result unification (§20)
 - CR-D34: Empty-group origination (§20)
-- CR-D35: Engine primitive sealing (§11)
+- CR-D35: Sealed engine primitives (§11)
+- CR-D36: Soft lifecycle primitives (§11)
+- CR-D37: Default scalar lifecycle metrics (§11)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -1903,6 +1950,7 @@ cold-agent gate depends on it.
 - CR-OQ5: MCP run_verb routing under shadowed names (§60)
 - CR-OQ6: Performance ceiling (§61)
 - CR-OQ7: Context verb executable contract (§62)
+- CR-OQ8: Ordered config fact representation (§63)
 
 ---
 

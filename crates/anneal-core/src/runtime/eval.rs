@@ -5,6 +5,7 @@ use std::fmt;
 use std::io;
 use std::slice;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -295,11 +296,34 @@ impl<'a> Iterator for RowCandidates<'a> {
 #[derive(Clone, Debug, Default)]
 struct GraphIndex {
     nodes: BTreeSet<String>,
+    handles: BTreeMap<String, HandleState>,
     outgoing: BTreeMap<String, BTreeSet<String>>,
     incoming: BTreeMap<String, BTreeSet<String>>,
     out_edge_count: BTreeMap<String, usize>,
     in_edge_count: BTreeMap<String, usize>,
     cite_count: BTreeMap<String, usize>,
+    discharge_count: BTreeMap<String, usize>,
+    content_tokens: BTreeMap<String, usize>,
+    active_statuses: BTreeSet<String>,
+    terminal_statuses: BTreeSet<String>,
+    settled_statuses: BTreeSet<String>,
+    pipeline_positions: BTreeMap<String, i64>,
+    linear_namespaces: BTreeSet<String>,
+    status_snapshots: BTreeMap<String, Vec<SnapshotStatus>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HandleState {
+    kind: String,
+    status: Option<String>,
+    namespace: String,
+    date: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SnapshotStatus {
+    at: i64,
+    status: String,
 }
 
 impl GraphIndex {
@@ -308,6 +332,17 @@ impl GraphIndex {
             HANDLE_RELATION => {
                 if let Some(id) = row_string(row, ID_FIELD) {
                     self.nodes.insert(id.to_owned());
+                    self.handles.insert(
+                        id.to_owned(),
+                        HandleState {
+                            kind: row_string(row, KIND_FIELD).unwrap_or_default().to_owned(),
+                            status: row_string(row, STATUS_FIELD).map(str::to_owned),
+                            namespace: row_string(row, NAMESPACE_FIELD)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            date: row_string(row, DATE_FIELD).and_then(iso_days_since_epoch),
+                        },
+                    );
                 }
             }
             EDGE_RELATION => {
@@ -332,7 +367,84 @@ impl GraphIndex {
                 *self.in_edge_count.entry(to.clone()).or_default() += 1;
                 if row_string(row, KIND_FIELD) == Some(CITES_EDGE_KIND) {
                     *self.cite_count.entry(to).or_default() += 1;
+                } else if row_string(row, KIND_FIELD) == Some(DISCHARGES_EDGE_KIND) {
+                    *self.discharge_count.entry(to).or_default() += 1;
                 }
+            }
+            CONFIG_RELATION => self.insert_config(row),
+            CONTENT_RELATION => {
+                let (Some(handle), Some(tokens)) =
+                    (row_string(row, HANDLE_FIELD), row_i64(row, TOKENS_FIELD))
+                else {
+                    return;
+                };
+                let tokens = usize::try_from(tokens).unwrap_or(0);
+                *self.content_tokens.entry(handle.to_owned()).or_default() += tokens;
+            }
+            SNAPSHOT_RELATION => {
+                let (Some(id), Some(key), Some(status), Some(at)) = (
+                    row_string(row, ID_FIELD),
+                    row_string(row, KEY_FIELD),
+                    row_string(row, VALUE_FIELD),
+                    row_string(row, AT_FIELD).and_then(iso_days_since_epoch),
+                ) else {
+                    return;
+                };
+                if key == STATUS_FIELD {
+                    self.insert_status_snapshot(
+                        id,
+                        SnapshotStatus {
+                            at,
+                            status: status.to_owned(),
+                        },
+                    );
+                }
+            }
+            LINEAR_NAMESPACE_RELATION => {
+                if let Some(namespace) = row_string(row, NAMESPACE_FIELD) {
+                    self.linear_namespaces.insert(namespace.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_status_snapshot(&mut self, handle: &str, snapshot: SnapshotStatus) {
+        let snapshots = self.status_snapshots.entry(handle.to_owned()).or_default();
+        let idx = snapshots
+            .binary_search_by(|probe| {
+                probe
+                    .at
+                    .cmp(&snapshot.at)
+                    .then_with(|| probe.status.cmp(&snapshot.status))
+            })
+            .unwrap_or_else(|idx| idx);
+        snapshots.insert(idx, snapshot);
+    }
+
+    fn insert_config(&mut self, row: &NamedRow) {
+        let (Some(key), Some(value)) = (row_string(row, KEY_FIELD), row_string(row, VALUE_FIELD))
+        else {
+            return;
+        };
+        match key {
+            CONFIG_ACTIVE_STATUS => {
+                self.active_statuses.insert(value.to_owned());
+            }
+            CONFIG_TERMINAL_STATUS => {
+                self.terminal_statuses.insert(value.to_owned());
+            }
+            CONFIG_SETTLED_STATUS => {
+                self.settled_statuses.insert(value.to_owned());
+            }
+            CONFIG_PIPELINE_ORDERING => {
+                let position = i64::try_from(self.pipeline_positions.len()).unwrap_or(i64::MAX);
+                self.pipeline_positions
+                    .entry(value.to_owned())
+                    .or_insert(position);
+            }
+            CONFIG_LINEAR_NAMESPACE => {
+                self.linear_namespaces.insert(value.to_owned());
             }
             _ => {}
         }
@@ -348,9 +460,33 @@ impl GraphIndex {
             }
             PrimitivePredicate::Impact => self.impact_tuples(constraints),
             PrimitivePredicate::Neighborhood => self.neighborhood_tuples(constraints),
+            PrimitivePredicate::Terminal => self.lifecycle_tuples(constraints, Self::is_terminal),
+            PrimitivePredicate::Active => self.lifecycle_tuples(constraints, Self::is_active),
+            PrimitivePredicate::Settled => self.lifecycle_tuples(constraints, Self::is_settled),
+            PrimitivePredicate::PipelinePosition => self.pipeline_position_tuples(constraints),
+            PrimitivePredicate::PipelinePositionFor => {
+                self.pipeline_position_for_tuples(constraints)
+            }
+            PrimitivePredicate::Obligation => {
+                self.lifecycle_tuples(constraints, Self::is_obligation)
+            }
+            PrimitivePredicate::Discharged => {
+                self.lifecycle_tuples(constraints, Self::is_discharged)
+            }
+            PrimitivePredicate::Undischarged => {
+                self.lifecycle_tuples(constraints, Self::is_undischarged)
+            }
             PrimitivePredicate::CiteCount => self.count_tuples(constraints, &self.cite_count),
             PrimitivePredicate::InDegree => self.count_tuples(constraints, &self.in_edge_count),
             PrimitivePredicate::OutDegree => self.count_tuples(constraints, &self.out_edge_count),
+            PrimitivePredicate::DischargeCount => {
+                self.handle_count_tuples(constraints, &self.discharge_count)
+            }
+            PrimitivePredicate::Freshness => self.freshness_tuples(constraints),
+            PrimitivePredicate::Flux => self.flux_tuples(constraints),
+            PrimitivePredicate::TokenEstimate => {
+                self.handle_count_tuples(constraints, &self.content_tokens)
+            }
         }
     }
 
@@ -497,6 +633,180 @@ impl GraphIndex {
         }
     }
 
+    fn lifecycle_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        predicate: fn(&Self, &str, &HandleState) -> bool,
+    ) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        match handle {
+            ArgConstraint::Impossible => Vec::new(),
+            ArgConstraint::Exact(id) => self
+                .handles
+                .get(id)
+                .filter(|state| predicate(self, id, state))
+                .map(|_| vec![Tuple(vec![graph_string(id)])])
+                .unwrap_or_default(),
+            ArgConstraint::Any => self
+                .handles
+                .iter()
+                .filter(|(id, state)| predicate(self, id, state))
+                .map(|(id, _)| Tuple(vec![graph_string(id)]))
+                .collect(),
+        }
+    }
+
+    fn pipeline_position_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let position = i64_constraint(constraints, 1);
+        match (handle, position) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(id), _) => self
+                .handles
+                .get(id)
+                .and_then(|state| state.status.as_deref())
+                .and_then(|status| self.pipeline_position(status))
+                .map(|position| Tuple(vec![graph_string(id), graph_int(position)]))
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, _) => self
+                .handles
+                .iter()
+                .filter_map(|(id, state)| {
+                    state
+                        .status
+                        .as_deref()
+                        .and_then(|status| self.pipeline_position(status))
+                        .map(|position| Tuple(vec![graph_string(id), graph_int(position)]))
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn pipeline_position_for_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let status = string_constraint(constraints, 0);
+        let position = i64_constraint(constraints, 1);
+        match (status, position) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(status), _) => self
+                .pipeline_position(status)
+                .map(|position| Tuple(vec![graph_string(status), graph_int(position)]))
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, _) => self
+                .pipeline_ordering()
+                .into_iter()
+                .map(|(status, position)| Tuple(vec![graph_string(status), graph_int(position)]))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn handle_count_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        counts: &BTreeMap<String, usize>,
+    ) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let count = i64_constraint(constraints, 1);
+        match (handle, count) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(handle), _) if self.handles.contains_key(handle) => {
+                let count = i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX);
+                vec![Tuple(vec![graph_string(handle), graph_int(count)])]
+                    .into_iter()
+                    .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                    .collect()
+            }
+            (ArgConstraint::Exact(_), _) => Vec::new(),
+            (ArgConstraint::Any, _) => self
+                .handles
+                .keys()
+                .map(|handle| {
+                    let count =
+                        i64::try_from(*counts.get(handle).unwrap_or(&0)).unwrap_or(i64::MAX);
+                    Tuple(vec![graph_string(handle), graph_int(count)])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn freshness_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let days = i64_constraint(constraints, 1);
+        let today = current_days_since_epoch();
+        match (handle, days) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(handle), _) => self
+                .handles
+                .get(handle)
+                .map(|state| {
+                    Tuple(vec![
+                        graph_string(handle),
+                        graph_int(freshness_days(state, today)),
+                    ])
+                })
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, _) => self
+                .handles
+                .iter()
+                .map(|(handle, state)| {
+                    Tuple(vec![
+                        graph_string(handle),
+                        graph_int(freshness_days(state, today)),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn flux_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let days = match i64_constraint(constraints, 1) {
+            ArgConstraint::Exact(days) if days >= 0 => days,
+            ArgConstraint::Any | ArgConstraint::Exact(_) | ArgConstraint::Impossible => {
+                return Vec::new();
+            }
+        };
+        let delta = i64_constraint(constraints, 2);
+        let today = current_days_since_epoch();
+        match (handle, delta) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(handle), _) => self
+                .handles
+                .get(handle)
+                .map(|state| {
+                    Tuple(vec![
+                        graph_string(handle),
+                        graph_int(days),
+                        graph_int(self.flux_delta(handle, state, days, today)),
+                    ])
+                })
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, _) => self
+                .handles
+                .iter()
+                .map(|(handle, state)| {
+                    Tuple(vec![
+                        graph_string(handle),
+                        graph_int(days),
+                        graph_int(self.flux_delta(handle, state, days, today)),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
     fn count_tuples(
         &self,
         constraints: &[(usize, Value)],
@@ -528,6 +838,99 @@ impl GraphIndex {
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
+    }
+
+    fn is_terminal(&self, _handle: &str, state: &HandleState) -> bool {
+        let Some(status) = state.status.as_deref() else {
+            return false;
+        };
+        if self.terminal_statuses.contains(status) {
+            return true;
+        }
+        if self.active_statuses.contains(status) {
+            return false;
+        }
+        is_terminal_status(status)
+    }
+
+    fn is_active(&self, handle: &str, state: &HandleState) -> bool {
+        !self.is_terminal(handle, state)
+    }
+
+    fn is_settled(&self, _handle: &str, state: &HandleState) -> bool {
+        let Some(status) = state.status.as_deref() else {
+            return false;
+        };
+        self.settled_statuses.contains(status) || is_canonical_settled_status(status)
+    }
+
+    fn is_obligation(&self, _handle: &str, state: &HandleState) -> bool {
+        state.kind == LABEL_KIND && self.linear_namespaces.contains(&state.namespace)
+    }
+
+    fn is_discharged(&self, handle: &str, _state: &HandleState) -> bool {
+        self.discharge_count
+            .get(handle)
+            .copied()
+            .unwrap_or_default()
+            > 0
+    }
+
+    fn is_undischarged(&self, handle: &str, state: &HandleState) -> bool {
+        self.is_obligation(handle, state)
+            && !self.is_discharged(handle, state)
+            && !self.is_terminal(handle, state)
+    }
+
+    fn pipeline_position(&self, status: &str) -> Option<i64> {
+        self.pipeline_positions.get(status).copied().or_else(|| {
+            self.pipeline_positions
+                .is_empty()
+                .then(|| canonical_pipeline_position(status))
+                .flatten()
+        })
+    }
+
+    fn pipeline_ordering(&self) -> Vec<(&str, i64)> {
+        if self.pipeline_positions.is_empty() {
+            return CANONICAL_PIPELINE_ORDERING
+                .iter()
+                .enumerate()
+                .map(|(idx, status)| (*status, i64::try_from(idx).unwrap_or(i64::MAX)))
+                .collect();
+        }
+        let mut ordering = self
+            .pipeline_positions
+            .iter()
+            .map(|(status, position)| (status.as_str(), *position))
+            .collect::<Vec<_>>();
+        ordering.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(right.0)));
+        ordering
+    }
+
+    fn flux_delta(&self, handle: &str, state: &HandleState, days: i64, today: Option<i64>) -> i64 {
+        let Some(today) = today else {
+            return 0;
+        };
+        let start = today.saturating_sub(days);
+        let mut statuses = self
+            .status_snapshots
+            .get(handle)
+            .into_iter()
+            .flat_map(|snapshots| snapshots.iter())
+            .filter(|snapshot| snapshot.at >= start && snapshot.at <= today)
+            .map(|snapshot| (snapshot.at, snapshot.status.as_str()))
+            .collect::<Vec<_>>();
+        if let Some(status) = state.status.as_deref() {
+            statuses.push((today, status));
+        }
+        i64::try_from(
+            statuses
+                .windows(2)
+                .filter(|pair| pair[0].1 != pair[1].1)
+                .count(),
+        )
+        .unwrap_or(i64::MAX)
     }
 
     fn reachable_from(
@@ -648,13 +1051,142 @@ fn row_string<'a>(row: &'a NamedRow, field: &str) -> Option<&'a str> {
     Some(value)
 }
 
+fn row_i64(row: &NamedRow, field: &str) -> Option<i64> {
+    let field = Ident::new_unchecked(field);
+    let Some(Value::Number(NumberValue::Int(value))) = row.get(&field) else {
+        return None;
+    };
+    Some(*value)
+}
+
 const HANDLE_RELATION: &str = "handle";
 const EDGE_RELATION: &str = "edge";
+const CONFIG_RELATION: &str = "config";
+const CONTENT_RELATION: &str = "content";
+const SNAPSHOT_RELATION: &str = "snapshot";
+const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
 const ID_FIELD: &str = "id";
 const FROM_FIELD: &str = "from";
 const TO_FIELD: &str = "to";
 const KIND_FIELD: &str = "kind";
+const STATUS_FIELD: &str = "status";
+const NAMESPACE_FIELD: &str = "namespace";
+const DATE_FIELD: &str = "date";
+const HANDLE_FIELD: &str = "handle";
+const TOKENS_FIELD: &str = "tokens";
+const KEY_FIELD: &str = "key";
+const VALUE_FIELD: &str = "value";
+const AT_FIELD: &str = "at";
+const LABEL_KIND: &str = "label";
 const CITES_EDGE_KIND: &str = "Cites";
+const DISCHARGES_EDGE_KIND: &str = "Discharges";
+const CONFIG_ACTIVE_STATUS: &str = "convergence.active";
+const CONFIG_TERMINAL_STATUS: &str = "convergence.terminal";
+const CONFIG_SETTLED_STATUS: &str = "convergence.settled";
+const CONFIG_PIPELINE_ORDERING: &str = "convergence.ordering";
+const CONFIG_LINEAR_NAMESPACE: &str = "handles.linear";
+const CANONICAL_PIPELINE_ORDERING: &[&str] = &[
+    "raw",
+    "draft",
+    "research",
+    "plan",
+    "current",
+    "active",
+    "stable",
+    "authoritative",
+];
+const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
+    "superseded",
+    "archived",
+    "historical",
+    "prior",
+    "retired",
+    "deprecated",
+    "obsolete",
+    "withdrawn",
+    "cancelled",
+    "canceled",
+    "closed",
+    "resolved",
+    "done",
+    "completed",
+    "incorporated",
+    "digested",
+];
+const CANONICAL_SETTLED_STATUSES: &[&str] =
+    &["authoritative", "current", "active", "stable", "living"];
+
+fn is_terminal_status(status: &str) -> bool {
+    let lower = status.to_lowercase();
+    TERMINAL_STATUS_HEURISTICS
+        .iter()
+        .any(|heuristic| lower.contains(heuristic))
+}
+
+fn is_canonical_settled_status(status: &str) -> bool {
+    CANONICAL_SETTLED_STATUSES.contains(&status)
+}
+
+fn canonical_pipeline_position(status: &str) -> Option<i64> {
+    CANONICAL_PIPELINE_ORDERING
+        .iter()
+        .position(|candidate| candidate == &status)
+        .map(|idx| i64::try_from(idx).unwrap_or(i64::MAX))
+}
+
+fn freshness_days(state: &HandleState, today: Option<i64>) -> i64 {
+    let (Some(date), Some(today)) = (state.date, today) else {
+        return 0;
+    };
+    today.saturating_sub(date).max(0)
+}
+
+fn current_days_since_epoch() -> Option<i64> {
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_secs() / 86_400).ok()
+}
+
+fn iso_days_since_epoch(value: &str) -> Option<i64> {
+    if value.len() != "YYYY-MM-DD".len() {
+        return None;
+    }
+    let year = value.get(0..4)?.parse::<i32>().ok()?;
+    let month = value.get(5..7)?.parse::<u32>().ok()?;
+    let day = value.get(8..10)?.parse::<u32>().ok()?;
+    if value.as_bytes().get(4) != Some(&b'-') || value.as_bytes().get(7) != Some(&b'-') {
+        return None;
+    }
+    days_from_civil(year, month, day)
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
+        return None;
+    }
+    let month = i64::from(month);
+    let day = i64::from(day);
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
 
 fn string_constraint(constraints: &[(usize, Value)], position: usize) -> ArgConstraint<&str> {
     value_constraint(constraints, position, |value| match value {
@@ -1040,6 +1572,14 @@ fn eval_derived(
     database: &Database,
 ) -> Result<Vec<Binding>, EvalError> {
     if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
+        if primitive.is_soft() && database.derived.contains_key(&atom.predicate) {
+            let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
+                EvalError::UnknownDerivedPredicate {
+                    predicate: atom.predicate.clone(),
+                }
+            })?;
+            return eval_derived_from_relation(atom, bindings, relation);
+        }
         return eval_primitive(primitive, &atom.args, bindings, database);
     }
     let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
@@ -1670,15 +2210,26 @@ mod tests {
     }
 
     fn handle(id: &str, kind: &str, status: &str, namespace: &str, area: &str) -> HandleFact {
+        handle_with_options(id, kind, Some(status), namespace, area, None)
+    }
+
+    fn handle_with_options(
+        id: &str,
+        kind: &str,
+        status: Option<&str>,
+        namespace: &str,
+        area: &str,
+        date: Option<&str>,
+    ) -> HandleFact {
         HandleFact {
             identity: identity(id),
             id: id.to_string(),
             kind: kind.to_string(),
-            status: Some(status.to_string()),
+            status: status.map(str::to_string),
             namespace: namespace.to_string(),
             file: format!("{area}/{id}.md"),
             line: 1,
-            date: None,
+            date: date.map(str::to_string),
             area: area.to_string(),
             summary: String::new(),
         }
@@ -1692,6 +2243,25 @@ mod tests {
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
+        }
+    }
+
+    fn content(handle: &str, span_id: &str, tokens: u32) -> ContentFact {
+        ContentFact {
+            identity: identity(&format!("{handle}#{span_id}")),
+            handle: handle.to_string(),
+            span_id: span_id.to_string(),
+            lines: 1,
+            text: String::new(),
+            tokens,
+        }
+    }
+
+    fn config(key: &str, value: &str) -> ConfigFact {
+        ConfigFact {
+            corpus: CorpusId::from("test"),
+            key: key.to_string(),
+            value: value.to_string(),
         }
     }
 
@@ -1732,6 +2302,74 @@ mod tests {
         let mut store = FactStore::default();
         store.merge(batch).expect("fixture merge");
         store
+    }
+
+    fn lifecycle_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle_with_options("raw.md", "file", Some("raw"), "", "core", None),
+            handle_with_options(
+                "draft.md",
+                "file",
+                Some("draft"),
+                "",
+                "core",
+                Some("9999-01-01"),
+            ),
+            handle_with_options("done.md", "file", Some("done"), "", "core", None),
+            handle_with_options("stable.md", "file", Some("stable"), "", "core", None),
+            handle_with_options("nostatus.md", "file", None, "", "core", None),
+            handle_with_options("OQ-1", "label", Some("open"), "OQ", "core", None),
+            handle_with_options("OQ-2", "label", Some("open"), "OQ", "core", None),
+        ];
+        batch.edges = vec![edge("doc.md", "OQ-1", "Discharges")];
+        batch.content = vec![
+            content("draft.md", "draft-1", 10),
+            content("draft.md", "draft-2", 15),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("lifecycle fixture merge");
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![
+                    config("convergence.active", "draft"),
+                    config("convergence.terminal", "done"),
+                    config("convergence.settled", "stable"),
+                    config("convergence.ordering", "raw"),
+                    config("convergence.ordering", "draft"),
+                    config("convergence.ordering", "stable"),
+                    config("handles.linear", "OQ"),
+                ],
+            )
+            .expect("lifecycle config replace");
+
+        let mut database = Database::from_store(&store);
+        database.insert_stored_rows(
+            "snapshot",
+            [
+                named_row([
+                    ("id", s("draft.md")),
+                    ("key", s("status")),
+                    ("value", s("raw")),
+                    ("at", s("1970-01-01")),
+                    ("corpus", s("test")),
+                ]),
+                named_row([
+                    ("id", s("draft.md")),
+                    ("key", s("status")),
+                    ("value", s("draft")),
+                    ("at", s("1970-01-02")),
+                    ("corpus", s("test")),
+                ]),
+            ],
+        );
+        database
     }
 
     fn mvs_database() -> Database {
@@ -2326,6 +2964,111 @@ mod tests {
     fn count_primitives_do_not_invent_unknown_handles() {
         let outputs = evaluate_queries(r#"? cite_count("missing", n)."#, mvs_database());
         assert_query_rows(&outputs[0], Vec::new());
+    }
+
+    #[test]
+    fn lifecycle_primitives_use_configured_lattice_facts() {
+        let outputs = evaluate_queries(
+            r#"
+            ? terminal("done.md").
+            ? active("draft.md").
+            ? active("nostatus.md").
+            ? settled("stable.md").
+            ? pipeline_position("draft.md", n).
+            ? pipeline_position_for("stable", n).
+            ? obligation("OQ-1").
+            ? discharged("OQ-1").
+            ? undischarged("OQ-2").
+            ? discharge_count("OQ-1", n).
+            ? discharge_count("OQ-2", n).
+            ? token_estimate("draft.md", n).
+            ? freshness("draft.md", days).
+            ? flux("draft.md", 1000000, delta).
+            "#,
+            lifecycle_database(),
+        );
+
+        let mut rows = outputs.into_iter();
+        assert_query_rows(&rows.next().expect("terminal output"), vec![row([])]);
+        assert_query_rows(&rows.next().expect("active output"), vec![row([])]);
+        assert_query_rows(
+            &rows.next().expect("missing status active output"),
+            vec![row([])],
+        );
+        assert_query_rows(&rows.next().expect("settled output"), vec![row([])]);
+        assert_query_rows(
+            &rows.next().expect("pipeline position output"),
+            vec![row([("n", n(1))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("pipeline position for output"),
+            vec![row([("n", n(2))])],
+        );
+        assert_query_rows(&rows.next().expect("obligation output"), vec![row([])]);
+        assert_query_rows(&rows.next().expect("discharged output"), vec![row([])]);
+        assert_query_rows(&rows.next().expect("undischarged output"), vec![row([])]);
+        assert_query_rows(
+            &rows.next().expect("discharge count output"),
+            vec![row([("n", n(1))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("zero discharge count output"),
+            vec![row([("n", n(0))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("token estimate output"),
+            vec![row([("n", n(25))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("future freshness output"),
+            vec![row([("days", n(0))])],
+        );
+        assert_query_rows(
+            &rows.next().expect("flux output"),
+            vec![row([("delta", n(1))])],
+        );
+        assert!(rows.next().is_none(), "unexpected extra lifecycle output");
+    }
+
+    #[test]
+    fn lifecycle_metrics_do_not_invent_unknown_handles_or_unbound_flux_windows() {
+        let outputs = evaluate_queries(
+            r#"
+            ? token_estimate("missing.md", n).
+            ? discharge_count("missing.md", n).
+            ? freshness("missing.md", days).
+            ? flux("draft.md", days, delta).
+            ? flux("draft.md", "bad", delta).
+            "#,
+            lifecycle_database(),
+        );
+
+        for output in outputs {
+            assert_query_rows(&output, Vec::new());
+        }
+    }
+
+    #[test]
+    fn soft_lifecycle_rule_shadowing_replaces_default_primitive() {
+        let outputs = evaluate_queries(
+            r#"
+            terminal(h) := *handle{id: h, status: "draft"}.
+            ? terminal("draft.md").
+            ? terminal("done.md").
+            "#,
+            lifecycle_database(),
+        );
+
+        let mut rows = outputs.into_iter();
+        assert_query_rows(
+            &rows.next().expect("shadowed terminal output"),
+            vec![row([])],
+        );
+        assert_query_rows(
+            &rows.next().expect("default terminal no longer applies"),
+            Vec::new(),
+        );
+        assert!(rows.next().is_none(), "unexpected extra shadowing output");
     }
 
     #[test]
