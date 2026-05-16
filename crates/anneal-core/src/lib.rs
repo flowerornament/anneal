@@ -9,6 +9,7 @@ pub mod facts;
 pub mod hash;
 pub mod history;
 pub mod ids;
+pub mod policy;
 pub mod project;
 pub mod ranking;
 pub mod retrieval;
@@ -28,6 +29,7 @@ pub use history::{
     append_snapshot_entry, read_snapshot_history, repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+pub use policy::{Action, ActionKind, AllowAllPolicy, Policy, PolicyDecision};
 pub use project::{PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, load_project_extension};
 pub use ranking::{
     DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
@@ -38,8 +40,8 @@ pub use retrieval::{
     SearchRequest, SearchSpanScope,
 };
 pub use source::{
-    Action, ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey,
-    Pattern, RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
+    ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
+    RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
     SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};

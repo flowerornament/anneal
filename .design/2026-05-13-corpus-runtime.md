@@ -845,6 +845,23 @@ built-in constructors are explicit: trusted local CLI actors carry
 all runtime capabilities plus private fact visibility; conservative
 MCP actors carry none until the MCP surface or host grants them.
 
+**Definition CR-D63 (Policy action gates).** Capability checks are the
+built-in runtime floor; `Policy` is the host/project authorization
+layer above that floor. `PolicyDecision` is a closed allow/deny result.
+The default runtime policy allows all actions so v1-compatible CLI
+execution is unchanged unless a surface or host installs a narrower
+policy. A denied policy check returns a policy-denial error naming the
+actor and action. `Action` is a policy-boundary type, not a source
+type; variants carry the target data available at the gate, such as
+`read`/`read_full` handle, `search` query and optional handle scope,
+`match` pattern and optional handle scope, `eval`, and extraction
+source. Policy is consulted before `read`, `search`, `match`, and
+`read_full` perform provider work, regex compilation, or content
+budgeting, and evaluator entrypoints consult `eval` policy before
+rule/query execution. Capability-required errors remain distinct from
+policy denials: missing `read_full` or `eval` capability reports the
+missing capability before project policy is considered.
+
 **Definition CR-D53 (Fact visibility boundary).** Authorization is
 not only a surface action gate. The fact store carries an evaluation
 visibility envelope for source-derived rows. Relation schemas do not
@@ -2038,6 +2055,17 @@ pub trait Policy {
     fn check(&self, actor: &ActorContext, action: &Action) -> PolicyDecision;
 }
 
+pub enum PolicyDecision { Allow, Deny }
+
+pub enum Action {
+    Read { handle: String },
+    ReadFull { handle: String },
+    Search { query: String, handle: Option<String> },
+    Match { pattern: String, handle: Option<String> },
+    Eval,
+    Extract { source: String },
+}
+
 pub trait TrailRecorder {
     fn record(&self, entry: TrailEntryInProgress, ctx: &TrailContext) -> Result<(), TrailError>;
     fn note_consumed(&self, reference: TrailReference, ctx: &TrailContext);
@@ -2569,6 +2597,7 @@ as data instead of smuggling it through row sequence.
 - CR-D60: Executable verb schema encoding (§31)
 - CR-D61: Fact visibility capabilities (§16)
 - CR-D62: Visibility closure over handle references (§16)
+- CR-D63: Policy action gates (§16)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

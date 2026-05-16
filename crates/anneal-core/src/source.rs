@@ -367,15 +367,6 @@ pub struct SearchInfo {
     pub low_confidence_threshold: f32,
 }
 
-/// Policy action target.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Action {
-    Read,
-    Search,
-    Eval,
-    Extract { source: String },
-}
-
 /// Source extraction error.
 #[derive(Debug)]
 pub enum SourceError {

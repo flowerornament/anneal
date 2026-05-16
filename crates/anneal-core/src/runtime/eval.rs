@@ -14,6 +14,9 @@ use crate::facts::{
     SnapshotFact, SpanFact,
 };
 use crate::ids::Generation;
+#[cfg(test)]
+use crate::policy::ActionKind;
+use crate::policy::{Action, AllowAllPolicy, Policy, PolicyDecision};
 use crate::ranking::{
     DEFAULT_LOW_CONFIDENCE_THRESHOLD, DefaultRanker, Ranker, RankingContext, SearchHandleDocument,
     SearchIndex, SearchQuery, rank_search_hits,
@@ -87,6 +90,7 @@ pub struct EvalOptions {
     read_full_token_limit: i64,
     low_confidence_threshold: f32,
     ranker: Arc<dyn Ranker>,
+    policy: Arc<dyn Policy>,
 }
 
 impl EvalOptions {
@@ -119,8 +123,33 @@ impl EvalOptions {
         self
     }
 
+    pub fn with_policy(mut self, policy: impl Policy + 'static) -> Self {
+        self.policy = Arc::new(policy);
+        self
+    }
+
+    pub fn authorize_eval(&self) -> Result<(), EvalError> {
+        if !self.has_capability(RuntimeCapability::Eval) {
+            return Err(EvalError::CapabilityRequired {
+                primitive: "eval",
+                capability: RuntimeCapability::Eval,
+            });
+        }
+        self.authorize(Action::Eval)
+    }
+
     fn has_capability(&self, capability: RuntimeCapability) -> bool {
         self.actor.has_runtime_capability(capability)
+    }
+
+    fn authorize(&self, action: Action) -> Result<(), EvalError> {
+        match self.policy.check(&self.actor, &action) {
+            PolicyDecision::Allow => Ok(()),
+            PolicyDecision::Deny => Err(EvalError::PolicyDenied {
+                actor: self.actor.actor.clone(),
+                action,
+            }),
+        }
     }
 
     fn ranking_context(&self, query: &str) -> RankingContext {
@@ -135,10 +164,11 @@ impl EvalOptions {
 impl Default for EvalOptions {
     fn default() -> Self {
         Self {
-            actor: ActorContext::anonymous_cli(),
+            actor: ActorContext::anonymous_cli().with_runtime_capability(RuntimeCapability::Eval),
             read_full_token_limit: DEFAULT_READ_FULL_TOKEN_LIMIT,
             low_confidence_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
             ranker: Arc::new(DefaultRanker),
+            policy: Arc::new(AllowAllPolicy),
         }
     }
 }
@@ -460,6 +490,10 @@ impl Database {
             ArgConstraint::Exact(handle) => Some(handle),
             ArgConstraint::Impossible => return Ok(Vec::new()),
         };
+        options.authorize(Action::Search {
+            query: query_text.to_owned(),
+            handle: handle.map(str::to_owned),
+        })?;
         let span = match search_span_filter(constraints, 2) {
             SearchSpanConstraint::Any => SearchSpanScope::Any,
             SearchSpanConstraint::Null => SearchSpanScope::Null,
@@ -506,6 +540,9 @@ impl Database {
         if budget < 0 {
             return Ok(Vec::new());
         }
+        options.authorize(Action::Read {
+            handle: handle.to_owned(),
+        })?;
         if self.hidden_handles.contains(handle) {
             return Ok(Vec::new());
         }
@@ -541,6 +578,9 @@ impl Database {
         let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
             return Ok(Vec::new());
         };
+        options.authorize(Action::ReadFull {
+            handle: handle.to_owned(),
+        })?;
         if self.hidden_handles.contains(handle)
             || (self.content_provider.is_some() && self.handle_has_hidden_spans(handle))
         {
@@ -2529,6 +2569,8 @@ pub enum EvalError {
         primitive: &'static str,
         capability: RuntimeCapability,
     },
+    #[error("policy denied action '{action}' for actor '{actor}'")]
+    PolicyDenied { actor: String, action: Action },
     #[error("read_full({handle:?}) would return {tokens} tokens, exceeding the hard limit {limit}")]
     ReadFullBudgetExceeded {
         handle: String,
@@ -2582,6 +2624,7 @@ impl Evaluator {
     }
 
     pub fn run_fixpoint(&mut self) -> Result<(), EvalError> {
+        self.options.authorize_eval()?;
         self.seed_facts()?;
         let strata = self.program.strata().to_vec();
         for stratum in strata {
@@ -2602,6 +2645,7 @@ impl Evaluator {
     }
 
     pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
+        self.options.authorize_eval()?;
         let query_ast = query.query();
         let mut warnings = self.warnings.clone();
         if query_ast.local_rules.is_empty() {
@@ -3315,6 +3359,15 @@ fn primitive_tuples(
             let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
                 return Ok(Vec::new());
             };
+            let handle = match string_constraint(constraints, 1) {
+                ArgConstraint::Any => None,
+                ArgConstraint::Impossible => return Ok(Vec::new()),
+                ArgConstraint::Exact(handle) => Some(handle.to_owned()),
+            };
+            options.authorize(Action::Match {
+                pattern: pattern.to_owned(),
+                handle,
+            })?;
             if !regex_cache.contains_key(pattern) {
                 let regex = Regex::new(pattern).map_err(|source| EvalError::InvalidRegex {
                     pattern: pattern.to_owned(),
@@ -5471,6 +5524,274 @@ mod tests {
                 ("tokens", n(7)),
             ])],
         );
+    }
+
+    #[derive(Debug)]
+    struct DenyActionPolicy(ActionKind);
+
+    impl Policy for DenyActionPolicy {
+        fn check(&self, _actor: &ActorContext, action: &Action) -> PolicyDecision {
+            if action.kind() == self.0 {
+                PolicyDecision::Deny
+            } else {
+                PolicyDecision::Allow
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct DenyActorActionPolicy {
+        actor: &'static str,
+        action: ActionKind,
+    }
+
+    impl Policy for DenyActorActionPolicy {
+        fn check(&self, actor: &ActorContext, action: &Action) -> PolicyDecision {
+            if actor.actor == self.actor && action.kind() == self.action {
+                PolicyDecision::Deny
+            } else {
+                PolicyDecision::Allow
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct DenyReadHandlePolicy(&'static str);
+
+    impl Policy for DenyReadHandlePolicy {
+        fn check(&self, _actor: &ActorContext, action: &Action) -> PolicyDecision {
+            if matches!(action, Action::Read { handle } if handle == self.0) {
+                PolicyDecision::Deny
+            } else {
+                PolicyDecision::Allow
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct PanicContentProvider;
+
+    impl ContentProvider for PanicContentProvider {
+        fn read(
+            &self,
+            _request: ReadRequest<'_>,
+            _ctx: &ReadContext<'_>,
+        ) -> Result<Vec<ReadChunk>, ReadError> {
+            panic!("read provider should not be invoked after policy denial");
+        }
+
+        fn read_full(
+            &self,
+            _request: ReadFullRequest<'_>,
+            _ctx: &ReadContext<'_>,
+        ) -> Result<Option<ReadFullContent>, ReadError> {
+            panic!("read_full provider should not be invoked after policy denial");
+        }
+    }
+
+    #[derive(Debug)]
+    struct PanicSearchProvider;
+
+    impl SearchProvider for PanicSearchProvider {
+        fn search(
+            &self,
+            _request: SearchRequest<'_>,
+            _ctx: &SearchContext<'_>,
+        ) -> Result<Vec<crate::SearchHit>, SearchError> {
+            panic!("search provider should not be invoked after policy denial");
+        }
+    }
+
+    #[test]
+    fn policy_denies_primitives_before_provider_or_regex_work() {
+        let search_err = evaluate_query_error_with_options(
+            r#"? search("needle", h, span_id, score, reason, field, low_confidence)."#,
+            Database::default().with_search_provider(PanicSearchProvider),
+            EvalOptions::default().with_policy(DenyActionPolicy(ActionKind::Search)),
+        );
+        assert!(matches!(
+            search_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Search
+        ));
+
+        let read_err = evaluate_query_error_with_options(
+            r#"? read("external.md", 10, span_id, text, start_line, end_line, tokens)."#,
+            Database::default().with_content_provider(PanicContentProvider),
+            EvalOptions::default().with_policy(DenyActionPolicy(ActionKind::Read)),
+        );
+        assert!(matches!(
+            read_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Read
+        ));
+
+        let full_err = evaluate_query_error_with_options(
+            r#"? read_full("external.md", content)."#,
+            Database::default().with_content_provider(PanicContentProvider),
+            EvalOptions::default()
+                .with_capability(READ_FULL_CAPABILITY)
+                .with_policy(DenyActionPolicy(ActionKind::ReadFull)),
+        );
+        assert!(matches!(
+            full_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::ReadFull
+        ));
+
+        let match_err = evaluate_query_error_with_options(
+            r#"? match("[", "alpha.md", line, snippet)."#,
+            content_database(),
+            EvalOptions::default().with_policy(DenyActionPolicy(ActionKind::Match)),
+        );
+        assert!(matches!(
+            match_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Match
+        ));
+    }
+
+    #[test]
+    fn policy_can_deny_by_actor_identity_and_allow_other_actors() {
+        let denied = evaluate_query_error_with_options(
+            r#"? read("alpha.md", 9, span_id, text, start_line, end_line, tokens)."#,
+            content_database(),
+            EvalOptions::default()
+                .with_actor(
+                    ActorContext {
+                        actor: "blocked".to_string(),
+                        capabilities: BTreeSet::new(),
+                    }
+                    .with_runtime_capability(RuntimeCapability::Eval),
+                )
+                .with_policy(DenyActorActionPolicy {
+                    actor: "blocked",
+                    action: ActionKind::Read,
+                }),
+        );
+        assert!(matches!(
+            denied,
+            EvalError::PolicyDenied {
+                actor,
+                action,
+            } if actor == "blocked" && action.kind() == ActionKind::Read
+        ));
+
+        let output = evaluate_query_output_with_options(
+            r#"? read("alpha.md", 9, span_id, text, start_line, end_line, tokens)."#,
+            content_database(),
+            EvalOptions::default()
+                .with_actor(
+                    ActorContext {
+                        actor: "allowed".to_string(),
+                        capabilities: BTreeSet::new(),
+                    }
+                    .with_runtime_capability(RuntimeCapability::Eval),
+                )
+                .with_policy(DenyActorActionPolicy {
+                    actor: "blocked",
+                    action: ActionKind::Read,
+                }),
+        );
+        assert_eq!(output.rows.len(), 2);
+    }
+
+    #[test]
+    fn policy_actions_include_resource_targets() {
+        let denied = evaluate_query_error_with_options(
+            r#"? read("alpha.md", 9, span_id, text, start_line, end_line, tokens)."#,
+            content_database(),
+            EvalOptions::default().with_policy(DenyReadHandlePolicy("alpha.md")),
+        );
+        assert!(matches!(
+            denied,
+            EvalError::PolicyDenied {
+                action: Action::Read { handle },
+                ..
+            } if handle == "alpha.md"
+        ));
+
+        let output = evaluate_query_output_with_options(
+            r#"? read("beta.md", 10, "shared", text, start_line, end_line, tokens)."#,
+            content_database(),
+            EvalOptions::default().with_policy(DenyReadHandlePolicy("alpha.md")),
+        );
+        assert_eq!(output.rows.len(), 1);
+    }
+
+    #[test]
+    fn eval_action_authorization_distinguishes_capability_and_policy() {
+        let missing = EvalOptions::default()
+            .with_actor(ActorContext::anonymous_mcp())
+            .authorize_eval()
+            .expect_err("eval capability is required");
+        assert!(matches!(
+            missing,
+            EvalError::CapabilityRequired {
+                primitive: "eval",
+                capability: RuntimeCapability::Eval,
+            }
+        ));
+
+        let denied = EvalOptions::default()
+            .with_capability(RuntimeCapability::Eval)
+            .with_policy(DenyActionPolicy(ActionKind::Eval))
+            .authorize_eval()
+            .expect_err("policy can deny eval after capability passes");
+        assert!(matches!(
+            denied,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Eval
+        ));
+
+        EvalOptions::default()
+            .with_capability(RuntimeCapability::Eval)
+            .authorize_eval()
+            .expect("default policy allows eval once capability is present");
+    }
+
+    #[test]
+    fn evaluator_entrypoints_enforce_eval_policy() {
+        let program = parse_program("inline", r"? *handle{id: h}.").expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query present");
+        let mut evaluator = Evaluator::with_options(
+            analyzed,
+            content_database(),
+            EvalOptions::default().with_policy(DenyActionPolicy(ActionKind::Eval)),
+        );
+
+        let fixpoint_err = evaluator
+            .run_fixpoint()
+            .expect_err("run_fixpoint is eval-gated");
+        assert!(matches!(
+            fixpoint_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Eval
+        ));
+
+        let query_err = evaluator
+            .eval_query(&query)
+            .expect_err("eval_query is eval-gated");
+        assert!(matches!(
+            query_err,
+            EvalError::PolicyDenied {
+                action,
+                ..
+            } if action.kind() == ActionKind::Eval
+        ));
     }
 
     #[derive(Debug)]
