@@ -54,6 +54,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
+anneal-cli = { version = "0.10.1", path = "crates/anneal-cli" }
 anneal-legacy = { version = "0.10.1", path = "crates/anneal-legacy" }
 
 [profile.release]

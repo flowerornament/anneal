@@ -4,6 +4,7 @@
 //! foundation checkpoint. This crate is the destination for the v2
 //! surface once the shared runtime is wired.
 
+pub mod app;
 mod context;
 
 pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;

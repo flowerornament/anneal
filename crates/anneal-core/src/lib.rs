@@ -15,6 +15,7 @@ pub mod project;
 pub mod ranking;
 pub mod retrieval;
 pub mod runtime;
+pub mod runtime_config;
 pub mod source;
 pub mod store;
 mod time;
@@ -40,7 +41,10 @@ pub use policy::{
     Action, ActionKind, AllowAllPolicy, AuthorizationError, Policy, PolicyDecision,
     authorize_action, authorize_capability_action, authorize_trail_private,
 };
-pub use project::{PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, load_project_extension};
+pub use project::{
+    PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, ShadowWarning, load_project_extension,
+    merge_program_layers,
+};
 pub use ranking::{
     DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
 };
@@ -48,6 +52,9 @@ pub use retrieval::{
     ContentProvider, ReadChunk, ReadChunkParts, ReadContext, ReadError, ReadFullContent,
     ReadFullRequest, ReadRequest, RetrievalContext, SearchContext, SearchError, SearchProvider,
     SearchRequest, SearchSpanScope,
+};
+pub use runtime_config::{
+    RuntimeConfigError, load_runtime_configs, load_runtime_configs_if_present,
 };
 pub use source::{
     ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,

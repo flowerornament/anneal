@@ -5,6 +5,7 @@ use std::fmt;
 use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::prelude::{ContextQueryArgs, render_context_query};
 use anneal_core::runtime::{Row, Value};
+use serde::Serialize;
 
 pub const DEFAULT_CONTEXT_BUDGET: i64 = 4_000;
 pub const DEFAULT_CONTEXT_HITS: usize = 3;
@@ -74,7 +75,7 @@ impl ContextCommand {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ContextOutput {
     pub goal: String,
     pub hits: Vec<ContextHit>,
@@ -157,7 +158,7 @@ impl ContextOutput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ContextHit {
     pub handle: String,
     pub span_id: Option<String>,
@@ -166,7 +167,7 @@ pub struct ContextHit {
     pub field: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ContextSpan {
     pub handle: String,
     pub span_id: String,
@@ -176,7 +177,7 @@ pub struct ContextSpan {
     pub text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ContextNeighbor {
     pub handle: String,
     pub neighbor: String,

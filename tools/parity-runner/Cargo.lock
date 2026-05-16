@@ -26,6 +26,10 @@ version = "0.10.1"
 dependencies = [
  "anneal-core",
  "anneal-md",
+ "anyhow",
+ "camino",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -38,6 +42,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -437,7 +442,6 @@ dependencies = [
  "anyhow",
  "camino",
  "serde_json",
- "toml",
 ]
 
 [[package]]

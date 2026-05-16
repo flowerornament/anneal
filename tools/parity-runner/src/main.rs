@@ -12,11 +12,11 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigFact, ConfigFacts, CorpusId, FactBatch, FactStore,
-    Generation, Source, SourceContext,
+    Generation, Source, SourceContext, load_runtime_configs,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use serde_json::{Value as JsonValue, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -971,131 +971,6 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
         batch,
         configs,
     })
-}
-
-fn load_runtime_configs(root: &Utf8Path, corpus: &CorpusId) -> Result<Vec<ConfigFact>> {
-    let path = root.join("anneal.toml");
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read runtime config {path}"))?;
-    let value = text
-        .parse::<toml::Value>()
-        .with_context(|| format!("failed to parse runtime config {path}"))?;
-    let mut configs = Vec::new();
-    if let Some(convergence) = value.get("convergence").and_then(toml::Value::as_table) {
-        push_string_array(
-            &mut configs,
-            corpus,
-            convergence,
-            "active",
-            "convergence.active",
-        )?;
-        push_string_array(
-            &mut configs,
-            corpus,
-            convergence,
-            "terminal",
-            "convergence.terminal",
-        )?;
-        push_ordered_string_array(
-            &mut configs,
-            corpus,
-            convergence,
-            "ordering",
-            "convergence.ordering",
-        )?;
-    }
-    if let Some(handles) = value.get("handles").and_then(toml::Value::as_table) {
-        push_string_array(
-            &mut configs,
-            corpus,
-            handles,
-            "confirmed",
-            "handles.confirmed",
-        )?;
-        push_string_array(
-            &mut configs,
-            corpus,
-            handles,
-            "rejected",
-            "handles.rejected",
-        )?;
-        push_string_array(&mut configs, corpus, handles, "linear", "handles.linear")?;
-    }
-    if let Some(freshness) = value.get("freshness").and_then(toml::Value::as_table) {
-        push_integer_config(&mut configs, corpus, freshness, "warn", "freshness.warn")?;
-        push_integer_config(&mut configs, corpus, freshness, "error", "freshness.error")?;
-    }
-    Ok(configs)
-}
-
-fn push_string_array(
-    configs: &mut Vec<ConfigFact>,
-    corpus: &CorpusId,
-    table: &toml::value::Table,
-    field: &str,
-    key: &str,
-) -> Result<()> {
-    let Some(values) = table.get(field).and_then(toml::Value::as_array) else {
-        return Ok(());
-    };
-    for value in values {
-        let value = value
-            .as_str()
-            .with_context(|| format!("{field} contains a non-string value"))?;
-        configs.push(ConfigFact {
-            corpus: corpus.clone(),
-            key: key.to_string(),
-            value: value.to_string(),
-            ordinal: None,
-        });
-    }
-    Ok(())
-}
-
-fn push_ordered_string_array(
-    configs: &mut Vec<ConfigFact>,
-    corpus: &CorpusId,
-    table: &toml::value::Table,
-    field: &str,
-    key: &str,
-) -> Result<()> {
-    let Some(values) = table.get(field).and_then(toml::Value::as_array) else {
-        return Ok(());
-    };
-    for (idx, value) in values.iter().enumerate() {
-        let value = value
-            .as_str()
-            .with_context(|| format!("{field} contains a non-string value"))?;
-        configs.push(ConfigFact {
-            corpus: corpus.clone(),
-            key: key.to_string(),
-            value: value.to_string(),
-            ordinal: Some(u32::try_from(idx).context("ordered config index overflowed u32")?),
-        });
-    }
-    Ok(())
-}
-
-fn push_integer_config(
-    configs: &mut Vec<ConfigFact>,
-    corpus: &CorpusId,
-    table: &toml::value::Table,
-    field: &str,
-    key: &str,
-) -> Result<()> {
-    let Some(value) = table.get(field) else {
-        return Ok(());
-    };
-    let value = value
-        .as_integer()
-        .with_context(|| format!("{field} contains a non-integer value"))?;
-    configs.push(ConfigFact {
-        corpus: corpus.clone(),
-        key: key.to_string(),
-        value: value.to_string(),
-        ordinal: None,
-    });
-    Ok(())
 }
 
 fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandResult> {

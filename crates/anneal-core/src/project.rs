@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::runtime::analysis::{StaticError, analyze};
-use crate::runtime::ast::{Expr, Head, Literal, NumberLiteral, Program, Statement, Term};
+use crate::runtime::ast::{
+    Expr, Head, Literal, NumberLiteral, Program, SourceLocation, Statement, Term,
+};
 use crate::runtime::loader::{LoadError, load_program};
 use crate::runtime::parser::ParseError;
 use crate::source::{ConfigEntry, ConfigFacts, SourceInfo};
@@ -39,6 +41,82 @@ pub fn load_project_extension(
     let (discovery, program) = split_project_program(loaded, sources)?;
     validate_verbs(&program, base_program)?;
     Ok(ProjectExtension { discovery, program })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShadowWarning {
+    pub predicate: String,
+    pub location: SourceLocation,
+    pub replaced_clauses: usize,
+}
+
+pub fn merge_program_layers(base: Program, extension: Program) -> (Program, Vec<ShadowWarning>) {
+    let shadowed = shadowed_predicates(&extension);
+    if shadowed.is_empty() {
+        let mut statements = base.statements;
+        statements.extend(extension.statements);
+        return (Program::new(statements), Vec::new());
+    }
+
+    let mut replaced = BTreeMap::<String, usize>::new();
+    let mut statements = Vec::new();
+    for statement in base.statements {
+        if let Some(predicate) = statement_defined_predicate(&statement)
+            && shadowed.contains_key(&predicate)
+        {
+            *replaced.entry(predicate).or_default() += 1;
+            continue;
+        }
+        statements.push(statement);
+    }
+    statements.extend(extension.statements);
+
+    let warnings = shadowed
+        .into_iter()
+        .filter_map(|(predicate, location)| {
+            replaced
+                .get(&predicate)
+                .copied()
+                .map(|replaced_clauses| ShadowWarning {
+                    predicate,
+                    location,
+                    replaced_clauses,
+                })
+        })
+        .collect();
+    (Program::new(statements), warnings)
+}
+
+fn shadowed_predicates(program: &Program) -> BTreeMap<String, SourceLocation> {
+    let mut shadowed = BTreeMap::new();
+    for statement in &program.statements {
+        if let Some((predicate, location)) = statement_definition(statement) {
+            shadowed.entry(predicate).or_insert(location);
+        }
+    }
+    shadowed
+}
+
+fn statement_defined_predicate(statement: &Statement) -> Option<String> {
+    statement_definition(statement).map(|(predicate, _)| predicate)
+}
+
+fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation)> {
+    match statement {
+        Statement::Fact(head) | Statement::OptionalFact(head) => {
+            Some((head.predicate.display_name(), head.location.clone()))
+        }
+        Statement::Rule(rule) => Some((
+            rule.head.predicate.display_name(),
+            rule.head.location.clone(),
+        )),
+        Statement::Doc(doc) => Some((doc.name().to_string(), doc.location().clone())),
+        Statement::Query(_)
+        | Statement::Include(_)
+        | Statement::Import(_)
+        | Statement::AtBlock { .. }
+        | Statement::Verb(_) => None,
+    }
 }
 
 fn split_project_program(
@@ -630,6 +708,52 @@ mod tests {
             work_rows[0].fields.get("query"),
             Some(&Value::String("? project_seed(h).".to_string()))
         );
+    }
+
+    #[test]
+    fn merge_program_layers_replaces_earlier_predicate_definitions() {
+        let base = parse_program(
+            "base",
+            r#"
+            @doc(name: "blocked", doc: "base blocked").
+            blocked("base").
+            blocked(h) := active(h).
+            active("x").
+            "#,
+        )
+        .expect("base parses");
+        let extension = parse_program(
+            PROJECT_RULE_FILE,
+            r#"
+            @doc(name: "blocked", doc: "project blocked").
+            blocked("project").
+            "#,
+        )
+        .expect("extension parses");
+
+        let (merged, warnings) = merge_program_layers(base, extension);
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].predicate, "blocked");
+        assert_eq!(warnings[0].replaced_clauses, 3);
+        let blocked_count = merged
+            .statements
+            .iter()
+            .filter(|statement| match statement {
+                Statement::Fact(head) => head.predicate.display_name() == "blocked",
+                Statement::Rule(rule) => rule.head.predicate.display_name() == "blocked",
+                Statement::Doc(doc) => doc.name() == "blocked",
+                _ => false,
+            })
+            .count();
+        assert_eq!(blocked_count, 2);
+        assert!(merged.facts().any(|head| {
+            head.predicate.display_name() == "active"
+                && matches!(
+                    head.terms.as_slice(),
+                    [Term::Expr(Expr::Literal(Literal::String(value)))] if value == "x"
+                )
+        }));
     }
 
     #[test]

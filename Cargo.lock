@@ -24,6 +24,7 @@ dependencies = [
 name = "anneal"
 version = "0.10.1"
 dependencies = [
+ "anneal-cli",
  "anneal-legacy",
 ]
 
@@ -33,7 +34,9 @@ version = "0.10.1"
 dependencies = [
  "anneal-core",
  "anneal-md",
+ "anyhow",
  "camino",
+ "serde",
  "serde_json",
 ]
 
@@ -48,6 +51,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
