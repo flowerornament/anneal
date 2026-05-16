@@ -38,8 +38,8 @@ pub use retrieval::{
     SearchRequest, SearchSpanScope,
 };
 pub use source::{
-    Action, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
-    RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
+    Action, ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey,
+    Pattern, RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
     SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};

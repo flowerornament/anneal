@@ -839,6 +839,12 @@ all capabilities; MCP starts with a conservative default; host-embed
 sets explicitly. The `Policy` trait (§6) overrides any of the above
 per project.
 
+Runtime code treats capabilities as typed `ActorCapability` values
+and serializes them as strings only at host/surface boundaries. The
+built-in constructors are explicit: trusted local CLI actors carry
+all runtime capabilities plus private fact visibility; conservative
+MCP actors carry none until the MCP surface or host grants them.
+
 **Definition CR-D53 (Fact visibility boundary).** Authorization is
 not only a surface action gate. The fact store carries an evaluation
 visibility envelope for source-derived rows. Relation schemas do not

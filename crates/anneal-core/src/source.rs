@@ -131,12 +131,42 @@ pub enum RuntimeCapability {
 }
 
 impl RuntimeCapability {
+    pub const ALL: [Self; 3] = [Self::ReadFull, Self::Eval, Self::TrailPrivate];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadFull => "read_full",
             Self::Eval => "eval",
             Self::TrailPrivate => "trail_private",
         }
+    }
+}
+
+/// Typed actor capability understood by the runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ActorCapability {
+    Runtime(RuntimeCapability),
+    FactVisibility(FactVisibility),
+}
+
+impl ActorCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Runtime(capability) => capability.as_str(),
+            Self::FactVisibility(FactVisibility::Public) => "visibility:public",
+            Self::FactVisibility(FactVisibility::Team) => {
+                ActorContext::TEAM_FACT_VISIBILITY_CAPABILITY
+            }
+            Self::FactVisibility(FactVisibility::Private) => {
+                ActorContext::PRIVATE_FACT_VISIBILITY_CAPABILITY
+            }
+        }
+    }
+}
+
+impl fmt::Display for ActorCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -157,43 +187,60 @@ impl ActorContext {
         }
     }
 
-    pub fn with_runtime_capability(mut self, capability: RuntimeCapability) -> Self {
-        self.capabilities.insert(capability.as_str().to_string());
+    pub fn trusted_cli() -> Self {
+        Self::anonymous_cli()
+            .with_runtime_capability(RuntimeCapability::ReadFull)
+            .with_runtime_capability(RuntimeCapability::Eval)
+            .with_runtime_capability(RuntimeCapability::TrailPrivate)
+            .with_fact_visibility_capability(FactVisibility::Private)
+    }
+
+    pub fn anonymous_mcp() -> Self {
+        Self {
+            actor: "anonymous-mcp".to_string(),
+            capabilities: BTreeSet::new(),
+        }
+    }
+
+    pub fn with_actor_capability(mut self, capability: ActorCapability) -> Self {
+        if capability != ActorCapability::FactVisibility(FactVisibility::Public) {
+            self.capabilities.insert(capability.as_str().to_string());
+        }
         self
     }
 
+    pub fn with_runtime_capability(self, capability: RuntimeCapability) -> Self {
+        self.with_actor_capability(ActorCapability::Runtime(capability))
+    }
+
     pub fn has_runtime_capability(&self, capability: RuntimeCapability) -> bool {
-        self.has_capability(capability.as_str())
+        self.has_actor_capability(ActorCapability::Runtime(capability))
     }
 
     pub fn has_capability(&self, capability: &str) -> bool {
         self.capabilities.contains(capability)
     }
 
-    pub fn with_fact_visibility_capability(mut self, visibility: FactVisibility) -> Self {
-        match visibility {
-            FactVisibility::Public => {}
-            FactVisibility::Team => {
-                self.capabilities
-                    .insert(Self::TEAM_FACT_VISIBILITY_CAPABILITY.to_string());
-            }
-            FactVisibility::Private => {
-                self.capabilities
-                    .insert(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY.to_string());
-            }
-        }
-        self
+    pub fn has_actor_capability(&self, capability: ActorCapability) -> bool {
+        capability == ActorCapability::FactVisibility(FactVisibility::Public)
+            || self.has_capability(capability.as_str())
+    }
+
+    pub fn with_fact_visibility_capability(self, visibility: FactVisibility) -> Self {
+        self.with_actor_capability(ActorCapability::FactVisibility(visibility))
     }
 
     pub fn can_see_fact_visibility(&self, visibility: FactVisibility) -> bool {
         match visibility {
             FactVisibility::Public => true,
             FactVisibility::Team => {
-                self.has_capability(Self::TEAM_FACT_VISIBILITY_CAPABILITY)
-                    || self.has_capability(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY)
+                self.has_actor_capability(ActorCapability::FactVisibility(FactVisibility::Team))
+                    || self.has_actor_capability(ActorCapability::FactVisibility(
+                        FactVisibility::Private,
+                    ))
             }
             FactVisibility::Private => {
-                self.has_capability(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY)
+                self.has_actor_capability(ActorCapability::FactVisibility(FactVisibility::Private))
             }
         }
     }
@@ -454,6 +501,23 @@ mod tests {
         };
         assert!(caps.supports_time_ref(&TimeRef::GitRef("HEAD~3".to_string())));
         assert!(!caps.supports_time_ref(&TimeRef::Snapshot("snapshot:last".to_string())));
+    }
+
+    #[test]
+    fn actor_capabilities_have_typed_runtime_and_visibility_helpers() {
+        let actor = ActorContext::anonymous_mcp()
+            .with_actor_capability(ActorCapability::Runtime(RuntimeCapability::ReadFull))
+            .with_actor_capability(ActorCapability::FactVisibility(FactVisibility::Team));
+
+        assert!(actor.has_runtime_capability(RuntimeCapability::ReadFull));
+        assert!(actor.can_see_fact_visibility(FactVisibility::Public));
+        assert!(actor.can_see_fact_visibility(FactVisibility::Team));
+        assert!(!actor.can_see_fact_visibility(FactVisibility::Private));
+        assert!(ActorContext::trusted_cli().has_runtime_capability(RuntimeCapability::Eval));
+        assert!(
+            ActorContext::trusted_cli().has_runtime_capability(RuntimeCapability::TrailPrivate)
+        );
+        assert!(ActorContext::trusted_cli().can_see_fact_visibility(FactVisibility::Private));
     }
 
     #[test]
