@@ -54,5 +54,6 @@ pub use trail::{
     JsonlTrailStore, TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError,
     TrailGeneration, TrailQuery, TrailRecorder, TrailRedactor, TrailRefKind, TrailReference,
     TrailSessionId, TrailSessionIdError, TrailStore, TrailSummarizer, TrailSummary,
+    summarize_trail_session,
 };
 pub use visibility::FactVisibility;

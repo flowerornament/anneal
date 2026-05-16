@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
+use crate::facts::StoredRelationDescriptor;
 use crate::hash::fnv1a_64;
 use crate::ids::{CorpusId, Generation, SourceName};
 use crate::policy::{AllowAllPolicy, AuthorizationError, Policy, authorize_trail_private};
@@ -14,6 +15,52 @@ use crate::visibility::FactVisibility;
 
 static DEFAULT_TRAIL_POLICY: AllowAllPolicy = AllowAllPolicy;
 pub const DEFAULT_TRAIL_QUERY_LIMIT: usize = 1_000;
+pub const TRAIL_RELATION: &str = "trail";
+pub const TRAIL_REF_RELATION: &str = "trail_ref";
+pub const TRAIL_GENERATION_RELATION: &str = "trail_generation";
+
+pub(crate) const TRAIL_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
+    StoredRelationDescriptor {
+        name: TRAIL_RELATION,
+        fields: &[
+            "session_id",
+            "step",
+            "timestamp",
+            "actor",
+            "corpus",
+            "verb",
+            "redacted_expr",
+            "input_hash",
+            "prelude_hash",
+            "visibility",
+            "retention",
+        ],
+        doc: "Runtime-populated redacted trail audit rows for agent/session paths.",
+        provenance: "runtime",
+    },
+    StoredRelationDescriptor {
+        name: TRAIL_REF_RELATION,
+        fields: &[
+            "session_id",
+            "step",
+            "kind",
+            "ordinal",
+            "corpus",
+            "source",
+            "handle",
+            "span_id",
+            "score",
+        ],
+        doc: "Runtime-populated normalized surfaced and consumed references for trail steps.",
+        provenance: "runtime",
+    },
+    StoredRelationDescriptor {
+        name: TRAIL_GENERATION_RELATION,
+        fields: &["session_id", "step", "corpus", "source", "generation"],
+        doc: "Runtime-populated source generation stamps for trail steps.",
+        provenance: "runtime",
+    },
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -281,6 +328,19 @@ pub trait TrailStore {
         request: TrailQuery,
         ctx: &TrailContext<'_>,
     ) -> Result<Vec<TrailEntryRedacted>, TrailError>;
+}
+
+pub fn summarize_trail_session(
+    store: &dyn TrailStore,
+    session_id: &TrailSessionId,
+    include_private: bool,
+    summarizer: &dyn TrailSummarizer,
+    ctx: &TrailContext<'_>,
+) -> Result<TrailSummary, TrailError> {
+    let request =
+        TrailQuery::for_valid_session(session_id.clone()).include_private(include_private);
+    let entries = store.query(request, ctx)?;
+    Ok(summarizer.summarize(session_id, &entries, ctx))
 }
 
 #[derive(Clone, Debug)]

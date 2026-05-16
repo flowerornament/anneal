@@ -46,6 +46,12 @@ use crate::time::{
     current_days_since_epoch, iso_days_since_epoch, relative_days_reference,
     snapshot_days_since_epoch,
 };
+use crate::trail::{
+    TRAIL_GENERATION_RELATION, TRAIL_REF_RELATION, TRAIL_RELATION, TrailContext,
+    TrailEntryRedacted, TrailError, TrailGeneration, TrailQuery, TrailRefKind, TrailReference,
+    TrailStore,
+};
+use crate::visibility::FactVisibility;
 
 pub type Binding = BTreeMap<Ident, Value>;
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
@@ -460,6 +466,25 @@ impl Database {
         self.insert_named_rows(&relation.into(), rows);
     }
 
+    pub fn with_trail_store(
+        mut self,
+        store: &dyn TrailStore,
+        request: TrailQuery,
+        options: &EvalOptions,
+    ) -> Result<Self, TrailError> {
+        self.ensure_trail_relations();
+        let ctx = TrailContext::new(options.actor(), options.policy.as_ref());
+        let entries = store.query(request, &ctx)?;
+        self.insert_trail_entries(entries);
+        Ok(self)
+    }
+
+    fn insert_trail_entries(&mut self, entries: impl IntoIterator<Item = TrailEntryRedacted>) {
+        for entry in entries {
+            self.insert_trail_entry(&entry);
+        }
+    }
+
     pub fn derived(&self, predicate: &PredicateRef) -> Option<&BTreeSet<Tuple>> {
         self.derived.get(predicate).map(DerivedRelation::tuples)
     }
@@ -474,6 +499,52 @@ impl Database {
         self.search_provider
             .as_deref()
             .unwrap_or_else(|| self.search.as_ref())
+    }
+
+    fn insert_trail_entry(&mut self, entry: &TrailEntryRedacted) {
+        self.insert_named_rows(TRAIL_RELATION, [trail_row(entry)]);
+        self.insert_named_rows(
+            TRAIL_REF_RELATION,
+            entry
+                .surfaced_refs
+                .iter()
+                .take(MAX_TRAIL_REFS_PER_ENTRY)
+                .enumerate()
+                .map(|(ordinal, reference)| {
+                    trail_ref_row(entry, TrailRefKind::Surfaced, ordinal, reference)
+                })
+                .chain(
+                    entry
+                        .consumed_refs
+                        .iter()
+                        .take(MAX_TRAIL_REFS_PER_ENTRY)
+                        .enumerate()
+                        .map(|(ordinal, reference)| {
+                            trail_ref_row(entry, TrailRefKind::Consumed, ordinal, reference)
+                        }),
+                ),
+        );
+        self.insert_named_rows(
+            TRAIL_GENERATION_RELATION,
+            entry
+                .source_generations
+                .iter()
+                .take(MAX_TRAIL_GENERATIONS_PER_ENTRY)
+                .map(|generation| trail_generation_row(entry, generation)),
+        );
+    }
+
+    fn ensure_trail_relations(&mut self) {
+        for relation in [
+            TRAIL_RELATION,
+            TRAIL_REF_RELATION,
+            TRAIL_GENERATION_RELATION,
+        ] {
+            let relation = Ident::new_unchecked(relation);
+            self.stored
+                .entry(relation.clone())
+                .or_insert_with(|| StoredRelation::new(relation));
+        }
     }
 
     fn search_tuples(
@@ -2331,9 +2402,17 @@ const KEY_FIELD: &str = "key";
 const VALUE_FIELD: &str = "value";
 const ORDINAL_FIELD: &str = "ordinal";
 const AT_FIELD: &str = "at";
+const SESSION_ID_FIELD: &str = "session_id";
+const STEP_FIELD: &str = "step";
+const ACTOR_FIELD: &str = "actor";
+const VERB_FIELD: &str = "verb";
+const GENERATION_FIELD: &str = "generation";
+const TRAIL_VISIBILITY_FIELD: &str = "visibility";
 const LABEL_KIND: &str = "label";
 const CITES_EDGE_KIND: &str = "Cites";
 const DISCHARGES_EDGE_KIND: &str = "Discharges";
+const MAX_TRAIL_REFS_PER_ENTRY: usize = 256;
+const MAX_TRAIL_GENERATIONS_PER_ENTRY: usize = 64;
 const CONFIG_ACTIVE_STATUS: &str = "convergence.active";
 const CONFIG_TERMINAL_STATUS: &str = "convergence.terminal";
 const CONFIG_SETTLED_STATUS: &str = "convergence.settled";
@@ -2445,12 +2524,31 @@ fn float_value(value: f64) -> Value {
 }
 
 fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
-    !matches!(
-        (relation.as_str(), field.as_str()),
-        ("content", "text")
-            | ("span" | "handle", "summary")
-            | ("meta" | "config" | "snapshot", "value")
-    )
+    match (relation.as_str(), field.as_str()) {
+        (
+            TRAIL_RELATION,
+            SESSION_ID_FIELD
+            | STEP_FIELD
+            | ACTOR_FIELD
+            | CORPUS_FIELD
+            | VERB_FIELD
+            | TRAIL_VISIBILITY_FIELD,
+        )
+        | (
+            TRAIL_REF_RELATION,
+            SESSION_ID_FIELD | STEP_FIELD | KIND_FIELD | CORPUS_FIELD | SOURCE_FIELD | HANDLE_FIELD
+            | SPAN_ID_FIELD,
+        )
+        | (
+            TRAIL_GENERATION_RELATION,
+            SESSION_ID_FIELD | STEP_FIELD | CORPUS_FIELD | SOURCE_FIELD | GENERATION_FIELD,
+        ) => true,
+        (TRAIL_RELATION | TRAIL_REF_RELATION | TRAIL_GENERATION_RELATION, _)
+        | ("content", "text")
+        | ("span" | "handle", "summary")
+        | ("meta" | "config" | "snapshot", "value") => false,
+        _ => true,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3129,7 +3227,7 @@ fn eval_atom(
     options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     match atom {
-        Atom::Stored(stored) => eval_stored(stored, bindings, database),
+        Atom::Stored(stored) => eval_stored(stored, bindings, database, options),
         Atom::Derived(derived) => {
             if let Some(view) = delta {
                 eval_derived_from_delta(derived, bindings, view.delta)
@@ -3253,6 +3351,7 @@ fn eval_stored(
     atom: &StoredAtom,
     bindings: Vec<Binding>,
     database: &Database,
+    options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
     let relation =
         database
@@ -3265,12 +3364,38 @@ fn eval_stored(
     for binding in bindings {
         let constraints = stored_constraints(&atom.fields, &binding)?;
         for row in relation.candidate_rows(&constraints) {
+            if !stored_row_visible(&atom.relation, row, options) {
+                continue;
+            }
             if let Some(next) = unify_stored_fields(&atom.fields, row, &binding)? {
                 out.push(next);
             }
         }
     }
     Ok(out)
+}
+
+fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -> bool {
+    if !matches!(
+        relation.as_str(),
+        TRAIL_RELATION | TRAIL_REF_RELATION | TRAIL_GENERATION_RELATION
+    ) {
+        return true;
+    }
+    match row_string(row, TRAIL_VISIBILITY_FIELD) {
+        Some("private") => {
+            options
+                .actor()
+                .can_see_fact_visibility(FactVisibility::Private)
+                && options.has_capability(RuntimeCapability::TrailPrivate)
+                && options.authorize(Action::TrailPrivateRead).is_ok()
+        }
+        Some("team") => options
+            .actor()
+            .can_see_fact_visibility(FactVisibility::Team),
+        Some("public") | None => true,
+        Some(_) => false,
+    }
 }
 
 fn eval_derived(
@@ -4154,6 +4279,72 @@ fn opt_string(value: Option<&String>) -> Value {
     value.cloned().map_or(Value::Null, Value::String)
 }
 
+fn u64_value(value: u64) -> Value {
+    int_value(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+fn usize_value(value: usize) -> Value {
+    int_value(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+fn score_value(score: Option<f32>) -> Value {
+    score.map_or(Value::Null, |score| {
+        if score.is_finite() && (0.0..=1.0).contains(&score) {
+            float_value(f64::from(score))
+        } else {
+            Value::Null
+        }
+    })
+}
+
+fn trail_row(entry: &TrailEntryRedacted) -> NamedRow {
+    named_row([
+        ("session_id", Value::String(entry.session_id.to_string())),
+        ("step", u64_value(entry.step)),
+        ("timestamp", Value::String(entry.timestamp.clone())),
+        ("actor", Value::String(entry.actor.clone())),
+        ("corpus", Value::String(entry.corpus.to_string())),
+        ("verb", Value::String(entry.verb.clone())),
+        ("redacted_expr", Value::String(entry.redacted_expr.clone())),
+        ("input_hash", Value::String(entry.input_hash.clone())),
+        ("prelude_hash", Value::String(entry.prelude_hash.clone())),
+        (
+            "visibility",
+            Value::String(entry.visibility.as_str().to_string()),
+        ),
+        ("retention", opt_string(entry.retention.as_ref())),
+    ])
+}
+
+fn trail_ref_row(
+    entry: &TrailEntryRedacted,
+    kind: TrailRefKind,
+    ordinal: usize,
+    reference: &TrailReference,
+) -> NamedRow {
+    named_row([
+        ("session_id", Value::String(entry.session_id.to_string())),
+        ("step", u64_value(entry.step)),
+        ("kind", Value::String(kind.as_str().to_string())),
+        ("ordinal", usize_value(ordinal)),
+        ("corpus", Value::String(reference.corpus.to_string())),
+        ("source", Value::String(reference.source.to_string())),
+        ("handle", Value::String(reference.handle.clone())),
+        ("span_id", opt_string(reference.span_id.as_ref())),
+        ("score", score_value(reference.score)),
+    ])
+}
+
+fn trail_generation_row(entry: &TrailEntryRedacted, generation: &TrailGeneration) -> NamedRow {
+    named_row([
+        ("session_id", Value::String(entry.session_id.to_string())),
+        ("step", u64_value(entry.step)),
+        ("corpus", Value::String(generation.corpus.to_string())),
+        ("source", Value::String(generation.source.to_string())),
+        ("generation", generation_value(generation.generation)),
+    ])
+}
+
 fn handle_row(fact: &HandleFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -4331,11 +4522,19 @@ mod tests {
     use std::fmt::Write as _;
     use std::sync::OnceLock;
 
+    use camino::Utf8PathBuf;
+    use tempfile::{TempDir, tempdir};
+
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
+    use crate::trail::{
+        DefaultTrailRedactor, DefaultTrailSummarizer, JsonlTrailStore, TrailEntryInProgress,
+        TrailGeneration, TrailQuery, TrailRedactor, TrailReference, TrailSessionId, TrailStore,
+        summarize_trail_session,
+    };
     use crate::visibility::FactVisibility;
 
     fn identity(native_id: &str) -> FactIdentity {
@@ -4712,6 +4911,48 @@ mod tests {
             actor: "restricted".to_string(),
             capabilities: BTreeSet::new(),
         }
+    }
+
+    fn trail_session_id(value: &str) -> TrailSessionId {
+        TrailSessionId::new(value).expect("valid trail session id")
+    }
+
+    fn trail_fixture_entry(session_id: &str, step: u64, expr: &str) -> TrailEntryInProgress {
+        TrailEntryInProgress {
+            session_id: trail_session_id(session_id),
+            step,
+            timestamp: "2026-05-16T00:00:00Z".to_string(),
+            corpus: CorpusId::from("test"),
+            verb: "-e".to_string(),
+            expr: expr.to_string(),
+            surfaced_refs: vec![TrailReference {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from("md"),
+                handle: "alpha.md".to_string(),
+                span_id: Some("body".to_string()),
+                score: Some(0.875),
+            }],
+            consumed_refs: vec![TrailReference {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from("md"),
+                handle: "beta.md".to_string(),
+                span_id: None,
+                score: None,
+            }],
+            prelude_hash: "prelude-v1".to_string(),
+            source_generations: vec![TrailGeneration {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from("md"),
+                generation: Generation::new(3),
+            }],
+            retention: None,
+        }
+    }
+
+    fn trail_store(temp: &TempDir) -> JsonlTrailStore {
+        JsonlTrailStore::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("trails")).expect("tempdir path is utf-8"),
+        )
     }
 
     fn multi_source_search_database() -> Database {
@@ -6524,6 +6765,382 @@ release_blocker(code) := issue(code, "error").
                 ("doc", s("Markdown source")),
             ])],
         );
+    }
+
+    #[test]
+    fn trail_store_projects_redacted_entries_into_relations() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let redactor = DefaultTrailRedactor::default();
+        let actor = ActorContext::anonymous_cli();
+        let ctx = TrailContext::from(&actor).with_visibility(FactVisibility::Public);
+        let options = EvalOptions::default();
+        store
+            .append(
+                redactor.redact(
+                    trail_fixture_entry("session-1", 1, r#"? read("alpha.md", span, text)."#),
+                    &ctx,
+                ),
+                &ctx,
+            )
+            .expect("append public trail row");
+
+        let database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &options,
+            )
+            .expect("trail rows load");
+        let outputs = evaluate_queries(
+            r#"
+? *trail{session_id, step, actor, redacted_expr, prelude_hash, visibility, retention}.
+? *trail_ref{session_id, step, kind, ordinal, handle, span_id, score}.
+? *trail_generation{session_id, step, corpus, source, generation}.
+? schema("trail_ref", kind, signature, determinism, provenance)."#,
+            database,
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("session_id", s("session-1")),
+                ("step", n(1)),
+                ("actor", s("anonymous-cli")),
+                ("redacted_expr", s(r#"? read("<redacted>", span, text)."#)),
+                ("prelude_hash", s("prelude-v1")),
+                ("visibility", s("public")),
+                ("retention", Value::Null),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![
+                row([
+                    ("session_id", s("session-1")),
+                    ("step", n(1)),
+                    ("kind", s("consumed")),
+                    ("ordinal", n(0)),
+                    ("handle", s("beta.md")),
+                    ("span_id", Value::Null),
+                    ("score", Value::Null),
+                ]),
+                row([
+                    ("session_id", s("session-1")),
+                    ("step", n(1)),
+                    ("kind", s("surfaced")),
+                    ("ordinal", n(0)),
+                    ("handle", s("alpha.md")),
+                    ("span_id", s("body")),
+                    ("score", f(0.875)),
+                ]),
+            ],
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([
+                ("session_id", s("session-1")),
+                ("step", n(1)),
+                ("corpus", s("test")),
+                ("source", s("md")),
+                ("generation", n(3)),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[3],
+            vec![row([
+                ("kind", s("stored")),
+                (
+                    "signature",
+                    s(
+                        "*trail_ref{session_id, step, kind, ordinal, corpus, source, handle, span_id, score}",
+                    ),
+                ),
+                ("determinism", s("input")),
+                ("provenance", s("runtime")),
+            ])],
+        );
+    }
+
+    #[test]
+    fn trail_projection_enforces_store_visibility() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let redactor = DefaultTrailRedactor::default();
+        let public_actor = ActorContext::anonymous_cli();
+        let public_ctx = TrailContext::from(&public_actor).with_visibility(FactVisibility::Public);
+        store
+            .append(
+                redactor.redact(
+                    trail_fixture_entry("session-1", 1, "? work(h)."),
+                    &public_ctx,
+                ),
+                &public_ctx,
+            )
+            .expect("append public trail row");
+        let private_actor = ActorContext::trusted_cli();
+        let private_ctx =
+            TrailContext::from(&private_actor).with_visibility(FactVisibility::Private);
+        store
+            .append(
+                redactor.redact(
+                    trail_fixture_entry("session-1", 2, "? blocked(h)."),
+                    &private_ctx,
+                ),
+                &private_ctx,
+            )
+            .expect("append private trail row");
+
+        let restricted = restricted_actor();
+        let restricted_options = EvalOptions::default().with_actor(
+            restricted
+                .clone()
+                .with_runtime_capability(RuntimeCapability::Eval),
+        );
+        let public_database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &restricted_options,
+            )
+            .expect("visible trail rows load");
+        let outputs = evaluate_queries(r"? *trail{session_id, step, visibility}.", public_database);
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("session_id", s("session-1")),
+                ("step", n(1)),
+                ("visibility", s("public")),
+            ])],
+        );
+
+        let err = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .include_private(true),
+                &restricted_options,
+            )
+            .expect_err("private trail load requires capability");
+        assert!(matches!(
+            err,
+            TrailError::Authorization(AuthorizationError::CapabilityRequired { .. })
+        ));
+
+        let private_options = EvalOptions::default().with_actor(private_actor.clone());
+        let private_database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .include_private(true),
+                &private_options,
+            )
+            .expect("private trail rows load for trusted actor");
+        let restricted_output = evaluate_query_output_with_options(
+            r"? *trail{session_id, step, visibility}.",
+            private_database.clone(),
+            restricted_options,
+        );
+        let mut rows = restricted_output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+        rows.sort();
+        assert_query_rows(
+            &rows,
+            vec![row([
+                ("session_id", s("session-1")),
+                ("step", n(1)),
+                ("visibility", s("public")),
+            ])],
+        );
+
+        let output = evaluate_query_output_with_options(
+            r"? *trail{session_id, step, visibility}.",
+            private_database,
+            private_options,
+        );
+        let mut rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+        rows.sort();
+        assert_query_rows(
+            &rows,
+            vec![
+                row([
+                    ("session_id", s("session-1")),
+                    ("step", n(1)),
+                    ("visibility", s("public")),
+                ]),
+                row([
+                    ("session_id", s("session-1")),
+                    ("step", n(2)),
+                    ("visibility", s("private")),
+                ]),
+            ],
+        );
+    }
+
+    #[test]
+    fn trail_summary_reads_from_store() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let redactor = DefaultTrailRedactor::default();
+        let actor = ActorContext::anonymous_cli();
+        let ctx = TrailContext::from(&actor).with_visibility(FactVisibility::Public);
+        store
+            .append(
+                redactor.redact(trail_fixture_entry("session-1", 1, "? work(h)."), &ctx),
+                &ctx,
+            )
+            .expect("append first trail row");
+        store
+            .append(
+                redactor.redact(trail_fixture_entry("session-1", 2, "? read(h)."), &ctx),
+                &ctx,
+            )
+            .expect("append second trail row");
+
+        let summary = summarize_trail_session(
+            &store,
+            &trail_session_id("session-1"),
+            false,
+            &DefaultTrailSummarizer,
+            &ctx,
+        )
+        .expect("summarize persisted trail");
+        assert_eq!(summary.session_id, trail_session_id("session-1"));
+        assert_eq!(summary.steps, 2);
+        assert_eq!(summary.consumed_refs, 2);
+    }
+
+    #[test]
+    fn empty_trail_projection_leaves_queryable_empty_relations() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("missing-session").expect("valid query"),
+                &EvalOptions::default(),
+            )
+            .expect("empty trail projection loads");
+        let outputs = evaluate_queries(
+            r"
+? *trail{session_id}.
+? *trail_ref{session_id}.
+? *trail_generation{session_id}.",
+            database,
+        );
+        assert_query_rows(&outputs[0], Vec::new());
+        assert_query_rows(&outputs[1], Vec::new());
+        assert_query_rows(&outputs[2], Vec::new());
+    }
+
+    #[test]
+    fn trail_projection_bounds_fanout_and_sanitizes_scores() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let redactor = DefaultTrailRedactor::default();
+        let actor = ActorContext::anonymous_cli();
+        let ctx = TrailContext::from(&actor).with_visibility(FactVisibility::Public);
+        let mut entry = trail_fixture_entry("session-1", 1, "? work(h).");
+        entry.surfaced_refs = (0..300)
+            .map(|idx| TrailReference {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from("md"),
+                handle: format!("surfaced-{idx}.md"),
+                span_id: None,
+                score: Some(if idx == 0 { f32::NAN } else { 0.5 }),
+            })
+            .collect();
+        entry.consumed_refs = (0..300)
+            .map(|idx| TrailReference {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from("md"),
+                handle: format!("consumed-{idx}.md"),
+                span_id: None,
+                score: Some(if idx == 0 { 1.5 } else { 0.25 }),
+            })
+            .collect();
+        entry.source_generations = (0..80)
+            .map(|idx| TrailGeneration {
+                corpus: CorpusId::from("test"),
+                source: SourceName::from(format!("source-{idx}")),
+                generation: Generation::new(idx + 1),
+            })
+            .collect();
+        store
+            .append(redactor.redact(entry, &ctx), &ctx)
+            .expect("append bounded fanout trail row");
+
+        let database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &EvalOptions::default(),
+            )
+            .expect("trail rows load");
+        let outputs = evaluate_queries(
+            r#"
+? surfaced = Count{ h : *trail_ref{kind: "surfaced", handle: h} }.
+? consumed = Count{ h : *trail_ref{kind: "consumed", handle: h} }.
+? generations = Count{ source : *trail_generation{source} }.
+? *trail_ref{handle: "surfaced-0.md", score}.
+? *trail_ref{handle: "consumed-0.md", score}.
+? *trail_ref{handle: "surfaced-1.md", score}."#,
+            database,
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([(
+                "surfaced",
+                n(i64::try_from(MAX_TRAIL_REFS_PER_ENTRY).expect("limit fits i64")),
+            )])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![row([(
+                "consumed",
+                n(i64::try_from(MAX_TRAIL_REFS_PER_ENTRY).expect("limit fits i64")),
+            )])],
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([(
+                "generations",
+                n(i64::try_from(MAX_TRAIL_GENERATIONS_PER_ENTRY).expect("limit fits i64")),
+            )])],
+        );
+        assert_query_rows(&outputs[3], vec![row([("score", Value::Null)])]);
+        assert_query_rows(&outputs[4], vec![row([("score", Value::Null)])]);
+        assert_query_rows(&outputs[5], vec![row([("score", f(0.5))])]);
+    }
+
+    #[test]
+    fn trail_relations_index_only_queryable_identity_fields() {
+        assert!(should_index_stored_field(
+            &Ident::new_unchecked(TRAIL_RELATION),
+            &Ident::new_unchecked(SESSION_ID_FIELD),
+        ));
+        assert!(should_index_stored_field(
+            &Ident::new_unchecked(TRAIL_REF_RELATION),
+            &Ident::new_unchecked(HANDLE_FIELD),
+        ));
+        assert!(!should_index_stored_field(
+            &Ident::new_unchecked(TRAIL_RELATION),
+            &Ident::new_unchecked("redacted_expr"),
+        ));
+        assert!(!should_index_stored_field(
+            &Ident::new_unchecked(TRAIL_REF_RELATION),
+            &Ident::new_unchecked("score"),
+        ));
     }
 
     #[test]

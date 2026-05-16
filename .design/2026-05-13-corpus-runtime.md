@@ -731,6 +731,23 @@ provenance feature. The storage API must not let host-provided session
 names escape `.anneal/trails`, forge audit fields, or turn normal trail
 queries into unbounded private-history scans.
 
+**Definition CR-D67 (Trail projection safety).** Loading persisted
+trail entries into Datalog relations is a second resource and privacy
+gate after `TrailStore::query`. The runtime must create empty
+`*trail`, `*trail_ref`, and `*trail_generation` relations for valid
+empty trail loads; must filter private trail rows against the
+evaluation actor as well as the store query actor; must bound
+normalized `*trail_ref` and `*trail_generation` fanout per entry; must
+avoid indexing high-cardinality payload fields such as
+`redacted_expr`, hashes, timestamps, retention, and scores; and must
+project non-finite or out-of-range scores as `null`.
+
+Rationale: `TrailQuery.limit` bounds JSONL entries, not normalized row
+fanout, and a materialized `Database` may outlive the actor context
+that loaded it. The relational projection must therefore remain safe
+when empty, when queried by a different actor, and when reading
+host-supplied or stale trail files.
+
 A `TrailRedactor` (§38 extension seam) produces the
 `redacted_expr` and may strip surfaced/consumed refs for handles
 whose `visibility` is `private`. The default redactor removes values
@@ -2659,6 +2676,7 @@ as data instead of smuggling it through row sequence.
 - CR-D64: Trail-private authorization hook (§16)
 - CR-D65: Trail relation normalization (§13)
 - CR-D66: Trail storage hardening (§13)
+- CR-D67: Trail projection safety (§13)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

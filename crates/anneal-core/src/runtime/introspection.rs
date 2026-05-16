@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::facts::STORED_RELATION_DESCRIPTORS;
 use crate::source::{SourceCapabilities, SourceInfo};
+use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
 use super::ast::{DocDecl, Expr, Head, Program, RuleLayer, SourceLocation, Statement, VerbDecl};
@@ -112,6 +113,7 @@ impl IntrospectionIndex {
 pub(crate) fn is_static_stored_relation(name: &str) -> bool {
     STORED_RELATION_DESCRIPTORS
         .iter()
+        .chain(TRAIL_RELATION_DESCRIPTORS)
         .any(|relation| relation.name == name)
 }
 
@@ -180,9 +182,13 @@ impl IntrospectionBuilder {
     fn add_stored_relations(&mut self, dynamic_stored: Vec<StoredRelationSummary>) {
         let static_names = STORED_RELATION_DESCRIPTORS
             .iter()
+            .chain(TRAIL_RELATION_DESCRIPTORS)
             .map(|relation| relation.name)
             .collect::<BTreeSet<_>>();
-        for relation in STORED_RELATION_DESCRIPTORS {
+        for relation in STORED_RELATION_DESCRIPTORS
+            .iter()
+            .chain(TRAIL_RELATION_DESCRIPTORS)
+        {
             self.add_stored_relation(
                 relation.name,
                 relation.fields,
