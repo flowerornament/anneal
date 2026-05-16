@@ -669,13 +669,17 @@ v2.0; raw expression and content capture are policy-controlled.
   verb,               // verb invocation name; "-e" for ad-hoc queries
   redacted_expr,      // expr with values redacted per policy
   input_hash,         // hash of full expression (deterministic provenance)
-  surfaced_refs,      // list of {corpus, source, handle, span_id, score} emitted
-  consumed_refs,      // subset of surfaced_refs the agent actually used
-                      // in the next step (read, follow-up query, etc.)
   prelude_hash,       // hash of loaded prelude; supports reproducibility
-  source_generations, // {(corpus, source): generation} snapshot at query time
   visibility,         // "public" | "team" | "private" — policy-derived
   retention,          // ISO duration; runtime garbage-collects past expiry
+}
+
+*trail_ref{
+  session_id, step, kind, ordinal, corpus, source, handle, span_id, score
+}
+
+*trail_generation{
+  session_id, step, corpus, source, generation
 }
 ```
 
@@ -694,6 +698,21 @@ output-explosion failure mode the live workflow simulation
 surfaced — context verb surfaces 6 hits + 4 spans + 2 edges, agent
 uses 1 — is resolved by recording both sets and treating consumed
 as the load-bearing path.
+
+**Definition CR-D65 (Trail relation normalization).** JSONL trail
+entries retain structured `surfaced_refs`, `consumed_refs`, and
+`source_generations` arrays exactly as captured. The Datalog stored
+surface normalizes those arrays into `*trail_ref` and
+`*trail_generation` rows instead of requiring object-valued `Value`
+terms or encoding JSON strings inside a relation field.
+`*trail_ref.kind` is `"surfaced"` or `"consumed"` and `ordinal`
+preserves the stored order. `*trail` carries scalar audit fields
+only.
+
+Rationale: the rule-layer value model intentionally has scalars and
+lists, not arbitrary object values. Normalized rows keep refs
+queryable, preserve ordering, and avoid a stringly JSON escape hatch
+in the language.
 
 A `TrailRedactor` (§38 extension seam) produces the
 `redacted_expr` and may strip surfaced/consumed refs for handles
@@ -2087,7 +2106,7 @@ pub trait TrailRedactor {
 }
 
 pub trait TrailSummarizer {
-    fn summarize(&self, entry: &TrailEntryRedacted, ctx: &TrailContext) -> TrailSummary;
+    fn summarize(&self, entries: &[TrailEntryRedacted], ctx: &TrailContext) -> TrailSummary;
 }
 
 pub trait TrailStore {
@@ -2610,6 +2629,7 @@ as data instead of smuggling it through row sequence.
 - CR-D62: Visibility closure over handle references (§16)
 - CR-D63: Policy action gates (§16)
 - CR-D64: Trail-private authorization hook (§16)
+- CR-D65: Trail relation normalization (§13)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

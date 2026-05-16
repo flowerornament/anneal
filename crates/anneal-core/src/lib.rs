@@ -17,6 +17,7 @@ pub mod runtime;
 pub mod source;
 pub mod store;
 mod time;
+pub mod trail;
 pub mod visibility;
 
 pub use facts::{
@@ -48,4 +49,10 @@ pub use source::{
     SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};
+pub use trail::{
+    DefaultTrailRecorder, DefaultTrailRedactor, DefaultTrailSummarizer, JsonlTrailStore,
+    TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError, TrailGeneration,
+    TrailQuery, TrailRecorder, TrailRedactor, TrailReference, TrailStore, TrailSummarizer,
+    TrailSummary,
+};
 pub use visibility::FactVisibility;
