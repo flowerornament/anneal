@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::facts::STORED_RELATION_DESCRIPTORS;
 use crate::source::{SourceCapabilities, SourceInfo};
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
+use crate::verbs::VerbRegistry;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
-use super::ast::{DocDecl, Expr, Head, Program, RuleLayer, SourceLocation, Statement, VerbDecl};
+use super::ast::{DocDecl, Expr, Head, Program, RuleLayer, SourceLocation, Statement};
 use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
 
@@ -264,29 +265,29 @@ impl IntrospectionBuilder {
         self.add_predicates(scanned.predicates, &scanned.docs);
         self.add_docs(&scanned.docs);
 
-        for verb in scanned.verbs {
-            let Some(info) = VerbInfo::from_decl(verb) else {
-                continue;
-            };
+        let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
+        for entry in registry.iter() {
             self.verbs.insert(Tuple(vec![
-                string_value(&info.name),
-                string_value(&info.query),
-                string_value(&info.doc),
-                string_value(&info.output_schema),
+                string_value(entry.name().as_str()),
+                string_value(entry.query_source()),
+                string_value(entry.doc()),
+                string_value(&entry.output_schema().to_string()),
             ]));
             self.describe.insert(Tuple(vec![
-                string_value(&info.name),
-                string_value(&info.doc),
+                string_value(entry.name().as_str()),
+                string_value(entry.doc()),
             ]));
             self.source_of.insert(Tuple(vec![
-                string_value(&info.name),
-                string_value(&verb.location().source_name),
-                string_value(&source_line_text(verb.location())),
+                string_value(entry.name().as_str()),
+                string_value(&entry.source().location().source_name),
+                string_value(&source_line_text(entry.source().location())),
             ]));
-            self.examples.insert(Tuple(vec![
-                string_value(&info.name),
-                string_value(&info.query),
-            ]));
+            for example in entry.examples() {
+                self.examples.insert(Tuple(vec![
+                    string_value(entry.name().as_str()),
+                    string_value(example),
+                ]));
+            }
         }
     }
 
@@ -501,20 +502,19 @@ fn merge_parameter_names(existing: &mut [ParameterName], observed: &[ParameterNa
 }
 
 #[derive(Default)]
-struct ProgramScanner<'a> {
+struct ProgramScanner {
     docs: BTreeMap<String, DocInfo>,
     predicates: BTreeMap<String, PredicateInfo>,
-    verbs: Vec<&'a VerbDecl>,
 }
 
-impl<'a> ProgramScanner<'a> {
-    fn scan(program: &'a Program) -> Self {
+impl ProgramScanner {
+    fn scan(program: &Program) -> Self {
         let mut scanner = Self::default();
         scanner.scan_statements(&program.statements);
         scanner
     }
 
-    fn scan_statements(&mut self, statements: &'a [Statement]) {
+    fn scan_statements(&mut self, statements: &[Statement]) {
         for statement in statements {
             match statement {
                 Statement::Fact(head) => {
@@ -536,7 +536,6 @@ impl<'a> ProgramScanner<'a> {
                 Statement::AtBlock { statements, .. } => {
                     self.scan_statements(statements);
                 }
-                Statement::Verb(verb) => self.verbs.push(verb),
                 Statement::Doc(doc) => {
                     if let Some(existing) = self.docs.get_mut(doc.name()) {
                         existing.replace_from_decl(doc);
@@ -546,6 +545,7 @@ impl<'a> ProgramScanner<'a> {
                     }
                 }
                 Statement::Query(_)
+                | Statement::Verb(_)
                 | Statement::Include(_)
                 | Statement::Import(_)
                 | Statement::OptionalFact(_) => {}
@@ -604,24 +604,6 @@ fn source_tuple(source: &SourceInfo) -> Tuple {
         )),
         string_value(source.doc),
     ])
-}
-
-struct VerbInfo {
-    name: String,
-    query: String,
-    doc: String,
-    output_schema: String,
-}
-
-impl VerbInfo {
-    fn from_decl(verb: &VerbDecl) -> Option<Self> {
-        Some(Self {
-            name: verb.string_arg("name")?.to_string(),
-            query: verb.string_arg("query")?.to_string(),
-            doc: verb.string_arg("doc")?.to_string(),
-            output_schema: verb.string_arg("output_schema")?.to_string(),
-        })
-    }
 }
 
 fn source_line_text(location: &SourceLocation) -> String {

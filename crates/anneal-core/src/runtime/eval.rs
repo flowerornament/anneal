@@ -7484,7 +7484,7 @@ mod tests {
         let outputs = evaluate_queries(
             r#"issue("a", "error").
 release_blocker(code) := issue(code, "error").
-@verb(name: "broken", query: "? release_blocker(code).", doc: "Show release blockers.", output_schema: "code").
+@verb(name: "broken", query: "? release_blocker(code).", doc: "Show release blockers.", output_schema: "{\"code\":\"String\"}", default_args: [], capabilities: []).
 ? schema("search", kind, signature, determinism, provenance).
 ? schema("release_blocker", kind, signature, determinism, provenance).
 ? predicates("release_blocker", doc, file, lines).
@@ -7529,7 +7529,7 @@ release_blocker(code) := issue(code, "error").
             vec![row([
                 ("query", s("? release_blocker(code).")),
                 ("doc", s("Show release blockers.")),
-                ("output_schema", s("code")),
+                ("output_schema", s(r#"{"code":"String"}"#)),
             ])],
         );
         assert!(

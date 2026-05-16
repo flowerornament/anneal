@@ -4,4 +4,166 @@
 //! surfaces land. Keeping it in the workspace now pins the public crate
 //! topology before implementation spreads.
 
+use anneal_core::{ActorContext, VerbDispatchError, VerbEntry, VerbRegistry, VerbRunPlan};
+
 pub const SURFACE_NAME: &str = "anneal-mcp";
+
+const STABLE_TOOLS: &[&str] = &[
+    "eval",
+    "search",
+    "read",
+    "verbs",
+    "describe",
+    "schema",
+    "source_of",
+    "dashboard",
+    "run_verb",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpVerb {
+    name: String,
+    doc: String,
+    output_schema: String,
+}
+
+impl McpVerb {
+    fn from_entry(entry: &VerbEntry) -> Self {
+        Self {
+            name: entry.name().to_string(),
+            doc: entry.doc().to_string(),
+            output_schema: entry.output_schema().to_string(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn doc(&self) -> &str {
+        &self.doc
+    }
+
+    pub fn output_schema(&self) -> &str {
+        &self.output_schema
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpToolCatalog {
+    tools: Vec<&'static str>,
+    verbs: Vec<McpVerb>,
+}
+
+impl McpToolCatalog {
+    pub fn from_registry(registry: &VerbRegistry) -> Self {
+        Self {
+            tools: STABLE_TOOLS.to_vec(),
+            verbs: registry.iter().map(McpVerb::from_entry).collect(),
+        }
+    }
+
+    pub fn tools(&self) -> &[&'static str] {
+        &self.tools
+    }
+
+    pub fn verbs(&self) -> &[McpVerb] {
+        &self.verbs
+    }
+
+    pub fn run_verb(
+        &self,
+        registry: &VerbRegistry,
+        actor: &ActorContext,
+        name: &str,
+    ) -> Result<VerbRunPlan, VerbDispatchError> {
+        registry.run_plan_for_actor(name, actor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use anneal_core::runtime::{parse_prelude_program, parse_program};
+    use anneal_core::{ActorContext, VerbDispatchError, VerbLayer, VerbRegistry};
+
+    use super::*;
+
+    #[test]
+    fn mcp_tool_surface_stays_stable_when_verbs_grow() {
+        let prelude = parse_prelude_program(
+            "views.dl",
+            r#"
+            @verb(name: "work", query: "? prelude_work(h).", doc: "Prelude work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
+            prelude_work("p").
+            "#,
+        )
+        .expect("prelude parses");
+        let project = parse_program(
+            "anneal.dl",
+            r#"
+            @verb(name: "work", query: "? project_work(h).", doc: "Project work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
+            @verb(name: "release", query: "? release_item(h).", doc: "Release.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["release"]).
+            project_work("p").
+            release_item("r").
+            "#,
+        )
+        .expect("project parses");
+        let registry = VerbRegistry::from_layers(&[
+            (VerbLayer::Prelude, &prelude),
+            (VerbLayer::Project, &project),
+        ])
+        .expect("registry builds");
+
+        let catalog = McpToolCatalog::from_registry(&registry);
+        assert_eq!(catalog.tools().len(), 9);
+        assert_eq!(
+            catalog
+                .verbs()
+                .iter()
+                .map(McpVerb::name)
+                .collect::<Vec<_>>(),
+            ["release", "work"]
+        );
+        assert_eq!(
+            catalog
+                .tools()
+                .iter()
+                .filter(|tool| **tool == "work" || **tool == "release")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn run_verb_dispatches_through_registry() {
+        let project = parse_program(
+            "anneal.dl",
+            r#"
+            @verb(name: "release", query: "? item(h).", doc: "Release.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["release"]).
+            item("h").
+            "#,
+        )
+        .expect("project parses");
+        let registry =
+            VerbRegistry::from_layers(&[(VerbLayer::Project, &project)]).expect("registry builds");
+        let catalog = McpToolCatalog::from_registry(&registry);
+
+        assert!(matches!(
+            catalog.run_verb(&registry, &ActorContext::anonymous_mcp(), "release"),
+            Err(VerbDispatchError::CapabilityDenied { .. })
+        ));
+        let actor = ActorContext {
+            actor: "host".to_string(),
+            capabilities: BTreeSet::from(["release".to_string()]),
+        };
+        assert_eq!(
+            catalog
+                .run_verb(&registry, &actor, "release")
+                .expect("capability admits")
+                .query_source(),
+            "? item(h)."
+        );
+    }
+}

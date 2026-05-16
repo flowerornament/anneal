@@ -8,6 +8,7 @@ mod context;
 
 pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
 use anneal_core::runtime::prelude::{datalog_string_literal, low_confidence_filter};
+use anneal_core::{ActorContext, VerbDispatchError, VerbEntry, VerbRegistry, VerbRunPlan};
 
 pub use context::{
     ContextCommand, ContextGroupError, ContextHit, ContextNeighbor, ContextOutput, ContextSpan,
@@ -18,6 +19,61 @@ pub const SURFACE_NAME: &str = "anneal-cli";
 
 pub const DEFAULT_SEARCH_LIMIT: usize = 25;
 pub const DEFAULT_READ_BUDGET: i64 = 4_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliVerb {
+    name: String,
+    doc: String,
+    default_args: Vec<String>,
+}
+
+impl CliVerb {
+    fn from_entry(entry: &VerbEntry) -> Self {
+        Self {
+            name: entry.name().to_string(),
+            doc: entry.doc().to_string(),
+            default_args: entry.default_args().to_vec(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn doc(&self) -> &str {
+        &self.doc
+    }
+
+    pub fn default_args(&self) -> &[String] {
+        &self.default_args
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliVerbProjection {
+    verbs: Vec<CliVerb>,
+}
+
+impl CliVerbProjection {
+    pub fn from_registry(registry: &VerbRegistry) -> Self {
+        Self {
+            verbs: registry.iter().map(CliVerb::from_entry).collect(),
+        }
+    }
+
+    pub fn verbs(&self) -> &[CliVerb] {
+        &self.verbs
+    }
+
+    pub fn run_plan(
+        &self,
+        registry: &VerbRegistry,
+        actor: &ActorContext,
+        name: &str,
+    ) -> Result<VerbRunPlan, VerbDispatchError> {
+        registry.run_plan_for_actor(name, actor)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchCommand {
@@ -118,8 +174,14 @@ impl SourcesCommand {
 #[cfg(test)]
 mod tests {
     use anneal_core::runtime::{analyze, parse_program};
+    use anneal_core::{ActorContext, VerbLayer, VerbRegistry};
 
     use super::*;
+
+    fn registry(source: &str) -> VerbRegistry {
+        let program = parse_program("anneal.dl", source).expect("program parses");
+        VerbRegistry::from_layers(&[(VerbLayer::Project, &program)]).expect("registry builds")
+    }
 
     #[test]
     fn search_template_filters_low_confidence_by_default() {
@@ -166,5 +228,58 @@ mod tests {
 
         assert_eq!(query, "? sources(name, recognizes, capabilities, doc).");
         analyze(parse_program("sources", query).expect("query parses")).expect("query analyzes");
+    }
+
+    #[test]
+    fn cli_projects_resolved_registry_verbs() {
+        let registry = registry(
+            r#"
+            @verb(
+              name: "work",
+              query: "? item(h).",
+              doc: "Show work.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: ["limit"],
+              capabilities: ["read"]
+            ).
+            item("h").
+            "#,
+        );
+
+        let projection = CliVerbProjection::from_registry(&registry);
+        assert_eq!(projection.verbs().len(), 1);
+        assert_eq!(projection.verbs()[0].name(), "work");
+        assert_eq!(projection.verbs()[0].default_args(), &["limit".to_string()]);
+        let plan = projection
+            .run_plan(&registry, &ActorContext::trusted_cli(), "work")
+            .expect("work dispatches");
+        assert_eq!(plan.query_source(), "? item(h).");
+    }
+
+    #[test]
+    fn cli_run_plan_reports_registry_dispatch_errors() {
+        let registry = registry(
+            r#"
+            @verb(
+              name: "release",
+              query: "? item(h).",
+              doc: "Release.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: [],
+              capabilities: ["release"]
+            ).
+            item("h").
+            "#,
+        );
+        let projection = CliVerbProjection::from_registry(&registry);
+
+        assert!(matches!(
+            projection.run_plan(&registry, &ActorContext::anonymous_mcp(), "release"),
+            Err(VerbDispatchError::CapabilityDenied { .. })
+        ));
+        assert!(matches!(
+            projection.run_plan(&registry, &ActorContext::trusted_cli(), "missing"),
+            Err(VerbDispatchError::MissingVerb { .. })
+        ));
     }
 }

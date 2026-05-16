@@ -18,6 +18,7 @@ pub mod source;
 pub mod store;
 mod time;
 pub mod trail;
+pub mod verbs;
 pub mod visibility;
 
 pub use facts::{
@@ -55,5 +56,9 @@ pub use trail::{
     TrailGeneration, TrailQuery, TrailRecorder, TrailRedactor, TrailRefKind, TrailReference,
     TrailSessionId, TrailSessionIdError, TrailStore, TrailSummarizer, TrailSummary,
     summarize_trail_session,
+};
+pub use verbs::{
+    VerbBuiltinPermission, VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbName,
+    VerbRegistry, VerbRegistryError, VerbRunPlan, VerbSource,
 };
 pub use visibility::FactVisibility;

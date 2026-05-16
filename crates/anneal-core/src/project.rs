@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::runtime::analysis::{StaticError, analyze};
-use crate::runtime::ast::{
-    Expr, Head, Literal, NumberLiteral, Program, Query, Statement, Term, VerbDecl,
-};
+use crate::runtime::ast::{Expr, Head, Literal, NumberLiteral, Program, Statement, Term};
 use crate::runtime::loader::{LoadError, load_program};
-use crate::runtime::parser::{ParseError, parse_program};
+use crate::runtime::parser::ParseError;
 use crate::source::{ConfigEntry, ConfigFacts, SourceInfo};
+use crate::verbs::{VerbRegistryError, validate_project_verb_query_program};
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
 
@@ -234,7 +233,11 @@ fn collect_verb_query_programs(
                     location: verb.location().clone(),
                 });
             }
-            Statement::Verb(verb) => out.push(validate_verb(verb)?),
+            Statement::Verb(verb) => {
+                out.push(
+                    validate_project_verb_query_program(verb).map_err(ProjectLoadError::from)?,
+                );
+            }
             Statement::AtBlock { statements, .. } => {
                 collect_verb_query_programs(statements, true, out)?;
             }
@@ -242,178 +245,6 @@ fn collect_verb_query_programs(
         }
     }
     Ok(())
-}
-
-fn validate_verb(verb: &VerbDecl) -> Result<Program, ProjectLoadError> {
-    let location = verb.location().clone();
-    let name = required_verb_string(verb, "name")?;
-    if !is_verb_name(name) {
-        return Err(ProjectLoadError::InvalidVerbName {
-            name: name.to_string(),
-            location,
-        });
-    }
-    let query = required_verb_string(verb, "query")?;
-    required_verb_string(verb, "doc")?;
-    required_verb_string_list(verb, "default_args")?;
-    required_verb_string_list(verb, "capabilities")?;
-    let schema = parse_output_schema(verb)?;
-    let query_program = parse_program(&format!("{}:@verb:{name}", verb.location()), query)
-        .map_err(|source| ProjectLoadError::VerbQueryParse {
-            name: name.to_string(),
-            location: verb.location().clone(),
-            source: Box::new(source),
-        })?;
-    let query_ast = single_query(name, verb, &query_program)?;
-    validate_query_schema(name, verb, query_ast, &schema)?;
-    Ok(query_program)
-}
-
-fn required_verb_string<'a>(verb: &'a VerbDecl, name: &str) -> Result<&'a str, ProjectLoadError> {
-    verb.string_arg(name)
-        .ok_or_else(|| ProjectLoadError::MissingVerbField {
-            field: name.to_string(),
-            location: verb.location().clone(),
-        })
-}
-
-fn parse_output_schema(verb: &VerbDecl) -> Result<serde_json::Value, ProjectLoadError> {
-    let schema = required_verb_string(verb, "output_schema")?;
-    let value = serde_json::from_str::<serde_json::Value>(schema).map_err(|source| {
-        ProjectLoadError::InvalidVerbSchema {
-            location: verb.location().clone(),
-            source,
-        }
-    })?;
-    if !value.is_object() {
-        return Err(ProjectLoadError::VerbSchemaMustBeObject {
-            location: verb.location().clone(),
-        });
-    }
-    validate_schema_value(&value, verb.location())?;
-    Ok(value)
-}
-
-fn single_query<'a>(
-    name: &str,
-    verb: &VerbDecl,
-    program: &'a Program,
-) -> Result<&'a Query, ProjectLoadError> {
-    let mut queries = program.queries();
-    let Some(query) = queries.next() else {
-        return Err(ProjectLoadError::VerbQueryCount {
-            name: name.to_string(),
-            count: 0,
-            location: verb.location().clone(),
-        });
-    };
-    if queries.next().is_some() {
-        return Err(ProjectLoadError::VerbQueryCount {
-            name: name.to_string(),
-            count: 2 + queries.count(),
-            location: verb.location().clone(),
-        });
-    }
-    Ok(query)
-}
-
-fn validate_query_schema(
-    name: &str,
-    verb: &VerbDecl,
-    query: &Query,
-    schema: &serde_json::Value,
-) -> Result<(), ProjectLoadError> {
-    let fields = output_schema_fields(schema);
-    let actual = query_output_fields(query);
-    if fields != actual {
-        return Err(ProjectLoadError::VerbSchemaMismatch {
-            name: name.to_string(),
-            expected: fields.into_iter().collect(),
-            actual: actual.into_iter().collect(),
-            location: verb.location().clone(),
-        });
-    }
-    Ok(())
-}
-
-fn output_schema_fields(schema: &serde_json::Value) -> BTreeSet<String> {
-    schema
-        .as_object()
-        .expect("output_schema was validated as object")
-        .keys()
-        .cloned()
-        .collect()
-}
-
-fn validate_schema_value(
-    value: &serde_json::Value,
-    location: &crate::runtime::ast::SourceLocation,
-) -> Result<(), ProjectLoadError> {
-    match value {
-        serde_json::Value::String(kind) if !kind.is_empty() => Ok(()),
-        serde_json::Value::Object(fields) => {
-            for field in fields.values() {
-                validate_schema_value(field, location)?;
-            }
-            Ok(())
-        }
-        serde_json::Value::Array(items) => match items.as_slice() {
-            [serde_json::Value::Object(_)] => validate_schema_value(&items[0], location),
-            _ => Err(ProjectLoadError::UnsupportedVerbSchema {
-                location: location.clone(),
-            }),
-        },
-        _ => Err(ProjectLoadError::UnsupportedVerbSchema {
-            location: location.clone(),
-        }),
-    }
-}
-
-fn required_verb_string_list(verb: &VerbDecl, field: &str) -> Result<(), ProjectLoadError> {
-    let Some(arg) = verb
-        .annotation
-        .args
-        .iter()
-        .find(|arg| arg.name.as_str() == field)
-    else {
-        return Err(ProjectLoadError::MissingVerbField {
-            field: field.to_string(),
-            location: verb.location().clone(),
-        });
-    };
-    let Expr::Literal(Literal::List(items)) = &arg.expr else {
-        return Err(ProjectLoadError::InvalidVerbListField {
-            field: field.to_string(),
-            location: verb.location().clone(),
-        });
-    };
-    for item in items {
-        if !matches!(item, Literal::String(_)) {
-            return Err(ProjectLoadError::InvalidVerbListField {
-                field: field.to_string(),
-                location: verb.location().clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn query_output_fields(query: &Query) -> BTreeSet<String> {
-    query
-        .body
-        .positive_binding_variables()
-        .into_iter()
-        .map(|ident| ident.to_string())
-        .collect()
-}
-
-fn is_verb_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_lowercase() || first == '_')
-        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -491,6 +322,68 @@ pub enum ProjectLoadError {
         actual: Vec<String>,
         location: crate::runtime::ast::SourceLocation,
     },
+}
+
+impl From<VerbRegistryError> for ProjectLoadError {
+    fn from(value: VerbRegistryError) -> Self {
+        match value {
+            VerbRegistryError::MissingField { field, location } => {
+                Self::MissingVerbField { field, location }
+            }
+            VerbRegistryError::InvalidNameAt { name, location }
+            | VerbRegistryError::DuplicateInLayer { name, location, .. } => {
+                Self::InvalidVerbName { name, location }
+            }
+            VerbRegistryError::InvalidName { name } => Self::InvalidVerbName {
+                name,
+                location: crate::runtime::ast::SourceLocation::unknown(),
+            },
+            VerbRegistryError::InvalidSchema { location, source } => {
+                Self::InvalidVerbSchema { location, source }
+            }
+            VerbRegistryError::SchemaMustBeObject { location } => {
+                Self::VerbSchemaMustBeObject { location }
+            }
+            VerbRegistryError::QueryParse {
+                name,
+                location,
+                source,
+            } => Self::VerbQueryParse {
+                name,
+                location,
+                source,
+            },
+            VerbRegistryError::QueryCount {
+                name,
+                count,
+                location,
+            } => Self::VerbQueryCount {
+                name,
+                count,
+                location,
+            },
+            VerbRegistryError::VerbInsideAtBlock { location } => {
+                Self::VerbInsideAtBlock { location }
+            }
+            VerbRegistryError::InvalidListField { field, location } => {
+                Self::InvalidVerbListField { field, location }
+            }
+            VerbRegistryError::UnsupportedSchema { location } => {
+                Self::UnsupportedVerbSchema { location }
+            }
+            VerbRegistryError::SchemaMismatch {
+                name,
+                expected,
+                actual,
+                location,
+            } => Self::VerbSchemaMismatch {
+                name,
+                expected,
+                actual,
+                location,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -693,6 +586,50 @@ mod tests {
 
         assert!(names.contains("verbs"));
         assert!(names.contains("project-seeds"));
+    }
+
+    #[test]
+    fn introspection_verbs_use_resolved_registry_shadowing() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "work",
+              query: "? project_seed(h).",
+              doc: "Project work view.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        let mut program = standard_prelude_program().unwrap();
+        let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
+        program
+            .statements
+            .extend(extension.into_parts().1.statements);
+        let query_program =
+            parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
+        program.statements.extend(query_program.statements);
+
+        let analyzed = analyze(program).expect("combined program analyzes");
+        let query = analyzed.queries().next().cloned().expect("verbs query");
+        let evaluator = Evaluator::new(analyzed, Database::default());
+        let output = evaluator.eval_query(&query).expect("verbs evaluate");
+        let work_rows = output
+            .rows
+            .iter()
+            .filter(|row| row.fields.get("name") == Some(&Value::String("work".to_string())))
+            .collect::<Vec<_>>();
+
+        assert_eq!(work_rows.len(), 1);
+        assert_eq!(
+            work_rows[0].fields.get("query"),
+            Some(&Value::String("? project_seed(h).".to_string()))
+        );
     }
 
     #[test]
