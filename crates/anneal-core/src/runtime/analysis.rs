@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::facts::{STORED_RELATION_DESCRIPTORS, StoredRelationDescriptor};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, DerivedAtom, Expr, Head, Ident,
     Literal, NegatedAtom, Negation, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation,
     Statement, StoredAtom, Term,
 };
 use crate::runtime::primitives::{PrimitivePredicate, PrimitiveSignature, primitive_signatures};
+use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
 
@@ -34,6 +36,31 @@ enum ParameterNames {
     Unknown,
     Named(Vec<Ident>),
     Ambiguous,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredFieldSet(Vec<&'static str>);
+
+impl StoredFieldSet {
+    fn from_descriptor(descriptor: StoredRelationDescriptor) -> Self {
+        Self(descriptor.fields.to_vec())
+    }
+
+    pub fn as_slice(&self) -> &[&'static str] {
+        &self.0
+    }
+}
+
+impl fmt::Display for StoredFieldSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, field) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(field)?;
+        }
+        Ok(())
+    }
 }
 
 pub fn analyze(program: Program) -> Result<AnalyzedProgram, StaticError> {
@@ -161,6 +188,13 @@ pub enum StaticError {
     UnknownNamedArgument {
         predicate: PredicateRef,
         argument: Ident,
+        location: SourceLocation,
+    },
+    #[error("{location}: unknown field '{field}' for '*{relation}'; expected one of: {expected}")]
+    UnknownStoredField {
+        relation: Ident,
+        field: Ident,
+        expected: StoredFieldSet,
         location: SourceLocation,
     },
     #[error("{location}: duplicate argument '{argument}' for '{predicate}'")]
@@ -543,8 +577,13 @@ fn normalize_global_statement_named_calls(
     match statement {
         Statement::Fact(head) => normalize_head_named_calls(head),
         Statement::Rule(rule) => normalize_rule_named_calls(rule, signatures),
-        Statement::AtBlock { .. }
-        | Statement::Query(_)
+        Statement::AtBlock { statements, .. } => {
+            for statement in statements {
+                normalize_global_statement_named_calls(statement, signatures)?;
+            }
+            Ok(())
+        }
+        Statement::Query(_)
         | Statement::OptionalFact(_)
         | Statement::Include(_)
         | Statement::Import(_)
@@ -618,12 +657,42 @@ fn normalize_atom_named_calls(
 }
 
 fn normalize_stored_named_calls(stored: &mut StoredAtom) -> Result<(), StaticError> {
+    validate_stored_fields(stored)?;
     for field in &mut stored.fields {
         if let Some(expr) = field.term.expr_mut() {
             normalize_expr_named_calls(expr)?;
         }
     }
     Ok(())
+}
+
+fn validate_stored_fields(stored: &StoredAtom) -> Result<(), StaticError> {
+    let Some(descriptor) = stored_relation_descriptor(stored.relation.as_str()) else {
+        return Ok(());
+    };
+    for field in &stored.fields {
+        if !descriptor
+            .fields
+            .iter()
+            .any(|expected| *expected == field.field.as_str())
+        {
+            return Err(StaticError::UnknownStoredField {
+                relation: stored.relation.clone(),
+                field: field.field.clone(),
+                expected: StoredFieldSet::from_descriptor(descriptor),
+                location: field.location.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn stored_relation_descriptor(name: &str) -> Option<StoredRelationDescriptor> {
+    STORED_RELATION_DESCRIPTORS
+        .iter()
+        .chain(TRAIL_RELATION_DESCRIPTORS)
+        .find(|descriptor| descriptor.name == name)
+        .copied()
 }
 
 fn normalize_aggregate_named_calls(
@@ -1719,6 +1788,37 @@ mod tests {
             err.to_string()
                 .contains(&location("inline", input, "missing: x").to_string())
         );
+    }
+
+    #[test]
+    fn rejects_unknown_stored_relation_fields() {
+        let input = r"? *handle{id: h, namspace: ns}.";
+        let err = analyze_err("inline", input);
+        let StaticError::UnknownStoredField {
+            relation,
+            field,
+            expected,
+            location: actual,
+        } = &err
+        else {
+            panic!("expected unknown stored field");
+        };
+        assert_eq!(relation.as_str(), "handle");
+        assert_eq!(field.as_str(), "namspace");
+        assert!(expected.as_slice().contains(&"namespace"));
+        assert!(expected.to_string().contains("namespace"));
+        assert_eq!(actual, &location("inline", input, "namspace"));
+        assert!(err.to_string().contains("expected one of"));
+    }
+
+    #[test]
+    fn rejects_unknown_stored_relation_fields_inside_at_blocks() {
+        let input = r#"at("snap") { bad(h) := *handle{namspace: h}. } ? bad(h)."#;
+        let err = analyze_err("inline", input);
+        assert!(matches!(
+            err,
+            StaticError::UnknownStoredField { field, .. } if field.as_str() == "namspace"
+        ));
     }
 
     #[test]

@@ -564,29 +564,34 @@ fn frontmatter_field(key: &str) -> String {
     format!("frontmatter:{key}")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SearchQuery {
     original: String,
     normalized: String,
-    terms: Vec<String>,
+    terms: Vec<QueryTerm>,
+    total_weight: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct QueryTerm {
+    value: String,
+    weight: f32,
 }
 
 impl SearchQuery {
     pub(crate) fn parse(query: &str) -> Option<Self> {
-        let normalized = normalize_search_text(query);
+        let original_terms = search_tokens(query);
+        let normalized = original_terms.join(" ");
         if normalized.is_empty() {
             return None;
         }
-        let mut terms = normalized
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        terms.sort();
-        terms.dedup();
+        let total_weight = f32::from(u16::try_from(original_terms.len()).unwrap_or(u16::MAX));
+        let terms = expanded_query_terms(&original_terms);
         Some(Self {
             original: query.to_owned(),
             normalized,
             terms,
+            total_weight,
         })
     }
 
@@ -601,35 +606,145 @@ impl SearchQuery {
         if normalized_text.contains(&self.normalized) {
             return Some(1.0);
         }
-        let matched = self
+        let matched_weight = self
             .terms
             .iter()
-            .filter(|term| normalized_text.contains(term.as_str()))
-            .count();
-        (matched > 0).then(|| {
-            let matched = u16::try_from(matched).unwrap_or(u16::MAX);
-            let total = u16::try_from(self.terms.len().max(1)).unwrap_or(u16::MAX);
-            0.35 + (0.55 * (f32::from(matched) / f32::from(total)))
-        })
+            .filter(|term| normalized_text.contains(term.value.as_str()))
+            .map(|term| term.weight)
+            .sum::<f32>();
+        (matched_weight > 0.0)
+            .then(|| 0.35 + (0.55 * (matched_weight / self.total_weight).min(1.0)))
     }
 }
 
 fn normalize_search_text(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
-    let mut previous_was_space = true;
+    let mut token = String::new();
     for ch in value.chars().flat_map(char::to_lowercase) {
         if ch.is_alphanumeric() {
-            normalized.push(ch);
-            previous_was_space = false;
-        } else if !previous_was_space {
-            normalized.push(' ');
-            previous_was_space = true;
+            token.push(ch);
+        } else {
+            push_normalized_token(&mut normalized, &mut token);
         }
     }
-    if normalized.ends_with(' ') {
-        normalized.pop();
-    }
+    push_normalized_token(&mut normalized, &mut token);
     normalized
+}
+
+fn search_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            token.push(ch);
+        } else {
+            push_search_token(&mut tokens, &mut token);
+        }
+    }
+    push_search_token(&mut tokens, &mut token);
+    tokens
+}
+
+fn push_normalized_token(normalized: &mut String, token: &mut String) {
+    canonicalize_search_token(token);
+    if token.is_empty() {
+        return;
+    }
+    if !normalized.is_empty() {
+        normalized.push(' ');
+    }
+    normalized.push_str(token);
+    token.clear();
+}
+
+fn push_search_token(tokens: &mut Vec<String>, token: &mut String) {
+    canonicalize_search_token(token);
+    if !token.is_empty() {
+        tokens.push(std::mem::take(token));
+    }
+    token.clear();
+}
+
+fn canonical_search_token(token: &str) -> String {
+    let mut stem = token.to_owned();
+    canonicalize_search_token(&mut stem);
+    stem
+}
+
+fn canonicalize_search_token(stem: &mut String) {
+    if stem.len() > 6 && stem.ends_with("ation") {
+        stem.truncate(stem.len() - "ation".len());
+    } else if stem.len() > 5 && stem.ends_with("ing") {
+        stem.truncate(stem.len() - "ing".len());
+        trim_doubled_final_consonant(stem);
+    } else if stem.len() > 4 && stem.ends_with("ies") {
+        stem.truncate(stem.len() - "ies".len());
+        stem.push('y');
+    } else if stem.len() > 4 && stem.ends_with("ed") {
+        stem.truncate(stem.len() - "ed".len());
+        trim_doubled_final_consonant(stem);
+    } else if stem.len() > 3 && stem.ends_with('s') {
+        stem.pop();
+    }
+    if stem.len() > 6 && stem.ends_with("ure") {
+        stem.pop();
+    }
+}
+
+fn trim_doubled_final_consonant(value: &mut String) {
+    let mut chars = value.chars().rev();
+    let Some(last) = chars.next() else {
+        return;
+    };
+    let Some(previous) = chars.next() else {
+        return;
+    };
+    if last == previous && !matches!(last, 'a' | 'e' | 'i' | 'o' | 'u') {
+        value.pop();
+    }
+}
+
+fn expanded_query_terms(original_terms: &[String]) -> Vec<QueryTerm> {
+    let mut weights = BTreeMap::<String, f32>::new();
+    for term in original_terms {
+        insert_term_weight(&mut weights, term, 1.0);
+        for (expanded, weight) in abbreviation_expansions(term) {
+            insert_term_weight(&mut weights, expanded, *weight);
+        }
+    }
+    for window in original_terms.windows(2) {
+        if window[0] == "open" && window[1] == "question" {
+            insert_term_weight(&mut weights, "oq", 2.0);
+        }
+    }
+    for window in original_terms.windows(3) {
+        if window[0] == "architecture" && window[1] == "decision" && window[2] == "record" {
+            insert_term_weight(&mut weights, "adr", 3.0);
+        } else if window[0] == "request" && window[1] == "for" && window[2] == "comment" {
+            insert_term_weight(&mut weights, "rfc", 3.0);
+        }
+    }
+    weights
+        .into_iter()
+        .map(|(value, weight)| QueryTerm { value, weight })
+        .collect()
+}
+
+fn insert_term_weight(weights: &mut BTreeMap<String, f32>, term: &str, weight: f32) {
+    let term = canonical_search_token(term);
+    weights
+        .entry(term)
+        .and_modify(|existing| *existing = existing.max(weight))
+        .or_insert(weight);
+}
+
+fn abbreviation_expansions(term: &str) -> &'static [(&'static str, f32)] {
+    match term {
+        "oq" => &[("open", 0.25), ("question", 0.25)],
+        "adr" => &[("architecture", 0.2), ("decision", 0.2), ("record", 0.2)],
+        "rfc" => &[("request", 0.2), ("comment", 0.2)],
+        _ => &[],
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -931,6 +1046,69 @@ mod tests {
         assert!(!hits.iter().any(
             |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
         ));
+    }
+
+    #[test]
+    fn query_expansion_connects_open_question_to_oq_namespace() {
+        let mut index = SearchIndex::default();
+        index.insert_handle(SearchHandleDocument {
+            corpus: "test",
+            source: "fixture",
+            handle: "OQ-42",
+            file: "design.md",
+            summary: Some("Runtime question"),
+            status: Some("open"),
+            namespace: Some("OQ"),
+            area: Some("runtime"),
+            kind: Some("label"),
+        });
+
+        let query = SearchQuery::parse("open questions").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("open questions", 0.5),
+            &DefaultRanker,
+        );
+
+        let hit = ranked.first().expect("expanded query finds OQ");
+        assert_eq!(hit.hit().handle(), "OQ-42");
+        assert!(!hit.low_confidence());
+    }
+
+    #[test]
+    fn light_stemming_connects_configure_and_configuration() {
+        let query = SearchQuery::parse("configure").expect("query parses");
+
+        assert!(
+            query
+                .score_normalized(&normalize_search_text("configuration"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn acronym_expansion_keeps_single_generic_words_low_confidence() {
+        let query = SearchQuery::parse("RFC").expect("query parses");
+        let raw_score = query
+            .score_normalized(&normalize_search_text("request"))
+            .expect("single expansion term matches");
+        let hit = SearchHit::new(
+            "test",
+            "fixture",
+            "draft.md",
+            None,
+            raw_score,
+            REASON_TITLE_SUBSTRING,
+            FIELD_TITLE,
+        );
+        let ranked = rank_search_hits(
+            [hit],
+            &RankingContext::new("RFC", DEFAULT_LOW_CONFIDENCE_THRESHOLD),
+            &DefaultRanker,
+        );
+
+        assert!(ranked[0].low_confidence());
     }
 
     fn insert_handle(index: &mut SearchIndex, handle: &str, file: &str, summary: &str) {

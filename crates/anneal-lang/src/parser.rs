@@ -294,13 +294,18 @@ impl Parser {
     }
 
     fn parse_field_pattern(&mut self) -> Result<FieldPattern, ParseError> {
+        let location = self.peek().location(&self.source);
         let field = self.expect_ident()?;
         let term = if self.eat(&TokenKind::Colon) {
             self.parse_term()?
         } else {
             Term::Expr(Expr::Var(field.clone()))
         };
-        Ok(FieldPattern { field, term })
+        Ok(FieldPattern {
+            field,
+            term,
+            location,
+        })
     }
 
     fn parse_derived_atom(&mut self) -> Result<DerivedAtom, ParseError> {

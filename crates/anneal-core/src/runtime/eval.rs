@@ -1056,6 +1056,9 @@ impl Database {
         let ArgConstraint::Exact(query_text) = string_constraint(constraints, 0) else {
             return Ok(Vec::new());
         };
+        if SearchQuery::parse(query_text).is_none() {
+            return Err(EvalError::SearchProvider(SearchError::EmptyQuery));
+        }
         let handle = match string_constraint(constraints, 1) {
             ArgConstraint::Any => None,
             ArgConstraint::Exact(handle) => Some(handle),
@@ -2052,7 +2055,7 @@ impl SearchProvider for SearchIndex {
         _ctx: &SearchContext<'_>,
     ) -> Result<Vec<crate::ranking::SearchHit>, SearchError> {
         let Some(query) = SearchQuery::parse(request.query()) else {
-            return Ok(Vec::new());
+            return Err(SearchError::EmptyQuery);
         };
         Ok(self.search_hits(
             &query,
@@ -7198,6 +7201,19 @@ mod tests {
             }),
             "scores must be calibrated into [0, 1]: {rows:?}"
         );
+    }
+
+    #[test]
+    fn empty_search_query_is_invalid_at_runtime_boundary() {
+        let err = evaluate_query_error(
+            r#"? search("   ", h, span_id, score, reason, field, low_confidence)."#,
+            search_database(),
+        );
+
+        assert!(matches!(
+            err,
+            EvalError::SearchProvider(SearchError::EmptyQuery)
+        ));
     }
 
     #[test]

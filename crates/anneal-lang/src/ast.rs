@@ -473,6 +473,8 @@ pub struct StoredAtom {
 pub struct FieldPattern {
     pub field: Ident,
     pub term: Term,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

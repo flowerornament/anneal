@@ -24,6 +24,7 @@ use crate::{
 };
 
 const DEFAULT_CORPUS: &str = "cli";
+const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
 
 pub fn should_handle_args(args: &[OsString]) -> bool {
     let mut iter = args.iter().skip(1);
@@ -65,6 +66,9 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let output = session.run(invocation.command)?;
     let stdout = io::stdout();
     let mode = invocation.output.resolve(stdout.is_terminal());
+    if let Some(message) = output.empty_rows_diagnostic(mode) {
+        writeln!(io::stderr().lock(), "{message}")?;
+    }
     output.write(stdout.lock(), mode)
 }
 
@@ -654,6 +658,15 @@ enum CommandOutput {
 }
 
 impl CommandOutput {
+    fn empty_rows_diagnostic(&self, mode: OutputMode) -> Option<&'static str> {
+        match (mode, self) {
+            (_, Self::Rows(rows)) | (OutputMode::Json, Self::Status(rows)) if rows.is_empty() => {
+                Some(EMPTY_ROWS_DIAGNOSTIC)
+            }
+            (_, Self::Status(_) | Self::Rows(_) | Self::Context(_) | Self::Text(_)) => None,
+        }
+    }
+
     fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
         match (mode, self) {
             (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
@@ -677,7 +690,7 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
 
     writeln!(writer, "Status")?;
     if rows.is_empty() {
-        writeln!(writer, "(0 rows)")?;
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
         return Ok(());
     }
 
@@ -908,8 +921,10 @@ fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
             value => assign_once(&mut query, value, "search accepts one query")?,
         }
     }
+    let query = query.context("search requires a query")?;
+    ensure!(!query.trim().is_empty(), "search query must not be empty");
     Ok(RuntimeCommand::Search {
-        query: query.context("search requires a query")?,
+        query,
         limit,
         include_low_confidence,
     })
@@ -1311,6 +1326,34 @@ mod tests {
             error
                 .to_string()
                 .contains("describe accepts at most one name")
+        );
+    }
+
+    #[test]
+    fn search_rejects_empty_query() {
+        let error =
+            Invocation::parse(os(&["anneal", "search", "   "])).expect_err("empty search fails");
+
+        assert!(error.to_string().contains("search query must not be empty"));
+    }
+
+    #[test]
+    fn empty_row_outputs_report_zero_rows_to_stderr() {
+        assert_eq!(
+            CommandOutput::Rows(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
+            Some(EMPTY_ROWS_DIAGNOSTIC)
+        );
+        assert_eq!(
+            CommandOutput::Rows(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
+            Some(EMPTY_ROWS_DIAGNOSTIC)
+        );
+        assert_eq!(
+            CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
+            Some(EMPTY_ROWS_DIAGNOSTIC)
+        );
+        assert_eq!(
+            CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
+            None
         );
     }
 

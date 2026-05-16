@@ -46,9 +46,10 @@ All notable changes to `anneal` are documented in this file.
   binary does not yet expose `anneal --mcp` or `anneal mcp`; source checkouts
   can inspect the crate-level tool catalog with
   `cargo run -p anneal-mcp -- --tools`.
-- The default ranker is strict lexical retrieval. It does not yet do stemming
-  or synonym expansion, so queries such as "open question" and "OQ" may need
-  explicit wording.
+- The default ranker is still lexical retrieval. It includes light stemming and
+  a small built-in abbreviation table for common planning terms, but broader
+  domain synonyms still require explicit wording or a custom search/ranking
+  provider.
 - Remaining polish and edge-case correctness work is tracked in `bd`,
   including introspection field polish, stricter empty-result diagnostics, and
   runtime edge cases that are not acceptance blockers for the next release.

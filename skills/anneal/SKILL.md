@@ -43,8 +43,11 @@ anneal read <handle> --budget 4000
 anneal H <handle>
 ```
 
-Use `search` for content retrieval. Use `read` after search or when the handle
-is known. Use `H` when relationship shape matters.
+Use `search` for content retrieval. It handles light stemming and common
+planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
+search or when the handle is known. Use `H` when relationship shape matters.
+Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
+for pipes.
 
 ### Asking a Precise Question
 

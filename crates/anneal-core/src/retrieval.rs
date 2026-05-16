@@ -337,12 +337,14 @@ impl std::error::Error for ReadError {}
 
 #[derive(Debug)]
 pub enum SearchError {
+    EmptyQuery,
     Other(String),
 }
 
 impl fmt::Display for SearchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyQuery => f.write_str("search query must not be empty"),
             Self::Other(message) => f.write_str(message),
         }
     }

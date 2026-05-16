@@ -485,6 +485,18 @@ Rationale: existence diagnostics, resolution-cascade suggestions, and
 legacy parity need to reason about failed references, not only resolved
 relationships.
 
+**Rule CR-R11 (Stored field validation).** A stored atom whose relation
+is one of the CR-D8 runtime relations must use only that relation's
+declared field names. Unknown fields are static-analysis errors with a
+source location and the expected field set. Relations not declared by
+CR-D8 remain outside this validation rule so local test fixtures and
+future adapter-internal rule experiments can still use private stored
+relations until they are promoted to runtime primitives.
+
+Rationale: a typo such as `*handle{namspace: ns}` is a malformed query,
+not a legitimate zero-row result. Cold agents need that distinction to
+recover without guessing whether the corpus was empty.
+
 ### §11 Engine-derived predicates [CR-D9]
 
 **Definition CR-D9 (Function primitives).** Predicates implemented in
@@ -688,6 +700,12 @@ ranker multiplies lexical match quality by field weights, clamps the
 result, and then orders by descending calibrated score, `source`,
 reason priority, `handle`, `span_id`, `field`, and `reason`. Scores
 below the active low-confidence threshold set `low_confidence: true`.
+The lexical match quality includes light deterministic stemming and a
+small built-in abbreviation table for corpus-planning idioms such as
+`OQ` ↔ `open question`, `ADR` ↔ `architecture decision record`, and
+`RFC` ↔ `request for comments`; this is still lexical expansion, not
+semantic retrieval. Additional domain synonyms belong in a custom
+`SearchProvider` or `Ranker`.
 The exact built-in weight values and default threshold are shipped
 policy defaults, not semantic contracts; CR-OQ8 and CR-OQ9 track their
 future tuning.
@@ -2206,6 +2224,18 @@ system; it is a projection layer over the runtime vocabulary.
 - **Exit codes:** 0 success (including empty results), 1 query
   error, 2 invocation error, 3 gate failure.
 
+**Definition CR-D85 (Empty row diagnostic).** Runtime commands whose
+successful output is an NDJSON row stream emit `(0 rows)` to stderr
+when the row stream is empty. stdout remains empty so pipes and MCP
+callers can continue to treat stdout as pure NDJSON. Structurally
+invalid inputs, such as an empty search query, remain invocation or
+query errors rather than empty-result successes.
+
+Rationale: cold agents need to distinguish "the command ran and
+matched nothing" from "the command produced no bytes because routing,
+input, or parsing failed." Keeping the signal on stderr preserves the
+stdout contract.
+
 ### §37 MCP surface [CR-D26]
 
 **Definition CR-D26 (MCP transport).** The `anneal-mcp` crate
@@ -2961,6 +2991,7 @@ config key.
 - CR-D82: Help and reference projection (§35)
 - CR-D83: Legacy boundary deletion gate (§47)
 - CR-D84: Explain output row cap (§14)
+- CR-D85: Empty row diagnostic (§36)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2973,6 +3004,7 @@ config key.
 - CR-R8: Bounded content primitive inputs (§11)
 - CR-R9: Language API stabilization gate (§8.1)
 - CR-R10: Visibility before derivation (§16)
+- CR-R11: Stored field validation (§10)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
