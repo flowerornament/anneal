@@ -1,0 +1,780 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use crate::runtime::analysis::{StaticError, analyze};
+use crate::runtime::ast::{
+    Expr, Head, Literal, NumberLiteral, Program, Query, Statement, Term, VerbDecl,
+};
+use crate::runtime::loader::{LoadError, load_program};
+use crate::runtime::parser::{ParseError, parse_program};
+use crate::source::{ConfigEntry, ConfigFacts, SourceInfo};
+
+pub const PROJECT_RULE_FILE: &str = "anneal.dl";
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectExtension {
+    discovery: ConfigFacts,
+    program: Program,
+}
+
+impl ProjectExtension {
+    pub fn discovery(&self) -> &ConfigFacts {
+        &self.discovery
+    }
+
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    pub fn into_parts(self) -> (ConfigFacts, Program) {
+        (self.discovery, self.program)
+    }
+}
+
+pub fn load_project_extension(
+    root: impl AsRef<Path>,
+    sources: &[SourceInfo],
+    base_program: &Program,
+) -> Result<ProjectExtension, ProjectLoadError> {
+    let loaded = load_program(root, PROJECT_RULE_FILE)?;
+    let (discovery, program) = split_project_program(loaded, sources)?;
+    validate_verbs(&program, base_program)?;
+    Ok(ProjectExtension { discovery, program })
+}
+
+fn split_project_program(
+    program: Program,
+    sources: &[SourceInfo],
+) -> Result<(ConfigFacts, Program), ProjectLoadError> {
+    let resolver = DiscoveryResolver::new(sources);
+    let mut discovery = Vec::new();
+    let mut statements = Vec::new();
+
+    for statement in program.statements {
+        match statement {
+            Statement::Fact(head) => match resolver.entries_for_required_fact(&head)? {
+                Some(entries) => discovery.extend(entries),
+                None => statements.push(Statement::Fact(head)),
+            },
+            Statement::OptionalFact(head) => {
+                discovery.extend(resolver.entries_for_optional_fact(&head)?);
+            }
+            other => statements.push(other),
+        }
+    }
+
+    Ok((
+        ConfigFacts::from_entries(discovery),
+        Program::new(statements),
+    ))
+}
+
+struct DiscoveryResolver {
+    exact: BTreeSet<String>,
+    by_local: BTreeMap<String, Vec<String>>,
+}
+
+impl DiscoveryResolver {
+    fn new(sources: &[SourceInfo]) -> Self {
+        let mut exact = BTreeSet::new();
+        let mut by_local = BTreeMap::<String, Vec<String>>::new();
+        for source in sources {
+            for key in &source.config_keys {
+                exact.insert(key.key.clone());
+                if let Some((_, local)) = key.key.split_once('.') {
+                    by_local
+                        .entry(local.to_string())
+                        .or_default()
+                        .push(key.key.clone());
+                }
+            }
+        }
+        Self { exact, by_local }
+    }
+
+    fn entries_for_required_fact(
+        &self,
+        head: &Head,
+    ) -> Result<Option<Vec<ConfigEntry>>, ProjectLoadError> {
+        let Some(key) = self.resolve_required_key(head)? else {
+            return Ok(None);
+        };
+        Ok(Some(config_entries(key, head)?))
+    }
+
+    fn entries_for_optional_fact(&self, head: &Head) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+        let Some(key) = self.resolve_optional_key(head)? else {
+            return Ok(Vec::new());
+        };
+        config_entries(key, head)
+    }
+
+    fn resolve_required_key(&self, head: &Head) -> Result<Option<String>, ProjectLoadError> {
+        if head.predicate.module.is_some() {
+            let key = head.predicate.display_name();
+            if self.exact.contains(&key) {
+                return Ok(Some(key));
+            }
+            return if is_project_rule_file(&head.location) {
+                Err(ProjectLoadError::UnknownDiscoveryKey {
+                    key,
+                    location: head.location.clone(),
+                })
+            } else {
+                Ok(None)
+            };
+        }
+
+        self.resolve_unqualified_key(head)
+    }
+
+    fn resolve_optional_key(&self, head: &Head) -> Result<Option<String>, ProjectLoadError> {
+        if head.predicate.module.is_some() {
+            let key = head.predicate.display_name();
+            if self.exact.contains(&key) {
+                return Ok(Some(key));
+            }
+            return Ok(None);
+        }
+
+        self.resolve_unqualified_key(head)
+    }
+
+    fn resolve_unqualified_key(&self, head: &Head) -> Result<Option<String>, ProjectLoadError> {
+        let local = head.predicate.name.as_str();
+        let Some(matches) = self.by_local.get(local) else {
+            return Ok(None);
+        };
+        match matches.as_slice() {
+            [key] => Ok(Some(key.clone())),
+            [] => Ok(None),
+            many => Err(ProjectLoadError::AmbiguousDiscoveryFact {
+                name: local.to_string(),
+                candidates: many.to_vec(),
+                location: head.location.clone(),
+            }),
+        }
+    }
+}
+
+fn is_project_rule_file(location: &crate::runtime::ast::SourceLocation) -> bool {
+    location.source_name == PROJECT_RULE_FILE
+}
+
+fn config_entries(key: String, head: &Head) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    let mut values = Vec::new();
+    for term in &head.terms {
+        let Some(value) = config_value(term) else {
+            return Err(ProjectLoadError::NonLiteralDiscoveryValue {
+                key,
+                location: head.location.clone(),
+            });
+        };
+        values.push(value);
+    }
+
+    if values.len() <= 1 {
+        return Ok(vec![ConfigEntry::scalar(
+            key,
+            values.into_iter().next().unwrap_or_default(),
+        )]);
+    }
+
+    Ok(values
+        .into_iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            ConfigEntry::ordered(
+                key.clone(),
+                value,
+                u32::try_from(idx).expect("config arity fits u32"),
+            )
+        })
+        .collect())
+}
+
+fn config_value(term: &Term) -> Option<String> {
+    let Term::Expr(Expr::Literal(literal)) = term else {
+        return None;
+    };
+    Some(match literal {
+        Literal::String(value) => value.clone(),
+        Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
+        Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
+        Literal::Bool(value) => value.to_string(),
+        Literal::Null => "null".to_string(),
+        Literal::List(_) => return None,
+    })
+}
+
+fn validate_verbs(program: &Program, base_program: &Program) -> Result<(), ProjectLoadError> {
+    let mut query_programs = Vec::new();
+    collect_verb_query_programs(&program.statements, false, &mut query_programs)?;
+
+    let mut combined = base_program.clone();
+    combined.statements.extend(program.statements.clone());
+    for query_program in query_programs {
+        combined.statements.extend(query_program.statements);
+    }
+    analyze(combined).map_err(|source| ProjectLoadError::VerbQueriesStatic {
+        source: Box::new(source),
+    })?;
+    Ok(())
+}
+
+fn collect_verb_query_programs(
+    statements: &[Statement],
+    inside_at_block: bool,
+    out: &mut Vec<Program>,
+) -> Result<(), ProjectLoadError> {
+    for statement in statements {
+        match statement {
+            Statement::Verb(verb) if inside_at_block => {
+                return Err(ProjectLoadError::VerbInsideAtBlock {
+                    location: verb.location().clone(),
+                });
+            }
+            Statement::Verb(verb) => out.push(validate_verb(verb)?),
+            Statement::AtBlock { statements, .. } => {
+                collect_verb_query_programs(statements, true, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_verb(verb: &VerbDecl) -> Result<Program, ProjectLoadError> {
+    let location = verb.location().clone();
+    let name = required_verb_string(verb, "name")?;
+    if !is_verb_name(name) {
+        return Err(ProjectLoadError::InvalidVerbName {
+            name: name.to_string(),
+            location,
+        });
+    }
+    let query = required_verb_string(verb, "query")?;
+    required_verb_string(verb, "doc")?;
+    required_verb_string_list(verb, "default_args")?;
+    required_verb_string_list(verb, "capabilities")?;
+    let schema = parse_output_schema(verb)?;
+    let query_program = parse_program(&format!("{}:@verb:{name}", verb.location()), query)
+        .map_err(|source| ProjectLoadError::VerbQueryParse {
+            name: name.to_string(),
+            location: verb.location().clone(),
+            source: Box::new(source),
+        })?;
+    let query_ast = single_query(name, verb, &query_program)?;
+    validate_query_schema(name, verb, query_ast, &schema)?;
+    Ok(query_program)
+}
+
+fn required_verb_string<'a>(verb: &'a VerbDecl, name: &str) -> Result<&'a str, ProjectLoadError> {
+    verb.string_arg(name)
+        .ok_or_else(|| ProjectLoadError::MissingVerbField {
+            field: name.to_string(),
+            location: verb.location().clone(),
+        })
+}
+
+fn parse_output_schema(verb: &VerbDecl) -> Result<serde_json::Value, ProjectLoadError> {
+    let schema = required_verb_string(verb, "output_schema")?;
+    let value = serde_json::from_str::<serde_json::Value>(schema).map_err(|source| {
+        ProjectLoadError::InvalidVerbSchema {
+            location: verb.location().clone(),
+            source,
+        }
+    })?;
+    if !value.is_object() {
+        return Err(ProjectLoadError::VerbSchemaMustBeObject {
+            location: verb.location().clone(),
+        });
+    }
+    validate_schema_value(&value, verb.location())?;
+    Ok(value)
+}
+
+fn single_query<'a>(
+    name: &str,
+    verb: &VerbDecl,
+    program: &'a Program,
+) -> Result<&'a Query, ProjectLoadError> {
+    let mut queries = program.queries();
+    let Some(query) = queries.next() else {
+        return Err(ProjectLoadError::VerbQueryCount {
+            name: name.to_string(),
+            count: 0,
+            location: verb.location().clone(),
+        });
+    };
+    if queries.next().is_some() {
+        return Err(ProjectLoadError::VerbQueryCount {
+            name: name.to_string(),
+            count: 2 + queries.count(),
+            location: verb.location().clone(),
+        });
+    }
+    Ok(query)
+}
+
+fn validate_query_schema(
+    name: &str,
+    verb: &VerbDecl,
+    query: &Query,
+    schema: &serde_json::Value,
+) -> Result<(), ProjectLoadError> {
+    let fields = output_schema_fields(schema);
+    let actual = query_output_fields(query);
+    if fields != actual {
+        return Err(ProjectLoadError::VerbSchemaMismatch {
+            name: name.to_string(),
+            expected: fields.into_iter().collect(),
+            actual: actual.into_iter().collect(),
+            location: verb.location().clone(),
+        });
+    }
+    Ok(())
+}
+
+fn output_schema_fields(schema: &serde_json::Value) -> BTreeSet<String> {
+    schema
+        .as_object()
+        .expect("output_schema was validated as object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn validate_schema_value(
+    value: &serde_json::Value,
+    location: &crate::runtime::ast::SourceLocation,
+) -> Result<(), ProjectLoadError> {
+    match value {
+        serde_json::Value::String(kind) if !kind.is_empty() => Ok(()),
+        serde_json::Value::Object(fields) => {
+            for field in fields.values() {
+                validate_schema_value(field, location)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => match items.as_slice() {
+            [serde_json::Value::Object(_)] => validate_schema_value(&items[0], location),
+            _ => Err(ProjectLoadError::UnsupportedVerbSchema {
+                location: location.clone(),
+            }),
+        },
+        _ => Err(ProjectLoadError::UnsupportedVerbSchema {
+            location: location.clone(),
+        }),
+    }
+}
+
+fn required_verb_string_list(verb: &VerbDecl, field: &str) -> Result<(), ProjectLoadError> {
+    let Some(arg) = verb
+        .annotation
+        .args
+        .iter()
+        .find(|arg| arg.name.as_str() == field)
+    else {
+        return Err(ProjectLoadError::MissingVerbField {
+            field: field.to_string(),
+            location: verb.location().clone(),
+        });
+    };
+    let Expr::Literal(Literal::List(items)) = &arg.expr else {
+        return Err(ProjectLoadError::InvalidVerbListField {
+            field: field.to_string(),
+            location: verb.location().clone(),
+        });
+    };
+    for item in items {
+        if !matches!(item, Literal::String(_)) {
+            return Err(ProjectLoadError::InvalidVerbListField {
+                field: field.to_string(),
+                location: verb.location().clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn query_output_fields(query: &Query) -> BTreeSet<String> {
+    query
+        .body
+        .positive_binding_variables()
+        .into_iter()
+        .map(|ident| ident.to_string())
+        .collect()
+}
+
+fn is_verb_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first == '_')
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectLoadError {
+    #[error(transparent)]
+    Load(#[from] LoadError),
+    #[error("{location}: unknown discovery fact '{key}'")]
+    UnknownDiscoveryKey {
+        key: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: ambiguous discovery fact '{name}' ({candidates:?})")]
+    AmbiguousDiscoveryFact {
+        name: String,
+        candidates: Vec<String>,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: discovery fact '{key}' values must be literal scalars")]
+    NonLiteralDiscoveryValue {
+        key: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb missing string field '{field}'")]
+    MissingVerbField {
+        field: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: invalid verb name '{name}'")]
+    InvalidVerbName {
+        name: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb output_schema must be valid JSON: {source}")]
+    InvalidVerbSchema {
+        location: crate::runtime::ast::SourceLocation,
+        source: serde_json::Error,
+    },
+    #[error("{location}: @verb output_schema must be a JSON object")]
+    VerbSchemaMustBeObject {
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb '{name}' query must parse: {source}")]
+    VerbQueryParse {
+        name: String,
+        location: crate::runtime::ast::SourceLocation,
+        source: Box<ParseError>,
+    },
+    #[error("{location}: @verb '{name}' must contain exactly one query, found {count}")]
+    VerbQueryCount {
+        name: String,
+        count: usize,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb must not be declared inside at() blocks")]
+    VerbInsideAtBlock {
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb field '{field}' must be a list of strings")]
+    InvalidVerbListField {
+        field: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb output_schema uses an unsupported shape")]
+    UnsupportedVerbSchema {
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("@verb query failed static analysis: {source}")]
+    VerbQueriesStatic { source: Box<StaticError> },
+    #[error(
+        "{location}: @verb '{name}' output_schema fields {expected:?} do not match query fields {actual:?}"
+    )]
+    VerbSchemaMismatch {
+        name: String,
+        expected: Vec<String>,
+        actual: Vec<String>,
+        location: crate::runtime::ast::SourceLocation,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::runtime::prelude::standard_prelude_program;
+    use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
+    use crate::source::{ConfigKey, Pattern, SourceCapabilities};
+
+    fn source(name: &'static str, keys: Vec<ConfigKey>) -> SourceInfo {
+        SourceInfo {
+            name,
+            recognizes: vec![Pattern::new("**/*")],
+            doc: "test source",
+            config_keys: keys,
+            capabilities: SourceCapabilities::default(),
+            search: None,
+        }
+    }
+
+    fn write_project(root: &Path, source: &str) {
+        fs::write(root.join(PROJECT_RULE_FILE), source).expect("write anneal.dl");
+    }
+
+    #[test]
+    fn single_adapter_sugar_qualifies_discovery_facts() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            file_extension(".md").
+            label_pattern("OQ", "OQ-(\\d+)", "any").
+            project_seed("x").
+            "#,
+        );
+        let sources = [source(
+            "markdown",
+            vec![
+                ConfigKey::required("md.file_extension"),
+                ConfigKey::optional("md.label_pattern"),
+            ],
+        )];
+
+        let extension =
+            load_project_extension(root.path(), &sources, &standard_prelude_program().unwrap())
+                .expect("project loads");
+
+        assert_eq!(
+            extension.discovery().entries(),
+            &[
+                ConfigEntry::scalar("md.file_extension", ".md"),
+                ConfigEntry::ordered("md.label_pattern", "OQ", 0),
+                ConfigEntry::ordered("md.label_pattern", r"OQ-(\d+)", 1),
+                ConfigEntry::ordered("md.label_pattern", "any", 2),
+            ]
+        );
+        assert_eq!(extension.program().facts().count(), 1);
+    }
+
+    #[test]
+    fn multi_adapter_unqualified_discovery_fact_errors() {
+        let root = tempdir().expect("tempdir");
+        write_project(root.path(), r#"file_extension(".md")."#);
+        let sources = [
+            source("markdown", vec![ConfigKey::required("md.file_extension")]),
+            source("mdx", vec![ConfigKey::required("mdx.file_extension")]),
+        ];
+
+        let err = load_project_extension(root.path(), &sources, &Program::new(Vec::new()))
+            .expect_err("ambiguous discovery fact rejected");
+        assert!(matches!(
+            err,
+            ProjectLoadError::AmbiguousDiscoveryFact { .. }
+        ));
+    }
+
+    #[test]
+    fn optional_unknown_adapter_discovery_fact_is_skipped() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            optional code.module_pattern("**/*.rs").
+            md.file_extension(".md").
+            "#,
+        );
+        let sources = [source(
+            "markdown",
+            vec![ConfigKey::required("md.file_extension")],
+        )];
+
+        let extension =
+            load_project_extension(root.path(), &sources, &standard_prelude_program().unwrap())
+                .expect("project loads");
+        assert_eq!(
+            extension.discovery().entries(),
+            &[ConfigEntry::scalar("md.file_extension", ".md")]
+        );
+    }
+
+    #[test]
+    fn required_unknown_adapter_discovery_fact_errors() {
+        let root = tempdir().expect("tempdir");
+        write_project(root.path(), r#"code.module_pattern("**/*.rs")."#);
+
+        let err = load_project_extension(root.path(), &[], &Program::new(Vec::new()))
+            .expect_err("unknown discovery key rejected");
+        assert!(matches!(err, ProjectLoadError::UnknownDiscoveryKey { .. }));
+    }
+
+    #[test]
+    fn imported_qualified_facts_are_not_discovery_facts() {
+        let root = tempdir().expect("tempdir");
+        write_project(root.path(), r#"import helper from "helper.dl"."#);
+        fs::write(root.path().join("helper.dl"), r#"seed("x")."#).expect("write helper");
+        let sources = [source(
+            "markdown",
+            vec![ConfigKey::required("md.file_extension")],
+        )];
+
+        let extension =
+            load_project_extension(root.path(), &sources, &standard_prelude_program().unwrap())
+                .expect("project loads");
+        let names = extension
+            .program()
+            .facts()
+            .map(|fact| fact.predicate.display_name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["helper.seed"]);
+        assert!(extension.discovery().entries().is_empty());
+    }
+
+    #[test]
+    fn project_verb_validates_query_and_schema() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "project-seeds",
+              query: "? project_seed(h).",
+              doc: "List project seed facts.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect("verb validates");
+    }
+
+    #[test]
+    fn introspection_lists_prelude_and_project_verbs_together() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "project-seeds",
+              query: "? project_seed(h).",
+              doc: "List project seed facts.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        let mut program = standard_prelude_program().unwrap();
+        let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
+        program
+            .statements
+            .extend(extension.into_parts().1.statements);
+        let query_program =
+            parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
+        program.statements.extend(query_program.statements);
+
+        let analyzed = analyze(program).expect("combined program analyzes");
+        let query = analyzed.queries().next().cloned().expect("verbs query");
+        let evaluator = Evaluator::new(analyzed, Database::default());
+        let output = evaluator.eval_query(&query).expect("verbs evaluate");
+        let names = output
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("name") {
+                Some(Value::String(name)) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert!(names.contains("verbs"));
+        assert!(names.contains("project-seeds"));
+    }
+
+    #[test]
+    fn project_verb_bad_schema_errors_at_declaration() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "project-seeds",
+              query: "? project_seed(h).",
+              doc: "List project seed facts.",
+              output_schema: "{\"other\":\"String\"}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("schema mismatch rejected");
+        assert!(matches!(err, ProjectLoadError::VerbSchemaMismatch { .. }));
+    }
+
+    #[test]
+    fn project_verb_missing_doc_is_rejected() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "project-seeds",
+              query: "? project_seed(h).",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("missing doc rejected");
+        assert!(matches!(
+            err,
+            ProjectLoadError::MissingVerbField { field, .. } if field == "doc"
+        ));
+    }
+
+    #[test]
+    fn project_verb_unsupported_schema_shape_is_rejected() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            project_seed("x").
+            @verb(
+              name: "project-seeds",
+              query: "? project_seed(h).",
+              doc: "List project seed facts.",
+              output_schema: "{\"h\":[\"String\"]}",
+              default_args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("unsupported schema rejected");
+        assert!(matches!(
+            err,
+            ProjectLoadError::UnsupportedVerbSchema { .. }
+        ));
+    }
+
+    #[test]
+    fn optional_fact_outside_project_loader_is_rejected_by_analysis() {
+        let program = parse_program("inline", r#"optional md.file_extension(".md")."#)
+            .expect("optional fact parses");
+
+        let err = analyze(program).expect_err("optional discovery rejected");
+        assert!(matches!(err, StaticError::OptionalDiscoveryFact { .. }));
+    }
+}

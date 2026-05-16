@@ -9,6 +9,7 @@ pub mod facts;
 pub mod hash;
 pub mod history;
 pub mod ids;
+pub mod project;
 pub mod ranking;
 pub mod retrieval;
 pub mod runtime;
@@ -26,6 +27,7 @@ pub use history::{
     append_snapshot_entry, read_snapshot_history, repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+pub use project::{PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, load_project_extension};
 pub use ranking::{
     DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
 };

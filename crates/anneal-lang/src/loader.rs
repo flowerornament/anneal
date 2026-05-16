@@ -84,6 +84,7 @@ impl ProgramLoader {
         let parsed = parse_program(&self.source_name(path), &input)?;
         let base = path.parent().unwrap_or(&self.root);
         let mut statements = Vec::new();
+        let mut imported_modules = std::collections::BTreeMap::<Ident, SourceLocation>::new();
 
         for statement in parsed.statements {
             match statement {
@@ -97,6 +98,15 @@ impl ProgramLoader {
                     )?);
                 }
                 Statement::Import(directive) => {
+                    if let Some(first_location) = imported_modules
+                        .insert(directive.module.clone(), directive.location.clone())
+                    {
+                        return Err(LoadError::DuplicateImportModule {
+                            module: directive.module,
+                            first_location,
+                            location: directive.location,
+                        });
+                    }
                     statements.extend(self.load_import(base, &directive, context)?);
                 }
                 mut statement => {
@@ -223,6 +233,12 @@ pub enum LoadError {
         path: PathBuf,
         chain: IncludeCycle,
     },
+    #[error("{location}: duplicate import module '{module}' first declared at {first_location}")]
+    DuplicateImportModule {
+        module: Ident,
+        first_location: SourceLocation,
+        location: SourceLocation,
+    },
     #[error(transparent)]
     Parse(#[from] ParseError),
 }
@@ -266,7 +282,9 @@ fn collect_unqualified_definitions(statements: &[Statement]) -> BTreeSet<Ident> 
 
 fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeSet<Ident>) {
     match statement {
-        Statement::Fact(head) => collect_head_definition(head, definitions),
+        Statement::Fact(head) | Statement::OptionalFact(head) => {
+            collect_head_definition(head, definitions);
+        }
         Statement::Rule(rule) => collect_head_definition(&rule.head, definitions),
         Statement::Query(query) => {
             for rule in &query.local_rules {
@@ -304,7 +322,9 @@ fn qualify_statement(
     local_definitions: &BTreeSet<Ident>,
 ) {
     match statement {
-        Statement::Fact(head) => qualify_head(head, module, local_definitions),
+        Statement::Fact(head) | Statement::OptionalFact(head) => {
+            qualify_head(head, module, local_definitions);
+        }
         Statement::Rule(rule) => qualify_rule(rule, module, local_definitions),
         Statement::Query(query) => qualify_query(query, module, local_definitions),
         Statement::AtBlock { statements, .. } => {
@@ -525,6 +545,24 @@ mod tests {
             panic!("expected diagnostic id literal");
         };
         assert_eq!(id, "PROJ-001");
+    }
+
+    #[test]
+    fn rejects_duplicate_import_modules() {
+        let root = test_root("duplicate-import-module");
+        write(
+            &root.join("anneal.dl"),
+            r#"
+            import helper from "a.dl".
+            import helper from "b.dl".
+            "#,
+        );
+        write(&root.join("a.dl"), r#"a("x")."#);
+        write(&root.join("b.dl"), r#"b("x")."#);
+
+        let err = load_program(&root, "anneal.dl").expect_err("duplicate module rejected");
+        assert!(matches!(err, LoadError::DuplicateImportModule { .. }));
+        assert!(err.to_string().contains("helper"));
     }
 
     struct TestRoot {

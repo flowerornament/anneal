@@ -1624,6 +1624,17 @@ shipped in the prelude. Identical:
 `capabilities` (list of required ActorContext capabilities). The
 runtime validates `query` against `output_schema` at load.
 
+**Definition CR-D60 (Executable verb schema encoding).** In v2.0, the
+parser-accepted `@verb.output_schema` encoding is a canonical JSON
+string whose top-level object maps output field names to schema terms.
+The runtime parses that string at load, rejects malformed or unsupported
+schema shapes, and validates the query's output fields against the
+top-level schema keys. Object-literal schema examples in this document
+are specification notation until `anneal-lang` grows object literal
+syntax; surfaces and registries consume the parsed schema, not the raw
+string. Rationale: this preserves typed load-time validation without
+making Phase 7 also carry a broader expression-grammar expansion.
+
 ### §32 Discovery fact contract
 
 Adapters declare their consumed discovery facts in `SourceInfo.config_keys`:
@@ -2526,6 +2537,7 @@ as data instead of smuggling it through row sequence.
 - CR-D57: Source driver boundary (§5)
 - CR-D58: Lifecycle profile examples (§27)
 - CR-D59: Custom prelude package order (§25)
+- CR-D60: Executable verb schema encoding (§31)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

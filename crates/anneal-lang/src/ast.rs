@@ -144,7 +144,12 @@ impl Statement {
                     statement.assign_rule_layer(layer);
                 }
             }
-            Self::Fact(_) | Self::Include(_) | Self::Import(_) | Self::Verb(_) | Self::Doc(_) => {}
+            Self::Fact(_)
+            | Self::OptionalFact(_)
+            | Self::Include(_)
+            | Self::Import(_)
+            | Self::Verb(_)
+            | Self::Doc(_) => {}
         }
     }
 }
@@ -152,6 +157,7 @@ impl Statement {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     Fact(Head),
+    OptionalFact(Head),
     Rule(Rule),
     Query(Query),
     Include(IncludeDirective),
@@ -388,6 +394,18 @@ impl Body {
     pub fn is_empty(&self) -> bool {
         self.atoms.is_empty()
     }
+
+    pub fn positive_binding_variables(&self) -> BTreeSet<Ident> {
+        let mut variables = BTreeSet::new();
+        self.collect_positive_binding_variables(&mut variables);
+        variables
+    }
+
+    pub fn collect_positive_binding_variables(&self, out: &mut BTreeSet<Ident>) {
+        for atom in &self.atoms {
+            atom.collect_positive_binding_variables(out);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -409,6 +427,34 @@ impl Atom {
             Self::Aggregation(atom) => &atom.location,
             Self::Negation(atom) => &atom.location,
             Self::TimeBlock(atom) => &atom.location,
+        }
+    }
+
+    pub fn collect_positive_binding_variables(&self, out: &mut BTreeSet<Ident>) {
+        match self {
+            Self::Stored(stored) => stored.collect_binding_variables(out),
+            Self::Derived(derived) => derived.collect_binding_variables(out),
+            Self::Aggregation(aggregate) => aggregate.result.binding_variables(out),
+            Self::TimeBlock(time_block) => time_block.body.collect_positive_binding_variables(out),
+            Self::Comparison(_) | Self::Negation(_) => {}
+        }
+    }
+}
+
+impl StoredAtom {
+    pub fn collect_binding_variables(&self, out: &mut BTreeSet<Ident>) {
+        for field in &self.fields {
+            if let Some(expr) = field.term.expr() {
+                expr.binding_variables(out);
+            }
+        }
+    }
+}
+
+impl DerivedAtom {
+    pub fn collect_binding_variables(&self, out: &mut BTreeSet<Ident>) {
+        for arg in &self.args {
+            arg.expr().binding_variables(out);
         }
     }
 }

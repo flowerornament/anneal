@@ -80,6 +80,11 @@ impl Parser {
                 location,
             }));
         }
+        if self.eat_keyword("optional") {
+            let head = self.parse_head()?;
+            self.expect(&TokenKind::Dot)?;
+            return Ok(Statement::OptionalFact(head));
+        }
         if self.eat(&TokenKind::AtSign) {
             let location = statement_start.location(&self.source);
             let annotation = self.expect_ident()?;
@@ -1131,14 +1136,16 @@ mod tests {
             r#"
             include "checks/release.dl".
             import strict_checks from "checks/release.dl".
+            optional code.module_pattern("**/*.rs").
             @verb(name: "broken", query: "diagnostic(code)").
             @doc(name: "convergence", doc: "Convergence vocabulary.").
             at("HEAD~1") { old(h) := *handle{id: h}. }
             "#,
         )
         .expect("program parses");
-        assert_eq!(program.statements.len(), 5);
-        let Statement::Doc(doc) = &program.statements[3] else {
+        assert_eq!(program.statements.len(), 6);
+        assert!(matches!(program.statements[2], Statement::OptionalFact(_)));
+        let Statement::Doc(doc) = &program.statements[4] else {
             panic!("expected @doc");
         };
         assert_eq!(doc.name(), "convergence");

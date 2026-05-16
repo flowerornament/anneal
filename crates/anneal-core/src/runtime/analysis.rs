@@ -185,6 +185,13 @@ pub enum StaticError {
         predicate: PredicateRef,
         location: SourceLocation,
     },
+    #[error(
+        "{location}: optional discovery fact '{predicate}' must be consumed by the project loader"
+    )]
+    OptionalDiscoveryFact {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
     #[error("{location}: graph primitive '{predicate}' requires a bound endpoint argument")]
     UnboundGraphPrimitiveAnchor {
         predicate: PredicateRef,
@@ -261,6 +268,7 @@ impl Analyzer {
     }
 
     fn analyze(mut self) -> Result<AnalyzedProgram, StaticError> {
+        self.check_no_optional_discovery_facts()?;
         self.collect_global_signatures()?;
         normalize_global_named_calls(&mut self.program, &self.signatures)?;
         self.check_facts()?;
@@ -274,6 +282,13 @@ impl Analyzer {
             strata,
             queries,
         })
+    }
+
+    fn check_no_optional_discovery_facts(&self) -> Result<(), StaticError> {
+        for statement in &self.program.statements {
+            check_no_optional_discovery_fact(statement)?;
+        }
+        Ok(())
     }
 
     fn collect_global_signatures(&mut self) -> Result<(), StaticError> {
@@ -346,6 +361,28 @@ impl Analyzer {
             local_strata,
             local_predicates,
         })
+    }
+}
+
+fn check_no_optional_discovery_fact(statement: &Statement) -> Result<(), StaticError> {
+    match statement {
+        Statement::OptionalFact(head) => Err(StaticError::OptionalDiscoveryFact {
+            predicate: head.predicate.clone(),
+            location: head.location.clone(),
+        }),
+        Statement::AtBlock { statements, .. } => {
+            for statement in statements {
+                check_no_optional_discovery_fact(statement)?;
+            }
+            Ok(())
+        }
+        Statement::Fact(_)
+        | Statement::Rule(_)
+        | Statement::Query(_)
+        | Statement::Include(_)
+        | Statement::Import(_)
+        | Statement::Verb(_)
+        | Statement::Doc(_) => Ok(()),
     }
 }
 
@@ -508,6 +545,7 @@ fn normalize_global_statement_named_calls(
         Statement::Rule(rule) => normalize_rule_named_calls(rule, signatures),
         Statement::AtBlock { .. }
         | Statement::Query(_)
+        | Statement::OptionalFact(_)
         | Statement::Include(_)
         | Statement::Import(_)
         | Statement::Verb(_)
@@ -1281,23 +1319,11 @@ fn negated_vars(negated: &NegatedAtom) -> BTreeSet<Ident> {
 }
 
 fn collect_positive_atom_vars(atom: &Atom, out: &mut BTreeSet<Ident>) {
-    match atom {
-        Atom::Stored(stored) => stored_binding_vars(stored, out),
-        Atom::Derived(derived) => {
-            derived_binding_vars(derived, out);
-        }
-        Atom::Comparison(_) | Atom::Negation(_) => {}
-        Atom::Aggregation(aggregate) => {
-            aggregate.result.binding_variables(out);
-        }
-        Atom::TimeBlock(time_block) => collect_positive_body_vars(&time_block.body, out),
-    }
+    atom.collect_positive_binding_variables(out);
 }
 
 fn collect_positive_body_vars(body: &Body, out: &mut BTreeSet<Ident>) {
-    for atom in &body.atoms {
-        collect_positive_atom_vars(atom, out);
-    }
+    body.collect_positive_binding_variables(out);
 }
 
 fn stored_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
@@ -1310,14 +1336,6 @@ fn stored_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
     vars
 }
 
-fn stored_binding_vars(stored: &StoredAtom, out: &mut BTreeSet<Ident>) {
-    for field in &stored.fields {
-        if let Term::Expr(expr) = &field.term {
-            expr.binding_variables(out);
-        }
-    }
-}
-
 fn stored_input_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
     let mut vars = BTreeSet::new();
     for field in &stored.fields {
@@ -1326,12 +1344,6 @@ fn stored_input_vars(stored: &StoredAtom) -> BTreeSet<Ident> {
         }
     }
     vars
-}
-
-fn derived_binding_vars(derived: &DerivedAtom, out: &mut BTreeSet<Ident>) {
-    for arg in &derived.args {
-        arg.expr().binding_variables(out);
-    }
 }
 
 fn derived_input_vars(derived: &DerivedAtom) -> BTreeSet<Ident> {

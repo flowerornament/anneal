@@ -539,7 +539,10 @@ impl<'a> ProgramScanner<'a> {
                             .insert(doc.name().to_string(), DocInfo::from_decl(doc));
                     }
                 }
-                Statement::Query(_) | Statement::Include(_) | Statement::Import(_) => {}
+                Statement::Query(_)
+                | Statement::Include(_)
+                | Statement::Import(_)
+                | Statement::OptionalFact(_) => {}
             }
         }
     }
