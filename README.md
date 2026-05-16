@@ -1,29 +1,37 @@
 # anneal
 
-Convergence assistant for knowledge corpora.
+Programmable corpus runtime for agents.
 
-`anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It helps disconnected intelligences — agents across sessions with no shared memory — orient in a body of knowledge, recover relevant context quickly, and push it toward settledness.
+`anneal` reads a knowledge corpus, turns it into typed facts, evaluates a
+Datalog-style standard library, and exposes a small set of agent-friendly
+commands for orientation, retrieval, health, and extension. It is built for
+disconnected intelligences: agents across sessions with no shared memory that
+need to recover what matters, read enough context, and leave the corpus more
+settled than they found it.
 
-## The problem
+## Why
 
-A knowledge corpus grows across many sessions. No single agent sees the full history. Documents reference each other, supersede each other, track obligations. Without tooling, every arriving agent has to read everything to understand what's settled, what's drifting, and what's connected to what.
+A corpus grows across many sessions. Files reference each other, supersede each
+other, encode obligations, drift out of date, and accumulate local vocabulary.
+Without tooling, every arriving agent has to page through the same material and
+rebuild the same map.
 
-`anneal` makes that orientation instant:
+`anneal` gives the arriving agent a runtime instead:
 
+```bash
+anneal context "v17 conformance audit"
+anneal search "release blocker" --limit 5
+anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md
+anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
-$ anneal status
- corpus  84 files, 1205 handles, 892 edges
-         1140 active, 65 terminal
-    pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
 
- health  23 errors, 11 warnings
+The same substrate also keeps the older corpus-health loop reachable during the
+v2 migration window:
 
- convergence  advancing (resolution +4, creation +2, obligations 0)
-
- suggestions  7
-       4  S001 orphaned handles
-       2  S003 pipeline stalls
-       1  S005 concern group candidates
+```bash
+anneal status --json --compact
+anneal check --scope=active
+anneal get design.md --context
 ```
 
 ## Install
@@ -34,22 +42,23 @@ $ anneal status
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash
 ```
 
-The installer is the primary path for prebuilt binaries. It installs to `~/.local/bin` by default, prints the exact target / URL / destination before it writes anything, fails fast on unsupported targets, and stays aligned with the published release matrix.
+The installer is the primary path for prebuilt binaries. It installs to
+`~/.local/bin` by default, prints the target, URL, and destination before it
+writes anything, fails fast on unsupported targets, and stays aligned with the
+published release matrix.
 
 By default it installs only the binary. To also install the bundled anneal
 skill, pass one or more explicit skill targets. Each target is a directory path
 that anneal will populate with the bundled skill files.
 
-Common variations:
-
 ```bash
 # Install somewhere else
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | INSTALL_DIR="$HOME/bin" bash
 
-# Same override, but passed as an installer flag
+# Same override, passed as an installer flag
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --install-dir "$HOME/bin"
 
-# Preview what would happen without writing anything
+# Preview without writing anything
 curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash -s -- --dry-run
 
 # Install the bundled skill into agent-managed locations
@@ -58,7 +67,11 @@ curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/instal
   --skill-target "$HOME/.codex/skills/anneal"
 ```
 
-Binaries available for: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+Binaries are published for:
+
+- `aarch64-apple-darwin`
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 
 ### From source
 
@@ -91,31 +104,11 @@ anneal = {
 };
 ```
 
-This installs the binary only unless you additionally wire skill installation
-yourself. `anneal` keeps the same runtime config layout no matter how it was
-installed:
-
-- repo config: `anneal.toml` at the corpus root
-- user config: `$XDG_CONFIG_HOME/anneal/config.toml`
-- derived history: `$XDG_STATE_HOME/anneal/...`
-
 ### Nix + Home Manager
 
-For a declarative Nix-native setup, use the exported Home Manager module. It
-installs `anneal`, writes the same XDG user config that non-Nix setups use,
-and can optionally install the bundled anneal skill into agent-managed skill
-directories.
-
-Add the flake input:
-
-```nix
-anneal = {
-  url = "github:flowerornament/anneal";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-Then include the module in your Home Manager configuration:
+Use the exported Home Manager module for a declarative setup. It installs the
+binary, writes the same XDG user config that non-Nix setups use, and can
+optionally install the bundled skill into agent-managed skill directories.
 
 ```nix
 {
@@ -135,570 +128,197 @@ Then include the module in your Home Manager configuration:
 }
 ```
 
-Available module options:
+Repo-owned corpus behavior still lives in `anneal.toml`. User preferences and
+derived history live under XDG paths.
 
-- `programs.anneal.enable`
-- `programs.anneal.package`
-- `programs.anneal.settings.state.historyMode`
-- `programs.anneal.settings.state.historyDir`
-- `programs.anneal.skill.enable`
-- `programs.anneal.skill.targets`
+## Agent Loop
 
-Repo-owned corpus behavior still lives in `anneal.toml`. Skill targets are
-home-relative symlink paths, so you can install the anneal skill anywhere your
-agent tooling expects it.
-
-If you already use Home Manager through nix-darwin, add the exported module to
-`home-manager.sharedModules` (or otherwise make it available in your shared
-Home Manager module set), then enable `programs.anneal` in the user config that
-owns your shell environment.
-
-## Quick start
+Use the narrowest command that answers the next question.
 
 ```bash
-# Per-area health profiles — the "what exists here?" view
-anneal areas
+# 1. One-call orientation
+anneal context "find the most urgent thing blocking v17 conformance"
 
-# Token-budgeted reading list (agent-oriented)
-anneal orient --budget=50k
-anneal orient --area=compiler --budget=30k
-anneal orient --file=impl-plan.md
+# 2. Retrieval when you need to inspect a specific candidate
+anneal search "v17 conformance audit" --limit 3
+anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000
 
-# Ranked maintenance tasks with fix/context/verify hints
-anneal garden
-anneal garden --area=compiler
-anneal garden --category=fix
+# 3. Graph and health checks
+anneal H 2026-05-13-corpus-runtime.md
+anneal broken
+anneal work
+anneal trend  # requires snapshot history
 
-# Corpus shape, health, and convergence direction
-anneal status
-anneal status --json --compact
+# 4. Introspection before writing custom rules
+anneal describe convergence
+anneal sources
+anneal verbs
+anneal schema
 
-# Actionable issues in active work
-anneal check
-anneal check --area=compiler --recent
-
-# Resolve a specific handle
-anneal get REQ-12
-anneal get REQ-12 --context
-
-# Search handle identities (query is optional when any filter is present)
-anneal find ADR --limit 25
-anneal find --status=active --kind=file --context
-anneal find --recent --sort=date
-
-# Ask an ad hoc structural question
-anneal query diagnostics --severity error
-anneal query edges --kind DependsOn --confidence-gap
-
-# Explain a derived result
-anneal explain convergence
-anneal explain diagnostic --id diag_deadbeef
-anneal explain obligation REQ-12
-
-# Reverse dependencies for a file or handle (downstream complement to orient --file)
-anneal impact spec/api-v3.md
-
-# Local graph neighborhood (add --upstream / --downstream for directed traversal)
-anneal map --around=REQ-12 --depth=1
-anneal map --around=REQ-12 --upstream
-anneal map --render=text --full
-
-# Linear namespace summary
-anneal obligations
-
-# Snapshot delta
-anneal diff
-anneal diff --days=7
-
-# Infer configuration
-anneal init
+# 5. Raw Datalog when the built-in verbs are too coarse
+anneal -e '? *handle{id: h, kind: "file", status: s}.'
 ```
 
-## Workflow
-
-`anneal` supports three practical loops for corpus work.
-
-### Arriving at an unfamiliar corpus (orientation)
-
-1. `anneal areas` — what exists, and how healthy is each area?
-2. `anneal find --kind=file --status=active --context` — what is each active thing actually about?
-3. `anneal explain convergence` — what do the status values mean here?
-4. `anneal orient --budget=50k` — generate a tiered reading list before making changes.
-
-### Scoped to a specific area or file (narrowing)
-
-1. `anneal orient --area=<dir> --budget=30k` or `anneal orient --file=<path>` for the reading list.
-2. `anneal map --around=<handle> --upstream` to see what the target builds on.
-3. `anneal impact <file>` to see what breaks downstream if the file changes.
-4. `anneal check --area=<dir>` to verify structural health after an edit.
-
-### Maintenance (gardening)
-
-1. `anneal garden` surfaces ranked tasks with `fix:`, `context:`, and `verify:` hints per task.
-2. Follow each task's `context:` hint (an `anneal orient` invocation) to load the files you need.
-3. Apply the `fix:` action.
-4. Run the task's `verify:` hint (usually `anneal check --area=X`) to confirm.
-5. `anneal diff --days=7` to see what moved since the last session.
-
-The paired `orient → impact` workflow covers the before/after of a specific edit: `orient --file=X` is the upstream reading list, `impact X` is the downstream review set. The `garden → orient → fix → check` loop covers the maintenance cycle.
-
-## Concepts
-
-**Handles** are the unit of knowledge. Five kinds:
-
-| Kind     | Example                    | Description                                     |
-| -------- | -------------------------- | ----------------------------------------------- |
-| file     | `spec/api-v3.md`           | A markdown document                             |
-| section  | `api-v3.md#authentication` | A heading within a file                         |
-| label    | `REQ-12`                   | A cross-reference tag (namespace + number)      |
-| version  | `v3`                       | A versioned artifact                            |
-| external | `https://example.com/spec` | An external URL referenced from corpus metadata |
-
-**Edges** are typed relationships between handles:
-
-| Edge       | Meaning                          |
-| ---------- | -------------------------------- |
-| Cites      | References without dependency    |
-| DependsOn  | Structural dependency            |
-| Supersedes | Version chain (v3 supersedes v2) |
-| Verifies   | Formal verification link         |
-| Discharges | Obligation fulfillment           |
-
-**Status** is a frontmatter `status:` field, partitioned into **active** (in-progress) and **terminal** (settled). When pipeline ordering is configured, `anneal` shows a histogram of handles flowing through status levels.
-
-**Convergence** tracks whether the corpus is advancing (more handles reaching terminal state), holding (stable), or drifting (creation outpacing resolution). Measured by comparing snapshots over time.
+The v2 surface is NDJSON-first. Each row is a standalone JSON object. Use
+`--pretty` when a human needs to read the stream directly.
 
 ## Commands
 
-### `anneal status`
+### `anneal`
 
-Single-screen dashboard for quick orientation. Shows corpus size, active/terminal partition, pipeline histogram, health (errors + warnings), convergence direction, and suggestion breakdown.
+Compact corpus dashboard from the standard library's `anneal` verb. Use this
+when the question is "what state is this corpus in right now?"
 
-```
-$ anneal status -v
- corpus  84 files, 1205 handles, 892 edges
-         1140 active, 65 terminal
-    pipeline  8 raw -> 5 draft -> 12 review -> 3 approved -> 6 published
-              raw (8):
-                notes/2025-01-15-auth-redesign.md
-                notes/2025-01-20-rate-limiting.md
-                ...
-```
+### `anneal context GOAL`
 
-Appends a snapshot to local anneal history for convergence tracking. By default this is machine-local XDG state, not a repo file.
+Cold-agent orientation in one call. `context` composes `search`, graph
+neighborhood, and bounded `read` spans into one grouped response.
 
-For agents and other tools, prefer:
+Useful flags:
 
-```bash
-anneal status --json --compact
-```
+- `--budget N`: total token budget for read spans
+- `--hits N`: number of search winners
+- `--neighborhood-depth N`: graph distance around winners
+- `--include-low-confidence`: include low-confidence search hits
 
-### `anneal areas`
+### `anneal search TEXT`
 
-Per-area health profiles. Areas are auto-detected from the top-level directory structure — each subdirectory is an area, files at the corpus root are grouped under `(root)`. Each area gets a grade (A–D) based on error count, connectivity, and metadata coverage.
-
-```
-$ anneal areas
-Area                 Files  Conn  Cross Grade  Signal
-────────────────────────────────────────────────────────────────────────
-synthesis/              34   1.5    793   [A]  healthy
-implementation/         73   0.7    552   [C]  2 broken
-compiler/               28   0.6    104   [B]  9 orphans
-archive/                17   0.3      0   [B]  island, no active files
-```
-
-Grades:
-- **A**: No errors, adequate connectivity, has active files
-- **B**: No errors, but low connectivity, no active metadata, or elevated orphan count
-- **C**: Has errors (E001/E002)
-- **D**: Has errors and low connectivity
-
-When `[concerns]` is configured in `anneal.toml`, concern groups can also act as areas.
-
-| Flag                 | Effect                                          |
-| -------------------- | ----------------------------------------------- |
-| `--sort=files\|grade\|conn\|name` | Sort order (default: files descending) |
-| `--include-terminal` | Include areas that contain only terminal files   |
-
-### `anneal orient`
-
-Context-budgeted reading list for onboarding or resuming. Answers "I'm about to work on this; what should I read, within a token budget?"
-
-```
-$ anneal orient --area=implementation --budget=30k
-
-  Frontier (3)
-  where work is now
-  implementation/2026-04-20-jz1v-arc-landing.md                14k
-      Landed the jz1v arc on master; compound-cell lowering now in…
-  implementation/2026-04-20-session-service-architecture.md    8k
-      Session service architecture. Defines the boundary between…
-
-  Foundation (4)
-  stable hubs the frontier still cites
-  README.md                                                    3k
-      Corpus overview — read first for project orientation.
-  CHANGELOG.md                                                 6k
-      Curated release narrative; names primary artifacts per entry.
-  DESIGN-GOALS.md                                              5k
-      Seven commitments synthesized from the full corpus.
-  implementation/README.md                                     1k
-      Index and orientation guide for the implementation corpus.
-
-    Overflow (2)  too large for budget; re-run with wider --budget
-    synthesis/2026-03-25-v17-convergence-synthesis.md            20k
-    formal-model/v17.md                                          88k
-
-  Budget 29k / 30k tokens used
-```
-
-**How it picks.** Output splits into tiers, top-to-bottom:
-
-- **Pinned** — `[orient].pin` config; always first.
-- **Frontier** — where work is now. Per-area newest file with a Frontier-eligible status. When the corpus declares `[convergence] ordering = [...]` in `anneal.toml`, a status is Frontier-eligible if it appears in that ordering — so off-pipeline alive statuses like `reference` or `stable` stay out of Frontier and flow to Foundation where they belong. Without an ordering, any non-terminal declared status qualifies. In `--area=X` mode, all area files by date. Flat corpora fall back to top-5 globally by date.
-- **Foundation** — stable hubs the frontier still cites. Curated hubs (`README`, `CHANGELOG`, `DESIGN-GOALS`, `OPEN-QUESTIONS`, `LABELS`, `INDEX`, `ROADMAP`, `OVERVIEW`, `GLOSSARY` at any depth, plus files with `status: living` or a `purpose:` line mentioning "entry point" / "read first" / "overview" / "map" / "orientation") always surface. Non-curated foundation files rank by **recency-weighted in-degree**: each incoming citation counted by the *citer's* recency, so stale hubs whose citers have moved on fall off.
-- **Upstream** / **Downstream** — in `--area=X` mode only, the cross-area boundary files.
-
-**Overflow.** Files whose token cost exceeds remaining budget appear as `path  Nk` rows (no snippet) under an Overflow sub-block, capped at 5 per tier. Agents can re-run with a wider `--budget` to pull them in.
-
-**What's filtered out.** Hard excludes, not soft demotions:
-
-- Terminal `status` (corpus lattice): either listed in `[convergence] terminal` in `anneal.toml`, or matching the tool-wide heuristic family — `superseded`, `archived`, `historical`, `prior`, `incorporated`, `digested`, `resolved`, `retired`, `deprecated`, `obsolete`, `withdrawn`, `cancelled`, `closed`, `done`, `completed`
-- Frontmatter `superseded-by: <path>` (the replacement wins)
-- Files under archive-style directories (`archive/`, `archives/`, `archived/`, `old/`, `legacy/`)
-- Files smaller than `[orient].stub_bytes` (default 1000) unless they're a curated hub
-
-#### Annotation vocabulary
-
-| Frontmatter | Effect |
-| --- | --- |
-| Status in your `[convergence] ordering` (or any non-terminal status if no ordering is set) | Frontier-eligible |
-| `status: living` | Always in Foundation (curated hub) |
-| Terminal status (see list above) | Excluded entirely |
-| `superseded-by: <path>` | Excluded; `<path>` is the replacement |
-| `purpose: "entry point"` / "read first" / "overview" / "map" / "orientation" | Foundation curated-hub bonus |
-
-The tool-wide terminal canon lives in the lattice — orient, check, query, and every other surface read it from the same place. Frontier-eligibility follows the corpus's own pipeline declaration: if you've declared an ordering, "where work is now" means *in* that ordering (so off-pipeline statuses like `reference` or `stable` stay out of Frontier without being hidden). If you haven't declared one, Frontier falls back to "any non-terminal status" — the tool has no finer signal.
-
-When writing a doc that obsoletes another, set both `status: superseded` and `superseded-by: <new-path>` on the old file. The corpus stops surfacing the redirect the moment you save.
-
-`orient --file=X` scopes to the upstream dependency ancestry of a single file (the upstream complement to `impact`). No per-area partition inside an upstream walk — output is Foundation only.
-
-| Flag           | Effect                                                           |
-| -------------- | ---------------------------------------------------------------- |
-| `--area=X`     | Scope to one area (also works as a global flag)                  |
-| `--budget=Nk`  | Token budget (defaults to `[orient] budget` or 50k)              |
-| `--file=X`     | Scope to the upstream ancestry of a specific file                |
-| `--paths-only` | Emit bare file paths (for piping to other tools)                 |
-| `--json`       | Structured output with scores, tiers, and budget math            |
-
-The `[orient]` config block in `anneal.toml` controls edge/label/recency weights, `recency_half_life_days` (default 90 — how fast old files decay out of the recency bonus), default budget, traversal depth, a `pin` list (always-first files), an `exclude` glob list, `stub_bytes` (default 1000; size below which a non-curated file is treated as a stub and excluded), and `curated_hub_weight` (default 10.0; additive bonus applied to curated hubs).
-
-### `anneal garden`
-
-Ranked maintenance tasks with `fix:`, `context:`, and `verify:` hints per task. Closes the `garden → orient → fix → check` loop without human guidance.
-
-```
-$ anneal garden
-
- 1. [fix]   2 broken refs in implementation/            blast=high
-             specimens/cpu-fast-path/.../family.toml not found
-             fix:     resolve or remove the broken references listed
-             context: anneal orient --area=implementation --budget=20k
-             verify:  anneal check --area=implementation --errors-only
- 2. [tidy]  9 orphaned labels in compiler/              blast=med
-             OD-1, OD-2, OD-3, OD-4, OD-5, ... (4 more)
-             fix:     reference these labels from relevant documents, or retire them
-             context: anneal orient --area=compiler --budget=20k
-             verify:  anneal check --area=compiler --suggest
- 3. [link]  island: 17 files, 0 cross-links in archive/  blast=low
-             nothing references this area and nothing inside it references elsewhere
-             fix:     add `depends-on:` frontmatter or body references
-             context: anneal orient --area=archive --budget=20k
-             verify:  anneal areas --area=archive
-```
-
-Six categories:
-
-| Category | Source                     | Description                                       |
-| -------- | -------------------------- | ------------------------------------------------- |
-| `fix`    | E001 / E002                | Broken references and undischarged obligations    |
-| `tidy`   | S001                       | Orphaned labels grouped by area                   |
-| `link`   | Cross-edge analysis        | Areas with zero cross-links (structural islands)  |
-| `stale`  | Temporal analysis          | Old files with no edges to recent work            |
-| `meta`   | W003                       | Areas missing frontmatter or status metadata      |
-| `drift`  | Namespace dispersion       | Namespaces leaking across area boundaries         |
-
-Tasks are ranked by blast radius: errors first, then orphan density, island size, staleness × handle count, metadata gaps, and namespace dispersion. E002 obligation tasks include the exact `discharges:` frontmatter syntax needed to remediate.
-
-| Flag                   | Effect                                    |
-| ---------------------- | ----------------------------------------- |
-| `--area=X`             | Scope to one area                         |
-| `--category=fix\|tidy\|link\|stale\|meta\|drift` | Filter to one category |
-| `--limit=N`            | Show top N tasks (default: 10)            |
-| `--json`               | Structured output for agent consumption   |
-
-### `anneal check`
-
-Five check rules and five suggestion rules with compiler-style diagnostics:
-
-```
-$ anneal check
-error[E001]: broken reference: auth-flow.md not found
-  -> spec/api-v3.md
-error[E001]: broken reference: REQ-99 not found
-  -> decisions/ADR-005.md
-
-23 errors (23 in active files), 11 warnings, 1 info, 7 suggestions
-```
-
-`anneal check` reports active-file diagnostics by default. Use `--scope=all` (or the legacy `--include-terminal`) when you want the full picture, including settled material.
-
-For interactive health checks, prefer the plain-text report. JSON is summary-first by default, then expands deliberately with explicit flags.
-
-| Flag                 | Effect                                            |
-| -------------------- | ------------------------------------------------- |
-| `--scope=active\|all`| Convergence scope (mirrors `query --scope`)       |
-| `--include-terminal` | Legacy alias for `--scope=all`                    |
-| `--active-only`      | Legacy alias for `--scope=active`                 |
-| `--errors-only`      | Errors only (for CI/pre-commit)                   |
-| `--suggest`          | Structural suggestions only (S001–S005)           |
-| `--stale`            | Staleness warnings only (W001)                    |
-| `--obligations`      | Obligation diagnostics only (E002/I002)           |
-| `--file=path.md`     | Scope diagnostics to a single file                |
-| `--diagnostics`      | Include bounded diagnostics in JSON output        |
-| `--limit=N`          | Cap JSON diagnostic samples                       |
-| `--extractions-summary` | Include aggregate extraction facts in JSON output |
-| `--full-extractions` | Include full extraction payloads in JSON output   |
-| `--full`             | Explicitly request full diagnostics + extractions |
-
-### `anneal get`
-
-Resolve a handle and show bounded graph context:
-
-```
-$ anneal get REQ-12
-REQ-12 (label)
-  File: requirements/REQUIREMENTS.md
-  Snippet: Requirements (REQ-): | REQ-12 | Authentication requests must be signed | draft |
-  Incoming:
-    Cites <- spec/api-v3.md
-    Cites <- decisions/ADR-003.md
-    Cites <- notes/2025-01-15-auth-redesign.md
-```
-
-Useful expansions:
+Content retrieval over stored `*content`, `*span`, and metadata. This is not
+the legacy identity search. It returns ranked hits with handle, span, score,
+reason, field, and low-confidence marker.
 
 ```bash
-anneal get REQ-12 --context            # compact agent briefing
-anneal get REQ-12 --refs               # bounded incoming/outgoing references
-anneal get REQ-12 --trace --full       # full adjacency
-anneal get REQ-12 --json               # summary JSON with counts and samples
+anneal search "conformance audit" --limit 5
 ```
 
-Pass multiple handles to get a compact batch table — one row per handle. `--status-only` trims to identity and status; `--context` adds the `purpose:`/`note:` summary.
+### `anneal read HANDLE`
+
+Budgeted content retrieval for a handle.
 
 ```bash
-anneal get arch.md impl.md spec.md               # compact batch view
-anneal get arch.md impl.md --status-only         # identity + status only
-anneal get arch.md impl.md --context             # add purpose/note summary
+anneal read formal-model/v17.md --budget 4000
 ```
 
-`get` includes a snippet when anneal can extract one from the source file. Single-handle JSON reports edge counts and truncation by default instead of dumping the full adjacency list; multi-handle JSON emits an array.
+`read` is bounded by default so agents can safely compose it with search
+without dumping the whole corpus.
 
-### `anneal impact`
+### `anneal H HANDLE`
 
-Reverse dependency traversal — what's affected if a handle changes:
+Handle neighborhood summary. Use it after search or when a handle is already
+known and relationship shape matters more than text.
 
-```
-$ anneal impact spec/api-v3.md
-Directly affected (depend on this):
-  spec/api-v2.md
-Indirectly affected (depend on the above):
-  spec/api-v1.md
-  archive/api-draft.md
-```
+### Starter Verbs
 
-Traverses the edge kinds configured in `[impact] traverse` in `anneal.toml` (defaults to DependsOn, Supersedes, Verifies). Does not traverse Cites by default (citations are not dependencies).
+The standard library ships starter verbs as ordinary `@verb` definitions:
 
-### `anneal map`
+- `anneal`: compact dashboard
+- `H`: handle neighborhood
+- `find`: identity-oriented handle lookup
+- `work`: ranked work candidates
+- `blocked`: blockers for a handle or corpus
+- `broken`: diagnostic gate
+- `trend`: convergence movement when snapshot history exists
+- `context`: cold-agent retrieval bundle
 
-Render or summarize the knowledge graph:
+Project verbs declared in `anneal.dl` are surfaced the same way as standard
+library verbs.
+
+### Introspection
 
 ```bash
-anneal map                                    # Graph summary
-anneal map --around=REQ-12 --depth=1          # Focused text neighborhood
-anneal map --around=REQ-12 --upstream         # What feeds into REQ-12
-anneal map --around=REQ-12 --downstream       # What depends on REQ-12
-anneal map --render=text --full               # Full active graph (text)
-anneal map --render=dot --full | dot -Tpng -o g.png
-                                               # Graphviz PNG
-anneal map --by-area                          # Area-level topology
-anneal map --by-area --min-edges=10           # Suppress weak cross-area links
-anneal map --by-area --render=dot | dot -Tpng -o areas.png
-                                               # Area-level PNG
-anneal map --json                             # Summary JSON
-anneal map --json --nodes --limit-nodes 50    # Structured node sample
+anneal describe convergence
+anneal sources
+anneal verbs
+anneal schema
 ```
 
-`--by-area` rolls every cross-area edge up into a directed edge list between top-level directories. Edges are sorted by count, with area-level islands (zero cross-links) listed separately so the topology gap is visible at a glance.
+Use introspection before inventing a query. Agents should be able to discover
+which sources are linked, which verbs exist, what a predicate means, and which
+capabilities a command needs.
 
-### `anneal diff`
-
-What changed since last session:
-
-```
-$ anneal diff
-Since last snapshot:
-  Handles: +12 (+8 active, +4 terminal)
-  State: draft: 3 -> 5 (+2)
-  Obligations: +0 outstanding, +2 discharged, +0 mooted
-  Edges: +47
-```
-
-Three reference modes: last snapshot (default), `--days=N` (time-based), or a git ref (`HEAD~3`, `main`) for structural diff.
-
-`--by-area` pivots the output to a per-area trend table with delta errors, delta orphans, delta connectivity, and an improving/holding/degrading/new/removed trend column. Grade changes render as `[B→C]` inline. When no snapshot history exists, `--by-area` falls back to a current-state view (equivalent to `anneal areas`).
+### Raw Queries
 
 ```bash
-anneal diff --by-area                         # Per-area trend table
-anneal diff --by-area --days=7                # Trend over the last week
-anneal diff --by-area --json                  # Structured per-area deltas
+anneal -e '? *handle{id: h, kind: "file"}.'
+anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
 
-By default, `diff` reads the same machine-local snapshot history used by `status` and `check`. If you previously used repo-local `.anneal/history.jsonl`, anneal will continue reading that legacy history for compatibility.
+The query language is Datalog-shaped. Stored source facts use `*` prefixes, for
+example `*handle`, `*edge`, `*meta`, `*content`, `*span`, `*config`,
+`*snapshot`, and `*generation`. Derived predicates come from the standard
+library, project `anneal.dl`, and inline query-local rules.
 
-### `anneal obligations`
+### Compatibility Commands
 
-Summarize outstanding, discharged, and mooted obligations for configured linear namespaces:
+During the v2 migration window the v1 corpus-health commands remain available:
 
 ```bash
-$ anneal obligations
-Obligations: 3 outstanding, 12 discharged, 1 mooted
-
-REQ
-  Outstanding:
-    REQ-14
-    REQ-19
-    REQ-22
+anneal status
+anneal check --scope=active
+anneal get HANDLE --context
+anneal find TEXT --limit 25
+anneal map --around=HANDLE
+anneal impact HANDLE
+anneal diff --days=7
+anneal obligations
+anneal init
+anneal prime
 ```
 
-Use `--json` for machine-readable totals and per-namespace buckets.
+Use them when you need exact v1 behavior or release compatibility. New agent
+workflows should prefer `context`, `search`, `read`, verbs, and raw Datalog.
 
-### `anneal find`
+## Project Extension
 
-Search handle identities:
+`anneal.dl` lives at the corpus root. It can declare discovery facts, project
+rules, and verbs.
 
-```bash
-anneal find ADR                    # Bounded active ADR-* sample
-anneal find ADR --limit 50         # Larger sample
-anneal find "" --status=draft      # Broad but narrowed query
-anneal find "" --kind=file --all   # All files including terminal
-anneal find "" --status=draft --json
-                                   # JSON sample with counts, truncation, and facets
+```dl
+# discovery facts are consumed by adapters before extraction
+md.file_extension(".md").
+md.scan_root(".").
+md.scan_exclude("node_modules").
+md.linear_namespace("OQ").
+
+# rules run after source facts exist
+release_blocker(h, "broken_ref") :=
+  diagnostic("E001", severity, h, file, line, evidence).
+
+@verb(
+  name: "release-blockers",
+  query: "? release_blocker(h, why).",
+  doc: "Open blockers for the next release.",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  capabilities: ["read"]
+)
 ```
 
-`find` is bounded by default. Use `--offset` to page through results or `--full` when you intentionally want the full match set.
-
-### `anneal query`
-
-Run bounded structural selectors over the current graph and freshly derived diagnostics:
-
-```bash
-anneal query handles --kind label --namespace REQ
-anneal query edges --kind DependsOn --confidence-gap
-anneal query diagnostics --severity warning
-anneal query obligations --undischarged
-anneal query suggestions --code S001
-```
-
-`query` is for graph-shaped questions that are too specific for `status`, too broad for `get`, and outside `find`'s identity-search role. All query domains inherit anneal's bounded-output defaults: `--limit`, `--offset`, `--scope`, and explicit `--full`.
-
-### `anneal explain`
-
-Explain why anneal produced a derived result:
-
-```bash
-anneal explain diagnostic --id diag_deadbeef
-anneal explain impact spec/api-v3.md
-anneal explain convergence
-anneal explain obligation REQ-12
-anneal explain suggestion --id sugg_deadbeef
-```
-
-`explain` is the provenance companion to anneal's structural outputs. It does not search semantically; it shows the handles, edges, states, rules, and snapshots behind a specific result.
-
-`explain convergence` also surfaces the corpus pipeline: the configured active/terminal partition, the ordering, and — if `[convergence.descriptions]` is configured — a human-readable description for each status. That turns an unfamiliar status value into something an agent can read without hunting through the config.
-
-### `anneal init`
-
-Generate `anneal.toml` from inferred corpus structure:
-
-```bash
-anneal init              # Write anneal.toml
-anneal init --dry-run    # Preview without writing
-```
-
-Infers active/terminal partition, label namespaces, and frontmatter field mappings. Pipeline ordering and linear namespaces require manual tuning.
-
-### `anneal prime`
-
-Print the agent skill briefing — first moves, command map, agent rules — baked into the binary at build time from `skills/anneal/SKILL.md`. One source of truth; the printed text always matches the skill shipped with the release.
-
-```bash
-anneal prime             # Full briefing to stdout
-anneal prime | less      # Paginate
-```
-
-Use this for onboarding a fresh agent that doesn't have the anneal skill preloaded, or for recovering context after a session restart.
+Load order is fixed: config and discovery facts first, source extraction
+second, standard library and project rules third, evaluation last. Project
+predicates shadow prelude predicates by name and arity.
 
 ## Configuration
 
-`anneal.toml` at the corpus root. Optional — `anneal` works without it (existence lattice mode: reference checking only).
-
-`anneal` separates repo-owned corpus behavior from machine-local runtime preferences:
-
-- Repo config lives in `anneal.toml` at the corpus root.
-- User config lives in XDG config:
-  - `$XDG_CONFIG_HOME/anneal/config.toml`
-  - fallback `~/.config/anneal/config.toml`
-- Derived snapshot history lives in XDG state by default:
-  - `$XDG_STATE_HOME/anneal/...`
-  - fallback `~/.local/state/anneal/...`
-
-This keeps automatic convergence tracking and `anneal diff` useful without dirtying the git worktree during normal use.
+`anneal.toml` at the corpus root controls corpus semantics. It is optional;
+without it, anneal falls back to an existence lattice and reference checking.
 
 ```toml
-exclude = ["**/README.md"]  # glob patterns and directory names to skip
+exclude = ["vendor", "**/README.md"]
 
 [convergence]
 active = ["draft", "review", "approved"]
 terminal = ["published", "archived", "superseded"]
 ordering = ["raw", "draft", "review", "approved", "published"]
 
-# Optional: human-readable descriptions surfaced by `anneal explain convergence`.
-# Agents encountering unfamiliar status values can read the operational meaning
-# directly from the command instead of hunting through the config.
 [convergence.descriptions]
-draft = "Under construction — may change substantially"
+draft = "Under construction; may change substantially"
 approved = "Settled primary artifact; changes require review"
 archived = "Superseded or retired; no further changes expected"
 
 [handles]
 confirmed = ["REQ", "ADR", "RFC"]
 rejected = ["SHA", "GPT"]
-linear = ["REQ"]  # obligations: must be discharged exactly once
-
-[suppress]
-codes = ["I001"]  # optional global suppressions
-
-[[suppress.rules]]
-code = "E001"
-target = "synthesis/v17.md"
-
-[freshness]
-warn = 30   # days before staleness warning
-error = 90  # days before staleness error
+linear = ["REQ"]
 
 [frontmatter.fields.depends-on]
 edge_kind = "DependsOn"
@@ -708,138 +328,78 @@ direction = "forward"
 edge_kind = "Supersedes"
 direction = "forward"
 
-[frontmatter.fields.synthesizes]
-edge_kind = "Synthesizes"  # custom edge kinds are accepted — any string works
-direction = "inverse"
-
-[concerns]
-api = ["REQ", "ADR"]
-
 [impact]
-traverse = ["DependsOn", "Supersedes", "Verifies", "Synthesizes", "Implements"]
+traverse = ["DependsOn", "Supersedes", "Verifies"]
 
 [state]
-history_mode = "xdg"  # optional: xdg | repo | off
+history_mode = "xdg"  # xdg | repo | off
 ```
 
-`anneal.toml` controls corpus semantics: statuses, namespaces, suppressions, frontmatter mappings, concern groups, impact traversal, file exclusions, and the history backend mode (`xdg`, `repo`, or `off`). The `exclude` list accepts both plain directory names (e.g. `"vendor"`) and glob patterns (e.g. `"**/README.md"`) — glob entries are matched against paths relative to root and prevent matched files from entering the graph entirely.
+User config lives at `$XDG_CONFIG_HOME/anneal/config.toml` with fallback
+`~/.config/anneal/config.toml`. Derived snapshot history lives under
+`$XDG_STATE_HOME/anneal/...` with fallback `~/.local/state/anneal/...`.
 
-Five edge kinds have built-in diagnostic behavior: `Cites`, `DependsOn`, `Supersedes`, `Verifies`, `Discharges`. Any other `edge_kind` string (e.g. `Synthesizes`, `Flags`, `Implements`) is accepted as a custom kind — indexed in the graph and queryable via `anneal query edges --kind=<name>`, but with no built-in checks. W001 (stale dependency) fires only on `DependsOn` edges.
+Repo config can choose whether history is machine-local, repo-local, or
+disabled. Only user config can choose an arbitrary machine-local history path.
 
-Area and temporal tuning:
+## Stored Facts
 
-```toml
-[areas]
-orphan_threshold = 5  # orphan count that downgrades an area to grade B
+Adapters emit stored facts. Rules and queries consume them.
 
-[temporal]
-recent_days = 7  # default window for --recent (days)
-```
+- `*handle`: handle id, kind, status, namespace, file, line, area, summary,
+  identity, revision, generation
+- `*edge`: typed handle relationship
+- `*meta`: frontmatter and extracted metadata
+- `*content`: bounded text chunks
+- `*span`: addressable content spans
+- `*concern`: concern-group membership
+- `*config`: ordered runtime config facts
+- `*snapshot`: history rows for `at(...)`
+- `*generation`: source refresh bookkeeping
 
-The `[impact] traverse` list controls which edge kinds `anneal impact` follows when computing affected handles. When absent, falls back to the built-in default (`DependsOn`, `Supersedes`, `Verifies`). Corpora using custom edge kinds for structural relationships should configure this to get accurate impact analysis.
+Every stored row carries enough identity to distinguish corpus, source,
+origin, revision, and generation. Engine choice is internal to `anneal-core`;
+dynamic IR owns prelude, project, and inline rules.
 
-If you want repo-local snapshots, set:
+## Diagnostics
 
-```toml
-[state]
-history_mode = "repo"
-```
+The v2 `checks.dl` catalog mirrors the shipped v1 diagnostic membership.
 
-User config controls machine-local preferences such as the base directory for derived history:
-
-```toml
-[state]
-history_dir = "/Users/alice/.local/state"
-```
-
-Important boundary: repo config can choose whether history is machine-local, repo-local, or disabled, but it cannot choose an arbitrary machine-local path. Only user config can override `history_dir`.
-
-For Nix users, the Home Manager module writes this same user config file
-declaratively. It does not introduce a separate anneal-specific config path or
-runtime mode.
-
-## Diagnostic reference
-
-### Check rules
-
-| Code | Severity | Description                                                     |
-| ---- | -------- | --------------------------------------------------------------- |
-| E001 | Error    | Broken reference — handle not found                             |
-| E002 | Error    | Undischarged obligation — linear handle without Discharges edge |
-| W001 | Warning  | Stale dependency — active handle has DependsOn edge to terminal |
-| W002 | Warning  | Confidence gap — higher pipeline level depends on lower         |
-| W003 | Warning  | Missing frontmatter — file without `status:` field              |
-| I001 | Info     | Section reference summary                                       |
-| I002 | Info     | Multiple discharges on single obligation                        |
-
-### Suggestion rules
-
-| Code | Description                                                         |
-| ---- | ------------------------------------------------------------------- |
-| S001 | Orphaned handles — labels/versions with no incoming edges           |
-| S002 | Candidate namespaces — recurring prefix not in confirmed list       |
-| S003 | Pipeline stalls — status level with no outflow to next level        |
-| S004 | Abandoned namespaces — all members terminal or stale                |
-| S005 | Concern group candidates — label prefixes co-occurring across files |
-
-## JSON output
-
-All commands support `--json` for machine consumption. Risky commands now use progressive disclosure:
-
-- default JSON is bounded and explicit about truncation
-- expansion flags like `--diagnostics`, `--refs`, `--nodes`, and `--full` request more detail
-- `--pretty` exists for humans; plain `--json` stays compact for tools
-
-Use JSON for compact facts and jq-filtered summaries rather than dumping full structured output back into chat:
-
-```bash
-anneal status --json --compact | jq '.convergence'
-anneal check --scope=active --json | jq '.summary'
-anneal check --scope=active --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
-anneal find ADR --json | jq '._meta'
-anneal map --json | jq '{nodes, edges, by_kind}'
-```
+| Code | Severity | Description |
+| --- | --- | --- |
+| E001 | Error | Broken reference |
+| E002 | Error | Undischarged obligation |
+| W001 | Warning | Active handle depends on terminal handle |
+| W002 | Warning | Higher lifecycle state depends on lower state |
+| W003 | Warning | Missing frontmatter |
+| W004 | Warning | Malformed or suspicious frontmatter value |
+| I001 | Info | Section reference summary |
+| I002 | Info | Multiple discharges on one obligation |
+| S001 | Suggestion | Orphaned handle |
+| S002 | Suggestion | Candidate namespace |
+| S003 | Suggestion | Pipeline stall |
+| S004 | Suggestion | Abandoned namespace |
+| S005 | Suggestion | Concern group candidate |
 
 ## Design
 
-On every invocation, `anneal` walks a directory of markdown files and builds a typed knowledge graph in memory:
+The v2 workspace is split by runtime boundary:
 
-1. **Parse** — split YAML frontmatter from body text, extract typed references, and scan markdown structure with pulldown-cmark
-2. **Resolve** — infer label namespaces from sequential cardinality (REQ-1 through REQ-50 is a namespace; SHA-256 is not), resolve cross-references to graph nodes with deterministic fallback candidates
-3. **Lattice** — partition observed `status:` values into active and terminal sets, optionally infer from directory conventions (files only in `archive/` → terminal)
-4. **Check** — run five consistency rules and five suggestion rules against the graph, then apply optional suppressions
-5. **Snapshot** — capture counts to local anneal history for convergence tracking over time
-
-No persistent database. The graph is ephemeral — rebuilt from files each run. The only state is the append-only snapshot history, which is derived, deletable, and machine-local by default.
-
-The underlying model borrows a simple idea from type theory and static analysis: statuses are ordered, so the tool can compare neighboring handles and ask questions like "is this dependency less settled than the thing that depends on it?" The active/terminal split is the simplest form of that ordering. A configured pipeline turns it into a richer progression. Convergence tracking measures how the population moves through that progression over time. Checks stay local — they compare a handle with its immediate neighbors rather than trying to solve a whole-program global proof — which keeps the tool fast and predictable.
-
-### Architecture
-
-```
-src/
-  handle.rs       Handle, HandleKind, NodeId
-  graph.rs        DiGraph with dual adjacency lists
-  parse.rs        Frontmatter + markdown scanning
-  extraction.rs   Typed reference extraction
-  resolve.rs      Handle resolution across namespaces
-  identity.rs     Stable diagnostic / suggestion IDs
-  lattice.rs      Convergence lattice, freshness
-  config.rs       anneal.toml parsing
-  checks.rs       Check rules + suggestion rules
-  impact.rs       Reverse graph traversal
-  obligations.rs  Linear namespace obligation tracking
-  area.rs         Per-area health + AreaFilter + TemporalFilter
-  snapshot.rs     JSONL history, convergence summary
-  analysis.rs     Shared analysis context + artifact derivation
-  query.rs        Structural query surface (handles/edges/diagnostics/…)
-  explain.rs      Provenance for diagnostics/impact/convergence/obligations
-  cli/            Per-command modules (one file per subcommand)
-  style.rs        Terminal styling via console crate
-  main.rs         Entry point + CLI dispatch
+```text
+crates/
+  anneal-lang/     private parser, AST, source spans, loader
+  anneal-core/     runtime, facts, store, evaluator, prelude, verbs, trails
+  anneal-md/       markdown Source adapter
+  anneal-legacy/   transition-only v1 parser/config bridge
+  anneal-cli/      CLI surface over core + adapters
+  anneal-mcp/      MCP surface over core + adapters
 ```
 
-The codebase is intentionally straightforward: parse markdown, build an in-memory graph, run local checks, and emit either human-readable output or JSON. The direct dependency set is small, the test suite covers the core graph/check/CLI paths, and the tool is fast enough for interactive use on a few-hundred-file corpus.
+`anneal-core` has no markdown-specific code. Adapters implement `Source` and
+emit `FactBatch` values. Retrieval providers, trail recording, policy checks,
+verb projection, and source orchestration are separate runtime seams so future
+adapters can target code, host runtimes, issue trackers, and federated corpora
+without changing the Datalog language.
 
 ## License
 
