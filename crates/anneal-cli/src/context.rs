@@ -547,6 +547,7 @@ mod tests {
                 ("tokens".to_string(), n(4)),
                 ("neighbor".to_string(), s(neighbor)),
             ]),
+            derivation: None,
         }
     }
 

@@ -57,6 +57,7 @@ mod tests {
     fn writes_one_json_record_per_line() {
         let row = Row {
             fields: BTreeMap::from([("h".to_string(), Value::String("OQ-22".to_string()))]),
+            derivation: None,
         };
         let mut out = Vec::new();
         write_ndjson(&mut out, [row]).expect("write");
@@ -73,6 +74,7 @@ mod tests {
 
         let row = Row {
             fields: BTreeMap::from([("h".to_string(), Value::String("OQ-22".to_string()))]),
+            derivation: None,
         };
         let mut out = Vec::new();
         write_ndjson_with_meta(
@@ -87,6 +89,21 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).expect("utf8"),
             "{\"_meta\":{\"query\":\"? blocked(h).\",\"prelude_hash\":\"abc123\"}}\n{\"h\":\"OQ-22\"}\n"
+        );
+    }
+
+    #[test]
+    fn derivation_field_serializes_as_reserved_output_key() {
+        let row = Row {
+            fields: BTreeMap::new(),
+            derivation: Some(crate::runtime::DerivationNode::synthetic_query(Vec::new())),
+        };
+
+        let mut out = Vec::new();
+        write_ndjson(&mut out, [row]).expect("write");
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "{\"_derivation\":{\"kind\":\"query\",\"label\":\"query output row\"}}\n"
         );
     }
 }

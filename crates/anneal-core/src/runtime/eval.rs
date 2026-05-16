@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use regex::Regex;
 use serde::Serialize;
+use serde::ser::SerializeMap;
 
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactIdentity, HandleFact, MetaFact,
@@ -33,8 +34,8 @@ use crate::retrieval::{
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
-    FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, PredicateRef, Rule, StoredAtom,
-    Term,
+    FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, PredicateRef, Rule,
+    SourceLocation, StoredAtom, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
@@ -55,6 +56,7 @@ use crate::visibility::FactVisibility;
 
 pub type Binding = BTreeMap<Ident, Value>;
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
+type DerivationRef = Arc<DerivationNode>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);
@@ -67,10 +69,33 @@ impl Tuple {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
+    pub derivation: Option<DerivationNode>,
+}
+
+impl Serialize for Row {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let derivation_replaces_field =
+            self.derivation.is_some() && self.fields.contains_key("_derivation");
+        let len = self.fields.len() + usize::from(self.derivation.is_some())
+            - usize::from(derivation_replaces_field);
+        let mut map = serializer.serialize_map(Some(len))?;
+        for (key, value) in &self.fields {
+            if derivation_replaces_field && key == "_derivation" {
+                continue;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        if let Some(derivation) = &self.derivation {
+            map.serialize_entry("_derivation", derivation)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -94,12 +119,394 @@ pub struct QueryWarning {
 
 pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
+const DEFAULT_EXPLAIN_DEPTH: usize = 5;
+const MAX_AGGREGATE_DERIVATION_CHILDREN: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplainDepth(usize);
+
+impl ExplainDepth {
+    #[must_use]
+    pub fn new(depth: usize) -> Self {
+        Self(depth.max(1))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl Default for ExplainDepth {
+    fn default() -> Self {
+        Self(DEFAULT_EXPLAIN_DEPTH)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExplainOptions {
+    depth: ExplainDepth,
+    enabled: bool,
+    explicit_depth: bool,
+}
+
+impl ExplainOptions {
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_depth(depth: usize) -> Self {
+        Self {
+            enabled: true,
+            depth: ExplainDepth::new(depth),
+            explicit_depth: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub const fn depth(&self) -> ExplainDepth {
+        self.depth
+    }
+
+    #[must_use]
+    pub const fn explicit_depth(&self) -> bool {
+        self.explicit_depth
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DerivationNode {
+    kind: DerivationKind,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predicate: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tuple: Vec<Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    fields: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    truncated: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    children: Vec<Self>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DerivationKind {
+    Query,
+    Rule,
+    Fact,
+    Stored,
+    Primitive,
+    Comparison,
+    Aggregate,
+    Negation,
+    TimeBlock,
+    RecursiveChain,
+    Truncated,
+}
+
+impl DerivationNode {
+    #[must_use]
+    pub fn synthetic_query(children: Vec<Self>) -> Self {
+        Self::query(children)
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> DerivationKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    #[must_use]
+    pub fn children(&self) -> &[Self] {
+        &self.children
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &BTreeMap<String, Value> {
+        &self.fields
+    }
+
+    fn query(children: Vec<Self>) -> Self {
+        Self {
+            kind: DerivationKind::Query,
+            label: "query output row".to_string(),
+            relation: None,
+            predicate: None,
+            tuple: Vec::new(),
+            fields: BTreeMap::new(),
+            source: None,
+            line: None,
+            column: None,
+            truncated: None,
+            children,
+        }
+    }
+
+    fn rule(rule: &Rule, tuple: &Tuple, children: Vec<Self>) -> Self {
+        let origin = rule.origin();
+        let location = origin.location();
+        Self {
+            kind: DerivationKind::Rule,
+            label: format!(
+                "rule {} fired from {:?}",
+                rule.head.predicate.display_name(),
+                origin.layer()
+            ),
+            relation: None,
+            predicate: Some(rule.head.predicate.display_name()),
+            tuple: tuple.0.clone(),
+            fields: BTreeMap::new(),
+            source: Some(location.source_name.clone()),
+            line: non_zero(location.line),
+            column: non_zero(location.column),
+            truncated: None,
+            children,
+        }
+    }
+
+    fn fact(predicate: &PredicateRef, tuple: &Tuple) -> Self {
+        Self {
+            kind: DerivationKind::Fact,
+            label: format!("fact {}", predicate.display_name()),
+            relation: None,
+            predicate: Some(predicate.display_name()),
+            tuple: tuple.0.clone(),
+            fields: BTreeMap::new(),
+            source: None,
+            line: None,
+            column: None,
+            truncated: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn stored(relation: &Ident, row: &NamedRow) -> Self {
+        Self {
+            kind: DerivationKind::Stored,
+            label: format!("stored *{relation} row matched"),
+            relation: Some(relation.to_string()),
+            predicate: None,
+            tuple: Vec::new(),
+            fields: compact_stored_row(relation, row),
+            source: row_string(row, SOURCE_FIELD).map(str::to_owned),
+            line: row_i64(row, "line").and_then(i64_to_usize),
+            column: None,
+            truncated: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn primitive(predicate: &PredicateRef, tuple: &Tuple) -> Self {
+        Self {
+            kind: DerivationKind::Primitive,
+            label: format!("primitive {} returned a tuple", predicate.display_name()),
+            relation: None,
+            predicate: Some(predicate.display_name()),
+            tuple: tuple.0.clone(),
+            fields: BTreeMap::new(),
+            source: None,
+            line: None,
+            column: None,
+            truncated: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn comparison(comparison: &Comparison) -> Self {
+        Self::located(
+            DerivationKind::Comparison,
+            "comparison matched",
+            comparison.location.clone(),
+        )
+    }
+
+    fn aggregate(aggregate: &Aggregate, children: Vec<Self>) -> Self {
+        let mut node = Self::located(
+            DerivationKind::Aggregate,
+            &format!("aggregate {:?} produced a value", aggregate.function),
+            aggregate.location.clone(),
+        );
+        node.children = children;
+        node
+    }
+
+    fn negation(negation: &NegatedAtom) -> Self {
+        let location = match negation {
+            NegatedAtom::Stored(atom) => atom.location.clone(),
+            NegatedAtom::Derived(atom) => atom.location.clone(),
+        };
+        Self::located(
+            DerivationKind::Negation,
+            "negated atom had no matches",
+            location,
+        )
+    }
+
+    fn time_block(reference: &str, location: SourceLocation, children: Vec<Self>) -> Self {
+        let mut node = Self::located(
+            DerivationKind::TimeBlock,
+            &format!("evaluated at {reference:?}"),
+            location,
+        );
+        node.children = children;
+        node
+    }
+
+    fn located(kind: DerivationKind, label: &str, location: SourceLocation) -> Self {
+        Self {
+            kind,
+            label: label.to_string(),
+            relation: None,
+            predicate: None,
+            tuple: Vec::new(),
+            fields: BTreeMap::new(),
+            source: Some(location.source_name),
+            line: non_zero(location.line),
+            column: non_zero(location.column),
+            truncated: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn bounded(&self, options: &ExplainOptions) -> Self {
+        let mut rule_stack = Vec::new();
+        self.bounded_inner(options.depth().get(), options, &mut rule_stack)
+    }
+
+    fn evidence_truncated(omitted: usize) -> Self {
+        Self {
+            kind: DerivationKind::Truncated,
+            label: format!("... {omitted} more aggregate evidence nodes omitted"),
+            relation: None,
+            predicate: None,
+            tuple: Vec::new(),
+            fields: BTreeMap::new(),
+            source: None,
+            line: None,
+            column: None,
+            truncated: Some("aggregate evidence limit reached".to_string()),
+            children: Vec::new(),
+        }
+    }
+
+    fn bounded_inner(
+        &self,
+        remaining_depth: usize,
+        options: &ExplainOptions,
+        rule_stack: &mut Vec<String>,
+    ) -> Self {
+        if remaining_depth == 0 {
+            return Self {
+                kind: DerivationKind::Truncated,
+                label: "... more derivation levels (use --explain-depth)".to_string(),
+                relation: None,
+                predicate: None,
+                tuple: Vec::new(),
+                fields: BTreeMap::new(),
+                source: None,
+                line: None,
+                column: None,
+                truncated: Some("depth limit reached".to_string()),
+                children: Vec::new(),
+            };
+        }
+
+        let fingerprint = self.rule_fingerprint();
+        if !options.explicit_depth()
+            && let Some(fingerprint) = &fingerprint
+            && rule_stack.contains(fingerprint)
+        {
+            let hops = rule_stack
+                .iter()
+                .filter(|existing| *existing == fingerprint)
+                .count()
+                + 1;
+            return Self {
+                kind: DerivationKind::RecursiveChain,
+                label: format!("via {fingerprint} x {hops} recursive hops"),
+                relation: None,
+                predicate: self.predicate.clone(),
+                tuple: self.tuple.clone(),
+                fields: BTreeMap::new(),
+                source: self.source.clone(),
+                line: self.line,
+                column: self.column,
+                truncated: Some("recursive chain summarized".to_string()),
+                children: Vec::new(),
+            };
+        }
+
+        if let Some(fingerprint) = &fingerprint {
+            rule_stack.push(fingerprint.clone());
+        }
+        let mut node = self.clone();
+        node.children = self
+            .children
+            .iter()
+            .map(|child| child.bounded_inner(remaining_depth - 1, options, rule_stack))
+            .collect();
+        if fingerprint.is_some() {
+            rule_stack.pop();
+        }
+        node
+    }
+
+    fn rule_fingerprint(&self) -> Option<String> {
+        if self.kind != DerivationKind::Rule {
+            return None;
+        }
+        let predicate = self.predicate.as_ref()?;
+        Some(match (&self.source, self.line) {
+            (Some(source), Some(line)) => format!("{predicate}@{source}:{line}"),
+            (Some(source), None) => format!("{predicate}@{source}"),
+            (None, _) => predicate.clone(),
+        })
+    }
+}
+
+fn non_zero(value: usize) -> Option<usize> {
+    (value != 0).then_some(value)
+}
+
+fn i64_to_usize(value: i64) -> Option<usize> {
+    usize::try_from(value).ok()
+}
 
 #[derive(Clone)]
 pub struct EvalOptions {
     actor: ActorContext,
     read_full_token_limit: i64,
     low_confidence_threshold: f32,
+    explain: ExplainOptions,
     ranker: Arc<dyn Ranker>,
     policy: Arc<dyn Policy>,
 }
@@ -127,6 +534,21 @@ impl EvalOptions {
     pub fn with_low_confidence_threshold(mut self, threshold: f32) -> Self {
         self.low_confidence_threshold = threshold.clamp(0.0, 1.0);
         self
+    }
+
+    pub fn with_explain(mut self) -> Self {
+        self.explain = ExplainOptions::enabled();
+        self
+    }
+
+    pub fn with_explain_depth(mut self, depth: usize) -> Self {
+        self.explain = ExplainOptions::with_depth(depth);
+        self
+    }
+
+    #[must_use]
+    pub const fn explain(&self) -> &ExplainOptions {
+        &self.explain
     }
 
     pub fn with_ranker(mut self, ranker: impl Ranker + 'static) -> Self {
@@ -172,6 +594,7 @@ impl Default for EvalOptions {
             actor: ActorContext::anonymous_cli().with_runtime_capability(RuntimeCapability::Eval),
             read_full_token_limit: DEFAULT_READ_FULL_TOKEN_LIMIT,
             low_confidence_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+            explain: ExplainOptions::default(),
             ranker: Arc::new(DefaultRanker),
             policy: Arc::new(AllowAllPolicy),
         }
@@ -184,6 +607,7 @@ impl fmt::Debug for EvalOptions {
             .field("actor", &self.actor)
             .field("read_full_token_limit", &self.read_full_token_limit)
             .field("low_confidence_threshold", &self.low_confidence_threshold)
+            .field("explain", &self.explain)
             .finish_non_exhaustive()
     }
 }
@@ -2382,8 +2806,13 @@ const SNAPSHOT_RELATION: &str = "snapshot";
 const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
 const CORPUS_FIELD: &str = "corpus";
 const SOURCE_FIELD: &str = "source";
+const NATIVE_ID_FIELD: &str = "native_id";
+const ORIGIN_URI_FIELD: &str = "origin_uri";
+const REVISION_FIELD: &str = "revision";
 const SNAPSHOT_FIELD: &str = "snapshot";
 const ID_FIELD: &str = "id";
+const FILE_FIELD: &str = "file";
+const LINE_FIELD: &str = "line";
 const FROM_FIELD: &str = "from";
 const TO_FIELD: &str = "to";
 const KIND_FIELD: &str = "kind";
@@ -2554,6 +2983,7 @@ fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
 #[derive(Clone, Debug, Default)]
 struct DerivedRelation {
     tuples: BTreeSet<Tuple>,
+    derivations: BTreeMap<Tuple, DerivationRef>,
     indexes: Vec<BTreeMap<Value, Vec<Tuple>>>,
 }
 
@@ -2566,9 +2996,12 @@ impl DerivedRelation {
         &self.tuples
     }
 
-    fn insert(&mut self, tuple: &Tuple) -> bool {
+    fn insert_with_derivation(&mut self, tuple: &Tuple, derivation: Option<DerivationRef>) -> bool {
         if !self.tuples.insert(tuple.clone()) {
             return false;
+        }
+        if let Some(derivation) = derivation {
+            self.derivations.insert(tuple.clone(), derivation);
         }
         if self.indexes.len() < tuple.0.len() {
             self.indexes.resize_with(tuple.0.len(), BTreeMap::new);
@@ -2580,6 +3013,10 @@ impl DerivedRelation {
                 .push(tuple.clone());
         }
         true
+    }
+
+    fn derivation(&self, tuple: &Tuple) -> Option<DerivationRef> {
+        self.derivations.get(tuple).map(Arc::clone)
     }
 
     fn candidate_tuples(&self, constraints: &[(usize, Value)]) -> TupleCandidates<'_> {
@@ -2687,6 +3124,8 @@ pub enum EvalError {
     UnsupportedExpression,
     #[error("division by zero")]
     DivisionByZero,
+    #[error("reserved output field '{field}' cannot be bound when explain output is enabled")]
+    ReservedExplainField { field: &'static str },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -2762,6 +3201,24 @@ impl Evaluator {
         let query_ast = query.query();
         let mut warnings = self.warnings.clone();
         if query_ast.local_rules.is_empty() {
+            if self.options.explain().is_enabled() {
+                let bindings = eval_body_traced(
+                    &query_ast.body,
+                    vec![TracedBinding::empty()],
+                    &self.database,
+                    None,
+                    &mut warnings,
+                    &self.options,
+                )?;
+                ensure_no_reserved_explain_fields(&bindings)?;
+                return Ok(QueryOutput {
+                    rows: bindings
+                        .into_iter()
+                        .map(|binding| traced_binding_to_row(binding, self.options.explain()))
+                        .collect(),
+                    warnings,
+                });
+            }
             let bindings = eval_body(
                 &query_ast.body,
                 vec![Binding::new()],
@@ -2787,14 +3244,32 @@ impl Evaluator {
                 .collect::<Vec<_>>();
             run_rule_group(&mut database, &rules, &mut warnings, &self.options)?;
         }
-        let bindings = eval_body(
-            &query_ast.body,
-            vec![Binding::new()],
-            &database,
-            &mut warnings,
-            &self.options,
-        )?;
-        let rows = bindings.into_iter().map(binding_to_row).collect();
+        let rows = if self.options.explain().is_enabled() {
+            let bindings = eval_body_traced(
+                &query_ast.body,
+                vec![TracedBinding::empty()],
+                &database,
+                None,
+                &mut warnings,
+                &self.options,
+            )?;
+            ensure_no_reserved_explain_fields(&bindings)?;
+            bindings
+                .into_iter()
+                .map(|binding| traced_binding_to_row(binding, self.options.explain()))
+                .collect()
+        } else {
+            eval_body(
+                &query_ast.body,
+                vec![Binding::new()],
+                &database,
+                &mut warnings,
+                &self.options,
+            )?
+            .into_iter()
+            .map(binding_to_row)
+            .collect()
+        };
         Ok(QueryOutput { rows, warnings })
     }
 
@@ -2808,11 +3283,16 @@ impl Evaluator {
         }
         for fact in self.program.facts() {
             let tuple = project_fact_head(fact)?;
+            let derivation = self
+                .options
+                .explain()
+                .is_enabled()
+                .then(|| Arc::new(DerivationNode::fact(&fact.predicate, &tuple)));
             self.database
                 .derived
                 .entry(fact.predicate.clone())
                 .or_default()
-                .insert(&tuple);
+                .insert_with_derivation(&tuple, derivation);
         }
         self.facts_seeded = true;
         Ok(())
@@ -2857,23 +3337,92 @@ fn run_rule_group(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+struct DerivedTuple {
+    tuple: Tuple,
+    derivation: Option<DerivationRef>,
+}
+
+#[derive(Clone, Debug)]
+struct TracedBinding {
+    values: Binding,
+    steps: Vec<DerivationRef>,
+}
+
+impl TracedBinding {
+    fn empty() -> Self {
+        Self {
+            values: Binding::new(),
+            steps: Vec::new(),
+        }
+    }
+
+    fn with_values(values: Binding) -> Self {
+        Self {
+            values,
+            steps: Vec::new(),
+        }
+    }
+
+    fn push_step(mut self, step: DerivationRef) -> Self {
+        self.steps.push(step);
+        self
+    }
+}
+
+fn clone_derivation_refs(steps: &[DerivationRef]) -> Vec<DerivationNode> {
+    steps.iter().map(|step| step.as_ref().clone()).collect()
+}
+
+fn derivation_ref(node: DerivationNode) -> DerivationRef {
+    Arc::new(node)
+}
+
 fn eval_rule(
     rule: &Rule,
     database: &Database,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
-) -> Result<Vec<Tuple>, EvalError> {
-    let bindings = eval_body(
+) -> Result<Vec<DerivedTuple>, EvalError> {
+    if options.explain().is_enabled() {
+        let bindings = eval_body_traced(
+            &rule.body,
+            vec![TracedBinding::empty()],
+            database,
+            None,
+            warnings,
+            options,
+        )?;
+        return bindings
+            .into_iter()
+            .map(|binding| {
+                let tuple = project_head(&rule.head, &binding.values)?;
+                let derivation =
+                    DerivationNode::rule(rule, &tuple, clone_derivation_refs(&binding.steps))
+                        .bounded(options.explain());
+                Ok(DerivedTuple {
+                    tuple,
+                    derivation: Some(Arc::new(derivation)),
+                })
+            })
+            .collect();
+    }
+
+    eval_body(
         &rule.body,
         vec![Binding::new()],
         database,
         warnings,
         options,
-    )?;
-    bindings
-        .into_iter()
-        .map(|binding| project_head(&rule.head, &binding))
-        .collect()
+    )?
+    .into_iter()
+    .map(|binding| {
+        Ok(DerivedTuple {
+            tuple: project_head(&rule.head, &binding)?,
+            derivation: None,
+        })
+    })
+    .collect()
 }
 
 fn eval_rule_with_delta(
@@ -2883,32 +3432,63 @@ fn eval_rule_with_delta(
     atom_index: usize,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
-) -> Result<Vec<Tuple>, EvalError> {
-    let bindings = eval_body_with_delta(
+) -> Result<Vec<DerivedTuple>, EvalError> {
+    if options.explain().is_enabled() {
+        let bindings = eval_body_traced(
+            &rule.body,
+            vec![TracedBinding::empty()],
+            database,
+            Some(DeltaView { delta, atom_index }),
+            warnings,
+            options,
+        )?;
+        return bindings
+            .into_iter()
+            .map(|binding| {
+                let tuple = project_head(&rule.head, &binding.values)?;
+                let derivation =
+                    DerivationNode::rule(rule, &tuple, clone_derivation_refs(&binding.steps))
+                        .bounded(options.explain());
+                Ok(DerivedTuple {
+                    tuple,
+                    derivation: Some(Arc::new(derivation)),
+                })
+            })
+            .collect();
+    }
+
+    eval_body_with_delta(
         &rule.body,
         vec![Binding::new()],
         database,
         Some(DeltaView { delta, atom_index }),
         warnings,
         options,
-    )?;
-    bindings
-        .into_iter()
-        .map(|binding| project_head(&rule.head, &binding))
-        .collect()
+    )?
+    .into_iter()
+    .map(|binding| {
+        Ok(DerivedTuple {
+            tuple: project_head(&rule.head, &binding)?,
+            derivation: None,
+        })
+    })
+    .collect()
 }
 
 fn insert_new_tuples(
     database: &mut Database,
     predicate: &PredicateRef,
-    tuples: Vec<Tuple>,
+    tuples: Vec<DerivedTuple>,
     delta: &mut DeltaMap,
 ) -> bool {
     let relation = database.derived.entry(predicate.clone()).or_default();
     let mut changed = false;
-    for tuple in tuples {
-        if relation.insert(&tuple) {
-            delta.entry(predicate.clone()).or_default().insert(&tuple);
+    for derived in tuples {
+        if relation.insert_with_derivation(&derived.tuple, derived.derivation.clone()) {
+            delta
+                .entry(predicate.clone())
+                .or_default()
+                .insert_with_derivation(&derived.tuple, derived.derivation);
             changed = true;
         }
     }
@@ -2965,6 +3545,42 @@ fn eval_body_with_delta(
         bindings = eval_atom(atom, bindings, database, atom_delta, warnings, options)?;
     }
     Ok(bindings)
+}
+
+fn eval_body_traced(
+    body: &Body,
+    mut bindings: Vec<TracedBinding>,
+    database: &Database,
+    delta: Option<DeltaView<'_>>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut remaining = body.atoms.iter().enumerate().collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        if bindings.is_empty() {
+            break;
+        }
+        let bound = common_bound_variables_traced(&bindings);
+        let next_index = remaining
+            .iter()
+            .position(|(atom_index, atom)| atom_ready(body, *atom_index, atom, &bound))
+            .unwrap_or(0);
+        let (atom_index, atom) = remaining.remove(next_index);
+        let atom_delta = delta.filter(|view| view.atom_index == atom_index);
+        bindings = eval_atom_traced(atom, bindings, database, atom_delta, warnings, options)?;
+    }
+    Ok(bindings)
+}
+
+fn common_bound_variables_traced(bindings: &[TracedBinding]) -> BTreeSet<Ident> {
+    let Some((first, rest)) = bindings.split_first() else {
+        return BTreeSet::new();
+    };
+    let mut common = first.values.keys().cloned().collect::<BTreeSet<_>>();
+    for binding in rest {
+        common.retain(|var| binding.values.contains_key(var));
+    }
+    common
 }
 
 fn common_bound_variables(bindings: &[Binding]) -> BTreeSet<Ident> {
@@ -3251,6 +3867,65 @@ fn eval_atom(
     }
 }
 
+fn eval_atom_traced(
+    atom: &Atom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    delta: Option<DeltaView<'_>>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    match atom {
+        Atom::Stored(stored) => eval_stored_traced(stored, bindings, database, options),
+        Atom::Derived(derived) => {
+            if let Some(view) = delta {
+                eval_derived_from_delta_traced(derived, bindings, view.delta)
+            } else {
+                eval_derived_traced(derived, bindings, database, options)
+            }
+        }
+        Atom::Comparison(comparison) => eval_comparison_traced(comparison, bindings),
+        Atom::Aggregation(aggregate) => {
+            eval_aggregate_traced(aggregate, bindings, database, warnings, options)
+        }
+        Atom::Negation(negation) => {
+            eval_negation_traced(&negation.atom, bindings, database, warnings, options)
+        }
+        Atom::TimeBlock(time_block) => {
+            ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
+            let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
+            push_warnings(warnings, scoped_warnings);
+            let mut out = Vec::new();
+            for binding in bindings {
+                let children = eval_body_traced(
+                    &time_block.body,
+                    vec![TracedBinding::with_values(binding.values.clone())],
+                    &scoped,
+                    None,
+                    warnings,
+                    options,
+                )?;
+                out.extend(children.into_iter().map(|child| {
+                    TracedBinding {
+                        values: child.values,
+                        steps: binding
+                            .steps
+                            .clone()
+                            .into_iter()
+                            .chain([derivation_ref(DerivationNode::time_block(
+                                &time_block.reference,
+                                time_block.location.clone(),
+                                clone_derivation_refs(&child.steps),
+                            ))])
+                            .collect(),
+                    }
+                }));
+            }
+            Ok(out)
+        }
+    }
+}
+
 fn ensure_snapshot_time_body_supported(
     reference: &str,
     body: &Body,
@@ -3375,6 +4050,42 @@ fn eval_stored(
     Ok(out)
 }
 
+fn eval_stored_traced(
+    atom: &StoredAtom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let relation =
+        database
+            .stored
+            .get(&atom.relation)
+            .ok_or_else(|| EvalError::UnknownStoredRelation {
+                relation: atom.relation.clone(),
+            })?;
+    let mut out = Vec::new();
+    for binding in bindings {
+        let constraints = stored_constraints(&atom.fields, &binding.values)?;
+        for row in relation.candidate_rows(&constraints) {
+            if !stored_row_visible(&atom.relation, row, options) {
+                continue;
+            }
+            if let Some(next) = unify_stored_fields(&atom.fields, row, &binding.values)? {
+                out.push(TracedBinding {
+                    values: next,
+                    steps: binding
+                        .steps
+                        .clone()
+                        .into_iter()
+                        .chain([derivation_ref(DerivationNode::stored(&atom.relation, row))])
+                        .collect(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -> bool {
     if !matches!(
         relation.as_str(),
@@ -3448,6 +4159,101 @@ fn eval_derived_from_relation(
             }
             if let Some(next) = unify_call_args(&atom.args, tuple, &binding)? {
                 out.push(next);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn eval_derived_traced(
+    atom: &crate::runtime::ast::DerivedAtom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
+        if primitive.is_soft() && database.derived.contains_key(&atom.predicate) {
+            let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
+                EvalError::UnknownDerivedPredicate {
+                    predicate: atom.predicate.clone(),
+                }
+            })?;
+            return eval_derived_from_relation_traced(atom, bindings, relation);
+        }
+        return eval_primitive_traced(primitive, atom, bindings, database, options);
+    }
+    let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
+        EvalError::UnknownDerivedPredicate {
+            predicate: atom.predicate.clone(),
+        }
+    })?;
+    eval_derived_from_relation_traced(atom, bindings, relation)
+}
+
+fn eval_derived_from_delta_traced(
+    atom: &crate::runtime::ast::DerivedAtom,
+    bindings: Vec<TracedBinding>,
+    delta: &DeltaMap,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let Some(relation) = delta.get(&atom.predicate) else {
+        return Ok(Vec::new());
+    };
+    eval_derived_from_relation_traced(atom, bindings, relation)
+}
+
+fn eval_derived_from_relation_traced(
+    atom: &crate::runtime::ast::DerivedAtom,
+    bindings: Vec<TracedBinding>,
+    relation: &DerivedRelation,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let constraints = call_constraints(&atom.args, &binding.values)?;
+        for tuple in relation.candidate_tuples(&constraints) {
+            if tuple.0.len() != atom.args.len() {
+                continue;
+            }
+            if let Some(next) = unify_call_args(&atom.args, tuple, &binding.values)? {
+                let step = relation.derivation(tuple).unwrap_or_else(|| {
+                    derivation_ref(DerivationNode::fact(&atom.predicate, tuple))
+                });
+                out.push(TracedBinding {
+                    values: next,
+                    steps: binding.steps.clone().into_iter().chain([step]).collect(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn eval_primitive_traced(
+    primitive: PrimitivePredicate,
+    atom: &crate::runtime::ast::DerivedAtom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut out = Vec::new();
+    let mut regex_cache = BTreeMap::<String, Regex>::new();
+    for binding in bindings {
+        let constraints = call_constraints(&atom.args, &binding.values)?;
+        let tuples =
+            primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
+        for tuple in tuples {
+            if let Some(next) = unify_call_args(&atom.args, &tuple, &binding.values)? {
+                out.push(TracedBinding {
+                    values: next,
+                    steps: binding
+                        .steps
+                        .clone()
+                        .into_iter()
+                        .chain([derivation_ref(DerivationNode::primitive(
+                            &atom.predicate,
+                            &tuple,
+                        ))])
+                        .collect(),
+                });
             }
         }
     }
@@ -3564,6 +4370,21 @@ fn eval_comparison(
     Ok(out)
 }
 
+fn eval_comparison_traced(
+    comparison: &Comparison,
+    bindings: Vec<TracedBinding>,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let left = eval_expr(&comparison.left, &binding.values)?;
+        let right = eval_expr(&comparison.right, &binding.values)?;
+        if compare(&left, comparison.op, &right)? {
+            out.push(binding.push_step(derivation_ref(DerivationNode::comparison(comparison))));
+        }
+    }
+    Ok(out)
+}
+
 fn eval_negation(
     negated: &NegatedAtom,
     bindings: Vec<Binding>,
@@ -3587,6 +4408,34 @@ fn eval_negation(
         )?;
         if matches.is_empty() {
             out.push(binding);
+        }
+    }
+    Ok(out)
+}
+
+fn eval_negation_traced(
+    negated: &NegatedAtom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let atom = match negated {
+            NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
+            NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
+        };
+        let matches = eval_atom(
+            &atom,
+            vec![binding.values.clone()],
+            database,
+            None,
+            warnings,
+            options,
+        )?;
+        if matches.is_empty() {
+            out.push(binding.push_step(derivation_ref(DerivationNode::negation(negated))));
         }
     }
     Ok(out)
@@ -3625,6 +4474,83 @@ fn eval_aggregate(
         out.extend(eval_aggregate_group(aggregate, &binding, &inner)?);
     }
     Ok(out)
+}
+
+fn eval_aggregate_traced(
+    aggregate: &Aggregate,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    validate_aggregate_args(aggregate)?;
+
+    let mut out = Vec::new();
+    for binding in bindings {
+        let inner = eval_body_traced(
+            &aggregate.body,
+            vec![TracedBinding::with_values(binding.values.clone())],
+            database,
+            None,
+            warnings,
+            options,
+        )?;
+        if inner.is_empty() {
+            if aggregate.function == AggregateFunction::Count
+                && let Some(group) = bind_aggregate_result(
+                    &aggregate.result,
+                    &binding.values,
+                    &Value::Number(NumberValue::Int(0)),
+                )?
+            {
+                out.push(
+                    TracedBinding {
+                        values: group,
+                        steps: binding.steps.clone(),
+                    }
+                    .push_step(derivation_ref(DerivationNode::aggregate(
+                        aggregate,
+                        Vec::new(),
+                    ))),
+                );
+            }
+            continue;
+        }
+        let rows = inner
+            .iter()
+            .map(|row| row.values.clone())
+            .collect::<Vec<_>>();
+        let aggregate_steps = aggregate_derivation_steps(&inner);
+        for values in eval_aggregate_group(aggregate, &binding.values, &rows)? {
+            out.push(
+                TracedBinding {
+                    values,
+                    steps: binding.steps.clone(),
+                }
+                .push_step(derivation_ref(DerivationNode::aggregate(
+                    aggregate,
+                    clone_derivation_refs(&aggregate_steps),
+                ))),
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn aggregate_derivation_steps(rows: &[TracedBinding]) -> Vec<DerivationRef> {
+    let mut out = Vec::new();
+    let mut omitted = 0_usize;
+    for step in rows.iter().flat_map(|row| row.steps.iter()) {
+        if out.len() < MAX_AGGREGATE_DERIVATION_CHILDREN {
+            out.push(Arc::clone(step));
+        } else {
+            omitted += 1;
+        }
+    }
+    if omitted > 0 {
+        out.push(derivation_ref(DerivationNode::evidence_truncated(omitted)));
+    }
+    out
 }
 
 fn eval_aggregate_group(
@@ -4245,7 +5171,119 @@ fn binding_to_row(binding: Binding) -> Row {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
+        derivation: None,
     }
+}
+
+fn traced_binding_to_row(binding: TracedBinding, options: &ExplainOptions) -> Row {
+    debug_assert!(
+        !binding
+            .values
+            .contains_key(&Ident::new_unchecked("_derivation")),
+        "explain output reserves _derivation"
+    );
+    Row {
+        fields: binding
+            .values
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+        derivation: Some(
+            DerivationNode::query(clone_derivation_refs(&binding.steps)).bounded(options),
+        ),
+    }
+}
+
+fn ensure_no_reserved_explain_fields(bindings: &[TracedBinding]) -> Result<(), EvalError> {
+    let reserved = Ident::new_unchecked("_derivation");
+    if bindings
+        .iter()
+        .any(|binding| binding.values.contains_key(&reserved))
+    {
+        return Err(EvalError::ReservedExplainField {
+            field: "_derivation",
+        });
+    }
+    Ok(())
+}
+
+fn compact_stored_row(relation: &Ident, row: &NamedRow) -> BTreeMap<String, Value> {
+    row.iter()
+        .filter(|(field, _)| explain_field_visible(relation.as_str(), field.as_str()))
+        .map(|(field, value)| (field.to_string(), value.clone()))
+        .collect()
+}
+
+fn explain_field_visible(relation: &str, field: &str) -> bool {
+    let identity = matches!(
+        field,
+        CORPUS_FIELD
+            | SOURCE_FIELD
+            | NATIVE_ID_FIELD
+            | ORIGIN_URI_FIELD
+            | REVISION_FIELD
+            | GENERATION_FIELD
+    );
+    identity
+        || match relation {
+            HANDLE_RELATION => matches!(
+                field,
+                ID_FIELD
+                    | KIND_FIELD
+                    | STATUS_FIELD
+                    | NAMESPACE_FIELD
+                    | FILE_FIELD
+                    | LINE_FIELD
+                    | DATE_FIELD
+                    | AREA_FIELD
+            ),
+            EDGE_RELATION => matches!(field, FROM_FIELD | TO_FIELD | KIND_FIELD),
+            META_RELATION | CONFIG_RELATION | SNAPSHOT_RELATION => matches!(
+                field,
+                HANDLE_FIELD
+                    | ID_FIELD
+                    | KEY_FIELD
+                    | VALUE_FIELD
+                    | ORDINAL_FIELD
+                    | AT_FIELD
+                    | SNAPSHOT_FIELD
+            ),
+            CONTENT_RELATION | SPAN_RELATION => matches!(
+                field,
+                HANDLE_FIELD
+                    | SPAN_ID_FIELD
+                    | ID_FIELD
+                    | START_LINE_FIELD
+                    | END_LINE_FIELD
+                    | TOKENS_FIELD
+            ),
+            TRAIL_RELATION => matches!(
+                field,
+                SESSION_ID_FIELD
+                    | STEP_FIELD
+                    | ACTOR_FIELD
+                    | CORPUS_FIELD
+                    | VERB_FIELD
+                    | TRAIL_VISIBILITY_FIELD
+            ),
+            TRAIL_REF_RELATION => matches!(
+                field,
+                SESSION_ID_FIELD
+                    | STEP_FIELD
+                    | KIND_FIELD
+                    | ORDINAL_FIELD
+                    | CORPUS_FIELD
+                    | SOURCE_FIELD
+                    | HANDLE_FIELD
+                    | SPAN_ID_FIELD
+                    | "score"
+            ),
+            TRAIL_GENERATION_RELATION => matches!(
+                field,
+                SESSION_ID_FIELD | STEP_FIELD | CORPUS_FIELD | SOURCE_FIELD | GENERATION_FIELD
+            ),
+            _ => false,
+        }
 }
 
 fn named_row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> NamedRow {
@@ -5521,6 +6559,28 @@ mod tests {
         match value {
             Value::Number(NumberValue::Float(value)) => *value,
             other => panic!("expected float value, got {other:?}"),
+        }
+    }
+
+    fn derivation_contains(node: &DerivationNode, kind: DerivationKind) -> bool {
+        node.kind == kind
+            || node
+                .children
+                .iter()
+                .any(|child| derivation_contains(child, kind))
+    }
+
+    fn derivation_rule_depth(node: &DerivationNode) -> usize {
+        let child_depth = node
+            .children
+            .iter()
+            .map(derivation_rule_depth)
+            .max()
+            .unwrap_or(0);
+        if node.kind == DerivationKind::Rule {
+            child_depth + 1
+        } else {
+            child_depth
         }
     }
 
@@ -6983,6 +8043,144 @@ release_blocker(code) := issue(code, "error").
                     ("visibility", s("private")),
                 ]),
             ],
+        );
+    }
+
+    #[test]
+    fn explain_attaches_per_row_stored_and_rule_derivations() {
+        let output = evaluate_query_output_with_options(
+            r#"
+            blocked(h) := *handle{id: h, status: "open"}.
+            ? blocked(h).
+            "#,
+            Database::from_store(&fixture_store()),
+            EvalOptions::default().with_explain(),
+        );
+
+        assert_eq!(output.rows.len(), 1);
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert_eq!(derivation.kind, DerivationKind::Query);
+        assert!(derivation_contains(derivation, DerivationKind::Rule));
+        assert!(derivation_contains(derivation, DerivationKind::Stored));
+        assert!(!output.rows[0].fields.contains_key("_derivation"));
+    }
+
+    #[test]
+    fn explain_depth_bounds_recursive_rule_chains_by_default() {
+        let output = evaluate_query_output_with_options(
+            r#"
+            edge("a", "b").
+            edge("b", "c").
+            edge("c", "d").
+            path(x, y) := edge(x, y).
+            path(x, z) := edge(x, y), path(y, z).
+            ? path("a", "d").
+            "#,
+            Database::default(),
+            EvalOptions::default().with_explain(),
+        );
+
+        assert_eq!(output.rows.len(), 1);
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert!(derivation_contains(
+            derivation,
+            DerivationKind::RecursiveChain
+        ));
+    }
+
+    #[test]
+    fn explicit_explain_depth_expands_recursive_rule_chains_until_limit() {
+        let output = evaluate_query_output_with_options(
+            r#"
+            edge("a", "b").
+            edge("b", "c").
+            edge("c", "d").
+            path(x, y) := edge(x, y).
+            path(x, z) := edge(x, y), path(y, z).
+            ? path("a", "d").
+            "#,
+            Database::default(),
+            EvalOptions::default().with_explain_depth(8),
+        );
+
+        assert_eq!(output.rows.len(), 1);
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert!(!derivation_contains(
+            derivation,
+            DerivationKind::RecursiveChain
+        ));
+        assert!(
+            derivation_rule_depth(derivation) >= 2,
+            "explicit depth should expose recursive rule chain: {derivation:?}"
+        );
+    }
+
+    #[test]
+    fn explain_rejects_reserved_derivation_output_binding() {
+        let err = evaluate_query_error_with_options(
+            r"? *handle{id: _derivation}.",
+            Database::from_store(&fixture_store()),
+            EvalOptions::default().with_explain(),
+        );
+
+        assert!(matches!(
+            err,
+            EvalError::ReservedExplainField {
+                field: "_derivation"
+            }
+        ));
+    }
+
+    #[test]
+    fn explain_uses_visible_trail_projection_and_compact_rows() {
+        let temp = tempdir().expect("tempdir");
+        let store = trail_store(&temp);
+        let redactor = DefaultTrailRedactor::default();
+        let public_actor = ActorContext::anonymous_cli();
+        let public_ctx = TrailContext::from(&public_actor).with_visibility(FactVisibility::Public);
+        store
+            .append(
+                redactor.redact(
+                    trail_fixture_entry("session-1", 1, r#"? read("customer secret", h)."#),
+                    &public_ctx,
+                ),
+                &public_ctx,
+            )
+            .expect("append trail row");
+        let options = EvalOptions::default().with_explain();
+        let database = Database::default()
+            .with_trail_store(
+                &store,
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &options,
+            )
+            .expect("trail rows load");
+        let output =
+            evaluate_query_output_with_options(r"? *trail{session_id, step}.", database, options);
+
+        assert_eq!(output.rows.len(), 1);
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Stored));
+        let stored = derivation
+            .children
+            .iter()
+            .find(|node| derivation_contains(node, DerivationKind::Stored))
+            .expect("stored trail derivation present");
+        assert!(
+            !format!("{stored:?}").contains("customer"),
+            "explain should use compact redacted trail projection"
         );
     }
 
