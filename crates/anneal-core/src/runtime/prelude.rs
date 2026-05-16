@@ -28,6 +28,20 @@ pub const CONVERGENCE_PRELUDE: &str = include_str!("../prelude/convergence.dl");
 pub const CHECKS_PRELUDE: &str = include_str!("../prelude/checks.dl");
 pub const RANKING_PRELUDE: &str = include_str!("../prelude/ranking.dl");
 pub const VIEWS_PRELUDE: &str = include_str!("../prelude/views.dl");
+static CONTEXT_QUERY_TEMPLATE: LazyLock<String> = LazyLock::new(|| {
+    let program = parse_prelude_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE)
+        .expect("checked-in views prelude should parse");
+    program
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            Statement::Verb(verb) if verb.string_arg("name") == Some(CONTEXT_VERB_NAME) => {
+                verb.string_arg("query").map(str::to_string)
+            }
+            _ => None,
+        })
+        .expect("checked-in views prelude should declare the context verb")
+});
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmbeddedPreludeFile {
@@ -571,48 +585,37 @@ fn render_context_query_terms(
     neighborhood_depth_term: &str,
     include_low_confidence: bool,
 ) -> String {
-    let confidence_filter = low_confidence_filter(include_low_confidence);
-    format!(
-        "\
-context_goal({goal_term}).
-context_hits({hits_term}).
-context_read_budget({read_budget_term}).
-context_neighborhood_depth({neighborhood_depth_term}).
+    let mut query = CONTEXT_QUERY_TEMPLATE.clone();
+    replace_required(
+        &mut query,
+        "context_goal(goal).",
+        &format!("context_goal({goal_term})."),
+    );
+    replace_required(
+        &mut query,
+        "context_hits(hits).",
+        &format!("context_hits({hits_term})."),
+    );
+    replace_required(
+        &mut query,
+        "context_read_budget(per_hit_budget).",
+        &format!("context_read_budget({read_budget_term})."),
+    );
+    replace_required(
+        &mut query,
+        "context_neighborhood_depth(depth).",
+        &format!("context_neighborhood_depth({neighborhood_depth_term})."),
+    );
+    if include_low_confidence {
+        replace_required(&mut query, low_confidence_filter(false), "");
+    }
+    query
+}
 
-context_readable(h) :=
-  *handle{{id: h}},
-  context_read_budget(per_hit_budget),
-  *content{{handle: h, tokens}}.
-
-context_hit(h, hit_span_id, score, reason, field) :=
-  context_goal(goal),
-  context_hits(hits),
-  (h, hit_span_id, score, reason, field) = TopK{{ k: hits, key: score :
-    (h, hit_span_id, score, reason, field) :
-      search(goal, h, hit_span_id, score, reason, field, low_confidence){confidence_filter},
-      context_readable(h)
-  }}.
-
-context_neighbor(h, h) := context_hit(h, hit_span_id, score, reason, field).
-context_neighbor(h, neighbor) :=
-  context_hit(h, hit_span_id, score, reason, field),
-  context_neighborhood_depth(depth),
-  neighborhood(h, depth, neighbor).
-
-context_span(h, span_id, text, start_line, end_line, tokens) :=
-  context_hit(h, hit_span_id, score, reason, field),
-  context_read_budget(per_hit_budget),
-  (span_id, text, start_line, end_line, tokens) = TakeUntil{{
-    budget: per_hit_budget, sum: tokens, key: start_line :
-    (span_id, text, start_line, end_line, tokens) :
-      read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)
-  }}.
-
-?
-  context_hit(h, hit_span_id, score, reason, field),
-  context_span(h, span_id, text, start_line, end_line, tokens),
-  context_neighbor(h, neighbor).",
-    )
+fn replace_required(query: &mut String, from: &str, to: &str) {
+    let replaced = query.replacen(from, to, 1);
+    assert_ne!(replaced, *query, "context query template missing {from:?}");
+    *query = replaced;
 }
 
 #[cfg(test)]
@@ -894,6 +897,7 @@ mod tests {
                         "neighbor",
                         "reason",
                         "score",
+                        "section",
                         "span_id",
                         "start_line",
                         "end_line",

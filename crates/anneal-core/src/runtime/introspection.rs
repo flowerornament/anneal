@@ -708,7 +708,7 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
             "Match a regular expression against stored content for one bound handle."
         }
         PrimitivePredicate::Schema => {
-            "List queryable stored relations, derived predicates, and engine primitives."
+            "List queryable stored relations, derived predicates, and engine primitives. The signature column is both the positional argument order and the accepted named-call parameter set."
         }
         PrimitivePredicate::Predicates => {
             "List rule-defined predicates with documentation and source locations."

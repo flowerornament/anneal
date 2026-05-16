@@ -92,40 +92,48 @@ impl ContextOutput {
         let mut neighborhood_keys = BTreeSet::new();
 
         for row in rows {
-            let hit = ContextHit {
-                handle: string_field(row, "h")?,
-                span_id: optional_string_field(row, "hit_span_id")?,
-                score: number_field(row, "score")?,
-                reason: string_field(row, "reason")?,
-                field: string_field(row, "field")?,
-            };
-            if hit_keys.insert((
-                hit.handle.clone(),
-                hit.span_id.clone(),
-                hit.reason.clone(),
-                hit.field.clone(),
-            )) {
-                hits.push(hit);
-            }
-
-            let span = ContextSpan {
-                handle: string_field(row, "h")?,
-                span_id: string_field(row, "span_id")?,
-                start_line: int_field(row, "start_line")?,
-                end_line: int_field(row, "end_line")?,
-                tokens: int_field(row, "tokens")?,
-                text: string_field(row, "text")?,
-            };
-            if span_keys.insert((span.handle.clone(), span.span_id.clone())) {
-                spans.push(span);
-            }
-
-            let neighbor = ContextNeighbor {
-                handle: string_field(row, "h")?,
-                neighbor: string_field(row, "neighbor")?,
-            };
-            if neighborhood_keys.insert((neighbor.handle.clone(), neighbor.neighbor.clone())) {
-                neighborhood.push(neighbor);
+            match ContextSection::parse(&string_field(row, "section")?)? {
+                ContextSection::Hit => {
+                    let hit = ContextHit {
+                        handle: string_field(row, "h")?,
+                        span_id: optional_string_field(row, "hit_span_id")?,
+                        score: number_field(row, "score")?,
+                        reason: string_field(row, "reason")?,
+                        field: string_field(row, "field")?,
+                    };
+                    if hit_keys.insert((
+                        hit.handle.clone(),
+                        hit.span_id.clone(),
+                        hit.reason.clone(),
+                        hit.field.clone(),
+                    )) {
+                        hits.push(hit);
+                    }
+                }
+                ContextSection::Span => {
+                    let span = ContextSpan {
+                        handle: string_field(row, "h")?,
+                        span_id: string_field(row, "span_id")?,
+                        start_line: int_field(row, "start_line")?,
+                        end_line: int_field(row, "end_line")?,
+                        tokens: int_field(row, "tokens")?,
+                        text: string_field(row, "text")?,
+                    };
+                    if span_keys.insert((span.handle.clone(), span.span_id.clone())) {
+                        spans.push(span);
+                    }
+                }
+                ContextSection::Neighbor => {
+                    let neighbor = ContextNeighbor {
+                        handle: string_field(row, "h")?,
+                        neighbor: string_field(row, "neighbor")?,
+                    };
+                    if neighborhood_keys
+                        .insert((neighbor.handle.clone(), neighbor.neighbor.clone()))
+                    {
+                        neighborhood.push(neighbor);
+                    }
+                }
             }
         }
 
@@ -154,6 +162,26 @@ impl ContextOutput {
             spans,
             neighborhood,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextSection {
+    Hit,
+    Span,
+    Neighbor,
+}
+
+impl ContextSection {
+    fn parse(value: &str) -> Result<Self, ContextGroupError> {
+        match value {
+            "hit" => Ok(Self::Hit),
+            "span" => Ok(Self::Span),
+            "neighbor" => Ok(Self::Neighbor),
+            section => Err(ContextGroupError::UnknownSection {
+                section: section.to_string(),
+            }),
+        }
     }
 }
 
@@ -191,6 +219,9 @@ pub enum ContextGroupError {
         field: &'static str,
         expected: &'static str,
     },
+    UnknownSection {
+        section: String,
+    },
 }
 
 impl fmt::Display for ContextGroupError {
@@ -199,6 +230,9 @@ impl fmt::Display for ContextGroupError {
             Self::MissingField { field } => write!(f, "context row missing field {field:?}"),
             Self::WrongFieldType { field, expected } => {
                 write!(f, "context row field {field:?} is not a {expected}")
+            }
+            Self::UnknownSection { section } => {
+                write!(f, "context row has unknown section {section:?}")
             }
         }
     }
@@ -285,7 +319,9 @@ mod tests {
         assert!(query.contains("TopK{ k: hits"));
         assert!(query.contains("TakeUntil{"));
         assert!(query.contains("low_confidence = false"));
-        assert!(query.contains("context_neighbor(h, h) := context_hit"));
+        assert!(query.contains("context_hit_handle(h) := context_hit"));
+        assert!(query.contains("context_neighbor(h, h) := context_hit_handle"));
+        assert!(query.contains(r#"context_output("hit""#));
         analyze(parse_program("context", &query).expect("query parses")).expect("query analyzes");
     }
 
@@ -382,14 +418,17 @@ mod tests {
     #[test]
     fn context_output_groups_relational_rows_by_schema() {
         let rows = vec![
-            context_row("audit/v17.md", "intro", 0.9, "audit/v17.md"),
-            context_row("audit/v17.md", "intro", 0.9, "formal-model/v17.md"),
+            context_hit_row("audit/v17.md", "intro", 0.9),
+            context_hit_row("audit/v17.md", "details", 0.8),
+            context_span_row("audit/v17.md", "intro"),
+            context_neighbor_row("audit/v17.md", "audit/v17.md"),
+            context_neighbor_row("audit/v17.md", "formal-model/v17.md"),
         ];
 
         let output = ContextOutput::from_rows("v17 conformance audit", &rows).expect("rows group");
 
         assert_eq!(output.goal, "v17 conformance audit");
-        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits.len(), 2);
         assert_eq!(output.spans.len(), 1);
         assert_eq!(
             output.neighborhood,
@@ -403,6 +442,23 @@ mod tests {
                     neighbor: "formal-model/v17.md".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn context_output_rejects_unknown_group_section() {
+        let row = Row {
+            fields: BTreeMap::from([("section".to_string(), s("mystery"))]),
+            derivation: None,
+        };
+        let err =
+            ContextOutput::from_rows("v17 conformance audit", &[row]).expect_err("bad section");
+
+        assert_eq!(
+            err,
+            ContextGroupError::UnknownSection {
+                section: "mystery".to_string(),
+            }
         );
     }
 
@@ -588,19 +644,40 @@ mod tests {
         Database::from_store(&store).with_sources([driver.describe()])
     }
 
-    fn context_row(handle: &str, span_id: &str, score: f64, neighbor: &str) -> Row {
+    fn context_hit_row(handle: &str, span_id: &str, score: f64) -> Row {
         Row {
             fields: BTreeMap::from([
+                ("section".to_string(), s("hit")),
                 ("h".to_string(), s(handle)),
                 ("hit_span_id".to_string(), s(span_id)),
-                ("span_id".to_string(), s(span_id)),
                 ("score".to_string(), f(score)),
                 ("reason".to_string(), s("body-substring")),
                 ("field".to_string(), s("body")),
+            ]),
+            derivation: None,
+        }
+    }
+
+    fn context_span_row(handle: &str, span_id: &str) -> Row {
+        Row {
+            fields: BTreeMap::from([
+                ("section".to_string(), s("span")),
+                ("h".to_string(), s(handle)),
+                ("span_id".to_string(), s(span_id)),
                 ("text".to_string(), s("body text")),
                 ("start_line".to_string(), n(1)),
                 ("end_line".to_string(), n(2)),
                 ("tokens".to_string(), n(4)),
+            ]),
+            derivation: None,
+        }
+    }
+
+    fn context_neighbor_row(handle: &str, neighbor: &str) -> Row {
+        Row {
+            fields: BTreeMap::from([
+                ("section".to_string(), s("neighbor")),
+                ("h".to_string(), s(handle)),
                 ("neighbor".to_string(), s(neighbor)),
             ]),
             derivation: None,

@@ -1898,12 +1898,8 @@ mod tests {
 
     #[test]
     fn test_large-corpus_corpus() {
-        let root = Utf8PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-            .join("code/large-corpus/.design");
-        if !root.exists() {
-            eprintln!("Large Corpus corpus not found at {root}, skipping");
-            return;
-        }
+        let root =
+            Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.fixtures/sample-corpus");
         let config = config::load_config(root.as_std_path()).expect("config load");
         let mut result = parse::build_graph(&root, &config).expect("build_graph");
 
@@ -1951,14 +1947,8 @@ mod tests {
         assert!(!stats.namespaces.contains("GPT"), "GPT should be rejected");
 
         // D-02: Bare filename resolution + D-03 URL rejection + D-08 code block skip
-        // should reduce unresolved count from Phase 1's 3396. The live large-corpus corpus
-        // grows over time, so this absolute threshold drifts; the proper fix is the
-        // frozen fixture corpora used by the parity runner.
-        assert!(
-            stats.pending_edges_unresolved < 5000,
-            "Expected fewer than 5000 unresolved pending edges (relaxed from Phase 1 baseline of 3396 as large-corpus corpus grew), got {}",
-            stats.pending_edges_unresolved
-        );
+        // should keep the frozen fixture's unresolved count stable.
+        assert_eq!(stats.pending_edges_unresolved, 3965);
 
         // D-04: Verify lattice has terminal statuses from directory convention
         let lattice = lattice::infer_lattice(

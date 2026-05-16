@@ -1828,6 +1828,28 @@ mod tests {
     }
 
     #[test]
+    fn primitive_named_calls_reject_unknown_parameter_names() {
+        let input = r"? predicates(name: n, arity: a).";
+        let err = analyze_err("inline", input);
+        let StaticError::UnknownNamedArgument {
+            predicate,
+            argument,
+            location: actual,
+        } = &err
+        else {
+            panic!("expected unknown named argument");
+        };
+        assert_eq!(predicate.name.as_str(), "predicates");
+        assert_eq!(argument.as_str(), "arity");
+        assert_eq!(actual, &location("inline", input, "arity: a"));
+        assert!(err.to_string().contains("unknown named argument 'arity'"));
+        assert!(
+            err.to_string()
+                .contains(&location("inline", input, "arity: a").to_string())
+        );
+    }
+
+    #[test]
     fn rejects_unknown_stored_relation_fields() {
         let input = r"? *handle{id: h, namspace: ns}.";
         let err = analyze_err("inline", input);
