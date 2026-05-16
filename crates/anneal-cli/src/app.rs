@@ -50,6 +50,9 @@ pub fn main_entry() -> Result<()> {
 
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let invocation = Invocation::parse(args)?;
+    if let V2Command::Help { topic } = invocation.command {
+        return CommandOutput::Text(topic.render().to_string()).write(io::stdout().lock());
+    }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
     output.write(io::stdout().lock())
@@ -130,6 +133,9 @@ enum V2Command {
         query: String,
         explain: ExplainMode,
     },
+    Help {
+        topic: HelpTopic,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -140,11 +146,230 @@ enum ExplainMode {
     Depth(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpTopic {
+    Dashboard,
+    Context,
+    Search,
+    Read,
+    Handle,
+    Work,
+    Blocked,
+    Broken,
+    Trend,
+    Describe,
+    Sources,
+    Schema,
+    Verbs,
+    Eval,
+}
+
+impl HelpTopic {
+    fn parse(command: &str) -> Option<Self> {
+        Some(match command {
+            "anneal" => Self::Dashboard,
+            "context" => Self::Context,
+            "search" => Self::Search,
+            "read" => Self::Read,
+            "H" => Self::Handle,
+            "work" => Self::Work,
+            "blocked" => Self::Blocked,
+            "broken" => Self::Broken,
+            "trend" => Self::Trend,
+            "describe" => Self::Describe,
+            "sources" => Self::Sources,
+            "schema" => Self::Schema,
+            "verbs" => Self::Verbs,
+            "eval" | "-e" | "--eval" => Self::Eval,
+            _ => return None,
+        })
+    }
+
+    const fn render(self) -> &'static str {
+        match self {
+            Self::Dashboard => {
+                "\
+Usage: anneal [OPTIONS] anneal
+
+Print the v2 programmable-runtime dashboard as NDJSON.
+
+Output: NDJSON rows from the standard-library `anneal` verb.
+"
+            }
+            Self::Context => {
+                "\
+Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
+
+Cold-agent orientation in one JSON object. Composes search, bounded read
+spans, and graph neighborhood.
+
+Arguments:
+  <GOAL>                         Natural-language goal/query
+
+Options:
+      --budget <N>               Context budget hint; derives per-hit read cap
+      --hits <N>                 Number of search winners (default: 3)
+      --depth <N>                Alias for --neighborhood-depth
+      --neighborhood-depth <N>   Graph distance around winners (default: 1)
+      --include-low-confidence   Include low-confidence search hits
+
+Output: one JSON object with goal, hits, spans, and neighborhood.
+"
+            }
+            Self::Search => {
+                "\
+Usage: anneal [OPTIONS] search [OPTIONS] <TEXT>
+
+Ranked content search over handles and spans.
+
+Arguments:
+  <TEXT>                         Search query
+
+Options:
+      --limit <N>                Maximum rows (default: 25)
+      --include-low-confidence   Include low-confidence hits
+
+Output: NDJSON rows with h, span_id, score, reason, field, low_confidence.
+"
+            }
+            Self::Read => {
+                "\
+Usage: anneal [OPTIONS] read [OPTIONS] <HANDLE>
+
+Read bounded content spans for a handle.
+
+Arguments:
+  <HANDLE>                       Handle id to read
+
+Options:
+      --budget <N>               Token budget (default: 4000)
+
+Output: NDJSON rows with span_id, text, start_line, end_line, tokens.
+"
+            }
+            Self::Handle => {
+                "\
+Usage: anneal [OPTIONS] H <HANDLE>
+
+Show one handle plus bounded incoming/outgoing references.
+
+Arguments:
+  <HANDLE>                       Handle id to inspect
+
+Output: NDJSON rows with relation, other, kind, status, file, line, summary.
+"
+            }
+            Self::Work => {
+                "\
+Usage: anneal [OPTIONS] work
+
+Show ranked work candidates from the standard-library work verb.
+
+Output: NDJSON rows.
+"
+            }
+            Self::Blocked => {
+                "\
+Usage: anneal [OPTIONS] blocked <HANDLE>
+
+Show why a handle is blocked according to convergence rules.
+
+Arguments:
+  <HANDLE>                       Handle id to inspect
+
+Output: NDJSON rows.
+"
+            }
+            Self::Broken => {
+                "\
+Usage: anneal [OPTIONS] broken
+
+Show diagnostic blockers from the standard-library checks prelude.
+
+Output: NDJSON rows.
+"
+            }
+            Self::Trend => {
+                "\
+Usage: anneal [OPTIONS] trend
+
+Show status changes when snapshot history exists. No-history corpora emit no rows.
+
+Output: NDJSON rows.
+"
+            }
+            Self::Describe => {
+                "\
+Usage: anneal [OPTIONS] describe [NAME]
+
+Describe a runtime primitive, predicate, or verb. Defaults to runtime.
+
+Arguments:
+  [NAME]                         Object to describe
+
+Output: NDJSON rows with doc text.
+"
+            }
+            Self::Sources => {
+                "\
+Usage: anneal [OPTIONS] sources
+
+List linked sources/adapters and their capabilities.
+
+Output: NDJSON rows.
+"
+            }
+            Self::Schema => {
+                "\
+Usage: anneal [OPTIONS] schema
+
+List runtime predicates, primitives, signatures, and provenance.
+
+Output: NDJSON rows.
+"
+            }
+            Self::Verbs => {
+                "\
+Usage: anneal [OPTIONS] verbs
+
+List standard-library and project @verb declarations.
+
+Output: NDJSON rows with name, query, doc, output_schema.
+"
+            }
+            Self::Eval => {
+                "\
+Usage: anneal [OPTIONS] -e [OPTIONS] <QUERY>
+       anneal [OPTIONS] eval [OPTIONS] <QUERY>
+
+Run a raw Datalog query against the v2 runtime.
+
+Arguments:
+  <QUERY>                        Query string
+
+Options:
+      --explain                  Include derivation trees
+      --explain-depth <N>        Derivation expansion depth
+
+Output: NDJSON rows.
+"
+            }
+        }
+    }
+}
+
 impl V2Command {
     fn parse(args: &[String]) -> Result<Self> {
         let Some((command, rest)) = args.split_first() else {
             bail!("missing v2 command");
         };
+        if rest
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+            && let Some(topic) = HelpTopic::parse(command)
+        {
+            return Ok(Self::Help { topic });
+        }
         match command.as_str() {
             "anneal" => Ok(Self::Dashboard),
             "context" => parse_context(rest),
@@ -322,6 +547,7 @@ impl RuntimeSession {
             V2Command::Schema => self.run_verb("schema"),
             V2Command::Verbs => self.run_verb("verbs"),
             V2Command::Eval { query, explain } => self.run_query(&query, explain),
+            V2Command::Help { topic } => Ok(CommandOutput::Text(topic.render().to_string())),
         }
     }
 
@@ -365,6 +591,7 @@ impl RuntimeSession {
 enum CommandOutput {
     Rows(Vec<anneal_core::runtime::Row>),
     One(serde_json::Value),
+    Text(String),
 }
 
 impl CommandOutput {
@@ -372,6 +599,7 @@ impl CommandOutput {
         match self {
             Self::Rows(rows) => write_ndjson(&mut writer, rows)?,
             Self::One(value) => write_json_line(&mut writer, &value)?,
+            Self::Text(text) => writer.write_all(text.as_bytes())?,
         }
         Ok(())
     }
@@ -675,6 +903,38 @@ mod tests {
                 explain: ExplainMode::Depth(4),
             }
         );
+    }
+
+    #[test]
+    fn parses_v2_subcommand_help_without_loading_corpus() {
+        let parsed = Invocation::parse(os(&["anneal", "--root=.design", "context", "--help"]))
+            .expect("parse context help");
+
+        assert_eq!(
+            parsed.command,
+            V2Command::Help {
+                topic: HelpTopic::Context
+            }
+        );
+        assert!(HelpTopic::Context.render().contains("Usage: anneal"));
+        assert!(
+            HelpTopic::Context
+                .render()
+                .contains("Output: one JSON object")
+        );
+    }
+
+    #[test]
+    fn parses_eval_help_aliases() {
+        let parsed = Invocation::parse(os(&["anneal", "-e", "--help"])).expect("parse eval help");
+
+        assert_eq!(
+            parsed.command,
+            V2Command::Help {
+                topic: HelpTopic::Eval
+            }
+        );
+        assert!(HelpTopic::Eval.render().contains("--explain-depth"));
     }
 
     #[test]

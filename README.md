@@ -401,6 +401,9 @@ verb projection, and source orchestration are separate runtime seams so future
 adapters can target code, host runtimes, issue trackers, and federated corpora
 without changing the Datalog language.
 
+In v2.0, `anneal-mcp` is a crate/library surface. The root CLI does not yet
+ship a stable `anneal --mcp` or `anneal mcp` launcher.
+
 ## License
 
 MIT

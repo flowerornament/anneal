@@ -2056,7 +2056,7 @@ filters still belong in queries.
 | `--budget=N` | token budget for `work` / `read` / `context` | verb-specific |
 | `--gate` | exit 1 if any results | `broken` |
 | `--source=NAME` | restrict ingestion to one Source | global |
-| `--mcp` | start as MCP server on stdin/stdout | global |
+| `--mcp` | planned MCP launcher; v2.0 ships `anneal-mcp` as crate/library surface | global |
 | `--color=auto` | TTY detect; pipes get plain text | global |
 | `--pretty` | human-readable formatted JSON (breaks NDJSON contract) | global |
 | `--include-low-confidence` | omit the default `low_confidence = false` predicate from search/context `TopK` templates | global, search-relevant |
@@ -2080,11 +2080,20 @@ filters still belong in queries.
 
 ### §37 MCP surface [CR-D26]
 
-**Definition CR-D26 (MCP transport).** `anneal --mcp` (or the
-`anneal-mcp` binary) starts a stdio MCP server. The tool surface is
+**Definition CR-D26 (MCP transport).** The `anneal-mcp` crate
+projects the runtime as a small stdio MCP surface. The tool surface is
 **not 1:1 with verbs.** Tool inflation is a real failure mode; v2.0
 ships a small stable surface that scales by introspection, not by
 verb count.
+
+**Definition CR-D72 (MCP launcher status).** v2.0 ships the MCP
+surface as a crate/library boundary over `anneal-core` and adapters;
+the root CLI does not yet expose a stable `anneal --mcp` or
+`anneal mcp` launcher. That launcher is a surface projection follow-up
+once process lifecycle, config, and policy defaults are wired through
+the same path as CLI verbs. Rationale: the transport contract should
+not pretend to be discoverable from the binary until it is actually
+operator-ready.
 
 Default MCP tool surface:
 
@@ -2735,6 +2744,7 @@ as data instead of smuggling it through row sequence.
 - CR-D69: Corpus-scoped diagnostic locations (§28.2)
 - CR-D70: Markdown scan-root identity (§42)
 - CR-D71: Context per-hit read cap (§33.1)
+- CR-D72: MCP launcher status (§37)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

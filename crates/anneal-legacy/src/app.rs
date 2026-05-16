@@ -756,6 +756,67 @@ EXAMPLES:
         file: Option<String>,
     },
 
+    /// v2 dashboard verb (programmable runtime)
+    #[command(long_about = "Print the v2 programmable-runtime dashboard as NDJSON.")]
+    Anneal,
+
+    /// v2 cold-agent context bundle
+    #[command(
+        long_about = "Compose search, bounded read spans, and graph neighborhood into one JSON object."
+    )]
+    Context,
+
+    /// v2 ranked content search
+    #[command(long_about = "Search handles and spans with scores, reasons, and fields.")]
+    Search,
+
+    /// v2 bounded content read
+    #[command(long_about = "Read bounded content spans for a handle.")]
+    Read,
+
+    /// v2 handle view
+    #[command(
+        name = "H",
+        long_about = "Show one handle plus bounded incoming/outgoing references."
+    )]
+    H,
+
+    /// v2 ranked work candidates
+    #[command(long_about = "Show ranked work candidates from the standard-library work verb.")]
+    Work,
+
+    /// v2 blocker view for one handle
+    #[command(long_about = "Show why a handle is blocked according to convergence rules.")]
+    Blocked,
+
+    /// v2 diagnostic blockers
+    #[command(long_about = "Show diagnostic blockers from the checks prelude.")]
+    Broken,
+
+    /// v2 status-change rows when snapshot history exists
+    #[command(long_about = "Show status changes when snapshot history exists.")]
+    Trend,
+
+    /// v2 runtime object description
+    #[command(long_about = "Describe a runtime primitive, predicate, or verb.")]
+    Describe,
+
+    /// v2 linked source/adapters
+    #[command(long_about = "List linked sources/adapters and their capabilities.")]
+    Sources,
+
+    /// v2 predicate and primitive catalog
+    #[command(long_about = "List runtime predicates, primitives, signatures, and provenance.")]
+    Schema,
+
+    /// v2 available standard-library and project verbs
+    #[command(long_about = "List standard-library and project @verb declarations.")]
+    Verbs,
+
+    /// v2 raw Datalog query
+    #[command(long_about = "Run a raw Datalog query against the v2 runtime.")]
+    Eval,
+
     /// Query structural facts derived from the current corpus
     #[command(long_about = "\
 Run bounded structural queries over anneal's current in-memory graph and
@@ -1517,6 +1578,27 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
+        Some(
+            Command::Anneal
+            | Command::Context
+            | Command::Search
+            | Command::Read
+            | Command::H
+            | Command::Work
+            | Command::Blocked
+            | Command::Broken
+            | Command::Trend
+            | Command::Describe
+            | Command::Sources
+            | Command::Schema
+            | Command::Verbs
+            | Command::Eval,
+        ) => {
+            anyhow::bail!(
+                "v2 command reached the legacy dispatcher; run through the root anneal binary"
+            );
+        }
+
         Some(Command::Query { ref command }) => {
             query::run(
                 &analysis,
@@ -1618,6 +1700,22 @@ mod tests {
                 command: explain::ExplainCommand::Diagnostic(_),
             })
         ));
+    }
+
+    #[test]
+    fn top_level_help_lists_v2_commands() {
+        let mut command = <Cli as clap::CommandFactory>::command();
+        let help = command.render_long_help().to_string();
+
+        for name in [
+            "context", "search", "read", "H", "work", "blocked", "broken", "trend", "describe",
+            "sources", "schema", "verbs", "eval",
+        ] {
+            assert!(
+                help.contains(name),
+                "top-level help should list v2 command {name:?}"
+            );
+        }
     }
 
     #[test]
