@@ -25,14 +25,15 @@ Pick the smallest command that can answer the next agent question.
 
 ```bash
 anneal context "<goal>"
-anneal
+anneal anneal
 anneal describe runtime
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
-graph neighborhood, and read spans in one call. Use bare `anneal` when the
-question is corpus state. Use `describe` when you need vocabulary help before
-querying.
+graph neighborhood, and read spans in one call. Its `--budget` derives a
+per-hit read cap that is applied independently to each winning hit. Use
+`anneal anneal` when the question is corpus state. Use `describe` when you need
+vocabulary help before querying.
 
 ### Finding and Reading
 
@@ -74,14 +75,14 @@ runtime.
 ```bash
 anneal broken
 anneal work
-anneal trend  # emits rows when snapshot history exists
+anneal trend  # emits rows when snapshot history exists; otherwise zero rows
 anneal status --json --compact
 anneal check --scope=active
 anneal get <handle> --context
 ```
 
-Prefer v2 verbs for new workflows. The v1 health commands remain available
-during the migration window when exact compatibility matters.
+Prefer programmable-runtime verbs for new workflows. The older health commands
+remain available during the migration window when exact compatibility matters.
 
 ## Command Map
 
@@ -96,12 +97,13 @@ during the migration window when exact compatibility matters.
 
 ### Standard Verbs
 
-- `anneal`: compact corpus dashboard
+- `anneal anneal`: compact corpus dashboard
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
 - `blocked`: blockers for a handle or corpus
 - `broken`: diagnostic gate
-- `trend`: convergence movement rows when snapshot history exists
+- `trend`: convergence movement rows when snapshot history exists; no-history
+  corpora emit zero rows
 - `context`: cold-agent retrieval bundle
 
 Project `@verb` declarations in `anneal.dl` appear beside these in
@@ -147,10 +149,10 @@ Common prelude families:
 - Use `--json` or NDJSON streams for tool consumption. Add `--pretty` only for
   human reading.
 - Use legacy `status`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
-  `obligations` when exact v1 behavior is required.
+  `obligations` when exact pre-runtime behavior is required.
 - After editing corpus files, run `anneal broken` or `anneal check
-  --scope=active`, depending on whether you are exercising v2 or compatibility
-  behavior.
+  --scope=active`, depending on whether you are exercising the programmable
+  runtime or the compatibility surface.
 - If a command returns too much, rerun with a lower `--limit`, smaller
   `--budget`, or a more specific query.
 

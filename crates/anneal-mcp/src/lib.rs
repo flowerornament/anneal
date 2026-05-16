@@ -1,4 +1,4 @@
-//! MCP surface crate for anneal v2.
+//! MCP surface crate for anneal.
 //!
 //! This crate is intentionally skeletal until the runtime and policy
 //! surfaces land. Keeping it in the workspace now pins the public crate
@@ -19,6 +19,10 @@ const STABLE_TOOLS: &[&str] = &[
     "dashboard",
     "run_verb",
 ];
+
+pub const fn stable_tools() -> &'static [&'static str] {
+    STABLE_TOOLS
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpVerb {

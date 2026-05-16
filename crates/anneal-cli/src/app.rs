@@ -197,7 +197,7 @@ impl HelpTopic {
                 "\
 Usage: anneal [OPTIONS] anneal
 
-Print the v2 programmable-runtime dashboard as NDJSON.
+Print the programmable-runtime dashboard as NDJSON.
 
 Output: NDJSON rows from the standard-library `anneal` verb.
 "
@@ -213,7 +213,7 @@ Arguments:
   <GOAL>                         Natural-language goal/query
 
 Options:
-      --budget <N>               Context budget hint; derives per-hit read cap
+      --budget <N>               Derives one per-hit read cap; not divided by hits
       --hits <N>                 Number of search winners (default: 3)
       --depth <N>                Alias for --neighborhood-depth
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
@@ -348,7 +348,7 @@ Output: NDJSON rows with name, query, doc, output_schema.
 Usage: anneal [OPTIONS] -e [OPTIONS] <QUERY>
        anneal [OPTIONS] eval [OPTIONS] <QUERY>
 
-Run a raw Datalog query against the v2 runtime.
+Run a raw Datalog query against the programmable runtime.
 
 Arguments:
   <QUERY>                        Query string
@@ -367,13 +367,13 @@ Output: NDJSON rows.
 impl V2Command {
     fn parse(args: &[String]) -> Result<Self> {
         let Some((command, rest)) = args.split_first() else {
-            bail!("missing v2 command");
+            bail!("missing runtime command");
         };
         if command == "help" {
             let topic = rest
                 .first()
                 .and_then(|topic| HelpTopic::parse(topic))
-                .context("help requires a v2 command")?;
+                .context("help requires a runtime command")?;
             return Ok(Self::Help { topic });
         }
         if rest
@@ -404,7 +404,7 @@ impl V2Command {
             "schema" => Ok(Self::Schema),
             "verbs" => Ok(Self::Verbs),
             "-e" | "--eval" | "eval" => parse_eval(rest),
-            other => bail!("unknown v2 command {other:?}"),
+            other => bail!("unknown runtime command {other:?}"),
         }
     }
 
@@ -841,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_only_v2_commands() {
+    fn routes_only_runtime_commands() {
         assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "context", "goal"
         ])));
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_v2_subcommand_help_without_loading_corpus() {
+    fn parses_runtime_subcommand_help_without_loading_corpus() {
         for (command, topic, expected_output) in [
             ("context", HelpTopic::Context, "Output: one JSON object"),
             ("search", HelpTopic::Search, "Output: NDJSON rows with h"),
@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_help_subcommand_for_v2_topics() {
+    fn parses_help_subcommand_for_runtime_topics() {
         let parsed =
             Invocation::parse(os(&["anneal", "help", "context"])).expect("parse help context");
 

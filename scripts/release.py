@@ -13,6 +13,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+ANNEAL_MANIFESTS = [
+    ROOT / "Cargo.toml",
+    ROOT / "crates/anneal-cli/Cargo.toml",
+    ROOT / "crates/anneal-core/Cargo.toml",
+    ROOT / "crates/anneal-lang/Cargo.toml",
+    ROOT / "crates/anneal-legacy/Cargo.toml",
+    ROOT / "crates/anneal-mcp/Cargo.toml",
+    ROOT / "crates/anneal-md/Cargo.toml",
+]
 
 
 def fail(message: str) -> None:
@@ -33,16 +42,45 @@ def cargo_version() -> str:
     return data["package"]["version"]
 
 
-def cargo_lock_version() -> str:
+def cargo_manifest_versions() -> dict[str, str]:
+    versions = {}
+    for manifest in ANNEAL_MANIFESTS:
+        data = tomllib.loads(read_text(manifest))
+        versions[str(manifest.relative_to(ROOT))] = data["package"]["version"]
+    return versions
+
+
+def cargo_path_dependency_versions() -> dict[str, str]:
+    versions = {}
+    dependency_re = re.compile(
+        r'(?m)^(anneal(?:-[a-z]+)?) = \{ version = "([^"]+)", path = "[^"]+" \}$'
+    )
+    for manifest in ANNEAL_MANIFESTS:
+        text = read_text(manifest)
+        for name, version in dependency_re.findall(text):
+            key = f"{manifest.relative_to(ROOT)}:{name}"
+            versions[key] = version
+    return versions
+
+
+def cargo_lock_versions() -> dict[str, str]:
     text = read_text(ROOT / "Cargo.lock")
-    match = re.search(
-        r'name = "anneal"\nversion = "([^"]+)"\ndependencies = \[',
+    matches = re.findall(
+        r'name = "(anneal(?:-[a-z]+)?)"\nversion = "([^"]+)"',
         text,
         re.MULTILINE,
     )
-    if match is None:
+    if not matches:
+        fail("could not find anneal package entries in Cargo.lock")
+    return dict(matches)
+
+
+def cargo_lock_version() -> str:
+    versions = cargo_lock_versions()
+    try:
+        return versions["anneal"]
+    except KeyError:
         fail("could not find anneal package entry in Cargo.lock")
-    return match.group(1)
 
 
 def flake_version() -> str:
@@ -72,9 +110,16 @@ def installer_targets() -> list[str]:
 def readme_targets() -> list[str]:
     text = read_text(ROOT / "README.md")
     match = re.search(r"Binaries available for: (.+)\.", text)
-    if match is None:
+    if match is not None:
+        return re.findall(r"`([^`]+)`", match.group(1))
+
+    section = re.search(
+        r"(?ms)^Binaries are published for:\n\n(?P<body>(?:- `[^`]+`\n)+)",
+        text,
+    )
+    if section is None:
         fail("could not find release target list in README.md")
-    return re.findall(r"`([^`]+)`", match.group(1))
+    return re.findall(r"`([^`]+)`", section.group("body"))
 
 
 def beads_config_is_public_safe() -> bool:
@@ -87,20 +132,23 @@ def changelog_text() -> str:
 
 
 def changelog_has_entry(version: str) -> bool:
-    pattern = rf"(?m)^## {re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$"
+    pattern = rf"(?m)^## v?{re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$"
     return re.search(pattern, changelog_text()) is not None
 
 
 def changelog_entry(version: str) -> str:
     text = changelog_text()
     heading = re.search(
-        rf"(?m)^## {re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$",
+        rf"(?m)^## v?{re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$",
         text,
     )
     if heading is None:
         fail(f"CHANGELOG.md is missing an entry for {version}")
 
-    next_heading = re.search(r"(?m)^## \d+\.\d+\.\d+ - \d{4}-\d{2}-\d{2}$", text[heading.end() :])
+    next_heading = re.search(
+        r"(?m)^## v?\d+\.\d+\.\d+ - \d{4}-\d{2}-\d{2}$",
+        text[heading.end() :],
+    )
     if next_heading is None:
         return text[heading.end() :]
     return text[heading.end() : heading.end() + next_heading.start()]
@@ -112,7 +160,7 @@ def changelog_insert_entry(version: str) -> None:
 
     today = date.today().isoformat()
     scaffold = (
-        f"## {version} - {today}\n\n"
+        f"## v{version} - {today}\n\n"
         "### Changed\n\n"
         "- TODO: summarize release changes.\n\n"
     )
@@ -143,23 +191,28 @@ def bump(version: str) -> None:
     if SEMVER_RE.fullmatch(version) is None:
         fail("version must be semver like 0.2.1")
 
-    cargo_toml = ROOT / "Cargo.toml"
     cargo_lock = ROOT / "Cargo.lock"
     flake_nix = ROOT / "flake.nix"
 
-    cargo_text = read_text(cargo_toml)
-    cargo_text = replace_once(
-        cargo_text,
-        r'(?m)^version = "[^"]+"$',
-        f'version = "{version}"',
-    )
-    write_text(cargo_toml, cargo_text)
+    for manifest in ANNEAL_MANIFESTS:
+        cargo_text = read_text(manifest)
+        cargo_text = replace_once(
+            cargo_text,
+            r'(?m)^version = "[^"]+"$',
+            f'version = "{version}"',
+        )
+        cargo_text = re.sub(
+            r'(?m)^(anneal(?:-[a-z]+)? = \{ version = )"[^"]+"(, path = "[^"]+" \})$',
+            rf'\1"{version}"\2',
+            cargo_text,
+        )
+        write_text(manifest, cargo_text)
 
     lock_text = read_text(cargo_lock)
-    lock_text = replace_once(
+    lock_text = re.sub(
+        r'(name = "anneal(?:-[a-z]+)?"\nversion = )"[^"]+"',
+        rf'\1"{version}"',
         lock_text,
-        r'name = "anneal"\nversion = "[^"]+"\ndependencies = \[',
-        f'name = "anneal"\nversion = "{version}"\ndependencies = [',
     )
     write_text(cargo_lock, lock_text)
 
@@ -173,7 +226,8 @@ def bump(version: str) -> None:
     changelog_insert_entry(version)
 
     print(f"updated release version to {version}")
-    print("  - Cargo.toml")
+    for manifest in ANNEAL_MANIFESTS:
+        print(f"  - {manifest.relative_to(ROOT)}")
     print("  - Cargo.lock")
     print("  - flake.nix")
     print("  - CHANGELOG.md")
@@ -186,8 +240,9 @@ def run(cmd: list[str]) -> None:
 
 def verify() -> None:
     versions = {
-        "Cargo.toml": cargo_version(),
-        "Cargo.lock": cargo_lock_version(),
+        **cargo_manifest_versions(),
+        **{f"Cargo.lock:{name}": version for name, version in cargo_lock_versions().items()},
+        **cargo_path_dependency_versions(),
         "flake.nix": flake_version(),
     }
     unique_versions = set(versions.values())

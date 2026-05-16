@@ -2,6 +2,7 @@
 name = "anneal"
 version = "0.10.1"
 edition = "2024"
+default-run = "anneal"
 license = "MIT"
 description = "Convergence assistant for knowledge corpora"
 

@@ -26,7 +26,7 @@ anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
 
 The same substrate also keeps the older corpus-health loop reachable during the
-v2 migration window:
+compatibility window:
 
 ```bash
 anneal status --json --compact
@@ -144,10 +144,10 @@ anneal search "v17 conformance audit" --limit 3
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000
 
 # 3. Graph and health checks
-anneal H 2026-05-13-corpus-runtime.md
+anneal H reviews/2026-04-28-formal-model-v17-conformance-audit.md
 anneal broken
 anneal work
-anneal trend  # emits rows when snapshot history exists
+anneal trend  # emits rows when snapshot history exists; otherwise zero rows
 
 # 4. Introspection before writing custom rules
 anneal describe convergence
@@ -159,12 +159,12 @@ anneal schema
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
 ```
 
-The v2 surface is NDJSON-first. Each row is a standalone JSON object. Use
+The programmable runtime surface is NDJSON-first. Each row is a standalone JSON object. Use
 `--pretty` when a human needs to read the stream directly.
 
 ## Commands
 
-### `anneal`
+### `anneal anneal`
 
 Compact corpus dashboard from the standard library's `anneal` verb. Use this
 when the question is "what state is this corpus in right now?"
@@ -176,7 +176,8 @@ neighborhood, and bounded `read` spans into one grouped response.
 
 Useful flags:
 
-- `--budget N`: context budget hint; v2 derives a per-hit read cap from it
+- `--budget N`: derives one per-hit read cap and applies that cap independently
+  to each winning hit; it is not divided by `--hits`
 - `--hits N`: number of search winners
 - `--neighborhood-depth N`: graph distance around winners
 - `--include-low-confidence`: include low-confidence search hits
@@ -211,13 +212,14 @@ known and relationship shape matters more than text.
 
 The standard library ships starter verbs as ordinary `@verb` definitions:
 
-- `anneal`: compact dashboard
+- `anneal anneal`: compact dashboard
 - `H`: handle neighborhood
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
 - `blocked`: blockers for a handle or corpus
 - `broken`: diagnostic gate
-- `trend`: convergence movement rows when snapshot history exists
+- `trend`: convergence movement rows when snapshot history exists; no-history
+  corpora emit zero rows
 - `context`: cold-agent retrieval bundle
 
 Project verbs declared in `anneal.dl` are surfaced the same way as standard
@@ -250,7 +252,7 @@ library, project `anneal.dl`, and inline query-local rules.
 
 ### Compatibility Commands
 
-During the v2 migration window the v1 corpus-health commands remain available:
+During the compatibility window the older corpus-health commands remain available:
 
 ```bash
 anneal status
@@ -265,7 +267,7 @@ anneal init
 anneal prime
 ```
 
-Use them when you need exact v1 behavior or release compatibility. New agent
+Use them when you need exact compatibility with the pre-runtime surface. New agent
 workflows should prefer `context`, `search`, `read`, verbs, and raw Datalog.
 
 ## Project Extension
@@ -363,7 +365,7 @@ dynamic IR owns prelude, project, and inline rules.
 
 ## Diagnostics
 
-The v2 `checks.dl` catalog mirrors the shipped v1 diagnostic membership.
+The `checks.dl` catalog mirrors the shipped compatibility diagnostic membership.
 
 | Code | Severity | Description |
 | --- | --- | --- |
@@ -383,16 +385,16 @@ The v2 `checks.dl` catalog mirrors the shipped v1 diagnostic membership.
 
 ## Design
 
-The v2 workspace is split by runtime boundary:
+The workspace is split by runtime boundary:
 
 ```text
 crates/
-  anneal-lang/     private parser, AST, source spans, loader
+  anneal-lang/     private parser, AST, source spans, loader (publish = false)
   anneal-core/     runtime, facts, store, evaluator, prelude, verbs, trails
   anneal-md/       markdown Source adapter
   anneal-legacy/   transition-only v1 parser/config bridge
   anneal-cli/      CLI surface over core + adapters
-  anneal-mcp/      MCP surface over core + adapters
+  anneal-mcp/      MCP library surface over core + adapters
 ```
 
 `anneal-core` has no markdown-specific code. Adapters implement `Source` and
@@ -401,8 +403,12 @@ verb projection, and source orchestration are separate runtime seams so future
 adapters can target code, host runtimes, issue trackers, and federated corpora
 without changing the Datalog language.
 
-In v2.0, `anneal-mcp` is a crate/library surface. The root CLI does not yet
-ship a stable `anneal --mcp` or `anneal mcp` launcher.
+`anneal-lang` is a private crate (`publish = false`) until a second consumer
+proves the syntax boundary. `anneal-mcp` is likewise shipped as a crate/library
+surface, not an installed root-CLI launcher. The stable binary
+does not expose `anneal --mcp` or `anneal mcp`; from a source checkout,
+`cargo run -p anneal-mcp -- --tools` is the developer escape hatch for the
+crate-level MCP tool catalog.
 
 ## License
 

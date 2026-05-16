@@ -19,10 +19,11 @@ use crate::{
     long_about = "\
 Convergence assistant for knowledge corpora.
 
-anneal reads a directory of markdown files, computes a typed knowledge graph,
-checks it for local consistency, and tracks convergence over time. It helps
-disconnected intelligences (agents across sessions with no shared memory)
-orient in a shared body of knowledge and push it toward settledness.
+anneal reads a knowledge corpus, turns it into typed facts, evaluates a
+Datalog-style standard library, and exposes agent-friendly commands for
+orientation, retrieval, health, and extension. It helps disconnected
+intelligences (agents across sessions with no shared memory) orient in a shared
+body of knowledge and push it toward settledness.
 
 Use it to:
   orient       What exists here? What is active? Where is uncertainty highest?
@@ -61,19 +62,19 @@ CORE CONCEPTS:
 
 START HERE:
 
-  anneal prime                Print the full agent skill briefing (arrival handoff)
-  anneal areas                Per-area health profiles — the \"what exists here?\" view
-  anneal orient --budget=50k  Token-budgeted reading list (agent-oriented)
-  anneal garden               Ranked maintenance tasks with fix/context/verify hints
-  anneal status               Dashboard: corpus health, pipeline, convergence
-  anneal check                Diagnostics: broken refs, staleness, obligations
-  anneal get REQ-12           Inspect one handle with bounded context
-  anneal find ADR             Search handle identities
-  anneal impact spec/v3.md    Reverse dependencies for safe edits (downstream)
-  anneal diff                 Change since last snapshot or git ref
-  anneal map --around=REQ-12  Neighborhood view around one handle
-  anneal obligations          Linear namespace obligation summary
-  anneal init                 Generate anneal.toml from inferred structure
+  anneal context \"goal\"       Search, read, and graph context in one response
+  anneal anneal               Compact programmable-runtime dashboard
+  anneal search TEXT          Ranked content retrieval
+  anneal read HANDLE          Budgeted content spans for one handle
+  anneal broken               Runtime diagnostic blockers
+  anneal work                 Ranked work candidates
+  anneal -e '? query.'        Raw Datalog query over corpus facts
+  anneal prime                Full bundled agent skill briefing
+  anneal status               Compatibility dashboard: health and convergence
+  anneal check                Compatibility diagnostics
+  anneal get REQ-12           Compatibility handle inspection
+  anneal find ADR             Compatibility handle-identity search
+  anneal impact docs/v3.md    Reverse dependencies for safe edits
 
 PAIRED WORKFLOWS:
 
@@ -756,65 +757,65 @@ EXAMPLES:
         file: Option<String>,
     },
 
-    /// v2 dashboard verb (programmable runtime)
-    #[command(long_about = "Print the v2 programmable-runtime dashboard as NDJSON.")]
+    /// Programmable-runtime dashboard verb
+    #[command(long_about = "Print the programmable-runtime dashboard as NDJSON.")]
     Anneal,
 
-    /// v2 cold-agent context bundle
+    /// Programmable-runtime cold-agent context bundle
     #[command(
         long_about = "Compose search, bounded read spans, and graph neighborhood into one JSON object."
     )]
     Context,
 
-    /// v2 ranked content search
+    /// Programmable-runtime ranked content search
     #[command(long_about = "Search handles and spans with scores, reasons, and fields.")]
     Search,
 
-    /// v2 bounded content read
+    /// Programmable-runtime bounded content read
     #[command(long_about = "Read bounded content spans for a handle.")]
     Read,
 
-    /// v2 handle view
+    /// Programmable-runtime handle view
     #[command(
         name = "H",
         long_about = "Show one handle plus bounded incoming/outgoing references."
     )]
     H,
 
-    /// v2 ranked work candidates
+    /// Programmable-runtime ranked work candidates
     #[command(long_about = "Show ranked work candidates from the standard-library work verb.")]
     Work,
 
-    /// v2 blocker view for one handle
+    /// Programmable-runtime blocker view for one handle
     #[command(long_about = "Show why a handle is blocked according to convergence rules.")]
     Blocked,
 
-    /// v2 diagnostic blockers
+    /// Programmable-runtime diagnostic blockers
     #[command(long_about = "Show diagnostic blockers from the checks prelude.")]
     Broken,
 
-    /// v2 status-change rows when snapshot history exists
+    /// Programmable-runtime status-change rows when snapshot history exists
     #[command(long_about = "Show status changes when snapshot history exists.")]
     Trend,
 
-    /// v2 runtime object description
+    /// Programmable-runtime object description
     #[command(long_about = "Describe a runtime primitive, predicate, or verb.")]
     Describe,
 
-    /// v2 linked source/adapters
+    /// Programmable-runtime linked source/adapters
     #[command(long_about = "List linked sources/adapters and their capabilities.")]
     Sources,
 
-    /// v2 predicate and primitive catalog
+    /// Programmable-runtime predicate and primitive catalog
     #[command(long_about = "List runtime predicates, primitives, signatures, and provenance.")]
     Schema,
 
-    /// v2 available standard-library and project verbs
+    /// Programmable-runtime available standard-library and project verbs
     #[command(long_about = "List standard-library and project @verb declarations.")]
     Verbs,
 
-    /// v2 raw Datalog query
-    #[command(long_about = "Run a raw Datalog query against the v2 runtime.")]
+    /// Programmable-runtime raw Datalog query
+    #[command(long_about = "Run a raw Datalog query against the programmable runtime.")]
     Eval,
 
     /// Query structural facts derived from the current corpus
@@ -1595,7 +1596,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Eval,
         ) => {
             anyhow::bail!(
-                "v2 command reached the legacy dispatcher; run through the root anneal binary"
+                "runtime command reached the legacy dispatcher; run through the root anneal binary"
             );
         }
 
@@ -1703,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_help_lists_v2_commands() {
+    fn top_level_help_lists_runtime_commands() {
         let mut command = <Cli as clap::CommandFactory>::command();
         let help = command.render_long_help().to_string();
 
@@ -1713,7 +1714,7 @@ mod tests {
         ] {
             assert!(
                 help.contains(name),
-                "top-level help should list v2 command {name:?}"
+                "top-level help should list runtime command {name:?}"
             );
         }
     }
@@ -1908,7 +1909,7 @@ mod tests {
         // D-02: Bare filename resolution + D-03 URL rejection + D-08 code block skip
         // should reduce unresolved count from Phase 1's 3396. The live large-corpus corpus
         // grows over time, so this absolute threshold drifts; the proper fix is the
-        // frozen fixture corpora planned in v2.0 Phase 0 (.design/2026-05-07-engine-spike-and-parity-protocol.md SP-D3).
+        // frozen fixture corpora used by the parity runner.
         assert!(
             stats.pending_edges_unresolved < 5000,
             "Expected fewer than 5000 unresolved pending edges (relaxed from Phase 1 baseline of 3396 as large-corpus corpus grew), got {}",
