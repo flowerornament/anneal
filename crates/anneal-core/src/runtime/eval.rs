@@ -3,6 +3,7 @@ use std::collections::btree_set;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::io;
+use std::num::NonZeroUsize;
 use std::slice;
 use std::sync::Arc;
 
@@ -120,6 +121,7 @@ pub struct QueryWarning {
 pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
 const DEFAULT_EXPLAIN_DEPTH: usize = 5;
+const DEFAULT_EXPLAIN_ROW_LIMIT: usize = 3;
 const MAX_AGGREGATE_DERIVATION_CHILDREN: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,8 +148,24 @@ impl Default for ExplainDepth {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExplainOptions {
     depth: ExplainDepth,
+    row_limit: ExplainRowLimit,
     enabled: bool,
     explicit_depth: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplainRowLimit {
+    First(NonZeroUsize),
+    All,
+}
+
+impl Default for ExplainRowLimit {
+    fn default() -> Self {
+        Self::First(
+            NonZeroUsize::new(DEFAULT_EXPLAIN_ROW_LIMIT)
+                .expect("default explain row limit is nonzero"),
+        )
+    }
 }
 
 impl ExplainOptions {
@@ -170,7 +188,16 @@ impl ExplainOptions {
             enabled: true,
             depth: ExplainDepth::new(depth),
             explicit_depth: true,
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn with_depth_limit(mut self, depth: usize) -> Self {
+        self.enabled = true;
+        self.depth = ExplainDepth::new(depth);
+        self.explicit_depth = true;
+        self
     }
 
     #[must_use]
@@ -184,8 +211,39 @@ impl ExplainOptions {
     }
 
     #[must_use]
+    pub const fn row_limit(&self) -> ExplainRowLimit {
+        self.row_limit
+    }
+
+    #[must_use]
     pub const fn explicit_depth(&self) -> bool {
         self.explicit_depth
+    }
+
+    #[must_use]
+    pub fn with_first_rows(mut self, rows: usize) -> Self {
+        self.enabled = true;
+        self.row_limit =
+            ExplainRowLimit::First(NonZeroUsize::new(rows).unwrap_or(NonZeroUsize::MIN));
+        self
+    }
+
+    #[must_use]
+    pub fn with_all_rows(mut self) -> Self {
+        self.enabled = true;
+        self.row_limit = ExplainRowLimit::All;
+        self
+    }
+
+    #[must_use]
+    pub const fn explains_row(&self, index: usize) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.row_limit {
+            ExplainRowLimit::First(rows) => index < rows.get(),
+            ExplainRowLimit::All => true,
+        }
     }
 }
 
@@ -537,12 +595,31 @@ impl EvalOptions {
     }
 
     pub fn with_explain(mut self) -> Self {
-        self.explain = ExplainOptions::enabled();
+        if !self.explain.is_enabled() {
+            self.explain = ExplainOptions::enabled();
+        }
         self
     }
 
     pub fn with_explain_depth(mut self, depth: usize) -> Self {
-        self.explain = ExplainOptions::with_depth(depth);
+        self.explain.enabled = true;
+        self.explain.depth = ExplainDepth::new(depth);
+        self.explain.explicit_depth = true;
+        self
+    }
+
+    pub fn with_explain_first(mut self, rows: usize) -> Self {
+        self.explain = self.explain.with_first_rows(rows);
+        self
+    }
+
+    pub fn with_explain_all(mut self) -> Self {
+        self.explain = self.explain.with_all_rows();
+        self
+    }
+
+    pub fn with_explain_options(mut self, explain: ExplainOptions) -> Self {
+        self.explain = explain;
         self
     }
 
@@ -3214,10 +3291,7 @@ impl Evaluator {
                 )?;
                 ensure_no_reserved_explain_fields(&bindings)?;
                 return Ok(QueryOutput {
-                    rows: bindings
-                        .into_iter()
-                        .map(|binding| traced_binding_to_row(binding, self.options.explain()))
-                        .collect(),
+                    rows: traced_bindings_to_rows(bindings, self.options.explain()),
                     warnings,
                 });
             }
@@ -3256,10 +3330,7 @@ impl Evaluator {
                 &self.options,
             )?;
             ensure_no_reserved_explain_fields(&bindings)?;
-            bindings
-                .into_iter()
-                .map(|binding| traced_binding_to_row(binding, self.options.explain()))
-                .collect()
+            traced_bindings_to_rows(bindings, self.options.explain())
         } else {
             eval_body(
                 &query_ast.body,
@@ -4940,7 +5011,21 @@ fn binding_to_row(binding: Binding) -> Row {
     }
 }
 
-fn traced_binding_to_row(binding: TracedBinding, options: &ExplainOptions) -> Row {
+fn traced_bindings_to_rows(bindings: Vec<TracedBinding>, options: &ExplainOptions) -> Vec<Row> {
+    bindings
+        .into_iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            traced_binding_to_row(binding, options, options.explains_row(index))
+        })
+        .collect()
+}
+
+fn traced_binding_to_row(
+    binding: TracedBinding,
+    options: &ExplainOptions,
+    include_derivation: bool,
+) -> Row {
     debug_assert!(
         !binding
             .values
@@ -4953,9 +5038,8 @@ fn traced_binding_to_row(binding: TracedBinding, options: &ExplainOptions) -> Ro
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
-        derivation: Some(
-            DerivationNode::query(clone_derivation_refs(&binding.steps)).bounded(options),
-        ),
+        derivation: include_derivation
+            .then(|| DerivationNode::query(clone_derivation_refs(&binding.steps)).bounded(options)),
     }
 }
 
@@ -7831,6 +7915,59 @@ release_blocker(code) := issue(code, "error").
         assert!(derivation_contains(derivation, DerivationKind::Rule));
         assert!(derivation_contains(derivation, DerivationKind::Stored));
         assert!(!output.rows[0].fields.contains_key("_derivation"));
+    }
+
+    #[test]
+    fn explain_defaults_to_first_three_rows() {
+        let output = evaluate_query_output_with_options(
+            r"? *handle{id: h}.",
+            Database::from_store(&fixture_store()),
+            EvalOptions::default().with_explain(),
+        );
+
+        assert_eq!(output.rows.len(), 5);
+        assert_eq!(
+            output
+                .rows
+                .iter()
+                .filter(|row| row.derivation.is_some())
+                .count(),
+            3
+        );
+        assert!(
+            output.rows[3..].iter().all(|row| row.derivation.is_none()),
+            "rows after the default explain cap should remain bare"
+        );
+    }
+
+    #[test]
+    fn explain_first_and_all_control_row_count() {
+        let first_two = evaluate_query_output_with_options(
+            r"? *handle{id: h}.",
+            Database::from_store(&fixture_store()),
+            EvalOptions::default().with_explain_first(2),
+        );
+        assert_eq!(
+            first_two
+                .rows
+                .iter()
+                .filter(|row| row.derivation.is_some())
+                .count(),
+            2
+        );
+
+        let all = evaluate_query_output_with_options(
+            r"? *handle{id: h}.",
+            Database::from_store(&fixture_store()),
+            EvalOptions::default().with_explain_all(),
+        );
+        assert_eq!(
+            all.rows
+                .iter()
+                .filter(|row| row.derivation.is_some())
+                .count(),
+            all.rows.len()
+        );
     }
 
     #[test]

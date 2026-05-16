@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
-use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
     Database, EvalOptions, Evaluator, Program, QueryOutput, Row, Value, analyze, parse_program,
@@ -15,7 +15,7 @@ use anneal_core::{
     load_runtime_configs_if_present, merge_program_layers,
 };
 use anneal_md::MarkdownSource;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
 
 use crate::{
@@ -172,19 +172,11 @@ enum RuntimeCommand {
     Verbs,
     Eval {
         query: String,
-        explain: ExplainMode,
+        explain: ExplainOptions,
     },
     Help {
         topic: HelpTopic,
     },
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ExplainMode {
-    #[default]
-    Disabled,
-    DefaultDepth,
-    Depth(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -389,7 +381,9 @@ Arguments:
   <QUERY>                        Query string
 
 Options:
-      --explain                  Include derivation trees
+      --explain                  Include derivation trees for first 3 rows
+      --explain-first <N>        Include derivation trees for first N rows
+      --explain-all              Include derivation trees for every row
       --explain-depth <N>        Derivation expansion depth
 
 Output: NDJSON rows.
@@ -570,7 +564,7 @@ impl RuntimeSession {
                     .with_hits(hits)
                     .with_neighborhood_depth(depth)
                     .include_low_confidence(include_low_confidence);
-                let output = self.eval(command.datalog().as_str(), ExplainMode::Disabled)?;
+                let output = self.eval(command.datalog().as_str(), ExplainOptions::disabled())?;
                 Ok(CommandOutput::Context(command.group_rows(&output.rows)?))
             }
             RuntimeCommand::Search {
@@ -582,27 +576,27 @@ impl RuntimeSession {
                     .with_limit(limit)
                     .include_low_confidence(include_low_confidence)
                     .datalog();
-                self.run_query(&query, ExplainMode::Disabled)
+                self.run_query(&query, ExplainOptions::disabled())
             }
             RuntimeCommand::Read { handle, budget } => {
                 let query = ReadCommand::new(handle).with_budget(budget).datalog();
-                self.run_query(&query, ExplainMode::Disabled)
+                self.run_query(&query, ExplainOptions::disabled())
             }
             RuntimeCommand::Handle { handle } => {
-                self.run_query(&handle_query(&handle), ExplainMode::Disabled)
+                self.run_query(&handle_query(&handle), ExplainOptions::disabled())
             }
             RuntimeCommand::Work => self.run_verb("work"),
             RuntimeCommand::Blocked { handle } => {
-                self.run_query(&blocked_query(&handle), ExplainMode::Disabled)
+                self.run_query(&blocked_query(&handle), ExplainOptions::disabled())
             }
             RuntimeCommand::Broken => self.run_verb("broken"),
             RuntimeCommand::Trend => self.run_verb("trend"),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(name).datalog();
-                self.run_query(&query, ExplainMode::Disabled)
+                self.run_query(&query, ExplainOptions::disabled())
             }
             RuntimeCommand::Sources => {
-                self.run_query(SourcesCommand.datalog(), ExplainMode::Disabled)
+                self.run_query(SourcesCommand.datalog(), ExplainOptions::disabled())
             }
             RuntimeCommand::Schema => self.run_verb("schema"),
             RuntimeCommand::Verbs => self.run_verb("verbs"),
@@ -613,21 +607,21 @@ impl RuntimeSession {
 
     fn run_verb(&self, name: &str) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor(name, &self.actor)?;
-        self.run_query(plan.query_source(), ExplainMode::Disabled)
+        self.run_query(plan.query_source(), ExplainOptions::disabled())
     }
 
     fn run_status(&self) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor("status", &self.actor)?;
-        let output = self.eval(plan.query_source(), ExplainMode::Disabled)?;
+        let output = self.eval(plan.query_source(), ExplainOptions::disabled())?;
         Ok(CommandOutput::Status(output.rows))
     }
 
-    fn run_query(&self, query: &str, explain: ExplainMode) -> Result<CommandOutput> {
+    fn run_query(&self, query: &str, explain: ExplainOptions) -> Result<CommandOutput> {
         let output = self.eval(query, explain)?;
         Ok(CommandOutput::Rows(output.rows))
     }
 
-    fn eval(&self, query_source: &str, explain: ExplainMode) -> Result<QueryOutput> {
+    fn eval(&self, query_source: &str, explain: ExplainOptions) -> Result<QueryOutput> {
         let mut program = self.program.clone();
         let query_program = parse_program("cli-query", query_source)
             .with_context(|| format!("failed to parse query {query_source:?}"))?;
@@ -639,11 +633,9 @@ impl RuntimeSession {
             .cloned()
             .context("query source did not contain a query")?;
         let mut options = EvalOptions::default().with_actor(self.actor.clone());
-        options = match explain {
-            ExplainMode::Disabled => options,
-            ExplainMode::DefaultDepth => options.with_explain(),
-            ExplainMode::Depth(depth) => options.with_explain_depth(depth),
-        };
+        if explain.is_enabled() {
+            options = options.with_explain_options(explain);
+        }
         let database = Database::from_store_for_options(&self.store, &options)
             .with_sources(self.sources.clone());
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
@@ -945,21 +937,34 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
 
 fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
-    let mut explain = ExplainMode::Disabled;
+    let mut explain = ExplainOptions::disabled();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--explain" => explain = ExplainMode::DefaultDepth,
+            "--explain" => explain = explain.with_first_rows(3),
             "--explain-depth" => {
-                explain = ExplainMode::Depth(parse_usize(
+                let depth = parse_positive_usize(
                     next_value(&mut iter, "--explain-depth")?,
                     "--explain-depth",
-                )?);
+                )?;
+                explain = explain.with_depth_limit(depth);
             }
             value if value.starts_with("--explain-depth=") => {
-                explain =
-                    ExplainMode::Depth(parse_usize(value_after_equals(value), "--explain-depth")?);
+                let depth = parse_positive_usize(value_after_equals(value), "--explain-depth")?;
+                explain = explain.with_depth_limit(depth);
             }
+            "--explain-first" => {
+                let rows = parse_positive_usize(
+                    next_value(&mut iter, "--explain-first")?,
+                    "--explain-first",
+                )?;
+                explain = explain.with_first_rows(rows);
+            }
+            value if value.starts_with("--explain-first=") => {
+                let rows = parse_positive_usize(value_after_equals(value), "--explain-first")?;
+                explain = explain.with_first_rows(rows);
+            }
+            "--explain-all" => explain = explain.with_all_rows(),
             value if value.starts_with('-') => bail!("unknown eval option {value:?}"),
             value => assign_once(&mut query, value, "eval accepts one query string")?,
         }
@@ -1009,6 +1014,15 @@ fn parse_usize(value: &str, flag: &str) -> Result<usize> {
     value
         .parse()
         .with_context(|| format!("{flag} value {value:?} is not a positive integer"))
+}
+
+fn parse_positive_usize(value: &str, flag: &str) -> Result<usize> {
+    let parsed = parse_usize(value, flag)?;
+    ensure!(
+        parsed > 0,
+        "{flag} value {value:?} must be greater than zero"
+    );
+    Ok(parsed)
 }
 
 fn value_after_equals(value: &str) -> &str {
@@ -1092,8 +1106,10 @@ fn prelude_error(error: PreludeError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anneal_core::runtime::eval::ExplainRowLimit;
     use anneal_core::runtime::prelude::standard_prelude_program;
     use std::fs;
+    use std::num::NonZeroUsize;
     use tempfile::tempdir;
 
     fn os(args: &[&str]) -> Vec<OsString> {
@@ -1161,13 +1177,49 @@ mod tests {
             "4",
         ]))
         .expect("parse");
+        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+            panic!("expected eval command");
+        };
         assert_eq!(
-            parsed.command,
-            RuntimeCommand::Eval {
-                query: "? diagnostic(code, severity, subject, file, line, evidence).".to_string(),
-                explain: ExplainMode::Depth(4),
-            }
+            query,
+            "? diagnostic(code, severity, subject, file, line, evidence)."
         );
+        assert!(explain.is_enabled());
+        assert_eq!(explain.depth().get(), 4);
+        assert!(explain.explicit_depth());
+        assert_eq!(explain.row_limit(), ExplainRowLimit::default());
+    }
+
+    #[test]
+    fn parses_eval_explain_row_limit_options() {
+        let parsed = Invocation::parse(os(&[
+            "anneal",
+            "-e",
+            "? blocked(h).",
+            "--explain-first=2",
+            "--explain-depth",
+            "4",
+        ]))
+        .expect("parse explain first");
+        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+            panic!("expected eval command");
+        };
+        assert_eq!(query, "? blocked(h).");
+        assert!(explain.is_enabled());
+        assert_eq!(explain.depth().get(), 4);
+        assert_eq!(
+            explain.row_limit(),
+            ExplainRowLimit::First(NonZeroUsize::new(2).expect("nonzero"))
+        );
+
+        let parsed = Invocation::parse(os(&["anneal", "-e", "? blocked(h).", "--explain-all"]))
+            .expect("parse explain all");
+        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+            panic!("expected eval command");
+        };
+        assert_eq!(query, "? blocked(h).");
+        assert!(explain.is_enabled());
+        assert_eq!(explain.row_limit(), ExplainRowLimit::All);
     }
 
     #[test]
@@ -1216,6 +1268,8 @@ mod tests {
             }
         );
         assert!(HelpTopic::Eval.render().contains("--explain-depth"));
+        assert!(HelpTopic::Eval.render().contains("--explain-first"));
+        assert!(HelpTopic::Eval.render().contains("--explain-all"));
     }
 
     #[test]

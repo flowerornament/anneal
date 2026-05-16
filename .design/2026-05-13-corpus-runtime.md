@@ -877,14 +877,28 @@ derivation tree:
 - `prelude_hash` and `source_generations` at evaluation time
 
 Provenance is **lazy and bounded**. The IR records derivation
-metadata as it computes, but the full tree is only materialized on
-`--explain`. Per-record derivation is bounded to a configurable
-depth (default 5 levels); deeper chains report `... + <n> more
-levels (use --explain-depth)` rather than expanding.
+metadata as it computes, but full trees are only materialized on
+`--explain`. `--explain` explains the first 3 output rows by default;
+`--explain-first N` changes that row cap, and `--explain-all`
+explicitly restores derivations on every row. Rows beyond the cap
+remain ordinary output rows without `_derivation`. Per-record
+derivation is bounded to a configurable depth (default 5 levels);
+deeper chains report `... + <n> more levels (use --explain-depth)`
+rather than expanding.
 
 For recursive rules, derivation is path-summarized: chains of the
 same rule with bound arguments collapse to "via <rule> × N hops"
 unless `--explain-depth` is explicit.
+
+**Definition CR-D84 (Explain output row cap).** `--explain` is a
+row-count bounded output provenance mode. The default cap is the first 3 rows,
+`--explain-first N` explains only the first `N` rows, and
+`--explain-all` is required for every-row derivations. The row cap and
+depth cap are independent: `--explain-depth` changes tree depth, not
+how many rows receive `_derivation`. This cap limits emitted
+derivation fields; it is not a fixpoint-work or memory budget.
+Rationale: multi-row agent queries must remain scannable while
+preserving an explicit full-trace escape hatch.
 
 ### §15 Snapshots and time travel [CR-D13]
 
@@ -1381,8 +1395,9 @@ Cardinality: set semantics by default (duplicates deduplicated). For
 multiset, use explicit aggregation or include the full key in the
 head.
 
-Provenance: `--explain` (CLI) or `derivation: true` (MCP) adds a
-`_derivation` field to each record. Without it, records are bare.
+Provenance: `--explain` (CLI) or `derivation: true` (MCP) may add a
+`_derivation` field to records. CLI `--explain` is capped by CR-D84;
+without explain, records are bare.
 
 ### §24 Errors
 
@@ -2144,8 +2159,10 @@ filters still belong in queries.
 | `--root=PATH` | operate on a different corpus | global |
 | `--at=<ref>` | evaluate at a historical reference | global |
 | `--limit=N` | cap output records | global |
-| `--explain` | include `_derivation` per record | global |
-| `--explain-depth=N` | derivation expansion depth (default 5) | global |
+| `--explain` | include `_derivation` on first 3 records | `-e` / `eval` |
+| `--explain-first=N` | include `_derivation` on first N records | `-e` / `eval` |
+| `--explain-all` | include `_derivation` on every record | `-e` / `eval` |
+| `--explain-depth=N` | derivation expansion depth (default 5) | `-e` / `eval` |
 | `--meta` | emit `_meta` envelope record on stdout | global |
 | `--no-snapshot` | don't append history on this run | global |
 | `--quiet` | suppress stderr chatter | global |
@@ -2943,6 +2960,7 @@ config key.
 - CR-D81: Schema signature encoding (§43)
 - CR-D82: Help and reference projection (§35)
 - CR-D83: Legacy boundary deletion gate (§47)
+- CR-D84: Explain output row cap (§14)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

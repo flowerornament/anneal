@@ -57,6 +57,10 @@ anneal -e '? upstream("formal-model/v17.md", h).'
 Use raw Datalog when the built-in verbs are too broad. Stored source facts use
 `*` prefixes; prelude and project predicates do not.
 
+Use `--explain` when you need provenance for why a row exists. It explains the
+first 3 rows by default; use `--explain-first N` for a different cap or
+`--explain-all` only when you really want every row's derivation tree.
+
 ### Discovering the Runtime
 
 ```bash
