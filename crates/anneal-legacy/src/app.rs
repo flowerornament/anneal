@@ -116,11 +116,13 @@ CONFIGURATION:
 
 OUTPUT:
 
-  All commands support --json for machine consumption. Risky commands use
-  progressive disclosure: bounded JSON by default, explicit expansion flags for
-  more detail, and --full for full dumps when intentionally requested.
-  Human output is designed for terminal use with auto-colored diagnostics
-  (disabled when piped).
+  Runtime commands render readable text at a terminal and NDJSON when piped.
+  Use --format=text to force readable output through a harness, or --json /
+  --format=json for machine consumption. Compatibility commands support --json
+  for machine consumption. Risky commands use progressive disclosure: bounded
+  JSON by default, explicit expansion flags for more detail, and --full for
+  full dumps when intentionally requested. Human output is designed for terminal
+  use with auto-colored diagnostics (disabled when piped).
 
   Exit code 1 when errors are found (check command), 0 otherwise."
 )]

@@ -704,7 +704,11 @@ The lexical match quality includes light deterministic stemming and a
 small built-in abbreviation table for corpus-planning idioms such as
 `OQ` ↔ `open question`, `ADR` ↔ `architecture decision record`, and
 `RFC` ↔ `request for comments`; this is still lexical expansion, not
-semantic retrieval. Additional domain synonyms belong in a custom
+semantic retrieval. The default calibration may apply small
+deterministic authority adjustments from corpus structure, including
+inbound-reference boosts for highly cited handles and penalties for
+historical/prior-path handles, so tied lexical matches prefer current
+canonical sources. Additional domain synonyms belong in a custom
 `SearchProvider` or `Ranker`.
 The exact built-in weight values and default threshold are shipped
 policy defaults, not semantic contracts; CR-OQ8 and CR-OQ9 track their
@@ -951,7 +955,8 @@ key/value pair was recorded. `.anneal/history.jsonl` stores one JSON
 object per snapshot:
 `{snapshot, at, corpus, facts:[{id,key,value}]}`. Empty snapshot ids,
 empty fact ids/keys, and unparseable `at` timestamps are recoverable
-history read warnings; invalid entries are skipped. `snapshot:last`
+history read warnings; invalid entries are skipped. Writers MUST
+validate the same entry contract before appending history. `snapshot:last`
 selects the parseable entry with the latest `at` timestamp;
 `snapshot:<id>` selects by `snapshot`; ISO and relative date refs
 select the nearest parseable `at` timestamp. Ties choose the later
@@ -1398,11 +1403,13 @@ overrides and small project vocabularies.
 
 ### §23 Output shape [CR-D20]
 
-**Definition CR-D20 (Output contract).**
+**Definition CR-D20 (Machine output contract).**
 
-- **stdout: pure NDJSON.** One record per match, `\n` terminated,
-  streamed as derived. No verb-banner text, no "underlying query"
-  print on stdout — see §25 for where the query lives.
+- **machine stdout: pure NDJSON.** One record per match, `\n`
+  terminated, streamed as derived. No verb-banner text, no
+  "underlying query" print on stdout — see §25 for where the query
+  lives. CLI human rendering is a surface projection governed by
+  CR-D87.
 - **stderr: human text.** Progress, warnings, parse errors with
   line/column. Never NDJSON.
 
@@ -2127,13 +2134,13 @@ not the total invocation budget. The query then runs over `TopK`,
 first materialized as `context_hit` before joining reads or neighbors;
 otherwise later positive atoms can bind `h` early and accidentally
 turn the query into top-K-per-handle. `context_hit` also requires
-`context_readable(h)`, meaning `*content{handle: h, tokens}` has at
-least one span under the per-hit budget before the handle can win
-TopK; a searchable but unreadably large handle must not starve the
-context result. This check must use content metadata, not `read`,
-because `read` constructs text-bearing rows and would do full-corpus
-read work before ranking. `context_neighbor(h, h)` is always emitted
-from `context_hit` so isolated top hits keep their read spans;
+`context_readable(h)`, meaning `*content{handle: h, tokens}` exists
+before the handle can win TopK; oversized spans remain eligible and
+are clipped by bounded `read` rather than being suppressed before
+ranking. This check must use content metadata, not `read`, because
+`read` constructs text-bearing rows and would do full-corpus read work
+before ranking. `context_neighbor(h, h)` is always emitted from
+`context_hit` so isolated top hits keep their read spans;
 additional neighbors come from `neighborhood(h, depth, neighbor)`
 anchored on `context_hit`, never from the full `*handle` universe. The
 search hit's raw `hit_span_id` is preserved as hit metadata but `read`
@@ -2222,12 +2229,13 @@ system; it is a projection layer over the runtime vocabulary.
 
 **Definition CR-D25 (I/O contract).**
 
-- **stdout: pure NDJSON.** Bare record stream; `--meta` adds one
-  envelope record at the top. Pipe to `jq` for human-readable
-  formatting: `anneal | jq` is the canonical pretty-print path. The
-  `--pretty` flag is also available for in-process formatting; it
-  emits multi-line JSON and breaks the NDJSON contract, so it is
-  human-only and never used in agent pipelines or `--mcp` mode.
+- **machine stdout: pure NDJSON.** Bare record stream; `--meta` adds
+  one envelope record at the top. Machine mode is selected when stdout
+  is piped or when `--json` / `--format=json` is passed. Human mode is
+  governed by CR-D87. The `--pretty` flag is also available for
+  in-process formatting; it emits multi-line JSON and breaks the NDJSON
+  contract, so it is human-only and never used in agent pipelines or
+  `--mcp` mode.
 - **stderr: human text.** Verb-banner echo, progress, warnings,
   parse errors. Never NDJSON.
 - **stdin: `-` means stdin.** `anneal blocked -` reads handles, one
@@ -2241,6 +2249,15 @@ when the row stream is empty. stdout remains empty so pipes and MCP
 callers can continue to treat stdout as pure NDJSON. Structurally
 invalid inputs, such as an empty search query, remain invocation or
 query errors rather than empty-result successes.
+
+**Definition CR-D87 (CLI output mode selection).** Runtime CLI commands
+render readable text when stdout is a terminal, preserve NDJSON when
+stdout is piped, and accept `--format=text` to force readable text
+through pipe-only harnesses. `--json` and `--format=json` force machine
+mode. Human rendering is a CLI projection only: library, MCP, and
+machine-mode CLI callers continue to consume the CR-D20/CR-D25 NDJSON
+contract. Rationale: cold agents often run through pipe-only harnesses
+but still need the same low-friction orientation humans get at a TTY.
 
 Rationale: cold agents need to distinguish "the command ran and
 matched nothing" from "the command produced no bytes because routing,
@@ -3005,6 +3022,7 @@ config key.
 - CR-D84: Explain output row cap (§14)
 - CR-D85: Empty row diagnostic (§36)
 - CR-D86: Corpus vocabulary verb (§33)
+- CR-D87: CLI output mode selection (§36)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

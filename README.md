@@ -161,8 +161,9 @@ anneal -e '? *handle{id: h, kind: "file", status: s}.'
 ```
 
 The programmable runtime surface remains machine-friendly when piped. At a
-terminal, `status` and `context` render readable summaries; use `--json` when
-you want their JSON/NDJSON contracts explicitly.
+terminal, runtime commands render readable text; use `--json` or `--format=json`
+when you want JSON/NDJSON contracts explicitly. Use `--format=text` to force
+the readable renderer through pipe-only harnesses.
 
 ## Commands
 

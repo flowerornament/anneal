@@ -158,8 +158,9 @@ Common prelude families:
   query against unfamiliar vocabulary.
 - Use `anneal -e` for composite questions. Keep queries narrow and project only
   fields you need.
-- Use `--json` or NDJSON streams for tool consumption. At a terminal, `status`
-  and `context` render readable summaries.
+- Use `--json` or NDJSON streams for tool consumption. Runtime commands render
+  readable text at a terminal; use `--format=text` to force that renderer
+  through pipe-only harnesses.
 - Use `--root` for the corpus path. Use `--area` only for an area name inside
   that corpus, usually a top-level directory or configured concern group.
 - Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`, and

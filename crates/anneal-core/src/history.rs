@@ -133,6 +133,8 @@ pub fn repo_history_path(root: &Utf8Path) -> Utf8PathBuf {
 
 /// Append one v2 snapshot entry as a single JSON line.
 pub fn append_snapshot_entry(root: &Utf8Path, entry: &SnapshotEntry) -> Result<(), HistoryError> {
+    validate_snapshot_entry(entry).map_err(HistoryError::InvalidEntry)?;
+
     let path = repo_history_path(root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent.as_std_path()).map_err(|source| HistoryError::Io {
@@ -234,6 +236,8 @@ pub enum HistoryError {
         path: String,
         source: std::io::Error,
     },
+    #[error("invalid snapshot history entry: {0}")]
+    InvalidEntry(String),
     #[error("could not encode snapshot history entry: {0}")]
     Encode(serde_json::Error),
 }
@@ -363,6 +367,67 @@ mod tests {
         assert_eq!(history.entries().len(), 1);
         assert_eq!(history.warnings().len(), 1);
         assert_eq!(history.warnings()[0].line, 2);
+    }
+
+    #[test]
+    fn read_snapshot_history_skips_timestamp_with_valid_date_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        append_snapshot_entry(
+            &root,
+            &SnapshotEntry::new(
+                "s1",
+                "2026-05-13T10:00:00Z",
+                CorpusId::from("test"),
+                standard_prelude_set(),
+                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            ),
+        )
+        .expect("append valid entry");
+        {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(repo_history_path(&root).as_std_path())
+                .expect("open history");
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "snapshot": "bad",
+                    "at": "2026-05-13junk",
+                    "corpus": "test",
+                    "facts": [{"id": "a.md", "key": "status", "value": "current"}]
+                })
+            )
+            .expect("append invalid entry");
+        }
+
+        let history = read_snapshot_history(&root).expect("read history");
+
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.warnings().len(), 1);
+        assert_eq!(history.warnings()[0].line, 2);
+    }
+
+    #[test]
+    fn append_snapshot_entry_rejects_invalid_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        let entry = SnapshotEntry::new(
+            "s1",
+            "2026-05-13junk",
+            CorpusId::from("test"),
+            standard_prelude_set(),
+            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+        );
+
+        let err = append_snapshot_entry(&root, &entry).expect_err("entry rejected");
+
+        assert!(
+            matches!(err, HistoryError::InvalidEntry(message) if message.contains("timestamp"))
+        );
+        let history = read_snapshot_history(&root).expect("read missing history");
+        assert!(history.entries().is_empty());
     }
 
     #[test]

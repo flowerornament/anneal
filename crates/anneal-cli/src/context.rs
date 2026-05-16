@@ -549,8 +549,8 @@ mod tests {
             content(
                 "docs/canonical.md",
                 "body",
-                "Authoritative milestone source.",
-                3,
+                "Authoritative milestone source with enough surrounding text to exceed the tiny context budget.",
+                100,
             ),
             content("MCD-1", "body", "milestone chain alpha", 3),
             content("MCD-2", "body", "milestone chain beta", 3),

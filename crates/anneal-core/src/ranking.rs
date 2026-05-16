@@ -11,6 +11,9 @@ use crate::source::SearchInfo;
 
 pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 const PARENT_CLUSTER_RAW_SCORE_BOOST: f32 = 0.15;
+const INBOUND_AUTHORITY_SCORE_BOOST: f32 = 0.12;
+const INBOUND_AUTHORITY_MIN_EDGES: u32 = 8;
+const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
 
 pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
@@ -72,6 +75,7 @@ pub struct SearchHit {
     handle: String,
     span_id: Option<String>,
     raw_score: SearchScore,
+    score_boost: SearchScore,
     reason: String,
     field: String,
 }
@@ -93,6 +97,7 @@ impl SearchHit {
             handle: handle.into(),
             span_id,
             raw_score: SearchScore::new(raw_score),
+            score_boost: SearchScore::new(0.0),
             reason: reason.into(),
             field: field.into(),
         }
@@ -121,6 +126,11 @@ impl SearchHit {
     #[must_use]
     pub fn raw_score(&self) -> SearchScore {
         self.raw_score
+    }
+
+    #[must_use]
+    pub fn score_boost(&self) -> SearchScore {
+        self.score_boost
     }
 
     #[must_use]
@@ -173,7 +183,11 @@ pub struct DefaultRanker;
 
 impl Ranker for DefaultRanker {
     fn calibrate(&self, hit: &SearchHit, _ctx: &RankingContext) -> f32 {
-        SearchScore::new(hit.raw_score().get() * field_weight(hit.field())).get()
+        SearchScore::new(
+            hit.raw_score().get() * field_weight(hit.field()) + hit.score_boost().get()
+                - historical_path_penalty(hit.handle()),
+        )
+        .get()
     }
 
     fn tie_break(&self, a: &SearchHit, b: &SearchHit) -> Ordering {
@@ -202,9 +216,18 @@ fn field_weight(field: &str) -> f32 {
     }
 }
 
+fn historical_path_penalty(handle: &str) -> f32 {
+    if handle.contains("/history/") || handle.contains("/prior/") {
+        HISTORICAL_PATH_SCORE_PENALTY
+    } else {
+        0.0
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SearchIndex {
     documents: BTreeMap<SearchDocumentKey, SearchDocument>,
+    incoming_edge_counts: BTreeMap<SearchDocumentKey, u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -394,7 +417,15 @@ impl SearchIndex {
         if cluster_only {
             hits.retain(|hit| hit.reason() == REASON_PARENT_CLUSTER);
         }
+        self.apply_authority_boosts(&mut hits);
         hits
+    }
+
+    pub(crate) fn insert_edge(&mut self, corpus: &str, source: &str, _from: &str, to: &str) {
+        *self
+            .incoming_edge_counts
+            .entry(SearchDocumentKey::new(corpus, source, to))
+            .or_default() += 1;
     }
 
     fn document_mut(&mut self, corpus: &str, source: &str, handle: &str) -> &mut SearchDocument {
@@ -478,6 +509,15 @@ impl SearchIndex {
                     .max(DefaultRanker.calibrate(&hit, &ctx));
                 signal
             })
+    }
+
+    fn apply_authority_boosts(&self, hits: &mut [SearchHit]) {
+        for hit in hits {
+            let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+            let count = self.incoming_edge_counts.get(&key).copied().unwrap_or(0);
+            hit.score_boost =
+                SearchScore::new(hit.score_boost.get() + authority_score_boost(count));
+        }
     }
 }
 
@@ -614,6 +654,14 @@ impl SearchQuery {
             .sum::<f32>();
         (matched_weight > 0.0)
             .then(|| 0.35 + (0.55 * (matched_weight / self.total_weight).min(1.0)))
+    }
+}
+
+fn authority_score_boost(incoming_edges: u32) -> f32 {
+    if incoming_edges >= INBOUND_AUTHORITY_MIN_EDGES {
+        INBOUND_AUTHORITY_SCORE_BOOST
+    } else {
+        0.0
     }
 }
 
@@ -1074,6 +1122,58 @@ mod tests {
         let hit = ranked.first().expect("expanded query finds OQ");
         assert_eq!(hit.hit().handle(), "OQ-42");
         assert!(!hit.low_confidence());
+    }
+
+    #[test]
+    fn inbound_edge_authority_boosts_canonical_source_above_tied_history() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "formal-model/history/sample-formal-model-v16.md",
+            "formal-model/history/sample-formal-model-v16.md",
+            "Formal model v16",
+        );
+        insert_handle(
+            &mut index,
+            "formal-model/sample-formal-model-v17.md",
+            "formal-model/sample-formal-model-v17.md",
+            "Formal model v17",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "formal-model/history/sample-formal-model-v16.md",
+            "body",
+            "block boundary precedence rule",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "formal-model/sample-formal-model-v17.md",
+            "body",
+            "block boundary precedence rule",
+        );
+        for idx in 0..INBOUND_AUTHORITY_MIN_EDGES {
+            index.insert_edge(
+                "test",
+                "fixture",
+                &format!("ref-{idx}.md"),
+                "formal-model/sample-formal-model-v17.md",
+            );
+        }
+
+        let query = SearchQuery::parse("block boundary precedence rule").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("block boundary precedence rule", 0.5),
+            &DefaultRanker,
+        );
+
+        assert_eq!(
+            ranked.first().expect("ranked hit").hit().handle(),
+            "formal-model/sample-formal-model-v17.md"
+        );
     }
 
     #[test]

@@ -35,11 +35,12 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         if matches!(arg, "-e" | "--eval") {
             return true;
         }
-        if arg == "--root" {
+        if matches!(arg, "--root" | "--format") {
             let _ = iter.next();
             continue;
         }
-        if arg.starts_with("--root=") || is_ignored_global_flag(arg) {
+        if arg.starts_with("--root=") || arg.starts_with("--format=") || is_ignored_global_flag(arg)
+        {
             continue;
         }
         if arg == "help" {
@@ -83,6 +84,7 @@ struct Invocation {
 enum OutputPreference {
     #[default]
     Auto,
+    Human,
     Json,
 }
 
@@ -91,6 +93,7 @@ impl OutputPreference {
         match self {
             Self::Auto if stdout_is_terminal => OutputMode::Human,
             Self::Auto | Self::Json => OutputMode::Json,
+            Self::Human => OutputMode::Human,
         }
     }
 }
@@ -124,6 +127,15 @@ impl Invocation {
                 root = Some(Utf8PathBuf::from(value));
             } else if arg == "--json" {
                 output = OutputPreference::Json;
+            } else if arg == "--format" {
+                output = parse_output_format(
+                    iter.next()
+                        .context("--format requires json or text")?
+                        .to_str()
+                        .context("--format value is not valid UTF-8")?,
+                )?;
+            } else if let Some(value) = arg.strip_prefix("--format=") {
+                output = parse_output_format(value)?;
             } else if !is_ignored_global_flag(&arg) {
                 rest.push(arg);
             }
@@ -233,7 +245,7 @@ Usage: anneal [OPTIONS] status
 
 Print compact corpus status from the programmable runtime.
 
-Output: human summary at a terminal; NDJSON rows when piped or with --json.
+Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Context => {
@@ -253,7 +265,7 @@ Options:
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
 
-Output: human summary at a terminal; one JSON object when piped or with --json.
+Output: human summary at a terminal or with --format=text; one JSON object when piped or with --json.
 "
             }
             Self::Search => {
@@ -269,7 +281,7 @@ Options:
       --limit <N>                Maximum rows (default: 25)
       --include-low-confidence   Include low-confidence hits
 
-Output: NDJSON rows with h, span_id, score, reason, field, low_confidence.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Read => {
@@ -284,7 +296,7 @@ Arguments:
 Options:
       --budget <N>               Token budget (default: 4000)
 
-Output: NDJSON rows with span_id, text, start_line, end_line, tokens.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Handle => {
@@ -296,7 +308,7 @@ Show one handle plus bounded incoming/outgoing references.
 Arguments:
   <HANDLE>                       Handle id to inspect
 
-Output: NDJSON rows with relation, other, kind, status, file, line, summary.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Work => {
@@ -305,7 +317,7 @@ Usage: anneal [OPTIONS] work
 
 Show ranked work candidates from the standard-library work verb.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Blocked => {
@@ -319,7 +331,7 @@ Arguments:
 
 For a corpus-wide blocked list, use `anneal status` or `anneal work`.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Broken => {
@@ -328,7 +340,7 @@ Usage: anneal [OPTIONS] broken
 
 Show diagnostic blockers from the standard-library checks prelude.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Trend => {
@@ -337,7 +349,7 @@ Usage: anneal [OPTIONS] trend
 
 Show status changes when snapshot history exists. No-history corpora emit no rows.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Vocab => {
@@ -347,7 +359,7 @@ Usage: anneal [OPTIONS] vocab
 List observed corpus vocabulary: status values, edge kinds, namespaces, and
 frontmatter fields.
 
-Output: NDJSON rows with category, value, source.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Describe => {
@@ -359,7 +371,7 @@ Describe a runtime primitive, predicate, or verb. Defaults to runtime.
 Arguments:
   [NAME]                         Object to describe
 
-Output: NDJSON rows with doc text.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Sources => {
@@ -368,7 +380,7 @@ Usage: anneal [OPTIONS] sources
 
 List linked sources/adapters and their capabilities.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Schema => {
@@ -377,7 +389,7 @@ Usage: anneal [OPTIONS] schema
 
 List runtime predicates, primitives, signatures, and provenance.
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Verbs => {
@@ -386,7 +398,7 @@ Usage: anneal [OPTIONS] verbs
 
 List standard-library and project @verb declarations.
 
-Output: NDJSON rows with name, query, doc, output_schema.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Eval => {
@@ -405,7 +417,7 @@ Options:
       --explain-all              Include derivation trees for every row
       --explain-depth <N>        Derivation expansion depth
 
-Output: NDJSON rows.
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
         }
@@ -695,6 +707,7 @@ impl CommandOutput {
         match (mode, self) {
             (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
             (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
+            (OutputMode::Human, Self::Rows(rows)) => write_rows_text(writer, &rows)?,
             (_, Self::Status(rows) | Self::Rows(rows)) => write_ndjson(writer, rows)?,
             (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
             (_, Self::Text(text)) => write_text(writer, text)?,
@@ -840,6 +853,23 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
     Ok(())
 }
 
+fn write_rows_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    writeln!(writer, "Rows")?;
+    if rows.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        return Ok(());
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        write!(writer, "{:>2}.", index + 1)?;
+        for (field, value) in &row.fields {
+            write!(writer, " {field}={}", display_value(value))?;
+        }
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
 fn section_title(section: &str) -> String {
     let mut chars = section.chars();
     let Some(first) = chars.next() else {
@@ -886,6 +916,55 @@ fn display_number(value: &NumberValue) -> String {
     match value {
         NumberValue::Int(value) => value.to_string(),
         NumberValue::Float(value) => format!("{value:.3}"),
+    }
+}
+
+fn display_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => display_string_value(value),
+        Value::Number(value) => display_number(value),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        Value::List(values) => {
+            let values = values
+                .iter()
+                .map(display_value)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({values})")
+        }
+    }
+}
+
+fn display_string_value(value: &str) -> String {
+    const MAX_INLINE_CHARS: usize = 96;
+
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut rendered = String::new();
+    for (index, ch) in collapsed.chars().enumerate() {
+        if index == MAX_INLINE_CHARS {
+            rendered.push_str("...");
+            break;
+        }
+        rendered.push(ch);
+    }
+    if rendered.is_empty() {
+        r#""""#.to_string()
+    } else if rendered
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '/' | '_' | '-' | ':' | '#'))
+    {
+        rendered
+    } else {
+        format!("{rendered:?}")
+    }
+}
+
+fn parse_output_format(value: &str) -> Result<OutputPreference> {
+    match value {
+        "json" => Ok(OutputPreference::Json),
+        "text" => Ok(OutputPreference::Human),
+        _ => bail!("--format accepts json or text; got {value:?}"),
     }
 }
 
@@ -1172,6 +1251,14 @@ mod tests {
         assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "status"
         ])));
+        assert!(should_handle_args(&os(&[
+            "anneal", "--format", "text", "work"
+        ])));
+        assert!(should_handle_args(&os(&[
+            "anneal",
+            "--format=text",
+            "vocab"
+        ])));
         assert!(!should_handle_args(&os(&[
             "anneal", "--root", ".design", "health"
         ])));
@@ -1265,13 +1352,9 @@ mod tests {
     fn parses_runtime_subcommand_help_without_loading_corpus() {
         for (command, topic, expected_output) in [
             ("context", HelpTopic::Context, "Output: human summary"),
-            ("search", HelpTopic::Search, "Output: NDJSON rows with h"),
-            ("read", HelpTopic::Read, "Output: NDJSON rows with span_id"),
-            (
-                "vocab",
-                HelpTopic::Vocab,
-                "Output: NDJSON rows with category",
-            ),
+            ("search", HelpTopic::Search, "Output: readable rows"),
+            ("read", HelpTopic::Read, "Output: readable rows"),
+            ("vocab", HelpTopic::Vocab, "Output: readable rows"),
         ] {
             let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
                 .expect("parse command help");
@@ -1343,6 +1426,21 @@ mod tests {
         let parsed = Invocation::parse(os(&["anneal", "--json", "status"])).expect("parse status");
 
         assert_eq!(parsed.command, RuntimeCommand::Status);
+        assert_eq!(parsed.output, OutputPreference::Json);
+    }
+
+    #[test]
+    fn parses_text_output_preference() {
+        let parsed =
+            Invocation::parse(os(&["anneal", "--format=text", "work"])).expect("parse work");
+
+        assert_eq!(parsed.command, RuntimeCommand::Work);
+        assert_eq!(parsed.output, OutputPreference::Human);
+
+        let parsed =
+            Invocation::parse(os(&["anneal", "vocab", "--format", "json"])).expect("parse vocab");
+
+        assert_eq!(parsed.command, RuntimeCommand::Vocab);
         assert_eq!(parsed.output, OutputPreference::Json);
     }
 
@@ -1441,6 +1539,26 @@ mod tests {
         assert!(rendered.starts_with(
             "{\"h\":\"plan.md\",\"score\":42,\"section\":\"work\",\"why\":\"potential\"}\n"
         ));
+    }
+
+    #[test]
+    fn generic_rows_human_render_is_readable() {
+        let output = CommandOutput::Rows(vec![row(&[
+            ("category", Value::String("status".to_string())),
+            ("value", Value::String("open question".to_string())),
+            ("count", Value::Number(NumberValue::Int(2))),
+        ])]);
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render rows");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.starts_with("Rows\n 1."));
+        assert!(rendered.contains("category=status"));
+        assert!(rendered.contains(r#"value="open question""#));
+        assert!(rendered.contains("count=2"));
     }
 
     #[test]

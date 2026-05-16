@@ -1888,8 +1888,7 @@ impl ContentProvider for ContentIndex {
         if let Some(span_id) = request.span_id() {
             return Ok(self
                 .content_spans_for_handle_and_span(request.handle(), span_id)
-                .filter(|span| span.content.tokens <= request.budget())
-                .map(read_chunk)
+                .filter_map(|span| read_chunk_with_budget(span, request.budget()))
                 .collect());
         }
         let mut used = 0_i64;
@@ -1897,6 +1896,12 @@ impl ContentProvider for ContentIndex {
         for span in self.content_spans_for_handle(request.handle()) {
             let next = used.saturating_add(span.content.tokens);
             if next > request.budget() {
+                if out.is_empty()
+                    && let Some(chunk) =
+                        read_chunk_with_budget(span, request.budget().saturating_sub(used))
+                {
+                    out.push(chunk);
+                }
                 break;
             }
             used = next;
@@ -1923,6 +1928,39 @@ fn read_chunk(span: ContentSpan<'_>) -> ReadChunk {
         span.span.end_line,
         span.content.tokens,
     )
+}
+
+fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
+    if budget <= 0 {
+        return None;
+    }
+    if span.content.tokens <= budget {
+        return Some(read_chunk(span));
+    }
+    Some(ReadChunk::new(
+        &span.key.handle,
+        &span.key.span_id,
+        clip_text_to_budget(&span.content.text, budget),
+        span.span.start_line,
+        span.span.end_line,
+        budget,
+    ))
+}
+
+fn clip_text_to_budget(text: &str, budget: i64) -> String {
+    let char_budget = usize::try_from(budget)
+        .ok()
+        .and_then(|budget| budget.checked_mul(4))
+        .unwrap_or(usize::MAX);
+    let mut clipped = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index == char_budget {
+            clipped.push_str("\n...");
+            break;
+        }
+        clipped.push(ch);
+    }
+    clipped
 }
 
 fn enforce_read_budget(chunks: Vec<ReadChunk>, budget: i64, exact_span: bool) -> Vec<ReadChunk> {
@@ -2019,6 +2057,17 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
                 area: row_string(row, AREA_FIELD),
                 kind: row_string(row, KIND_FIELD),
             });
+        }
+        EDGE_RELATION => {
+            let (Some(corpus), Some(source), Some(from), Some(to)) = (
+                row_string(row, CORPUS_FIELD),
+                row_string(row, SOURCE_FIELD),
+                row_string(row, FROM_FIELD),
+                row_string(row, TO_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_edge(corpus, source, from, to);
         }
         META_RELATION => {
             let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (
@@ -5691,6 +5740,26 @@ mod tests {
         Database::from_store(&store)
     }
 
+    fn oversized_content_database() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle("long.md", "file", "current", "", "core")];
+        batch.content = vec![content_with_text(
+            "long.md",
+            "full",
+            "abcdefghijklmnop oversized span",
+            20,
+        )];
+        batch.spans = vec![span("long.md", "full", 1, 99)];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("oversized content fixture merge");
+        Database::from_store(&store)
+    }
+
     fn search_database() -> Database {
         let mut batch = FactBatch::new(
             CorpusId::from("test"),
@@ -6609,6 +6678,30 @@ mod tests {
                     ("tokens", n(5)),
                 ]),
             ],
+        );
+    }
+
+    #[test]
+    fn read_clips_first_oversized_span_to_budget() {
+        let output = evaluate_query_output(
+            r#"? read("long.md", 3, span_id, text, start_line, end_line, tokens)."#,
+            oversized_content_database(),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![row([
+                ("span_id", s("full")),
+                ("text", s("abcdefghijkl\n...")),
+                ("start_line", n(1)),
+                ("end_line", n(99)),
+                ("tokens", n(3)),
+            ])],
         );
     }
 

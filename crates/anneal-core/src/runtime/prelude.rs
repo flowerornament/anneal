@@ -582,8 +582,7 @@ context_neighborhood_depth({neighborhood_depth_term}).
 context_readable(h) :=
   *handle{{id: h}},
   context_read_budget(per_hit_budget),
-  *content{{handle: h, tokens}},
-  tokens <= per_hit_budget.
+  *content{{handle: h, tokens}}.
 
 context_hit(h, hit_span_id, score, reason, field) :=
   context_goal(goal),
