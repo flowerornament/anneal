@@ -942,6 +942,14 @@ fn is_in_terminal_directory(relative: &Utf8Path) -> bool {
 }
 
 pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<BuildResult> {
+    build_graph_scoped(root, config, &[Utf8PathBuf::from(".")])
+}
+
+pub(crate) fn build_graph_scoped(
+    root: &Utf8Path,
+    config: &AnnealConfig,
+    scan_roots: &[Utf8PathBuf],
+) -> Result<BuildResult> {
     let mut graph = DiGraph::new();
     let mut all_label_candidates = Vec::new();
     let mut pending_edges = Vec::new();
@@ -1019,6 +1027,9 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
             .strip_prefix(root)
             .unwrap_or(&utf8_path)
             .to_path_buf();
+        if !is_inside_scan_roots(&relative, scan_roots) {
+            continue;
+        }
 
         if let Some(filename) = relative.file_name() {
             filename_index
@@ -1243,6 +1254,12 @@ pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<Buil
         malformed_frontmatter,
         skipped_non_utf8: skipped_non_utf8.get(),
     })
+}
+
+fn is_inside_scan_roots(relative: &Utf8Path, scan_roots: &[Utf8PathBuf]) -> bool {
+    scan_roots
+        .iter()
+        .any(|scan_root| scan_root == "." || relative.starts_with(scan_root))
 }
 
 #[cfg(test)]

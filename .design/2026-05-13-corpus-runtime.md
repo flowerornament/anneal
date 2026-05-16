@@ -2306,6 +2306,13 @@ Other adapters declare their own (`code.module_pattern`,
 isn't recognized by a linked Source; `optional` facts are skipped
 when the adapter is absent.
 
+**Definition CR-D70 (Markdown scan-root identity).** `md.scan_root`
+selects one or more corpus-relative subtrees for markdown extraction;
+it does not rewrite handle ids, `native_id`, or `origin_uri`. A file
+at `included/b.md` remains `included/b.md` even when the only scan
+root is `included`. Rationale: discovery configuration changes the
+extraction window, not the identity of already-known corpus objects.
+
 ### §43 Introspection
 
 **Definition CR-D44 (Introspection tuple encoding).**
@@ -2713,6 +2720,7 @@ as data instead of smuggling it through row sequence.
 - CR-D67: Trail projection safety (§13)
 - CR-D68: Source refresh transaction (§5)
 - CR-D69: Corpus-scoped diagnostic locations (§28.2)
+- CR-D70: Markdown scan-root identity (§42)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

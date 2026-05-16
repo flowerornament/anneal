@@ -1,9 +1,10 @@
 //! Markdown adapter for anneal v2.
 
 use anneal_core::{
-    ConfigKey, FactBatch, FactBatchMode, Pattern, Source, SourceCapabilities, SourceContext,
-    SourceError, SourceInfo, SourceName, default_lexical_search_info,
+    ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern, Source, SourceCapabilities,
+    SourceContext, SourceError, SourceInfo, SourceName, default_lexical_search_info,
 };
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 const SOURCE_NAME: &str = "markdown";
 
@@ -45,6 +46,7 @@ impl Source for MarkdownSource {
         }
 
         let generation = cx.next_generation();
+        let config = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -53,11 +55,12 @@ impl Source for MarkdownSource {
         );
         for root in cx.roots {
             cx.cancellation.check()?;
-            let batch = anneal_legacy::v2_adapter::extract_markdown_facts(
+            let batch = anneal_legacy::v2_adapter::extract_markdown_facts_with_options(
                 root,
                 cx.corpus.clone(),
                 SourceName::from(SOURCE_NAME),
                 generation,
+                &config.options,
             )
             .map_err(|err| SourceError::Other(err.to_string()))?;
             combined.visibility.extend(batch.visibility);
@@ -71,6 +74,79 @@ impl Source for MarkdownSource {
         }
         Ok(combined)
     }
+}
+
+struct MarkdownDiscoveryConfig {
+    options: anneal_legacy::v2_adapter::MarkdownExtractionOptions,
+}
+
+impl MarkdownDiscoveryConfig {
+    fn from_facts(facts: &ConfigFacts) -> Result<Self, SourceError> {
+        validate_file_extensions(facts)?;
+        reject_unsupported(facts, "md.label_pattern")?;
+        reject_unsupported(facts, "md.version_pattern")?;
+        reject_unsupported(facts, "md.section_min_depth")?;
+        reject_unsupported(facts, "md.section_max_depth")?;
+
+        let mut scan_roots = facts
+            .values("md.scan_root")
+            .map(valid_relative_path)
+            .collect::<Result<Vec<_>, _>>()?;
+        if scan_roots.is_empty() {
+            scan_roots.push(Utf8PathBuf::from("."));
+        }
+
+        Ok(Self {
+            options: anneal_legacy::v2_adapter::MarkdownExtractionOptions {
+                scan_roots,
+                exclude: facts
+                    .values("md.scan_exclude")
+                    .map(str::to_string)
+                    .collect(),
+                linear_namespaces: facts
+                    .values("md.linear_namespace")
+                    .map(str::to_string)
+                    .collect(),
+            },
+        })
+    }
+}
+
+fn validate_file_extensions(facts: &ConfigFacts) -> Result<(), SourceError> {
+    for extension in facts.values("md.file_extension") {
+        if !matches!(extension, ".md" | "md") {
+            return Err(SourceError::Other(format!(
+                "markdown source only supports md.file_extension(\".md\") during the legacy bridge; got {extension:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn reject_unsupported(facts: &ConfigFacts, key: &str) -> Result<(), SourceError> {
+    if let Some(value) = facts.first(key) {
+        return Err(SourceError::Other(format!(
+            "markdown source does not support {key}({value:?}) through the legacy bridge yet"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_relative_path(value: &str) -> Result<Utf8PathBuf, SourceError> {
+    let path = Utf8Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Utf8Component::ParentDir | Utf8Component::Prefix(_)
+            )
+        })
+    {
+        return Err(SourceError::Other(format!(
+            "md.scan_root must be a relative path inside the corpus root; got {value:?}"
+        )));
+    }
+    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -145,6 +221,49 @@ mod tests {
         }));
         assert!(batch.spans.iter().any(|fact| fact.handle == "a.md"));
         assert!(batch.content.iter().any(|fact| fact.handle == "a.md"));
+    }
+
+    #[test]
+    fn markdown_source_honors_scan_root_discovery_fact() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::create_dir(root.join("included")).expect("create included");
+        fs::write(root.join("anneal.toml"), "").expect("write root config");
+        fs::write(root.join("a.md"), "---\nstatus: draft\n---\n# A\n").expect("write excluded doc");
+        fs::write(
+            root.join("included").join("b.md"),
+            "---\nstatus: active\n---\n# B\n",
+        )
+        .expect("write included doc");
+        let config = ConfigFacts::new(vec![
+            ("md.file_extension".to_string(), ".md".to_string()),
+            ("md.scan_root".to_string(), "included".to_string()),
+        ]);
+
+        let batch = MarkdownSource
+            .extract(&context(&root, &config, Some(Generation::new(0))))
+            .expect("extract");
+
+        assert!(!batch.handles.iter().any(|fact| fact.id == "a.md"));
+        assert!(batch.handles.iter().any(|fact| fact.id == "included/b.md"));
+    }
+
+    #[test]
+    fn markdown_source_rejects_unsupported_discovery_facts_loudly() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        let config = ConfigFacts::new(vec![
+            ("md.file_extension".to_string(), ".txt".to_string()),
+            ("md.scan_root".to_string(), ".".to_string()),
+        ]);
+
+        let err = MarkdownSource
+            .extract(&context(&root, &config, Some(Generation::new(0))))
+            .expect_err("unsupported extension rejects");
+
+        assert!(err.to_string().contains("md.file_extension"));
     }
 
     #[test]

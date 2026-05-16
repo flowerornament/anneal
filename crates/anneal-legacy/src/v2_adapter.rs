@@ -16,14 +16,47 @@ use crate::graph::{DiGraph, EdgeKind};
 use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId, resolved_file};
 use crate::parse::{self, PendingEdge};
 
+#[derive(Clone, Debug, Default)]
+pub struct MarkdownExtractionOptions {
+    pub scan_roots: Vec<Utf8PathBuf>,
+    pub exclude: Vec<String>,
+    pub linear_namespaces: Vec<String>,
+}
+
 pub fn extract_markdown_facts(
     root: &Utf8Path,
     corpus: anneal_core::CorpusId,
     source: SourceName,
     generation: Generation,
 ) -> Result<FactBatch> {
-    let config = config::load_config(root.as_std_path())?;
-    let mut result = parse::build_graph(root, &config)?;
+    extract_markdown_facts_with_options(
+        root,
+        corpus,
+        source,
+        generation,
+        &MarkdownExtractionOptions::default(),
+    )
+}
+
+pub fn extract_markdown_facts_with_options(
+    root: &Utf8Path,
+    corpus: anneal_core::CorpusId,
+    source: SourceName,
+    generation: Generation,
+    options: &MarkdownExtractionOptions,
+) -> Result<FactBatch> {
+    let mut config = config::load_config(root.as_std_path())?;
+    config.exclude.extend(options.exclude.iter().cloned());
+    config
+        .handles
+        .linear
+        .extend(options.linear_namespaces.iter().cloned());
+    let scan_roots = if options.scan_roots.is_empty() {
+        vec![Utf8PathBuf::from(".")]
+    } else {
+        options.scan_roots.clone()
+    };
+    let mut result = parse::build_graph_scoped(root, &config, &scan_roots)?;
     let _stats = crate::resolve::resolve_all(
         &mut result.graph,
         &result.label_candidates,

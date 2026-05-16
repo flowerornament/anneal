@@ -210,7 +210,7 @@ impl RuntimeSession {
         let mut discovery = default_markdown_config();
         let project = if root.join(anneal_core::PROJECT_RULE_FILE).is_file() {
             let extension = load_project_extension(root.as_std_path(), &sources, &program)?;
-            discovery.extend(extension.discovery().entries().iter().cloned());
+            merge_discovery(&mut discovery, extension.discovery());
             Some(extension.program().clone())
         } else {
             None
@@ -554,6 +554,15 @@ fn default_markdown_config() -> Vec<ConfigEntry> {
     ]
 }
 
+fn merge_discovery(discovery: &mut Vec<ConfigEntry>, extension: &ConfigFacts) {
+    for entry in extension.entries() {
+        if entry.ordinal.is_none() {
+            discovery.retain(|existing| existing.key != entry.key || existing.ordinal.is_some());
+        }
+        discovery.push(entry.clone());
+    }
+}
+
 fn handle_query(handle: &str) -> String {
     let handle = datalog_string_literal(handle);
     format!(
@@ -599,6 +608,8 @@ fn prelude_error(error: PreludeError) -> anyhow::Error {
 mod tests {
     use super::*;
     use anneal_core::runtime::prelude::standard_prelude_program;
+    use std::fs;
+    use tempfile::tempdir;
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
@@ -691,6 +702,49 @@ mod tests {
         assert!(rows.iter().any(|row| {
             row.fields.get("name")
                 == Some(&anneal_core::runtime::Value::String("markdown".to_string()))
+        }));
+    }
+
+    #[test]
+    fn project_discovery_facts_affect_markdown_extraction() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::create_dir(root.join("included")).expect("create included");
+        fs::write(root.join("anneal.toml"), "").expect("write config");
+        fs::write(root.join("anneal.dl"), r#"md.scan_root("included")."#)
+            .expect("write project rules");
+        fs::write(
+            root.join("a.md"),
+            "---\nstatus: draft\n---\n# Excluded\nshared marker\n",
+        )
+        .expect("write excluded doc");
+        fs::write(
+            root.join("included").join("b.md"),
+            "---\nstatus: draft\n---\n# Included\nshared marker\n",
+        )
+        .expect("write included doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(V2Command::Search {
+                query: "shared marker".to_string(),
+                limit: 10,
+                include_low_confidence: false,
+            })
+            .expect("search runs");
+        let CommandOutput::Rows(rows) = output else {
+            panic!("search should emit rows");
+        };
+
+        assert!(rows.iter().any(|row| {
+            row.fields.get("h")
+                == Some(&anneal_core::runtime::Value::String(
+                    "included/b.md".to_string(),
+                ))
+        }));
+        assert!(!rows.iter().any(|row| {
+            row.fields.get("h") == Some(&anneal_core::runtime::Value::String("a.md".to_string()))
         }));
     }
 }

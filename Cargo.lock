@@ -38,6 +38,7 @@ dependencies = [
  "camino",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
