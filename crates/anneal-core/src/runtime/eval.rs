@@ -4086,8 +4086,7 @@ mod tests {
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::ranking::{SearchHit, default_lexical_search_info};
-    use crate::runtime::ast::RuleLayer;
-    use crate::runtime::{StaticError, analyze, parse_program};
+    use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
 
     fn identity(native_id: &str) -> FactIdentity {
@@ -4859,7 +4858,7 @@ mod tests {
     }
 
     fn compute_mvs_outputs() -> MvsOutputs {
-        let mut program = parse_program(
+        let program = parse_prelude_program(
             "mvs.dl",
             r#"
             terminal(h) := *handle{id: h, status: "superseded"}.
@@ -4926,7 +4925,6 @@ mod tests {
             "#,
         )
         .expect("mvs program parses");
-        program.assign_rule_layer(RuleLayer::Prelude);
         let analyzed = analyze(program).expect("mvs program analyzes");
         let queries = analyzed.queries().cloned().collect::<Vec<_>>();
         let mut evaluator = Evaluator::new(analyzed, mvs_database());

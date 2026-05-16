@@ -41,8 +41,19 @@ dependencies = [
 name = "anneal-core"
 version = "0.10.1"
 dependencies = [
+ "anneal-lang",
  "camino",
  "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "anneal-lang"
+version = "0.10.1"
+dependencies = [
  "serde",
  "serde_json",
  "tempfile",

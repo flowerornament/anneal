@@ -765,7 +765,7 @@ fn check_diagnostic_rule(
         return Ok(());
     }
 
-    let location = rule.origin.location.clone();
+    let location = rule.origin().location().clone();
     let Some(Term::Expr(Expr::Literal(Literal::String(id)))) = rule.head.terms.first() else {
         return Err(StaticError::DiagnosticIdMustBeLiteral {
             predicate: rule.head.predicate.clone(),
@@ -781,7 +781,7 @@ fn check_diagnostic_rule(
         });
     }
 
-    if is_reserved_diagnostic_id(id) && rule.origin.layer != RuleLayer::Prelude {
+    if is_reserved_diagnostic_id(id) && rule.origin().layer() != RuleLayer::Prelude {
         return Err(StaticError::ReservedDiagnosticId {
             id: id.clone(),
             location,
@@ -1358,7 +1358,10 @@ fn positive_body_input_vars(body: &Body) -> BTreeSet<Ident> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::parser::parse_program;
+    use std::fs;
+
+    use crate::runtime::loader::{load_prelude, load_program};
+    use crate::runtime::parser::{parse_prelude_program, parse_program};
 
     fn analyze_err(source: &str, input: &str) -> StaticError {
         let program = parse_program(source, input).expect("program parses");
@@ -1812,6 +1815,96 @@ mod tests {
         .unwrap();
         let err = analyze(program).expect_err("reserved diagnostic id rejected");
         assert!(matches!(err, StaticError::ReservedDiagnosticId { .. }));
+    }
+
+    #[test]
+    fn loaded_project_rejects_reserved_diagnostic_prefixes() {
+        let root = tempfile::tempdir().expect("temp rule root");
+        fs::write(
+            root.path().join("anneal.dl"),
+            r#"diagnostic("E001", "error", h) := *handle{id: h}."#,
+        )
+        .expect("write project rules");
+
+        let program = load_program(root.path(), "anneal.dl").expect("project loads");
+        let err = analyze(program).expect_err("reserved diagnostic id rejected");
+        assert!(matches!(err, StaticError::ReservedDiagnosticId { .. }));
+    }
+
+    #[test]
+    fn loaded_prelude_allows_reserved_diagnostic_prefixes() {
+        let root = tempfile::tempdir().expect("temp rule root");
+        fs::write(
+            root.path().join("checks.dl"),
+            r#"diagnostic("E001", "error", h) := *handle{id: h}."#,
+        )
+        .expect("write prelude rules");
+
+        let program = load_prelude(root.path(), "checks.dl").expect("prelude loads");
+        analyze(program).expect("prelude diagnostics analyze");
+    }
+
+    #[test]
+    fn duplicate_diagnostic_id_beats_reserved_prefix_error() {
+        let mut program = parse_prelude_program(
+            "prelude.dl",
+            r#"diagnostic("E001", "error", h) := *handle{id: h}."#,
+        )
+        .unwrap();
+
+        program.statements.extend(
+            parse_program(
+                "project.dl",
+                r#"diagnostic("E001", "warning", h) := *handle{id: h}."#,
+            )
+            .unwrap()
+            .statements,
+        );
+
+        let err = analyze(program).expect_err("duplicate id rejected");
+        assert!(matches!(err, StaticError::DuplicateDiagnosticId { .. }));
+    }
+
+    #[test]
+    fn loaded_child_file_diagnostic_locations_survive_analysis() {
+        let root = tempfile::tempdir().expect("temp rule root");
+        fs::create_dir_all(root.path().join("checks")).expect("create checks dir");
+        fs::write(root.path().join("anneal.dl"), r#"include "checks/bad.dl"."#)
+            .expect("write entry");
+        fs::write(root.path().join("checks/bad.dl"), r"bad(h) := missing(h).")
+            .expect("write child");
+
+        let program = load_program(root.path(), "anneal.dl").expect("program loads");
+        let err = analyze(program).expect_err("unknown predicate rejected");
+        let StaticError::UnknownPredicate {
+            location: actual, ..
+        } = err
+        else {
+            panic!("expected unknown predicate");
+        };
+        assert_eq!(
+            actual,
+            SourceLocation::new("checks/bad.dl", 1, "bad(h) := ".len() + 1)
+        );
+    }
+
+    #[test]
+    fn loaded_import_qualification_survives_analysis() {
+        let root = tempfile::tempdir().expect("temp rule root");
+        fs::write(
+            root.path().join("anneal.dl"),
+            r#"
+            active(h) := *handle{id: h}.
+            import strict from "strict.dl".
+            ? strict.blocker(h).
+            "#,
+        )
+        .expect("write project");
+        fs::write(root.path().join("strict.dl"), r"blocker(h) := active(h).")
+            .expect("write import");
+
+        let program = load_program(root.path(), "anneal.dl").expect("program loads");
+        analyze(program).expect("imported rule can call global predicate");
     }
 
     #[test]

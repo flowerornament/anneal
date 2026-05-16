@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 
 use serde::Serialize;
 
-use super::ast::{Program, RuleLayer, Statement};
-use super::parser::{ParseError, parse_program};
+use super::ast::{Program, Statement};
+use super::parser::{ParseError, parse_prelude_program};
 use crate::hash::Fnv1a64;
 
 pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
@@ -107,12 +107,11 @@ impl PreludeSet {
     pub fn program(&self) -> Result<Program, ParseError> {
         let mut statements = Vec::new();
         for file in &self.files {
-            let mut program = parse_program(file.source_name(), file.contents())?;
+            let program = parse_prelude_program(file.source_name(), file.contents())?;
             reject_unresolved_load_directives(file, &program)?;
-            program.assign_rule_layer(RuleLayer::Prelude);
             statements.extend(program.statements);
         }
-        Ok(Program { statements })
+        Ok(Program::new(statements))
     }
 
     pub fn compatibility(&self) -> PreludeCompatibility {
@@ -630,7 +629,7 @@ mod tests {
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::QueryOutput;
     use crate::runtime::ast::Statement;
-    use crate::runtime::ast::{Expr, Literal, NumberLiteral, Program};
+    use crate::runtime::ast::{Expr, Literal, NumberLiteral, Program, RuleLayer};
     use crate::runtime::eval::NumberValue;
     use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
     use crate::source::{ConfigKey, Pattern, SourceCapabilities, SourceInfo};
@@ -1634,15 +1633,14 @@ topic(x) := fact(x).
 
     #[test]
     fn assign_rule_layer_marks_nested_rules_as_prelude() {
-        let program = parse_program(
+        let program = parse_prelude_program(
             "layers.dl",
             r#"root(x) := fact(x).
 ? where local(x) := root(x). local(x).
 at("snapshot:last") { historical(h) := *handle{id: h}. }
 "#,
         );
-        let mut program = program.expect("layer fixture parses");
-        program.assign_rule_layer(RuleLayer::Prelude);
+        let program = program.expect("layer fixture parses");
         assert_prelude_layers(&program.statements);
     }
 
@@ -1650,14 +1648,14 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         for statement in statements {
             match statement {
                 Statement::Rule(rule) => {
-                    assert_eq!(rule.origin.layer, RuleLayer::Prelude);
+                    assert_eq!(rule.origin().layer(), RuleLayer::Prelude);
                 }
                 Statement::Query(query) => {
                     assert!(
                         query
                             .local_rules
                             .iter()
-                            .all(|rule| rule.origin.layer == RuleLayer::Inline)
+                            .all(|rule| rule.origin().layer() == RuleLayer::Inline)
                     );
                 }
                 Statement::AtBlock { statements, .. } => assert_prelude_layers(statements),

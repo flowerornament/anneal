@@ -28,4 +28,4 @@ pub use eval::{
 };
 pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};
 pub use ndjson::{NdjsonError, write_ndjson, write_ndjson_with_meta};
-pub use parser::{ParseError, parse_program};
+pub use parser::{ParseError, parse_prelude_program, parse_program};

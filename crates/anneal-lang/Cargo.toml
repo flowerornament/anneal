@@ -1,9 +1,10 @@
 [package]
-name = "anneal-core"
+name = "anneal-lang"
 version = "0.10.1"
 edition = "2024"
 license = "MIT"
-description = "Substrate runtime types for anneal"
+description = "Private syntax crate for anneal's Datalog dialect"
+publish = false
 
 [lints.rust]
 unsafe_code = "deny"
@@ -26,12 +27,9 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-lang = { version = "0.10.1", path = "../anneal-lang" }
-camino = { version = "1.2.2", features = ["serde1"] }
-regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
 thiserror = "2.0.18"
 
 [dev-dependencies]
+serde_json = "1.0.149"
 tempfile = "3.27.0"
