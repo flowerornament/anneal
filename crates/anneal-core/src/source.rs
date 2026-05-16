@@ -6,7 +6,8 @@ use std::sync::{
 };
 
 use camino::Utf8Path;
-use serde::{Deserialize, Serialize};
+use serde::de;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::visibility::FactVisibility;
 
@@ -43,18 +44,89 @@ impl SourceContext<'_> {
 }
 
 /// Discovery facts available to sources during Phase B extraction.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ConfigFacts {
     entries: Vec<ConfigEntry>,
 }
 
 /// One adapter-visible discovery/config fact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ConfigEntry {
     pub key: String,
     pub value: String,
     #[serde(default)]
     pub ordinal: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicateConfigOrdinal {
+    pub key: String,
+    pub ordinal: u32,
+}
+
+impl fmt::Display for DuplicateConfigOrdinal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "duplicate ordinal {} for config key {}",
+            self.ordinal, self.key
+        )
+    }
+}
+
+impl std::error::Error for DuplicateConfigOrdinal {}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ConfigEntryWire {
+    Current {
+        key: String,
+        value: String,
+        #[serde(default)]
+        ordinal: Option<u32>,
+    },
+    LegacyTuple(String, String),
+}
+
+impl From<ConfigEntryWire> for ConfigEntry {
+    fn from(wire: ConfigEntryWire) -> Self {
+        match wire {
+            ConfigEntryWire::Current {
+                key,
+                value,
+                ordinal,
+            } => Self {
+                key,
+                value,
+                ordinal,
+            },
+            ConfigEntryWire::LegacyTuple(key, value) => Self::scalar(key, value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfigEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ConfigEntryWire::deserialize(deserializer).map(Self::from)
+    }
+}
+
+impl<'de> Deserialize<'de> for ConfigFacts {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ConfigFactsWire {
+            entries: Vec<ConfigEntry>,
+        }
+
+        let wire = ConfigFactsWire::deserialize(deserializer)?;
+        Self::try_from_entries(wire.entries).map_err(de::Error::custom)
+    }
 }
 
 impl ConfigEntry {
@@ -92,27 +164,59 @@ impl ConfigFacts {
         Self { entries }
     }
 
+    pub fn try_from_entries(entries: Vec<ConfigEntry>) -> Result<Self, DuplicateConfigOrdinal> {
+        reject_duplicate_ordinals(&entries)?;
+        Ok(Self::from_entries(entries))
+    }
+
     pub fn entries(&self) -> &[ConfigEntry] {
         &self.entries
     }
 
-    pub fn values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-        self.entries
-            .iter()
-            .filter(move |entry| entry.key == key)
+    pub fn values<'a>(&'a self, key: &str) -> impl Iterator<Item = &'a str> + 'a {
+        sorted_config_entries(&self.entries, key)
+            .into_iter()
             .map(|entry| entry.value.as_str())
     }
 
     pub fn first(&self, key: &str) -> Option<&str> {
-        self.entries
-            .iter()
-            .find(|entry| entry.key == key)
+        sorted_config_entries(&self.entries, key)
+            .into_iter()
+            .next()
             .map(|entry| entry.value.as_str())
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+fn reject_duplicate_ordinals(entries: &[ConfigEntry]) -> Result<(), DuplicateConfigOrdinal> {
+    let mut seen = BTreeSet::new();
+    for entry in entries {
+        let Some(ordinal) = entry.ordinal else {
+            continue;
+        };
+        if !seen.insert((entry.key.as_str(), ordinal)) {
+            return Err(DuplicateConfigOrdinal {
+                key: entry.key.clone(),
+                ordinal,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn sorted_config_entries<'a>(entries: &'a [ConfigEntry], key: &str) -> Vec<&'a ConfigEntry> {
+    let mut matches: Vec<(usize, &ConfigEntry)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.key == key)
+        .collect();
+    if matches.iter().any(|(_, entry)| entry.ordinal.is_some()) {
+        matches.sort_by_key(|(index, entry)| (entry.ordinal.unwrap_or(u32::MAX), *index));
+    }
+    matches.into_iter().map(|(_, entry)| entry).collect()
 }
 
 /// Actor identity and granted runtime capabilities.
@@ -512,20 +616,49 @@ mod tests {
     }
 
     #[test]
-    fn config_facts_preserve_explicit_ordinals() {
+    fn config_facts_preserve_explicit_ordinals_and_sort_accessors() {
         let facts = ConfigFacts::from_entries(vec![
-            ConfigEntry::ordered("convergence.ordering", "draft", 1),
+            ConfigEntry::ordered("convergence.ordering", "settled", 2),
+            ConfigEntry::ordered("convergence.ordering", "draft", 0),
             ConfigEntry::scalar("md.file_extension", ".md"),
+            ConfigEntry::ordered("convergence.ordering", "active", 1),
         ]);
 
         assert_eq!(facts.first("md.file_extension"), Some(".md"));
+        assert_eq!(facts.first("convergence.ordering"), Some("draft"));
+        assert_eq!(
+            facts.values("convergence.ordering").collect::<Vec<_>>(),
+            vec!["draft", "active", "settled"]
+        );
         assert_eq!(
             facts
                 .entries()
                 .iter()
-                .find(|entry| entry.key == "convergence.ordering")
+                .find(|entry| entry.value == "active")
                 .and_then(|entry| entry.ordinal),
             Some(1)
         );
+    }
+
+    #[test]
+    fn config_facts_deserialize_legacy_tuple_entries() {
+        let facts: ConfigFacts = serde_json::from_str(
+            r#"{"entries":[["md.file_extension",".md"],{"key":"convergence.ordering","value":"draft","ordinal":0}]}"#,
+        )
+        .expect("legacy tuple and current entries parse");
+
+        assert_eq!(facts.first("md.file_extension"), Some(".md"));
+        assert_eq!(facts.first("convergence.ordering"), Some("draft"));
+        assert!(facts.entries()[0].ordinal.is_none());
+    }
+
+    #[test]
+    fn config_facts_deserialize_rejects_duplicate_ordinals_for_key() {
+        let err = serde_json::from_str::<ConfigFacts>(
+            r#"{"entries":[{"key":"convergence.ordering","value":"draft","ordinal":0},{"key":"convergence.ordering","value":"active","ordinal":0}]}"#,
+        )
+        .expect_err("duplicate ordinal is rejected");
+
+        assert!(err.to_string().contains("duplicate ordinal 0"));
     }
 }

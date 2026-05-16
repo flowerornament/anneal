@@ -7,7 +7,7 @@ use crate::runtime::ast::{
 };
 use crate::runtime::loader::{LoadError, load_program};
 use crate::runtime::parser::ParseError;
-use crate::source::{ConfigEntry, ConfigFacts, SourceInfo};
+use crate::source::{ConfigEntry, ConfigFacts, DuplicateConfigOrdinal, SourceInfo};
 use crate::verbs::{VerbRegistryError, validate_project_verb_query_program};
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
@@ -140,10 +140,9 @@ fn split_project_program(
         }
     }
 
-    Ok((
-        ConfigFacts::from_entries(discovery),
-        Program::new(statements),
-    ))
+    let discovery = ConfigFacts::try_from_entries(discovery)
+        .map_err(ProjectLoadError::DuplicateDiscoveryOrdinal)?;
+    Ok((discovery, Program::new(statements)))
 }
 
 struct DiscoveryResolver {
@@ -345,6 +344,8 @@ pub enum ProjectLoadError {
         key: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error("discovery facts contain {0}")]
+    DuplicateDiscoveryOrdinal(DuplicateConfigOrdinal),
     #[error("{location}: @verb missing string field '{field}'")]
     MissingVerbField {
         field: String,
