@@ -526,7 +526,11 @@ Read it as the active shape of the corpus: where work is accumulating, where it
 is settling, and whether the whole system is advancing or drifting.
 
 Use `anneal check` for detailed diagnostics and `anneal diff` for
-between-sessions change.",
+between-sessions change.
+
+Migration note: in 0.10 and earlier, `anneal status` printed this corpus health
+overview. Use `anneal health` for that report now; `anneal status` is the
+runtime work-prioritization view.",
         after_help = "\
 EXAMPLES:
   anneal health                   # Human-readable health report
@@ -766,7 +770,12 @@ EXAMPLES:
     },
 
     /// Programmable-runtime status
-    #[command(long_about = "Print compact corpus status from the programmable runtime.")]
+    #[command(long_about = "\
+Print compact corpus status from the programmable runtime.
+
+Migration note: in 0.10 and earlier, `anneal status` printed the corpus health
+overview. That compatibility report is now `anneal health`; `status` is the
+runtime work-prioritization view.")]
     Status,
 
     /// Programmable-runtime cold-agent context bundle
@@ -1732,6 +1741,26 @@ mod tests {
                 "top-level help should list runtime command {name:?}"
             );
         }
+    }
+
+    #[test]
+    fn status_and_health_help_explain_rename() {
+        let mut command = <Cli as clap::CommandFactory>::command();
+        let status_help = command
+            .find_subcommand_mut("status")
+            .expect("status subcommand exists")
+            .render_long_help()
+            .to_string();
+        assert!(status_help.contains("0.10 and earlier"));
+        assert!(status_help.contains("anneal health"));
+
+        let health_help = command
+            .find_subcommand_mut("health")
+            .expect("health subcommand exists")
+            .render_long_help()
+            .to_string();
+        assert!(health_help.contains("0.10 and earlier"));
+        assert!(health_help.contains("anneal status"));
     }
 
     #[test]

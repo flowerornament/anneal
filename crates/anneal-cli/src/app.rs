@@ -245,6 +245,10 @@ Usage: anneal [OPTIONS] status
 
 Print compact corpus status from the programmable runtime.
 
+Migration note: in 0.10 and earlier, `anneal status` printed the corpus health
+overview. That compatibility report is now `anneal health`; `status` is the
+runtime work-prioritization view.
+
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
@@ -1381,6 +1385,11 @@ mod tests {
             HelpTopic::Read
                 .render()
                 .contains(&format!("default: {DEFAULT_READ_BUDGET}"))
+        );
+        assert!(
+            HelpTopic::Status.render().contains("0.10 and earlier")
+                && HelpTopic::Status.render().contains("anneal health"),
+            "status help should explain the health rename"
         );
     }
 

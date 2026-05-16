@@ -36,6 +36,9 @@ All notable changes to `anneal` are documented in this file.
 - `anneal status` is the named runtime status command, and bare `anneal` also
   routes to that status view. The older compatibility health report is
   available as `anneal health`.
+- Renames: users of 0.10 and earlier should run `anneal health` for the old
+  corpus-health overview that used to live at `anneal status`. `anneal status`
+  is now the runtime work-prioritization view.
 - README and the bundled `anneal` skill lead with the programmable runtime
   while still documenting compatibility commands (`health`, `check`, `get`,
   `find`, `map`, `impact`, `diff`, `obligations`, `init`, and `prime`).
