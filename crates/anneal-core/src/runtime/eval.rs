@@ -3524,27 +3524,18 @@ fn eval_body(
 
 fn eval_body_with_delta(
     body: &Body,
-    mut bindings: Vec<Binding>,
+    bindings: Vec<Binding>,
     database: &Database,
     delta: Option<DeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<Vec<Binding>, EvalError> {
-    let mut remaining = body.atoms.iter().enumerate().collect::<Vec<_>>();
-    while !remaining.is_empty() {
-        if bindings.is_empty() {
-            break;
-        }
-        let bound = common_bound_variables(&bindings);
-        let next_index = remaining
-            .iter()
-            .position(|(atom_index, atom)| atom_ready(body, *atom_index, atom, &bound))
-            .unwrap_or(0);
-        let (atom_index, atom) = remaining.remove(next_index);
-        let atom_delta = delta.filter(|view| view.atom_index == atom_index);
-        bindings = eval_atom(atom, bindings, database, atom_delta, warnings, options)?;
-    }
-    Ok(bindings)
+    let bindings = bindings
+        .into_iter()
+        .map(TracedBinding::with_values)
+        .collect::<Vec<_>>();
+    eval_body_traced(body, bindings, database, delta, warnings, options)
+        .map(|bindings| bindings.into_iter().map(|binding| binding.values).collect())
 }
 
 fn eval_body_traced(
@@ -3579,17 +3570,6 @@ fn common_bound_variables_traced(bindings: &[TracedBinding]) -> BTreeSet<Ident> 
     let mut common = first.values.keys().cloned().collect::<BTreeSet<_>>();
     for binding in rest {
         common.retain(|var| binding.values.contains_key(var));
-    }
-    common
-}
-
-fn common_bound_variables(bindings: &[Binding]) -> BTreeSet<Ident> {
-    let Some((first, rest)) = bindings.split_first() else {
-        return BTreeSet::new();
-    };
-    let mut common = first.keys().cloned().collect::<BTreeSet<_>>();
-    for binding in rest {
-        common.retain(|var| binding.contains_key(var));
     }
     common
 }
@@ -3834,39 +3814,6 @@ fn positive_body_outer_input_variables(body: &Body) -> BTreeSet<Ident> {
     inputs
 }
 
-fn eval_atom(
-    atom: &Atom,
-    bindings: Vec<Binding>,
-    database: &Database,
-    delta: Option<DeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    match atom {
-        Atom::Stored(stored) => eval_stored(stored, bindings, database, options),
-        Atom::Derived(derived) => {
-            if let Some(view) = delta {
-                eval_derived_from_delta(derived, bindings, view.delta)
-            } else {
-                eval_derived(derived, bindings, database, options)
-            }
-        }
-        Atom::Comparison(comparison) => eval_comparison(comparison, bindings),
-        Atom::Aggregation(aggregate) => {
-            eval_aggregate(aggregate, bindings, database, warnings, options)
-        }
-        Atom::Negation(negation) => {
-            eval_negation(&negation.atom, bindings, database, warnings, options)
-        }
-        Atom::TimeBlock(time_block) => {
-            ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
-            let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
-            push_warnings(warnings, scoped_warnings);
-            eval_body(&time_block.body, bindings, &scoped, warnings, options)
-        }
-    }
-}
-
 fn eval_atom_traced(
     atom: &Atom,
     bindings: Vec<TracedBinding>,
@@ -4022,34 +3969,6 @@ fn time_scoped_primitive_supported(primitive: PrimitivePredicate) -> bool {
     )
 }
 
-fn eval_stored(
-    atom: &StoredAtom,
-    bindings: Vec<Binding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    let relation =
-        database
-            .stored
-            .get(&atom.relation)
-            .ok_or_else(|| EvalError::UnknownStoredRelation {
-                relation: atom.relation.clone(),
-            })?;
-    let mut out = Vec::new();
-    for binding in bindings {
-        let constraints = stored_constraints(&atom.fields, &binding)?;
-        for row in relation.candidate_rows(&constraints) {
-            if !stored_row_visible(&atom.relation, row, options) {
-                continue;
-            }
-            if let Some(next) = unify_stored_fields(&atom.fields, row, &binding)? {
-                out.push(next);
-            }
-        }
-    }
-    Ok(out)
-}
-
 fn eval_stored_traced(
     atom: &StoredAtom,
     bindings: Vec<TracedBinding>,
@@ -4107,62 +4026,6 @@ fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -
         Some("public") | None => true,
         Some(_) => false,
     }
-}
-
-fn eval_derived(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<Binding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
-        if primitive.is_soft() && database.derived.contains_key(&atom.predicate) {
-            let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
-                EvalError::UnknownDerivedPredicate {
-                    predicate: atom.predicate.clone(),
-                }
-            })?;
-            return eval_derived_from_relation(atom, bindings, relation);
-        }
-        return eval_primitive(primitive, &atom.args, bindings, database, options);
-    }
-    let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
-        EvalError::UnknownDerivedPredicate {
-            predicate: atom.predicate.clone(),
-        }
-    })?;
-    eval_derived_from_relation(atom, bindings, relation)
-}
-
-fn eval_derived_from_delta(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<Binding>,
-    delta: &DeltaMap,
-) -> Result<Vec<Binding>, EvalError> {
-    let Some(relation) = delta.get(&atom.predicate) else {
-        return Ok(Vec::new());
-    };
-    eval_derived_from_relation(atom, bindings, relation)
-}
-
-fn eval_derived_from_relation(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<Binding>,
-    relation: &DerivedRelation,
-) -> Result<Vec<Binding>, EvalError> {
-    let mut out = Vec::new();
-    for binding in bindings {
-        let constraints = call_constraints(&atom.args, &binding)?;
-        for tuple in relation.candidate_tuples(&constraints) {
-            if tuple.0.len() != atom.args.len() {
-                continue;
-            }
-            if let Some(next) = unify_call_args(&atom.args, tuple, &binding)? {
-                out.push(next);
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn eval_derived_traced(
@@ -4260,28 +4123,6 @@ fn eval_primitive_traced(
     Ok(out)
 }
 
-fn eval_primitive(
-    primitive: PrimitivePredicate,
-    args: &[CallArg],
-    bindings: Vec<Binding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    let mut out = Vec::new();
-    let mut regex_cache = BTreeMap::<String, Regex>::new();
-    for binding in bindings {
-        let constraints = call_constraints(args, &binding)?;
-        let tuples =
-            primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
-        for tuple in tuples {
-            if let Some(next) = unify_call_args(args, &tuple, &binding)? {
-                out.push(next);
-            }
-        }
-    }
-    Ok(out)
-}
-
 fn primitive_tuples(
     primitive: PrimitivePredicate,
     constraints: &[(usize, Value)],
@@ -4355,21 +4196,6 @@ fn primitive_tuples(
     }
 }
 
-fn eval_comparison(
-    comparison: &Comparison,
-    bindings: Vec<Binding>,
-) -> Result<Vec<Binding>, EvalError> {
-    let mut out = Vec::new();
-    for binding in bindings {
-        let left = eval_expr(&comparison.left, &binding)?;
-        let right = eval_expr(&comparison.right, &binding)?;
-        if compare(&left, comparison.op, &right)? {
-            out.push(binding);
-        }
-    }
-    Ok(out)
-}
-
 fn eval_comparison_traced(
     comparison: &Comparison,
     bindings: Vec<TracedBinding>,
@@ -4380,34 +4206,6 @@ fn eval_comparison_traced(
         let right = eval_expr(&comparison.right, &binding.values)?;
         if compare(&left, comparison.op, &right)? {
             out.push(binding.push_step(derivation_ref(DerivationNode::comparison(comparison))));
-        }
-    }
-    Ok(out)
-}
-
-fn eval_negation(
-    negated: &NegatedAtom,
-    bindings: Vec<Binding>,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    let mut out = Vec::new();
-    for binding in bindings {
-        let atom = match negated {
-            NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
-            NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
-        };
-        let matches = eval_atom(
-            &atom,
-            vec![binding.clone()],
-            database,
-            None,
-            warnings,
-            options,
-        )?;
-        if matches.is_empty() {
-            out.push(binding);
         }
     }
     Ok(out)
@@ -4426,9 +4224,9 @@ fn eval_negation_traced(
             NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
             NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
         };
-        let matches = eval_atom(
+        let matches = eval_atom_traced(
             &atom,
-            vec![binding.values.clone()],
+            vec![TracedBinding::with_values(binding.values.clone())],
             database,
             None,
             warnings,
@@ -4437,41 +4235,6 @@ fn eval_negation_traced(
         if matches.is_empty() {
             out.push(binding.push_step(derivation_ref(DerivationNode::negation(negated))));
         }
-    }
-    Ok(out)
-}
-
-fn eval_aggregate(
-    aggregate: &Aggregate,
-    bindings: Vec<Binding>,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    validate_aggregate_args(aggregate)?;
-
-    let mut out = Vec::new();
-    for binding in bindings {
-        let inner = eval_body(
-            &aggregate.body,
-            vec![binding.clone()],
-            database,
-            warnings,
-            options,
-        )?;
-        if inner.is_empty() {
-            if aggregate.function == AggregateFunction::Count
-                && let Some(group) = bind_aggregate_result(
-                    &aggregate.result,
-                    &binding,
-                    &Value::Number(NumberValue::Int(0)),
-                )?
-            {
-                out.push(group);
-            }
-            continue;
-        }
-        out.extend(eval_aggregate_group(aggregate, &binding, &inner)?);
     }
     Ok(out)
 }
