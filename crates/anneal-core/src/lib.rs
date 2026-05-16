@@ -50,9 +50,9 @@ pub use source::{
 };
 pub use store::{FactStore, GenerationFact, StoreError};
 pub use trail::{
-    DefaultTrailRecorder, DefaultTrailRedactor, DefaultTrailSummarizer, JsonlTrailStore,
-    TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError, TrailGeneration,
-    TrailQuery, TrailRecorder, TrailRedactor, TrailReference, TrailStore, TrailSummarizer,
-    TrailSummary,
+    DEFAULT_TRAIL_QUERY_LIMIT, DefaultTrailRecorder, DefaultTrailRedactor, DefaultTrailSummarizer,
+    JsonlTrailStore, TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError,
+    TrailGeneration, TrailQuery, TrailRecorder, TrailRedactor, TrailRefKind, TrailReference,
+    TrailSessionId, TrailSessionIdError, TrailStore, TrailSummarizer, TrailSummary,
 };
 pub use visibility::FactVisibility;

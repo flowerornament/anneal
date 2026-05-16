@@ -705,14 +705,31 @@ entries retain structured `surfaced_refs`, `consumed_refs`, and
 surface normalizes those arrays into `*trail_ref` and
 `*trail_generation` rows instead of requiring object-valued `Value`
 terms or encoding JSON strings inside a relation field.
-`*trail_ref.kind` is `"surfaced"` or `"consumed"` and `ordinal`
-preserves the stored order. `*trail` carries scalar audit fields
-only.
+`*trail_ref.kind` is a typed `TrailRefKind` enum (`surfaced` or
+`consumed`) and `ordinal` preserves the stored order. `*trail`
+carries scalar audit fields only.
 
 Rationale: the rule-layer value model intentionally has scalars and
 lists, not arbitrary object values. Normalized rows keep refs
 queryable, preserve ordering, and avoid a stringly JSON escape hatch
 in the language.
+
+**Definition CR-D66 (Trail storage hardening).** `TrailSessionId` is a
+validated filename-safe newtype before it reaches `TrailStore`; hosts
+may supply session ids, but path separators, reserved `.`/`..`
+segments, empty ids, and oversized ids are rejected. `TrailContext`,
+not caller-supplied row payloads, stamps actor identity and default
+visibility onto redacted entries. `TrailQuery` is bounded by default
+and supports session, step-window, visibility, and limit constraints;
+private trail queries authorize `trail_private` before opening or
+deserializing candidate trail files. `TrailRecorder.note_consumed`
+returns `Result` and must not silently drop explicit consumption
+signals.
+
+Rationale: mandatory trail capture is a security boundary as well as a
+provenance feature. The storage API must not let host-provided session
+names escape `.anneal/trails`, forge audit fields, or turn normal trail
+queries into unbounded private-history scans.
 
 A `TrailRedactor` (§38 extension seam) produces the
 `redacted_expr` and may strip surfaced/consumed refs for handles
@@ -2098,7 +2115,13 @@ pub enum Action {
 
 pub trait TrailRecorder {
     fn record(&self, entry: TrailEntryInProgress, ctx: &TrailContext) -> Result<(), TrailError>;
-    fn note_consumed(&self, reference: TrailReference, ctx: &TrailContext);
+    fn note_consumed(
+        &self,
+        session_id: &TrailSessionId,
+        step: u64,
+        reference: TrailReference,
+        ctx: &TrailContext,
+    ) -> Result<(), TrailError>;
 }
 
 pub trait TrailRedactor {
@@ -2106,7 +2129,12 @@ pub trait TrailRedactor {
 }
 
 pub trait TrailSummarizer {
-    fn summarize(&self, entries: &[TrailEntryRedacted], ctx: &TrailContext) -> TrailSummary;
+    fn summarize(
+        &self,
+        session_id: &TrailSessionId,
+        entries: &[TrailEntryRedacted],
+        ctx: &TrailContext,
+    ) -> TrailSummary;
 }
 
 pub trait TrailStore {
@@ -2630,6 +2658,7 @@ as data instead of smuggling it through row sequence.
 - CR-D63: Policy action gates (§16)
 - CR-D64: Trail-private authorization hook (§16)
 - CR-D65: Trail relation normalization (§13)
+- CR-D66: Trail storage hardening (§13)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -13,6 +13,85 @@ use crate::source::ActorContext;
 use crate::visibility::FactVisibility;
 
 static DEFAULT_TRAIL_POLICY: AllowAllPolicy = AllowAllPolicy;
+pub const DEFAULT_TRAIL_QUERY_LIMIT: usize = 1_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TrailSessionId(String);
+
+impl TrailSessionId {
+    pub fn new(value: impl Into<String>) -> Result<Self, TrailSessionIdError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(TrailSessionIdError::Empty);
+        }
+        if value == "." || value == ".." {
+            return Err(TrailSessionIdError::Reserved(value));
+        }
+        if value.len() > 128 {
+            return Err(TrailSessionIdError::TooLong { len: value.len() });
+        }
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(TrailSessionIdError::InvalidCharacters(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TrailSessionId {
+    type Error = TrailSessionIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<TrailSessionId> for String {
+    fn from(value: TrailSessionId) -> Self {
+        value.0
+    }
+}
+
+impl std::fmt::Display for TrailSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TrailSessionIdError {
+    #[error("trail session id cannot be empty")]
+    Empty,
+    #[error("trail session id {0:?} is reserved")]
+    Reserved(String),
+    #[error("trail session id is too long: {len} bytes")]
+    TooLong { len: usize },
+    #[error("trail session id contains invalid characters: {0:?}")]
+    InvalidCharacters(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrailRefKind {
+    Surfaced,
+    Consumed,
+}
+
+impl TrailRefKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Surfaced => "surfaced",
+            Self::Consumed => "consumed",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrailReference {
@@ -32,10 +111,9 @@ pub struct TrailGeneration {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrailEntryInProgress {
-    pub session_id: String,
+    pub session_id: TrailSessionId,
     pub step: u64,
     pub timestamp: String,
-    pub actor: String,
     pub corpus: CorpusId,
     pub verb: String,
     pub expr: String,
@@ -43,13 +121,12 @@ pub struct TrailEntryInProgress {
     pub consumed_refs: Vec<TrailReference>,
     pub prelude_hash: String,
     pub source_generations: Vec<TrailGeneration>,
-    pub visibility: FactVisibility,
     pub retention: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrailEntryRedacted {
-    pub session_id: String,
+    pub session_id: TrailSessionId,
     pub step: u64,
     pub timestamp: String,
     pub actor: String,
@@ -65,17 +142,45 @@ pub struct TrailEntryRedacted {
     pub retention: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrailQuery {
-    pub session_id: Option<String>,
+    pub session_id: Option<TrailSessionId>,
     pub include_private: bool,
+    pub min_step: Option<u64>,
+    pub max_step: Option<u64>,
+    pub limit: usize,
+}
+
+impl Default for TrailQuery {
+    fn default() -> Self {
+        Self {
+            session_id: None,
+            include_private: false,
+            min_step: None,
+            max_step: None,
+            limit: DEFAULT_TRAIL_QUERY_LIMIT,
+        }
+    }
 }
 
 impl TrailQuery {
-    pub fn for_session(session_id: impl Into<String>) -> Self {
-        Self {
-            session_id: Some(session_id.into()),
+    pub fn for_session(session_id: impl Into<String>) -> Result<Self, TrailSessionIdError> {
+        Ok(Self {
+            session_id: Some(TrailSessionId::new(session_id)?),
             include_private: false,
+            min_step: None,
+            max_step: None,
+            limit: DEFAULT_TRAIL_QUERY_LIMIT,
+        })
+    }
+
+    pub fn for_valid_session(session_id: TrailSessionId) -> Self {
+        Self {
+            session_id: Some(session_id),
+            include_private: false,
+            min_step: None,
+            max_step: None,
+            limit: DEFAULT_TRAIL_QUERY_LIMIT,
         }
     }
 
@@ -83,11 +188,22 @@ impl TrailQuery {
         self.include_private = include_private;
         self
     }
+
+    pub const fn with_step_window(mut self, min_step: Option<u64>, max_step: Option<u64>) -> Self {
+        self.min_step = min_step;
+        self.max_step = max_step;
+        self
+    }
+
+    pub const fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrailSummary {
-    pub session_id: String,
+    pub session_id: TrailSessionId,
     pub steps: usize,
     pub consumed_refs: usize,
 }
@@ -95,11 +211,16 @@ pub struct TrailSummary {
 pub struct TrailContext<'a> {
     actor: &'a ActorContext,
     policy: &'a dyn Policy,
+    visibility: FactVisibility,
 }
 
 impl<'a> TrailContext<'a> {
     pub const fn new(actor: &'a ActorContext, policy: &'a dyn Policy) -> Self {
-        Self { actor, policy }
+        Self {
+            actor,
+            policy,
+            visibility: FactVisibility::Private,
+        }
     }
 
     pub const fn actor(&self) -> &'a ActorContext {
@@ -108,6 +229,15 @@ impl<'a> TrailContext<'a> {
 
     pub const fn policy(&self) -> &'a dyn Policy {
         self.policy
+    }
+
+    pub const fn visibility(&self) -> FactVisibility {
+        self.visibility
+    }
+
+    pub const fn with_visibility(mut self, visibility: FactVisibility) -> Self {
+        self.visibility = visibility;
+        self
     }
 }
 
@@ -121,7 +251,13 @@ pub trait TrailRecorder {
     fn record(&self, entry: TrailEntryInProgress, ctx: &TrailContext<'_>)
     -> Result<(), TrailError>;
 
-    fn note_consumed(&self, reference: TrailReference, ctx: &TrailContext<'_>);
+    fn note_consumed(
+        &self,
+        session_id: &TrailSessionId,
+        step: u64,
+        reference: TrailReference,
+        ctx: &TrailContext<'_>,
+    ) -> Result<(), TrailError>;
 }
 
 pub trait TrailRedactor {
@@ -129,7 +265,12 @@ pub trait TrailRedactor {
 }
 
 pub trait TrailSummarizer {
-    fn summarize(&self, entries: &[TrailEntryRedacted], ctx: &TrailContext<'_>) -> TrailSummary;
+    fn summarize(
+        &self,
+        session_id: &TrailSessionId,
+        entries: &[TrailEntryRedacted],
+        ctx: &TrailContext<'_>,
+    ) -> TrailSummary;
 }
 
 pub trait TrailStore {
@@ -172,7 +313,7 @@ impl DefaultTrailRedactor {
 }
 
 impl TrailRedactor for DefaultTrailRedactor {
-    fn redact(&self, entry: TrailEntryInProgress, _ctx: &TrailContext<'_>) -> TrailEntryRedacted {
+    fn redact(&self, entry: TrailEntryInProgress, ctx: &TrailContext<'_>) -> TrailEntryRedacted {
         let mut redacted_expr = redact_string_literals(&entry.expr);
         let lower = redacted_expr.to_ascii_lowercase();
         if self
@@ -186,7 +327,7 @@ impl TrailRedactor for DefaultTrailRedactor {
             session_id: entry.session_id,
             step: entry.step,
             timestamp: entry.timestamp,
-            actor: entry.actor,
+            actor: ctx.actor().actor.clone(),
             corpus: entry.corpus,
             verb: entry.verb,
             redacted_expr,
@@ -195,7 +336,7 @@ impl TrailRedactor for DefaultTrailRedactor {
             consumed_refs: entry.consumed_refs,
             prelude_hash: entry.prelude_hash,
             source_generations: entry.source_generations,
-            visibility: entry.visibility,
+            visibility: ctx.visibility(),
             retention: entry.retention,
         }
     }
@@ -227,19 +368,31 @@ where
         self.store.append(redacted, ctx)
     }
 
-    fn note_consumed(&self, _reference: TrailReference, _ctx: &TrailContext<'_>) {}
+    fn note_consumed(
+        &self,
+        _session_id: &TrailSessionId,
+        _step: u64,
+        _reference: TrailReference,
+        _ctx: &TrailContext<'_>,
+    ) -> Result<(), TrailError> {
+        Err(TrailError::Unsupported(
+            "default trail recorder cannot update consumed refs without runtime integration",
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DefaultTrailSummarizer;
 
 impl TrailSummarizer for DefaultTrailSummarizer {
-    fn summarize(&self, entries: &[TrailEntryRedacted], _ctx: &TrailContext<'_>) -> TrailSummary {
+    fn summarize(
+        &self,
+        session_id: &TrailSessionId,
+        entries: &[TrailEntryRedacted],
+        _ctx: &TrailContext<'_>,
+    ) -> TrailSummary {
         TrailSummary {
-            session_id: entries
-                .first()
-                .map(|entry| entry.session_id.clone())
-                .unwrap_or_default(),
+            session_id: session_id.clone(),
             steps: entries.len(),
             consumed_refs: entries
                 .iter()
@@ -263,7 +416,7 @@ impl JsonlTrailStore {
         &self.dir
     }
 
-    fn session_path(&self, session_id: &str) -> Utf8PathBuf {
+    fn session_path(&self, session_id: &TrailSessionId) -> Utf8PathBuf {
         self.dir.join(format!("{session_id}.jsonl"))
     }
 }
@@ -273,8 +426,9 @@ impl TrailStore for JsonlTrailStore {
         fs::create_dir_all(&self.dir)?;
         let path = self.session_path(&entry.session_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        serde_json::to_writer(&mut file, &entry)?;
-        file.write_all(b"\n")?;
+        let mut record = serde_json::to_vec(&entry)?;
+        record.push(b'\n');
+        file.write_all(&record)?;
         Ok(())
     }
 
@@ -283,42 +437,28 @@ impl TrailStore for JsonlTrailStore {
         request: TrailQuery,
         ctx: &TrailContext<'_>,
     ) -> Result<Vec<TrailEntryRedacted>, TrailError> {
-        let mut entries = Vec::new();
-        for path in self.query_paths(request.session_id.as_deref())? {
-            read_jsonl_entries(&path, &mut entries)?;
-        }
-        entries.retain(|entry| {
-            request
-                .session_id
-                .as_deref()
-                .is_none_or(|id| entry.session_id == id)
-        });
-        if request.include_private
-            && entries
-                .iter()
-                .any(|entry| entry.visibility == FactVisibility::Private)
-        {
+        if request.include_private {
             authorize_trail_private(ctx.actor(), ctx.policy())?;
         }
-        entries.retain(|entry| match entry.visibility {
-            FactVisibility::Public => true,
-            FactVisibility::Team => ctx.actor().can_see_fact_visibility(FactVisibility::Team),
-            FactVisibility::Private => {
-                request.include_private
-                    && ctx.actor().can_see_fact_visibility(FactVisibility::Private)
+        let mut entries = Vec::new();
+        if request.limit == 0 {
+            return Ok(entries);
+        }
+        for path in self.query_paths(request.session_id.as_ref())? {
+            read_matching_jsonl_entries(&path, &request, ctx, &mut entries)?;
+            if entries.len() >= request.limit {
+                break;
             }
-        });
-        entries.sort_by(|left, right| {
-            left.session_id
-                .cmp(&right.session_id)
-                .then(left.step.cmp(&right.step))
-        });
+        }
         Ok(entries)
     }
 }
 
 impl JsonlTrailStore {
-    fn query_paths(&self, session_id: Option<&str>) -> Result<Vec<Utf8PathBuf>, TrailError> {
+    fn query_paths(
+        &self,
+        session_id: Option<&TrailSessionId>,
+    ) -> Result<Vec<Utf8PathBuf>, TrailError> {
         let Some(session_id) = session_id else {
             let Ok(entries) = fs::read_dir(&self.dir) else {
                 return Ok(Vec::new());
@@ -335,7 +475,7 @@ impl JsonlTrailStore {
             return Ok(paths);
         };
         let path = self.session_path(session_id);
-        Ok(path.exists().then_some(path).into_iter().collect())
+        Ok(vec![path])
     }
 }
 
@@ -349,21 +489,64 @@ pub enum TrailError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Authorization(#[from] AuthorizationError),
+    #[error("invalid trail session id: {0}")]
+    InvalidSessionId(#[from] TrailSessionIdError),
+    #[error("unsupported trail operation: {0}")]
+    Unsupported(&'static str),
 }
 
-fn read_jsonl_entries(
+fn read_matching_jsonl_entries(
     path: &Utf8Path,
+    request: &TrailQuery,
+    ctx: &TrailContext<'_>,
     entries: &mut Vec<TrailEntryRedacted>,
 ) -> Result<(), TrailError> {
-    let file = fs::File::open(path)?;
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(TrailError::Io(err)),
+    };
     for line in BufReader::new(file).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        entries.push(serde_json::from_str(&line)?);
+        let entry = serde_json::from_str(&line)?;
+        if trail_entry_matches_request(&entry, request, ctx) {
+            entries.push(entry);
+        }
+        if entries.len() >= request.limit {
+            break;
+        }
     }
     Ok(())
+}
+
+fn trail_entry_matches_request(
+    entry: &TrailEntryRedacted,
+    request: &TrailQuery,
+    ctx: &TrailContext<'_>,
+) -> bool {
+    if request
+        .session_id
+        .as_ref()
+        .is_some_and(|id| entry.session_id != *id)
+    {
+        return false;
+    }
+    if request.min_step.is_some_and(|min| entry.step < min) {
+        return false;
+    }
+    if request.max_step.is_some_and(|max| entry.step > max) {
+        return false;
+    }
+    match entry.visibility {
+        FactVisibility::Public => true,
+        FactVisibility::Team => ctx.actor().can_see_fact_visibility(FactVisibility::Team),
+        FactVisibility::Private => {
+            request.include_private && ctx.actor().can_see_fact_visibility(FactVisibility::Private)
+        }
+    }
 }
 
 fn stable_input_hash(input: &str) -> String {
@@ -413,12 +596,15 @@ mod tests {
     use super::*;
     use crate::source::RuntimeCapability;
 
-    fn trail_entry(expr: &str, visibility: FactVisibility) -> TrailEntryInProgress {
+    fn session_id() -> TrailSessionId {
+        TrailSessionId::new("session-1").expect("valid session id")
+    }
+
+    fn trail_entry(expr: &str) -> TrailEntryInProgress {
         TrailEntryInProgress {
-            session_id: "session-1".to_string(),
+            session_id: session_id(),
             step: 1,
             timestamp: "2026-05-16T00:00:00Z".to_string(),
-            actor: "tester".to_string(),
             corpus: CorpusId::from("test"),
             verb: "-e".to_string(),
             expr: expr.to_string(),
@@ -436,9 +622,16 @@ mod tests {
                 source: SourceName::from("md"),
                 generation: Generation::initial(),
             }],
-            visibility,
             retention: Some("P30D".to_string()),
         }
+    }
+
+    #[test]
+    fn trail_session_id_rejects_path_escape_names() {
+        assert!(TrailSessionId::new("../outside").is_err());
+        assert!(TrailSessionId::new("/tmp/session").is_err());
+        assert!(TrailSessionId::new("..").is_err());
+        assert!(TrailSessionId::new("session-1").is_ok());
     }
 
     #[test]
@@ -446,15 +639,11 @@ mod tests {
         let actor = ActorContext::trusted_cli();
         let ctx = TrailContext::from(&actor);
         let redactor = DefaultTrailRedactor::default();
-        let redacted = redactor.redact(
-            trail_entry(
-                r#"? secret("hunter2", "customer-7")."#,
-                FactVisibility::Public,
-            ),
-            &ctx,
-        );
+        let redacted = redactor.redact(trail_entry(r#"? secret("hunter2", "customer-7")."#), &ctx);
 
         assert_eq!(redacted.redacted_expr, "<redacted>");
+        assert_eq!(redacted.actor, "anonymous-cli");
+        assert_eq!(redacted.visibility, FactVisibility::Private);
         assert!(!redacted.redacted_expr.contains("hunter2"));
         assert!(!redacted.redacted_expr.contains("customer-7"));
         assert_eq!(
@@ -471,25 +660,25 @@ mod tests {
         );
         let recorder = DefaultTrailRecorder::new(DefaultTrailRedactor::default(), store.clone());
         let actor = ActorContext::trusted_cli();
-        let ctx = TrailContext::from(&actor);
+        let ctx = TrailContext::from(&actor).with_visibility(FactVisibility::Public);
 
         recorder
             .record(
-                trail_entry(
-                    r#"? read("secret-token", 10, span, text)."#,
-                    FactVisibility::Public,
-                ),
+                trail_entry(r#"? read("secret-token", 10, span, text)."#),
                 &ctx,
             )
             .expect("trail record persists");
 
         let rows = store
-            .query(TrailQuery::for_session("session-1"), &ctx)
+            .query(
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &ctx,
+            )
             .expect("query persisted trail");
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].redacted_expr.contains("secret-token"));
         assert!(
-            !fs::read_to_string(store.session_path("session-1"))
+            !fs::read_to_string(store.session_path(&session_id()))
                 .expect("trail file")
                 .contains("secret-token")
         );
@@ -506,10 +695,7 @@ mod tests {
         store
             .append(
                 DefaultTrailRedactor::default().redact(
-                    trail_entry(
-                        r#"? read("visible", 10, span, text)."#,
-                        FactVisibility::Private,
-                    ),
+                    trail_entry(r#"? read("visible", 10, span, text)."#),
                     &cli_ctx,
                 ),
                 &cli_ctx,
@@ -520,13 +706,18 @@ mod tests {
         let mcp_ctx = TrailContext::from(&mcp_actor);
         assert!(
             store
-                .query(TrailQuery::for_session("session-1"), &mcp_ctx)
+                .query(
+                    TrailQuery::for_session("session-1").expect("valid query"),
+                    &mcp_ctx
+                )
                 .expect("public query skips private rows")
                 .is_empty()
         );
         let err = store
             .query(
-                TrailQuery::for_session("session-1").include_private(true),
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .include_private(true),
                 &mcp_ctx,
             )
             .expect_err("private trail read requires capability");
@@ -541,11 +732,97 @@ mod tests {
         let privileged_ctx = TrailContext::from(&privileged_actor);
         let private_rows = store
             .query(
-                TrailQuery::for_session("session-1").include_private(true),
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .include_private(true),
                 &privileged_ctx,
             )
             .expect("capable actor can query private trails");
         assert_eq!(private_rows.len(), 1);
+    }
+
+    #[test]
+    fn default_recorder_reports_consumed_ref_updates_as_unsupported() {
+        let dir = tempdir().expect("tempdir");
+        let store = JsonlTrailStore::new(
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("tempdir path is utf-8"),
+        );
+        let recorder = DefaultTrailRecorder::new(DefaultTrailRedactor::default(), store);
+        let actor = ActorContext::trusted_cli();
+        let ctx = TrailContext::from(&actor);
+        let err = recorder
+            .note_consumed(
+                &session_id(),
+                1,
+                TrailReference {
+                    corpus: CorpusId::from("test"),
+                    source: SourceName::from("md"),
+                    handle: "alpha.md".to_string(),
+                    span_id: None,
+                    score: None,
+                },
+                &ctx,
+            )
+            .expect_err("default recorder does not silently drop consumed refs");
+
+        assert!(matches!(err, TrailError::Unsupported(_)));
+    }
+
+    #[test]
+    fn private_queries_authorize_before_reading_files() {
+        let dir = tempdir().expect("tempdir");
+        let trail_dir =
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("tempdir path is utf-8");
+        fs::create_dir_all(&trail_dir).expect("create trail dir");
+        fs::write(trail_dir.join("session-1.jsonl"), b"{not json}\n").expect("write bad json");
+        let store = JsonlTrailStore::new(trail_dir);
+        let actor = ActorContext::anonymous_mcp();
+        let ctx = TrailContext::from(&actor);
+
+        let err = store
+            .query(
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .include_private(true),
+                &ctx,
+            )
+            .expect_err("private read should fail before json parsing");
+
+        assert!(matches!(
+            err,
+            TrailError::Authorization(AuthorizationError::CapabilityRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn trail_query_streams_with_step_window_and_limit() {
+        let dir = tempdir().expect("tempdir");
+        let store = JsonlTrailStore::new(
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("tempdir path is utf-8"),
+        );
+        let actor = ActorContext::trusted_cli();
+        let ctx = TrailContext::from(&actor).with_visibility(FactVisibility::Public);
+
+        for step in 1..=3 {
+            let mut entry = trail_entry(r"? work(h).");
+            entry.step = step;
+            store
+                .append(DefaultTrailRedactor::default().redact(entry, &ctx), &ctx)
+                .expect("append trail row");
+        }
+
+        let rows = store
+            .query(
+                TrailQuery::for_session("session-1")
+                    .expect("valid query")
+                    .with_step_window(Some(2), None)
+                    .with_limit(1),
+                &ctx,
+            )
+            .expect("query bounded trail");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].step, 2);
     }
 
     #[test]
@@ -555,11 +832,10 @@ mod tests {
             Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("tempdir path is utf-8"),
         );
         let cli_actor = ActorContext::trusted_cli();
-        let cli_ctx = TrailContext::from(&cli_actor);
+        let cli_ctx = TrailContext::from(&cli_actor).with_visibility(FactVisibility::Team);
         store
             .append(
-                DefaultTrailRedactor::default()
-                    .redact(trail_entry(r"? work(h).", FactVisibility::Team), &cli_ctx),
+                DefaultTrailRedactor::default().redact(trail_entry(r"? work(h)."), &cli_ctx),
                 &cli_ctx,
             )
             .expect("append team trail");
@@ -568,7 +844,10 @@ mod tests {
         let mcp_ctx = TrailContext::from(&mcp_actor);
         assert!(
             store
-                .query(TrailQuery::for_session("session-1"), &mcp_ctx)
+                .query(
+                    TrailQuery::for_session("session-1").expect("valid query"),
+                    &mcp_ctx
+                )
                 .expect("actor without team visibility cannot read team trail rows")
                 .is_empty()
         );
@@ -577,7 +856,10 @@ mod tests {
             ActorContext::anonymous_mcp().with_fact_visibility_capability(FactVisibility::Team);
         let team_ctx = TrailContext::from(&team_actor);
         let rows = store
-            .query(TrailQuery::for_session("session-1"), &team_ctx)
+            .query(
+                TrailQuery::for_session("session-1").expect("valid query"),
+                &team_ctx,
+            )
             .expect("actor with team visibility can read team trail rows");
         assert_eq!(rows.len(), 1);
     }
