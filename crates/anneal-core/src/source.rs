@@ -8,6 +8,8 @@ use std::sync::{
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
+use crate::visibility::FactVisibility;
+
 use crate::facts::FactBatch;
 use crate::ids::{CorpusId, Generation};
 
@@ -145,6 +147,9 @@ impl fmt::Display for RuntimeCapability {
 }
 
 impl ActorContext {
+    pub const TEAM_FACT_VISIBILITY_CAPABILITY: &'static str = "visibility:team";
+    pub const PRIVATE_FACT_VISIBILITY_CAPABILITY: &'static str = "visibility:private";
+
     pub fn anonymous_cli() -> Self {
         Self {
             actor: "anonymous-cli".to_string(),
@@ -163,6 +168,34 @@ impl ActorContext {
 
     pub fn has_capability(&self, capability: &str) -> bool {
         self.capabilities.contains(capability)
+    }
+
+    pub fn with_fact_visibility_capability(mut self, visibility: FactVisibility) -> Self {
+        match visibility {
+            FactVisibility::Public => {}
+            FactVisibility::Team => {
+                self.capabilities
+                    .insert(Self::TEAM_FACT_VISIBILITY_CAPABILITY.to_string());
+            }
+            FactVisibility::Private => {
+                self.capabilities
+                    .insert(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY.to_string());
+            }
+        }
+        self
+    }
+
+    pub fn can_see_fact_visibility(&self, visibility: FactVisibility) -> bool {
+        match visibility {
+            FactVisibility::Public => true,
+            FactVisibility::Team => {
+                self.has_capability(Self::TEAM_FACT_VISIBILITY_CAPABILITY)
+                    || self.has_capability(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY)
+            }
+            FactVisibility::Private => {
+                self.has_capability(Self::PRIVATE_FACT_VISIBILITY_CAPABILITY)
+            }
+        }
     }
 }
 

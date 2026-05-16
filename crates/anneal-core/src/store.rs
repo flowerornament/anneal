@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::facts::{
@@ -7,6 +7,7 @@ use crate::facts::{
 };
 use crate::history::SnapshotHistory;
 use crate::ids::{CorpusId, Generation, NativeId, SourceName};
+use crate::visibility::FactVisibility;
 
 /// In-memory stored-fact relation set with runtime-owned generation swaps.
 #[derive(Clone, Debug, Default)]
@@ -20,6 +21,7 @@ pub struct FactStore {
     configs: Vec<ConfigFact>,
     snapshots: Vec<SnapshotFact>,
     generations: Vec<GenerationFact>,
+    visibility: BTreeMap<VisibilityKey, FactVisibility>,
 }
 
 /// Stored `*generation` row.
@@ -49,6 +51,17 @@ impl FactStore {
         self.spans.extend(batch.spans);
         self.meta.extend(batch.meta);
         self.concerns.extend(batch.concerns);
+        self.visibility
+            .extend(batch.visibility.into_iter().map(|(native_id, visibility)| {
+                (
+                    VisibilityKey::new(
+                        validated.scope.corpus.clone(),
+                        validated.scope.source.clone(),
+                        native_id,
+                    ),
+                    visibility,
+                )
+            }));
         self.set_generation(
             validated.scope.corpus,
             validated.scope.source,
@@ -91,6 +104,13 @@ impl FactStore {
 
     pub fn generations(&self) -> &[GenerationFact] {
         &self.generations
+    }
+
+    pub fn visibility_for(&self, identity: &FactIdentity) -> FactVisibility {
+        self.visibility
+            .get(&VisibilityKey::from_identity(identity))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Replace runtime snapshot facts for one corpus.
@@ -166,6 +186,7 @@ impl FactStore {
         self.spans.retain(|fact| !scope.matches(&fact.identity));
         self.meta.retain(|fact| !scope.matches(&fact.identity));
         self.concerns.retain(|fact| !scope.matches(&fact.identity));
+        self.visibility.retain(|key, _| !scope.matches_key(key));
     }
 
     fn remove_native_ids(&mut self, scope: &BatchScope, native_ids: &BTreeSet<NativeId>) {
@@ -181,6 +202,33 @@ impl FactStore {
             .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
         self.concerns
             .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
+        self.visibility
+            .retain(|key, _| !scope.matches_native_key(key, native_ids));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VisibilityKey {
+    corpus: CorpusId,
+    source: SourceName,
+    native_id: NativeId,
+}
+
+impl VisibilityKey {
+    fn new(corpus: CorpusId, source: SourceName, native_id: NativeId) -> Self {
+        Self {
+            corpus,
+            source,
+            native_id,
+        }
+    }
+
+    fn from_identity(identity: &FactIdentity) -> Self {
+        Self::new(
+            identity.corpus.clone(),
+            identity.source.clone(),
+            identity.native_id.clone(),
+        )
     }
 }
 
@@ -199,6 +247,7 @@ impl ValidatedBatch {
     fn from_batch(batch: &FactBatch) -> Result<Self, StoreError> {
         let scope = BatchScope::from_batch(batch);
         let mut native_ids = BTreeSet::new();
+        let mut fact_native_ids = BTreeSet::new();
         let collect_native_ids = matches!(batch.mode, FactBatchMode::Delta);
         for identity in all_identities(batch) {
             if !scope.matches(identity) {
@@ -207,9 +256,17 @@ impl ValidatedBatch {
             if identity.generation != batch.generation {
                 return Err(StoreError::MismatchedGeneration);
             }
+            fact_native_ids.insert(identity.native_id.clone());
             if collect_native_ids {
                 native_ids.insert(identity.native_id.clone());
             }
+        }
+        if batch
+            .visibility
+            .keys()
+            .any(|native_id| !fact_native_ids.contains(native_id))
+        {
+            return Err(StoreError::VisibilityWithoutFact);
         }
         Ok(Self { scope, native_ids })
     }
@@ -227,8 +284,16 @@ impl BatchScope {
         identity.corpus == self.corpus && identity.source == self.source
     }
 
+    fn matches_key(&self, key: &VisibilityKey) -> bool {
+        key.corpus == self.corpus && key.source == self.source
+    }
+
     fn matches_native(&self, identity: &FactIdentity, native_ids: &BTreeSet<NativeId>) -> bool {
         self.matches(identity) && native_ids.contains(&identity.native_id)
+    }
+
+    fn matches_native_key(&self, key: &VisibilityKey, native_ids: &BTreeSet<NativeId>) -> bool {
+        self.matches_key(key) && native_ids.contains(&key.native_id)
     }
 }
 
@@ -236,6 +301,7 @@ impl BatchScope {
 pub enum StoreError {
     MixedSourceBatch,
     MismatchedGeneration,
+    VisibilityWithoutFact,
     MixedConfigCorpus,
     MixedSnapshotCorpus,
 }
@@ -248,6 +314,9 @@ impl fmt::Display for StoreError {
             }
             Self::MismatchedGeneration => {
                 f.write_str("FactBatch fact identity generation does not match batch generation")
+            }
+            Self::VisibilityWithoutFact => {
+                f.write_str("FactBatch visibility references a native id without an emitted fact")
             }
             Self::MixedConfigCorpus => f.write_str("config facts contain multiple corpus scopes"),
             Self::MixedSnapshotCorpus => {
@@ -278,6 +347,7 @@ mod tests {
     use crate::history::{SnapshotEntry, SnapshotEntryFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::prelude::standard_prelude_set;
+    use crate::visibility::FactVisibility;
 
     fn identity(native_id: &str, generation: Generation) -> FactIdentity {
         FactIdentity::new(
@@ -424,6 +494,66 @@ mod tests {
 
         assert_eq!(store.handles().len(), 1);
         assert_eq!(store.handles()[0].status.as_deref(), Some("current"));
+    }
+
+    #[test]
+    fn visibility_envelope_tracks_source_generation_swaps() {
+        let mut store = FactStore::default();
+        let mut first = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        first
+            .handles
+            .push(handle("a.md", Generation::new(1), "draft"));
+        first
+            .handles
+            .push(handle("b.md", Generation::new(1), "draft"));
+        first.set_visibility(NativeId::from("a.md"), FactVisibility::Private);
+        store.merge(first).expect("merge first");
+
+        assert_eq!(
+            store.visibility_for(&identity("a.md", Generation::new(1))),
+            FactVisibility::Private
+        );
+        assert_eq!(
+            store.visibility_for(&identity("b.md", Generation::new(1))),
+            FactVisibility::Public
+        );
+
+        let mut delta = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            FactBatchMode::Delta,
+            Generation::new(2),
+        );
+        delta
+            .handles
+            .push(handle("a.md", Generation::new(2), "current"));
+        store.merge(delta).expect("merge delta");
+
+        assert_eq!(
+            store.visibility_for(&identity("a.md", Generation::new(2))),
+            FactVisibility::Public
+        );
+    }
+
+    #[test]
+    fn visibility_envelope_requires_an_emitted_fact() {
+        let mut store = FactStore::default();
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        batch.set_visibility(NativeId::from("missing.md"), FactVisibility::Private);
+
+        let err = store.merge(batch).expect_err("orphan visibility rejected");
+
+        assert_eq!(err, StoreError::VisibilityWithoutFact);
     }
 
     #[test]

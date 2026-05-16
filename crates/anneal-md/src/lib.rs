@@ -60,6 +60,7 @@ impl Source for MarkdownSource {
                 generation,
             )
             .map_err(|err| SourceError::Other(err.to_string()))?;
+            combined.visibility.extend(batch.visibility);
             combined.handles.extend(batch.handles);
             combined.edges.extend(batch.edges);
             combined.content.extend(batch.content);

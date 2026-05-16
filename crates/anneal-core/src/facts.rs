@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+use crate::visibility::FactVisibility;
 
 /// Origin tuple carried by every source-derived stored fact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +275,8 @@ pub struct FactBatch {
     pub source: SourceName,
     pub mode: FactBatchMode,
     pub generation: Generation,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub visibility: BTreeMap<NativeId, FactVisibility>,
     pub handles: Vec<HandleFact>,
     pub edges: Vec<EdgeFact>,
     pub content: Vec<ContentFact>,
@@ -293,6 +298,7 @@ impl FactBatch {
             source,
             mode,
             generation,
+            visibility: BTreeMap::new(),
             handles: Vec::new(),
             edges: Vec::new(),
             content: Vec::new(),
@@ -300,6 +306,14 @@ impl FactBatch {
             meta: Vec::new(),
             concerns: Vec::new(),
             retractions: Vec::new(),
+        }
+    }
+
+    pub fn set_visibility(&mut self, native_id: NativeId, visibility: FactVisibility) {
+        if visibility == FactVisibility::Public {
+            self.visibility.remove(&native_id);
+        } else {
+            self.visibility.insert(native_id, visibility);
         }
     }
 }

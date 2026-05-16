@@ -90,6 +90,10 @@ pub struct EvalOptions {
 }
 
 impl EvalOptions {
+    pub fn actor(&self) -> &ActorContext {
+        &self.actor
+    }
+
     pub fn with_actor(mut self, actor: ActorContext) -> Self {
         self.actor = actor;
         self
@@ -238,6 +242,8 @@ pub struct Database {
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
     search: Arc<SearchIndex>,
+    hidden_handles: Arc<BTreeSet<String>>,
+    hidden_content_spans: Arc<BTreeMap<String, BTreeSet<String>>>,
     content_provider: Option<Arc<dyn ContentProvider>>,
     search_provider: Option<Arc<dyn SearchProvider>>,
     introspection: Arc<IntrospectionIndex>,
@@ -251,6 +257,8 @@ impl Default for Database {
             graph: Arc::new(GraphIndex::default()),
             content: Arc::new(ContentIndex::default()),
             search: Arc::new(SearchIndex::default()),
+            hidden_handles: Arc::new(BTreeSet::new()),
+            hidden_content_spans: Arc::new(BTreeMap::new()),
             content_provider: None,
             search_provider: None,
             introspection: Arc::new(IntrospectionIndex::default()),
@@ -279,6 +287,11 @@ impl fmt::Debug for Database {
             )
             .field("content_spans", &self.content.len())
             .field("search_documents", &self.search.len())
+            .field("hidden_handles", &self.hidden_handles.len())
+            .field(
+                "hidden_content_spans",
+                &hidden_content_span_count(&self.hidden_content_spans),
+            )
             .field("custom_content_provider", &self.content_provider.is_some())
             .field("custom_search_provider", &self.search_provider.is_some())
             .finish_non_exhaustive()
@@ -287,15 +300,95 @@ impl fmt::Debug for Database {
 
 impl Database {
     pub fn from_store(store: &FactStore) -> Self {
+        Self::from_store_with_visibility(store, |_| true)
+    }
+
+    pub fn from_store_for_actor(store: &FactStore, actor: &ActorContext) -> Self {
+        Self::from_store_with_visibility(store, |identity| {
+            actor.can_see_fact_visibility(store.visibility_for(identity))
+        })
+    }
+
+    pub fn from_store_for_options(store: &FactStore, options: &EvalOptions) -> Self {
+        Self::from_store_for_actor(store, options.actor())
+    }
+
+    fn from_store_with_visibility(
+        store: &FactStore,
+        fact_visible: impl Fn(&FactIdentity) -> bool,
+    ) -> Self {
         let mut db = Self::default();
-        db.insert_named_rows("handle", store.handles().iter().map(handle_row));
-        db.insert_named_rows("edge", store.edges().iter().map(edge_row));
-        db.insert_named_rows("meta", store.meta().iter().map(meta_row));
-        db.insert_named_rows("content", store.content().iter().map(content_row));
-        db.insert_named_rows("span", store.spans().iter().map(span_row));
-        db.insert_named_rows("concern", store.concerns().iter().map(concern_row));
+        let hidden_handles = hidden_handles(store, &fact_visible);
+        let hidden_content_spans = hidden_content_spans(store, &fact_visible);
+        db.insert_named_rows(
+            "handle",
+            store
+                .handles()
+                .iter()
+                .filter(|fact| fact_visible(&fact.identity))
+                .map(handle_row),
+        );
+        db.insert_named_rows(
+            "edge",
+            store
+                .edges()
+                .iter()
+                .filter(|fact| {
+                    fact_visible(&fact.identity)
+                        && !hidden_handles.contains(&fact.from)
+                        && !hidden_handles.contains(&fact.to)
+                })
+                .map(edge_row),
+        );
+        db.insert_named_rows(
+            "meta",
+            store
+                .meta()
+                .iter()
+                .filter(|fact| {
+                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                })
+                .map(meta_row),
+        );
+        db.insert_named_rows(
+            "content",
+            store
+                .content()
+                .iter()
+                .filter(|fact| {
+                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                })
+                .map(content_row),
+        );
+        db.insert_named_rows(
+            "span",
+            store
+                .spans()
+                .iter()
+                .filter(|fact| {
+                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                })
+                .map(span_row),
+        );
+        db.insert_named_rows(
+            "concern",
+            store
+                .concerns()
+                .iter()
+                .filter(|fact| {
+                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
+                })
+                .map(concern_row),
+        );
         db.insert_named_rows("config", store.configs().iter().map(config_row));
-        db.insert_named_rows("snapshot", store.snapshots().iter().map(snapshot_row));
+        db.insert_named_rows(
+            "snapshot",
+            store
+                .snapshots()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.id))
+                .map(snapshot_row),
+        );
         db.insert_named_rows(
             "generation",
             store.generations().iter().map(|row| {
@@ -306,6 +399,8 @@ impl Database {
                 ])
             }),
         );
+        db.hidden_handles = Arc::new(hidden_handles);
+        db.hidden_content_spans = Arc::new(hidden_content_spans);
         db
     }
 
@@ -381,7 +476,12 @@ impl Database {
             .map_err(EvalError::SearchProvider)?;
         let ctx = options.ranking_context(query_text);
         let ranker = options.ranker();
-        let ranked = rank_search_hits(hits, &ctx, ranker);
+        let ranked = rank_search_hits(
+            hits.into_iter()
+                .filter(|hit| self.hit_is_visible(hit.handle(), hit.span_id())),
+            &ctx,
+            ranker,
+        );
 
         let mut seen = BTreeSet::new();
         Ok(ranked
@@ -406,16 +506,26 @@ impl Database {
         if budget < 0 {
             return Ok(Vec::new());
         }
+        if self.hidden_handles.contains(handle) {
+            return Ok(Vec::new());
+        }
         let span_id = match string_constraint(constraints, 2) {
             ArgConstraint::Any => None,
             ArgConstraint::Exact(span_id) => Some(span_id),
             ArgConstraint::Impossible => return Ok(Vec::new()),
         };
+        if span_id.is_some_and(|span_id| self.span_is_hidden(handle, span_id)) {
+            return Ok(Vec::new());
+        }
         let read_ctx = ReadContext::new(&options.actor);
         let chunks = self
             .content_provider()
             .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
             .map_err(map_read_error)?;
+        let chunks = chunks
+            .into_iter()
+            .filter(|chunk| self.hit_is_visible(chunk.handle(), Some(chunk.span_id())))
+            .collect();
         Ok(enforce_read_budget(chunks, budget, span_id.is_some())
             .into_iter()
             .map(|chunk| read_tuple(chunk, budget))
@@ -431,6 +541,11 @@ impl Database {
         let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
             return Ok(Vec::new());
         };
+        if self.hidden_handles.contains(handle)
+            || (self.content_provider.is_some() && self.handle_has_hidden_spans(handle))
+        {
+            return Ok(Vec::new());
+        }
         let read_ctx = ReadContext::new(&options.actor);
         let Some(content) = self
             .content_provider()
@@ -442,6 +557,9 @@ impl Database {
         else {
             return Ok(Vec::new());
         };
+        if !self.hit_is_visible(content.handle(), None) {
+            return Ok(Vec::new());
+        }
         if content.tokens() > options.read_full_token_limit {
             return Err(EvalError::ReadFullBudgetExceeded {
                 handle: content.handle().to_owned(),
@@ -457,6 +575,21 @@ impl Database {
             .then_some(tuple)
             .into_iter()
             .collect())
+    }
+
+    fn hit_is_visible(&self, handle: &str, span_id: Option<&str>) -> bool {
+        !self.hidden_handles.contains(handle)
+            && span_id.is_none_or(|span_id| !self.span_is_hidden(handle, span_id))
+    }
+
+    fn span_is_hidden(&self, handle: &str, span_id: &str) -> bool {
+        self.hidden_content_spans
+            .get(handle)
+            .is_some_and(|spans| spans.contains(span_id))
+    }
+
+    fn handle_has_hidden_spans(&self, handle: &str) -> bool {
+        self.hidden_content_spans.contains_key(handle)
     }
 
     fn ensure_derived(&mut self, predicates: impl IntoIterator<Item = PredicateRef>) {
@@ -551,6 +684,8 @@ impl Database {
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
             search: Arc::clone(&self.search),
+            hidden_handles: Arc::clone(&self.hidden_handles),
+            hidden_content_spans: Arc::clone(&self.hidden_content_spans),
             content_provider: self.content_provider.clone(),
             search_provider: self.search_provider.clone(),
             introspection: Arc::clone(&self.introspection),
@@ -4046,6 +4181,51 @@ fn concern_row(fact: &ConcernFact) -> NamedRow {
     )
 }
 
+fn hidden_handles<F>(store: &FactStore, fact_visible: &F) -> BTreeSet<String>
+where
+    F: Fn(&FactIdentity) -> bool,
+{
+    store
+        .handles()
+        .iter()
+        .filter(|fact| !fact_visible(&fact.identity))
+        .map(|fact| fact.id.clone())
+        .collect()
+}
+
+fn hidden_content_spans<F>(
+    store: &FactStore,
+    fact_visible: &F,
+) -> BTreeMap<String, BTreeSet<String>>
+where
+    F: Fn(&FactIdentity) -> bool,
+{
+    let mut hidden = BTreeMap::<String, BTreeSet<String>>::new();
+    for (handle, span_id) in store
+        .content()
+        .iter()
+        .filter(|fact| !fact_visible(&fact.identity))
+        .map(|fact| (&fact.handle, &fact.span_id))
+        .chain(
+            store
+                .spans()
+                .iter()
+                .filter(|fact| !fact_visible(&fact.identity))
+                .map(|fact| (&fact.handle, &fact.id)),
+        )
+    {
+        hidden
+            .entry(handle.clone())
+            .or_default()
+            .insert(span_id.clone());
+    }
+    hidden
+}
+
+fn hidden_content_span_count(spans_by_handle: &BTreeMap<String, BTreeSet<String>>) -> usize {
+    spans_by_handle.values().map(BTreeSet::len).sum()
+}
+
 fn config_row(fact: &ConfigFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
@@ -4088,6 +4268,7 @@ mod tests {
     use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
+    use crate::visibility::FactVisibility;
 
     fn identity(native_id: &str) -> FactIdentity {
         identity_for_source("fixture", native_id)
@@ -4419,6 +4600,50 @@ mod tests {
         let mut store = FactStore::default();
         store.merge(batch).expect("search fixture merge");
         Database::from_store(&store)
+    }
+
+    fn visibility_store() -> FactStore {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("public.md", "file", "current", "", "security"),
+            handle("team.md", "file", "current", "", "security"),
+            handle("secret.md", "file", "current", "", "security"),
+        ];
+        batch.content = vec![
+            content_with_text("public.md", "body", "public roadmap", 4),
+            content_with_text("secret.md", "body", "secret roadmap", 4),
+        ];
+        batch.spans = vec![
+            span("public.md", "body", 1, 1),
+            span("secret.md", "body", 1, 1),
+        ];
+        batch.meta = vec![meta("secret.md", "leaks-diagnostic", "true")];
+        batch.set_visibility(NativeId::from("team.md"), FactVisibility::Team);
+        batch.set_visibility(NativeId::from("secret.md"), FactVisibility::Private);
+        let mut store = FactStore::default();
+        store.merge(batch).expect("visibility fixture merge");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "2026-05-15", "public.md", "status", "current"),
+                    snapshot_fact("s1", "2026-05-15", "secret.md", "status", "current"),
+                ],
+            )
+            .expect("visibility snapshot fixture");
+        store
+    }
+
+    fn restricted_actor() -> ActorContext {
+        ActorContext {
+            actor: "restricted".to_string(),
+            capabilities: BTreeSet::new(),
+        }
     }
 
     fn multi_source_search_database() -> Database {
@@ -5322,6 +5547,26 @@ mod tests {
     }
 
     #[test]
+    fn content_provider_results_are_filtered_for_known_hidden_handles() {
+        let store = visibility_store();
+        let database = Database::from_store_for_actor(&store, &restricted_actor())
+            .with_content_provider(OvereagerContentProvider);
+
+        let read_output = evaluate_query_output(
+            r#"? read("secret.md", 10, span_id, text, start_line, end_line, tokens)."#,
+            database.clone(),
+        );
+        assert!(read_output.rows.is_empty());
+
+        let full_output = evaluate_query_output_with_options(
+            r#"? read_full("secret.md", content)."#,
+            database,
+            EvalOptions::default().with_capability(READ_FULL_CAPABILITY),
+        );
+        assert!(full_output.rows.is_empty());
+    }
+
+    #[test]
     fn content_primitives_can_use_later_positive_inputs() {
         let output = evaluate_query_output(
             r"
@@ -5470,6 +5715,107 @@ mod tests {
     }
 
     #[test]
+    fn actor_scoped_database_filters_private_facts_before_derivation() {
+        let store = visibility_store();
+        let database = Database::from_store_for_actor(&store, &restricted_actor());
+        let outputs = evaluate_queries(
+            r#"
+            diagnostic_leak(h) := *meta{handle: h, key: "leaks-diagnostic", value: "true"}.
+            ? count = Count{ h : *handle{id: h} }.
+            ? search("secret", h, span_id, score, reason, field, low_confidence).
+            ? read("secret.md", 10, span_id, text, start_line, end_line, tokens).
+            ? diagnostic_leak(h).
+            ? *snapshot{id: "secret.md", key, value}.
+            "#,
+            database,
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("count", n(1))])]);
+        assert!(outputs[1].is_empty(), "search leaked hidden row");
+        assert!(outputs[2].is_empty(), "read leaked hidden row");
+        assert!(outputs[3].is_empty(), "derivation leaked hidden row");
+        assert!(outputs[4].is_empty(), "snapshot leaked hidden row");
+    }
+
+    #[test]
+    fn all_visible_database_preserves_private_fact_behavior_for_cli_callers() {
+        let store = visibility_store();
+        let outputs = evaluate_queries(
+            r#"
+            diagnostic_leak(h) := *meta{handle: h, key: "leaks-diagnostic", value: "true"}.
+            ? count = Count{ h : *handle{id: h} }.
+            ? search("secret", h, span_id, score, reason, field, low_confidence).
+            ? read("secret.md", 10, span_id, text, start_line, end_line, tokens).
+            ? diagnostic_leak(h).
+            ? *snapshot{id: "secret.md", key, value}.
+            "#,
+            Database::from_store(&store),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("count", n(3))])]);
+        assert!(
+            outputs[1]
+                .iter()
+                .any(|row| row.get("h") == Some(&s("secret.md"))),
+            "all-visible search should include private fixture"
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([
+                ("span_id", s("body")),
+                ("text", s("secret roadmap")),
+                ("start_line", n(1)),
+                ("end_line", n(1)),
+                ("tokens", n(4)),
+            ])],
+        );
+        assert_query_rows(&outputs[3], vec![row([("h", s("secret.md"))])]);
+        assert_query_rows(
+            &outputs[4],
+            vec![row([("key", s("status")), ("value", s("current"))])],
+        );
+    }
+
+    #[test]
+    fn private_visibility_capability_admits_private_rows() {
+        let store = visibility_store();
+        let actor = restricted_actor().with_fact_visibility_capability(FactVisibility::Private);
+        let output = evaluate_query_output(
+            r"? *handle{id: h}.",
+            Database::from_store_for_actor(&store, &actor),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&row([("h", s("public.md"))])));
+        assert!(rows.contains(&row([("h", s("team.md"))])));
+        assert!(rows.contains(&row([("h", s("secret.md"))])));
+    }
+
+    #[test]
+    fn team_visibility_capability_excludes_private_rows() {
+        let store = visibility_store();
+        let actor = restricted_actor().with_fact_visibility_capability(FactVisibility::Team);
+        let output = evaluate_query_output(
+            r"? *handle{id: h}.",
+            Database::from_store_for_actor(&store, &actor),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&row([("h", s("public.md"))])));
+        assert!(rows.contains(&row([("h", s("team.md"))])));
+    }
+
+    #[test]
     fn search_honors_handle_and_span_constraints() {
         let output = evaluate_query_output(
             r#"? search("conformance", "audit/v17.md", "body", score, reason, field, low_confidence)."#,
@@ -5526,6 +5872,27 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct HiddenSearchProvider;
+
+    impl SearchProvider for HiddenSearchProvider {
+        fn search(
+            &self,
+            _request: SearchRequest<'_>,
+            _ctx: &SearchContext<'_>,
+        ) -> Result<Vec<SearchHit>, SearchError> {
+            Ok(vec![SearchHit::new(
+                "test",
+                "external",
+                "secret.md",
+                Some("body".to_string()),
+                1.0,
+                "provider",
+                "body",
+            )])
+        }
+    }
+
+    #[derive(Debug)]
     struct PreferSemanticRanker;
 
     impl Ranker for PreferSemanticRanker {
@@ -5556,6 +5923,18 @@ mod tests {
         assert_eq!(rows[0].get("score"), Some(&f(1.0)));
         assert_eq!(rows[1].get("h"), Some(&s("lexical.md")));
         assert!((value_f64(rows[1].get("score").expect("score")) - 0.1).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn search_provider_results_are_filtered_for_known_hidden_handles() {
+        let store = visibility_store();
+        let output = evaluate_query_output(
+            r#"? search("secret", h, span_id, score, reason, field, low_confidence)."#,
+            Database::from_store_for_actor(&store, &restricted_actor())
+                .with_search_provider(HiddenSearchProvider),
+        );
+
+        assert!(output.rows.is_empty());
     }
 
     #[test]

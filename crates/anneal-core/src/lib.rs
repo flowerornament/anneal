@@ -16,6 +16,7 @@ pub mod runtime;
 pub mod source;
 pub mod store;
 mod time;
+pub mod visibility;
 
 pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
@@ -42,3 +43,4 @@ pub use source::{
     SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};
+pub use visibility::FactVisibility;

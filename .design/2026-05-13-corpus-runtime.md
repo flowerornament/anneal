@@ -853,6 +853,29 @@ runtime only promises the three-level ordering. Derived rows inherit
 the most restrictive visibility of the facts and primitive rows used
 to derive them.
 
+**Definition CR-D61 (Fact visibility capabilities).** The default
+runtime maps `public`, `team`, and `private` fact visibility to
+actor capabilities before derivation. `public` rows are visible to
+all actors. `team` rows require `visibility:team` or
+`visibility:private`. `private` rows require `visibility:private`.
+Local CLI construction may use an all-visible database view for
+backwards-compatible operator workflows; embedded hosts and MCP
+surfaces must pass an explicit actor context. `trail_private` governs
+private trail reads only; it does not by itself reveal private source
+facts.
+
+**Definition CR-D62 (Visibility closure over handle references).**
+The runtime enforces a conservative closure over hidden handles before
+derivation. Source-derived rows that reference a hidden handle inherit
+at least that handle's hiddenness when constructing an actor-scoped
+logical database: content, spans, metadata, concern membership, and
+edges with a hidden endpoint are absent even if their own visibility
+envelope is missing or broader. Runtime snapshot rows for hidden
+handles are absent from actor-scoped evaluation as well. This keeps a
+single missed child-row annotation from leaking private handle
+existence through graph, search, read, diagnostic, or time-scope
+queries.
+
 **Rule CR-R10 (Visibility before derivation).** For actor-scoped
 evaluation, the runtime filters hidden facts before any rule,
 primitive, aggregate, search, read, diagnostic, trail, or provenance
@@ -2538,6 +2561,8 @@ as data instead of smuggling it through row sequence.
 - CR-D58: Lifecycle profile examples (§27)
 - CR-D59: Custom prelude package order (§25)
 - CR-D60: Executable verb schema encoding (§31)
+- CR-D61: Fact visibility capabilities (§16)
+- CR-D62: Visibility closure over handle references (§16)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
