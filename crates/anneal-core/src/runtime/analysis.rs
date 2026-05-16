@@ -138,11 +138,14 @@ pub enum StaticError {
         arity: usize,
         location: SourceLocation,
     },
-    #[error("{location}: predicate '{predicate}' used with arity {actual}, expected {expected}")]
+    #[error(
+        "{location}: predicate '{predicate}' used with arity {actual}, expected {expected}; signature: {expected_signature}"
+    )]
     ArityMismatch {
         predicate: PredicateRef,
         expected: usize,
         actual: usize,
+        expected_signature: Box<str>,
         location: SourceLocation,
     },
     #[error(
@@ -453,23 +456,23 @@ fn collect_signature(signatures: &mut SignatureMap, head: &Head) -> Result<(), S
         }
         Some(signature) if matches!(signature.kind, PredicateKind::Primitive { sealed: false }) => {
             if signature.arity != arity {
-                return Err(StaticError::ArityMismatch {
-                    predicate: head.predicate.clone(),
-                    expected: signature.arity,
-                    actual: arity,
-                    location: head.location.clone(),
-                });
+                return Err(arity_mismatch(
+                    &head.predicate,
+                    signature,
+                    arity,
+                    &head.location,
+                ));
             }
             signature.parameters = parameters;
             signature.kind = PredicateKind::Derived;
             Ok(())
         }
-        Some(signature) if signature.arity != arity => Err(StaticError::ArityMismatch {
-            predicate: head.predicate.clone(),
-            expected: signature.arity,
-            actual: arity,
-            location: head.location.clone(),
-        }),
+        Some(signature) if signature.arity != arity => Err(arity_mismatch(
+            &head.predicate,
+            signature,
+            arity,
+            &head.location,
+        )),
         Some(signature) => {
             signature.parameters.merge(parameters);
             Ok(())
@@ -513,6 +516,34 @@ fn parameter_names(signature: PrimitiveSignature) -> ParameterNames {
             .map(|parameter| Ident::new_unchecked(*parameter))
             .collect(),
     )
+}
+
+fn arity_mismatch(
+    predicate: &PredicateRef,
+    signature: &PredicateSignature,
+    actual: usize,
+    location: &SourceLocation,
+) -> StaticError {
+    StaticError::ArityMismatch {
+        predicate: predicate.clone(),
+        expected: signature.arity,
+        actual,
+        expected_signature: expected_signature(predicate, signature).into_boxed_str(),
+        location: location.clone(),
+    }
+}
+
+fn expected_signature(predicate: &PredicateRef, signature: &PredicateSignature) -> String {
+    let parameters = match &signature.parameters {
+        ParameterNames::Named(parameters) => parameters
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ParameterNames::Unknown | ParameterNames::Ambiguous => (0..signature.arity)
+            .map(|idx| format!("arg{idx}"))
+            .collect::<Vec<_>>(),
+    };
+    format!("{}({})", predicate, parameters.join(", "))
 }
 
 fn head_parameter_names(head: &Head) -> ParameterNames {
@@ -791,12 +822,12 @@ fn normalize_call_args(
                     });
                 }
                 if position >= signature.arity {
-                    return Err(StaticError::ArityMismatch {
-                        predicate: predicate.clone(),
-                        expected: signature.arity,
-                        actual: args.len(),
-                        location: named_call_location(args),
-                    });
+                    return Err(arity_mismatch(
+                        predicate,
+                        signature,
+                        args.len(),
+                        &named_call_location(args),
+                    ));
                 }
                 values[position] = Some(expr.clone());
             }
@@ -826,12 +857,12 @@ fn normalize_call_args(
     }
 
     if values.iter().any(Option::is_none) {
-        return Err(StaticError::ArityMismatch {
-            predicate: predicate.clone(),
-            expected: signature.arity,
-            actual: args.len(),
-            location: named_call_location(args),
-        });
+        return Err(arity_mismatch(
+            predicate,
+            signature,
+            args.len(),
+            &named_call_location(args),
+        ));
     }
 
     Ok(values
@@ -1025,12 +1056,7 @@ fn check_derived_call(
 ) -> Result<(), StaticError> {
     match signatures.get(predicate) {
         Some(signature) if signature.arity == arity => Ok(()),
-        Some(signature) => Err(StaticError::ArityMismatch {
-            predicate: predicate.clone(),
-            expected: signature.arity,
-            actual: arity,
-            location: location.clone(),
-        }),
+        Some(signature) => Err(arity_mismatch(predicate, signature, arity, location)),
         None => Err(StaticError::UnknownPredicate {
             predicate: predicate.clone(),
             arity,
@@ -1767,6 +1793,17 @@ mod tests {
         assert!(
             err.to_string()
                 .contains(&location("inline", input, "known(h, h)").to_string())
+        );
+    }
+
+    #[test]
+    fn arity_mismatch_reports_expected_signature() {
+        let err = analyze_err("inline", "? verbs(name, doc).");
+
+        assert!(
+            err.to_string()
+                .contains("signature: verbs(name, query, doc, output_schema)"),
+            "{err}"
         );
     }
 

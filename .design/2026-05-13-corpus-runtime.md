@@ -2016,11 +2016,22 @@ Projects override or extend any.
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
 | `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
+| `anneal vocab` | what words does this corpus use | observed statuses, edge kinds, namespaces, metadata keys |
 
 Plus self-description surfaces from §11. v0.11.0 ships CLI verbs for
-`schema`, `verbs`, `describe`, and `sources`; `predicates`,
+`schema`, `verbs`, `describe`, `sources`, and `vocab`; `predicates`,
 `source_of`, and `examples` are query primitives available through
 `anneal -e` until promoted to CLI verbs.
+
+**Definition CR-D86 (Corpus vocabulary verb).** `anneal vocab` is a
+standard-library verb that lists observed corpus-local vocabulary
+needed before filtering: status values, edge kinds, namespaces, and
+frontmatter/metadata keys. It is descriptive, not normative; the
+runtime must not infer lattice semantics from the verb's rows.
+
+Rationale: cold agents need to discover the corpus's actual words
+before writing Datalog filters, and this should take one compact
+command rather than a sequence of schema guesses.
 
 Plus meta forms:
 
@@ -2437,6 +2448,7 @@ For arrival on an unfamiliar corpus, prepend:
 ```
 0a. anneal sources         what adapters are loaded
 0b. anneal describe convergence  what convergence means here
+0c. anneal vocab           what statuses, edge kinds, and namespaces exist
 ```
 
 For multi-session handoff, prepend:
@@ -2992,6 +3004,7 @@ config key.
 - CR-D83: Legacy boundary deletion gate (§47)
 - CR-D84: Explain output row cap (§14)
 - CR-D85: Empty row diagnostic (§36)
+- CR-D86: Corpus vocabulary verb (§33)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -114,6 +114,15 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
+  name: "vocab",
+  query: "vocab_row(\"status\", status, \"handle.status\") :=\n  *handle{status: status},\n  status != null.\n\nvocab_row(\"status\", value, \"config.convergence.active\") :=\n  *config{key: \"convergence.active\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.terminal\") :=\n  *config{key: \"convergence.terminal\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.ordering\") :=\n  *config{key: \"convergence.ordering\", value: value}.\n\nvocab_row(\"edge-kind\", kind, \"edge.kind\") :=\n  *edge{kind: kind}.\n\nvocab_row(\"namespace\", namespace, \"handle.namespace\") :=\n  *handle{namespace: namespace},\n  namespace != \"\".\n\nvocab_row(\"frontmatter-field\", key, \"meta.key\") :=\n  *meta{key: key}.\n\n? vocab_row(category, value, source).",
+  doc: "List observed corpus vocabulary: status values, edge kinds, namespaces, and frontmatter fields.",
+  output_schema: "{\"category\":\"String\",\"value\":\"String\",\"source\":\"String\"}",
+  default_args: [],
+  capabilities: ["read"]
+).
+
+@verb(
   name: "schema",
   query: "? schema(name, kind, signature, determinism, provenance).",
   doc: "List queryable stored relations, derived predicates, and engine primitives.",

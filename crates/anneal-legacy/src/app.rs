@@ -67,6 +67,8 @@ START HERE:
   anneal search TEXT          Ranked content retrieval
   anneal read HANDLE          Budgeted content spans for one handle
   anneal broken               Runtime diagnostic blockers
+  anneal garden               Ranked maintenance tasks with hints
+  anneal vocab                Observed status, edge, namespace, and metadata vocabulary
   anneal work                 Ranked work candidates
   anneal -e '? query.'        Raw Datalog query over corpus facts
   anneal prime                Full bundled agent skill briefing
@@ -100,6 +102,9 @@ ROOT DIRECTORY:
     $XDG_CONFIG_HOME/anneal/config.toml
     ~/.config/anneal/config.toml        (fallback)
 
+  --area is not a path selector. It scopes output to an area name, usually
+  the top-level directory under --root or a configured concern group.
+
 CONFIGURATION:
 
   anneal.toml is optional. Without it, anneal infers structure and runs in
@@ -132,7 +137,7 @@ struct Cli {
     #[arg(long, global = true)]
     pretty: bool,
 
-    /// Scope output to a single area (directory or concern group name)
+    /// Scope output to an area name (top-level directory or concern group), not a filesystem path
     #[arg(long, global = true)]
     area: Option<String>,
 
@@ -671,11 +676,11 @@ CATEGORIES:
 
 Tasks are ranked by blast: errors first, then orphan density, island size,
 stale age × handle density, metadata gaps, and namespace dispersion. Use
---category to filter, --area to scope, --limit to bound the list.",
+--category to filter, --area to scope by area name, --limit to bound the list.",
         after_help = "\
 EXAMPLES:
   anneal garden                                # Top 10 maintenance tasks
-  anneal garden --area=compiler                # Scope to one area
+  anneal garden --area=compiler                # Scope to area name, not path
   anneal garden --category=fix                 # Only correctness blockers
   anneal garden --json                         # Structured output for agents
   anneal garden --limit=25                     # More tasks"
@@ -798,6 +803,12 @@ EXAMPLES:
     /// Programmable-runtime status-change rows when snapshot history exists
     #[command(long_about = "Show status changes when snapshot history exists.")]
     Trend,
+
+    /// Programmable-runtime corpus vocabulary
+    #[command(
+        long_about = "List observed status values, edge kinds, namespaces, and frontmatter fields."
+    )]
+    Vocab,
 
     /// Programmable-runtime object description
     #[command(long_about = "Describe a runtime primitive, predicate, or verb.")]
@@ -1590,6 +1601,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Blocked
             | Command::Broken
             | Command::Trend
+            | Command::Vocab
             | Command::Describe
             | Command::Sources
             | Command::Schema
@@ -1711,7 +1723,7 @@ mod tests {
 
         for name in [
             "status", "context", "search", "read", "H", "work", "blocked", "broken", "trend",
-            "describe", "sources", "schema", "verbs", "eval", "health",
+            "vocab", "describe", "sources", "schema", "verbs", "eval", "health",
         ] {
             assert!(
                 help.contains(name),

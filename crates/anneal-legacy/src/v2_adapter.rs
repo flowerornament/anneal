@@ -871,11 +871,7 @@ impl LoadedFacts {
         let terminal_by_directory = batch
             .handles
             .iter()
-            .filter(|fact| {
-                fact.file
-                    .split('/')
-                    .any(|part| matches!(part, "archive" | "history" | "prior"))
-            })
+            .filter(|fact| crate::path_conventions::has_terminal_directory_str(&fact.file))
             .filter_map(|fact| fact.status.clone())
             .collect();
         let lattice =

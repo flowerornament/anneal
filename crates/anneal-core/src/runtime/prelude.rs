@@ -646,6 +646,7 @@ mod tests {
         "blocked",
         "trend",
         "broken",
+        "vocab",
         "schema",
         "predicates",
         "verbs",

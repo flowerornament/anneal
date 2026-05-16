@@ -26,14 +26,17 @@ Pick the smallest command that can answer the next agent question.
 ```bash
 anneal context "<goal>"
 anneal status
+anneal garden
 anneal describe runtime
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
-`anneal status` when the question is corpus state. Use `describe` when you need
-vocabulary help before querying.
+`anneal status` when the question is corpus state. Use `anneal garden` when
+you want ranked maintenance tasks with fix/context/verify hints. Use
+`describe` for predicates, verbs, primitives, and runtime objects; use `vocab`
+for observed status values, edge kinds, namespaces, and frontmatter fields.
 
 ### Finding and Reading
 
@@ -70,12 +73,13 @@ first 3 rows by default; use `--explain-first N` for a different cap or
 anneal sources
 anneal verbs
 anneal schema
+anneal vocab
 anneal describe convergence
 ```
 
 Use these before inventing names. Agents should discover the active adapters,
-verbs, predicates, output contracts, and capability requirements from the
-runtime.
+verbs, predicates, corpus vocabulary, output contracts, and capability
+requirements from the runtime.
 
 ### Health and Compatibility
 
@@ -107,10 +111,11 @@ remain available during the migration window when exact compatibility matters.
 - `anneal status`: compact corpus status
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
-- `blocked`: blockers for a handle or corpus
+- `blocked`: blockers for one handle
 - `broken`: diagnostic gate
 - `trend`: convergence movement rows when snapshot history exists; no-history
   corpora emit zero rows
+- `vocab`: observed status, edge, namespace, and metadata vocabulary
 - `context`: cold-agent retrieval bundle
 
 Project `@verb` declarations in `anneal.dl` appear beside these in
@@ -155,6 +160,8 @@ Common prelude families:
   fields you need.
 - Use `--json` or NDJSON streams for tool consumption. At a terminal, `status`
   and `context` render readable summaries.
+- Use `--root` for the corpus path. Use `--area` only for an area name inside
+  that corpus, usually a top-level directory or configured concern group.
 - Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
   `obligations` when exact pre-runtime behavior is required.
 - After editing corpus files, run `anneal broken` or `anneal check

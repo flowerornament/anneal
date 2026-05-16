@@ -927,20 +927,6 @@ pub(crate) fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobS
 /// Walks the directory tree, creates File handles, scans content with
 /// pulldown-cmark, and collects label candidates and pending edges for
 /// later resolution.
-/// Directories whose contents signal terminal convergence state (D-04).
-const TERMINAL_DIRS: &[&str] = &["archive", "history", "prior"];
-
-/// Check if a relative path has any ancestor directory matching a terminal convention.
-fn is_in_terminal_directory(relative: &Utf8Path) -> bool {
-    for component in relative.components() {
-        let name = component.as_str();
-        if TERMINAL_DIRS.contains(&name) {
-            return true;
-        }
-    }
-    false
-}
-
 pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<BuildResult> {
     build_graph_scoped(root, config, &[Utf8PathBuf::from(".")])
 }
@@ -1083,7 +1069,7 @@ pub(crate) fn build_graph_scoped(
             observed_statuses.insert(s.clone());
 
             // D-04: Track directory convention for terminal status classification
-            let in_terminal = is_in_terminal_directory(&relative);
+            let in_terminal = crate::path_conventions::has_terminal_directory(&relative);
             if in_terminal {
                 *status_in_terminal.entry(s.clone()).or_insert(0) += 1;
             } else {

@@ -483,19 +483,18 @@ fn collect_stale_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
         if has_recent_neighbor(opts.graph, node, today, warn_days) {
             continue;
         }
-        let path = handle
-            .file_path
-            .as_deref()
-            .map_or(String::new(), |p| p.as_str().to_string());
-        if path.is_empty() {
+        let Some(path) = handle.file_path.as_deref().map(camino::Utf8Path::as_str) else {
+            continue;
+        };
+        if path.is_empty() || crate::path_conventions::has_terminal_directory_str(path) {
             continue;
         }
-        let area = area_of(path.as_str()).to_string();
-        let handle_count = handles_by_file.get(&path).copied().unwrap_or(1);
+        let area = area_of(path).to_string();
+        let handle_count = handles_by_file.get(path).copied().unwrap_or(1);
         #[allow(clippy::cast_sign_loss)]
         let age = age_days.max(0) as u64;
         let entry = stale_by_area.entry(area).or_default();
-        entry.files.push(path);
+        entry.files.push(path.to_string());
         entry.score = entry
             .score
             .saturating_add(age.saturating_mul(handle_count as u64));
@@ -532,7 +531,7 @@ fn collect_stale_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
             files: acc.files,
             hints: GardenHints {
                 fix: Some(
-                    "link these to recent work, retire them, or move them to an archive/ directory"
+                    "link these to recent work, retire them, or move them to a terminal directory (archive/, history/, or prior/)"
                         .to_string(),
                 ),
                 context: Some(format!("anneal orient --area={area} --budget=20k")),
@@ -769,6 +768,43 @@ mod tests {
             .tasks
             .iter()
             .any(|t| t.category == GardenCategory::Link && t.area.as_deref() == Some("archive")));
+    }
+
+    #[test]
+    fn garden_stale_ignores_archive_directories() {
+        let mut graph = DiGraph::new();
+        let old = chrono::Local::now().date_naive() - chrono::Duration::days(90);
+        graph.add_node(Handle::test_file_with_date(
+            "archive/old.md",
+            Some("draft"),
+            old,
+        ));
+        graph.add_node(Handle::test_file_with_date(
+            "history/old.md",
+            Some("draft"),
+            old,
+        ));
+        graph.add_node(Handle::test_file_with_date(
+            "compiler/old.md",
+            Some("draft"),
+            old,
+        ));
+        let lattice = Lattice::test_empty();
+        let areas = compute_areas(&graph, &lattice, &[], &AreasConfig::default());
+        let mut config = AnnealConfig::default();
+        config.freshness.warn = 30;
+
+        let output = cmd_garden(&base_opts(&graph, &[], &areas, &config));
+        let stale_files = output
+            .tasks
+            .iter()
+            .filter(|task| task.category == GardenCategory::Stale)
+            .flat_map(|task| task.files.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(stale_files.contains(&"compiler/old.md"));
+        assert!(!stale_files.contains(&"archive/old.md"));
+        assert!(!stale_files.contains(&"history/old.md"));
     }
 
     #[test]

@@ -154,6 +154,7 @@ anneal describe convergence
 anneal sources
 anneal verbs
 anneal schema
+anneal vocab
 
 # 5. Raw Datalog when the built-in verbs are too coarse
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
@@ -217,10 +218,11 @@ The standard library ships starter verbs as ordinary `@verb` definitions:
 - `H`: handle neighborhood
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
-- `blocked`: blockers for a handle or corpus
+- `blocked`: blockers for one handle
 - `broken`: diagnostic gate
 - `trend`: convergence movement rows when snapshot history exists; no-history
   corpora emit zero rows
+- `vocab`: observed status, edge, namespace, and metadata vocabulary
 - `context`: cold-agent retrieval bundle
 
 Project verbs declared in `anneal.dl` are surfaced the same way as standard
@@ -233,11 +235,13 @@ anneal describe convergence
 anneal sources
 anneal verbs
 anneal schema
+anneal vocab
 ```
 
 Use introspection before inventing a query. Agents should be able to discover
 which sources are linked, which verbs exist, what a predicate means, and which
-capabilities a command needs.
+capabilities a command needs. Use `vocab` to see corpus-local status values,
+edge kinds, namespaces, and frontmatter fields before writing filters.
 
 ### Raw Queries
 
@@ -270,6 +274,10 @@ anneal prime
 
 Use them when you need exact compatibility with the pre-runtime surface. New agent
 workflows should prefer `context`, `search`, `read`, verbs, and raw Datalog.
+
+For compatibility commands, `--root` selects the corpus path. `--area` selects
+an area name inside that corpus, usually a top-level directory or configured
+concern group; it is not a path selector.
 
 ## Project Extension
 

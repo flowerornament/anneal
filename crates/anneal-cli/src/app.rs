@@ -168,6 +168,7 @@ enum RuntimeCommand {
     },
     Broken,
     Trend,
+    Vocab,
     Describe {
         name: String,
     },
@@ -194,6 +195,7 @@ enum HelpTopic {
     Blocked,
     Broken,
     Trend,
+    Vocab,
     Describe,
     Sources,
     Schema,
@@ -213,6 +215,7 @@ impl HelpTopic {
             "blocked" => Self::Blocked,
             "broken" => Self::Broken,
             "trend" => Self::Trend,
+            "vocab" => Self::Vocab,
             "describe" => Self::Describe,
             "sources" => Self::Sources,
             "schema" => Self::Schema,
@@ -309,10 +312,12 @@ Output: NDJSON rows.
                 "\
 Usage: anneal [OPTIONS] blocked <HANDLE>
 
-Show why a handle is blocked according to convergence rules.
+Show why one handle is blocked according to convergence rules.
 
 Arguments:
   <HANDLE>                       Handle id to inspect
+
+For a corpus-wide blocked list, use `anneal status` or `anneal work`.
 
 Output: NDJSON rows.
 "
@@ -333,6 +338,16 @@ Usage: anneal [OPTIONS] trend
 Show status changes when snapshot history exists. No-history corpora emit no rows.
 
 Output: NDJSON rows.
+"
+            }
+            Self::Vocab => {
+                "\
+Usage: anneal [OPTIONS] vocab
+
+List observed corpus vocabulary: status values, edge kinds, namespaces, and
+frontmatter fields.
+
+Output: NDJSON rows with category, value, source.
 "
             }
             Self::Describe => {
@@ -432,7 +447,11 @@ impl RuntimeCommand {
                 Ok(Self::Work)
             }
             "blocked" => Ok(Self::Blocked {
-                handle: required_positional(rest, "blocked requires a handle")?.to_string(),
+                handle: required_positional(
+                    rest,
+                    "blocked inspects one handle; pass `anneal blocked <HANDLE>` or use `anneal status` for a corpus-wide blocked list",
+                )?
+                .to_string(),
             }),
             "broken" => {
                 ensure_no_args(rest, "broken")?;
@@ -441,6 +460,10 @@ impl RuntimeCommand {
             "trend" => {
                 ensure_no_args(rest, "trend")?;
                 Ok(Self::Trend)
+            }
+            "vocab" => {
+                ensure_no_args(rest, "vocab")?;
+                Ok(Self::Vocab)
             }
             "describe" => match rest {
                 [] => Ok(Self::Describe {
@@ -595,6 +618,7 @@ impl RuntimeSession {
             }
             RuntimeCommand::Broken => self.run_verb("broken"),
             RuntimeCommand::Trend => self.run_verb("trend"),
+            RuntimeCommand::Vocab => self.run_verb("vocab"),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(name).datalog();
                 self.run_query(&query, ExplainOptions::disabled())
@@ -1243,6 +1267,11 @@ mod tests {
             ("context", HelpTopic::Context, "Output: human summary"),
             ("search", HelpTopic::Search, "Output: NDJSON rows with h"),
             ("read", HelpTopic::Read, "Output: NDJSON rows with span_id"),
+            (
+                "vocab",
+                HelpTopic::Vocab,
+                "Output: NDJSON rows with category",
+            ),
         ] {
             let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
                 .expect("parse command help");
@@ -1335,6 +1364,15 @@ mod tests {
             Invocation::parse(os(&["anneal", "search", "   "])).expect_err("empty search fails");
 
         assert!(error.to_string().contains("search query must not be empty"));
+    }
+
+    #[test]
+    fn blocked_without_handle_points_to_list_command() {
+        let error = Invocation::parse(os(&["anneal", "blocked"]))
+            .expect_err("blocked without handle fails");
+
+        assert!(error.to_string().contains("blocked inspects one handle"));
+        assert!(error.to_string().contains("anneal status"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod lattice;
 mod obligations;
 mod output;
 mod parse;
+mod path_conventions;
 mod query;
 mod resolve;
 mod snapshot;
