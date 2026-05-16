@@ -25,8 +25,9 @@ that makes that graph queryable, extensible, and durable across sessions
 
 The product is:
 
-- **A substrate**: a Datalog dialect with stored and derived primitives,
-  a convergence standard library, self-description, and provenance.
+- **A substrate**: a corpus runtime with a stratified Datalog rule layer,
+  stored facts, function primitives, a convergence standard library,
+  self-description, and provenance.
 - **A family of sources**: format adapters that turn markdown, MDX, code,
   issue trackers, host applications, and future formats into handle/edge
   facts the substrate can reason about. Sources are the only
@@ -174,7 +175,7 @@ pub struct SourceCapabilities {
 pub struct SearchInfo {
     pub reason_vocabulary: Vec<&'static str>,
     pub fields: Vec<&'static str>,
-    pub low_confidence_threshold: f32,      // default 0.5 if omitted
+    pub low_confidence_threshold: Option<f32>, // omitted => runtime default (CR-OQ9)
 }
 ```
 
@@ -247,6 +248,14 @@ adapters may provide lazy content retrieval or indexed search without
 changing the public `search(...)` and `read(...)` relation shapes.
 Providers still emit enough provenance for `source_of`, trails, and
 `--explain` to name the underlying handle/span/source.
+
+`match(pattern, handle, line, snippet)` remains substrate-owned in
+v0.11.0. It performs a bounded regex scan over the already-authorized
+stored content for a bound handle and is policy-gated as `Action::Match`.
+It is not a third provider surface yet, because adapter-native regex
+search would need a separate budget, provenance, and capability story.
+Future indexed or host-native regex matching is tracked as an open
+provider question, not silently hidden inside `SearchProvider`.
 
 Rationale: markdown can eagerly load content, but code indexes, issue
 trackers, and host runtimes often cannot. Retrieval is an access-path
@@ -349,9 +358,10 @@ a parser-only need.
 
 1. `@verb`, include/import, aggregation, and diagnostic-span semantics
    are pinned by this spec and parity fixtures.
-2. At least one non-CLI consumer needs parser-only access (MCP verb
-   introspection, LSP/formatter, `anneal-host`, or an external
-   adapter).
+2. At least one true parser-only consumer exists: either an external
+   workspace crate uses `anneal-lang` without `anneal-core`, or a
+   non-CLI/non-MCP crate inside this workspace uses `anneal-lang`
+   independently of runtime introspection.
 3. The public API hides representation choices with non-exhaustive
    enums, constructors/accessors, or equivalent compatibility guards.
 
@@ -362,23 +372,28 @@ private crate boundary gives the architecture a clean lower layer now
 while deferring public stability until real consumers force the right
 interface.
 
-**Engine choice is internal to `anneal-core`.** v2.0 uses
-[`ascent`](https://github.com/s-arash/ascent) for engine-derived
-primitives and a dynamic IR for the rule layer (prelude + project +
-inline). The surface language is a stratified Datalog dialect with
-aggregation — semantics every Datalog engine in the relevant class
-(ascent, Crepe, hand-rolled, soufflé) supports. The grammar in
-Part IV (Steele's criterion for project verbs, `@verb` declarations,
-adapter-qualified discovery facts, `context` as composition primitive)
-is designed for agents reasoning about corpora, not for Rust
-developers embedding a fact engine; it deliberately does *not* mirror
-ascent's surface syntax. This is a load-bearing invariant: swapping
-engines (for performance, for non-Rust embedding, for an incremental
-evaluator) is allowed because the user-facing language and the
-stored-relation schema are independent of the engine choice. The IR's
-internal AST stays close to ascent's shape so the primitives-lowering
-pass is thin, but that's an implementation detail of `anneal-core`,
-not a public contract.
+**Definition CR-D74 (Rule layer/runtime substrate boundary).**
+Engine choice is internal to `anneal-core`. v2.0 uses
+[`ascent`](https://github.com/s-arash/ascent) for fixed
+engine-derived primitive support and a dynamic IR for the rule layer
+(prelude + project + inline). The rule layer is a stratified Datalog
+fragment with aggregation; the substrate is a corpus runtime with
+I/O-bearing primitives, actor-scoped fact visibility, capability and
+policy gates, trail capture, source/provider traits, and runtime
+self-description. The rule syntax is portable. The runtime semantics
+are not a generic Datalog-engine contract.
+
+The grammar in Part IV (Steele's criterion for project verbs, `@verb`
+declarations, adapter-qualified discovery facts, `context` as a
+composition primitive) is designed for agents reasoning about corpora,
+not for Rust developers embedding a fact engine; it deliberately does
+*not* mirror ascent's surface syntax. This is a load-bearing
+invariant: swapping engines for performance, non-Rust embedding, or
+incremental evaluation is allowed only behind `anneal-core` because
+the user-facing language and stored-relation schema are independent of
+the engine choice. The IR's internal AST may stay close to ascent's
+shape so a primitives-lowering pass is thin, but that is an
+implementation detail of `anneal-core`, not a public contract.
 
 ---
 
@@ -549,12 +564,13 @@ the substrate's context-loading valve; agents need predictable bounded
 reads instead of accidental full-corpus dumps.
 
 **Definition CR-D35 (Sealed engine primitives).** Substrate-only
-engine primitive predicate names in CR-D9 are sealed. Prelude,
-project, import, inline, and fact clauses may call them but must not
-define, shadow, or union with them. Projects that need domain-specific
-variants wrap sealed primitives in separately named derived
-predicates. Rationale: sealed primitive semantics are part of the
-engine-replaceability contract; letting corpus rules redefine them
+engine primitive predicate names in CR-D9 are sealed unless CR-D36
+marks them soft lifecycle primitives. Prelude, project, import,
+inline, and fact clauses may call sealed primitives but must not
+define, shadow, or union with them. Projects that need
+domain-specific variants wrap sealed primitives in separately named
+derived predicates. Rationale: sealed primitive semantics are part of
+the engine-replaceability contract; letting corpus rules redefine them
 would make runtime behavior depend on load order rather than the
 substrate contract.
 
@@ -573,8 +589,28 @@ them under the unqualified name. Rationale: code, host, issue, and
 markdown corpora need a common lifecycle vocabulary without forcing
 markdown's status model into every adapter.
 
-All other CR-D9 primitives are sealed unless a later CR-D* explicitly
-marks them soft.
+**Definition CR-D75 (Primitive lifecycle classes).** CR-D9 primitives
+are classified by lifecycle, not by call syntax:
+
+| Class | Predicates | Shadowing |
+|---|---|---|
+| Sealed substrate primitives | graph traversal, counts/metrics, content retrieval, `search`, `read`, `read_full`, `match`, self-description | cannot be defined, shadowed, or unioned by loaded rules |
+| Soft lifecycle defaults | `terminal`, `active`, `settled`, `pipeline_position`, `pipeline_position_for`, `obligation`, `discharged`, `undischarged` | replaced by an unqualified rule definition per CR-D36 |
+| Future structural primitives | none in v0.11.0 | CR-Fw5 may add read-only, no-I/O adapter structural primitives |
+
+Every `schema(...)` row that describes an engine primitive must expose
+its lifecycle class through the machine-readable `kind` field
+specified in CR-D81. All CR-D9 primitives not listed as soft are
+sealed unless a later CR-D* explicitly changes their lifecycle class.
+
+**Definition CR-D76 (Adapter primitive extension boundary).**
+Adapters cannot add new engine primitive predicates in v0.11.0. They
+extend the runtime through stored facts, `ContentProvider`,
+`SearchProvider`, `Ranker`, `Policy`, `Trail*` components, and derived
+rules. Rationale: arbitrary adapter primitives would turn provider
+registration into a runtime ABI before capability, provenance, and
+engine-replacement rules exist. Adapter-native structural primitives
+are a forward-looking escape hatch, not current behavior.
 
 **Definition CR-D37 (Default scalar lifecycle metrics).**
 `discharge_count(h, n)` counts incoming `Discharges` edges for known
@@ -624,9 +660,10 @@ set.
   to decide whether a hit is structural or content-based.
 - Ordering by `score` is deterministic given a fixed corpus state and
   query; tie-breakers documented per `Ranker`.
-- **Confidence threshold.** Each search provider declares a
-  `low_confidence_threshold: f32` through the source or provider
-  registration (default `0.5`). Hits with calibrated
+- **Confidence threshold.** A search provider may declare a
+  `low_confidence_threshold` through the source or provider
+  registration; omission uses the runtime default tracked by CR-OQ9.
+  Hits with calibrated
   `score < threshold` carry
   `low_confidence: true` in the relation, signalling agents that
   the hit is plausible but uncertain. The relation shape:
@@ -641,18 +678,19 @@ set.
   comparable to 0.93 hit" failure mode the live workflow simulation
   surfaced.
 
-**Definition CR-D42 (Default lexical Ranker).** The v2.0 default
+**Definition CR-D42 (Default lexical Ranker).** The v0.11.0 default
 `Ranker` is deterministic and lexical. It emits internal `SearchHit`
 candidates from handle identifiers, handle summaries as `title`,
 frontmatter-style handle/meta fields, and content spans as `body`.
 Raw adapter or field scores are internal. Public `score` is the
 active ranker's calibrated score clamped to `[0.0, 1.0]`; the default
-ranker multiplies lexical match quality by field weights
-(`identifier`: `1.0`, `title`: `0.95`, `body`: `0.82`,
-`frontmatter:*`: `0.88`, other fields: `0.75`). Ordering is descending
-calibrated score, then `source`, reason priority, `handle`,
-`span_id`, `field`, and `reason`. Scores below the active
-low-confidence threshold, default `0.5`, set `low_confidence: true`.
+ranker multiplies lexical match quality by field weights, clamps the
+result, and then orders by descending calibrated score, `source`,
+reason priority, `handle`, `span_id`, `field`, and `reason`. Scores
+below the active low-confidence threshold set `low_confidence: true`.
+The exact built-in weight values and default threshold are shipped
+policy defaults, not semantic contracts; CR-OQ8 and CR-OQ9 track their
+future tuning.
 
 **Definition CR-D73 (Clustered child-hit parent promotion).** When the
 default lexical index finds matches on two or more child handles whose
@@ -727,6 +765,24 @@ output-explosion failure mode the live workflow simulation
 surfaced — context verb surfaces 6 hits + 4 spans + 2 edges, agent
 uses 1 — is resolved by recording both sets and treating consumed
 as the load-bearing path.
+
+**Definition CR-D77 (Consumed reference heuristic).** In the default
+runtime, a surfaced handle becomes consumed when it appears in a
+later verb's input within the same trail session, including `read`,
+`context`, `source_of`, `run_verb`, or an ad-hoc query literal. Host
+applications may call `TrailRecorder.note_consumed` for explicit
+selection gestures. Display alone is not consumption. Rationale:
+trail replay should follow the path an agent actually acted on, not
+every candidate a ranking surface showed.
+
+**Definition CR-D78 (Default trail redaction patterns).** The default
+redactor redacts string literal values and meta/config values whose
+keys contain `secret`, `password`, `token`, `api_key`, or
+`private_key`, case-insensitively. Projects may extend or replace this
+set through `[trail]` configuration. Redaction patterns are policy
+inputs, not relation fields. Rationale: mandatory trail capture needs
+a conservative local default while leaving project-specific secret
+vocabularies configurable.
 
 **Definition CR-D65 (Trail relation normalization).** JSONL trail
 entries retain structured `surfaced_refs`, `consumed_refs`, and
@@ -962,15 +1018,17 @@ filter for actor-scoped evaluation, search, read, provenance, and
 trail capture. Sources may attach visibility at extraction time;
 missing visibility defaults to `public`.
 
-Visibility values are at least `public`, `team`, and `private`.
-Hosts may define narrower labels as policy inputs, but the default
-runtime only promises the three-level ordering. Derived rows inherit
-the most restrictive visibility of the facts and primitive rows used
-to derive them.
+Visibility values are named policy labels. The built-in labels are
+`public`, `team`, and `private`; hosts may define narrower labels as
+policy inputs. Derived rows inherit the most restrictive visibility of
+the facts and primitive rows used to derive them according to the
+active policy ordering.
 
-**Definition CR-D61 (Fact visibility capabilities).** The default
-runtime maps `public`, `team`, and `private` fact visibility to
-actor capabilities before derivation. `public` rows are visible to
+**Definition CR-D61 (Fact visibility capabilities).** The runtime maps
+fact visibility labels to actor capabilities before derivation.
+`public`, `team`, and `private` are the built-in labels and ship with
+the default ordering `public < team < private`; custom label sets and
+non-ordinal policy models remain CR-OQ10. `public` rows are visible to
 all actors. `team` rows require `visibility:team` or
 `visibility:private`. `private` rows require `visibility:private`.
 Local CLI construction may use an all-visible database view for
@@ -1010,9 +1068,11 @@ without policy approval.
 
 ### §17 Grammar
 
-Modern Datalog. Named fields on stored relations, lowercase
-identifiers, `:=` for "is true when," `?` for queries,
-`*relation{...}` for stored data.
+Stratified Datalog rule layer over the corpus runtime. Named fields
+on stored relations, lowercase identifiers, `:=` for "is true when,"
+`?` for queries, `*relation{...}` for stored data. The rule syntax is
+Datalog-shaped; primitives, directives, visibility, trails, policy,
+and provider-backed content/search belong to the runtime substrate.
 
 ```
 program     := statement*
@@ -1073,6 +1133,15 @@ declared signature. Rule heads are canonical positional definitions;
 calls may use positional arguments followed by named arguments.
 Named arguments are not records and do not introduce field access.
 
+**Definition CR-D79 (Directive reification).** `@verb`, `@doc`,
+`include`, `import`, and `at` are syntax directives, not facts that
+participate in fixpoint evaluation. `@verb` and `@doc` are also
+reified into runtime introspection rows (`verbs`, `describe`,
+`source_of`, and `examples` when present) after load-order and
+shadowing rules resolve the program. Rationale: authors write
+declarative annotations, while agents query a relational
+self-description surface.
+
 ### §18 Types and operators
 
 Dynamic, four primitive types plus one composite:
@@ -1132,6 +1201,18 @@ or inline via `where` clauses.
 
 The `*` prefix is a visible marker: *this is real data, not
 derived.*
+
+**Definition CR-D80 (Primitive evaluation within strata).** Function
+primitive calls are evaluated as relational body atoms inside the
+same stratum as the rule that contains them. They observe the
+actor-filtered stored facts and all same-stratum positive derived
+rows that have reached the current fixpoint iteration; if those
+inputs grow, the primitive call is eligible for re-evaluation before
+the stratum is complete. Primitive calls do not create hidden
+side-channel state inside fixpoint evaluation. Rationale:
+aggregation, graph traversal, search, and read must compose with
+derived predicates without accidentally freezing an earlier partial
+view of the stratum.
 
 ### §20 Aggregation [CR-D17]
 
@@ -1344,8 +1425,9 @@ anneal-core/src/prelude/
   views.dl          # the starter verbs as saved queries
 ```
 
-`anneal source-of convergence` prints the file:lines where the
-convergence vocabulary lives. `ANNEAL_PRELUDE_PATH` overrides the
+`anneal -e '? source_of("convergence", file, lines).'` prints the
+file:lines where the convergence vocabulary lives.
+`ANNEAL_PRELUDE_PATH` overrides the
 embedded prelude; doing so changes the `prelude_hash` and is
 recorded in trails — agents replaying a trail later see whether the
 prelude differs.
@@ -1401,7 +1483,7 @@ does. The runtime warns at load on stderr:
 
 ```
 warning: anneal.dl:42: 'blocked/1' overrides prelude (2 clauses)
-         compare: anneal source-of blocked
+         compare: anneal -e '? source_of("blocked", file, lines).'
 ```
 
 For predicates that should *never* be shadowed (engine identity
@@ -1891,7 +1973,7 @@ Projects override or extend any.
 
 | Verb | Question | Underlying query (sketch) |
 |---|---|---|
-| `anneal` | where am I | composed of summary, work, advancing, blocked |
+| `anneal status` | where am I | composed of summary, work, advancing, blocked |
 | `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges |
 | `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
 | `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
@@ -1902,8 +1984,10 @@ Projects override or extend any.
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
 | `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
 
-Plus self-description verbs from §11: `schema`, `predicates`, `verbs`,
-`describe`, `source-of`, `examples`, `sources`.
+Plus self-description surfaces from §11. v0.11.0 ships CLI verbs for
+`schema`, `verbs`, `describe`, and `sources`; `predicates`,
+`source_of`, and `examples` are query primitives available through
+`anneal -e` until promoted to CLI verbs.
 
 Plus meta forms:
 
@@ -1962,12 +2046,7 @@ Underlying composition contract (from `views.dl`):
       },
       context_neighbor(h, neighbor).
   ",
-  output_schema: {
-    goal: String,
-    hits: List<{handle, span_id, score, reason, field}>,
-    spans: List<{handle, span_id, start_line, end_line, tokens, text}>,
-    neighborhood: List<{handle, neighbor}>
-  },
+  output_schema: "{\"goal\":\"String\",\"hits\":\"List<{handle,span_id,score,reason,field}>\",\"spans\":\"List<{handle,span_id,start_line,end_line,tokens,text}>\",\"neighborhood\":\"List<{handle,neighbor}>\"}",
   capabilities: ["read"]
 )
 ```
@@ -1980,22 +2059,23 @@ isolated top hit still returns its read span. Phase 1 must pin this
 as an executable `views.dl` fixture before `context` is treated as a
 shipped verb.
 
-Budget allocation: v2.0 derives `context_read_budget` as 60% of the
-requested `--budget` and applies that cap independently to each top
-hit's `read`. It does not divide the read cap by `K`; doing so makes
+Budget allocation: v0.11.0 derives a per-hit `context_read_budget`
+from the requested `--budget` and applies that cap independently to
+each top hit's `read`. It does not divide the read cap by `K`; doing so makes
 increasing `--hits` silently exclude the most relevant document before
 `read` can return a useful first span. Exact whole-response token
 accounting across grouped `hits`, `spans`, and `neighborhood` is not a
-v2.0 invariant.
+v0.11.0 invariant. The exact allocation ratio is a tuning default
+tracked by CR-OQ11, not a semantic contract.
 
 Cold-agent test (§49 large-corpus fixture) targets a single `context`
-call after an optional `anneal` dashboard — total tool calls ≤2,
+call after an optional `anneal status` surface — total tool calls ≤2,
 counted including any required follow-ups.
 
-**Definition CR-D45 (Executable context lowering).** Until Phase 7
-ships typed `@verb` validation, the executable `context` contract is
-the lowered Datalog program used by `views.dl` and `anneal-cli`: the
-surface introduces parameter facts (`context_goal`,
+**Definition CR-D45 (Executable context lowering fixture).** The
+executable `context` contract in v0.11.0 is the lowered Datalog
+program used by `views.dl` and `anneal-cli`: the surface introduces
+parameter facts (`context_goal`,
 `context_hits`, `context_read_budget`, `context_neighborhood_depth`).
 `context_read_budget` is the already-allocated per-hit span budget,
 not the total invocation budget. The query then runs over `TopK`,
@@ -2021,8 +2101,8 @@ string in the parser-accepted fixture and grouped by the surface into
 `hit_span_id` are mapped to public grouped fields `handle` and
 `span_id`, while invocation fields such as `goal` come from the verb
 arguments rather than being duplicated into every relation row.
-Rationale: this pins the agent-visible behavior with today's parser
-while preserving CR-R4's stronger typed verb contract for Phase 7.
+Rationale: this pins the shipped agent-visible behavior while leaving
+future typed object-literal ergonomics to CR-OQ12.
 
 **Definition CR-D71 (Context per-hit read cap).** The CLI derives
 `context_read_budget` from `--budget` once and applies it as the cap
@@ -2077,6 +2157,21 @@ filters still belong in queries.
 | `--pretty` | human-readable formatted JSON (breaks NDJSON contract) | global |
 | `--include-low-confidence` | omit the default `low_confidence = false` predicate from search/context `TopK` templates | global, search-relevant |
 
+**Definition CR-D82 (Help and reference projection).** CLI help is a
+projection of the same runtime self-description that backs
+`schema`, `predicates`, `verbs`, `describe`, `source_of`, `examples`,
+and `sources`. v0.11.0 ships top-level `anneal --help`, static
+`anneal <command> --help`, and the `schema`/`verbs`/`describe`/`sources`
+CLI projections. Topic help, generated language-reference docs,
+predicate/source/example CLI projections, and machine-readable help are
+follow-up surfaces that must use this same source of truth rather than
+hand-maintained parallel docs. `@doc` text may use restrained inline
+Markdown (emphasis, code spans, and links) but not headings or block
+structure. Error messages name available help topics or introspection
+commands first; configured external URLs may be appended through
+`[help].doc_url_base`. Rationale: help is not a parallel documentation
+system; it is a projection layer over the runtime vocabulary.
+
 ### §36 I/O contract [CR-D25]
 
 **Definition CR-D25 (I/O contract).**
@@ -2122,7 +2217,7 @@ Default MCP tool surface:
 | `describe` | `describe` primitive | always allowed |
 | `schema` | `schema` primitive | always allowed |
 | `source_of` | `source_of` primitive | always allowed |
-| `dashboard` | the `anneal` verb | always allowed |
+| `status` | the `anneal` status verb | always allowed |
 | `run_verb` | invoke any verb by name | gated by per-verb declared capabilities |
 
 `read_full` is **not** a default MCP tool. Projects may expose it
@@ -2269,8 +2364,8 @@ wrote anneal.dl (16 lines)
   …
 
 next steps:
-  anneal                       see the landscape
-  anneal source-of convergence read what convergence means here
+  anneal status                see the landscape
+  anneal describe convergence  read what convergence means here
   anneal work                  pick where to work
 ```
 
@@ -2283,7 +2378,7 @@ in `anneal.toml`.
 **Definition CR-D29 (Agent loop).**
 
 ```
-1. anneal                  see the landscape
+1. anneal status           see the landscape
 2. anneal work             pick where to work
 3. anneal blocked H        understand why H isn't moving
 4. (do the work)
@@ -2294,7 +2389,7 @@ For arrival on an unfamiliar corpus, prepend:
 
 ```
 0a. anneal sources         what adapters are loaded
-0b. anneal source-of convergence  what convergence means here
+0b. anneal describe convergence  what convergence means here
 ```
 
 For multi-session handoff, prepend:
@@ -2369,6 +2464,19 @@ rule-defined predicates without attached docs get a generated fallback
 doc and rely on `source_of` for precise context. Rationale: agents need
 one stable relational shape across CLI, MCP, and library surfaces
 without a second decoding convention for introspection rows.
+
+**Definition CR-D81 (Schema signature encoding).** `schema(name,
+kind, signature, determinism, source_provenance)` returns a canonical
+signature string of the form `name(arg1: Type, arg2: Type) -> row` for
+predicates and `name(args...) -> grouped-output` for verbs. `kind` is
+a machine-readable lifecycle/source category such as `stored`,
+`derived`, `sealed-primitive`, `soft-primitive`, `verb`, or `source`.
+The number of top-level arguments before `->` is the arity surfaces
+report in help and diagnostics. Unknown or variadic positions must be
+spelled explicitly (`Any`, `List<T>`, or `...`); docstrings never
+occupy arity or signature fields. Rationale: agents must be able to
+recover a call shape and shadowing behavior from `schema` without
+reverse-engineering prose or column order.
 
 **Definition CR-D46 (Documentation declarations).** `@doc(name:
 "...", doc: "...").` is a non-evaluating prelude or project
@@ -2451,7 +2559,7 @@ Every v1.x command is reachable in v2.0:
 
 | v1.x | v2.0 |
 |---|---|
-| `anneal status` | `anneal` |
+| `anneal status` | `anneal status` |
 | `anneal get H` | `anneal H` |
 | `anneal find TEXT` | `anneal find TEXT` (identity search; unchanged) |
 | (new) | `anneal search TEXT` (content retrieval) |
@@ -2483,6 +2591,16 @@ Every v1.x command is reachable in v2.0:
 5. **Dual ship.** v1.x and v2.0 binaries in parallel for one minor
    release; v1.x prints deprecation warnings.
 6. **Documentation.** SKILL.md, README.md rewritten.
+
+**Definition CR-D83 (Legacy boundary deletion gate).**
+`anneal-legacy` is a transition-only crate and must be removed before
+v1.0.0 unless a later explicit CR-D renews it with a narrower purpose.
+The migration is complete only when the root CLI depends on
+`anneal-core`/`anneal-md` directly for shipped behavior and no
+production path reaches back through the legacy parser/config bridge.
+Rationale: compatibility scaffolding is useful during dual-CLI
+migration, but an unbounded transition crate becomes architecture by
+accident.
 
 ### §48 What stays unchanged
 
@@ -2519,7 +2637,7 @@ cold-agent fixtures pass:
 - *Tool-call target*: 2 calls (search + read) with `MRR ≥ 0.5`
   across cold-agent runs
 - *Context target*: `anneal context "v17 conformance audit"` after
-  an optional `anneal` dashboard returns the same audit handle and
+  an optional `anneal status` call returns the same audit handle and
   a useful first span in ≤2 total calls
 
 **Fixture: anneal/release-blocker**
@@ -2607,6 +2725,27 @@ Ash resources, Phoenix routes, Oban jobs, decision-log entries, and
 customer-state transitions as handles. The same agent skill that
 runs in large-corpus's `.design/` runs inside host-corpus.
 
+### §55.1 Structural primitives (v2.1+) [CR-Fw5]
+
+CR-D35 keeps engine primitive names sealed for v0.11.0. v2.1+ may add
+a `StructuralPrimitive` registration trait for adapter-native,
+read-only, no-I/O graph or topology relations such as Oban DAGs,
+Phoenix routes, Ash relationships, or code-call graphs. Authorization,
+capability checks, content/search I/O, and policy remain
+substrate-owned; structural primitives expose deterministic relation
+rows over already-visible adapter state only. This is the planned
+escape hatch for host-scale traversal without turning every adapter
+into a general primitive engine.
+
+### §55.2 Typed evidence rows (v2.1+) [CR-Fw6]
+
+`*meta` remains the v0.11.0 compatibility and adapter-evidence escape
+hatch. A future `*evidence` relation should replace JSON-shaped
+diagnostic values and adapter-specific meta blobs with typed slots
+for evidence kind, subject, locator, related handle, observed value,
+and confidence. The goal is to keep diagnostic and provenance evidence
+queryable without smuggling structure through strings.
+
 ---
 
 ## Part XIV: Open questions [CR-OQ]
@@ -2618,54 +2757,82 @@ non-numeric, `sum` must be non-negative integer, `key` gives
 deterministic ordering, and threshold ties are resolved by stable
 value tie-breaks rather than bucket inclusion.
 
-### §57 Cross-adapter score calibration in the default `Ranker`
+### §57 Default Ranker weights [CR-OQ8]
 
-Resolved for v2.0 by CR-D42 and CR-D43. Cross-adapter statistical
-calibration remains a future Ranker override question; the default
-ranker is a deterministic lexical baseline with documented
-tie-breaks, and surfaced search templates apply the executable
-low-confidence predicate before `TopK`.
+CR-D42 locks the deterministic default ranker mechanism: per-field
+weighting, clamping, low-confidence marking, and stable tie-break
+order. The numeric field weights remain policy defaults. v0.11.0 ships
+`identifier = 1.0`, `title = 0.95`, `frontmatter:* = 0.88`,
+`body = 0.82`, and `other = 0.75`; later releases should tune these
+against real cold-agent fixtures and cross-corpus smoke instead of
+treating them as semantics.
 
-### §58 Default trail redaction patterns
+### §58 Low-confidence threshold [CR-OQ9]
 
-§13 says default redactor redacts values in string literals and
-meta-key values matching configured patterns. The default pattern
-set (`secret`, `password`, etc.) needs review; probably project-
-overridable via `[trail]` in `anneal.toml`.
+CR-D43 locks the selection mechanism: raw `search(...)` exposes all
+rows with `low_confidence`, while surfaced `TopK` templates filter
+low-confidence rows by default unless configuration or flags opt in.
+The default threshold value remains a policy default. v0.11.0 ships
+`0.5`; later releases may tune this without changing relation shape.
 
-### §59 Distinguishing consumed-by-read from consumed-by-display
+### §59 Visibility label model [CR-OQ10]
 
-§13 distinguishes `surfaced_refs` from `consumed_refs`. The runtime
-infers `consumed_refs` from observed verb-to-verb dataflow. Two
-edge cases: an agent that reads then never uses the content (the
-read is consumption-of-attention but not consumption-of-output);
-an agent that bulk-surfaces and silently drops most. Default heuristic
-TBD: lean toward `consumed = handles that appeared in a subsequent
-verb's input within the same session`.
+CR-D61 locks fact visibility before derivation and the built-in
+`public < team < private` labels. Real host deployments may need
+attribute-based or non-ordinal visibility models. v0.11.0 keeps the
+three built-ins for CLI/MCP and defers richer policy label semantics
+until a host adapter forces them.
 
-### §60 MCP run_verb routing
+### §60 Context budget allocation [CR-OQ11]
+
+CR-D71 locks the important invariant: `context_read_budget` is a
+per-hit cap and is not divided by `--hits`. The exact allocation from
+the user-facing `--budget` is a tuning default. v0.11.0 uses the
+current CLI heuristic; later releases should tune response-wide
+packing, span density, and neighborhood reserves from fixtures.
+
+### §61 Executable context lowering syntax [CR-OQ12]
+
+CR-D45 locks the shipped v0.11.0 lowered `views.dl` fixture for
+`context`. The open question is syntax, not behavior: future
+`anneal-lang` object literals may replace canonical JSON strings in
+`@verb.output_schema` while preserving CR-R4 and the same grouped
+surface output.
+
+### §62 `match` provider surface [CR-OQ13]
+
+CR-D52 leaves `match` substrate-owned in v0.11.0. Code and host
+adapters may eventually need native regex or structural match indexes.
+That should land as an explicit provider or structural primitive
+decision with budget, provenance, visibility, and policy semantics,
+not as an implicit change to `SearchProvider`.
+
+### §63 Trail redaction patterns
+
+Resolved by CR-D78: the default pattern set is `secret`, `password`,
+`token`, `api_key`, and `private_key`, case-insensitive and
+project-overridable through `[trail]`.
+
+### §64 Distinguishing consumed-by-read from consumed-by-display
+
+Resolved by CR-D77: display alone is not consumption; a surfaced
+handle becomes consumed when it appears in a later verb input within
+the same trail session or a host records explicit selection.
+
+### §65 MCP run_verb routing
 
 Resolved by CR-D56: `run_verb` dispatches through the core
 `VerbRegistry`. Project verbs win over prelude verbs per CR-D21 and
 CR-R4 before MCP projection, and MCP exposes only the resolved name.
 
-### §61 Performance ceiling
+### §66 Performance ceiling [CR-OQ6]
 
-For corpora with hundreds of thousands of handles and rich rule
-sets, evaluation time grows. The substrate is designed for
-hundreds-of-thousands; tens-of-millions probably needs indexed
-evaluation. Out of scope for v2.0.
+For corpora with hundreds of thousands of handles and rich rule sets,
+evaluation time grows. The substrate is designed for
+hundreds-of-thousands. Tens of millions of handles likely need indexed
+or incremental evaluation and are out of scope for v0.11.0.
 
-### §62 Context verb executable contract
-
-§33.1 defines the `context` verb as a grouped, budgeted composition
-over `search`, `read`, and `neighborhood_or_self`. Phase 1 must pin
-the exact executable `views.dl` form and the row-to-group
-`output_schema` behavior in tests before `context` becomes a shipped
-verb. This is a contract question, not a UX polish item, because the
-cold-agent gate depends on it.
-
-### §63 Ordered config fact representation [CR-D40]
+### §67 Ordered config fact representation [CR-D40]
 
 **Definition CR-D40 (Ordered config facts).** `*config` rows carry an
 explicit `ordinal` field. Scalar settings and unordered sets emit
@@ -2678,7 +2845,11 @@ not from fact insertion order. If compatibility rows omit `ordinal`,
 the runtime MAY preserve legacy insertion-order behavior only for
 transient local evaluation; persisted or federated config facts MUST
 not omit `ordinal` for ordered lists. This keeps list order visible
-as data instead of smuggling it through row sequence.
+as data instead of smuggling it through row sequence. Serde,
+persistence, and replay MUST round-trip `ordinal` exactly, including
+`null`; accessors that materialize ordered config lists MUST sort by
+the numeric ordinal and reject duplicate ordinals for the same ordered
+config key.
 
 ---
 
@@ -2728,7 +2899,7 @@ as data instead of smuggling it through row sequence.
 - CR-D37: Default scalar lifecycle metrics (§11)
 - CR-D38: Non-count aggregation semantics (§20)
 - CR-D39: Snapshot identity and fallback history semantics (§15)
-- CR-D40: Ordered config facts (§63)
+- CR-D40: Ordered config facts (§67)
 - CR-D41: Corpus-unique handle ids (§15)
 - CR-D42: Default lexical Ranker (§12)
 - CR-D43: Search selection policy (§12)
@@ -2762,6 +2933,16 @@ as data instead of smuggling it through row sequence.
 - CR-D71: Context per-hit read cap (§33.1)
 - CR-D72: MCP launcher status (§37)
 - CR-D73: Clustered child-hit parent promotion (§12)
+- CR-D74: Rule layer/runtime substrate boundary (§8.1)
+- CR-D75: Primitive lifecycle classes (§11)
+- CR-D76: Adapter primitive extension boundary (§11)
+- CR-D77: Consumed reference heuristic (§13)
+- CR-D78: Default trail redaction patterns (§13)
+- CR-D79: Directive reification (§17)
+- CR-D80: Primitive evaluation within strata (§19)
+- CR-D81: Schema signature encoding (§43)
+- CR-D82: Help and reference projection (§35)
+- CR-D83: Legacy boundary deletion gate (§47)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -2794,13 +2975,17 @@ as data instead of smuggling it through row sequence.
 - CR-Fw2: Multi-corpus federation surface (§53)
 - CR-Fw3: Adapters beyond markdown (§54)
 - CR-Fw4: Host Corpus embedding (§55)
+- CR-Fw5: Structural primitives (§55.1)
+- CR-Fw6: Typed evidence rows (§55.2)
 
 ### CR-OQ (Open questions)
-- CR-OQ3: Default trail redaction patterns (§58)
-- CR-OQ4: Consumed-by-read vs consumed-by-display heuristic (§59)
-- CR-OQ5: MCP run_verb routing under shadowed names (§60)
-- CR-OQ6: Performance ceiling (§61)
-- CR-OQ7: Context verb executable contract (§62)
+- CR-OQ6: Performance ceiling (§66)
+- CR-OQ8: Default Ranker weights (§57)
+- CR-OQ9: Low-confidence threshold (§58)
+- CR-OQ10: Visibility label model (§59)
+- CR-OQ11: Context budget allocation (§60)
+- CR-OQ12: Executable context lowering syntax (§61)
+- CR-OQ13: `match` provider surface (§62)
 
 ---
 

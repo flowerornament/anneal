@@ -3,7 +3,7 @@ status: current
 date: 2026-05-13
 depends-on:
   - 2026-05-07-engine-spike-and-parity-protocol.md
-  - 2026-05-03-language-redesign.md
+  - 2026-05-13-corpus-runtime.md
 description: >
   Engine-spike findings for the v2.0 language redesign. Honest accounting
   of what was validated versus what the SP-D2 deliverable list requires,

@@ -2,7 +2,7 @@
 status: current
 date: 2026-05-07
 depends-on:
-  - 2026-05-03-language-redesign.md
+  - 2026-05-13-corpus-runtime.md
 description: >
   Implementation spec for v2.0 Phase 0 — engine spike and parity protocol.
   Defines the empirical gates that must pass before committing to Phase 1
