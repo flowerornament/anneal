@@ -11,7 +11,7 @@
 use crate::fixture::{Edge, Handle};
 use crate::loader::Corpus;
 use crate::types::{EdgeKind, HandleId, HandleKind, Namespace};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const BENCH_PRELUDE: &str = r#"
 terminal(h) :- handle(h, _kind, status, _ns, _file, _area, _date), is_terminal(status).
@@ -46,7 +46,7 @@ impl Program {
             }
             current.push_str(line);
             current.push(' ');
-            while let Some(idx) = current.find('.') {
+            while let Some(idx) = rule_terminator(&current) {
                 let raw = current[..idx].trim();
                 if !raw.is_empty() {
                     rules.push(parse_rule(raw)?);
@@ -68,6 +68,13 @@ impl Program {
         self.rules
             .iter()
             .any(|rule| rule.head.predicate == predicate)
+    }
+
+    pub fn head_predicates(&self) -> BTreeSet<PredicateId> {
+        self.rules
+            .iter()
+            .map(|rule| PredicateId::from_atom(&rule.head))
+            .collect()
     }
 }
 
@@ -96,6 +103,25 @@ pub enum Term {
     Str(String),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PredicateId {
+    pub name: String,
+    pub arity: usize,
+}
+
+impl PredicateId {
+    pub fn new(name: impl Into<String>, arity: usize) -> Self {
+        Self {
+            name: name.into(),
+            arity,
+        }
+    }
+
+    fn from_atom(atom: &Atom) -> Self {
+        Self::new(atom.predicate.clone(), atom.terms.len())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum IrError {
     #[error("unterminated rule: {0}")]
@@ -118,6 +144,50 @@ pub enum IrError {
 pub struct EvalSummary {
     pub rule_count: usize,
     pub relation_counts: BTreeMap<&'static str, usize>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ProjectLoadReport {
+    pub rule_count: usize,
+    pub head_predicates: BTreeSet<PredicateId>,
+    pub release_blocker: Option<PredicateId>,
+    pub shadow_warnings: Vec<ShadowWarning>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ShadowWarning {
+    pub predicate: PredicateId,
+    pub rule_index: usize,
+}
+
+pub fn load_project_extension(
+    source: &str,
+    prelude_predicates: &BTreeSet<PredicateId>,
+) -> Result<ProjectLoadReport, IrError> {
+    let program = Program::parse(source)?;
+    let mut shadow_warnings = Vec::new();
+    let mut warned = HashSet::new();
+    let mut release_blocker = None;
+    let mut head_predicates = BTreeSet::new();
+    for (rule_index, rule) in program.rules().iter().enumerate() {
+        let predicate = PredicateId::from_atom(&rule.head);
+        if predicate.name == "release_blocker" && predicate.arity == 2 {
+            release_blocker = Some(predicate.clone());
+        }
+        if prelude_predicates.contains(&predicate) && warned.insert(predicate.clone()) {
+            shadow_warnings.push(ShadowWarning {
+                predicate: predicate.clone(),
+                rule_index,
+            });
+        }
+        head_predicates.insert(predicate);
+    }
+    Ok(ProjectLoadReport {
+        rule_count: program.rules().len(),
+        head_predicates,
+        release_blocker,
+        shadow_warnings,
+    })
 }
 
 pub struct Evaluator {
@@ -315,6 +385,27 @@ fn parse_atom(raw: &str) -> Result<Atom, IrError> {
     })
 }
 
+fn rule_terminator(input: &str) -> Option<usize> {
+    let mut in_string = false;
+    let mut prev_escape = false;
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if ch == '"' && !prev_escape {
+                in_string = false;
+            }
+            prev_escape = ch == '\\' && !prev_escape;
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+        } else if ch == '.' {
+            return Some(idx);
+        }
+        prev_escape = false;
+    }
+    None
+}
+
 fn parse_term(raw: &str) -> Term {
     if raw == "_" || raw.starts_with('_') {
         Term::Wildcard
@@ -410,6 +501,19 @@ mod tests {
     }
 
     #[test]
+    fn parser_ignores_periods_inside_string_literals() {
+        let program = Program::parse(
+            r#"mentions(h) :- handle(h, "formal-model/v17.md"). terminal(h) :- retired(h)."#,
+        )
+        .expect("program parses");
+        assert_eq!(program.rules().len(), 2);
+        assert_eq!(
+            program.rules()[0].body[0].atom.terms[1],
+            Term::Str("formal-model/v17.md".to_string())
+        );
+    }
+
+    #[test]
     fn bench_prelude_parses() {
         let program = Program::parse(BENCH_PRELUDE).expect("benchmark prelude parses");
         assert_eq!(program.rules().len(), 14);
@@ -427,5 +531,35 @@ mod tests {
         assert_eq!(summary.relation_counts["open_oq"], 5);
         assert_eq!(summary.relation_counts["upstream"], 8);
         assert_eq!(summary.relation_counts["release_blocker"], 5);
+    }
+
+    #[test]
+    fn project_extension_report_flags_shadowed_prelude_predicates() {
+        let report = load_project_extension(
+            r#"
+            release_blocker(h, "project") :- diagnostic("E999", "error", h, _file, _line).
+            terminal(h) :- retired(h).
+            "#,
+            &[
+                PredicateId::new("terminal", 1),
+                PredicateId::new("active", 1),
+                PredicateId::new("settled", 1),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .expect("project extension loads");
+        assert_eq!(report.rule_count, 2);
+        assert_eq!(
+            report.release_blocker,
+            Some(PredicateId::new("release_blocker", 2))
+        );
+        assert_eq!(
+            report.shadow_warnings,
+            vec![ShadowWarning {
+                predicate: PredicateId::new("terminal", 1),
+                rule_index: 1,
+            }]
+        );
     }
 }

@@ -17,13 +17,25 @@ use std::process::Command;
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error("failed to spawn `anneal {kind}`: {source}")]
-    Spawn { kind: &'static str, #[source] source: std::io::Error },
+    Spawn {
+        kind: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("`anneal {kind}` exited {status}: {stderr}")]
-    NonZero { kind: &'static str, status: std::process::ExitStatus, stderr: String },
+    NonZero {
+        kind: &'static str,
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
 
     #[error("failed to parse `anneal {kind}` JSON: {source}")]
-    Parse { kind: &'static str, #[source] source: serde_json::Error },
+    Parse {
+        kind: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
 
     #[error("unknown handle_kind {0:?}")]
     UnknownHandleKind(String),
@@ -75,7 +87,9 @@ struct Interner {
 
 impl Interner {
     fn get(&mut self, s: &str) -> &'static str {
-        if let Some(&v) = self.cache.get(s) { return v; }
+        if let Some(&v) = self.cache.get(s) {
+            return v;
+        }
         let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
         self.cache.insert(leaked.to_string(), leaked);
         leaked
@@ -102,7 +116,8 @@ fn run_anneal_json(root: &Path, kind: &'static str) -> Result<Vec<u8>, LoadError
 /// `area_of` heuristic at `src/area.rs`. Returns `(root)` for top-level
 /// files.
 fn area_of(file: &str, interner: &mut Interner) -> &'static str {
-    file.split_once('/').map_or("(root)", |(first, _)| interner.get(first))
+    file.split_once('/')
+        .map_or("(root)", |(first, _)| interner.get(first))
 }
 
 /// Load a corpus by shelling out to anneal's query surface. Requires the
@@ -114,12 +129,18 @@ fn area_of(file: &str, interner: &mut Interner) -> &'static str {
 /// produces JSON the spike can't parse.
 pub fn load_via_anneal(root: &Path) -> Result<Corpus, LoadError> {
     let handles_bytes = run_anneal_json(root, "handles")?;
-    let handles_env: Envelope<HandleJson> = serde_json::from_slice(&handles_bytes)
-        .map_err(|source| LoadError::Parse { kind: "handles", source })?;
+    let handles_env: Envelope<HandleJson> =
+        serde_json::from_slice(&handles_bytes).map_err(|source| LoadError::Parse {
+            kind: "handles",
+            source,
+        })?;
 
     let edges_bytes = run_anneal_json(root, "edges")?;
-    let edges_env: Envelope<EdgeJson> = serde_json::from_slice(&edges_bytes)
-        .map_err(|source| LoadError::Parse { kind: "edges", source })?;
+    let edges_env: Envelope<EdgeJson> =
+        serde_json::from_slice(&edges_bytes).map_err(|source| LoadError::Parse {
+            kind: "edges",
+            source,
+        })?;
 
     let mut interner = Interner::default();
     let mut handles = Vec::with_capacity(handles_env.items.len());
@@ -127,19 +148,37 @@ pub fn load_via_anneal(root: &Path) -> Result<Corpus, LoadError> {
         let kind = HandleKind::parse(&h.handle_kind)
             .ok_or_else(|| LoadError::UnknownHandleKind(h.handle_kind.clone()))?;
         let id = HandleId(interner.get(&h.id));
-        let file = h.file.as_deref().map_or(FilePath(""), |f| FilePath(interner.get(f)));
+        let file = h
+            .file
+            .as_deref()
+            .map_or(FilePath(""), |f| FilePath(interner.get(f)));
         let area = Area(area_of(h.file.as_deref().unwrap_or(""), &mut interner));
-        let namespace = h.namespace.as_deref()
+        let namespace = h
+            .namespace
+            .as_deref()
             .map_or(Namespace::NONE, |n| Namespace(interner.get(n)));
-        let status = h.status.as_deref()
+        let status = h
+            .status
+            .as_deref()
             .map_or(Status::Other(""), |s| Status::parse(interner.get(s)));
-        handles.push(Handle { id, kind, status, namespace, file, area, date: None });
+        handles.push(Handle {
+            id,
+            kind,
+            status,
+            namespace,
+            file,
+            area,
+            date: None,
+        });
     }
 
     let mut edges = Vec::with_capacity(edges_env.items.len());
     for e in edges_env.items {
         let kind = EdgeKind::parse(interner.get(&e.edge_kind));
-        let file = e.source_file.as_deref().map_or(FilePath(""), |f| FilePath(interner.get(f)));
+        let file = e
+            .source_file
+            .as_deref()
+            .map_or(FilePath(""), |f| FilePath(interner.get(f)));
         edges.push(Edge {
             from: HandleId(interner.get(&e.source)),
             to: HandleId(interner.get(&e.target)),
@@ -174,8 +213,10 @@ mod tests {
         let mut i = Interner::default();
         let a = i.get("foo");
         let b = i.get("foo");
-        assert!(std::ptr::eq(a, b),
-            "second call must return the same leaked address as the first");
+        assert!(
+            std::ptr::eq(a, b),
+            "second call must return the same leaked address as the first"
+        );
         assert_ne!(a, i.get("bar"));
     }
 }

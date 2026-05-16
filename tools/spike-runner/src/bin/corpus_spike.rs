@@ -10,11 +10,11 @@
 //! `SPIKE_CORPUS_ROOT` to override without flags.
 
 use serde::Serialize;
-use spike_runner::loader::{load_via_anneal, Corpus, LoadError};
+use spike_runner::loader::{Corpus, LoadError, load_via_anneal};
 use spike_runner::program::{
-    diagnostics_derived, mvs1_rows, mvs2_rows, mvs3_rows, mvs4_rows, mvs5a_rows, mvs5b_rows,
-    mvs6_rows, mvs8_upstream_rows, push_edges, push_handles, push_linear_namespaces,
-    push_pipeline_ordering, AscentProgram,
+    AscentProgram, diagnostics_derived, mvs1_rows, mvs2_rows, mvs3_rows, mvs4_rows, mvs5a_rows,
+    mvs5b_rows, mvs6_rows, mvs8_upstream_rows, push_edges, push_handles, push_linear_namespaces,
+    push_pipeline_ordering,
 };
 use spike_runner::types::{HandleId, Namespace};
 use std::io::{self, BufWriter, Write};
@@ -31,7 +31,10 @@ struct ScaleReport {
 }
 
 #[derive(Serialize)]
-struct FactCounts { handles: usize, edges: usize }
+struct FactCounts {
+    handles: usize,
+    edges: usize,
+}
 
 #[derive(Serialize)]
 struct Timings {
@@ -66,13 +69,18 @@ struct DerivedCounts {
     recently_advanced: usize,
 }
 
-fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1000.0 }
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
 
 fn corpus_root() -> PathBuf {
-    if let Ok(p) = std::env::var("SPIKE_CORPUS_ROOT") { return PathBuf::from(p); }
-    if let Some(arg) = std::env::args().nth(1) { return PathBuf::from(arg); }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.fixtures/sample-corpus")
+    if let Ok(p) = std::env::var("SPIKE_CORPUS_ROOT") {
+        return PathBuf::from(p);
+    }
+    if let Some(arg) = std::env::args().nth(1) {
+        return PathBuf::from(arg);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.fixtures/sample-corpus")
 }
 
 fn fill_program(prog: &mut AscentProgram, corpus: &Corpus) {
@@ -84,11 +92,7 @@ fn fill_program(prog: &mut AscentProgram, corpus: &Corpus) {
     push_pipeline_ordering(prog);
 }
 
-fn write_sample<W: Write, T: Serialize>(
-    out: &mut W,
-    label: &str,
-    items: &[T],
-) -> io::Result<()> {
+fn write_sample<W: Write, T: Serialize>(out: &mut W, label: &str, items: &[T]) -> io::Result<()> {
     writeln!(out, "\n--- {label} sample (first 3 of {}) ---", items.len())?;
     for item in items.iter().take(3) {
         serde_json::to_writer(&mut *out, item)?;
@@ -116,18 +120,34 @@ fn run() -> Result<(), LoadError> {
     prog.run();
     let fixpoint = ms(t.elapsed());
 
-    let t = Instant::now(); let mvs1   = mvs1_rows(&prog);   let mvs1_ms   = ms(t.elapsed());
-    let t = Instant::now(); let mvs2   = mvs2_rows(&prog);   let mvs2_ms   = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs1 = mvs1_rows(&prog);
+    let mvs1_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs2 = mvs2_rows(&prog);
+    let mvs2_ms = ms(t.elapsed());
     let mvs3_root: Option<HandleId> = prog.supersedes_chain.first().map(|(s, _, _)| *s);
     let t = Instant::now();
     let mvs3 = mvs3_root.map(|r| mvs3_rows(&prog, r)).unwrap_or_default();
     let mvs3_ms = ms(t.elapsed());
-    let t = Instant::now(); let mvs4   = mvs4_rows(&prog);   let mvs4_ms   = ms(t.elapsed());
-    let t = Instant::now(); let mvs5a  = mvs5a_rows(&prog);  let mvs5a_ms  = ms(t.elapsed());
-    let t = Instant::now(); let mvs5b  = mvs5b_rows(&prog);  let mvs5b_ms  = ms(t.elapsed());
-    let t = Instant::now(); let mvs6   = mvs6_rows(&prog);   let mvs6_ms   = ms(t.elapsed());
-    let t = Instant::now(); let mvs8u  = mvs8_upstream_rows(&prog); let mvs8_ms = ms(t.elapsed());
-    let t = Instant::now(); let diag   = diagnostics_derived(&prog); let diag_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs4 = mvs4_rows(&prog);
+    let mvs4_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs5a = mvs5a_rows(&prog);
+    let mvs5a_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs5b = mvs5b_rows(&prog);
+    let mvs5b_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs6 = mvs6_rows(&prog);
+    let mvs6_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let mvs8u = mvs8_upstream_rows(&prog);
+    let mvs8_ms = ms(t.elapsed());
+    let t = Instant::now();
+    let diag = diagnostics_derived(&prog);
+    let diag_ms = ms(t.elapsed());
 
     let total = ms(total_start.elapsed());
 
@@ -138,23 +158,32 @@ fn run() -> Result<(), LoadError> {
             edges: corpus.edges.len(),
         },
         timings_ms: Timings {
-            load, fill_program: fill, fixpoint,
-            mvs1: mvs1_ms, mvs2: mvs2_ms, mvs3: mvs3_ms, mvs4: mvs4_ms,
-            mvs5a: mvs5a_ms, mvs5b: mvs5b_ms, mvs6: mvs6_ms,
-            mvs8_upstream: mvs8_ms, diagnostics: diag_ms, total,
+            load,
+            fill_program: fill,
+            fixpoint,
+            mvs1: mvs1_ms,
+            mvs2: mvs2_ms,
+            mvs3: mvs3_ms,
+            mvs4: mvs4_ms,
+            mvs5a: mvs5a_ms,
+            mvs5b: mvs5b_ms,
+            mvs6: mvs6_ms,
+            mvs8_upstream: mvs8_ms,
+            diagnostics: diag_ms,
+            total,
         },
         derived: DerivedCounts {
-            terminal:          prog.terminal.len(),
-            active:            prog.active.len(),
-            settled:           prog.settled.len(),
-            upstream:          prog.upstream.len(),
-            supersedes_chain:  prog.supersedes_chain.len(),
-            obligation:        prog.obligation.len(),
-            discharged:        prog.discharged.len(),
-            undischarged:      prog.undischarged.len(),
-            diagnostic:        prog.diagnostic.len(),
-            release_blocker:   prog.release_blocker.len(),
-            open_oq:           prog.open_oq.len(),
+            terminal: prog.terminal.len(),
+            active: prog.active.len(),
+            settled: prog.settled.len(),
+            upstream: prog.upstream.len(),
+            supersedes_chain: prog.supersedes_chain.len(),
+            obligation: prog.obligation.len(),
+            discharged: prog.discharged.len(),
+            undischarged: prog.undischarged.len(),
+            diagnostic: prog.diagnostic.len(),
+            release_blocker: prog.release_blocker.len(),
+            open_oq: prog.open_oq.len(),
             recently_advanced: prog.recently_advanced.len(),
         },
     };
@@ -164,20 +193,20 @@ fn run() -> Result<(), LoadError> {
     serde_json::to_writer_pretty(&mut out, &report)?;
     out.write_all(b"\n")?;
 
-    write_sample(&mut out, "MVS-1 handles",   &mvs1)?;
-    write_sample(&mut out, "MVS-2 blockers",  &mvs2)?;
+    write_sample(&mut out, "MVS-1 handles", &mvs1)?;
+    write_sample(&mut out, "MVS-2 blockers", &mvs2)?;
     let mvs3_label = if mvs3_root.is_some() {
         "MVS-3 supersedes (from first supersedes source)"
     } else {
         "MVS-3 supersedes (no supersedes edges in corpus)"
     };
     write_sample(&mut out, mvs3_label, &mvs3)?;
-    write_sample(&mut out, "MVS-4 open_oq",   &mvs4)?;
+    write_sample(&mut out, "MVS-4 open_oq", &mvs4)?;
     write_sample(&mut out, "MVS-5a pressure", &mvs5a)?;
     write_sample(&mut out, "MVS-5b per-area", &mvs5b)?;
-    write_sample(&mut out, "MVS-6 advanced",  &mvs6)?;
-    write_sample(&mut out, "MVS-8 upstream",  &mvs8u)?;
-    write_sample(&mut out, "diagnostics",     &diag)?;
+    write_sample(&mut out, "MVS-6 advanced", &mvs6)?;
+    write_sample(&mut out, "MVS-8 upstream", &mvs8u)?;
+    write_sample(&mut out, "diagnostics", &diag)?;
 
     out.flush()?;
     Ok(())

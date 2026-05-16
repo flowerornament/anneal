@@ -15,12 +15,12 @@ pub mod loader;
 pub mod program;
 pub mod types;
 
-pub use capability::{emit, CapabilityReport, Verdict};
+pub use capability::{CapabilityReport, Verdict, emit};
 pub use fixture::{
-    Edge, Handle, PendingEdge, Snapshot, EDGES, HANDLES, LINEAR_NAMESPACES, PENDING_EDGES,
-    SNAPSHOTS,
+    EDGES, Edge, HANDLES, Handle, LINEAR_NAMESPACES, PENDING_EDGES, PendingEdge, SNAPSHOTS,
+    Snapshot,
 };
 pub use types::{
-    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, Namespace, Severity,
-    SnapshotId, Status, PIPELINE_ORDERING,
+    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, Namespace, PIPELINE_ORDERING,
+    Severity, SnapshotId, Status,
 };

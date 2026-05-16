@@ -22,7 +22,9 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    pub const fn is_pass(&self) -> bool { matches!(self, Self::Pass) }
+    pub const fn is_pass(&self) -> bool {
+        matches!(self, Self::Pass)
+    }
 
     pub const fn reason(&self) -> Option<&'static str> {
         match self {
@@ -111,7 +113,10 @@ mod tests {
     use super::*;
 
     #[derive(Serialize)]
-    struct DemoRow { id: &'static str, n: u32 }
+    struct DemoRow {
+        id: &'static str,
+        n: u32,
+    }
 
     #[test]
     fn emit_writes_rows_then_summary_as_ndjson() {
@@ -121,7 +126,9 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "expected 2 rows + 1 summary");
-        for line in &lines[..2] { assert!(line.contains("\"capability\":\"DEMO\"")); }
+        for line in &lines[..2] {
+            assert!(line.contains("\"capability\":\"DEMO\""));
+        }
         assert!(lines[2].contains("\"row_count\":2"));
         assert!(lines[2].contains("\"pass\":true"));
     }
@@ -130,9 +137,15 @@ mod tests {
     fn fail_verdict_serializes_reason() {
         let rows: [DemoRow; 0] = [];
         let mut buf = Vec::new();
-        emit(&mut buf, "DEMO", "?.", &rows,
-             Verdict::from(Err::<(), _>("expected at least one row")),
-             Some("synthetic")).unwrap();
+        emit(
+            &mut buf,
+            "DEMO",
+            "?.",
+            &rows,
+            Verdict::from(Err::<(), _>("expected at least one row")),
+            Some("synthetic"),
+        )
+        .unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("\"pass\":false"));
         assert!(out.contains("\"reason\":\"expected at least one row\""));
@@ -141,7 +154,13 @@ mod tests {
 
     #[test]
     fn from_result_converts_correctly() {
-        assert!(matches!(Verdict::from(Ok::<(), &'static str>(())), Verdict::Pass));
-        assert!(matches!(Verdict::from(Err::<(), &'static str>("nope")), Verdict::Fail("nope")));
+        assert!(matches!(
+            Verdict::from(Ok::<(), &'static str>(())),
+            Verdict::Pass
+        ));
+        assert!(matches!(
+            Verdict::from(Err::<(), &'static str>("nope")),
+            Verdict::Fail("nope")
+        ));
     }
 }

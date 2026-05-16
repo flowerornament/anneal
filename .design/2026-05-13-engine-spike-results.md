@@ -127,6 +127,17 @@ state is "the spike passes" while "the spec's tests" are not all run.
 Recommendation: (a), executed as Phase 0 closure work before any
 user-visible Phase 1 surface depends on the new engine.
 
+**2026-05-16 update.** `anneal-10c` implements option (a). The
+`tools/spike-runner` Ascent harness now emits SP-Q1..9 pass/fail reports
+alongside the older MVS reports. The SP-Q layer is literal where the MVS
+layer had drifted: SP-Q1 projects open labels only, SP-Q3 queries
+`upstream("formal-model/v17.md", anc)`, SP-Q5 counts active files by
+area, SP-Q6 reports all status changes across `snapshot:last`, SP-Q7
+validates the NDJSON row/report stream, SP-Q8 filters explained upstream
+to the literal v17 query, and SP-Q9 validates a dynamic-IR
+`fixture-anneal.dl` load plus `terminal/1` shadow warning. MVS probes
+remain as broader capability coverage, not as substitutes for SP-Q.
+
 ---
 
 ## Part IV: Type-Design Debts [SR-T]

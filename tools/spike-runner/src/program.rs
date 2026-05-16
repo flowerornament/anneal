@@ -11,11 +11,11 @@
 
 use crate::fixture::{Edge, Handle};
 use crate::types::{
-    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace, Severity,
-    SnapshotId, Status, PIPELINE_ORDERING,
+    Area, DiagnosticCode, EdgeKind, FilePath, HandleId, HandleKind, IsoDate, Namespace,
+    PIPELINE_ORDERING, Severity, SnapshotId, Status,
 };
-use ascent::ascent;
 use ascent::aggregators::count;
+use ascent::ascent;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -127,6 +127,30 @@ ascent! {
     upstream_via(h, anc, UpstreamStep::Transitive { mid: *mid })
         <-- edge(h, mid, EdgeKind::DependsOn, _, _), upstream(mid, anc);
 
+    // SP-Q literal conformance relations. These intentionally mirror the
+    // protocol's query text even when the older MVS-shaped probes below use a
+    // broader or differently named capability relation.
+    relation spq_release_blocker(HandleId, &'static str);
+    spq_release_blocker(h, "broken_ref")
+        <-- diagnostic(DiagnosticCode::E001, _, h, _, _);
+    spq_release_blocker(h, "undischarged")
+        <-- diagnostic(DiagnosticCode::E002, _, h, _, _);
+
+    relation active_file_in_area(Area, HandleId);
+    active_file_in_area(area, h)
+        <-- handle(h, HandleKind::File, _, _, _, area, _), active(h);
+
+    relation area_active_count(Area, usize);
+    area_active_count(area, n) <--
+        active_file_in_area(area, _),
+        agg n = count() in active_file_in_area(area, _);
+
+    relation status_changed(HandleId, Status, Status);
+    status_changed(h, prev, curr) <--
+        handle(h, _, curr, _, _, _, _),
+        snapshot_handle(SnapshotId("snapshot:last"), h, prev),
+        if prev != curr;
+
     relation open_oq(HandleId);
     open_oq(q) <-- handle(q, HandleKind::Label, _, Namespace("OQ"), _, _, _), !terminal(q);
 
@@ -173,16 +197,28 @@ pub struct BlockerRow {
 }
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ChainRow { pub depth: usize, pub start: HandleId, pub target: HandleId }
+pub struct ChainRow {
+    pub depth: usize,
+    pub start: HandleId,
+    pub target: HandleId,
+}
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
-pub struct OpenOqRow { pub q: HandleId }
+pub struct OpenOqRow {
+    pub q: HandleId,
+}
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PressureRow { pub q: HandleId, pub n: usize }
+pub struct PressureRow {
+    pub q: HandleId,
+    pub n: usize,
+}
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
-pub struct AreaCountRow { pub area: Area, pub n: usize }
+pub struct AreaCountRow {
+    pub area: Area,
+    pub n: usize,
+}
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DiagnosticRow {
@@ -202,7 +238,63 @@ pub struct UpstreamWithProvenance {
 }
 
 #[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
-pub struct AdvancedRow { pub h: HandleId }
+pub struct AdvancedRow {
+    pub h: HandleId,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqOpenLabelRow {
+    pub id: HandleId,
+    pub kind: HandleKind,
+    pub status: Status,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqBlockerRow {
+    pub h: HandleId,
+    pub why: &'static str,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqUpstreamRow {
+    pub anc: HandleId,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqUnfinishedRow {
+    pub h: HandleId,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqAreaActiveCountRow {
+    pub area: Area,
+    pub n: usize,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqStatusChangedRow {
+    pub h: HandleId,
+    pub prev: Status,
+    pub curr: Status,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SpqExplainedUpstreamRow {
+    pub h: HandleId,
+    pub anc: HandleId,
+    #[serde(rename = "_derivation")]
+    pub chain: Vec<SpqDerivationStep>,
+}
+
+#[derive(Serialize, Eq, PartialEq, Ord, PartialOrd, Clone, Debug)]
+pub struct SpqDerivationStep {
+    pub rule: &'static str,
+    pub edge_from: HandleId,
+    pub edge_to: HandleId,
+    pub edge_kind: EdgeKind,
+    pub file: FilePath,
+    pub line: u32,
+}
 
 // ---------------------------------------------------------------------------
 // Row producers — pure functions over the program's derived relations
@@ -215,20 +307,37 @@ fn sorted<T: Ord>(iter: impl IntoIterator<Item = T>) -> Vec<T> {
 }
 
 pub fn mvs1_rows(prog: &AscentProgram) -> Vec<HandleRow> {
-    sorted(prog.handle.iter().map(|(id, kind, status, ns, _file, area, _date)| HandleRow {
-        id: *id, kind: *kind, status: *status, namespace: *ns, area: *area,
-    }))
+    sorted(
+        prog.handle
+            .iter()
+            .map(|(id, kind, status, ns, _file, area, _date)| HandleRow {
+                id: *id,
+                kind: *kind,
+                status: *status,
+                namespace: *ns,
+                area: *area,
+            }),
+    )
 }
 
 pub fn mvs2_rows(prog: &AscentProgram) -> Vec<BlockerRow> {
-    sorted(prog.release_blocker.iter().map(|(h, b)| BlockerRow { h: *h, blocker: *b }))
+    sorted(
+        prog.release_blocker
+            .iter()
+            .map(|(h, b)| BlockerRow { h: *h, blocker: *b }),
+    )
 }
 
 pub fn mvs3_rows(prog: &AscentProgram, root: HandleId) -> Vec<ChainRow> {
     sorted(
-        prog.supersedes_chain.iter()
+        prog.supersedes_chain
+            .iter()
             .filter(|(s, _, _)| *s == root)
-            .map(|(s, t, d)| ChainRow { depth: *d, start: *s, target: *t })
+            .map(|(s, t, d)| ChainRow {
+                depth: *d,
+                start: *s,
+                target: *t,
+            }),
     )
 }
 
@@ -237,23 +346,89 @@ pub fn mvs4_rows(prog: &AscentProgram) -> Vec<OpenOqRow> {
 }
 
 pub fn mvs5a_rows(prog: &AscentProgram) -> Vec<PressureRow> {
-    sorted(prog.oq_pressure.iter().map(|(q, n)| PressureRow { q: *q, n: *n }))
+    sorted(
+        prog.oq_pressure
+            .iter()
+            .map(|(q, n)| PressureRow { q: *q, n: *n }),
+    )
 }
 
 pub fn mvs5b_rows(prog: &AscentProgram) -> Vec<AreaCountRow> {
-    sorted(prog.oq_per_area.iter().map(|(area, n)| AreaCountRow { area: *area, n: *n }))
+    sorted(
+        prog.oq_per_area
+            .iter()
+            .map(|(area, n)| AreaCountRow { area: *area, n: *n }),
+    )
 }
 
 pub fn mvs6_rows(prog: &AscentProgram) -> Vec<AdvancedRow> {
-    sorted(prog.recently_advanced.iter().map(|(h,)| AdvancedRow { h: *h }))
+    sorted(
+        prog.recently_advanced
+            .iter()
+            .map(|(h,)| AdvancedRow { h: *h }),
+    )
+}
+
+pub fn spq1_rows(prog: &AscentProgram) -> Vec<SpqOpenLabelRow> {
+    sorted(
+        prog.handle
+            .iter()
+            .filter(|(_, kind, status, _, _, _, _)| {
+                *kind == HandleKind::Label && *status == Status::Open
+            })
+            .map(|(id, kind, status, _, _, _, _)| SpqOpenLabelRow {
+                id: *id,
+                kind: *kind,
+                status: *status,
+            }),
+    )
+}
+
+pub fn spq2_rows(prog: &AscentProgram) -> Vec<SpqBlockerRow> {
+    sorted(
+        prog.spq_release_blocker
+            .iter()
+            .map(|(h, why)| SpqBlockerRow { h: *h, why }),
+    )
+}
+
+pub fn spq3_rows(prog: &AscentProgram, root: HandleId) -> Vec<SpqUpstreamRow> {
+    sorted(
+        prog.upstream
+            .iter()
+            .filter(|(h, _)| *h == root)
+            .map(|(_, anc)| SpqUpstreamRow { anc: *anc }),
+    )
+}
+
+pub fn spq4_rows(prog: &AscentProgram) -> Vec<SpqUnfinishedRow> {
+    sorted(prog.open_oq.iter().map(|(h,)| SpqUnfinishedRow { h: *h }))
+}
+
+pub fn spq5_rows(prog: &AscentProgram) -> Vec<SpqAreaActiveCountRow> {
+    sorted(
+        prog.area_active_count
+            .iter()
+            .map(|(area, n)| SpqAreaActiveCountRow { area: *area, n: *n }),
+    )
+}
+
+pub fn spq6_rows(prog: &AscentProgram) -> Vec<SpqStatusChangedRow> {
+    sorted(
+        prog.status_changed
+            .iter()
+            .map(|(h, prev, curr)| SpqStatusChangedRow {
+                h: *h,
+                prev: *prev,
+                curr: *curr,
+            }),
+    )
 }
 
 /// Build a `(from, to) → step` index over `upstream_via` once per call;
 /// repeated chain walks reuse it rather than rescanning. Without this,
 /// `mvs8_upstream_rows` is `O(|upstream|² · chain_depth)`.
-pub fn upstream_chain_map(
-    prog: &AscentProgram,
-) -> HashMap<(HandleId, HandleId), UpstreamStep> {
+pub fn upstream_chain_map(prog: &AscentProgram) -> HashMap<(HandleId, HandleId), UpstreamStep> {
     let mut m = HashMap::with_capacity(prog.upstream_via.len());
     for &(h, anc, step) in &prog.upstream_via {
         m.entry((h, anc)).or_insert(step);
@@ -278,6 +453,16 @@ pub fn reconstruct_upstream_chain<S: std::hash::BuildHasher>(
     chain
 }
 
+fn depends_on_edge_map(prog: &AscentProgram) -> HashMap<(HandleId, HandleId), (FilePath, u32)> {
+    let mut map = HashMap::new();
+    for &(from, to, kind, file, line) in &prog.edge {
+        if kind == EdgeKind::DependsOn {
+            map.entry((from, to)).or_insert((file, line));
+        }
+    }
+    map
+}
+
 pub fn mvs8_upstream_rows(prog: &AscentProgram) -> Vec<UpstreamWithProvenance> {
     let map = upstream_chain_map(prog);
     sorted(prog.upstream.iter().map(|(h, anc)| UpstreamWithProvenance {
@@ -287,10 +472,74 @@ pub fn mvs8_upstream_rows(prog: &AscentProgram) -> Vec<UpstreamWithProvenance> {
     }))
 }
 
+pub fn spq8_rows(prog: &AscentProgram, root: HandleId) -> Vec<SpqExplainedUpstreamRow> {
+    let map = upstream_chain_map(prog);
+    let edge_map = depends_on_edge_map(prog);
+    sorted(
+        prog.upstream
+            .iter()
+            .filter(|(h, _)| *h == root)
+            .map(|(h, anc)| SpqExplainedUpstreamRow {
+                h: *h,
+                anc: *anc,
+                chain: reconstruct_upstream_derivation(&map, &edge_map, *h, *anc),
+            }),
+    )
+}
+
+fn reconstruct_upstream_derivation<S: std::hash::BuildHasher>(
+    chain_map: &HashMap<(HandleId, HandleId), UpstreamStep, S>,
+    edge_map: &HashMap<(HandleId, HandleId), (FilePath, u32)>,
+    h: HandleId,
+    anc: HandleId,
+) -> Vec<SpqDerivationStep> {
+    let mut chain = Vec::new();
+    let mut current = h;
+    while let Some(&step) = chain_map.get(&(current, anc)) {
+        match step {
+            UpstreamStep::Direct => {
+                if let Some(&(file, line)) = edge_map.get(&(current, anc)) {
+                    chain.push(SpqDerivationStep {
+                        rule: "upstream/2 base",
+                        edge_from: current,
+                        edge_to: anc,
+                        edge_kind: EdgeKind::DependsOn,
+                        file,
+                        line,
+                    });
+                }
+                break;
+            }
+            UpstreamStep::Transitive { mid } => {
+                if let Some(&(file, line)) = edge_map.get(&(current, mid)) {
+                    chain.push(SpqDerivationStep {
+                        rule: "upstream/2 recursive",
+                        edge_from: current,
+                        edge_to: mid,
+                        edge_kind: EdgeKind::DependsOn,
+                        file,
+                        line,
+                    });
+                }
+                current = mid;
+            }
+        }
+    }
+    chain
+}
+
 pub fn diagnostics_derived(prog: &AscentProgram) -> Vec<DiagnosticRow> {
-    sorted(prog.diagnostic.iter().map(|(code, sev, h, file, line)| DiagnosticRow {
-        code: *code, severity: *sev, handle: *h, file: *file, line: *line,
-    }))
+    sorted(
+        prog.diagnostic
+            .iter()
+            .map(|(code, sev, h, file, line)| DiagnosticRow {
+                code: *code,
+                severity: *sev,
+                handle: *h,
+                file: *file,
+                line: *line,
+            }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +551,8 @@ pub fn diagnostics_derived(prog: &AscentProgram) -> Vec<DiagnosticRow> {
 pub fn push_handles(prog: &mut AscentProgram, handles: &[Handle]) {
     prog.handle.reserve(handles.len());
     for h in handles {
-        prog.handle.push((h.id, h.kind, h.status, h.namespace, h.file, h.area, h.date));
+        prog.handle
+            .push((h.id, h.kind, h.status, h.namespace, h.file, h.area, h.date));
     }
 }
 

@@ -33,7 +33,9 @@ pub struct Namespace(pub &'static str);
 
 impl Namespace {
     pub const NONE: Self = Self("");
-    pub const fn is_empty(self) -> bool { self.0.is_empty() }
+    pub const fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
@@ -152,9 +154,8 @@ impl Status {
     /// heuristic. Mirrors `anneal::lattice::is_terminal_status`.
     pub const fn is_terminal(self) -> bool {
         use Status::{
-            Archived, Cancelled, Closed, Completed, Deprecated, Digested, Done,
-            Historical, Incorporated, Obsolete, Prior, Resolved, Retired,
-            Superseded, Withdrawn,
+            Archived, Cancelled, Closed, Completed, Deprecated, Digested, Done, Historical,
+            Incorporated, Obsolete, Prior, Resolved, Retired, Superseded, Withdrawn,
         };
         matches!(
             self,
@@ -177,13 +178,18 @@ impl Status {
     }
 
     /// Active is "not terminal" — the lattice's complement.
-    pub const fn is_active(self) -> bool { !self.is_terminal() }
+    pub const fn is_active(self) -> bool {
+        !self.is_terminal()
+    }
 
     /// Statuses considered "settled" — used by project predicates like
     /// `release_blocker` and downstream-pressure aggregation. Distinct from
     /// terminal: settled handles are alive but the work has crystallized.
     pub const fn is_settled(self) -> bool {
-        matches!(self, Self::Authoritative | Self::Current | Self::Active | Self::Stable | Self::Living)
+        matches!(
+            self,
+            Self::Authoritative | Self::Current | Self::Active | Self::Stable | Self::Living
+        )
     }
 
     /// Position in a canonical pipeline ordering. `None` for terminal
@@ -309,20 +315,40 @@ mod tests {
         // Mirrors src/lattice.rs::TERMINAL_STATUS_HEURISTICS (16 entries).
         // If anneal adds a new terminal heuristic, this list must grow with it.
         let terminals: Vec<Status> = vec![
-            Status::Superseded, Status::Archived, Status::Historical,
-            Status::Prior, Status::Retired, Status::Deprecated,
-            Status::Obsolete, Status::Withdrawn, Status::Cancelled,
-            Status::Closed, Status::Resolved, Status::Done,
-            Status::Completed, Status::Incorporated, Status::Digested,
+            Status::Superseded,
+            Status::Archived,
+            Status::Historical,
+            Status::Prior,
+            Status::Retired,
+            Status::Deprecated,
+            Status::Obsolete,
+            Status::Withdrawn,
+            Status::Cancelled,
+            Status::Closed,
+            Status::Resolved,
+            Status::Done,
+            Status::Completed,
+            Status::Incorporated,
+            Status::Digested,
         ];
-        for s in terminals { assert!(s.is_terminal(), "{s:?} should be terminal"); }
+        for s in terminals {
+            assert!(s.is_terminal(), "{s:?} should be terminal");
+        }
     }
 
     #[test]
     fn common_active_statuses_are_not_terminal() {
-        for s in [Status::Draft, Status::Current, Status::Authoritative,
-                  Status::Research, Status::Plan, Status::Open,
-                  Status::Active, Status::Stable, Status::Living] {
+        for s in [
+            Status::Draft,
+            Status::Current,
+            Status::Authoritative,
+            Status::Research,
+            Status::Plan,
+            Status::Open,
+            Status::Active,
+            Status::Stable,
+            Status::Living,
+        ] {
             assert!(s.is_active(), "{s:?} should be active");
         }
     }
@@ -334,16 +360,27 @@ mod tests {
 
     #[test]
     fn pipeline_position_advances_monotonically() {
-        let positions: Vec<_> = PIPELINE_ORDERING.iter()
-            .map(|s| s.pipeline_position().expect("status in ordering must have a position"))
+        let positions: Vec<_> = PIPELINE_ORDERING
+            .iter()
+            .map(|s| {
+                s.pipeline_position()
+                    .expect("status in ordering must have a position")
+            })
             .collect();
-        assert!(positions.windows(2).all(|w| w[0] < w[1]),
-            "PIPELINE_ORDERING positions must be strictly increasing");
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "PIPELINE_ORDERING positions must be strictly increasing"
+        );
     }
 
     #[test]
     fn terminal_statuses_have_no_pipeline_position() {
-        for s in [Status::Superseded, Status::Archived, Status::Resolved, Status::Done] {
+        for s in [
+            Status::Superseded,
+            Status::Archived,
+            Status::Resolved,
+            Status::Done,
+        ] {
             assert_eq!(s.pipeline_position(), None);
         }
     }
