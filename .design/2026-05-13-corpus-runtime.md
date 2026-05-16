@@ -650,9 +650,25 @@ active ranker's calibrated score clamped to `[0.0, 1.0]`; the default
 ranker multiplies lexical match quality by field weights
 (`identifier`: `1.0`, `title`: `0.95`, `body`: `0.82`,
 `frontmatter:*`: `0.88`, other fields: `0.75`). Ordering is descending
-calibrated score, then `source`, `handle`, `span_id`, `field`, and
-`reason`. Scores below the active low-confidence threshold, default
-`0.5`, set `low_confidence: true`.
+calibrated score, then `source`, reason priority, `handle`,
+`span_id`, `field`, and `reason`. Scores below the active
+low-confidence threshold, default `0.5`, set `low_confidence: true`.
+
+**Definition CR-D73 (Clustered child-hit parent promotion).** When the
+default lexical index finds matches on two or more child handles whose
+stored `file` field names the same canonical parent handle, and that
+parent handle exists in the same corpus/source, it emits an additional
+handle-level `SearchHit` for the parent with reason `parent-cluster`
+and field `identifier`. The cluster hit uses the best child raw score
+plus a small deterministic boost, clamped to `[0.0, 1.0]`; at equal
+calibrated scores, `parent-cluster` sorts before ordinary lexical
+reasons. If the parent already has an equal-or-stronger direct
+identifier/title hit by raw lexical match quality, or an
+equal-or-stronger direct calibrated score, no extra cluster hit is
+emitted. Single child hits do not synthesize a parent.
+Rationale: agents asking orientation questions need canonical source
+documents when many local labels or sections point to the same source,
+not a ranked list of fragments that hides the document to read.
 
 **Definition CR-D43 (Search selection policy).** The raw
 `search(...)` relation emits every calibrated hit with its
@@ -2745,6 +2761,7 @@ as data instead of smuggling it through row sequence.
 - CR-D70: Markdown scan-root identity (§42)
 - CR-D71: Context per-hit read cap (§33.1)
 - CR-D72: MCP launcher status (§37)
+- CR-D73: Clustered child-hit parent promotion (§12)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

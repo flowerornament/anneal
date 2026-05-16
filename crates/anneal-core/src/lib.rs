@@ -46,7 +46,8 @@ pub use project::{
     merge_program_layers,
 };
 pub use ranking::{
-    DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
+    DefaultRanker, REASON_PARENT_CLUSTER, Ranker, RankingContext, SearchHit, SearchScore,
+    default_lexical_search_info,
 };
 pub use retrieval::{
     ContentProvider, ReadChunk, ReadChunkParts, ReadContext, ReadError, ReadFullContent,

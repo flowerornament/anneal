@@ -457,6 +457,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn context_prefers_canonical_parent_when_child_hits_cluster() {
+        let output = evaluate_context(
+            &ContextCommand::new("milestone chain")
+                .with_hits(1)
+                .with_budget(20)
+                .include_low_confidence(true),
+            clustered_label_database(),
+            EvalOptions::default().with_low_confidence_threshold(0.0),
+        );
+
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].handle, "docs/canonical.md");
+        assert_eq!(output.hits[0].reason, anneal_core::REASON_PARENT_CLUSTER);
+        assert_eq!(output.spans[0].handle, "docs/canonical.md");
+    }
+
     fn evaluate_context(
         command: &ContextCommand,
         database: Database,
@@ -516,6 +533,38 @@ mod tests {
         Database::from_store(&store)
     }
 
+    fn clustered_label_database() -> Database {
+        let mut batch = FactBatch::new(
+            "test".into(),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("docs/canonical.md", "Canonical source"),
+            handle_in_file("MCD-1", "docs/canonical.md", "milestone chain alpha"),
+            handle_in_file("MCD-2", "docs/canonical.md", "milestone chain beta"),
+        ];
+        batch.content = vec![
+            content(
+                "docs/canonical.md",
+                "body",
+                "Authoritative milestone source.",
+                3,
+            ),
+            content("MCD-1", "body", "milestone chain alpha", 3),
+            content("MCD-2", "body", "milestone chain beta", 3),
+        ];
+        batch.spans = vec![
+            span("docs/canonical.md", "body", 1, 3),
+            span("MCD-1", "body", 4, 4),
+            span("MCD-2", "body", 5, 5),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge clustered label fixture");
+        Database::from_store(&store)
+    }
+
     fn frozen_large-corpus_database() -> Database {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../.fixtures/sample-corpus");
@@ -559,13 +608,17 @@ mod tests {
     }
 
     fn handle(id: &str, summary: &str) -> HandleFact {
+        handle_in_file(id, id, summary)
+    }
+
+    fn handle_in_file(id: &str, file: &str, summary: &str) -> HandleFact {
         HandleFact {
             identity: identity(id),
             id: id.to_string(),
-            kind: "file".to_string(),
+            kind: if id == file { "file" } else { "label" }.to_string(),
             status: Some("current".to_string()),
             namespace: String::new(),
-            file: id.to_string(),
+            file: file.to_string(),
             line: 1,
             date: None,
             area: "fixture".to_string(),

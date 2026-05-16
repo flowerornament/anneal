@@ -1927,10 +1927,12 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
             ) else {
                 return;
             };
+            let file = row_string(row, FILE_FIELD).unwrap_or(handle);
             search.insert_handle(SearchHandleDocument {
                 corpus,
                 source,
                 handle,
+                file,
                 summary: row_string(row, SUMMARY_FIELD),
                 status: row_string(row, STATUS_FIELD),
                 namespace: row_string(row, NAMESPACE_FIELD),

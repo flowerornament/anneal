@@ -4,12 +4,13 @@
 //! `search(...)` relation always exposes calibrated scores in `[0, 1]`.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
 pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
+const PARENT_CLUSTER_RAW_SCORE_BOOST: f32 = 0.15;
 
 pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
@@ -21,6 +22,7 @@ pub const REASON_TITLE_SUBSTRING: &str = "title-substring";
 pub const REASON_FRONTMATTER_KEY_MATCH: &str = "frontmatter-key-match";
 pub const REASON_FRONTMATTER_VALUE_MATCH: &str = "frontmatter-value-match";
 pub const REASON_BODY_SUBSTRING: &str = "body-substring";
+pub const REASON_PARENT_CLUSTER: &str = "parent-cluster";
 
 #[must_use]
 pub fn default_lexical_search_info() -> SearchInfo {
@@ -31,6 +33,7 @@ pub fn default_lexical_search_info() -> SearchInfo {
             REASON_FRONTMATTER_KEY_MATCH,
             REASON_FRONTMATTER_VALUE_MATCH,
             REASON_BODY_SUBSTRING,
+            REASON_PARENT_CLUSTER,
         ],
         fields: vec![
             FIELD_IDENTIFIER,
@@ -177,11 +180,16 @@ impl Ranker for DefaultRanker {
         a.corpus()
             .cmp(b.corpus())
             .then_with(|| a.source().cmp(b.source()))
+            .then_with(|| reason_priority(a.reason()).cmp(&reason_priority(b.reason())))
             .then_with(|| a.handle().cmp(b.handle()))
             .then_with(|| a.span_id().cmp(&b.span_id()))
             .then_with(|| a.field().cmp(b.field()))
             .then_with(|| a.reason().cmp(b.reason()))
     }
+}
+
+fn reason_priority(reason: &str) -> u8 {
+    u8::from(reason != REASON_PARENT_CLUSTER)
 }
 
 fn field_weight(field: &str) -> f32 {
@@ -204,6 +212,7 @@ pub(crate) struct SearchHandleDocument<'a> {
     pub(crate) corpus: &'a str,
     pub(crate) source: &'a str,
     pub(crate) handle: &'a str,
+    pub(crate) file: &'a str,
     pub(crate) summary: Option<&'a str>,
     pub(crate) status: Option<&'a str>,
     pub(crate) namespace: Option<&'a str>,
@@ -230,6 +239,7 @@ impl SearchDocumentKey {
 
 #[derive(Clone, Debug, Default)]
 struct SearchDocument {
+    parent_file: Option<String>,
     fields: Vec<SearchField>,
 }
 
@@ -265,6 +275,7 @@ impl SearchIndex {
 
     pub(crate) fn insert_handle(&mut self, fields: SearchHandleDocument<'_>) {
         let document = self.document_mut(fields.corpus, fields.source, fields.handle);
+        document.parent_file = (fields.file != fields.handle).then(|| fields.file.to_owned());
         push_field(
             document,
             None,
@@ -339,19 +350,171 @@ impl SearchIndex {
         reason_filter: Option<&str>,
         field_filter: Option<&str>,
     ) -> Vec<SearchHit> {
-        self.documents
+        let cluster_only = reason_filter == Some(REASON_PARENT_CLUSTER);
+        if cluster_only
+            && (!span_filter.accepts(None)
+                || field_filter.is_some_and(|field| field != FIELD_IDENTIFIER))
+        {
+            return Vec::new();
+        }
+        let base_reason_filter = if cluster_only { None } else { reason_filter };
+        let base_field_filter = if cluster_only { None } else { field_filter };
+        let mut hits = self
+            .documents
             .iter()
-            .filter(|(key, _)| handle.is_none_or(|handle| key.handle == handle))
-            .flat_map(|(key, document)| {
-                document.search_hits(key, query, span_filter, reason_filter, field_filter)
+            .filter(|(key, document)| match handle {
+                Some(handle) if cluster_only || base_reason_filter.is_none() => {
+                    key.handle == handle || document.parent_file.as_deref() == Some(handle)
+                }
+                Some(handle) => key.handle == handle,
+                None => true,
             })
-            .collect()
+            .flat_map(|(key, document)| {
+                document.search_hits(
+                    key,
+                    query,
+                    span_filter,
+                    base_reason_filter,
+                    base_field_filter,
+                )
+            })
+            .collect::<Vec<_>>();
+        if handle.is_none() || cluster_only || base_reason_filter.is_none() {
+            self.push_parent_cluster_hits(
+                &mut hits,
+                query,
+                span_filter,
+                reason_filter,
+                field_filter,
+            );
+        }
+        if let Some(handle) = handle {
+            hits.retain(|hit| hit.handle() == handle);
+        }
+        if cluster_only {
+            hits.retain(|hit| hit.reason() == REASON_PARENT_CLUSTER);
+        }
+        hits
     }
 
     fn document_mut(&mut self, corpus: &str, source: &str, handle: &str) -> &mut SearchDocument {
         self.documents
             .entry(SearchDocumentKey::new(corpus, source, handle))
             .or_default()
+    }
+
+    fn push_parent_cluster_hits(
+        &self,
+        hits: &mut Vec<SearchHit>,
+        query: &SearchQuery,
+        span_filter: SearchSpanScope<'_>,
+        reason_filter: Option<&str>,
+        field_filter: Option<&str>,
+    ) {
+        if !span_filter.accepts(None)
+            || reason_filter.is_some_and(|reason| reason != REASON_PARENT_CLUSTER)
+            || field_filter.is_some_and(|field| field != FIELD_IDENTIFIER)
+        {
+            return;
+        }
+
+        let mut clusters = BTreeMap::<SearchDocumentKey, ParentCluster>::new();
+        for hit in hits.iter() {
+            let child_key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+            let Some(child) = self.documents.get(&child_key) else {
+                continue;
+            };
+            let Some(parent_handle) = child.parent_file.as_deref() else {
+                continue;
+            };
+            let parent_key = SearchDocumentKey::new(hit.corpus(), hit.source(), parent_handle);
+            if !self.documents.contains_key(&parent_key) {
+                continue;
+            }
+            clusters
+                .entry(parent_key)
+                .or_default()
+                .record_child(hit.handle(), hit.raw_score().get());
+        }
+
+        hits.extend(clusters.into_iter().filter_map(|(parent_key, cluster)| {
+            let cluster_score = cluster.cluster_score(query);
+            let direct_signal = self.direct_parent_signal(&parent_key, query);
+            (cluster.is_actionable()
+                && cluster.best_raw_score > direct_signal.structural_raw_score
+                && cluster_score > direct_signal.calibrated_score)
+                .then(|| {
+                    SearchHit::new(
+                        parent_key.corpus,
+                        parent_key.source,
+                        parent_key.handle,
+                        None,
+                        cluster_score,
+                        REASON_PARENT_CLUSTER,
+                        FIELD_IDENTIFIER,
+                    )
+                })
+        }));
+    }
+
+    fn direct_parent_signal(
+        &self,
+        parent_key: &SearchDocumentKey,
+        query: &SearchQuery,
+    ) -> ParentDirectSignal {
+        let Some(parent) = self.documents.get(parent_key) else {
+            return ParentDirectSignal::default();
+        };
+        let ctx = RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD);
+        parent
+            .search_hits(parent_key, query, SearchSpanScope::Any, None, None)
+            .fold(ParentDirectSignal::default(), |mut signal, hit| {
+                if matches!(hit.field(), FIELD_IDENTIFIER | FIELD_TITLE) {
+                    signal.structural_raw_score =
+                        signal.structural_raw_score.max(hit.raw_score().get());
+                }
+                signal.calibrated_score = signal
+                    .calibrated_score
+                    .max(DefaultRanker.calibrate(&hit, &ctx));
+                signal
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ParentDirectSignal {
+    structural_raw_score: f32,
+    calibrated_score: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParentCluster {
+    children: BTreeSet<String>,
+    best_raw_score: f32,
+}
+
+impl ParentCluster {
+    fn record_child(&mut self, child: &str, raw_score: f32) {
+        self.children.insert(child.to_owned());
+        self.best_raw_score = self.best_raw_score.max(raw_score);
+    }
+
+    fn is_actionable(&self) -> bool {
+        self.children.len() >= 2
+    }
+
+    fn cluster_score(&self, query: &SearchQuery) -> f32 {
+        let hit = SearchHit::new(
+            "",
+            "",
+            "",
+            None,
+            self.best_raw_score + PARENT_CLUSTER_RAW_SCORE_BOOST,
+            REASON_PARENT_CLUSTER,
+            FIELD_IDENTIFIER,
+        );
+        let ctx = RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD);
+        DefaultRanker.calibrate(&hit, &ctx)
     }
 }
 
@@ -403,6 +566,7 @@ fn frontmatter_field(key: &str) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SearchQuery {
+    original: String,
     normalized: String,
     terms: Vec<String>,
 }
@@ -419,7 +583,15 @@ impl SearchQuery {
             .collect::<Vec<_>>();
         terms.sort();
         terms.dedup();
-        Some(Self { normalized, terms })
+        Some(Self {
+            original: query.to_owned(),
+            normalized,
+            terms,
+        })
+    }
+
+    fn original(&self) -> &str {
+        &self.original
     }
 
     fn score_normalized(&self, normalized_text: &str) -> Option<f32> {
@@ -513,4 +685,265 @@ fn compare_ranked_search_hits(
         .get()
         .total_cmp(&left.score.get())
         .then_with(|| ranker.tie_break(&left.hit, &right.hit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clustered_child_hits_promote_canonical_parent_file() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "Reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/canonical.md",
+            "milestone chain beta",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-3",
+            "docs/other.md",
+            "milestone chain gamma",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("milestone chain", 0.5),
+            &DefaultRanker,
+        );
+
+        let first = ranked.first().expect("ranked hit");
+        assert_eq!(first.hit().handle(), "docs/canonical.md");
+        assert_eq!(first.hit().reason(), REASON_PARENT_CLUSTER);
+        assert!(ranked.iter().any(|hit| hit.hit().handle() == "MCD-1"));
+        assert!(ranked.iter().any(|hit| hit.hit().handle() == "MCD-2"));
+        assert!(
+            !ranked
+                .iter()
+                .any(|hit| hit.hit().handle() == "docs/other.md")
+        );
+    }
+
+    #[test]
+    fn single_child_hit_does_not_promote_parent_file() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "Reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+
+        assert!(!hits.iter().any(
+            |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
+        ));
+    }
+
+    #[test]
+    fn parent_cluster_reason_filter_returns_synthesized_hits() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "Reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/canonical.md",
+            "milestone chain beta",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(
+            &query,
+            None,
+            SearchSpanScope::Any,
+            Some(REASON_PARENT_CLUSTER),
+            None,
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].handle(), "docs/canonical.md");
+        assert_eq!(hits[0].reason(), REASON_PARENT_CLUSTER);
+    }
+
+    #[test]
+    fn parent_cluster_reason_filter_honors_parent_handle_constraint() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "Reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/canonical.md",
+            "milestone chain beta",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(
+            &query,
+            Some("docs/canonical.md"),
+            SearchSpanScope::Any,
+            Some(REASON_PARENT_CLUSTER),
+            Some(FIELD_IDENTIFIER),
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].handle(), "docs/canonical.md");
+        assert_eq!(hits[0].reason(), REASON_PARENT_CLUSTER);
+    }
+
+    #[test]
+    fn parent_cluster_reason_filter_returns_empty_for_incompatible_field() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "Reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/canonical.md",
+            "milestone chain beta",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(
+            &query,
+            None,
+            SearchSpanScope::Any,
+            Some(REASON_PARENT_CLUSTER),
+            Some(FIELD_BODY),
+        );
+
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn parent_cluster_does_not_duplicate_stronger_direct_parent_hit() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/milestone-chain.md",
+            "docs/milestone-chain.md",
+            "milestone chain reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/milestone-chain.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/milestone-chain.md",
+            "milestone chain beta",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let parent_cluster_hits = hits
+            .iter()
+            .filter(|hit| {
+                hit.handle() == "docs/milestone-chain.md" && hit.reason() == REASON_PARENT_CLUSTER
+            })
+            .collect::<Vec<_>>();
+
+        assert!(parent_cluster_hits.is_empty());
+    }
+
+    #[test]
+    fn parent_cluster_does_not_duplicate_exact_parent_title_hit() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/canonical.md",
+            "docs/canonical.md",
+            "milestone chain reference",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "docs/canonical.md",
+            "milestone chain alpha",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "docs/canonical.md",
+            "milestone chain beta",
+        );
+
+        let query = SearchQuery::parse("milestone chain").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+
+        assert!(!hits.iter().any(
+            |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
+        ));
+    }
+
+    fn insert_handle(index: &mut SearchIndex, handle: &str, file: &str, summary: &str) {
+        index.insert_handle(SearchHandleDocument {
+            corpus: "test",
+            source: "fixture",
+            handle,
+            file,
+            summary: Some(summary),
+            status: None,
+            namespace: None,
+            area: None,
+            kind: Some("file"),
+        });
+    }
 }
