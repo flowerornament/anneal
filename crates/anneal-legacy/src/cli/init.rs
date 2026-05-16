@@ -97,11 +97,26 @@ pub(crate) fn cmd_init(
     active.sort();
     let mut terminal: Vec<String> = lattice.terminal.iter().cloned().collect();
     terminal.sort();
+    let mut ordering = lattice.ordering.clone();
+    if active.is_empty() && terminal.is_empty() && ordering.is_empty() {
+        active = vec![
+            "draft".to_string(),
+            "current".to_string(),
+            "stable".to_string(),
+        ];
+        terminal = vec!["superseded".to_string(), "archived".to_string()];
+        ordering = vec![
+            "raw".to_string(),
+            "draft".to_string(),
+            "current".to_string(),
+            "stable".to_string(),
+        ];
+    }
 
     let convergence = ConvergenceConfig {
         active,
         terminal,
-        ordering: lattice.ordering.clone(),
+        ordering,
         descriptions: HashMap::new(),
     };
 
@@ -169,4 +184,48 @@ pub(crate) fn cmd_init(
         written,
         path: path_str,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use tempfile::tempdir;
+
+    use crate::lattice::Lattice;
+    use crate::resolve::ResolveStats;
+
+    use super::*;
+
+    #[test]
+    fn init_scaffolds_lattice_on_defaults_for_markdown_only_project() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(dir.path()).expect("tempdir path is utf8");
+        let lattice = Lattice::test_empty();
+        let stats = ResolveStats {
+            namespaces: HashSet::new(),
+            labels_resolved: 0,
+            labels_skipped: 0,
+            versions_resolved: 0,
+            pending_edges_resolved: 0,
+            pending_edges_unresolved: 0,
+        };
+
+        let output = cmd_init(root, &lattice, &stats, &HashMap::new(), false).expect("init writes");
+
+        assert!(output.written);
+        assert_eq!(
+            output.config.convergence.ordering,
+            ["raw", "draft", "current", "stable"]
+        );
+        assert_eq!(
+            output.config.convergence.active,
+            ["draft", "current", "stable"]
+        );
+        assert_eq!(
+            output.config.convergence.terminal,
+            ["superseded", "archived"]
+        );
+        assert!(root.join("anneal.toml").exists());
+    }
 }

@@ -71,7 +71,14 @@ impl CliVerbProjection {
         actor: &ActorContext,
         name: &str,
     ) -> Result<VerbRunPlan, VerbDispatchError> {
-        registry.run_plan_for_actor(name, actor)
+        registry.run_plan_for_actor(canonical_cli_verb_name(name), actor)
+    }
+}
+
+fn canonical_cli_verb_name(name: &str) -> &str {
+    match name {
+        "H" => "handle",
+        _ => name,
     }
 }
 
@@ -173,8 +180,17 @@ impl SourcesCommand {
 
 #[cfg(test)]
 mod tests {
-    use anneal_core::runtime::{analyze, parse_program};
-    use anneal_core::{ActorContext, VerbLayer, VerbRegistry};
+    use anneal_core::runtime::prelude::standard_prelude_program;
+    use anneal_core::runtime::{
+        Database, EvalOptions, Evaluator, Expr, Literal, NumberLiteral, Program, QueryOutput, Row,
+        Statement, analyze, parse_program,
+    };
+    use anneal_core::{
+        ActorContext, ConfigFact, ConfigKey, ContentFact, CorpusId, EdgeFact, FactBatch,
+        FactBatchMode, FactIdentity, FactStore, Generation, HandleFact, NativeId, OriginUri,
+        Pattern, Revision, SnapshotFact, SourceCapabilities, SourceInfo, SourceName, SpanFact,
+        VerbLayer, VerbRegistry,
+    };
 
     use super::*;
 
@@ -257,6 +273,66 @@ mod tests {
     }
 
     #[test]
+    fn cli_h_alias_dispatches_to_handle_verb() {
+        let registry = registry(
+            r#"
+            @verb(
+              name: "handle",
+              query: "? handle(h).",
+              doc: "Show handle.",
+              output_schema: "{\"h\":\"String\"}",
+              default_args: ["h"],
+              capabilities: ["read"]
+            ).
+            handle("ticket-1").
+            "#,
+        );
+        let projection = CliVerbProjection::from_registry(&registry);
+
+        let plan = projection
+            .run_plan(&registry, &ActorContext::trusted_cli(), "H")
+            .expect("H dispatches to handle");
+
+        assert_eq!(plan.query_source(), "? handle(h).");
+    }
+
+    #[test]
+    fn phase10_starter_verbs_emit_valid_ndjson() {
+        let prelude = standard_prelude_program().expect("standard prelude parses");
+        let registry =
+            VerbRegistry::from_layers(&[(VerbLayer::Prelude, &prelude)]).expect("registry builds");
+        let projection = CliVerbProjection::from_registry(&registry);
+        let database = surface_database();
+        let mut names = projection
+            .verbs()
+            .iter()
+            .map(|verb| verb.name().to_string())
+            .collect::<Vec<_>>();
+        names.push("H".to_string());
+
+        for name in names {
+            let plan = projection
+                .run_plan(&registry, &ActorContext::trusted_cli(), &name)
+                .unwrap_or_else(|err| panic!("{name} should dispatch: {err}"));
+            let output = evaluate_surface_plan(&name, plan.query_source(), database.clone());
+            assert!(
+                !output.rows.is_empty(),
+                "{name} should emit at least one row for the Phase 10 fixture"
+            );
+            let ndjson = encode_ndjson(&output.rows);
+
+            for line in ndjson.lines() {
+                let value = serde_json::from_str::<serde_json::Value>(line)
+                    .unwrap_or_else(|err| panic!("{name} emitted invalid NDJSON: {err}"));
+                assert!(
+                    value.as_object().is_some_and(|object| !object.is_empty()),
+                    "{name} should emit object rows"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cli_run_plan_reports_registry_dispatch_errors() {
         let registry = registry(
             r#"
@@ -281,5 +357,297 @@ mod tests {
             projection.run_plan(&registry, &ActorContext::trusted_cli(), "missing"),
             Err(VerbDispatchError::MissingVerb { .. })
         ));
+    }
+
+    fn evaluate_surface_plan(name: &str, query_source: &str, database: Database) -> QueryOutput {
+        let mut query_program = parse_program(&format!("phase10:{name}"), query_source)
+            .unwrap_or_else(|err| panic!("{name} query should parse: {err}"));
+        bind_surface_args(name, &mut query_program);
+        let mut program = standard_prelude_program().expect("standard prelude parses");
+        program.statements.extend(query_program.statements);
+        let analyzed =
+            analyze(program).unwrap_or_else(|err| panic!("{name} should analyze: {err}"));
+        let query = analyzed
+            .queries()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} should contain one query"));
+        let mut evaluator = Evaluator::with_options(analyzed, database, EvalOptions::default());
+        evaluator
+            .run_fixpoint()
+            .unwrap_or_else(|err| panic!("{name} fixpoint should run: {err}"));
+        evaluator
+            .eval_query(&query)
+            .unwrap_or_else(|err| panic!("{name} query should evaluate: {err}"))
+    }
+
+    fn bind_surface_args(name: &str, program: &mut Program) {
+        match canonical_cli_verb_name(name) {
+            "handle" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("handle_focus", "h", "ticket-1"),
+            ),
+            "find" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("find_text", "text", "ticket"),
+            ),
+            "search" => {
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::string("search_query", "query", "ticket"),
+                );
+                bind_parameter_fact(program, ParameterBinding::int("search_limit", "limit", 10));
+            }
+            "context" => {
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::string("context_goal", "goal", "ticket"),
+                );
+                bind_parameter_fact(program, ParameterBinding::int("context_hits", "hits", 3));
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::int("context_read_budget", "per_hit_budget", 800),
+                );
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::int("context_neighborhood_depth", "depth", 1),
+                );
+            }
+            "read" => {
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::string("read_handle", "h", "ticket-1"),
+                );
+                bind_parameter_fact(
+                    program,
+                    ParameterBinding::int("read_budget", "budget", 4000),
+                );
+            }
+            "blocked" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("blocked_focus", "h", "ticket-1"),
+            ),
+            "describe" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("describe_name", "name", "runtime"),
+            ),
+            "source-of" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("source_of_name", "name", "top_work"),
+            ),
+            "examples" => bind_parameter_fact(
+                program,
+                ParameterBinding::string("examples_name", "name", "search"),
+            ),
+            _ => {}
+        }
+    }
+
+    struct ParameterBinding {
+        predicate: &'static str,
+        variable: &'static str,
+        value: Literal,
+    }
+
+    impl ParameterBinding {
+        fn string(predicate: &'static str, variable: &'static str, value: &str) -> Self {
+            Self {
+                predicate,
+                variable,
+                value: Literal::String(value.to_string()),
+            }
+        }
+
+        fn int(predicate: &'static str, variable: &'static str, value: i64) -> Self {
+            Self {
+                predicate,
+                variable,
+                value: Literal::Number(NumberLiteral::Int(value)),
+            }
+        }
+    }
+
+    fn bind_parameter_fact(program: &mut Program, binding: ParameterBinding) {
+        let ParameterBinding {
+            predicate,
+            variable,
+            value,
+        } = binding;
+        let mut matched = false;
+        for statement in &mut program.statements {
+            let Statement::Fact(head) = statement else {
+                continue;
+            };
+            if head.predicate.module.is_some() || head.predicate.name.as_str() != predicate {
+                continue;
+            }
+            assert_eq!(head.terms.len(), 1, "{predicate} arity");
+            let Some(expr) = head.terms[0].expr_mut() else {
+                panic!("{predicate} parameter fact must bind a variable");
+            };
+            match expr {
+                Expr::Var(var) if var.as_str() == variable => {
+                    *expr = Expr::Literal(value.clone());
+                    matched = true;
+                }
+                Expr::Var(var) => panic!("{predicate} expected variable {variable}, found {var}"),
+                Expr::Literal(_)
+                | Expr::FunctionCall { .. }
+                | Expr::Binary { .. }
+                | Expr::Tuple(_) => panic!("{predicate} parameter fact was already lowered"),
+            }
+        }
+        assert!(matched, "missing parameter fact {predicate}");
+    }
+
+    fn encode_ndjson(rows: &[Row]) -> String {
+        let mut out = Vec::new();
+        anneal_core::runtime::write_ndjson(&mut out, rows.iter()).expect("rows encode");
+        String::from_utf8(out).expect("json is utf8")
+    }
+
+    fn surface_database() -> Database {
+        let mut store = FactStore::default();
+        let mut batch = FactBatch::new(
+            CorpusId::from("phase10"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("ticket-1", "issue", Some("open"), "ticket one urgent work"),
+            handle(
+                "ticket-2",
+                "issue",
+                Some("review"),
+                "ticket two review work",
+            ),
+            handle("done-1", "issue", Some("closed"), "closed dependency"),
+        ];
+        batch.content = vec![
+            content(
+                "ticket-1",
+                "intro",
+                "ticket one has urgent work and a broken reference",
+                9,
+            ),
+            content("ticket-2", "intro", "ticket two recently advanced", 5),
+        ];
+        batch.spans = vec![
+            span("ticket-1", "intro", 1, 3),
+            span("ticket-2", "intro", 1, 2),
+        ];
+        batch.edges = vec![
+            edge("ticket-1", "done-1", "DependsOn", 4),
+            edge("ticket-1", "missing.md", "Cites", 7),
+        ];
+        store.merge(batch).expect("merge surface fixture");
+        store
+            .replace_configs(
+                &CorpusId::from("phase10"),
+                vec![
+                    config("convergence.active", "open", None),
+                    config("convergence.active", "review", None),
+                    config("convergence.terminal", "closed", None),
+                    config("convergence.ordering", "open", Some(0)),
+                    config("convergence.ordering", "review", Some(1)),
+                    config("convergence.ordering", "closed", Some(2)),
+                ],
+            )
+            .expect("replace configs");
+        store
+            .replace_snapshots(
+                &CorpusId::from("phase10"),
+                vec![SnapshotFact {
+                    corpus: CorpusId::from("phase10"),
+                    snapshot: "s1".to_string(),
+                    at: "2026-05-01".to_string(),
+                    id: "ticket-2".to_string(),
+                    key: "status".to_string(),
+                    value: "open".to_string(),
+                }],
+            )
+            .expect("replace snapshots");
+        Database::from_store(&store).with_sources([SourceInfo {
+            name: "fixture",
+            recognizes: vec![Pattern::new("*.md")],
+            doc: "Phase 10 surface fixture.",
+            config_keys: vec![ConfigKey::required("md.file_extension")],
+            capabilities: SourceCapabilities {
+                supports_git_ref: false,
+                supports_time_snapshot: true,
+                supports_incremental: false,
+                live_only: false,
+            },
+            search: None,
+        }])
+    }
+
+    fn handle(id: &str, kind: &str, status: Option<&str>, summary: &str) -> HandleFact {
+        HandleFact {
+            identity: identity(id),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: status.map(ToString::to_string),
+            namespace: String::new(),
+            file: format!("{id}.md"),
+            line: 1,
+            date: None,
+            area: "phase10".to_string(),
+            summary: summary.to_string(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, kind: &str, line: u32) -> EdgeFact {
+        EdgeFact {
+            identity: identity(&format!("{from}->{to}:{kind}")),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            file: format!("{from}.md"),
+            line,
+        }
+    }
+
+    fn content(handle: &str, span_id: &str, text: &str, tokens: u32) -> ContentFact {
+        ContentFact {
+            identity: identity(&format!("{handle}#{span_id}:content")),
+            handle: handle.to_string(),
+            span_id: span_id.to_string(),
+            lines: 1,
+            text: text.to_string(),
+            tokens,
+        }
+    }
+
+    fn span(handle: &str, span_id: &str, start_line: u32, end_line: u32) -> SpanFact {
+        SpanFact {
+            identity: identity(&format!("{handle}#{span_id}:span")),
+            id: span_id.to_string(),
+            handle: handle.to_string(),
+            start_line,
+            end_line,
+            summary: String::new(),
+        }
+    }
+
+    fn config(key: &str, value: &str, ordinal: Option<u32>) -> ConfigFact {
+        ConfigFact {
+            corpus: CorpusId::from("phase10"),
+            key: key.to_string(),
+            value: value.to_string(),
+            ordinal,
+        }
+    }
+
+    fn identity(native_id: &str) -> FactIdentity {
+        FactIdentity {
+            corpus: CorpusId::from("phase10"),
+            source: SourceName::from("fixture"),
+            native_id: NativeId::from(native_id),
+            origin_uri: OriginUri::from(format!("fixture://{native_id}")),
+            revision: Revision::from("rev"),
+            generation: Generation::initial(),
+        }
     }
 }

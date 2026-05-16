@@ -84,6 +84,7 @@ impl McpToolCatalog {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::fmt::Write as _;
 
     use anneal_core::runtime::{parse_prelude_program, parse_program};
     use anneal_core::{ActorContext, VerbDispatchError, VerbLayer, VerbRegistry};
@@ -100,16 +101,22 @@ mod tests {
             "#,
         )
         .expect("prelude parses");
-        let project = parse_program(
-            "anneal.dl",
-            r#"
-            @verb(name: "work", query: "? project_work(h).", doc: "Project work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
-            @verb(name: "release", query: "? release_item(h).", doc: "Release.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["release"]).
-            project_work("p").
-            release_item("r").
-            "#,
-        )
-        .expect("project parses");
+        let mut project_source = r#"
+        @verb(name: "work", query: "? project_work(h).", doc: "Project work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
+        project_work("p").
+        "#
+        .to_string();
+        for index in 0..24 {
+            write!(
+                &mut project_source,
+                r#"
+                @verb(name: "project-{index}", query: "? project_item_{index}(h).", doc: "Project verb.", output_schema: "{{\"h\":\"String\"}}", default_args: [], capabilities: ["read"]).
+                project_item_{index}("h-{index}").
+                "#
+            )
+            .expect("write project verb");
+        }
+        let project = parse_program("anneal.dl", &project_source).expect("project parses");
         let registry = VerbRegistry::from_layers(&[
             (VerbLayer::Prelude, &prelude),
             (VerbLayer::Project, &project),
@@ -117,20 +124,13 @@ mod tests {
         .expect("registry builds");
 
         let catalog = McpToolCatalog::from_registry(&registry);
-        assert_eq!(catalog.tools().len(), 9);
-        assert_eq!(
-            catalog
-                .verbs()
-                .iter()
-                .map(McpVerb::name)
-                .collect::<Vec<_>>(),
-            ["release", "work"]
-        );
+        assert_eq!(catalog.tools(), STABLE_TOOLS);
+        assert!(catalog.verbs().len() > catalog.tools().len());
         assert_eq!(
             catalog
                 .tools()
                 .iter()
-                .filter(|tool| **tool == "work" || **tool == "release")
+                .filter(|tool| **tool == "work" || tool.starts_with("project-"))
                 .count(),
             0
         );

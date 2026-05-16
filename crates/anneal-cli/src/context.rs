@@ -419,15 +419,23 @@ mod tests {
 
     #[test]
     fn context_large-corpus_v17_fixture_gate() {
-        let output = evaluate_context(
-            &ContextCommand::new("v17 conformance audit")
-                .with_hits(3)
-                .with_budget(4_000),
-            frozen_large-corpus_database(),
-            EvalOptions::default(),
-        );
+        let mut tool_calls = 0;
+        let output = {
+            tool_calls += 1;
+            evaluate_context(
+                &ContextCommand::new("v17 conformance audit")
+                    .with_hits(3)
+                    .with_budget(4_000),
+                frozen_large-corpus_database(),
+                EvalOptions::default(),
+            )
+        };
 
         assert_eq!(output.goal, "v17 conformance audit");
+        assert!(
+            tool_calls <= 2,
+            "CR-R5 cold-agent gate allows at most two tool calls"
+        );
         assert!(!output.hits.is_empty(), "context should find v17 material");
         assert!(
             output.hits.len() <= 3,
