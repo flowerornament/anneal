@@ -147,7 +147,7 @@ anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 40
 anneal H 2026-05-13-corpus-runtime.md
 anneal broken
 anneal work
-anneal trend  # requires snapshot history
+anneal trend  # emits rows when snapshot history exists
 
 # 4. Introspection before writing custom rules
 anneal describe convergence
@@ -217,7 +217,7 @@ The standard library ships starter verbs as ordinary `@verb` definitions:
 - `work`: ranked work candidates
 - `blocked`: blockers for a handle or corpus
 - `broken`: diagnostic gate
-- `trend`: convergence movement when snapshot history exists
+- `trend`: convergence movement rows when snapshot history exists
 - `context`: cold-agent retrieval bundle
 
 Project verbs declared in `anneal.dl` are surfaced the same way as standard

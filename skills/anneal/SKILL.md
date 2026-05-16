@@ -74,7 +74,7 @@ runtime.
 ```bash
 anneal broken
 anneal work
-anneal trend  # requires snapshot history
+anneal trend  # emits rows when snapshot history exists
 anneal status --json --compact
 anneal check --scope=active
 anneal get <handle> --context
@@ -101,7 +101,7 @@ during the migration window when exact compatibility matters.
 - `work`: ranked work candidates
 - `blocked`: blockers for a handle or corpus
 - `broken`: diagnostic gate
-- `trend`: convergence movement when snapshot history exists
+- `trend`: convergence movement rows when snapshot history exists
 - `context`: cold-agent retrieval bundle
 
 Project `@verb` declarations in `anneal.dl` appear beside these in

@@ -907,6 +907,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn trend_verb_returns_empty_without_snapshot_history() {
+        let verbs = views_verb_declarations();
+        let trend = verbs.get("trend").expect("trend verb is declared");
+        let query = trend.string_arg("query").expect("@verb has query");
+
+        let output = evaluate_verb_query(
+            "trend",
+            query,
+            standard_library_database_without_snapshots(),
+        );
+
+        assert!(output.rows.is_empty());
+    }
+
     fn views_verb_declarations() -> BTreeMap<String, crate::runtime::ast::VerbDecl> {
         let program = parse_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE).expect("views.dl parses");
         program
@@ -1702,6 +1717,14 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     }
 
     fn standard_library_database() -> Database {
+        standard_library_database_with_snapshots(true)
+    }
+
+    fn standard_library_database_without_snapshots() -> Database {
+        standard_library_database_with_snapshots(false)
+    }
+
+    fn standard_library_database_with_snapshots(include_snapshots: bool) -> Database {
         let corpus = CorpusId::from("test");
         let source = SourceName::from("host");
         let generation = Generation::initial();
@@ -1764,19 +1787,21 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 ],
             )
             .expect("replace stdlib fixture config");
-        store
-            .replace_snapshots(
-                &corpus,
-                vec![SnapshotFact {
-                    corpus: corpus.clone(),
-                    snapshot: "s1".to_string(),
-                    at: "2026-05-01".to_string(),
-                    id: "ticket-2".to_string(),
-                    key: "status".to_string(),
-                    value: "open".to_string(),
-                }],
-            )
-            .expect("replace stdlib fixture snapshots");
+        if include_snapshots {
+            store
+                .replace_snapshots(
+                    &corpus,
+                    vec![SnapshotFact {
+                        corpus: corpus.clone(),
+                        snapshot: "s1".to_string(),
+                        at: "2026-05-01".to_string(),
+                        id: "ticket-2".to_string(),
+                        key: "status".to_string(),
+                        value: "open".to_string(),
+                    }],
+                )
+                .expect("replace stdlib fixture snapshots");
+        }
         Database::from_store(&store).with_sources([fixture_source_info()])
     }
 

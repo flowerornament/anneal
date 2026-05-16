@@ -97,7 +97,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 
 @verb(
   name: "trend",
-  query: "trend_row(h, prior_status, current_status) :=\n  at(\"snapshot:last\") { *handle{id: h, status: prior_status} },\n  *handle{id: h, status: current_status},\n  prior_status != current_status.\n\n? trend_row(h, prior_status, current_status).",
+  query: "trend_row(h, prior_status, current_status) :=\n  snapshot_history_present(count),\n  at(\"snapshot:last\") { *handle{id: h, status: prior_status} },\n  *handle{id: h, status: current_status},\n  prior_status != current_status.\n\n? trend_row(h, prior_status, current_status).",
   doc: "Show handle status changes between the latest snapshot fallback and the current corpus.",
   output_schema: "{\"h\":\"HandleId\",\"prior_status\":\"String|null\",\"current_status\":\"String|null\"}",
   default_args: [],
