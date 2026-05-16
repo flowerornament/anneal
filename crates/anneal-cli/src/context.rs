@@ -266,8 +266,8 @@ mod tests {
     use anneal_core::runtime::{Database, EvalOptions, Evaluator, analyze, parse_program};
     use anneal_core::{
         ActorContext, CancellationToken, ConfigFacts, ContentFact, FactBatch, FactBatchMode,
-        FactIdentity, FactStore, Generation, HandleFact, NativeId, OriginUri, Revision, Source,
-        SourceContext, SourceName, SpanFact,
+        FactIdentity, FactStore, Generation, HandleFact, NativeId, OneShotSourceDriver, OriginUri,
+        Revision, SourceDriver, SourceName, SourceRefreshRequest, SpanFact, refresh_source,
     };
     use camino::Utf8PathBuf;
 
@@ -515,21 +515,14 @@ mod tests {
             actor: "test".to_string(),
             capabilities: BTreeSet::new(),
         };
-        let cx = SourceContext {
-            corpus: "large-corpus".into(),
-            roots: &roots,
-            config_facts: &config,
-            time_ref: None,
-            previous_generation: None,
-            actor,
-            cancellation: CancellationToken::new(),
-        };
         let source = anneal_md::MarkdownSource;
+        let request = SourceRefreshRequest::new("large-corpus", &roots, &config)
+            .with_actor(actor)
+            .with_cancellation(CancellationToken::new());
+        let driver = OneShotSourceDriver::new(source);
         let mut store = FactStore::default();
-        store
-            .merge(source.extract(&cx).expect("extract frozen large-corpus"))
-            .expect("merge frozen large-corpus");
-        Database::from_store(&store).with_sources([source.describe()])
+        refresh_source(&driver, &request, &mut store).expect("refresh frozen large-corpus");
+        Database::from_store(&store).with_sources([driver.describe()])
     }
 
     fn context_row(handle: &str, span_id: &str, score: f64, neighbor: &str) -> Row {

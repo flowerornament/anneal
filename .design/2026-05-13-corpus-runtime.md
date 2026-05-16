@@ -192,6 +192,19 @@ adapter invent its own refresh semantics and would couple markdown
 directory walking, host runtime polling, and remote issue trackers
 to one trait.
 
+**Definition CR-D68 (Source refresh transaction).** `anneal-core`
+owns the source refresh transaction boundary around a `SourceDriver`
+invocation. The core refresh operation builds `SourceContext` from
+the current store generation, calls the driver, validates the returned
+`FactBatch` scope, and commits it through the runtime `FactStore`
+merge API. `Source` and `SourceDriver` never write through a sink, and
+`FactStore` remains the single owner of generation retraction and
+atomic merge semantics.
+
+Rationale: long-running surfaces need one stable operation to call
+when a source changes, while adapters still need extraction to remain
+snapshot-scoped and independently testable.
+
 A `Source` is one of: a directory walker (markdown, MDX, AsciiDoc),
 a source-code analyzer (anneal-code), an external-system reader
 (GitHub issues, CI events), or a host application's runtime
@@ -2101,6 +2114,12 @@ pub trait SourceDriver {
     fn refresh(&self, cx: &SourceContext) -> Result<FactBatch, SourceError>;
 }
 
+pub fn refresh_source(
+    driver: &dyn SourceDriver,
+    request: &SourceRefreshRequest,
+    store: &mut FactStore,
+) -> Result<SourceRefreshReport, SourceDriverError>;
+
 pub trait ContentProvider {
     fn read(&self, request: &ReadRequest, ctx: &ReadContext) -> Result<Vec<ReadChunk>, ReadError>;
 }
@@ -2677,6 +2696,7 @@ as data instead of smuggling it through row sequence.
 - CR-D65: Trail relation normalization (§13)
 - CR-D66: Trail storage hardening (§13)
 - CR-D67: Trail projection safety (§13)
+- CR-D68: Source refresh transaction (§5)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

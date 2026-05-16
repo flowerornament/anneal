@@ -106,6 +106,11 @@ impl FactStore {
         &self.generations
     }
 
+    pub fn generation_for(&self, corpus: &CorpusId, source: &SourceName) -> Option<Generation> {
+        self.generation_index(corpus, source)
+            .map(|index| self.generations[index].current)
+    }
+
     pub fn visibility_for(&self, identity: &FactIdentity) -> FactVisibility {
         self.visibility
             .get(&VisibilityKey::from_identity(identity))
@@ -164,12 +169,8 @@ impl FactStore {
     }
 
     fn set_generation(&mut self, corpus: CorpusId, source: SourceName, current: Generation) {
-        if let Some(existing) = self
-            .generations
-            .iter_mut()
-            .find(|row| row.corpus == corpus && row.source == source)
-        {
-            existing.current = current;
+        if let Some(index) = self.generation_index(&corpus, &source) {
+            self.generations[index].current = current;
         } else {
             self.generations.push(GenerationFact {
                 corpus,
@@ -177,6 +178,12 @@ impl FactStore {
                 current,
             });
         }
+    }
+
+    fn generation_index(&self, corpus: &CorpusId, source: &SourceName) -> Option<usize> {
+        self.generations
+            .iter()
+            .position(|row| &row.corpus == corpus && &row.source == source)
     }
 
     fn remove_scope(&mut self, scope: &BatchScope) {

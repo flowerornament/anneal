@@ -80,7 +80,7 @@ mod tests {
 
     use anneal_core::{
         ActorContext, CancellationToken, ConfigFacts, CorpusId, FactStore, Generation,
-        SourceContext,
+        OneShotSourceDriver, SourceContext, SourceRefreshRequest, refresh_source,
     };
     use camino::Utf8PathBuf;
     use tempfile::tempdir;
@@ -163,20 +163,23 @@ mod tests {
             ("md.scan_root".to_string(), ".".to_string()),
         ]);
         let mut store = FactStore::default();
-        let first = MarkdownSource
-            .extract(&context(&root, &config, None))
-            .expect("first extract");
-        store.merge(first).expect("first merge");
+        let driver = OneShotSourceDriver::new(MarkdownSource);
+        let request = SourceRefreshRequest::new("test", std::slice::from_ref(&root), &config)
+            .with_actor(ActorContext {
+                actor: "test".to_string(),
+                capabilities: BTreeSet::new(),
+            });
+        let first = refresh_source(&driver, &request, &mut store).expect("first refresh");
+        assert_eq!(first.previous_generation, None);
 
         fs::write(
             root.join("a.md"),
             "---\nstatus: active\npurpose: New\n---\n# A\nNew body.\n",
         )
         .expect("write new");
-        let second = MarkdownSource
-            .extract(&context(&root, &config, Some(Generation::new(1))))
-            .expect("second extract");
-        store.merge(second).expect("second merge");
+        let second = refresh_source(&driver, &request, &mut store).expect("second refresh");
+        assert_eq!(second.previous_generation, Some(Generation::new(1)));
+        assert_eq!(second.current_generation, Generation::new(2));
 
         assert!(
             store

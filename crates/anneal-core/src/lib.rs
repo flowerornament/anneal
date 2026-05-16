@@ -5,6 +5,7 @@
 //! merge semantics. Adapters depend on this crate; this crate must not
 //! depend on any adapter.
 
+pub mod driver;
 pub mod facts;
 pub mod hash;
 pub mod history;
@@ -21,6 +22,10 @@ pub mod trail;
 pub mod verbs;
 pub mod visibility;
 
+pub use driver::{
+    OneShotSourceDriver, SourceDriver, SourceDriverError, SourceRefreshReport,
+    SourceRefreshRequest, refresh_source,
+};
 pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
     HandleFact, MetaFact, SnapshotFact, SpanFact,
