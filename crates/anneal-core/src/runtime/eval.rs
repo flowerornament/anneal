@@ -16,7 +16,12 @@ use crate::facts::{
 use crate::ids::Generation;
 #[cfg(test)]
 use crate::policy::ActionKind;
-use crate::policy::{Action, AllowAllPolicy, Policy, PolicyDecision};
+#[cfg(test)]
+use crate::policy::PolicyDecision;
+use crate::policy::{
+    Action, AllowAllPolicy, AuthorizationError, Policy, authorize_action,
+    authorize_capability_action,
+};
 use crate::ranking::{
     DEFAULT_LOW_CONFIDENCE_THRESHOLD, DefaultRanker, Ranker, RankingContext, SearchHandleDocument,
     SearchIndex, SearchQuery, rank_search_hits,
@@ -129,13 +134,13 @@ impl EvalOptions {
     }
 
     pub fn authorize_eval(&self) -> Result<(), EvalError> {
-        if !self.has_capability(RuntimeCapability::Eval) {
-            return Err(EvalError::CapabilityRequired {
-                primitive: "eval",
-                capability: RuntimeCapability::Eval,
-            });
-        }
-        self.authorize(Action::Eval)
+        authorize_capability_action(
+            &self.actor,
+            self.policy.as_ref(),
+            Action::Eval,
+            RuntimeCapability::Eval,
+        )
+        .map_err(EvalError::from)
     }
 
     fn has_capability(&self, capability: RuntimeCapability) -> bool {
@@ -143,13 +148,7 @@ impl EvalOptions {
     }
 
     fn authorize(&self, action: Action) -> Result<(), EvalError> {
-        match self.policy.check(&self.actor, &action) {
-            PolicyDecision::Allow => Ok(()),
-            PolicyDecision::Deny => Err(EvalError::PolicyDenied {
-                actor: self.actor.actor.clone(),
-                action,
-            }),
-        }
+        authorize_action(&self.actor, self.policy.as_ref(), action).map_err(EvalError::from)
     }
 
     fn ranking_context(&self, query: &str) -> RankingContext {
@@ -2592,6 +2591,22 @@ pub enum EvalError {
     DivisionByZero,
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+impl From<AuthorizationError> for EvalError {
+    fn from(error: AuthorizationError) -> Self {
+        match error {
+            AuthorizationError::CapabilityRequired { action, capability } => {
+                Self::CapabilityRequired {
+                    primitive: action.as_str(),
+                    capability,
+                }
+            }
+            AuthorizationError::PolicyDenied { actor, action } => {
+                Self::PolicyDenied { actor, action }
+            }
+        }
+    }
 }
 
 pub struct Evaluator {

@@ -29,7 +29,10 @@ pub use history::{
     append_snapshot_entry, read_snapshot_history, repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
-pub use policy::{Action, ActionKind, AllowAllPolicy, Policy, PolicyDecision};
+pub use policy::{
+    Action, ActionKind, AllowAllPolicy, AuthorizationError, Policy, PolicyDecision,
+    authorize_action, authorize_capability_action, authorize_trail_private,
+};
 pub use project::{PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, load_project_extension};
 pub use ranking::{
     DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,

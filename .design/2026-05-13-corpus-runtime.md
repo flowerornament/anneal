@@ -859,8 +859,18 @@ source. Policy is consulted before `read`, `search`, `match`, and
 `read_full` perform provider work, regex compilation, or content
 budgeting, and evaluator entrypoints consult `eval` policy before
 rule/query execution. Capability-required errors remain distinct from
-policy denials: missing `read_full` or `eval` capability reports the
-missing capability before project policy is considered.
+policy denials: missing `read_full`, `eval`, or `trail_private`
+capability reports the missing capability before project policy is
+considered.
+
+**Definition CR-D64 (Trail-private authorization hook).** v2.0 exposes
+a typed authorization hook for reading `private`-visibility trail
+entries before the concrete `TrailStore` lands. The hook checks
+`RuntimeCapability::TrailPrivate` and then `Policy` with the
+`TrailPrivateRead` action. `anneal-t10.1` owns the concrete row-level
+enforcement: every `TrailStore::query` result with private visibility
+must pass through this hook before returning to CLI, MCP, or host API
+callers.
 
 **Definition CR-D53 (Fact visibility boundary).** Authorization is
 not only a surface action gate. The fact store carries an evaluation
@@ -2063,6 +2073,7 @@ pub enum Action {
     Search { query: String, handle: Option<String> },
     Match { pattern: String, handle: Option<String> },
     Eval,
+    TrailPrivateRead,
     Extract { source: String },
 }
 
@@ -2598,6 +2609,7 @@ as data instead of smuggling it through row sequence.
 - CR-D61: Fact visibility capabilities (§16)
 - CR-D62: Visibility closure over handle references (§16)
 - CR-D63: Policy action gates (§16)
+- CR-D64: Trail-private authorization hook (§16)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
