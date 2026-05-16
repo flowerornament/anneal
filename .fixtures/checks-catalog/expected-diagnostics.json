@@ -1,0 +1,106 @@
+[
+  {
+    "code": "E001",
+    "severity": "error",
+    "subject": "broken.md",
+    "file": "broken.md",
+    "line": 3,
+    "evidence": ["broken_ref", "missing.md"]
+  },
+  {
+    "code": "E002",
+    "severity": "error",
+    "subject": "OQ-1",
+    "file": "OQ-1.md",
+    "line": null,
+    "evidence": "undischarged"
+  },
+  {
+    "code": "I001",
+    "severity": "info",
+    "subject": "corpus",
+    "file": null,
+    "line": null,
+    "evidence": ["section_refs", 1]
+  },
+  {
+    "code": "I002",
+    "severity": "info",
+    "subject": "OQ-2",
+    "file": "OQ-2.md",
+    "line": null,
+    "evidence": ["multiple_discharges", 2]
+  },
+  {
+    "code": "S001",
+    "severity": "suggestion",
+    "subject": "ORPH-1",
+    "file": "ORPH-1.md",
+    "line": null,
+    "evidence": ["orphaned_handle", "ORPH-1"]
+  },
+  {
+    "code": "S002",
+    "severity": "suggestion",
+    "subject": "NEW",
+    "file": "NEW-1.md",
+    "line": null,
+    "evidence": ["candidate_namespace", "NEW", 3]
+  },
+  {
+    "code": "S003",
+    "severity": "suggestion",
+    "subject": "draft",
+    "file": null,
+    "line": null,
+    "evidence": ["pipeline_stall", "draft", 23, "stable", false]
+  },
+  {
+    "code": "S004",
+    "severity": "suggestion",
+    "subject": "OLD",
+    "file": "OLD-1.md",
+    "line": null,
+    "evidence": ["abandoned_namespace", "OLD", 2, 2, 0]
+  },
+  {
+    "code": "S005",
+    "severity": "suggestion",
+    "subject": "AA",
+    "file": null,
+    "line": null,
+    "evidence": ["concern_group_candidate", "AA", "BB", 3]
+  },
+  {
+    "code": "W001",
+    "severity": "warning",
+    "subject": "stale-src.md",
+    "file": "stale-src.md",
+    "line": null,
+    "evidence": ["stale_ref", "draft", "archived"]
+  },
+  {
+    "code": "W002",
+    "severity": "warning",
+    "subject": "stable-src.md",
+    "file": "stable-src.md",
+    "line": null,
+    "evidence": ["confidence_gap", "stable", 1, "draft", 0]
+  },
+  {
+    "code": "W003",
+    "severity": "warning",
+    "subject": "team/missing.md",
+    "file": "team/missing.md",
+    "line": null,
+    "evidence": null
+  },
+  {
+    "code": "W004",
+    "severity": "warning",
+    "subject": "implausible.md",
+    "file": "implausible.md",
+    "line": null,
+    "evidence": ["implausible_ref", "/tmp/foo", "absolute path", 4]
+  }
+]

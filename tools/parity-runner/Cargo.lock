@@ -441,6 +441,7 @@ dependencies = [
  "anneal-md",
  "anyhow",
  "camino",
+ "serde",
  "serde_json",
 ]
 

@@ -11,12 +11,14 @@ use anneal_core::runtime::{
     parse_program,
 };
 use anneal_core::{
-    ActorContext, CancellationToken, ConfigFact, ConfigFacts, CorpusId, FactBatch, FactStore,
-    Generation, Source, SourceContext, load_runtime_configs,
+    ActorContext, CancellationToken, ConfigFact, ConfigFacts, CorpusId, EdgeFact, FactBatch,
+    FactBatchMode, FactIdentity, FactStore, Generation, HandleFact, MetaFact, NativeId, OriginUri,
+    Revision, Source, SourceContext, SourceName, load_runtime_configs,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
+use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -466,7 +468,8 @@ fn run_phase4_cases(
     let search = run_pd4_search(right)?;
     let read = run_pd5_read(right)?;
     let diagnostics = run_pd6_diagnostics(right, left_bin, corpus_root)?;
-    Ok(vec![search, read, diagnostics])
+    let catalog = run_pd6_catalog_fixture()?;
+    Ok(vec![search, read, diagnostics, catalog])
 }
 
 fn run_pd4_search(right: &FactRight) -> Result<CaseResult> {
@@ -552,22 +555,73 @@ fn run_pd6_diagnostics(
         ",
     )?;
     let actual = diagnostic_relation_rows(&output.rows)?;
-    let passed = actual == expected;
-    let detail = if passed {
-        format!(
-            "diagnostic relation rows match: {}",
-            format_counts(&actual)?
-        )
-    } else {
-        format!(
-            "diagnostic relation rows differ: {}",
-            first_multiset_diff(&expected, &actual)
-        )
-    };
-    Ok(CaseResult {
+    diagnostic_case_result(DiagnosticCase {
         id: "PD-6",
         label: "checks.dl",
         command,
+        success_prefix: "diagnostic relation rows match",
+        failure_prefix: "diagnostic relation rows differ",
+        expected_label: "left",
+        actual_label: "right",
+        expected,
+        actual,
+        raw_actual_rows: output.rows,
+    })
+}
+
+fn run_pd6_catalog_fixture() -> Result<CaseResult> {
+    let right = load_checks_catalog_fixture()?;
+    let output = right.eval_prelude_query(
+        r"
+        ? diagnostic(code, severity, subject, file, line, evidence).
+        ",
+    )?;
+    let actual = diagnostic_relation_rows(&output.rows)?;
+    let expected = right.expected_diagnostics()?;
+    diagnostic_case_result(DiagnosticCase {
+        id: "PD-6b",
+        label: "checks catalog",
+        command: "anneal prelude diagnostic(...) over .fixtures/checks-catalog".to_string(),
+        success_prefix: "catalog diagnostic relation rows match",
+        failure_prefix: "catalog diagnostic relation rows differ",
+        expected_label: "expected",
+        actual_label: "actual",
+        expected,
+        actual,
+        raw_actual_rows: output.rows,
+    })
+}
+
+type RowMultiset = BTreeMap<String, usize>;
+
+struct DiagnosticCase {
+    id: &'static str,
+    label: &'static str,
+    command: String,
+    success_prefix: &'static str,
+    failure_prefix: &'static str,
+    expected_label: &'static str,
+    actual_label: &'static str,
+    expected: RowMultiset,
+    actual: RowMultiset,
+    raw_actual_rows: Vec<Row>,
+}
+
+fn diagnostic_case_result(case: DiagnosticCase) -> Result<CaseResult> {
+    let passed = case.actual == case.expected;
+    let detail = if passed {
+        format!("{}: {}", case.success_prefix, format_counts(&case.actual)?)
+    } else {
+        format!(
+            "{}: {}",
+            case.failure_prefix,
+            first_multiset_diff(&case.expected, &case.actual)
+        )
+    };
+    Ok(CaseResult {
+        id: case.id,
+        label: case.label,
+        command: case.command,
         passed,
         detail,
         left_stderr: String::new(),
@@ -575,17 +629,53 @@ fn run_pd6_diagnostics(
             String::new()
         } else {
             serde_json::to_string(&json!({
-                "left_counts": format_counts(&expected)?,
-                "right_counts": format_counts(&actual)?,
-                "left_rows": multiset_rows(&expected),
-                "right_rows": multiset_rows(&actual),
-                "raw_right_rows": output.rows,
+                format!("{}_counts", case.expected_label): format_counts(&case.expected)?,
+                format!("{}_counts", case.actual_label): format_counts(&case.actual)?,
+                format!("{}_rows", case.expected_label): multiset_rows(&case.expected),
+                format!("{}_rows", case.actual_label): multiset_rows(&case.actual),
+                format!("raw_{}_rows", case.actual_label): case.raw_actual_rows,
             }))?
         },
     })
 }
 
-type RowMultiset = BTreeMap<String, usize>;
+impl FactRight {
+    fn expected_diagnostics(&self) -> Result<RowMultiset> {
+        let expected = self.root.join("expected-diagnostics.json");
+        let rows: Vec<ExpectedDiagnostic> = serde_json::from_slice(
+            &fs::read(&expected).with_context(|| format!("failed to read {expected}"))?,
+        )
+        .with_context(|| format!("failed to parse {expected}"))?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            insert_multiset(&mut out, row.canonical()?);
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpectedDiagnostic {
+    code: String,
+    severity: String,
+    subject: JsonValue,
+    file: JsonValue,
+    line: JsonValue,
+    evidence: JsonValue,
+}
+
+impl ExpectedDiagnostic {
+    fn canonical(&self) -> Result<String> {
+        canonical_diagnostic_row(
+            &self.code,
+            &self.severity,
+            &self.subject,
+            &self.file,
+            &self.line,
+            &self.evidence,
+        )
+    }
+}
 
 fn check_relation_rows(output: &JsonValue) -> Result<RowMultiset> {
     let diagnostics = output
@@ -971,6 +1061,174 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
         batch,
         configs,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct ChecksCatalogFixture {
+    handles: Vec<FixtureHandle>,
+    #[serde(default)]
+    edges: Vec<FixtureEdge>,
+    #[serde(default)]
+    meta: Vec<FixtureMeta>,
+    #[serde(default)]
+    configs: Vec<FixtureConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureHandle {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    namespace: String,
+    file: String,
+    #[serde(default = "default_line")]
+    line: u32,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    area: String,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureEdge {
+    from: String,
+    to: String,
+    kind: String,
+    file: String,
+    #[serde(default = "default_line")]
+    line: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureMeta {
+    handle: String,
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureConfig {
+    key: String,
+    value: String,
+    #[serde(default)]
+    ordinal: Option<u32>,
+}
+
+fn default_line() -> u32 {
+    1
+}
+
+fn load_checks_catalog_fixture() -> Result<FactRight> {
+    let repo = repo_root()?;
+    let root =
+        Utf8PathBuf::from_path_buf(repo.join(".fixtures/checks-catalog")).map_err(|path| {
+            anyhow!(
+                "checks catalog fixture path is not valid UTF-8: {}",
+                path.display()
+            )
+        })?;
+    let facts_path = root.join("facts.json");
+    let fixture: ChecksCatalogFixture = serde_json::from_slice(
+        &fs::read(&facts_path).with_context(|| format!("failed to read {facts_path}"))?,
+    )
+    .with_context(|| format!("failed to parse {facts_path}"))?;
+
+    let corpus = CorpusId::from("checks-catalog");
+    let source = SourceName::from("checks-catalog");
+    let generation = Generation::initial();
+    let mut batch = FactBatch::new(
+        corpus.clone(),
+        source.clone(),
+        FactBatchMode::FullSnapshot,
+        generation,
+    );
+    let scope = FixtureFactScope {
+        corpus: &corpus,
+        source: &source,
+        generation,
+    };
+
+    batch.handles = fixture
+        .handles
+        .into_iter()
+        .map(|handle| HandleFact {
+            identity: fixture_identity(&scope, &format!("handle:{}", handle.id)),
+            id: handle.id,
+            kind: handle.kind,
+            status: handle.status,
+            namespace: handle.namespace,
+            file: handle.file,
+            line: handle.line,
+            date: handle.date,
+            area: handle.area,
+            summary: handle.summary,
+        })
+        .collect();
+    batch.edges = fixture
+        .edges
+        .into_iter()
+        .map(|edge| EdgeFact {
+            identity: fixture_identity(
+                &scope,
+                &format!("edge:{}:{}:{}", edge.from, edge.kind, edge.to),
+            ),
+            from: edge.from,
+            to: edge.to,
+            kind: edge.kind,
+            file: edge.file,
+            line: edge.line,
+        })
+        .collect();
+    batch.meta = fixture
+        .meta
+        .into_iter()
+        .map(|meta| MetaFact {
+            identity: fixture_identity(
+                &scope,
+                &format!("meta:{}:{}:{}", meta.handle, meta.key, meta.value),
+            ),
+            handle: meta.handle,
+            key: meta.key,
+            value: meta.value,
+        })
+        .collect();
+    let configs = fixture
+        .configs
+        .into_iter()
+        .map(|config| ConfigFact {
+            corpus: corpus.clone(),
+            key: config.key,
+            value: config.value,
+            ordinal: config.ordinal,
+        })
+        .collect();
+
+    Ok(FactRight {
+        root,
+        batch,
+        configs,
+    })
+}
+
+struct FixtureFactScope<'a> {
+    corpus: &'a CorpusId,
+    source: &'a SourceName,
+    generation: Generation,
+}
+
+fn fixture_identity(scope: &FixtureFactScope<'_>, native_id: &str) -> FactIdentity {
+    FactIdentity::new(
+        scope.corpus.clone(),
+        scope.source.clone(),
+        NativeId::from(native_id),
+        OriginUri::from(format!("fixture://checks-catalog/{native_id}")),
+        Revision::from("checks-catalog"),
+        scope.generation,
+    )
 }
 
 fn run_anneal(bin: &str, corpus_root: &Path, args: &[&str]) -> Result<CommandResult> {
