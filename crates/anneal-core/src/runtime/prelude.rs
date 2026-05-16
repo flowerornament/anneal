@@ -970,7 +970,7 @@ mod tests {
                 );
                 bind_parameter_fact(
                     &mut program,
-                    ParameterBinding::int("context_read_budget", "per_hit_budget", 800),
+                    ParameterBinding::int("context_read_budget", "per_hit_budget", 2400),
                 );
                 bind_parameter_fact(
                     &mut program,

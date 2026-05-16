@@ -1911,7 +1911,7 @@ anneal context GOAL [--budget=N] [--neighborhood-depth=D] [--hits=K]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--budget=N` | `4000` tokens | total token budget across hits + spans + neighborhood |
+| `--budget=N` | `4000` tokens | context budget hint; v2.0 derives a per-hit read cap from it |
 | `--neighborhood-depth=D` | `1` | edges to traverse outward from the top hit |
 | `--hits=K` | `3` | candidates to return (after `TopK` filtering) |
 
@@ -1964,10 +1964,13 @@ isolated top hit still returns its read span. Phase 1 must pin this
 as an executable `views.dl` fixture before `context` is treated as a
 shipped verb.
 
-Budget allocation: 60% to span reads on top hits, 20% to
-neighborhood expansion, 20% reserved for `--explain` if requested.
-The runtime adjusts allocations downward when the requested K hits
-or D-depth neighborhood don't exist; it never overruns.
+Budget allocation: v2.0 derives `context_read_budget` as 60% of the
+requested `--budget` and applies that cap independently to each top
+hit's `read`. It does not divide the read cap by `K`; doing so makes
+increasing `--hits` silently exclude the most relevant document before
+`read` can return a useful first span. Exact whole-response token
+accounting across grouped `hits`, `spans`, and `neighborhood` is not a
+v2.0 invariant.
 
 Cold-agent test (§49 large-corpus fixture) targets a single `context`
 call after an optional `anneal` dashboard — total tool calls ≤2,
@@ -2004,6 +2007,16 @@ string in the parser-accepted fixture and grouped by the surface into
 arguments rather than being duplicated into every relation row.
 Rationale: this pins the agent-visible behavior with today's parser
 while preserving CR-R4's stronger typed verb contract for Phase 7.
+
+**Definition CR-D71 (Context per-hit read cap).** The CLI derives
+`context_read_budget` from `--budget` once and applies it as the cap
+for each selected hit; it must not divide that cap by `context_hits`.
+`context_readable(h)` may use content metadata to avoid choosing
+handles that cannot produce any span under that cap, but it must not
+make the top hit unreadable merely because the caller requested more
+candidates. Rationale: the cold-agent gate is won by retrieving the
+best document and a useful first span; exact response-wide budget
+packing is a later grouped-output concern.
 
 ### §34 Query echo behavior [CR-D24]
 
@@ -2721,6 +2734,7 @@ as data instead of smuggling it through row sequence.
 - CR-D68: Source refresh transaction (§5)
 - CR-D69: Corpus-scoped diagnostic locations (§28.2)
 - CR-D70: Markdown scan-root identity (§42)
+- CR-D71: Context per-hit read cap (§33.1)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -70,8 +70,7 @@ impl ContextCommand {
         if span_budget == 0 {
             return 0;
         }
-        let hits = i64::try_from(self.hits).unwrap_or(i64::MAX).max(1);
-        span_budget.saturating_div(hits).max(1)
+        span_budget.max(1)
     }
 }
 
@@ -281,7 +280,7 @@ mod tests {
             .with_budget(4_000)
             .datalog();
 
-        assert!(query.contains("context_read_budget(800)"));
+        assert!(query.contains("context_read_budget(2400)"));
         assert!(query.contains("*content{handle: h, tokens}"));
         assert!(query.contains("TopK{ k: hits"));
         assert!(query.contains("TakeUntil{"));
@@ -420,6 +419,8 @@ mod tests {
 
     #[test]
     fn context_large-corpus_v17_fixture_gate() {
+        const AUDIT_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
+
         let mut tool_calls = 0;
         let output = {
             tool_calls += 1;
@@ -444,11 +445,15 @@ mod tests {
             output.hits
         );
         assert!(
-            output.spans.iter().any(
-                |span| span.text.to_ascii_lowercase().contains("conformance")
-                    || span.text.to_ascii_lowercase().contains("v17")
-            ),
-            "context should read enough v17/conformance text to orient an agent"
+            output.hits.iter().any(|hit| hit.handle == AUDIT_HANDLE),
+            "CR-R5 context gate should include the v17 conformance audit: {:?}",
+            output.hits
+        );
+        assert!(
+            output.spans.iter().any(|span| span.handle == AUDIT_HANDLE
+                && (span.text.contains("## Method") || span.text.contains("## Summary"))),
+            "context should read the audit Method or Summary span: {:?}",
+            output.spans
         );
     }
 

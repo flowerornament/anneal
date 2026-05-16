@@ -176,7 +176,7 @@ neighborhood, and bounded `read` spans into one grouped response.
 
 Useful flags:
 
-- `--budget N`: total token budget for read spans
+- `--budget N`: context budget hint; v2 derives a per-hit read cap from it
 - `--hits N`: number of search winners
 - `--neighborhood-depth N`: graph distance around winners
 - `--include-low-confidence`: include low-confidence search hits
