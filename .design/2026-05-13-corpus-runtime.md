@@ -1341,12 +1341,24 @@ including `0` when the aggregate sub-body contributes no rows. Groups
 that are not reachable from a non-aggregate body atom are not
 synthesized from the value universe.
 
+**Definition CR-D88 (Aggregate body stratification).** Any derived
+predicate referenced inside an aggregate body is fully derived in an
+earlier stratum than the rule containing the aggregate. This applies
+to scalar and row-producing aggregators. Mutual recursion through an
+aggregate body is rejected at load time with the cycle named. The
+runtime does not re-evaluate aggregate outputs against same-stratum
+deltas because `Count`, `TopK`, `Rank`, and `TakeUntil` can invalidate
+previously emitted rows when new contribution rows appear; source-order
+independence comes from stratifying aggregate inputs, not from
+same-stratum aggregate retractions.
+
 ### §21 Negation, recursion, stratification [CR-D18]
 
 **Definition CR-D18 (Stratified negation).** The runtime partitions
 rules into strata such that any predicate referenced under `not` is
 fully derived in an earlier stratum. Mutual recursion through
 negation is rejected at load time with the cycle named.
+Aggregate body dependencies are stratifying per CR-D88.
 
 Safety rules (enforced at load):
 
@@ -3023,6 +3035,7 @@ config key.
 - CR-D85: Empty row diagnostic (§36)
 - CR-D86: Corpus vocabulary verb (§33)
 - CR-D87: CLI output mode selection (§36)
+- CR-D88: Aggregate body stratification (§20)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

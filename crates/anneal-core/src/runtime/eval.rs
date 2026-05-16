@@ -9248,6 +9248,35 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
+    fn row_producing_aggregates_are_independent_of_rule_source_order() {
+        let outputs = evaluate_queries(
+            r#"
+            top_work(h, energy) :=
+              (h, energy) = TopK{ k: 2, key: energy :
+                (h, energy) :
+                work_candidate(h, energy)
+              }.
+
+            work_candidate(h, energy) := potential(h, energy).
+            potential("low", 1).
+            potential("mid", 5).
+            potential("high", 9).
+
+            ? top_work(h, energy).
+            "#,
+            Database::default(),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("energy", n(5)), ("h", s("mid"))]),
+                row([("energy", n(9)), ("h", s("high"))]),
+            ],
+        );
+    }
+
+    #[test]
     fn aggregate_duplicate_args_are_rejected() {
         let program = parse_program(
             "inline",
