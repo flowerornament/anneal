@@ -10,6 +10,7 @@ pub mod hash;
 pub mod history;
 pub mod ids;
 pub mod ranking;
+pub mod retrieval;
 pub mod runtime;
 pub mod source;
 pub mod store;
@@ -27,6 +28,11 @@ pub use history::{
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use ranking::{
     DefaultRanker, Ranker, RankingContext, SearchHit, SearchScore, default_lexical_search_info,
+};
+pub use retrieval::{
+    ContentProvider, ReadChunk, ReadChunkParts, ReadContext, ReadError, ReadFullContent,
+    ReadFullRequest, ReadRequest, RetrievalContext, SearchContext, SearchError, SearchProvider,
+    SearchRequest, SearchSpanScope,
 };
 pub use source::{
     Action, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,

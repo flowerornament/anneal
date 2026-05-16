@@ -6,6 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
 pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
@@ -257,23 +258,6 @@ impl SearchField {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SearchSpanFilter<'a> {
-    Any,
-    Null,
-    Exact(&'a str),
-}
-
-impl SearchSpanFilter<'_> {
-    fn accepts(self, span_id: Option<&str>) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Null => span_id.is_none(),
-            Self::Exact(expected) => span_id == Some(expected),
-        }
-    }
-}
-
 impl SearchIndex {
     pub(crate) fn len(&self) -> usize {
         self.documents.len()
@@ -351,12 +335,16 @@ impl SearchIndex {
         &self,
         query: &SearchQuery,
         handle: Option<&str>,
-        span_filter: SearchSpanFilter<'_>,
+        span_filter: SearchSpanScope<'_>,
+        reason_filter: Option<&str>,
+        field_filter: Option<&str>,
     ) -> Vec<SearchHit> {
         self.documents
             .iter()
             .filter(|(key, _)| handle.is_none_or(|handle| key.handle == handle))
-            .flat_map(|(key, document)| document.search_hits(key, query, span_filter))
+            .flat_map(|(key, document)| {
+                document.search_hits(key, query, span_filter, reason_filter, field_filter)
+            })
             .collect()
     }
 
@@ -372,11 +360,15 @@ impl SearchDocument {
         &'a self,
         key: &'a SearchDocumentKey,
         query: &'a SearchQuery,
-        span_filter: SearchSpanFilter<'a>,
+        span_filter: SearchSpanScope<'a>,
+        reason_filter: Option<&'a str>,
+        field_filter: Option<&'a str>,
     ) -> impl Iterator<Item = SearchHit> + 'a {
         self.fields
             .iter()
             .filter(move |field| span_filter.accepts(field.span_id.as_deref()))
+            .filter(move |field| reason_filter.is_none_or(|reason| field.reason == reason))
+            .filter(move |field| field_filter.is_none_or(|field_name| field.field == field_name))
             .filter_map(move |field| {
                 query.score_normalized(&field.normalized_text).map(|score| {
                     SearchHit::new(

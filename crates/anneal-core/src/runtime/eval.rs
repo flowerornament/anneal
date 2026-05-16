@@ -16,7 +16,11 @@ use crate::facts::{
 use crate::ids::Generation;
 use crate::ranking::{
     DEFAULT_LOW_CONFIDENCE_THRESHOLD, DefaultRanker, Ranker, RankingContext, SearchHandleDocument,
-    SearchIndex, SearchQuery, SearchSpanFilter, rank_search_hits,
+    SearchIndex, SearchQuery, rank_search_hits,
+};
+use crate::retrieval::{
+    ContentProvider, ReadChunk, ReadContext, ReadError, ReadFullContent, ReadFullRequest,
+    ReadRequest, SearchContext, SearchError, SearchProvider, SearchRequest, SearchSpanScope,
 };
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
@@ -234,6 +238,8 @@ pub struct Database {
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
     search: Arc<SearchIndex>,
+    content_provider: Option<Arc<dyn ContentProvider>>,
+    search_provider: Option<Arc<dyn SearchProvider>>,
     introspection: Arc<IntrospectionIndex>,
 }
 
@@ -245,6 +251,8 @@ impl Default for Database {
             graph: Arc::new(GraphIndex::default()),
             content: Arc::new(ContentIndex::default()),
             search: Arc::new(SearchIndex::default()),
+            content_provider: None,
+            search_provider: None,
             introspection: Arc::new(IntrospectionIndex::default()),
         }
     }
@@ -271,6 +279,8 @@ impl fmt::Debug for Database {
             )
             .field("content_spans", &self.content.len())
             .field("search_documents", &self.search.len())
+            .field("custom_content_provider", &self.content_provider.is_some())
+            .field("custom_search_provider", &self.search_provider.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -306,6 +316,18 @@ impl Database {
         self
     }
 
+    #[must_use]
+    pub fn with_content_provider(mut self, provider: impl ContentProvider + 'static) -> Self {
+        self.content_provider = Some(Arc::new(provider));
+        self
+    }
+
+    #[must_use]
+    pub fn with_search_provider(mut self, provider: impl SearchProvider + 'static) -> Self {
+        self.search_provider = Some(Arc::new(provider));
+        self
+    }
+
     pub fn insert_stored_rows(
         &mut self,
         relation: impl Into<String>,
@@ -318,39 +340,123 @@ impl Database {
         self.derived.get(predicate).map(DerivedRelation::tuples)
     }
 
-    fn search_tuples(&self, constraints: &[(usize, Value)], options: &EvalOptions) -> Vec<Tuple> {
+    fn content_provider(&self) -> &dyn ContentProvider {
+        self.content_provider
+            .as_deref()
+            .unwrap_or_else(|| self.content.as_ref())
+    }
+
+    fn search_provider(&self) -> &dyn SearchProvider {
+        self.search_provider
+            .as_deref()
+            .unwrap_or_else(|| self.search.as_ref())
+    }
+
+    fn search_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        options: &EvalOptions,
+    ) -> Result<Vec<Tuple>, EvalError> {
         let ArgConstraint::Exact(query_text) = string_constraint(constraints, 0) else {
-            return Vec::new();
-        };
-        let Some(query) = SearchQuery::parse(query_text) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let handle = match string_constraint(constraints, 1) {
             ArgConstraint::Any => None,
             ArgConstraint::Exact(handle) => Some(handle),
-            ArgConstraint::Impossible => return Vec::new(),
+            ArgConstraint::Impossible => return Ok(Vec::new()),
         };
-        let span_filter = match search_span_filter(constraints, 2) {
-            SearchSpanConstraint::Any => SearchSpanFilter::Any,
-            SearchSpanConstraint::Null => SearchSpanFilter::Null,
-            SearchSpanConstraint::Exact(span_id) => SearchSpanFilter::Exact(span_id),
-            SearchSpanConstraint::Impossible => return Vec::new(),
+        let span = match search_span_filter(constraints, 2) {
+            SearchSpanConstraint::Any => SearchSpanScope::Any,
+            SearchSpanConstraint::Null => SearchSpanScope::Null,
+            SearchSpanConstraint::Exact(span_id) => SearchSpanScope::Exact(span_id),
+            SearchSpanConstraint::Impossible => return Ok(Vec::new()),
         };
+        let reason = optional_string_constraint(constraints, 4);
+        let field = optional_string_constraint(constraints, 5);
+        let request = SearchRequest::new(query_text, handle, span, reason, field);
+        let search_ctx = SearchContext::new(&options.actor);
+        let hits = self
+            .search_provider()
+            .search(request, &search_ctx)
+            .map_err(EvalError::SearchProvider)?;
         let ctx = options.ranking_context(query_text);
         let ranker = options.ranker();
-        let ranked = rank_search_hits(
-            self.search.search_hits(&query, handle, span_filter),
-            &ctx,
-            ranker,
-        );
+        let ranked = rank_search_hits(hits, &ctx, ranker);
 
         let mut seen = BTreeSet::new();
-        ranked
+        Ok(ranked
             .into_iter()
             .map(|hit| search_tuple(&hit, query_text))
             .filter(|tuple| tuple_matches_constraints(tuple, constraints))
             .filter(|tuple| seen.insert(tuple.clone()))
-            .collect()
+            .collect())
+    }
+
+    fn read_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        options: &EvalOptions,
+    ) -> Result<Vec<Tuple>, EvalError> {
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
+            return Ok(Vec::new());
+        };
+        let ArgConstraint::Exact(budget) = i64_constraint(constraints, 1) else {
+            return Ok(Vec::new());
+        };
+        if budget < 0 {
+            return Ok(Vec::new());
+        }
+        let span_id = match string_constraint(constraints, 2) {
+            ArgConstraint::Any => None,
+            ArgConstraint::Exact(span_id) => Some(span_id),
+            ArgConstraint::Impossible => return Ok(Vec::new()),
+        };
+        let read_ctx = ReadContext::new(&options.actor);
+        let chunks = self
+            .content_provider()
+            .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
+            .map_err(map_read_error)?;
+        Ok(enforce_read_budget(chunks, budget, span_id.is_some())
+            .into_iter()
+            .map(|chunk| read_tuple(chunk, budget))
+            .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+            .collect())
+    }
+
+    fn read_full_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        options: &EvalOptions,
+    ) -> Result<Vec<Tuple>, EvalError> {
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
+            return Ok(Vec::new());
+        };
+        let read_ctx = ReadContext::new(&options.actor);
+        let Some(content) = self
+            .content_provider()
+            .read_full(
+                ReadFullRequest::new(handle, options.read_full_token_limit),
+                &read_ctx,
+            )
+            .map_err(map_read_error)?
+        else {
+            return Ok(Vec::new());
+        };
+        if content.tokens() > options.read_full_token_limit {
+            return Err(EvalError::ReadFullBudgetExceeded {
+                handle: content.handle().to_owned(),
+                tokens: content.tokens(),
+                limit: options.read_full_token_limit,
+            });
+        }
+        let tuple = Tuple(vec![
+            string_value(content.handle()),
+            Value::String(content.text().to_owned()),
+        ]);
+        Ok(tuple_matches_constraints(&tuple, constraints)
+            .then_some(tuple)
+            .into_iter()
+            .collect())
     }
 
     fn ensure_derived(&mut self, predicates: impl IntoIterator<Item = PredicateRef>) {
@@ -445,6 +551,8 @@ impl Database {
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
             search: Arc::clone(&self.search),
+            content_provider: self.content_provider.clone(),
+            search_provider: self.search_provider.clone(),
             introspection: Arc::clone(&self.introspection),
         }
     }
@@ -637,6 +745,21 @@ fn push_warnings(out: &mut Vec<QueryWarning>, warnings: Vec<QueryWarning>) {
     }
 }
 
+fn map_read_error(error: ReadError) -> EvalError {
+    match error {
+        ReadError::BudgetExceeded {
+            handle,
+            tokens,
+            limit,
+        } => EvalError::ReadFullBudgetExceeded {
+            handle,
+            tokens,
+            limit,
+        },
+        other @ ReadError::Other(_) => EvalError::ReadProvider(other),
+    }
+}
+
 fn snapshot_partial_history_warning(
     reference: &str,
     snapshot: &str,
@@ -754,18 +877,23 @@ impl<'a> Iterator for RowCandidates<'a> {
 struct ContentIndex {
     content: BTreeMap<ContentKey, ContentPayload>,
     spans: BTreeMap<ContentKey, SpanPayload>,
+    span_keys_by_handle_span: BTreeMap<(String, String), BTreeSet<ContentKey>>,
     span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContentKey {
+    corpus: String,
+    source: String,
     handle: String,
     span_id: String,
 }
 
 impl ContentKey {
-    fn new(handle: &str, span_id: &str) -> Self {
+    fn new(corpus: &str, source: &str, handle: &str, span_id: &str) -> Self {
         Self {
+            corpus: corpus.to_owned(),
+            source: source.to_owned(),
             handle: handle.to_owned(),
             span_id: span_id.to_owned(),
         }
@@ -774,8 +902,10 @@ impl ContentKey {
 
 impl Ord for ContentKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.handle
-            .cmp(&other.handle)
+        self.corpus
+            .cmp(&other.corpus)
+            .then_with(|| self.source.cmp(&other.source))
+            .then_with(|| self.handle.cmp(&other.handle))
             .then_with(|| self.span_id.cmp(&other.span_id))
     }
 }
@@ -800,13 +930,17 @@ struct SpanPayload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OrderedSpanKey {
+    corpus: String,
+    source: String,
     start_line: i64,
     span_id: String,
 }
 
 impl OrderedSpanKey {
-    fn new(span_id: &str, start_line: i64) -> Self {
+    fn new(corpus: &str, source: &str, span_id: &str, start_line: i64) -> Self {
         Self {
+            corpus: corpus.to_owned(),
+            source: source.to_owned(),
             start_line,
             span_id: span_id.to_owned(),
         }
@@ -815,8 +949,10 @@ impl OrderedSpanKey {
 
 impl Ord for OrderedSpanKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.start_line
-            .cmp(&other.start_line)
+        self.corpus
+            .cmp(&other.corpus)
+            .then_with(|| self.source.cmp(&other.source))
+            .then_with(|| self.start_line.cmp(&other.start_line))
             .then_with(|| self.span_id.cmp(&other.span_id))
     }
 }
@@ -848,7 +984,9 @@ impl ContentIndex {
     }
 
     fn insert_content(&mut self, row: &NamedRow) {
-        let (Some(handle), Some(span_id), Some(text), Some(tokens)) = (
+        let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text), Some(tokens)) = (
+            row_string(row, CORPUS_FIELD),
+            row_string(row, SOURCE_FIELD),
             row_string(row, HANDLE_FIELD),
             row_string(row, SPAN_ID_FIELD),
             row_string(row, TEXT_FIELD),
@@ -856,7 +994,7 @@ impl ContentIndex {
         ) else {
             return;
         };
-        let key = ContentKey::new(handle, span_id);
+        let key = ContentKey::new(corpus, source, handle, span_id);
         let payload = ContentPayload {
             text: text.to_owned(),
             tokens,
@@ -865,15 +1003,25 @@ impl ContentIndex {
     }
 
     fn insert_span(&mut self, row: &NamedRow) {
-        let (Some(handle), Some(span_id), Some(start_line), Some(end_line)) = (
+        let (
+            Some(corpus),
+            Some(source),
+            Some(handle),
+            Some(span_id),
+            Some(start_line),
+            Some(end_line),
+        ) = (
+            row_string(row, CORPUS_FIELD),
+            row_string(row, SOURCE_FIELD),
             row_string(row, HANDLE_FIELD),
             row_string(row, ID_FIELD),
             row_i64(row, START_LINE_FIELD),
             row_i64(row, END_LINE_FIELD),
-        ) else {
+        )
+        else {
             return;
         };
-        let key = ContentKey::new(handle, span_id);
+        let key = ContentKey::new(corpus, source, handle, span_id);
         let payload = SpanPayload {
             start_line,
             end_line,
@@ -881,62 +1029,12 @@ impl ContentIndex {
         self.span_order_by_handle
             .entry(handle.to_owned())
             .or_default()
-            .insert(OrderedSpanKey::new(span_id, start_line));
+            .insert(OrderedSpanKey::new(corpus, source, span_id, start_line));
+        self.span_keys_by_handle_span
+            .entry((handle.to_owned(), span_id.to_owned()))
+            .or_default()
+            .insert(key.clone());
         self.spans.insert(key, payload);
-    }
-
-    fn read_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
-        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
-            return Vec::new();
-        };
-        let ArgConstraint::Exact(budget) = i64_constraint(constraints, 1) else {
-            return Vec::new();
-        };
-        if budget < 0 {
-            return Vec::new();
-        }
-        let span_id = string_constraint(constraints, 2);
-        if let ArgConstraint::Exact(span_id) = span_id {
-            return self
-                .content_span(&ContentKey::new(handle, span_id))
-                .filter(|span| span.content.tokens <= budget)
-                .map(|span| read_tuple(span, budget))
-                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
-                .into_iter()
-                .collect();
-        }
-        let mut used = 0_i64;
-        let mut out = Vec::new();
-        for span in self.content_spans_for_handle(handle) {
-            let next = used.saturating_add(span.content.tokens);
-            if next > budget {
-                break;
-            }
-            used = next;
-            let tuple = read_tuple(span, budget);
-            if tuple_matches_constraints(&tuple, constraints) {
-                out.push(tuple);
-            }
-        }
-        out
-    }
-
-    fn read_full_tuples(
-        &self,
-        constraints: &[(usize, Value)],
-        token_limit: i64,
-    ) -> Result<Vec<Tuple>, EvalError> {
-        let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
-            return Ok(Vec::new());
-        };
-        let Some(content) = self.full_content_under_limit(handle, token_limit)? else {
-            return Ok(Vec::new());
-        };
-        let tuple = Tuple(vec![string_value(handle), Value::String(content)]);
-        Ok(tuple_matches_constraints(&tuple, constraints)
-            .then_some(tuple)
-            .into_iter()
-            .collect())
     }
 
     fn match_tuples(&self, constraints: &[(usize, Value)], regex: &Regex) -> Vec<Tuple> {
@@ -979,52 +1077,135 @@ impl ContentIndex {
             .into_iter()
             .flat_map(move |ordered_keys| {
                 ordered_keys.iter().filter_map(move |ordered_key| {
-                    self.content_span(&ContentKey::new(handle, &ordered_key.span_id))
+                    self.content_span(&ContentKey::new(
+                        &ordered_key.corpus,
+                        &ordered_key.source,
+                        handle,
+                        &ordered_key.span_id,
+                    ))
                 })
             })
+    }
+
+    fn content_spans_for_handle_and_span<'a>(
+        &'a self,
+        handle: &'a str,
+        span_id: &'a str,
+    ) -> impl Iterator<Item = ContentSpan<'a>> + 'a {
+        self.span_keys_by_handle_span
+            .get(&(handle.to_owned(), span_id.to_owned()))
+            .into_iter()
+            .flat_map(|keys| keys.iter().filter_map(|key| self.content_span(key)))
     }
 
     fn full_content_under_limit(
         &self,
         handle: &str,
         token_limit: i64,
-    ) -> Result<Option<String>, EvalError> {
+    ) -> Result<Option<ReadFullContent>, ReadError> {
         let mut tokens = 0_i64;
-        let mut has_content = false;
+        let mut content = String::new();
         for span in self.content_spans_for_handle(handle) {
-            has_content = true;
             tokens = tokens.saturating_add(span.content.tokens);
             if tokens > token_limit {
-                return Err(EvalError::ReadFullBudgetExceeded {
+                return Err(ReadError::BudgetExceeded {
                     handle: handle.to_owned(),
                     tokens,
                     limit: token_limit,
                 });
             }
-        }
-        if !has_content {
-            return Ok(None);
-        }
-        let mut content = String::new();
-        for span in self.content_spans_for_handle(handle) {
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
             }
             content.push_str(&span.content.text);
         }
-        Ok(Some(content))
+        if content.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ReadFullContent::new(handle, content, tokens)))
+        }
     }
 }
 
-fn read_tuple(span: ContentSpan<'_>, budget: i64) -> Tuple {
+impl ContentProvider for ContentIndex {
+    fn read(
+        &self,
+        request: ReadRequest<'_>,
+        _ctx: &ReadContext<'_>,
+    ) -> Result<Vec<ReadChunk>, ReadError> {
+        if request.budget() < 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(span_id) = request.span_id() {
+            return Ok(self
+                .content_spans_for_handle_and_span(request.handle(), span_id)
+                .filter(|span| span.content.tokens <= request.budget())
+                .map(read_chunk)
+                .collect());
+        }
+        let mut used = 0_i64;
+        let mut out = Vec::new();
+        for span in self.content_spans_for_handle(request.handle()) {
+            let next = used.saturating_add(span.content.tokens);
+            if next > request.budget() {
+                break;
+            }
+            used = next;
+            out.push(read_chunk(span));
+        }
+        Ok(out)
+    }
+
+    fn read_full(
+        &self,
+        request: ReadFullRequest<'_>,
+        _ctx: &ReadContext<'_>,
+    ) -> Result<Option<ReadFullContent>, ReadError> {
+        self.full_content_under_limit(request.handle(), request.token_limit())
+    }
+}
+
+fn read_chunk(span: ContentSpan<'_>) -> ReadChunk {
+    ReadChunk::new(
+        &span.key.handle,
+        &span.key.span_id,
+        span.content.text.clone(),
+        span.span.start_line,
+        span.span.end_line,
+        span.content.tokens,
+    )
+}
+
+fn enforce_read_budget(chunks: Vec<ReadChunk>, budget: i64, exact_span: bool) -> Vec<ReadChunk> {
+    if exact_span {
+        return chunks
+            .into_iter()
+            .filter(|chunk| chunk.tokens() <= budget)
+            .collect();
+    }
+    let mut used = 0_i64;
+    let mut out = Vec::new();
+    for chunk in chunks {
+        let next = used.saturating_add(chunk.tokens());
+        if next > budget {
+            break;
+        }
+        used = next;
+        out.push(chunk);
+    }
+    out
+}
+
+fn read_tuple(chunk: ReadChunk, budget: i64) -> Tuple {
+    let chunk = chunk.into_parts();
     Tuple(vec![
-        string_value(&span.key.handle),
+        string_value(&chunk.handle),
         int_value(budget),
-        string_value(&span.key.span_id),
-        Value::String(span.content.text.clone()),
-        int_value(span.span.start_line),
-        int_value(span.span.end_line),
-        int_value(span.content.tokens),
+        string_value(&chunk.span_id),
+        Value::String(chunk.text),
+        int_value(chunk.start_line),
+        int_value(chunk.end_line),
+        int_value(chunk.tokens),
     ])
 }
 
@@ -1057,6 +1238,13 @@ fn search_span_filter(constraints: &[(usize, Value)], position: usize) -> Search
         Value::Null => SearchSpanConstraint::Null,
         Value::String(value) => SearchSpanConstraint::Exact(value),
         Value::Number(_) | Value::Bool(_) | Value::List(_) => SearchSpanConstraint::Impossible,
+    }
+}
+
+fn optional_string_constraint(constraints: &[(usize, Value)], position: usize) -> Option<&str> {
+    match string_constraint(constraints, position) {
+        ArgConstraint::Any | ArgConstraint::Impossible => None,
+        ArgConstraint::Exact(value) => Some(value),
     }
 }
 
@@ -1106,6 +1294,25 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
             search.insert_content(corpus, source, handle, span_id, text);
         }
         _ => {}
+    }
+}
+
+impl SearchProvider for SearchIndex {
+    fn search(
+        &self,
+        request: SearchRequest<'_>,
+        _ctx: &SearchContext<'_>,
+    ) -> Result<Vec<crate::ranking::SearchHit>, SearchError> {
+        let Some(query) = SearchQuery::parse(request.query()) else {
+            return Ok(Vec::new());
+        };
+        Ok(self.search_hits(
+            &query,
+            request.handle(),
+            request.span(),
+            request.reason(),
+            request.field(),
+        ))
     }
 }
 
@@ -2193,6 +2400,10 @@ pub enum EvalError {
         tokens: i64,
         limit: i64,
     },
+    #[error("content provider failed: {0}")]
+    ReadProvider(ReadError),
+    #[error("search provider failed: {0}")]
+    SearchProvider(SearchError),
     #[error("invalid regex pattern {pattern:?}: {source}")]
     InvalidRegex {
         pattern: String,
@@ -2954,8 +3165,8 @@ fn primitive_tuples(
     regex_cache: &mut BTreeMap<String, Regex>,
 ) -> Result<Vec<Tuple>, EvalError> {
     match primitive {
-        PrimitivePredicate::Search => Ok(database.search_tuples(constraints, options)),
-        PrimitivePredicate::Read => Ok(database.content.read_tuples(constraints)),
+        PrimitivePredicate::Search => database.search_tuples(constraints, options),
+        PrimitivePredicate::Read => database.read_tuples(constraints, options),
         PrimitivePredicate::ReadFull => {
             if !options.has_capability(READ_FULL_CAPABILITY) {
                 return Err(EvalError::CapabilityRequired {
@@ -2963,9 +3174,7 @@ fn primitive_tuples(
                     capability: READ_FULL_CAPABILITY,
                 });
             }
-            database
-                .content
-                .read_full_tuples(constraints, options.read_full_token_limit)
+            database.read_full_tuples(constraints, options)
         }
         PrimitivePredicate::Match => {
             let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
@@ -4982,6 +5191,138 @@ mod tests {
         );
     }
 
+    #[derive(Debug)]
+    struct StaticContentProvider;
+
+    impl ContentProvider for StaticContentProvider {
+        fn read(
+            &self,
+            request: ReadRequest<'_>,
+            ctx: &ReadContext<'_>,
+        ) -> Result<Vec<ReadChunk>, ReadError> {
+            assert_eq!(ctx.actor().actor, "anonymous-cli");
+            assert_eq!(request.handle(), "external.md");
+            assert_eq!(request.budget(), 20);
+            assert_eq!(request.span_id(), Some("s2"));
+            Ok(vec![ReadChunk::new(
+                request.handle(),
+                "s2",
+                "lazy provider content",
+                40,
+                41,
+                7,
+            )])
+        }
+
+        fn read_full(
+            &self,
+            request: ReadFullRequest<'_>,
+            _ctx: &ReadContext<'_>,
+        ) -> Result<Option<ReadFullContent>, ReadError> {
+            Ok(Some(ReadFullContent::new(
+                request.handle(),
+                "lazy provider content",
+                7,
+            )))
+        }
+    }
+
+    #[test]
+    fn read_primitive_uses_configured_content_provider() {
+        let output = evaluate_query_output(
+            r#"? read("external.md", 20, "s2", text, start_line, end_line, tokens)."#,
+            Database::default().with_content_provider(StaticContentProvider),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![row([
+                ("text", s("lazy provider content")),
+                ("start_line", n(40)),
+                ("end_line", n(41)),
+                ("tokens", n(7)),
+            ])],
+        );
+    }
+
+    #[derive(Debug)]
+    struct OvereagerContentProvider;
+
+    impl ContentProvider for OvereagerContentProvider {
+        fn read(
+            &self,
+            request: ReadRequest<'_>,
+            _ctx: &ReadContext<'_>,
+        ) -> Result<Vec<ReadChunk>, ReadError> {
+            Ok(vec![
+                ReadChunk::new(request.handle(), "a", "fits", 1, 1, 4),
+                ReadChunk::new(request.handle(), "b", "too far", 2, 2, 100),
+                ReadChunk::new(request.handle(), "c", "would fit only if skipping", 3, 3, 1),
+            ])
+        }
+
+        fn read_full(
+            &self,
+            request: ReadFullRequest<'_>,
+            _ctx: &ReadContext<'_>,
+        ) -> Result<Option<ReadFullContent>, ReadError> {
+            Ok(Some(ReadFullContent::new(
+                request.handle(),
+                "too much content",
+                request.token_limit().saturating_add(1),
+            )))
+        }
+    }
+
+    #[test]
+    fn runtime_enforces_read_budget_over_custom_provider_chunks() {
+        let output = evaluate_query_output(
+            r#"? read("external.md", 10, span_id, text, start_line, end_line, tokens)."#,
+            Database::default().with_content_provider(OvereagerContentProvider),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![row([
+                ("span_id", s("a")),
+                ("text", s("fits")),
+                ("start_line", n(1)),
+                ("end_line", n(1)),
+                ("tokens", n(4)),
+            ])],
+        );
+    }
+
+    #[test]
+    fn runtime_enforces_read_full_limit_over_custom_provider() {
+        let err = evaluate_query_error_with_options(
+            r#"? read_full("external.md", content)."#,
+            Database::default().with_content_provider(OvereagerContentProvider),
+            EvalOptions::default()
+                .with_capability(READ_FULL_CAPABILITY)
+                .with_read_full_token_limit(10),
+        );
+
+        assert!(matches!(
+            err,
+            EvalError::ReadFullBudgetExceeded {
+                handle,
+                tokens: 11,
+                limit: 10
+            } if handle == "external.md"
+        ));
+    }
+
     #[test]
     fn content_primitives_can_use_later_positive_inputs() {
         let output = evaluate_query_output(
@@ -5146,6 +5487,77 @@ mod tests {
         assert_eq!(rows[0].get("field"), Some(&s("body")));
         assert_eq!(rows[0].get("reason"), Some(&s("body-substring")));
         assert_eq!(rows[0].get("low_confidence"), Some(&Value::Bool(false)));
+    }
+
+    #[derive(Debug)]
+    struct StaticSearchProvider;
+
+    impl SearchProvider for StaticSearchProvider {
+        fn search(
+            &self,
+            request: SearchRequest<'_>,
+            ctx: &SearchContext<'_>,
+        ) -> Result<Vec<SearchHit>, SearchError> {
+            assert_eq!(ctx.actor().actor, "anonymous-cli");
+            assert_eq!(request.query(), "needle");
+            assert_eq!(request.handle(), None);
+            assert_eq!(request.span(), SearchSpanScope::Any);
+            assert_eq!(request.reason(), None);
+            assert_eq!(request.field(), None);
+            Ok(vec![
+                SearchHit::new(
+                    "test",
+                    "lexical",
+                    "lexical.md",
+                    Some("body".to_string()),
+                    1.0,
+                    "provider",
+                    "body",
+                ),
+                SearchHit::new(
+                    "test",
+                    "semantic",
+                    "semantic.md",
+                    Some("body".to_string()),
+                    0.2,
+                    "provider",
+                    "body",
+                ),
+            ])
+        }
+    }
+
+    #[derive(Debug)]
+    struct PreferSemanticRanker;
+
+    impl Ranker for PreferSemanticRanker {
+        fn calibrate(&self, hit: &SearchHit, _ctx: &RankingContext) -> f32 {
+            if hit.source() == "semantic" { 1.0 } else { 0.1 }
+        }
+
+        fn tie_break(&self, a: &SearchHit, b: &SearchHit) -> Ordering {
+            DefaultRanker.tie_break(a, b)
+        }
+    }
+
+    #[test]
+    fn search_primitive_uses_provider_before_runtime_ranking() {
+        let output = evaluate_query_output_with_options(
+            r#"? search("needle", h, span_id, score, reason, field, low_confidence)."#,
+            Database::default().with_search_provider(StaticSearchProvider),
+            EvalOptions::default().with_ranker(PreferSemanticRanker),
+        );
+        let rows = output
+            .rows
+            .into_iter()
+            .map(|row| row.fields)
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("h"), Some(&s("semantic.md")));
+        assert_eq!(rows[0].get("score"), Some(&f(1.0)));
+        assert_eq!(rows[1].get("h"), Some(&s("lexical.md")));
+        assert!((value_f64(rows[1].get("score").expect("score")) - 0.1).abs() < 0.000_001);
     }
 
     #[test]
