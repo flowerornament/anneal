@@ -4,6 +4,9 @@
 
 exclude = ["feedback"]
 
+[handles]
+confirmed = ["OQ", "PD", "CR-D", "CR-R", "CR-OQ", "HR-D", "HR-OQ", "MVS", "SP-Q"]
+
 [suppress]
 
 [[suppress.rules]]

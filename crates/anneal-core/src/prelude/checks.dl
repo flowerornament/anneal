@@ -1,0 +1,275 @@
+# Source-backed topic documentation for standard diagnostics.
+
+@doc(
+  name: "checks",
+  doc: "Diagnostic standard-library rules for the v1.x check catalog: broken references, obligations, stale dependencies, confidence gaps, convention drift, and convergence suggestions."
+).
+
+@doc(
+  name: "diagnostic",
+  doc: "Bind standard diagnostic rows as code, severity, subject, file, line, and evidence. Surfaces lower these relation rows into rendered messages, JSON records, diagnostic IDs, and suggestion IDs."
+).
+
+section_ref(target) :=
+  *edge{to: target},
+  target starts_with "section:".
+
+broken_reference(src, target, file, line) :=
+  *edge{from: src, to: target, file: file, line: line},
+  not *handle{id: target},
+  not section_ref(target).
+
+diagnostic("E001", "error", src, file, line, ("broken_ref", target)) :=
+  broken_reference(src, target, file, line).
+
+section_ref_edge(edge_id) :=
+  *edge{native_id: edge_id, to: target},
+  section_ref(target).
+
+section_ref_total(count) :=
+  count = Count{ edge_id : section_ref_edge(edge_id) },
+  count > 0.
+
+diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)) :=
+  section_ref_total(count).
+
+diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
+  *meta{handle: h, key: "md.implausible_ref", value: value},
+  *handle{id: h, file: file}.
+
+diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
+  *edge{from: src, to: target, kind: "DependsOn"},
+  *handle{id: src, status: source_status, file: file},
+  *handle{id: target, status: target_status},
+  source_status != null,
+  active(src),
+  terminal(target).
+
+configured_pipeline_status(status, level) :=
+  *config{key: "convergence.ordering", value: status, ordinal: level},
+  level != null.
+
+handle_file(h, file) :=
+  *handle{id: h, file: file},
+  file != "".
+
+handle_file(h, file) :=
+  *meta{handle: h, key: "md.resolved_file", value: file}.
+
+diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
+  *edge{from: src, to: target, kind: "DependsOn"},
+  *handle{id: src, status: source_status, file: file},
+  *handle{id: target, status: target_status},
+  configured_pipeline_status(source_status, source_level),
+  configured_pipeline_status(target_status, target_level),
+  source_level > target_level.
+
+diagnostic("E002", "error", h, file, null, "undischarged") :=
+  obligation(h),
+  not terminal(h),
+  discharge_count(h, 0),
+  handle_file(h, file).
+
+diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
+  obligation(h),
+  not terminal(h),
+  discharge_count(h, count),
+  count >= 2,
+  handle_file(h, file).
+
+file_parent_dir(h, dir) :=
+  *handle{id: h, kind: "file"},
+  *meta{handle: h, key: "md.parent_dir", value: dir}.
+
+parent_dir_present(dir) :=
+  file_parent_dir(h, dir).
+
+parent_dir_file_count(dir, total) :=
+  parent_dir_present(dir),
+  total = Count{ h : file_parent_dir(h, dir) },
+  total >= 2.
+
+parent_dir_frontmatter_count(dir, with_frontmatter) :=
+  parent_dir_present(dir),
+  with_frontmatter = Count{ h : file_parent_dir(h, dir), *handle{id: h, status: status}, status != null }.
+
+frontmatter_adoption_high(dir, with_frontmatter, total) :=
+  parent_dir_file_count(dir, total),
+  parent_dir_frontmatter_count(dir, with_frontmatter),
+  with_frontmatter * 2 > total.
+
+missing_frontmatter_file(h, dir, file) :=
+  *handle{id: h, kind: "file", status: null, file: file},
+  file_parent_dir(h, dir).
+
+diagnostic("W003", "warning", h, file, null, null) :=
+  missing_frontmatter_file(h, dir, file),
+  frontmatter_adoption_high(dir, with_frontmatter, total).
+
+s001_orphaned(h) :=
+  *handle{id: h, kind: "label"},
+  in_degree(h, 0).
+
+s001_orphaned(h) :=
+  *handle{id: h, kind: "version"},
+  in_degree(h, 0),
+  *edge{from: h, kind: "Supersedes"}.
+
+diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", h)) :=
+  s001_orphaned(h),
+  handle_file(h, file).
+
+confirmed_namespace(namespace) :=
+  *config{key: "handles.confirmed", value: namespace}.
+
+rejected_namespace(namespace) :=
+  *config{key: "handles.rejected", value: namespace}.
+
+namespace_label(namespace, h) :=
+  *handle{id: h, kind: "label", namespace: namespace},
+  namespace != "".
+
+namespace_present(namespace) :=
+  namespace_label(namespace, h).
+
+namespace_label_count(namespace, count) :=
+  namespace_present(namespace),
+  count = Count{ h : namespace_label(namespace, h) }.
+
+s002_candidate_namespace(namespace, count) :=
+  namespace_label_count(namespace, count),
+  count >= 3,
+  not confirmed_namespace(namespace),
+  not rejected_namespace(namespace).
+
+namespace_representative_file(namespace, file) :=
+  s002_candidate_namespace(namespace, count),
+  file = Min{ f : namespace_label(namespace, h), handle_file(h, f) }.
+
+diagnostic("S002", "suggestion", namespace, file, null, ("candidate_namespace", namespace, count)) :=
+  s002_candidate_namespace(namespace, count),
+  namespace_representative_file(namespace, file).
+
+next_pipeline_status(status, next_status) :=
+  configured_pipeline_status(status, level),
+  configured_pipeline_status(next_status, next_level),
+  next_level = level + 1.
+
+status_population(status, count) :=
+  configured_pipeline_status(status, level),
+  count = Count{ h : *handle{id: h, status: status} }.
+
+forward_dependency_to_next_status(status, next_status) :=
+  *handle{id: h, status: status},
+  *edge{from: h, to: target, kind: "DependsOn"},
+  *handle{id: target, status: next_status}.
+
+snapshot_history_exists("yes") :=
+  snapshot_history_present(count).
+
+no_snapshot_history("yes") :=
+  *handle{id: h},
+  not snapshot_history_exists("yes").
+
+previous_status_population(status, count) :=
+  snapshot_history_exists("yes"),
+  configured_pipeline_status(status, level),
+  count = Count{ h : at("snapshot:last") { *handle{id: h, status: status} } }.
+
+s003_pipeline_stall(status, count, next_status, false) :=
+  no_snapshot_history("yes"),
+  status_population(status, count),
+  count >= 3,
+  next_pipeline_status(status, next_status),
+  not forward_dependency_to_next_status(status, next_status).
+
+s003_pipeline_stall(status, count, null, true) :=
+  snapshot_history_exists("yes"),
+  status_population(status, count),
+  previous_status_population(status, previous_count),
+  next_pipeline_status(status, next_status),
+  count >= previous_count,
+  previous_count >= 3.
+
+diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
+  s003_pipeline_stall(status, count, next_status, based_on_history).
+
+confirmed_namespace_member(namespace, h) :=
+  confirmed_namespace(namespace),
+  namespace_label(namespace, h).
+
+confirmed_namespace_size(namespace, total) :=
+  confirmed_namespace(namespace),
+  total = Count{ h : confirmed_namespace_member(namespace, h) },
+  total >= 2.
+
+abandoned_terminal_member(namespace, h) :=
+  confirmed_namespace_member(namespace, h),
+  terminal(h).
+
+abandoned_stale_member(namespace, h) :=
+  confirmed_namespace_member(namespace, h),
+  not terminal(h),
+  freshness(h, days),
+  days >= 90.
+
+abandoned_terminal_count(namespace, count) :=
+  confirmed_namespace_size(namespace, total),
+  count = Count{ h : abandoned_terminal_member(namespace, h) }.
+
+abandoned_stale_count(namespace, count) :=
+  confirmed_namespace_size(namespace, total),
+  count = Count{ h : abandoned_stale_member(namespace, h) }.
+
+s004_abandoned_namespace(namespace, total, terminal_count, stale_count) :=
+  confirmed_namespace_size(namespace, total),
+  abandoned_terminal_count(namespace, terminal_count),
+  abandoned_stale_count(namespace, stale_count),
+  terminal_count + stale_count = total.
+
+confirmed_namespace_representative_file(namespace, file) :=
+  confirmed_namespace_size(namespace, total),
+  file = Min{ f : confirmed_namespace_member(namespace, h), handle_file(h, f) }.
+
+diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
+  s004_abandoned_namespace(namespace, total, terminal_count, stale_count),
+  confirmed_namespace_representative_file(namespace, file).
+
+file_prefix(file, prefix) :=
+  *handle{id: file, kind: "file"},
+  *edge{from: file, to: label, kind: "Cites"},
+  *handle{id: label, kind: "label", namespace: prefix},
+  prefix != "".
+
+file_prefix(file, prefix) :=
+  *handle{id: file, kind: "file"},
+  *edge{from: file, to: label, kind: "DependsOn"},
+  *handle{id: label, kind: "label", namespace: prefix},
+  prefix != "".
+
+same_concern_pair(left_prefix, right_prefix) :=
+  *concern{name: concern, member: left_member},
+  *concern{name: concern, member: right_member},
+  *handle{id: left_member, kind: "label", namespace: left_prefix},
+  *handle{id: right_member, kind: "label", namespace: right_prefix},
+  left_prefix < right_prefix.
+
+prefix_pair_candidate(left_prefix, right_prefix) :=
+  confirmed_namespace(left_prefix),
+  confirmed_namespace(right_prefix),
+  left_prefix < right_prefix.
+
+s005_pair_count(left_prefix, right_prefix, count) :=
+  prefix_pair_candidate(left_prefix, right_prefix),
+  count = Count{ file : file_prefix(file, left_prefix), file_prefix(file, right_prefix) },
+  count >= 3,
+  not same_concern_pair(left_prefix, right_prefix).
+
+s005_top_pair(left_prefix, right_prefix, count) :=
+  (left_prefix, right_prefix, count) = TopK{ k: 5, key: count :
+    (left_prefix, right_prefix, count) :
+      s005_pair_count(left_prefix, right_prefix, count)
+  }.
+
+diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
+  s005_top_pair(left_prefix, right_prefix, count).

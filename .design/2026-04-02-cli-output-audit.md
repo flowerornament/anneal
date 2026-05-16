@@ -1,5 +1,6 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-03-language-redesign.md
 updated: 2026-04-02
 description: >
   Audit of anneal CLI output behavior across representative corpora, focused on

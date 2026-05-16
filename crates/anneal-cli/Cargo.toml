@@ -1,0 +1,37 @@
+[package]
+name = "anneal-cli"
+version = "0.10.1"
+edition = "2024"
+license = "MIT"
+description = "CLI surface crate for anneal"
+
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+items_after_statements = "allow"
+struct_excessive_bools = "allow"
+
+[dependencies]
+anneal-core = { path = "../anneal-core" }
+anneal-md = { path = "../anneal-md" }
+anyhow = "1.0.102"
+camino = "1.2.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+[dev-dependencies]
+tempfile = "3.27.0"

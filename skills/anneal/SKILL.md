@@ -1,197 +1,210 @@
 ---
 name: anneal
-description: "Orient in knowledge corpora, recover relevant repo context quickly, inspect structure, check health, and assess edit impact. Use when a repo has `.design/`, `docs/`, or `anneal.toml`, or the user asks about convergence, broken refs, graph structure, what changed, or what depends on X."
+description: "Orient in knowledge corpora, retrieve relevant context, inspect graph structure, run corpus health checks, and ask Datalog queries over anneal facts. Use when a repo has `.design/`, `docs/`, or `anneal.toml`, or the user asks about convergence, blockers, broken refs, what changed, or what depends on X."
 metadata:
-  short-description: Orient in knowledge corpora with anneal
+  short-description: Query knowledge corpora with anneal
 ---
 
 # Anneal
 
-Use `anneal` to orient in a markdown knowledge corpus, recover relevant context quickly, and validate structural assumptions before making claims or edits.
+Use `anneal` as the runtime for a knowledge corpus. It turns corpus files into
+facts, loads the standard library and project `anneal.dl`, and exposes verbs,
+retrieval primitives, and raw Datalog queries.
 
-`anneal` treats a corpus as a convergence system rather than a pile of files: handles move through degrees of settledness, obligations are either discharged or left hanging, and snapshot history shows whether the body of knowledge is advancing, holding, or drifting.
+Run `anneal help <command>` for exact flags. Do not guess CLI details from
+memory when a command matters.
 
-Use `anneal help <command>` for exact flags and edge cases. Do not guess the CLI from memory.
-
-If you arrive at a session without this skill preloaded, run `anneal prime` to print the full briefing from the installed binary — it stays in sync with the shipped version.
-
-## Scope
-
-Use this skill for knowledge-corpus structure, health, impact, and validation.
-
-- Use `rg`, `git diff`, or language tools for ordinary source-code navigation.
-- Use `anneal help` for exact CLI details.
+If this skill is not preloaded, run `anneal prime` to print the shipped
+briefing from the installed binary.
 
 ## First Moves
 
-Pick the loop that matches the request shape.
+Pick the smallest command that can answer the next agent question.
 
-### Arriving at an unfamiliar corpus (general orientation)
-
-1. `anneal areas` — what exists, and how healthy is each area?
-2. `anneal find --kind=file --status=active --context` — what is each active thing actually about?
-3. `anneal explain convergence` — what do the status values mean here?
-4. `anneal orient --budget=50k` — if you need a reading list before making changes
-
-### Scoped to a specific area or file (narrowing)
-
-1. `anneal orient --area=<dir> --budget=30k` or `anneal orient --file=<path> --budget=30k`
-2. `anneal map --around=<handle> --upstream` — what does this build on?
-3. `anneal impact <file>` — what breaks if I change this?
-4. `anneal check --area=<dir>` — any issues in the scope?
-
-### Maintenance (gardening)
-
-1. `anneal garden` — ranked maintenance tasks with fix/context/verify hints
-2. Follow each task's `context:` hint (an `anneal orient` invocation) to load the files you need
-3. Apply the `fix:` action
-4. Run the task's `verify:` hint (usually an `anneal check` invocation) to confirm
-5. `anneal diff --days=7` to see what moved since the last session
-
-For a single concrete question, run the matching command directly.
-
-## Command Map By Intent
-
-### Orient
+### Arriving Cold
 
 ```bash
-anneal areas
-anneal areas --sort=grade
-anneal orient --budget=50k
-anneal orient --area=compiler --budget=30k
-anneal orient --file=impl-plan.md --budget=30k
-anneal status --json --compact
-anneal check --scope=active
-```
-
-Use `areas` for per-area health profiles — each directory gets a grade (A–D) based on errors, connectivity, and metadata coverage. Use `orient` to generate a tiered, token-budgeted reading list: **Pinned → Frontier → Foundation → Upstream → Downstream**. **Frontier** is per-area newest file with a Frontier-eligible status — when the corpus declares `[convergence] ordering`, that means status IN the ordering; otherwise any non-terminal declared status. **Foundation** is stable hubs the frontier still cites (curated hubs like `README`/`CHANGELOG`/`DESIGN-GOALS` always surface, plus files ranked by recency-weighted in-degree). Oversized foundation docs appear in an `Overflow` sub-block (path + size only, no snippet) — re-run with a wider `--budget` to pull them in. Use `orient --file=X` as the upstream complement to `impact`: what does this file build on? Use `status --json --compact` when you need a machine-readable dashboard. Use plain-text `check --scope=active` for default health checks.
-
-**Annotation that helps orient** (agents who maintain a corpus):
-- **Terminal status** (excluded from orient entirely): anneal reads the corpus's lattice. Any status configured in `[convergence] terminal` or matching the heuristic family — `superseded`, `archived`, `historical`, `prior`, `incorporated`, `digested`, `resolved`, `retired`, `deprecated`, `obsolete`, `withdrawn`, `cancelled`, `closed`, `done`, `completed` — is terminal. One canon, tool-wide.
-- **Frontier-eligible**: when the corpus declares a pipeline (`[convergence] ordering = [...]`), only statuses IN the ordering count. Otherwise, any non-terminal declared status works. This is why off-pipeline references like `status: stable` stay out of Frontier on a corpus with a pipeline — they're alive, just not where work is now.
-- `status: living` → always in Foundation (authoritative hub).
-- `superseded-by: <path>` → excluded; the replacement wins.
-- `purpose: "Entry point. Read this first."` → Foundation curated-hub bonus (also accepts "read first", "overview", "map", "orientation").
-- When creating a doc that obsoletes another, set both `status: superseded` and `superseded-by: <new-path>` on the old file. The corpus stops surfacing the redirect the moment you save.
-
-### Garden (maintenance)
-
-```bash
+anneal context "<goal>"
+anneal status
 anneal garden
-anneal garden --area=compiler
-anneal garden --category=fix
-anneal garden --json --limit=25
+anneal describe runtime
 ```
 
-Use `garden` to surface ranked maintenance tasks across six categories: `fix` (E001 broken refs, E002 undischarged obligations), `tidy` (S001 orphans), `link` (island areas), `stale` (old files), `meta` (missing frontmatter), `drift` (namespaces leaking across areas). Each task includes `fix:`, `context:`, and `verify:` hints so the agent can close the loop without guidance.
+Use `context` when the user gives a concrete goal and you need search hits,
+graph neighborhood, and read spans in one call. Its `--budget` derives a
+per-hit read cap that is applied independently to each winning hit. Use
+`anneal status` when the question is corpus state. Use `anneal garden` when
+you want ranked maintenance tasks with fix/context/verify hints. Use
+`describe` for predicates, verbs, primitives, and runtime objects; use `vocab`
+for observed status values, edge kinds, namespaces, and frontmatter fields.
 
-### Inspect A Specific Thing
+### Finding and Reading
 
 ```bash
-anneal get anneal-spec.md --context
-anneal get arch.md impl.md spec.md --status-only
-anneal get arch.md impl.md spec.md --context
-anneal find <text> --limit 25
-anneal find --status=active --kind=file --context
-anneal find --recent --kind=file --sort=date
-anneal map --around=anneal-spec.md
-anneal map --around=anneal-spec.md --upstream
-anneal map --around=anneal-spec.md --downstream
-anneal map --by-area
-anneal map --by-area --min-edges=10
+anneal search "<text>" --limit 5
+anneal read <handle> --budget 4000
+anneal H <handle>
 ```
 
-Use `get` for one known handle, `find` for discovery (query is optional when any filter is present), and `map --around` when relationship shape matters more than raw text. Pass multiple handles to `get` for a compact batch view (`--status-only` trims to identity+status; `--context` adds the purpose/note summary). Add `--upstream` or `--downstream` to turn `map --around` into a directed tree — the same traversal `orient --file` and `impact` use. Add `--by-area` for the 30-second shape-of-the-corpus view: cross-area edge counts plus island detection.
+Use `search` for content retrieval. It handles light stemming and common
+planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
+search or when the handle is known. Use `H` when relationship shape matters.
+Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
+for pipes.
 
-### Ask A Structural Question
+### Asking a Precise Question
 
 ```bash
-anneal query handles --kind label --namespace OQ
-anneal query edges --kind DependsOn --confidence-gap
-anneal query diagnostics --severity warning
-anneal query obligations --undischarged
-anneal query suggestions --code S001
+anneal -e '? *handle{id: h, kind: "file", status: s}.'
+anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+anneal -e '? upstream("formal-model/v17.md", h).'
 ```
 
-Use `query` for graph-shaped questions that are too specific for `status`, too broad for `get`, and outside `find`'s identity-search role.
+Use raw Datalog when the built-in verbs are too broad. Stored source facts use
+`*` prefixes; prelude and project predicates do not.
 
-### Justify A Derived Result
+Use `--explain` when you need provenance for why a row exists. It explains the
+first 3 rows by default; use `--explain-first N` for a different cap or
+`--explain-all` only when you really want every row's derivation tree.
+
+### Discovering the Runtime
 
 ```bash
-anneal explain diagnostic --id diag_deadbeef
-anneal explain impact anneal-spec.md
-anneal explain convergence
-anneal explain obligation REQ-12
-anneal explain suggestion --id sugg_deadbeef
+anneal sources
+anneal verbs
+anneal schema
+anneal vocab
+anneal describe convergence
 ```
 
-Use `explain` when the question is “why did anneal say this?” rather than “what exists?”.
+Use these before inventing names. Agents should discover the active adapters,
+verbs, predicates, corpus vocabulary, output contracts, and capability
+requirements from the runtime.
 
-### Understand Change Or Blast Radius
+### Health and Compatibility
 
 ```bash
-anneal diff
-anneal diff --days=7
-anneal diff --by-area
-anneal diff --by-area --days=7
-anneal impact anneal-spec.md
-anneal impact <file-or-handle>
-anneal orient --file=anneal-spec.md
+anneal broken
+anneal work
+anneal trend  # emits rows when snapshot history exists; otherwise zero rows
+anneal health --json --compact
+anneal check --scope=active
+anneal get <handle> --context
 ```
 
-Impact traverses edge kinds listed in `[impact] traverse` in `anneal.toml` (defaults to DependsOn, Supersedes, Verifies). Corpora with custom edge kinds like Synthesizes or Implements should configure this for accurate blast radius.
+Prefer programmable-runtime verbs for new workflows. The older health commands
+remain available during the migration window when exact compatibility matters.
 
-`orient --file=X` and `impact X` compose into a before/after pair for edits: `orient --file` is the upstream reading list ("what do I need to read before editing?") and `impact` is the downstream review set ("what do I need to verify after?").
+## Command Map
 
-Use `anneal diff` when the question is about structural corpus changes rather than line edits. Add `--days=7` or `--days=30` for a coarser session-resume view; add `--json` for a structured delta. `--by-area` pivots to a per-area trend table so you can see which areas are improving, holding, or degrading.
+### Retrieval
 
-### Initialize Or Adjust Config
+- `anneal context GOAL`: grouped cold-agent context from search, read, and
+  neighborhood
+- `anneal search TEXT`: ranked content hits with handle, span, score, reason,
+  field, and low-confidence marker
+- `anneal read HANDLE`: bounded content spans
+- `anneal H HANDLE`: handle neighborhood
+
+### Standard Verbs
+
+- `anneal status`: compact corpus status
+- `find`: identity-oriented handle lookup
+- `work`: ranked work candidates
+- `blocked`: blockers for one handle
+- `broken`: diagnostic gate
+- `trend`: convergence movement rows when snapshot history exists; no-history
+  corpora emit zero rows
+- `vocab`: observed status, edge, namespace, and metadata vocabulary
+- `context`: cold-agent retrieval bundle
+
+Project `@verb` declarations in `anneal.dl` appear beside these in
+`anneal verbs` and are callable through the same surface.
+
+### Raw Query Surface
 
 ```bash
-anneal init --dry-run
-anneal init
+anneal -e '? *handle{id: h, kind: "label", status: "open"}.'
+anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
+anneal -e '? search("conformance", h, span, score, reason, field, low).'
+anneal -e '? read("formal-model/v17.md", 4000, span, text, start, end, tokens).'
 ```
 
-Use this when the corpus lacks `anneal.toml` or when the user is formalizing status pipelines and handle namespaces.
+Common stored facts:
 
-The top-level `exclude` list in `anneal.toml` accepts directory names (e.g. `"vendor"`) and glob patterns (e.g. `"**/README.md"`). Glob patterns prevent matched files from entering the graph — useful for structural index files that should not trigger W003 or S003.
+- `*handle`
+- `*edge`
+- `*meta`
+- `*content`
+- `*span`
+- `*concern`
+- `*config`
+- `*snapshot`
+- `*generation`
 
-## Minimal Mental Model
+Common prelude families:
 
-- `handle`: a file, section, label, version, or external URL
-- `status`: frontmatter lifecycle state; typically split into active vs terminal, representing how settled the knowledge is
-- `snapshot`: `status` and `check` append to local anneal history, which powers convergence and diff
-- `convergence`: structural evidence that the corpus is settling rather than fragmenting
-
-You do not need the full model in your head. Reach for `anneal help` when exact semantics matter.
+- graph: `upstream`, `downstream`, `impact`, `neighborhood`
+- convergence: lifecycle position, entropy, blocked, advancing
+- checks: `diagnostic`
+- ranking: `search`, `top_work`, `top_k` helpers
+- views: callable starter verbs
 
 ## Agent Rules
 
-- Arriving at a new corpus: prefer `anneal areas` + `anneal orient` over `anneal status`. `areas` gives the shape (directories, grades, cross-links); `orient` gives a token-budgeted reading list. `status --json --compact` is the machine-readable dashboard — use it when capturing corpus state for another tool, not for human-facing orientation.
-- Before editing a knowledge file: `anneal orient --file=<path>` for upstream context, then `anneal impact <file>` for downstream blast radius. The pair composes into a before/after workflow.
-- When asked "what needs fixing?": `anneal garden`. Follow each task's `fix:`, `context:`, and `verify:` hints directly — they encode the full maintenance loop without further guidance.
-- Use plain-text output for routine `check`, `get`, `find`, `query`, `explain`, `map`, `diff`, `impact`, `areas`, `orient`, `garden`, and `init` unless you are immediately filtering machine-readable output.
-- Use plain-text `anneal check --scope=active` for default health checks. Scope with `--area=<dir>` or `--recent` / `--since=14d` to narrow quickly.
-- Prefer bounded defaults like `anneal get <handle> --context`, `anneal find <text> --limit 25`, `anneal query ...`, and `anneal map --around=<handle>`.
-- `anneal find` accepts an optional query — `anneal find --status=active --kind=file --context` works without a positional argument.
-- Reach for `anneal query ...` when the user is asking an ad hoc structural question across many handles or edges.
-- Reach for `anneal explain ...` when the user wants provenance for a diagnostic, suggestion, obligation state, impact set, or convergence signal. Outstanding obligations include the exact `discharges:` frontmatter syntax needed to remediate.
-- Root detection is automatic: `--root` overrides, otherwise `anneal` prefers `.design/`, then `docs/`, then the current directory.
-- After editing knowledge files, run `anneal check --scope=active` (or the `verify:` hint from the originating garden task).
-- If error counts look surprisingly high, confirm whether terminal files are included before reporting the corpus as unhealthy.
+- Start with `anneal context "<goal>"` for goal-oriented work.
+- Use `search` then `read` when you need tighter control over retrieval.
+- Use `sources`, `verbs`, `schema`, and `describe` before writing a custom
+  query against unfamiliar vocabulary.
+- Use `anneal -e` for composite questions. Keep queries narrow and project only
+  fields you need.
+- Use `--json` or NDJSON streams for tool consumption. Runtime commands render
+  readable text at a terminal; use `--format=text` to force that renderer
+  through pipe-only harnesses.
+- Use `--root` for the corpus path. Use `--area` only for an area name inside
+  that corpus, usually a top-level directory or configured concern group.
+- Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
+  `obligations` when exact pre-runtime behavior is required.
+- After editing corpus files, run `anneal broken` or `anneal check
+  --scope=active`, depending on whether you are exercising the programmable
+  runtime or the compatibility surface.
+- If a command returns too much, rerun with a lower `--limit`, smaller
+  `--budget`, or a more specific query.
 
-When you need structured diagnostics, filter them to a narrow summary before returning them to the model, for example:
+## Project Extension
 
-```bash
-anneal check --scope=active --json | jq '.summary'
-anneal check --scope=active --json --diagnostics --limit 25 | jq '.diagnostics[:5]'
+`anneal.dl` at the corpus root can add discovery facts, project predicates, and
+verbs.
+
+```dl
+md.file_extension(".md").
+md.scan_root(".").
+md.scan_exclude("node_modules").
+
+release_blocker(h, "broken_ref") :=
+  diagnostic("E001", severity, h, file, line, evidence).
+
+@verb(
+  name: "release-blockers",
+  query: "? release_blocker(h, why).",
+  doc: "Open blockers for the next release.",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  capabilities: ["read"]
+)
 ```
 
-## High-Value Diagnostics
+Discovery facts are consumed by adapters before extraction. Rules and verbs are
+loaded after source facts exist. Project predicates shadow standard-library
+predicates by name and arity.
 
-- `E001`: broken reference
-- `E002`: undischarged obligation
-- `W001`: stale dependency — active handle has DependsOn edge to terminal (Cites and custom edges don't trigger W001)
-- `W002`: confidence gap where higher-level work depends on lower-level work
+## Mental Model
 
-For the full diagnostic set, use `anneal help check`.
+- `handle`: a file, section, label, version, or external reference
+- `source`: an adapter such as markdown, code, host runtime, or issue tracker
+- `fact`: a stored row emitted by a source or a derived row produced by rules
+- `verb`: a named query with documentation, schema, and capabilities
+- `generation`: a source refresh epoch used for atomic fact replacement
+- `visibility`: fact-level access envelope applied before derivation
+
+You do not need the full language in your head. Query the runtime first; extend
+it only when a goal needs vocabulary the corpus does not yet have.

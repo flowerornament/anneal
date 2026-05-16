@@ -2,6 +2,61 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Programmable Corpus Runtime substrate: a Datalog parser/evaluator with
+  typed IR, stratified negation, safety checks, aggregation, runtime
+  primitives, content retrieval, self-description, standard-library preludes,
+  project `anneal.dl` extension, trail/provenance capture, and
+  capability/policy gates.
+- New additive programmable-runtime command surface in the same `anneal` binary:
+  `status`, `context`, `search`, `read`, `H`, `work`, `blocked`, `broken`, `trend`,
+  `describe`, `sources`, `schema`, `verbs`, `eval`, and `-e`.
+  `anneal --help`, `anneal <command> --help`, and
+  `anneal help <command>` expose the surface.
+- `anneal context GOAL` composes search hits, bounded read spans, and graph
+  neighborhood into one JSON object. Its `--budget` now derives a per-hit read
+  cap that is applied independently to each winning hit, so a strong long-form
+  result is not dropped merely because several hits were selected.
+- `--explain` derivation traces for raw Datalog queries and runtime verbs,
+  including rule/provenance paths back through the prelude and project layers.
+- Cargo workspace split into `anneal-core`, `anneal-md`, `anneal-cli`,
+  `anneal-mcp`, `anneal-lang`, and `anneal-legacy`. `anneal-lang` remains a
+  private crate (`publish = false`) until the syntax boundary has a second
+  consumer and pinned public semantics.
+
+### Changed
+
+- Existing corpus-health workflows remain available during the compatibility
+  window. The new runtime commands ship in the same installed binary.
+- `trend` now degrades cleanly on corpora without snapshot history by emitting
+  zero rows instead of failing.
+- `anneal status` is the named runtime status command, and bare `anneal` also
+  routes to that status view. The older compatibility health report is
+  available as `anneal health`.
+- Renames: users of 0.10 and earlier should run `anneal health` for the old
+  corpus-health overview that used to live at `anneal status`. `anneal status`
+  is now the runtime work-prioritization view.
+- README and the bundled `anneal` skill lead with the programmable runtime
+  while still documenting compatibility commands (`health`, `check`, `get`,
+  `find`, `map`, `impact`, `diff`, `obligations`, `init`, and `prime`).
+
+### Known Limitations
+
+- `anneal-mcp` ships as a crate/library surface. The installed root
+  binary does not yet expose `anneal --mcp` or `anneal mcp`; source checkouts
+  can inspect the crate-level tool catalog with
+  `cargo run -p anneal-mcp -- --tools`.
+- The default ranker is still lexical retrieval. It includes light stemming and
+  a small built-in abbreviation table for common planning terms, but broader
+  domain synonyms still require explicit wording or a custom search/ranking
+  provider.
+- Remaining polish and edge-case correctness work is tracked in `bd`,
+  including introspection field polish, stricter empty-result diagnostics, and
+  runtime edge cases that are not acceptance blockers for the next release.
+
 ## 0.10.1 - 2026-04-23
 
 ### Fixed
@@ -9,7 +64,7 @@ All notable changes to `anneal` are documented in this file.
 - `OutputStyle::tone(Heading)` previously emitted ANSI bold even when
   `color: false`, intending to preserve scannability in monochrome
   terminals and log files. In practice this broke pipe/grep
-  cleanliness and violated the `NO_COLOR` spec intent ("no added
+  cleanliness and violated the `NO_COLOR` intent ("no added
   ANSI"), and made plain-mode tests fail in the Nix build sandbox
   (seen as `\u{1b}[1m` wrappers around headings). Plain mode now
   emits no ANSI at all, including bold. Rich / TTY output unchanged.
@@ -33,7 +88,7 @@ All notable changes to `anneal` are documented in this file.
   `GLOSSARY` by basename, plus files with `status: living` or a
   `purpose:` line matching "entry point" / "read first" / "overview" /
   "map" / "orientation") receive an explicit bonus — human-curated
-  signals outrank graph-centrality guesses (`KB-P9` in the spec).
+  signals outrank graph-centrality guesses (`KB-P9`).
 
   **Frontier** picks per-area newest file with a Frontier-eligible
   status. When the corpus declares `[convergence] ordering = [...]`
@@ -78,7 +133,7 @@ All notable changes to `anneal` are documented in this file.
   "anneal respects your lattice."
 
 - S001 (orphaned handle) no longer fires on "solo" version handles —
-  a Version generated from a filename like `2026-04-17-audit-v2.md`
+  a Version generated from a filename like `2026-04-17-audit-v3.md`
   where no `-v1` sibling exists. Detection: no outgoing `Supersedes`
   edge means no older sibling, so the version is filename hygiene,
   not a disconnected version chain. Real version chains (v17 of
@@ -192,7 +247,7 @@ simpler before the cut:
 ### Changed
 
 - Snapshot schema gained an optional per-area summary (files, handles, errors, orphans, cross-links, connectivity, grade). Old snapshots without this field still parse.
-- Command count in docs and spec went from 12 to 15 (`orient`, `garden`, `prime`).
+- Command count in docs went from 12 to 15 (`orient`, `garden`, `prime`).
 - README, skill file, and `--help` examples reorganized around three explicit loops: orientation, narrowing, gardening. Command output cross-references (e.g. `status` → `check`, `areas` → `garden`, `check` → `explain obligation`) so an agent following hints reaches the right next command without consulting documentation.
 
 ### Fixed
@@ -223,12 +278,12 @@ simpler before the cut:
 - Temporal awareness: file handles now carry a resolved date from `updated:` frontmatter > `date:` frontmatter > `YYYY-MM-DD` filename prefix. Foundation for upcoming `--recent`, `--since`, and `orient` features.
 - `[areas]` config section with `orphan_threshold` for tuning grade sensitivity.
 - `[temporal]` config section with `recent_days` for the upcoming `--recent` flag.
-- Design specs for areas/orient/garden feature set and CLI UX audit.
+- Design notes for areas/orient/garden feature set and CLI UX audit.
 
 ### Changed
 
 - `check` human output now sorts diagnostics by severity (errors first). Previously sorted by code, which buried errors under suggestions in large corpora.
-- Human output now says "terminal" instead of "frozen" to match spec terminology consistently.
+- Human output now says "terminal" instead of "frozen" to match project terminology consistently.
 - Handle construction uses five named constructors (`Handle::file`, `::section`, `::label`, `::version`, `::external`) instead of raw struct literals. Adding a field to Handle is now a one-file change.
 
 ### Fixed
@@ -343,7 +398,7 @@ simpler before the cut:
 
 - Simplified the internal query/explain analysis pipeline by factoring shared analysis, obligation, identity, and selector logic into dedicated modules.
 - Tightened query/explain defaults around bounded output, active-scope filtering, and check-compatible diagnostic derivation.
-- Updated the README, canonical spec, CLI help, and bundled anneal skill so the new query/explain workflows are documented consistently.
+- Updated the README, canonical docs, CLI help, and bundled anneal skill so the new query/explain workflows are documented consistently.
 
 ## 0.4.3 - 2026-04-02
 

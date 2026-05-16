@@ -1,0 +1,33 @@
+# Source-backed topic documentation for ranking helpers.
+
+@doc(
+  name: "ranking",
+  doc: "Ranking standard-library helpers around lexical search, source-calibrated scores, low-confidence filtering, and result selection policies."
+).
+
+@doc(
+  name: "work_candidate",
+  doc: "Bind handles with convergence potential that can be ranked as possible work."
+).
+work_candidate(h, energy) :=
+  potential(h, energy).
+
+@doc(
+  name: "top_work",
+  doc: "Bind the top convergence-potential work candidates."
+).
+top_work(h, energy) :=
+  (h, energy) = TopK{ k: 25, key: energy :
+    (h, energy) :
+    work_candidate(h, energy)
+  }.
+
+@doc(
+  name: "ranked_work",
+  doc: "Bind dense ranks for convergence-potential work candidates."
+).
+ranked_work(h, energy, rank) :=
+  (h, energy, rank) = Rank{ key: energy, rank: rank :
+    (h, energy, rank) :
+    work_candidate(h, energy)
+  }.

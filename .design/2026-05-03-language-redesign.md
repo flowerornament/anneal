@@ -1,5 +1,6 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-13-corpus-runtime.md
 date: 2026-05-03
 depends-on:
   - anneal-spec.md

@@ -4,6 +4,7 @@
 
 - [x] **v1.0 MVP** - Phases 1-3 (shipped 2026-03-29)
 - [x] **v1.1 Parser Hardening & UX Polish** - Phases 4-7 (shipped 2026-03-31)
+- [ ] **v2.0 Programmable Corpus Runtime** - 11 phases (per `.design/2026-05-13-corpus-runtime.md`)
 
 ## Phases
 
@@ -128,20 +129,61 @@ Plans:
 - [x] 07-03-PLAN.md -- File-scoped check + terminal heuristics + temporal S003
 - [x] 07-04-PLAN.md -- Self-check closure
 
+### v2.0 Programmable Corpus Runtime (Active)
+
+**Milestone Goal:** A programmable knowledge-corpus runtime for agents and humans. Substrate (Datalog primitives + convergence standard library) decoupled from sources (markdown, MDX, code, host applications) by the `Source` trait. The same agent skills work across every corpus the substrate can ingest. Master spec: `.design/2026-05-13-corpus-runtime.md` (status: current).
+
+**Engine-spike outcome:** ascent for engine-derived primitives + dynamic IR for the rule layer. See `.design/2026-05-13-engine-spike-results.md`.
+
+Closure work (Phase 0):
+- [ ] **Phase 0 closure** — parity-runner, fixtures snapshot, unsafe audit, dynamic-IR bench. `bd anneal-apa`.
+
+Build phases (each depends on the previous unless noted):
+- [ ] **Phase 1 Foundation** — workspace, Source trait, stored relations, generation tracking, anneal-md. `bd anneal-xu2`.
+- [ ] **Phase 2 Datalog runtime** — parser, IR, fixpoint, stratification, NDJSON output. `bd anneal-jqh`.
+- [ ] **Phase 3 Engine primitives** — graph, lifecycle, obligations, aggregation, time travel. `bd anneal-f2b`.
+- [ ] **Phase 4 Content layer** — `*content`/`*span`, search + Ranker, read, match. `bd anneal-9yl`.
+- [ ] **Phase 5 Self-description** — schema, predicates, verbs, describe, source_of. `bd anneal-1gy`. *(parallel with Phase 4)*
+- [ ] **Phase 6 Standard library** — graph.dl, convergence.dl, checks.dl, ranking.dl, views.dl. `bd anneal-1xb`.
+- [ ] **Phase 7 Project extension** — anneal.dl loader, @verb, adapter-qualified discovery + single-adapter sugar. `bd anneal-7it`.
+- [ ] **Phase 8 Trails + provenance** — `*trail`, TrailSummarizer, persistence, --explain. `bd anneal-t10`. *(depends on Phase 4)*
+- [ ] **Phase 9 Capability + Policy** — ActorContext, capability gating, Policy trait. `bd anneal-m08`. *(depends on Phase 3)*
+- [ ] **Phase 10 Surfaces** — anneal-cli, anneal-mcp, anneal init. `bd anneal-toe`. *(depends on Phases 6, 7, 8, 9)*
+- [ ] **Phase 11 Migration + acceptance** — parity, fixtures (large-corpus/v17, anneal/release-blocker), dual-CLI, docs. `bd anneal-px9`.
+
+**Forward-looking tracks** (v2.1+; spec Part XIII):
+- Trail-driven workflows (replay, diff, summarize) — v2.1
+- Adapters beyond markdown — anneal-mdx, anneal-code, anneal-host (host-corpus embedding) — v2.1+
+- Multi-corpus federation UI — v2.2
+
+**Open questions** kept in bd: `anneal-23w` (TakeUntil), `anneal-kys` (federation, v2.2), `anneal-nty` (section parent_file), `anneal-s74` (perf ceiling).
+
 ## Progress
 
-**Execution Order:** Phases 4 -> 5 -> 6 -> 7
-
-| Phase | Milestone | Plans Complete | Status | Completed |
-|-------|-----------|----------------|--------|-----------|
-| 1. Graph Foundation | v1.0 | 3/3 | Complete | 2026-03-29 |
-| 2. Checks & CLI | v1.0 | 3/3 | Complete | 2026-03-29 |
-| 3. Convergence & Polish | v1.0 | 5/5 | Complete | 2026-03-29 |
-| 4. Types & Plausibility | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 5. pulldown-cmark Migration | v1.1 | 3/3 | Complete | 2026-03-30 |
-| 6. Resolution Cascade | v1.1 | 4/4 | Complete | 2026-03-30 |
-| 7. UX Enrichment | v1.1 | 4/4 | Complete | 2026-03-31 |
+| Phase | Milestone | Status | Completed |
+|-------|-----------|--------|-----------|
+| 1. Graph Foundation | v1.0 | Complete | 2026-03-29 |
+| 2. Checks & CLI | v1.0 | Complete | 2026-03-29 |
+| 3. Convergence & Polish | v1.0 | Complete | 2026-03-29 |
+| 4. Types & Plausibility | v1.1 | Complete | 2026-03-30 |
+| 5. pulldown-cmark Migration | v1.1 | Complete | 2026-03-30 |
+| 6. Resolution Cascade | v1.1 | Complete | 2026-03-30 |
+| 7. UX Enrichment | v1.1 | Complete | 2026-03-31 |
+| 0. Closure (parity, fixtures, unsafe audit) | v2.0 | Ready | — |
+| 1. Foundation | v2.0 | Blocked on Phase 0 | — |
+| 2. Datalog runtime | v2.0 | Blocked on Phase 1 | — |
+| 3. Engine primitives | v2.0 | Blocked on Phase 2 | — |
+| 4. Content layer | v2.0 | Blocked on Phase 3 | — |
+| 5. Self-description | v2.0 | Blocked on Phase 3 | — |
+| 6. Standard library | v2.0 | Blocked on Phase 4, 5 | — |
+| 7. Project extension | v2.0 | Blocked on Phase 6 | — |
+| 8. Trails | v2.0 | Blocked on Phase 4 | — |
+| 9. Capability/Policy | v2.0 | Blocked on Phase 3 | — |
+| 10. Surfaces | v2.0 | Blocked on Phases 6-9 | — |
+| 11. Migration | v2.0 | Blocked on Phase 10 | — |
 
 ---
 *Roadmap created: 2026-03-28*
 *v1.1 phases added: 2026-03-29*
+*v2.0 milestone added: 2026-05-07 (per language-first redesign spec merged 2026-05-03)*
+*v2.0 milestone reframed and rescoped: 2026-05-13 (per `.design/2026-05-13-corpus-runtime.md`)*

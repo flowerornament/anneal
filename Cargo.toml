@@ -2,8 +2,33 @@
 name = "anneal"
 version = "0.10.1"
 edition = "2024"
+default-run = "anneal"
 license = "MIT"
 description = "Convergence assistant for knowledge corpora"
+
+[workspace]
+members = [
+    "crates/anneal-legacy",
+    "crates/anneal-lang",
+    "crates/anneal-core",
+    "crates/anneal-md",
+    "crates/anneal-cli",
+    "crates/anneal-mcp",
+]
+default-members = [
+    ".",
+    "crates/anneal-legacy",
+    "crates/anneal-lang",
+    "crates/anneal-core",
+    "crates/anneal-md",
+    "crates/anneal-cli",
+    "crates/anneal-mcp",
+]
+exclude = [
+    "tools/parity-runner",
+    "tools/spike-runner",
+]
+resolver = "3"
 
 [lints.rust]
 unsafe_code = "deny"
@@ -30,22 +55,8 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anyhow = "1"
-camino = { version = "1", features = ["serde1"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-clap = { version = "4", features = ["derive"] }
-console = "0.16"
-globset = "0.4"
-pulldown-cmark = { version = "0.13", default-features = false }
-regex = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml_ng = "0.10"
-toml = "0.8"
-walkdir = "2"
-
-[dev-dependencies]
-tempfile = "3"
+anneal-cli = { version = "0.10.1", path = "crates/anneal-cli" }
+anneal-legacy = { version = "0.10.1", path = "crates/anneal-legacy" }
 
 [profile.release]
 lto = true

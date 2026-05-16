@@ -1,0 +1,78 @@
+# Source-backed topic documentation for structural graph helpers.
+
+@doc(
+  name: "graph",
+  doc: "Graph standard-library helpers for structural corpus shapes such as orphan, stub, hub, neighborhood-friendly relation views, and source-neutral graph maintenance queries."
+).
+
+@doc(
+  name: "area_of",
+  doc: "Bind the non-empty area for a handle."
+).
+area_of(h, area) :=
+  *handle{id: h, area: area},
+  area != "".
+
+@doc(
+  name: "namespace_of",
+  doc: "Bind the non-empty namespace for a handle."
+).
+namespace_of(h, namespace) :=
+  *handle{id: h, namespace: namespace},
+  namespace != "".
+
+@doc(
+  name: "status_of",
+  doc: "Bind the status for a handle when the source provided one."
+).
+status_of(h, status) :=
+  *handle{id: h, status: status},
+  status != null.
+
+@doc(
+  name: "incoming_edge",
+  doc: "Bind incoming edges as handle, source, and edge kind."
+).
+incoming_edge(h, from, kind) :=
+  *edge{to: h, from: from, kind: kind}.
+
+@doc(
+  name: "outgoing_edge",
+  doc: "Bind outgoing edges as handle, target, and edge kind."
+).
+outgoing_edge(h, to, kind) :=
+  *edge{from: h, to: to, kind: kind}.
+
+@doc(
+  name: "incident",
+  doc: "Bind handles adjacent to a handle by either incoming or outgoing edge."
+).
+incident(h, other) := incoming_edge(h, other, kind).
+incident(h, other) := outgoing_edge(h, other, kind).
+
+@doc(
+  name: "orphan",
+  doc: "Bind non-file, non-section handles with no incoming edges."
+).
+orphan(h) :=
+  *handle{id: h, kind: kind},
+  in_degree(h, 0),
+  kind != "file",
+  kind != "section".
+
+@doc(
+  name: "stub",
+  doc: "Bind file handles with no stored content tokens."
+).
+stub(h) :=
+  *handle{id: h, kind: "file"},
+  token_estimate(h, 0).
+
+@doc(
+  name: "hub",
+  doc: "Bind handles with at least ten distinct adjacent handles."
+).
+hub(h, degree) :=
+  *handle{id: h},
+  degree = Count{ other : incident(h, other) },
+  degree >= 10.

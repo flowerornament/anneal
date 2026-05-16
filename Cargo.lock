@@ -24,6 +24,52 @@ dependencies = [
 name = "anneal"
 version = "0.10.1"
 dependencies = [
+ "anneal-cli",
+ "anneal-legacy",
+]
+
+[[package]]
+name = "anneal-cli"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+ "anneal-md",
+ "anyhow",
+ "camino",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "anneal-core"
+version = "0.10.1"
+dependencies = [
+ "anneal-lang",
+ "camino",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "anneal-lang"
+version = "0.10.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "anneal-legacy"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
  "anyhow",
  "camino",
  "chrono",
@@ -38,6 +84,23 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
+]
+
+[[package]]
+name = "anneal-mcp"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+]
+
+[[package]]
+name = "anneal-md"
+version = "0.10.1"
+dependencies = [
+ "anneal-core",
+ "anneal-legacy",
+ "camino",
+ "tempfile",
 ]
 
 [[package]]
@@ -640,6 +703,26 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
