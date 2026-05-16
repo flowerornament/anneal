@@ -1,8 +1,7 @@
-//! Parity runner skeleton for anneal v2.0 Phase 0.
+//! Parity runner for anneal v2.0 migration gates.
 //!
-//! The first job is intentionally modest: run anneal v1.1 against itself on the
-//! frozen large-corpus fixture for PD-1, PD-2, and PD-3. That proves the harness is
-//! deterministic before v2.0 has any output to compare against.
+//! The harness can run v1.1 against itself for deterministic baselines, or run
+//! v1.1 JSON surfaces against anneal-md fact-backed output and prelude queries.
 
 use anneal_cli::{ReadCommand, SearchCommand};
 use anneal_core::runtime::eval::NumberValue;
@@ -555,7 +554,10 @@ fn run_pd6_diagnostics(
     let actual = diagnostic_relation_rows(&output.rows)?;
     let passed = actual == expected;
     let detail = if passed {
-        format!("diagnostic relation rows match: {}", format_counts(&actual)?)
+        format!(
+            "diagnostic relation rows match: {}",
+            format_counts(&actual)?
+        )
     } else {
         format!(
             "diagnostic relation rows differ: {}",
@@ -604,12 +606,20 @@ fn check_relation_rows(output: &JsonValue) -> Result<RowMultiset> {
             .get("message")
             .and_then(JsonValue::as_str)
             .context("diagnostic missing message")?;
-        let file = if matches!(code, "S003" | "S005") {
+        let corpus_scoped = is_corpus_scoped_diagnostic(code);
+        // CR-D69/CR-D50: these are corpus- or status-scoped relation rows.
+        // v1.x JSON may carry representative display files, so PD-6 compares
+        // the semantic diagnostic tuple rather than the legacy display anchor.
+        let file = if corpus_scoped {
             JsonValue::Null
         } else {
             diagnostic.get("file").cloned().unwrap_or(JsonValue::Null)
         };
-        let line = diagnostic.get("line").cloned().unwrap_or(JsonValue::Null);
+        let line = if corpus_scoped {
+            JsonValue::Null
+        } else {
+            diagnostic.get("line").cloned().unwrap_or(JsonValue::Null)
+        };
         let evidence = diagnostic.get("evidence").unwrap_or(&JsonValue::Null);
         let subject = left_diagnostic_subject(code, message, &file, evidence)?;
         let evidence = left_diagnostic_evidence(code, message, evidence)?;
@@ -619,6 +629,10 @@ fn check_relation_rows(output: &JsonValue) -> Result<RowMultiset> {
         );
     }
     Ok(rows)
+}
+
+fn is_corpus_scoped_diagnostic(code: &str) -> bool {
+    matches!(code, "I001" | "S003" | "S005")
 }
 
 fn diagnostic_relation_rows(rows: &[Row]) -> Result<RowMultiset> {
@@ -691,8 +705,9 @@ fn left_diagnostic_subject(
             evidence_string(evidence, "prefix").context("namespace evidence missing prefix")?
         }
         "S003" => evidence_string(evidence, "status").context("S003 evidence missing status")?,
-        "S005" => evidence_string(evidence, "left_prefix")
-            .context("S005 evidence missing left_prefix")?,
+        "S005" => {
+            evidence_string(evidence, "left_prefix").context("S005 evidence missing left_prefix")?
+        }
         other => bail!("unknown diagnostic code in PD-6 left output: {other}"),
     };
     Ok(JsonValue::String(subject))
@@ -721,9 +736,11 @@ fn left_diagnostic_evidence(code: &str, message: &str, evidence: &JsonValue) -> 
         "W002" => Ok(json!([
             "confidence_gap",
             evidence_string(evidence, "source_status").context("W002 evidence missing source")?,
-            evidence_usize(evidence, "source_level").context("W002 evidence missing source level")?,
+            evidence_usize(evidence, "source_level")
+                .context("W002 evidence missing source level")?,
             evidence_string(evidence, "target_status").context("W002 evidence missing target")?,
-            evidence_usize(evidence, "target_level").context("W002 evidence missing target level")?
+            evidence_usize(evidence, "target_level")
+                .context("W002 evidence missing target level")?
         ])),
         "W003" => Ok(JsonValue::Null),
         "W004" => Ok(json!([
@@ -745,7 +762,10 @@ fn left_diagnostic_evidence(code: &str, message: &str, evidence: &JsonValue) -> 
             "pipeline_stall",
             evidence_string(evidence, "status").context("S003 evidence missing status")?,
             evidence_usize(evidence, "count").context("S003 evidence missing count")?,
-            evidence.get("next_status").cloned().unwrap_or(JsonValue::Null),
+            evidence
+                .get("next_status")
+                .cloned()
+                .unwrap_or(JsonValue::Null),
             evidence
                 .get("based_on_history")
                 .and_then(JsonValue::as_bool)
@@ -754,14 +774,17 @@ fn left_diagnostic_evidence(code: &str, message: &str, evidence: &JsonValue) -> 
         "S004" => Ok(json!([
             "abandoned_namespace",
             evidence_string(evidence, "prefix").context("S004 evidence missing prefix")?,
-            evidence_usize(evidence, "member_count").context("S004 evidence missing member count")?,
+            evidence_usize(evidence, "member_count")
+                .context("S004 evidence missing member count")?,
             evidence_usize(evidence, "terminal_members")
                 .context("S004 evidence missing terminal count")?,
-            evidence_usize(evidence, "stale_members").context("S004 evidence missing stale count")?
+            evidence_usize(evidence, "stale_members")
+                .context("S004 evidence missing stale count")?
         ])),
         "S005" => Ok(json!([
             "concern_group_candidate",
-            evidence_string(evidence, "left_prefix").context("S005 evidence missing left prefix")?,
+            evidence_string(evidence, "left_prefix")
+                .context("S005 evidence missing left prefix")?,
             evidence_string(evidence, "right_prefix")
                 .context("S005 evidence missing right prefix")?,
             evidence_usize(evidence, "file_count").context("S005 evidence missing file count")?
@@ -798,11 +821,14 @@ fn runtime_value_to_json(value: &RuntimeValue) -> JsonValue {
     match value {
         RuntimeValue::String(value) => JsonValue::String(value.clone()),
         RuntimeValue::Number(NumberValue::Int(value)) => json!(value),
-        RuntimeValue::Number(NumberValue::Float(value)) => serde_json::Number::from_f64(*value)
-            .map_or(JsonValue::Null, JsonValue::Number),
+        RuntimeValue::Number(NumberValue::Float(value)) => {
+            serde_json::Number::from_f64(*value).map_or(JsonValue::Null, JsonValue::Number)
+        }
         RuntimeValue::Bool(value) => JsonValue::Bool(*value),
         RuntimeValue::Null => JsonValue::Null,
-        RuntimeValue::List(items) => JsonValue::Array(items.iter().map(runtime_value_to_json).collect()),
+        RuntimeValue::List(items) => {
+            JsonValue::Array(items.iter().map(runtime_value_to_json).collect())
+        }
     }
 }
 

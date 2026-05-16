@@ -1619,7 +1619,22 @@ JSON evidence decoding, and resolution-cascade candidate formatting.
 Those are output concerns; the standard library should remain
 queryable Horn clauses over stored relations.
 
-### §28.2 Concern-candidate namespace scope [CR-D50]
+### §28.2 Corpus-scoped diagnostic locations [CR-D69]
+
+**Definition CR-D69 (Corpus-scoped diagnostic locations).** I001,
+S003, and S005 are corpus- or status-scoped diagnostics. Their
+relational `diagnostic(...)` rows MUST use `file = null` and
+`line = null`; concrete files involved in the evidence MAY appear in
+the `evidence` value when they are semantically meaningful. During the
+dual-CLI parity window, surfaces MAY attach v1.x representative files
+when lowering these rows into legacy JSON records and diagnostic IDs.
+
+Rationale: representative files for corpus-wide summaries were
+historical display anchors. Agents querying the diagnostic relation need
+the scope to be explicit instead of inferring corpus-level meaning from
+an arbitrary source path.
+
+### §28.3 Concern-candidate namespace scope [CR-D50]
 
 **Definition CR-D50 (S005 confirmed namespace scope).** The standard
 S005 concern-group suggestion considers pairs of confirmed label
@@ -2678,7 +2693,7 @@ as data instead of smuggling it through row sequence.
 - CR-D47: Structural graph vocabulary (§27.1)
 - CR-D48: Work ranking vocabulary (§27.2)
 - CR-D49: Relational diagnostic contract (§28.1)
-- CR-D50: S005 confirmed namespace scope (§28.2)
+- CR-D50: S005 confirmed namespace scope (§28.3)
 - CR-D51: Embeddable language boundary (§8.1)
 - CR-D52: Retrieval provider boundary (§6)
 - CR-D53: Fact visibility boundary (§16)
@@ -2697,6 +2712,7 @@ as data instead of smuggling it through row sequence.
 - CR-D66: Trail storage hardening (§13)
 - CR-D67: Trail projection safety (§13)
 - CR-D68: Source refresh transaction (§5)
+- CR-D69: Corpus-scoped diagnostic locations (§28.2)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
