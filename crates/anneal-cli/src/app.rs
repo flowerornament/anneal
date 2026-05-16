@@ -39,6 +39,12 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         if arg.starts_with("--root=") || is_ignored_global_flag(arg) {
             continue;
         }
+        if arg == "help" {
+            return iter
+                .next()
+                .and_then(|next| next.to_str())
+                .is_some_and(|topic| HelpTopic::parse(topic).is_some());
+        }
         return V2Command::recognizes_first_arg(arg);
     }
     false
@@ -51,7 +57,7 @@ pub fn main_entry() -> Result<()> {
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let invocation = Invocation::parse(args)?;
     if let V2Command::Help { topic } = invocation.command {
-        return CommandOutput::Text(topic.render().to_string()).write(io::stdout().lock());
+        return CommandOutput::Text(topic.render()).write(io::stdout().lock());
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
@@ -363,6 +369,13 @@ impl V2Command {
         let Some((command, rest)) = args.split_first() else {
             bail!("missing v2 command");
         };
+        if command == "help" {
+            let topic = rest
+                .first()
+                .and_then(|topic| HelpTopic::parse(topic))
+                .context("help requires a v2 command")?;
+            return Ok(Self::Help { topic });
+        }
         if rest
             .iter()
             .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
@@ -396,23 +409,7 @@ impl V2Command {
     }
 
     fn recognizes_first_arg(arg: &str) -> bool {
-        matches!(
-            arg,
-            "anneal"
-                | "context"
-                | "search"
-                | "read"
-                | "H"
-                | "work"
-                | "blocked"
-                | "broken"
-                | "trend"
-                | "describe"
-                | "sources"
-                | "schema"
-                | "verbs"
-                | "eval"
-        )
+        HelpTopic::parse(arg).is_some()
     }
 }
 
@@ -547,7 +544,7 @@ impl RuntimeSession {
             V2Command::Schema => self.run_verb("schema"),
             V2Command::Verbs => self.run_verb("verbs"),
             V2Command::Eval { query, explain } => self.run_query(&query, explain),
-            V2Command::Help { topic } => Ok(CommandOutput::Text(topic.render().to_string())),
+            V2Command::Help { topic } => Ok(CommandOutput::Text(topic.render())),
         }
     }
 
@@ -591,7 +588,7 @@ impl RuntimeSession {
 enum CommandOutput {
     Rows(Vec<anneal_core::runtime::Row>),
     One(serde_json::Value),
-    Text(String),
+    Text(&'static str),
 }
 
 impl CommandOutput {
@@ -853,6 +850,7 @@ mod tests {
             "-e",
             "? *handle{id: h}."
         ])));
+        assert!(should_handle_args(&os(&["anneal", "help", "context"])));
         assert!(!should_handle_args(&os(&[
             "anneal", "--root", ".design", "status"
         ])));
@@ -907,20 +905,36 @@ mod tests {
 
     #[test]
     fn parses_v2_subcommand_help_without_loading_corpus() {
-        let parsed = Invocation::parse(os(&["anneal", "--root=.design", "context", "--help"]))
-            .expect("parse context help");
+        for (command, topic, expected_output) in [
+            ("context", HelpTopic::Context, "Output: one JSON object"),
+            ("search", HelpTopic::Search, "Output: NDJSON rows with h"),
+            ("read", HelpTopic::Read, "Output: NDJSON rows with span_id"),
+        ] {
+            let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
+                .expect("parse command help");
 
-        assert_eq!(
-            parsed.command,
-            V2Command::Help {
-                topic: HelpTopic::Context
-            }
-        );
-        assert!(HelpTopic::Context.render().contains("Usage: anneal"));
+            assert_eq!(parsed.command, V2Command::Help { topic });
+            assert!(topic.render().contains("Usage: anneal"));
+            assert!(topic.render().contains(expected_output));
+        }
         assert!(
             HelpTopic::Context
                 .render()
-                .contains("Output: one JSON object")
+                .contains(&format!("default: {}", crate::DEFAULT_CONTEXT_HITS))
+        );
+        assert!(HelpTopic::Context.render().contains(&format!(
+            "default: {}",
+            crate::DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH
+        )));
+        assert!(
+            HelpTopic::Search
+                .render()
+                .contains(&format!("default: {DEFAULT_SEARCH_LIMIT}"))
+        );
+        assert!(
+            HelpTopic::Read
+                .render()
+                .contains(&format!("default: {DEFAULT_READ_BUDGET}"))
         );
     }
 
@@ -935,6 +949,20 @@ mod tests {
             }
         );
         assert!(HelpTopic::Eval.render().contains("--explain-depth"));
+    }
+
+    #[test]
+    fn parses_help_subcommand_for_v2_topics() {
+        let parsed =
+            Invocation::parse(os(&["anneal", "help", "context"])).expect("parse help context");
+
+        assert_eq!(
+            parsed.command,
+            V2Command::Help {
+                topic: HelpTopic::Context
+            }
+        );
+        assert!(HelpTopic::Context.render().contains("<GOAL>"));
     }
 
     #[test]
