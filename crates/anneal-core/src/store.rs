@@ -277,6 +277,7 @@ mod tests {
     use crate::facts::{ConfigFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact};
     use crate::history::{SnapshotEntry, SnapshotEntryFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::runtime::prelude::standard_prelude_set;
 
     fn identity(native_id: &str, generation: Generation) -> FactIdentity {
         FactIdentity::new(
@@ -563,12 +564,14 @@ mod tests {
                 "s1",
                 "2026-05-13",
                 CorpusId::from("test"),
+                standard_prelude_set(),
                 vec![SnapshotEntryFact::new("a.md", "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
                 "2026-05-13",
                 CorpusId::from("other"),
+                standard_prelude_set(),
                 vec![SnapshotEntryFact::new("b.md", "status", "current")],
             ),
         ]);

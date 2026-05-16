@@ -1,10 +1,17 @@
 //! Embedded prelude declarations that the runtime exposes to surfaces.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use super::ast::{Program, RuleLayer};
-use super::parser::{ParseError, parse_program};
+use serde::Serialize;
 
+use super::ast::{Program, RuleLayer, Statement};
+use super::parser::{ParseError, parse_program};
+use crate::hash::Fnv1a64;
+
+pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
+pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
 pub const CONTEXT_VERB_DOC: &str = "Find the most relevant handles for a goal, read bounded spans, and include a small neighborhood so a cold agent can localize work in one call.";
 pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
@@ -51,8 +58,390 @@ pub const STANDARD_PRELUDE_FILES: &[EmbeddedPreludeFile] = &[
     },
 ];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreludeSet {
+    compatibility: PreludeCompatibility,
+    files: Vec<PreludeFile>,
+    hash: PreludeHash,
+    source_map: PreludeSourceMap,
+}
+
+impl PreludeSet {
+    pub fn standard() -> Self {
+        Self::new(
+            PreludeCompatibility::CheckedIn {
+                version: STANDARD_PRELUDE_VERSION,
+            },
+            STANDARD_PRELUDE_FILES
+                .iter()
+                .map(PreludeFile::from_embedded)
+                .collect(),
+        )
+    }
+
+    fn custom(files: Vec<PreludeFile>) -> Self {
+        Self::new(PreludeCompatibility::Custom, files)
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, PreludeLoadError> {
+        let path = path.as_ref();
+        let metadata = fs::metadata(path).map_err(|source| PreludeLoadError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if metadata.is_file() {
+            return Ok(Self::custom(vec![PreludeFile::from_disk_file(
+                path,
+                path.display().to_string(),
+                PreludePathKey::single_file(),
+            )?]));
+        }
+        if metadata.is_dir() {
+            return Self::from_directory(path);
+        }
+        Err(PreludeLoadError::UnsupportedPath {
+            path: path.to_path_buf(),
+        })
+    }
+
+    pub fn program(&self) -> Result<Program, ParseError> {
+        let mut statements = Vec::new();
+        for file in &self.files {
+            let mut program = parse_program(file.source_name(), file.contents())?;
+            reject_unresolved_load_directives(file, &program)?;
+            program.assign_rule_layer(RuleLayer::Prelude);
+            statements.extend(program.statements);
+        }
+        Ok(Program { statements })
+    }
+
+    pub fn compatibility(&self) -> PreludeCompatibility {
+        self.compatibility
+    }
+
+    pub fn version(&self) -> Option<&'static str> {
+        self.compatibility.version()
+    }
+
+    pub fn files(&self) -> &[PreludeFile] {
+        &self.files
+    }
+
+    pub fn hash(&self) -> &PreludeHash {
+        &self.hash
+    }
+
+    pub fn source_map(&self) -> &PreludeSourceMap {
+        &self.source_map
+    }
+
+    fn new(compatibility: PreludeCompatibility, files: Vec<PreludeFile>) -> Self {
+        let hash = PreludeHash::for_files(&files);
+        let source_map = PreludeSourceMap::from_files(&files);
+        Self {
+            compatibility,
+            files,
+            hash,
+            source_map,
+        }
+    }
+
+    fn from_directory(root: &Path) -> Result<Self, PreludeLoadError> {
+        let mut paths = Vec::new();
+        collect_prelude_paths(root, root, &mut paths)?;
+        if paths.is_empty() {
+            return Err(PreludeLoadError::EmptyDirectory {
+                path: root.to_path_buf(),
+            });
+        }
+        paths.sort_by(|left, right| left.key.cmp(&right.key));
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                PreludeFile::from_disk_file(&path.path, path.key.as_str().to_string(), path.key)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::custom(files))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LoadedPrelude {
+    set: PreludeSet,
+    program: Program,
+}
+
+impl LoadedPrelude {
+    pub fn load_active() -> Result<Self, PreludeError> {
+        if std::env::var_os(ANNEAL_PRELUDE_PATH_ENV).is_none() {
+            return Ok(Self {
+                set: standard_prelude_set().clone(),
+                program: standard_prelude_program()?,
+            });
+        }
+        let set = active_prelude_set()?;
+        let program = set.program()?;
+        Ok(Self { set, program })
+    }
+
+    pub fn set(&self) -> &PreludeSet {
+        &self.set
+    }
+
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    pub fn into_program(self) -> Program {
+        self.program
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreludeCompatibility {
+    CheckedIn { version: &'static str },
+    Custom,
+}
+
+impl PreludeCompatibility {
+    pub fn version(self) -> Option<&'static str> {
+        match self {
+            Self::CheckedIn { version } => Some(version),
+            Self::Custom => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreludeFile {
+    source_name: String,
+    hash_key: PreludePathKey,
+    contents: String,
+}
+
+impl PreludeFile {
+    pub fn new(source_name: impl Into<String>, contents: impl Into<String>) -> Self {
+        let source_name = source_name.into();
+        Self {
+            hash_key: PreludePathKey::new(source_name.clone()),
+            source_name,
+            contents: contents.into(),
+        }
+    }
+
+    fn with_hash_key(
+        source_name: impl Into<String>,
+        hash_key: PreludePathKey,
+        contents: impl Into<String>,
+    ) -> Self {
+        Self {
+            source_name: source_name.into(),
+            hash_key,
+            contents: contents.into(),
+        }
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub fn hash_key(&self) -> &str {
+        self.hash_key.as_str()
+    }
+
+    pub fn contents(&self) -> &str {
+        &self.contents
+    }
+
+    fn from_embedded(file: &EmbeddedPreludeFile) -> Self {
+        Self::new(file.source_name, file.contents)
+    }
+
+    fn from_disk_file(
+        path: &Path,
+        source_name: String,
+        hash_key: PreludePathKey,
+    ) -> Result<Self, PreludeLoadError> {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("dl") {
+            return Err(PreludeLoadError::UnsupportedPath {
+                path: path.to_path_buf(),
+            });
+        }
+        let contents = fs::read_to_string(path).map_err(|source| PreludeLoadError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Self::with_hash_key(source_name, hash_key, contents))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PreludePathKey(String);
+
+impl PreludePathKey {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    fn single_file() -> Self {
+        Self::new("prelude.dl")
+    }
+
+    fn from_relative(root: &Path, path: &Path) -> Result<Self, PreludeLoadError> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| PreludeLoadError::PathOutsideRoot {
+                path: path.to_path_buf(),
+                root: root.to_path_buf(),
+            })?;
+        let mut parts = Vec::new();
+        for component in relative.components() {
+            let std::path::Component::Normal(part) = component else {
+                return Err(PreludeLoadError::UnsupportedPath {
+                    path: path.to_path_buf(),
+                });
+            };
+            let Some(part) = part.to_str() else {
+                return Err(PreludeLoadError::NonUtf8Path {
+                    path: path.to_path_buf(),
+                });
+            };
+            parts.push(part);
+        }
+        Ok(Self::new(parts.join("/")))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreludeHash(String);
+
+impl PreludeHash {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn for_files(files: &[PreludeFile]) -> Self {
+        let mut hasher = Fnv1a64::new();
+        for file in files {
+            hasher = write_hash_part(hasher, file.hash_key().as_bytes());
+            hasher = write_hash_part(hasher, file.contents().as_bytes());
+        }
+        Self(format!("fnv1a64:{:016x}", hasher.finish()))
+    }
+}
+
+impl std::fmt::Display for PreludeHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreludeSourceMap {
+    files: Vec<PreludeSourceFile>,
+}
+
+impl PreludeSourceMap {
+    pub fn files(&self) -> &[PreludeSourceFile] {
+        &self.files
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    fn from_files(files: &[PreludeFile]) -> Self {
+        Self {
+            files: files.iter().map(PreludeSourceFile::from_file).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreludeSourceFile {
+    source_name: String,
+    line_count: usize,
+}
+
+impl PreludeSourceFile {
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.line_count
+    }
+
+    fn from_file(file: &PreludeFile) -> Self {
+        Self {
+            source_name: file.source_name().to_string(),
+            line_count: file.contents().lines().count(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreludeLoadError {
+    #[error("{path:?}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{path:?} is not a .dl file or directory")]
+    UnsupportedPath { path: PathBuf },
+    #[error("{path:?} contains no .dl files")]
+    EmptyDirectory { path: PathBuf },
+    #[error("{path:?} is not a UTF-8 prelude path")]
+    NonUtf8Path { path: PathBuf },
+    #[error("{path:?} is outside prelude root {root:?}")]
+    PathOutsideRoot { path: PathBuf, root: PathBuf },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreludeError {
+    #[error(transparent)]
+    Load(#[from] PreludeLoadError),
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+}
+
+static STANDARD_PRELUDE_SET: LazyLock<PreludeSet> = LazyLock::new(PreludeSet::standard);
 static STANDARD_PRELUDE_PROGRAM: LazyLock<Result<Program, ParseError>> =
     LazyLock::new(parse_standard_prelude_program);
+
+pub fn standard_prelude_set() -> &'static PreludeSet {
+    &STANDARD_PRELUDE_SET
+}
+
+pub fn active_prelude_set() -> Result<PreludeSet, PreludeLoadError> {
+    match std::env::var_os(ANNEAL_PRELUDE_PATH_ENV) {
+        Some(path) => PreludeSet::from_path(path),
+        None => Ok(standard_prelude_set().clone()),
+    }
+}
+
+pub fn active_prelude() -> Result<LoadedPrelude, PreludeError> {
+    LoadedPrelude::load_active()
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct QueryEchoMeta<'a> {
+    pub query: &'a str,
+    pub prelude_hash: &'a str,
+}
+
+impl<'a> QueryEchoMeta<'a> {
+    pub fn new(query: &'a str, prelude: &'a PreludeSet) -> Self {
+        Self {
+            query,
+            prelude_hash: prelude.hash().as_str(),
+        }
+    }
+}
 
 pub fn standard_prelude_program() -> Result<Program, ParseError> {
     match &*STANDARD_PRELUDE_PROGRAM {
@@ -62,13 +451,74 @@ pub fn standard_prelude_program() -> Result<Program, ParseError> {
 }
 
 fn parse_standard_prelude_program() -> Result<Program, ParseError> {
-    let mut statements = Vec::new();
-    for file in STANDARD_PRELUDE_FILES {
-        let mut program = parse_program(file.source_name, file.contents)?;
-        program.assign_rule_layer(RuleLayer::Prelude);
-        statements.extend(program.statements);
+    standard_prelude_set().program()
+}
+
+fn write_hash_part(hasher: Fnv1a64, part: &[u8]) -> Fnv1a64 {
+    hasher
+        .write(part.len().to_string().as_bytes())
+        .write(&[0])
+        .write(part)
+        .write(&[0xff])
+}
+
+#[derive(Debug)]
+struct PreludePath {
+    key: PreludePathKey,
+    path: PathBuf,
+}
+
+fn collect_prelude_paths(
+    root: &Path,
+    directory: &Path,
+    paths: &mut Vec<PreludePath>,
+) -> Result<(), PreludeLoadError> {
+    for entry in fs::read_dir(directory).map_err(|source| PreludeLoadError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| PreludeLoadError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| PreludeLoadError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
+            collect_prelude_paths(root, &path, paths)?;
+        } else if file_type.is_file()
+            && path.extension().and_then(std::ffi::OsStr::to_str) == Some("dl")
+        {
+            paths.push(PreludePath {
+                key: PreludePathKey::from_relative(root, &path)?,
+                path,
+            });
+        }
     }
-    Ok(Program { statements })
+    Ok(())
+}
+
+fn reject_unresolved_load_directives(
+    file: &PreludeFile,
+    program: &Program,
+) -> Result<(), ParseError> {
+    for statement in &program.statements {
+        let (location, directive) = match statement {
+            Statement::Include(directive) => (&directive.location, "include"),
+            Statement::Import(directive) => (&directive.location, "import"),
+            _ => continue,
+        };
+        return Err(ParseError {
+            location: location.clone(),
+            message: format!(
+                "{directive} is not allowed inside PreludeSet file {:?}; use ANNEAL_PRELUDE_PATH directory package ordering instead",
+                file.source_name()
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub struct ContextQueryArgs<'a> {
@@ -212,6 +662,7 @@ mod tests {
             .iter()
             .map(|file| file.source_name)
             .collect::<Vec<_>>();
+        let prelude = standard_prelude_set();
 
         assert_eq!(
             source_names,
@@ -227,6 +678,112 @@ mod tests {
             parse_program(file.source_name, file.contents).is_ok()
                 && !file.contents.trim().is_empty()
         }));
+        assert_eq!(prelude.version(), Some(STANDARD_PRELUDE_VERSION));
+        assert_eq!(
+            prelude
+                .files()
+                .iter()
+                .map(PreludeFile::source_name)
+                .collect::<Vec<_>>(),
+            source_names
+        );
+        assert!(prelude.hash().as_str().starts_with("fnv1a64:"));
+        assert_eq!(prelude.hash().as_str().len(), "fnv1a64:".len() + 16);
+        assert_eq!(prelude.source_map().files().len(), source_names.len());
+        assert!(
+            prelude.source_map().files().iter().all(|file| {
+                source_names.contains(&file.source_name()) && file.line_count() > 0
+            })
+        );
+        prelude.program().expect("standard PreludeSet parses");
+    }
+
+    #[test]
+    fn custom_prelude_set_has_deterministic_order_and_custom_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+        std::fs::write(nested.join("z.dl"), r#"z("ok")."#).expect("write z");
+        std::fs::write(dir.path().join("a.dl"), r#"a("ok")."#).expect("write a");
+        std::fs::write(dir.path().join("ignore.txt"), "ignored").expect("write ignored");
+
+        let prelude = PreludeSet::from_path(dir.path()).expect("custom prelude loads");
+
+        assert_eq!(prelude.compatibility(), PreludeCompatibility::Custom);
+        assert_eq!(prelude.version(), None);
+        assert_eq!(
+            prelude
+                .files()
+                .iter()
+                .map(PreludeFile::source_name)
+                .collect::<Vec<_>>(),
+            vec!["a.dl", "nested/z.dl"]
+        );
+        assert_eq!(
+            prelude
+                .files()
+                .iter()
+                .map(PreludeFile::hash_key)
+                .collect::<Vec<_>>(),
+            vec!["a.dl", "nested/z.dl"]
+        );
+        assert_ne!(prelude.hash(), standard_prelude_set().hash());
+        assert_eq!(prelude.source_map().files().len(), 2);
+        prelude.program().expect("custom PreludeSet parses");
+    }
+
+    #[test]
+    fn single_file_custom_prelude_is_the_whole_package() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("custom.dl");
+        std::fs::write(&file, r#"custom("ok")."#).expect("write custom prelude");
+
+        let prelude = PreludeSet::from_path(&file).expect("single file prelude loads");
+
+        assert_eq!(prelude.version(), None);
+        assert_eq!(prelude.files().len(), 1);
+        assert_eq!(prelude.files()[0].source_name(), file.display().to_string());
+        assert_eq!(prelude.files()[0].hash_key(), "prelude.dl");
+        prelude.program().expect("single file PreludeSet parses");
+    }
+
+    #[test]
+    fn single_file_custom_prelude_hash_is_location_independent() {
+        let left = tempfile::tempdir().expect("left tempdir");
+        let right = tempfile::tempdir().expect("right tempdir");
+        let left_file = left.path().join("custom.dl");
+        let right_file = right.path().join("renamed.dl");
+        std::fs::write(&left_file, r#"custom("ok")."#).expect("write left");
+        std::fs::write(&right_file, r#"custom("ok")."#).expect("write right");
+
+        let left_prelude = PreludeSet::from_path(&left_file).expect("left prelude loads");
+        let right_prelude = PreludeSet::from_path(&right_file).expect("right prelude loads");
+
+        assert_eq!(left_prelude.hash(), right_prelude.hash());
+        assert_ne!(
+            left_prelude.files()[0].source_name(),
+            right_prelude.files()[0].source_name()
+        );
+    }
+
+    #[test]
+    fn custom_prelude_rejects_unresolved_load_directives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("custom.dl");
+        std::fs::write(&file, r#"include "other.dl"."#).expect("write custom prelude");
+
+        let prelude = PreludeSet::from_path(&file).expect("custom prelude loads");
+        let err = prelude.program().expect_err("include is rejected");
+
+        assert!(err.message.contains("include is not allowed"));
+    }
+
+    #[test]
+    fn query_echo_meta_uses_prelude_set_hash() {
+        let prelude = standard_prelude_set();
+        let meta = QueryEchoMeta::new("? blocked(h).", prelude);
+
+        assert_eq!(meta.prelude_hash, prelude.hash().as_str());
     }
 
     #[test]

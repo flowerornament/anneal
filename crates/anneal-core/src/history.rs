@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::SnapshotFact;
 use crate::ids::CorpusId;
+use crate::runtime::prelude::PreludeSet;
 use crate::time::snapshot_days_since_epoch;
 
 /// One append-only v2 snapshot entry in `.anneal/history.jsonl`.
@@ -14,6 +15,8 @@ pub struct SnapshotEntry {
     pub snapshot: String,
     pub at: String,
     pub corpus: CorpusId,
+    #[serde(default = "unknown_prelude_hash")]
+    pub prelude_hash: String,
     pub facts: Vec<SnapshotEntryFact>,
 }
 
@@ -22,12 +25,24 @@ impl SnapshotEntry {
         snapshot: impl Into<String>,
         at: impl Into<String>,
         corpus: CorpusId,
+        prelude: &PreludeSet,
+        facts: Vec<SnapshotEntryFact>,
+    ) -> Self {
+        Self::with_prelude_hash(snapshot, at, corpus, prelude.hash().to_string(), facts)
+    }
+
+    pub fn with_prelude_hash(
+        snapshot: impl Into<String>,
+        at: impl Into<String>,
+        corpus: CorpusId,
+        prelude_hash: impl Into<String>,
         facts: Vec<SnapshotEntryFact>,
     ) -> Self {
         Self {
             snapshot: snapshot.into(),
             at: at.into(),
             corpus,
+            prelude_hash: prelude_hash.into(),
             facts,
         }
     }
@@ -45,6 +60,10 @@ impl SnapshotEntry {
             })
             .collect()
     }
+}
+
+fn unknown_prelude_hash() -> String {
+    "unknown".to_string()
 }
 
 /// One key/value fact captured for a handle in a snapshot entry.
@@ -222,6 +241,7 @@ pub enum HistoryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::prelude::standard_prelude_set;
 
     #[test]
     fn append_and_read_snapshot_entries() {
@@ -231,12 +251,14 @@ mod tests {
             "s1",
             "2026-05-13T10:00:00Z",
             CorpusId::from("test"),
+            standard_prelude_set(),
             vec![SnapshotEntryFact::new("a.md", "status", "draft")],
         );
         let second = SnapshotEntry::new(
             "s2",
             "2026-05-14T10:00:00Z",
             CorpusId::from("test"),
+            standard_prelude_set(),
             vec![SnapshotEntryFact::new("a.md", "status", "current")],
         );
 
@@ -247,6 +269,33 @@ mod tests {
         assert_eq!(history.entries(), &[first, second]);
         assert!(history.warnings().is_empty());
         assert_eq!(history.snapshot_facts().len(), 2);
+        assert_eq!(
+            history.entries()[0].prelude_hash,
+            standard_prelude_set().hash().to_string()
+        );
+    }
+
+    #[test]
+    fn snapshot_entry_can_record_custom_prelude_hash() {
+        let entry = SnapshotEntry::with_prelude_hash(
+            "s1",
+            "2026-05-13T10:00:00Z",
+            CorpusId::from("test"),
+            "custom-hash",
+            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+        );
+
+        assert_eq!(entry.prelude_hash, "custom-hash");
+    }
+
+    #[test]
+    fn missing_snapshot_prelude_hash_deserializes_as_unknown() {
+        let entry: SnapshotEntry = serde_json::from_str(
+            r#"{"snapshot":"s1","at":"2026-05-13T10:00:00Z","corpus":"test","facts":[]}"#,
+        )
+        .expect("legacy snapshot entry decodes");
+
+        assert_eq!(entry.prelude_hash, "unknown");
     }
 
     #[test]
@@ -257,6 +306,7 @@ mod tests {
             "s1",
             "2026-05-13",
             CorpusId::from("test"),
+            standard_prelude_set(),
             vec![SnapshotEntryFact::new("a.md", "status", "draft")],
         );
         append_snapshot_entry(&root, &entry).expect("append first");
@@ -285,6 +335,7 @@ mod tests {
                 "s1",
                 "2026-05-13T10:00:00Z",
                 CorpusId::from("test"),
+                standard_prelude_set(),
                 vec![SnapshotEntryFact::new("a.md", "status", "draft")],
             ),
         )
@@ -321,12 +372,14 @@ mod tests {
                 "",
                 "2026-05-13",
                 CorpusId::from("test"),
+                standard_prelude_set(),
                 vec![SnapshotEntryFact::new("a.md", "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
                 "2026-05-13",
                 CorpusId::from("test"),
+                standard_prelude_set(),
                 vec![SnapshotEntryFact::new("a.md", "status", "draft")],
             ),
         ]);

@@ -1228,6 +1228,23 @@ Rationale: the prelude is now a standard library compatibility
 surface. Treating it as a package hides file layout and embedding
 details while preserving `source_of` line-level introspection.
 
+**Definition CR-D59 (Custom prelude package order).**
+`ANNEAL_PRELUDE_PATH` points to either one `.dl` file or a directory
+containing `.dl` files. A file path loads that file as the whole custom
+prelude package. A directory path loads all descendant `.dl` files in
+bytewise UTF-8 relative-path order; non-UTF-8 descendant paths are
+rejected. A single-file package uses the package-local hash key
+`prelude.dl` rather than the caller's absolute path. The resulting
+`PreludeSet` has no checked-in version, and its `prelude_hash` is
+computed over the ordered package-local file keys plus each file's
+bytes. Custom prelude package files are package members; `include` and
+`import` directives are rejected inside `PreludeSet` packages. Use
+directory membership for multi-file custom preludes.
+
+Rationale: custom preludes must be replayable. Reproducible replay
+requires the package boundary and load order to be deterministic before
+the hash is meaningful.
+
 ### §26 Load order and shadowing [CR-D21]
 
 **Definition CR-D21 (Load order).** Phase C of §7 loads:
@@ -2508,6 +2525,7 @@ as data instead of smuggling it through row sequence.
 - CR-D56: Verb projection boundary (§37)
 - CR-D57: Source driver boundary (§5)
 - CR-D58: Lifecycle profile examples (§27)
+- CR-D59: Custom prelude package order (§25)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
