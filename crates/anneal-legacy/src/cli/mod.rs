@@ -37,7 +37,7 @@ pub(crate) use init::cmd_init;
 pub(crate) use map::{MapByAreaOptions, MapOptions, TraversalDirection, cmd_map, cmd_map_by_area};
 pub(crate) use obligations::cmd_obligations;
 pub(crate) use orient::{OrientOptions, cmd_orient, parse_budget};
-pub(crate) use status::{ConvergenceSummaryOutput, cmd_status};
+pub(crate) use status::{ConvergenceSummaryOutput, cmd_health};
 pub(crate) use summary::build_summary;
 
 mod summary;

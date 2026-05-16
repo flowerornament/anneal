@@ -1,8 +1,8 @@
-# Starter verb declarations and lifecycle profile examples for the v2 surface.
+# Starter verb declarations and lifecycle profile examples for the runtime surface.
 
 @doc(
   name: "views",
-  doc: "Saved verb declarations and lifecycle profile examples for the v2 surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude."
+  doc: "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude."
 ).
 
 @doc(
@@ -24,9 +24,9 @@ profile_code_corpus("# Code corpus lifecycle\npipeline_position_for(\"private\",
 profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 0).\npipeline_position_for(\"blocked\", 0).\npipeline_position_for(\"review\", 1).\npipeline_position_for(\"closed\", 2).\nterminal(h) := status_of(h, \"closed\").\nactive(h) := status_of(h, \"open\").\nactive(h) := status_of(h, \"blocked\").\nactive(h) := status_of(h, \"review\").\nsettled(h) := terminal(h).").
 
 @verb(
-  name: "anneal",
-  query: "anneal_item(\"work\", h, energy, \"potential\") :=\n  top_work(h, energy).\n\nanneal_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  entropy(h, source).\n\nanneal_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nanneal_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? anneal_item(section, h, score, why).",
-  doc: "Show the compact corpus dashboard an agent should read first: work candidates, blocked handles, advancing handles, and broken diagnostics.",
+  name: "status",
+  query: "status_item(\"work\", h, energy, \"potential\") :=\n  top_work(h, energy).\n\nstatus_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  entropy(h, source).\n\nstatus_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nstatus_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? status_item(section, h, score, why).",
+  doc: "Show the compact corpus status an agent should read first: work candidates, blocked handles, advancing handles, and broken diagnostics.",
   output_schema: "{\"section\":\"String\",\"h\":\"HandleId\",\"score\":\"Number\",\"why\":\"String\"}",
   default_args: [],
   capabilities: ["read"]

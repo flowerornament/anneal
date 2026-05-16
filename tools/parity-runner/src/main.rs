@@ -129,8 +129,8 @@ impl RightRunner {
 impl FactRight {
     fn run(&self, args: &[&str]) -> Result<CommandResult> {
         let stdout = match args {
-            ["status", "--json"] => {
-                anneal_legacy::v2_adapter::status_json_from_facts(self.root.as_path(), &self.batch)?
+            ["health", "--json"] => {
+                anneal_legacy::v2_adapter::health_json_from_facts(self.root.as_path(), &self.batch)?
             }
             ["check", "--scope=active", "--json"] => {
                 anneal_legacy::v2_adapter::check_json_from_facts(self.root.as_path(), &self.batch)?
@@ -240,11 +240,11 @@ fn main() -> Result<()> {
     let mut cases = Vec::new();
     cases.push(run_case(
         "PD-1",
-        "status",
+        "health",
         &config.left_bin,
         &right_runner,
         &corpus_root,
-        &["status", "--json"],
+        &["health", "--json"],
     )?);
     cases.push(run_case(
         "PD-2",

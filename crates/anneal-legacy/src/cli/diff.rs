@@ -71,8 +71,8 @@ impl Render for DiffOutput {
             p.heading("No snapshot history yet", None)?;
             p.blank()?;
             p.hints(&[
-                ("anneal status", "create the first snapshot"),
-                ("anneal status", "run again later to compare"),
+                ("anneal health", "create the first snapshot"),
+                ("anneal health", "run again later to compare"),
             ])?;
             return Ok(());
         }

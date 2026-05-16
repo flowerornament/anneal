@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
+use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
-    Database, EvalOptions, Evaluator, Program, QueryOutput, analyze, parse_program, write_ndjson,
+    Database, EvalOptions, Evaluator, Program, QueryOutput, Row, Value, analyze, parse_program,
+    write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFacts, CorpusId, FactStore, Generation,
@@ -14,11 +17,10 @@ use anneal_core::{
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
-use serde::Serialize;
 
 use crate::{
-    ContextCommand, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand, ReadCommand,
-    SearchCommand, SourcesCommand,
+    ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
+    ReadCommand, SearchCommand, SourcesCommand,
 };
 
 const DEFAULT_CORPUS: &str = "cli";
@@ -45,9 +47,9 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
                 .and_then(|next| next.to_str())
                 .is_some_and(|topic| HelpTopic::parse(topic).is_some());
         }
-        return V2Command::recognizes_first_arg(arg);
+        return RuntimeCommand::recognizes_first_arg(arg);
     }
-    false
+    true
 }
 
 pub fn main_entry() -> Result<()> {
@@ -56,23 +58,49 @@ pub fn main_entry() -> Result<()> {
 
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let invocation = Invocation::parse(args)?;
-    if let V2Command::Help { topic } = invocation.command {
-        return CommandOutput::Text(topic.render()).write(io::stdout().lock());
+    if let RuntimeCommand::Help { topic } = invocation.command {
+        return write_text(io::stdout().lock(), topic.render());
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
-    output.write(io::stdout().lock())
+    let stdout = io::stdout();
+    let mode = invocation.output.resolve(stdout.is_terminal());
+    output.write(stdout.lock(), mode)
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct Invocation {
     root: Utf8PathBuf,
-    command: V2Command,
+    output: OutputPreference,
+    command: RuntimeCommand,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OutputPreference {
+    #[default]
+    Auto,
+    Json,
+}
+
+impl OutputPreference {
+    const fn resolve(self, stdout_is_terminal: bool) -> OutputMode {
+        match self {
+            Self::Auto if stdout_is_terminal => OutputMode::Human,
+            Self::Auto | Self::Json => OutputMode::Json,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Human,
+    Json,
 }
 
 impl Invocation {
     fn parse(args: Vec<OsString>) -> Result<Self> {
         let mut root = None;
+        let mut output = OutputPreference::Auto;
         let mut rest = Vec::new();
         let mut iter = args.into_iter().skip(1);
         while let Some(arg) = iter.next() {
@@ -90,20 +118,27 @@ impl Invocation {
                 root = Some(Utf8PathBuf::from(value));
             } else if let Some(value) = arg.strip_prefix("--root=") {
                 root = Some(Utf8PathBuf::from(value));
+            } else if arg == "--json" {
+                output = OutputPreference::Json;
             } else if !is_ignored_global_flag(&arg) {
                 rest.push(arg);
             }
         }
         Ok(Self {
             root: root.unwrap_or_else(default_root),
-            command: V2Command::parse(&rest)?,
+            output,
+            command: if rest.is_empty() {
+                RuntimeCommand::Status
+            } else {
+                RuntimeCommand::parse(&rest)?
+            },
         })
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum V2Command {
-    Dashboard,
+enum RuntimeCommand {
+    Status,
     Context {
         goal: String,
         budget: i64,
@@ -154,7 +189,7 @@ enum ExplainMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HelpTopic {
-    Dashboard,
+    Status,
     Context,
     Search,
     Read,
@@ -173,7 +208,7 @@ enum HelpTopic {
 impl HelpTopic {
     fn parse(command: &str) -> Option<Self> {
         Some(match command {
-            "anneal" => Self::Dashboard,
+            "status" => Self::Status,
             "context" => Self::Context,
             "search" => Self::Search,
             "read" => Self::Read,
@@ -193,20 +228,20 @@ impl HelpTopic {
 
     const fn render(self) -> &'static str {
         match self {
-            Self::Dashboard => {
+            Self::Status => {
                 "\
-Usage: anneal [OPTIONS] anneal
+Usage: anneal [OPTIONS] status
 
-Print the programmable-runtime dashboard as NDJSON.
+Print compact corpus status from the programmable runtime.
 
-Output: NDJSON rows from the standard-library `anneal` verb.
+Output: human summary at a terminal; NDJSON rows when piped or with --json.
 "
             }
             Self::Context => {
                 "\
 Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
 
-Cold-agent orientation in one JSON object. Composes search, bounded read
+Cold-agent orientation in one response. Composes search, bounded read
 spans, and graph neighborhood.
 
 Arguments:
@@ -219,7 +254,7 @@ Options:
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
 
-Output: one JSON object with goal, hits, spans, and neighborhood.
+Output: human summary at a terminal; one JSON object when piped or with --json.
 "
             }
             Self::Search => {
@@ -364,7 +399,7 @@ Output: NDJSON rows.
     }
 }
 
-impl V2Command {
+impl RuntimeCommand {
     fn parse(args: &[String]) -> Result<Self> {
         let Some((command, rest)) = args.split_first() else {
             bail!("missing runtime command");
@@ -384,25 +419,53 @@ impl V2Command {
             return Ok(Self::Help { topic });
         }
         match command.as_str() {
-            "anneal" => Ok(Self::Dashboard),
+            "status" => {
+                ensure_no_args(rest, "status")?;
+                Ok(Self::Status)
+            }
             "context" => parse_context(rest),
             "search" => parse_search(rest),
             "read" => parse_read(rest),
             "H" => Ok(Self::Handle {
                 handle: required_positional(rest, "H requires a handle")?.to_string(),
             }),
-            "work" => Ok(Self::Work),
+            "work" => {
+                ensure_no_args(rest, "work")?;
+                Ok(Self::Work)
+            }
             "blocked" => Ok(Self::Blocked {
                 handle: required_positional(rest, "blocked requires a handle")?.to_string(),
             }),
-            "broken" => Ok(Self::Broken),
-            "trend" => Ok(Self::Trend),
-            "describe" => Ok(Self::Describe {
-                name: rest.first().map_or("runtime", String::as_str).to_string(),
-            }),
-            "sources" => Ok(Self::Sources),
-            "schema" => Ok(Self::Schema),
-            "verbs" => Ok(Self::Verbs),
+            "broken" => {
+                ensure_no_args(rest, "broken")?;
+                Ok(Self::Broken)
+            }
+            "trend" => {
+                ensure_no_args(rest, "trend")?;
+                Ok(Self::Trend)
+            }
+            "describe" => match rest {
+                [] => Ok(Self::Describe {
+                    name: "runtime".to_string(),
+                }),
+                [name] => Ok(Self::Describe { name: name.clone() }),
+                _ => bail!(
+                    "describe accepts at most one name; got {:?}",
+                    rest.join(" ")
+                ),
+            },
+            "sources" => {
+                ensure_no_args(rest, "sources")?;
+                Ok(Self::Sources)
+            }
+            "schema" => {
+                ensure_no_args(rest, "schema")?;
+                Ok(Self::Schema)
+            }
+            "verbs" => {
+                ensure_no_args(rest, "verbs")?;
+                Ok(Self::Verbs)
+            }
             "-e" | "--eval" | "eval" => parse_eval(rest),
             other => bail!("unknown runtime command {other:?}"),
         }
@@ -492,10 +555,10 @@ impl RuntimeSession {
         })
     }
 
-    fn run(&self, command: V2Command) -> Result<CommandOutput> {
+    fn run(&self, command: RuntimeCommand) -> Result<CommandOutput> {
         match command {
-            V2Command::Dashboard => self.run_verb("anneal"),
-            V2Command::Context {
+            RuntimeCommand::Status => self.run_status(),
+            RuntimeCommand::Context {
                 goal,
                 budget,
                 hits,
@@ -508,11 +571,9 @@ impl RuntimeSession {
                     .with_neighborhood_depth(depth)
                     .include_low_confidence(include_low_confidence);
                 let output = self.eval(command.datalog().as_str(), ExplainMode::Disabled)?;
-                Ok(CommandOutput::One(serde_json::to_value(
-                    command.group_rows(&output.rows)?,
-                )?))
+                Ok(CommandOutput::Context(command.group_rows(&output.rows)?))
             }
-            V2Command::Search {
+            RuntimeCommand::Search {
                 query,
                 limit,
                 include_low_confidence,
@@ -523,34 +584,42 @@ impl RuntimeSession {
                     .datalog();
                 self.run_query(&query, ExplainMode::Disabled)
             }
-            V2Command::Read { handle, budget } => {
+            RuntimeCommand::Read { handle, budget } => {
                 let query = ReadCommand::new(handle).with_budget(budget).datalog();
                 self.run_query(&query, ExplainMode::Disabled)
             }
-            V2Command::Handle { handle } => {
+            RuntimeCommand::Handle { handle } => {
                 self.run_query(&handle_query(&handle), ExplainMode::Disabled)
             }
-            V2Command::Work => self.run_verb("work"),
-            V2Command::Blocked { handle } => {
+            RuntimeCommand::Work => self.run_verb("work"),
+            RuntimeCommand::Blocked { handle } => {
                 self.run_query(&blocked_query(&handle), ExplainMode::Disabled)
             }
-            V2Command::Broken => self.run_verb("broken"),
-            V2Command::Trend => self.run_verb("trend"),
-            V2Command::Describe { name } => {
+            RuntimeCommand::Broken => self.run_verb("broken"),
+            RuntimeCommand::Trend => self.run_verb("trend"),
+            RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(name).datalog();
                 self.run_query(&query, ExplainMode::Disabled)
             }
-            V2Command::Sources => self.run_query(SourcesCommand.datalog(), ExplainMode::Disabled),
-            V2Command::Schema => self.run_verb("schema"),
-            V2Command::Verbs => self.run_verb("verbs"),
-            V2Command::Eval { query, explain } => self.run_query(&query, explain),
-            V2Command::Help { topic } => Ok(CommandOutput::Text(topic.render())),
+            RuntimeCommand::Sources => {
+                self.run_query(SourcesCommand.datalog(), ExplainMode::Disabled)
+            }
+            RuntimeCommand::Schema => self.run_verb("schema"),
+            RuntimeCommand::Verbs => self.run_verb("verbs"),
+            RuntimeCommand::Eval { query, explain } => self.run_query(&query, explain),
+            RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
         }
     }
 
     fn run_verb(&self, name: &str) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor(name, &self.actor)?;
         self.run_query(plan.query_source(), ExplainMode::Disabled)
+    }
+
+    fn run_status(&self) -> Result<CommandOutput> {
+        let plan = self.registry.run_plan_for_actor("status", &self.actor)?;
+        let output = self.eval(plan.query_source(), ExplainMode::Disabled)?;
+        Ok(CommandOutput::Status(output.rows))
     }
 
     fn run_query(&self, query: &str, explain: ExplainMode) -> Result<CommandOutput> {
@@ -586,29 +655,212 @@ impl RuntimeSession {
 }
 
 enum CommandOutput {
-    Rows(Vec<anneal_core::runtime::Row>),
-    One(serde_json::Value),
+    Rows(Vec<Row>),
+    Status(Vec<Row>),
+    Context(ContextOutput),
     Text(&'static str),
 }
 
 impl CommandOutput {
-    fn write<W: Write>(self, mut writer: W) -> Result<()> {
-        match self {
-            Self::Rows(rows) => write_ndjson(&mut writer, rows)?,
-            Self::One(value) => write_json_line(&mut writer, &value)?,
-            Self::Text(text) => writer.write_all(text.as_bytes())?,
+    fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
+        match (mode, self) {
+            (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
+            (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
+            (_, Self::Status(rows) | Self::Rows(rows)) => write_ndjson(writer, rows)?,
+            (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
+            (_, Self::Text(text)) => write_text(writer, text)?,
         }
         Ok(())
     }
 }
 
-fn write_json_line<W: Write, T: Serialize>(mut writer: W, value: &T) -> Result<()> {
-    serde_json::to_writer(&mut writer, value)?;
-    writer.write_all(b"\n")?;
+fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
+    writer.write_all(text.as_bytes())?;
     Ok(())
 }
 
-fn parse_context(args: &[String]) -> Result<V2Command> {
+fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    const SECTION_ORDER: [&str; 4] = ["broken", "blocked", "work", "advancing"];
+    const MAX_ROWS_PER_SECTION: usize = 12;
+
+    writeln!(writer, "Status")?;
+    if rows.is_empty() {
+        writeln!(writer, "(0 rows)")?;
+        return Ok(());
+    }
+
+    let mut sections: BTreeMap<&str, Vec<StatusRow<'_>>> = BTreeMap::new();
+    for row in rows {
+        let row = StatusRow::from_row(row)?;
+        sections.entry(row.section).or_default().push(row);
+    }
+
+    let mut wrote_section = false;
+    for section in SECTION_ORDER
+        .into_iter()
+        .chain(sections.keys().copied().filter(|section| {
+            !SECTION_ORDER
+                .iter()
+                .any(|ordered| ordered.eq_ignore_ascii_case(section))
+        }))
+    {
+        let Some(section_rows) = sections.get(section) else {
+            continue;
+        };
+        if wrote_section {
+            writeln!(writer)?;
+        }
+        wrote_section = true;
+        writeln!(writer, "{}", section_title(section))?;
+        for (index, row) in section_rows.iter().take(MAX_ROWS_PER_SECTION).enumerate() {
+            writeln!(
+                writer,
+                "{:>2}. {}  score={}  {}",
+                index + 1,
+                row.handle,
+                display_number(row.score),
+                row.why
+            )?;
+        }
+        let omitted = section_rows.len().saturating_sub(MAX_ROWS_PER_SECTION);
+        if omitted > 0 {
+            writeln!(writer, "    ... {omitted} more")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result<()> {
+    const MAX_TEXT_LINES_PER_SPAN: usize = 8;
+    const MAX_NEIGHBORS_PER_HANDLE: usize = 8;
+
+    writeln!(writer, "Context")?;
+    writeln!(writer, "Goal: {}", output.goal)?;
+
+    if output.hits.is_empty() {
+        writeln!(writer, "(0 hits)")?;
+        return Ok(());
+    }
+
+    writeln!(writer)?;
+    writeln!(writer, "Hits")?;
+    for (index, hit) in output.hits.iter().enumerate() {
+        let span = hit
+            .span_id
+            .as_deref()
+            .map_or(String::new(), |span| format!(" span={span}"));
+        writeln!(
+            writer,
+            "{:>2}. {}  score={:.3}  field={}  reason={}{}",
+            index + 1,
+            hit.handle,
+            hit.score,
+            hit.field,
+            hit.reason,
+            span
+        )?;
+    }
+
+    if !output.spans.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Read")?;
+        for span in &output.spans {
+            writeln!(
+                writer,
+                "{}:{}-{}  tokens={}",
+                span.handle, span.start_line, span.end_line, span.tokens
+            )?;
+            let mut lines = span.text.lines();
+            for line in lines.by_ref().take(MAX_TEXT_LINES_PER_SPAN) {
+                writeln!(writer, "  {}", line.trim_end())?;
+            }
+            if lines.next().is_some() {
+                writeln!(writer, "  ...")?;
+            }
+        }
+    }
+
+    if !output.neighborhood.is_empty() {
+        let mut by_handle: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for neighbor in &output.neighborhood {
+            by_handle
+                .entry(&neighbor.handle)
+                .or_default()
+                .push(&neighbor.neighbor);
+        }
+
+        writeln!(writer)?;
+        writeln!(writer, "Neighborhood")?;
+        for (handle, neighbors) in by_handle {
+            let omitted = neighbors.len().saturating_sub(MAX_NEIGHBORS_PER_HANDLE);
+            write!(writer, "{handle}: ")?;
+            for (index, neighbor) in neighbors.iter().take(MAX_NEIGHBORS_PER_HANDLE).enumerate() {
+                if index > 0 {
+                    write!(writer, ", ")?;
+                }
+                write!(writer, "{neighbor}")?;
+            }
+            if omitted == 0 {
+                writeln!(writer)?;
+            } else {
+                writeln!(writer, ", ... {omitted} more")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn section_title(section: &str) -> String {
+    let mut chars = section.chars();
+    let Some(first) = chars.next() else {
+        return "Other".to_string();
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+struct StatusRow<'a> {
+    section: &'a str,
+    handle: &'a str,
+    score: &'a NumberValue,
+    why: &'a str,
+}
+
+impl<'a> StatusRow<'a> {
+    fn from_row(row: &'a Row) -> Result<Self> {
+        Ok(Self {
+            section: required_string(row, "section")?,
+            handle: required_string(row, "h")?,
+            score: required_number(row, "score")?,
+            why: required_string(row, "why")?,
+        })
+    }
+}
+
+fn required_string<'a>(row: &'a Row, field: &str) -> Result<&'a str> {
+    match row.fields.get(field) {
+        Some(Value::String(value)) => Ok(value),
+        Some(_) => bail!("status row field {field:?} must be a string"),
+        None => bail!("status row missing field {field:?}"),
+    }
+}
+
+fn required_number<'a>(row: &'a Row, field: &str) -> Result<&'a NumberValue> {
+    match row.fields.get(field) {
+        Some(Value::Number(value)) => Ok(value),
+        Some(_) => bail!("status row field {field:?} must be a number"),
+        None => bail!("status row missing field {field:?}"),
+    }
+}
+
+fn display_number(value: &NumberValue) -> String {
+    match value {
+        NumberValue::Int(value) => value.to_string(),
+        NumberValue::Float(value) => format!("{value:.3}"),
+    }
+}
+
+fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
     let mut goal = None;
     let mut budget = DEFAULT_READ_BUDGET;
     let mut hits = crate::DEFAULT_CONTEXT_HITS;
@@ -639,7 +891,7 @@ fn parse_context(args: &[String]) -> Result<V2Command> {
             value => assign_once(&mut goal, value, "context accepts one goal")?,
         }
     }
-    Ok(V2Command::Context {
+    Ok(RuntimeCommand::Context {
         goal: goal.context("context requires a goal")?,
         budget,
         hits,
@@ -648,7 +900,7 @@ fn parse_context(args: &[String]) -> Result<V2Command> {
     })
 }
 
-fn parse_search(args: &[String]) -> Result<V2Command> {
+fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut limit = DEFAULT_SEARCH_LIMIT;
     let mut include_low_confidence = false;
@@ -664,14 +916,14 @@ fn parse_search(args: &[String]) -> Result<V2Command> {
             value => assign_once(&mut query, value, "search accepts one query")?,
         }
     }
-    Ok(V2Command::Search {
+    Ok(RuntimeCommand::Search {
         query: query.context("search requires a query")?,
         limit,
         include_low_confidence,
     })
 }
 
-fn parse_read(args: &[String]) -> Result<V2Command> {
+fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
     let mut handle = None;
     let mut budget = DEFAULT_READ_BUDGET;
     let mut iter = args.iter();
@@ -685,13 +937,13 @@ fn parse_read(args: &[String]) -> Result<V2Command> {
             value => assign_once(&mut handle, value, "read accepts one handle")?,
         }
     }
-    Ok(V2Command::Read {
+    Ok(RuntimeCommand::Read {
         handle: handle.context("read requires a handle")?,
         budget,
     })
 }
 
-fn parse_eval(args: &[String]) -> Result<V2Command> {
+fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut explain = ExplainMode::Disabled;
     let mut iter = args.iter();
@@ -712,7 +964,7 @@ fn parse_eval(args: &[String]) -> Result<V2Command> {
             value => assign_once(&mut query, value, "eval accepts one query string")?,
         }
     }
-    Ok(V2Command::Eval {
+    Ok(RuntimeCommand::Eval {
         query: query.context("eval requires a query")?,
         explain,
     })
@@ -723,6 +975,14 @@ fn required_positional<'a>(args: &'a [String], message: &str) -> Result<&'a str>
         [value] => Ok(value),
         [] => bail!("{message}"),
         _ => bail!("{message}; got extra arguments"),
+    }
+}
+
+fn ensure_no_args(args: &[String], command: &str) -> Result<()> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        bail!("{command} accepts no arguments; got {:?}", args.join(" "))
     }
 }
 
@@ -842,6 +1102,8 @@ mod tests {
 
     #[test]
     fn routes_only_runtime_commands() {
+        assert!(should_handle_args(&os(&["anneal"])));
+        assert!(should_handle_args(&os(&["anneal", "--root", ".design"])));
         assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "context", "goal"
         ])));
@@ -851,9 +1113,14 @@ mod tests {
             "? *handle{id: h}."
         ])));
         assert!(should_handle_args(&os(&["anneal", "help", "context"])));
-        assert!(!should_handle_args(&os(&[
+        assert!(!should_handle_args(&os(&["anneal", "anneal"])));
+        assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "status"
         ])));
+        assert!(!should_handle_args(&os(&[
+            "anneal", "--root", ".design", "health"
+        ])));
+        assert!(!should_handle_args(&os(&["anneal", "--help"])));
         assert!(!should_handle_args(&os(&["anneal", "check", "--json"])));
         assert!(!should_handle_args(&os(&["anneal", "--mcp"])));
     }
@@ -874,7 +1141,7 @@ mod tests {
         assert_eq!(parsed.root, Utf8PathBuf::from(".design"));
         assert_eq!(
             parsed.command,
-            V2Command::Context {
+            RuntimeCommand::Context {
                 goal: "v17 audit".to_string(),
                 budget: 1200,
                 hits: 2,
@@ -896,7 +1163,7 @@ mod tests {
         .expect("parse");
         assert_eq!(
             parsed.command,
-            V2Command::Eval {
+            RuntimeCommand::Eval {
                 query: "? diagnostic(code, severity, subject, file, line, evidence).".to_string(),
                 explain: ExplainMode::Depth(4),
             }
@@ -906,14 +1173,14 @@ mod tests {
     #[test]
     fn parses_runtime_subcommand_help_without_loading_corpus() {
         for (command, topic, expected_output) in [
-            ("context", HelpTopic::Context, "Output: one JSON object"),
+            ("context", HelpTopic::Context, "Output: human summary"),
             ("search", HelpTopic::Search, "Output: NDJSON rows with h"),
             ("read", HelpTopic::Read, "Output: NDJSON rows with span_id"),
         ] {
             let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
                 .expect("parse command help");
 
-            assert_eq!(parsed.command, V2Command::Help { topic });
+            assert_eq!(parsed.command, RuntimeCommand::Help { topic });
             assert!(topic.render().contains("Usage: anneal"));
             assert!(topic.render().contains(expected_output));
         }
@@ -944,7 +1211,7 @@ mod tests {
 
         assert_eq!(
             parsed.command,
-            V2Command::Help {
+            RuntimeCommand::Help {
                 topic: HelpTopic::Eval
             }
         );
@@ -958,11 +1225,140 @@ mod tests {
 
         assert_eq!(
             parsed.command,
-            V2Command::Help {
+            RuntimeCommand::Help {
                 topic: HelpTopic::Context
             }
         );
         assert!(HelpTopic::Context.render().contains("<GOAL>"));
+    }
+
+    #[test]
+    fn bare_invocation_defaults_to_status() {
+        let parsed = Invocation::parse(os(&["anneal", "--root=.design"])).expect("parse");
+
+        assert_eq!(parsed.command, RuntimeCommand::Status);
+        assert_eq!(parsed.output, OutputPreference::Auto);
+    }
+
+    #[test]
+    fn parses_json_output_preference() {
+        let parsed = Invocation::parse(os(&["anneal", "--json", "status"])).expect("parse status");
+
+        assert_eq!(parsed.command, RuntimeCommand::Status);
+        assert_eq!(parsed.output, OutputPreference::Json);
+    }
+
+    #[test]
+    fn describe_rejects_extra_names() {
+        let error = Invocation::parse(os(&["anneal", "describe", "runtime", "extra"]))
+            .expect_err("extra describe args should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("describe accepts at most one name")
+        );
+    }
+
+    #[test]
+    fn status_human_render_groups_sections() {
+        let output = CommandOutput::Status(vec![
+            row(&[
+                ("section", Value::String("work".to_string())),
+                ("h", Value::String("plan.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(42))),
+                ("why", Value::String("potential".to_string())),
+            ]),
+            row(&[
+                ("section", Value::String("broken".to_string())),
+                ("h", Value::String("bad.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(100))),
+                ("why", Value::String("E001".to_string())),
+            ]),
+        ]);
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render status");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.starts_with("Status\n"));
+        assert!(rendered.contains("Broken\n 1. bad.md"));
+        assert!(rendered.contains("Work\n 1. plan.md"));
+    }
+
+    #[test]
+    fn status_json_render_preserves_ndjson() {
+        let output = CommandOutput::Status(vec![row(&[
+            ("section", Value::String("work".to_string())),
+            ("h", Value::String("plan.md".to_string())),
+            ("score", Value::Number(NumberValue::Int(42))),
+            ("why", Value::String("potential".to_string())),
+        ])]);
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Json)
+            .expect("render status");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.starts_with(
+            "{\"h\":\"plan.md\",\"score\":42,\"section\":\"work\",\"why\":\"potential\"}\n"
+        ));
+    }
+
+    #[test]
+    fn status_human_render_rejects_schema_drift() {
+        let output = CommandOutput::Status(vec![row(&[
+            ("section", Value::String("work".to_string())),
+            ("h", Value::String("plan.md".to_string())),
+            ("why", Value::String("potential".to_string())),
+        ])]);
+        let mut rendered = Vec::new();
+
+        let error = output
+            .write(&mut rendered, OutputMode::Human)
+            .expect_err("missing score should fail");
+
+        assert!(error.to_string().contains("status row missing field"));
+    }
+
+    #[test]
+    fn context_human_render_is_readable() {
+        let output = CommandOutput::Context(ContextOutput {
+            goal: "find release blockers".to_string(),
+            hits: vec![crate::ContextHit {
+                handle: "plan.md".to_string(),
+                span_id: Some("body".to_string()),
+                score: 0.9,
+                reason: "body:release".to_string(),
+                field: "body".to_string(),
+            }],
+            spans: vec![crate::ContextSpan {
+                handle: "plan.md".to_string(),
+                span_id: "body".to_string(),
+                start_line: 10,
+                end_line: 12,
+                tokens: 12,
+                text: "Release blocker details.\nNext line.".to_string(),
+            }],
+            neighborhood: vec![crate::ContextNeighbor {
+                handle: "plan.md".to_string(),
+                neighbor: "dep.md".to_string(),
+            }],
+        });
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render context");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Context\nGoal: find release blockers"));
+        assert!(rendered.contains("Hits\n 1. plan.md"));
+        assert!(rendered.contains("Read\nplan.md:10-12"));
+        assert!(rendered.contains("Neighborhood\nplan.md: dep.md"));
     }
 
     #[test]
@@ -978,12 +1374,22 @@ mod tests {
         analyze(program).expect("query analyzes");
     }
 
+    fn row(fields: &[(&str, Value)]) -> Row {
+        Row {
+            fields: fields
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect(),
+            derivation: None,
+        }
+    }
+
     #[test]
     fn sources_command_reports_linked_markdown_adapter() {
         let fixture = camino::Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.fixtures/sample-corpus");
         let session = RuntimeSession::load(&fixture).expect("fixture session loads");
-        let output = session.run(V2Command::Sources).expect("sources runs");
+        let output = session.run(RuntimeCommand::Sources).expect("sources runs");
         let CommandOutput::Rows(rows) = output else {
             panic!("sources should emit rows");
         };
@@ -1015,7 +1421,7 @@ mod tests {
 
         let session = RuntimeSession::load(&root).expect("session loads");
         let output = session
-            .run(V2Command::Search {
+            .run(RuntimeCommand::Search {
                 query: "shared marker".to_string(),
                 limit: 10,
                 include_low_confidence: false,

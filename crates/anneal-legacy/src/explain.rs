@@ -266,13 +266,13 @@ fn build_convergence_explanation_output(context: &AnalysisContext<'_>) -> Conver
     } else {
         ConvergenceExplanation {
             signal: "no_history".to_string(),
-            detail: "no previous snapshot available; run `anneal status` or `anneal check` again after this snapshot is stored".to_string(),
+            detail: "no previous snapshot available; run `anneal health` or `anneal check` again after this snapshot is stored".to_string(),
             current: current_summary,
             previous: None,
             pipeline,
             facts: vec![
                 fact("history", "previous_snapshot", "missing"),
-                fact("history", "status_behavior", "status shows no convergence signal on first run"),
+                fact("history", "health_behavior", "health shows no convergence signal on first run"),
             ],
         }
     }

@@ -29,7 +29,7 @@ The same substrate also keeps the older corpus-health loop reachable during the
 compatibility window:
 
 ```bash
-anneal status --json --compact
+anneal health --json --compact
 anneal check --scope=active
 anneal get design.md --context
 ```
@@ -159,14 +159,15 @@ anneal schema
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
 ```
 
-The programmable runtime surface is NDJSON-first. Each row is a standalone JSON object. Use
-`--pretty` when a human needs to read the stream directly.
+The programmable runtime surface remains machine-friendly when piped. At a
+terminal, `status` and `context` render readable summaries; use `--json` when
+you want their JSON/NDJSON contracts explicitly.
 
 ## Commands
 
-### `anneal anneal`
+### `anneal status`
 
-Compact corpus dashboard from the standard library's `anneal` verb. Use this
+Compact corpus status from the standard library's `status` verb. Use this
 when the question is "what state is this corpus in right now?"
 
 ### `anneal context GOAL`
@@ -212,7 +213,7 @@ known and relationship shape matters more than text.
 
 The standard library ships starter verbs as ordinary `@verb` definitions:
 
-- `anneal anneal`: compact dashboard
+- `status`: compact corpus status
 - `H`: handle neighborhood
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
@@ -255,7 +256,7 @@ library, project `anneal.dl`, and inline query-local rules.
 During the compatibility window the older corpus-health commands remain available:
 
 ```bash
-anneal status
+anneal health
 anneal check --scope=active
 anneal get HANDLE --context
 anneal find TEXT --limit 25

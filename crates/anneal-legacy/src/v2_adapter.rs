@@ -105,7 +105,7 @@ pub fn extract_markdown_facts_with_options(
     Ok(batch)
 }
 
-pub fn status_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {
+pub fn health_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {
     let loaded = LoadedFacts::from_batch(root, batch)?;
     let diagnostics = loaded.diagnostics();
     let snap = crate::snapshot::build_snapshot(
@@ -114,7 +114,7 @@ pub fn status_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Valu
         &loaded.config,
         &diagnostics,
     );
-    let output = cli::cmd_status(
+    let output = cli::cmd_health(
         &loaded.graph,
         &loaded.lattice,
         &snap,
@@ -124,7 +124,7 @@ pub fn status_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Valu
     );
     let output = output.with_convergence(None);
     serde_json::to_value(cli::JsonEnvelope::new(cli::OutputMeta::full(), output))
-        .context("serialize fact-backed status output")
+        .context("serialize fact-backed health output")
 }
 
 pub fn check_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {
@@ -822,7 +822,6 @@ struct LoadedFacts {
     lattice: crate::lattice::Lattice,
     pending_edges: Vec<PendingEdge>,
     section_ref_count: usize,
-    legacy_section_ref_file: Option<String>,
     implausible_refs: Vec<parse::ImplausibleRef>,
     file_snippets: HashMap<String, String>,
     label_snippets: HashMap<String, String>,
@@ -844,7 +843,6 @@ impl LoadedFacts {
 
         let mut pending_edges = Vec::new();
         let mut section_ref_count = 0usize;
-        let mut legacy_section_ref_file = None;
         for fact in &batch.edges {
             let Some(&source) = id_to_node.get(&fact.from) else {
                 continue;
@@ -854,11 +852,6 @@ impl LoadedFacts {
             } else {
                 if fact.to.starts_with("section:") {
                     section_ref_count += 1;
-                    if legacy_section_ref_file.is_none()
-                        && let Some(file) = graph.node(source).file_path.as_ref()
-                    {
-                        legacy_section_ref_file = Some(file.to_string());
-                    }
                 }
                 pending_edges.push(PendingEdge {
                     source,
@@ -898,7 +891,6 @@ impl LoadedFacts {
             lattice,
             pending_edges,
             section_ref_count,
-            legacy_section_ref_file,
             implausible_refs,
             file_snippets,
             label_snippets,
@@ -917,27 +909,8 @@ impl LoadedFacts {
             previous_snapshot: None,
         };
         let mut diagnostics = checks::run_checks(&check_input);
-        self.apply_legacy_surface_locations(&mut diagnostics);
         checks::apply_suppressions(&mut diagnostics, &self.config.suppress);
         diagnostics
-    }
-
-    fn apply_legacy_surface_locations(&self, diagnostics: &mut [checks::Diagnostic]) {
-        let Some(file) = self
-            .legacy_section_ref_file
-            .as_deref()
-            .filter(|file| !file.is_empty())
-        else {
-            return;
-        };
-        for diagnostic in diagnostics {
-            if diagnostic.code == checks::DiagnosticCode::I001 {
-                // CR-D69: the relation stays corpus-scoped, but the temporary
-                // v1 JSON bridge keeps the historical representative location.
-                diagnostic.file = Some(file.to_string());
-                diagnostic.line = None;
-            }
-        }
     }
 }
 

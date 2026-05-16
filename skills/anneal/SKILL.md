@@ -25,14 +25,14 @@ Pick the smallest command that can answer the next agent question.
 
 ```bash
 anneal context "<goal>"
-anneal anneal
+anneal status
 anneal describe runtime
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
-`anneal anneal` when the question is corpus state. Use `describe` when you need
+`anneal status` when the question is corpus state. Use `describe` when you need
 vocabulary help before querying.
 
 ### Finding and Reading
@@ -76,7 +76,7 @@ runtime.
 anneal broken
 anneal work
 anneal trend  # emits rows when snapshot history exists; otherwise zero rows
-anneal status --json --compact
+anneal health --json --compact
 anneal check --scope=active
 anneal get <handle> --context
 ```
@@ -97,7 +97,7 @@ remain available during the migration window when exact compatibility matters.
 
 ### Standard Verbs
 
-- `anneal anneal`: compact corpus dashboard
+- `anneal status`: compact corpus status
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
 - `blocked`: blockers for a handle or corpus
@@ -146,9 +146,9 @@ Common prelude families:
   query against unfamiliar vocabulary.
 - Use `anneal -e` for composite questions. Keep queries narrow and project only
   fields you need.
-- Use `--json` or NDJSON streams for tool consumption. Add `--pretty` only for
-  human reading.
-- Use legacy `status`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
+- Use `--json` or NDJSON streams for tool consumption. At a terminal, `status`
+  and `context` render readable summaries.
+- Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
   `obligations` when exact pre-runtime behavior is required.
 - After editing corpus files, run `anneal broken` or `anneal check
   --scope=active`, depending on whether you are exercising the programmable

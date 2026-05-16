@@ -11,7 +11,7 @@ use crate::output::{Glyph, Line, OutputStyle, Printer, Render, Tone, format_numb
 use super::{DetailLevel, OutputMeta, plural};
 
 // ---------------------------------------------------------------------------
-// Status command (CLI-04, KB-C4, spec section 12.4)
+// Compatibility health report (CLI-04, KB-C4, spec section 12.4)
 // ---------------------------------------------------------------------------
 
 /// A single pipeline level with handle count.
@@ -21,7 +21,7 @@ pub(crate) struct PipelineLevel {
     pub(crate) count: usize,
 }
 
-/// Obligation summary for status dashboard.
+/// Obligation summary for the compatibility health report.
 #[derive(Clone, Serialize)]
 pub(crate) struct ObligationSummary {
     pub(crate) discharged: usize,
@@ -29,27 +29,27 @@ pub(crate) struct ObligationSummary {
     pub(crate) mooted: usize,
 }
 
-/// Diagnostic counts for status dashboard.
+/// Diagnostic counts for the compatibility health report.
 #[derive(Clone, Serialize)]
 pub(crate) struct DiagnosticSummary {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
 }
 
-/// Convergence signal for status dashboard output.
+/// Convergence signal for compatibility health report output.
 #[derive(Clone, Serialize)]
 pub(crate) struct ConvergenceSummaryOutput {
     pub(crate) signal: String,
     pub(crate) detail: String,
 }
 
-/// Output of `anneal status`: single-screen dashboard for arriving agents.
+/// Output of `anneal health`: single-screen health report for arriving agents.
 ///
 /// Matches spec section 12.4 / KB-C4. Shows file/handle/edge counts,
 /// active/frozen partition, pipeline histogram or flat lattice counts (D-11),
 /// obligation summary, diagnostic counts, convergence signal, and suggestions.
 #[derive(Serialize)]
-pub(crate) struct StatusOutput {
+pub(crate) struct HealthOutput {
     pub(crate) files: usize,
     pub(crate) handles: usize,
     pub(crate) edges: usize,
@@ -65,7 +65,7 @@ pub(crate) struct StatusOutput {
 }
 
 #[derive(Serialize)]
-pub(crate) struct StatusCompactOutput {
+pub(crate) struct HealthCompactOutput {
     #[serde(rename = "_meta")]
     pub(crate) meta: OutputMeta,
     pub(crate) files: usize,
@@ -89,14 +89,14 @@ pub(crate) struct SuggestionCount {
     pub(crate) count: usize,
 }
 
-impl Render for StatusOutput {
+impl Render for HealthOutput {
     fn render(&self, p: &mut Printer) -> std::io::Result<()> {
         self.render_inner(p, false, None, None)
     }
 }
 
-impl StatusOutput {
-    /// Render dashboard with optional verbose pipeline expansion. Takes
+impl HealthOutput {
+    /// Render the health report with optional verbose pipeline expansion. Takes
     /// a printer directly because it needs extra args that don't fit the
     /// `Render` trait contract.
     pub(crate) fn render_with_options(
@@ -213,14 +213,14 @@ impl StatusOutput {
         self
     }
 
-    pub(crate) fn compact_json(&self) -> StatusCompactOutput {
-        StatusCompactOutput {
+    pub(crate) fn compact_json(&self) -> HealthCompactOutput {
+        HealthCompactOutput {
             meta: OutputMeta::new(
                 DetailLevel::Summary,
                 false,
                 None,
                 None,
-                vec!["status --json".to_string()],
+                vec!["health --json".to_string()],
             ),
             files: self.files,
             handles: self.handles,
@@ -272,7 +272,7 @@ fn pipeline_line(pipeline: &[PipelineLevel], style: OutputStyle) -> Line {
 }
 
 /// Health summary: errors + warnings, plus obligation roll-up when present.
-fn health_line(s: &StatusOutput, outstanding: usize) -> Line {
+fn health_line(s: &HealthOutput, outstanding: usize) -> Line {
     let error_tone = if s.diagnostics.errors > 0 {
         Tone::Error
     } else {
@@ -369,7 +369,7 @@ fn render_pipeline_verbose(
     Ok(())
 }
 
-fn build_hints(s: &StatusOutput, outstanding: usize) -> Vec<(&'static str, &'static str)> {
+fn build_hints(s: &HealthOutput, outstanding: usize) -> Vec<(&'static str, &'static str)> {
     let mut hints = Vec::new();
     if s.diagnostics.errors > 0 {
         hints.push(("anneal check", "for detailed diagnostics"));
@@ -386,7 +386,7 @@ fn build_hints(s: &StatusOutput, outstanding: usize) -> Vec<(&'static str, &'sta
     hints
 }
 
-/// Build the status dashboard from the graph, lattice, config, and diagnostics.
+/// Build the compatibility health report from the graph, lattice, config, and diagnostics.
 ///
 /// Counts files, handles, edges, active/frozen partition, pipeline levels,
 /// obligations (linear namespaces), diagnostics, and suggestions.
@@ -395,14 +395,14 @@ fn build_hints(s: &StatusOutput, outstanding: usize) -> Vec<(&'static str, &'sta
 ///
 /// Derives counts from the pre-built snapshot to avoid a redundant graph traversal.
 /// The only extra traversal is counting File handles (not tracked in snapshots).
-pub(crate) fn cmd_status(
+pub(crate) fn cmd_health(
     graph: &DiGraph,
     lattice: &Lattice,
     snap: &crate::snapshot::Snapshot,
     diagnostics_list: &[crate::checks::Diagnostic],
     area: Option<&crate::area::AreaFilter>,
     temporal: Option<&crate::area::TemporalFilter>,
-) -> StatusOutput {
+) -> HealthOutput {
     // When scoped to an area or temporal window, compute counts from
     // the graph directly instead of using the corpus-wide snapshot.
     let scoped = area.is_some() || temporal.is_some();
@@ -493,7 +493,7 @@ pub(crate) fn cmd_status(
         })
         .collect();
 
-    StatusOutput {
+    HealthOutput {
         files,
         handles,
         edges,
@@ -529,8 +529,8 @@ mod tests {
 
     use super::*;
 
-    fn make_status_output_basic() -> StatusOutput {
-        StatusOutput {
+    fn make_health_output_basic() -> HealthOutput {
+        HealthOutput {
             files: 265,
             handles: 487,
             edges: 2031,
@@ -558,7 +558,7 @@ mod tests {
     }
 
     /// Render to string with plain mode (ANSI stripped for assertions).
-    fn render_status(output: &StatusOutput) -> String {
+    fn render_health(output: &HealthOutput) -> String {
         let (writer, buf) = crate::output::test_support::SharedBuf::new();
         let mut p = Printer::new(writer, OutputStyle::plain());
         output.render(&mut p).expect("render");
@@ -566,8 +566,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_scanned_line() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_scanned_line() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("265 files"),
             "Expected file count, got: {text}"
@@ -583,8 +583,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_active_terminal_line() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_active_terminal_line() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("142 active") && text.contains("345 terminal"),
             "Expected active/terminal counts, got: {text}"
@@ -592,8 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_pipeline_histogram() {
-        let mut output = make_status_output_basic();
+    fn health_print_human_pipeline_histogram() {
+        let mut output = make_health_output_basic();
         output.pipeline = Some(vec![
             PipelineLevel {
                 level: "raw".to_string(),
@@ -608,7 +608,7 @@ mod tests {
                 count: 6,
             },
         ]);
-        let text = render_status(&output);
+        let text = render_health(&output);
         assert!(
             text.contains("Pipeline"),
             "Expected pipeline section, got: {text}"
@@ -620,8 +620,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_flat_lattice_omits_pipeline() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_flat_lattice_omits_pipeline() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             !text.contains("Pipeline"),
             "Flat lattice should not show pipeline, got: {text}"
@@ -629,8 +629,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_obligations_line() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_obligations_line() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("6/20 obligations discharged"),
             "Expected obligations line, got: {text}"
@@ -638,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_diagnostics_line() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_diagnostics_line() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("0 errors") && text.contains("3 warnings"),
             "Expected diagnostics counts, got: {text}"
@@ -647,8 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_convergence_no_history() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_convergence_no_history() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("no history"),
             "Expected no history message, got: {text}"
@@ -656,13 +656,13 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_convergence_with_signal() {
-        let mut output = make_status_output_basic();
+    fn health_print_human_convergence_with_signal() {
+        let mut output = make_health_output_basic();
         output.convergence = Some(ConvergenceSummaryOutput {
             signal: "advancing".to_string(),
             detail: "resolution +10, creation +5".to_string(),
         });
-        let text = render_status(&output);
+        let text = render_health(&output);
         assert!(
             text.contains("advancing"),
             "Expected advancing signal, got: {text}"
@@ -674,8 +674,8 @@ mod tests {
     }
 
     #[test]
-    fn status_print_human_suggestions_breakdown() {
-        let text = render_status(&make_status_output_basic());
+    fn health_print_human_suggestions_breakdown() {
+        let text = render_health(&make_health_output_basic());
         assert!(
             text.contains("Suggestions"),
             "Expected suggestions section, got: {text}"
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn status_cmd_status_basic_counts() {
+    fn health_cmd_basic_counts() {
         let mut graph = DiGraph::new();
         graph.add_node(Handle::test_file("doc1.md", None));
         graph.add_node(Handle::test_file("doc2.md", None));
@@ -701,7 +701,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[], None, None);
+        let output = cmd_health(&graph, &lattice, &snap, &[], None, None);
 
         assert_eq!(output.files, 2);
         assert_eq!(output.handles, 3);
@@ -709,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn status_cmd_status_counts_active_frozen() {
+    fn health_cmd_counts_active_frozen() {
         let mut graph = DiGraph::new();
         graph.add_node(Handle::test_file("doc1.md", Some("draft")));
         graph.add_node(Handle::test_file("doc2.md", Some("archived")));
@@ -719,7 +719,7 @@ mod tests {
         let config = AnnealConfig::default();
         let snap = crate::snapshot::build_snapshot(&graph, &lattice, &config, &[]);
 
-        let output = cmd_status(&graph, &lattice, &snap, &[], None, None);
+        let output = cmd_health(&graph, &lattice, &snap, &[], None, None);
 
         assert_eq!(output.active_handles, 2);
         assert_eq!(output.frozen_handles, 1);
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn status_compact_json_keeps_core_counts() {
-        let compact = make_status_output_basic().compact_json();
+        let compact = make_health_output_basic().compact_json();
         assert_eq!(compact.files, 265);
         assert_eq!(compact.handles, 487);
         assert_eq!(compact.suggestion_total, 2);

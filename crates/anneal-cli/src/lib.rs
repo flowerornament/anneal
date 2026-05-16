@@ -1,8 +1,7 @@
-//! CLI surface crate for anneal v2.
+//! CLI surface crate for anneal.
 //!
-//! The existing v1.x CLI remains in the root package during the first
-//! foundation checkpoint. This crate is the destination for the v2
-//! surface once the shared runtime is wired.
+//! This crate owns the programmable runtime commands while the legacy crate
+//! keeps the compatibility corpus-health surface available.
 
 pub mod app;
 mod context;

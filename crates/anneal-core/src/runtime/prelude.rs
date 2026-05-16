@@ -17,7 +17,7 @@ pub const CONTEXT_VERB_DOC: &str = "Find the most relevant handles for a goal, r
 pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "neighborhood_depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
-pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the v2 surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
+pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
 pub const GRAPH_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/graph.dl";
 pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/convergence.dl";
 pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
@@ -636,7 +636,7 @@ mod tests {
     use crate::store::FactStore;
 
     const REQUIRED_VIEW_VERBS: &[&str] = &[
-        "anneal",
+        "status",
         "handle",
         "find",
         "search",

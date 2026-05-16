@@ -63,14 +63,14 @@ CORE CONCEPTS:
 START HERE:
 
   anneal context \"goal\"       Search, read, and graph context in one response
-  anneal anneal               Compact programmable-runtime dashboard
+  anneal status               Compact programmable-runtime status
   anneal search TEXT          Ranked content retrieval
   anneal read HANDLE          Budgeted content spans for one handle
   anneal broken               Runtime diagnostic blockers
   anneal work                 Ranked work candidates
   anneal -e '? query.'        Raw Datalog query over corpus facts
   anneal prime                Full bundled agent skill briefing
-  anneal status               Compatibility dashboard: health and convergence
+  anneal health               Compatibility corpus health and convergence
   anneal check                Compatibility diagnostics
   anneal get REQ-12           Compatibility handle inspection
   anneal find ADR             Compatibility handle-identity search
@@ -494,10 +494,11 @@ EXAMPLES:
         limit_edges: Option<usize>,
     },
 
-    /// Orientation dashboard for arriving agents
+    /// Compatibility corpus health report
     #[command(
+        name = "health",
         long_about = "\
-Single-screen dashboard answering: what's the state of this knowledge corpus?
+Single-screen health report answering: what's the state of this knowledge corpus?
 
 Shows:
   corpus        File, handle, and edge counts. Active vs frozen partition.
@@ -511,7 +512,7 @@ Shows:
                   drifting  — creation outpacing resolution
   suggestions   Count by type (S001-S005) with labels.
 
-Appends a snapshot to anneal history. Run status periodically to build
+Appends a snapshot to anneal history. Run health periodically to build
 convergence history — the signal becomes meaningful after 2+ snapshots.
 
 Read it as the active shape of the corpus: where work is accumulating, where it
@@ -521,12 +522,12 @@ Use `anneal check` for detailed diagnostics and `anneal diff` for
 between-sessions change.",
         after_help = "\
 EXAMPLES:
-  anneal status                   # Human-readable dashboard
-  anneal status --verbose         # Expand pipeline to list files per level
-  anneal status --json            # Full snapshot as JSON
-  anneal status --json --compact  # Compact agent session-start payload"
+  anneal health                   # Human-readable health report
+  anneal health --verbose         # Expand pipeline to list files per level
+  anneal health --json            # Full snapshot as JSON
+  anneal health --json --compact  # Compact agent session-start payload"
     )]
-    Status {
+    Health {
         /// Expand pipeline histogram to list files per level
         #[arg(long, short)]
         verbose: bool,
@@ -548,7 +549,7 @@ Three reference modes:
 Shows deltas for handles (created/active/frozen), state transitions, obligations,
 edges, and per-namespace statistics. Only non-zero deltas are shown.
 
-Requires at least one prior snapshot (from `anneal status` or `anneal check`).
+Requires at least one prior snapshot (from `anneal health` or `anneal check`).
 Legacy repo-local history is still read for compatibility when available.
 On first run with no history, prints an informative message.
 
@@ -757,9 +758,9 @@ EXAMPLES:
         file: Option<String>,
     },
 
-    /// Programmable-runtime dashboard verb
-    #[command(long_about = "Print the programmable-runtime dashboard as NDJSON.")]
-    Anneal,
+    /// Programmable-runtime status
+    #[command(long_about = "Print compact corpus status from the programmable runtime.")]
+    Status,
 
     /// Programmable-runtime cold-agent context bundle
     #[command(
@@ -1380,7 +1381,7 @@ fn run() -> anyhow::Result<()> {
             )?;
         }
 
-        Some(Command::Status { verbose, compact }) => {
+        Some(Command::Health { verbose, compact }) => {
             let analysis::AnalysisArtifacts {
                 previous_snapshot,
                 mut diagnostics,
@@ -1392,7 +1393,7 @@ fn run() -> anyhow::Result<()> {
                 diagnostics.retain(|d| d.file.as_deref().is_some_and(|f| tf.matches_file(f)));
             }
             let snap = snapshot::build_snapshot(graph, &lattice, &config, &diagnostics);
-            let output = cli::cmd_status(
+            let output = cli::cmd_health(
                 graph,
                 &lattice,
                 &snap,
@@ -1580,7 +1581,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         Some(
-            Command::Anneal
+            Command::Status
             | Command::Context
             | Command::Search
             | Command::Read
@@ -1709,8 +1710,8 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         for name in [
-            "context", "search", "read", "H", "work", "blocked", "broken", "trend", "describe",
-            "sources", "schema", "verbs", "eval",
+            "status", "context", "search", "read", "H", "work", "blocked", "broken", "trend",
+            "describe", "sources", "schema", "verbs", "eval", "health",
         ] {
             assert!(
                 help.contains(name),

@@ -16,7 +16,7 @@ const STABLE_TOOLS: &[&str] = &[
     "describe",
     "schema",
     "source_of",
-    "dashboard",
+    "status",
     "run_verb",
 ];
 

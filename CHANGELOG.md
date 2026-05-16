@@ -12,7 +12,7 @@ All notable changes to `anneal` are documented in this file.
   project `anneal.dl` extension, trail/provenance capture, and
   capability/policy gates.
 - New additive programmable-runtime command surface in the same `anneal` binary:
-  `context`, `search`, `read`, `H`, `work`, `blocked`, `broken`, `trend`,
+  `status`, `context`, `search`, `read`, `H`, `work`, `blocked`, `broken`, `trend`,
   `describe`, `sources`, `schema`, `verbs`, `eval`, and `-e`.
   `anneal --help`, `anneal <command> --help`, and
   `anneal help <command>` expose the surface.
@@ -29,13 +29,15 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
-- Existing corpus-health commands continue to work unchanged during the
-  compatibility window. The new runtime commands are additive and ship in the
-  same installed binary.
+- Existing corpus-health workflows remain available during the compatibility
+  window. The new runtime commands ship in the same installed binary.
 - `trend` now degrades cleanly on corpora without snapshot history by emitting
   zero rows instead of failing.
+- `anneal status` is the named runtime status command, and bare `anneal` also
+  routes to that status view. The older compatibility health report is
+  available as `anneal health`.
 - README and the bundled `anneal` skill lead with the programmable runtime
-  while still documenting compatibility commands (`status`, `check`, `get`,
+  while still documenting compatibility commands (`health`, `check`, `get`,
   `find`, `map`, `impact`, `diff`, `obligations`, `init`, and `prime`).
 
 ### Known Limitations
