@@ -1,6 +1,6 @@
 ---
 name: anneal
-description: "Orient in knowledge corpora, retrieve relevant context, inspect graph structure, run corpus health checks, and ask Datalog queries over anneal facts. Use when a repo has `.design/`, `docs/`, or `anneal.toml`, or the user asks about convergence, blockers, broken refs, what changed, or what depends on X."
+description: "Orient in knowledge corpora, retrieve relevant context, inspect graph structure, run corpus health checks, and ask Datalog queries over anneal facts. Use when a repo has `.design/`, `docs/`, or `anneal.dl`, or the user asks about convergence, blockers, broken refs, what changed, or what depends on X."
 metadata:
   short-description: Query knowledge corpora with anneal
 ---
@@ -26,29 +26,29 @@ Pick the smallest command that can answer the next agent question.
 ```bash
 anneal context "<goal>"
 anneal status
-anneal garden
-anneal describe runtime
+anneal describe
+anneal vocab
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
-`anneal status` when the question is corpus state. Use `anneal garden` when
-you want ranked maintenance tasks with fix/context/verify hints. Use
-`describe` for predicates, verbs, primitives, and runtime objects; use `vocab`
-for observed status values, edge kinds, namespaces, and frontmatter fields.
+`anneal status` when the question is corpus state. Use `describe` for
+predicates, verbs, primitives, and runtime objects; use `vocab` for observed
+status values, edge kinds, namespaces, and frontmatter fields.
 
 ### Finding and Reading
 
 ```bash
 anneal search "<text>" --limit 5
 anneal read <handle> --budget 4000
-anneal H <handle>
+anneal handle <handle>
 ```
 
 Use `search` for content retrieval. It handles light stemming and common
 planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
-search or when the handle is known. Use `H` when relationship shape matters.
+search or when the handle is known. Use `handle` when relationship shape
+matters; `H` is a short alias.
 Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
 for pipes.
 
@@ -60,7 +60,7 @@ anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 anneal -e '? upstream("formal-model/v17.md", h).'
 ```
 
-Use raw Datalog when the built-in verbs are too broad. Stored source facts use
+Use raw Datalog when the built-in verbs are too broad. Stored relations use
 `*` prefixes; prelude and project predicates do not.
 
 Use `--explain` when you need provenance for why a row exists. It explains the
@@ -81,19 +81,35 @@ Use these before inventing names. Agents should discover the active adapters,
 verbs, predicates, corpus vocabulary, output contracts, and capability
 requirements from the runtime.
 
+### Config and Extensions
+
+The ladder is:
+
+- built-in prelude: automatic standard rules and verbs
+- `anneal.dl`: repo-local project declarations for adapter discovery, statuses,
+  lattice, namespaces, frontmatter edges, excludes, rules, and `@verb`s
+- user config: machine-local preferences under XDG config
+
+Do not copy the built-in prelude into a project. Use `anneal init --dry-run` to
+inspect the current `anneal.dl` scaffold. `anneal init` refuses to overwrite an
+existing config unless `--force` is passed; for older installs, `--force`
+writes unified `anneal.dl` and moves `anneal.toml` to `anneal.toml.legacy`.
+
 ### Health and Compatibility
 
 ```bash
 anneal broken
 anneal work
+anneal garden
 anneal trend  # emits rows when snapshot history exists; otherwise zero rows
 anneal health --json --compact
 anneal check --scope=active
 anneal get <handle> --context
 ```
 
-Prefer programmable-runtime verbs for new workflows. The older health commands
-remain available during the migration window when exact compatibility matters.
+Prefer runtime verbs for new workflows. Use `garden` when you want ranked
+maintenance tasks with fix/context/verify hints. The older health commands
+remain available when exact compatibility matters.
 
 ## Command Map
 
@@ -104,11 +120,12 @@ remain available during the migration window when exact compatibility matters.
 - `anneal search TEXT`: ranked content hits with handle, span, score, reason,
   field, and low-confidence marker
 - `anneal read HANDLE`: bounded content spans
-- `anneal H HANDLE`: handle neighborhood
+- `anneal handle HANDLE`: handle neighborhood
 
 ### Standard Verbs
 
 - `anneal status`: compact corpus status
+- `handle`: handle neighborhood
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
 - `blocked`: blockers for one handle
@@ -130,7 +147,7 @@ anneal -e '? search("conformance", h, span, score, reason, field, low).'
 anneal -e '? read("formal-model/v17.md", 4000, span, text, start, end, tokens).'
 ```
 
-Common stored facts:
+Common stored relations:
 
 - `*handle`
 - `*edge`
@@ -163,8 +180,8 @@ Common prelude families:
   through pipe-only harnesses.
 - Use `--root` for the corpus path. Use `--area` only for an area name inside
   that corpus, usually a top-level directory or configured concern group.
-- Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`, and
-  `obligations` when exact pre-runtime behavior is required.
+- Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`,
+  `garden`, and `obligations` when exact pre-runtime behavior is required.
 - After editing corpus files, run `anneal broken` or `anneal check
   --scope=active`, depending on whether you are exercising the programmable
   runtime or the compatibility surface.
@@ -177,9 +194,11 @@ Common prelude families:
 verbs.
 
 ```dl
-md.file_extension(".md").
-md.scan_root(".").
-md.scan_exclude("node_modules").
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude("node_modules").
+}
 
 release_blocker(h, "broken_ref") :=
   diagnostic("E001", severity, h, file, line, evidence).
@@ -201,7 +220,7 @@ predicates by name and arity.
 
 - `handle`: a file, section, label, version, or external reference
 - `source`: an adapter such as markdown, code, host runtime, or issue tracker
-- `fact`: a stored row emitted by a source or a derived row produced by rules
+- `relation`: a stored row emitted by a source or a derived row produced by rules
 - `verb`: a named query with documentation, schema, and capabilities
 - `generation`: a source refresh epoch used for atomic fact replacement
 - `visibility`: fact-level access envelope applied before derivation

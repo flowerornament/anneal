@@ -1,9 +1,9 @@
 use crate::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, Comparison, ComparisonOp,
-    DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective,
-    Literal, NamedArg, NegatedAtom, Negation, NumberLiteral, PredicateRef, Program, Query, Rule,
-    RuleLayer, RuleOrigin, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
-    named_string_arg,
+    ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,
+    ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation, NumberLiteral,
+    PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin, SourceBlock, SourceLocation,
+    Statement, StoredAtom, Term, TimeBlock, VerbDecl, named_string_arg,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -85,6 +85,18 @@ impl Parser {
             self.expect(&TokenKind::Dot)?;
             return Ok(Statement::OptionalFact(head));
         }
+        if self.peek_keyword("config")
+            && matches!(self.peek_n(1).kind, TokenKind::Ident(_))
+            && self.peek_n(2).kind == TokenKind::LBrace
+        {
+            return self.parse_config_block(statement_start.location(&self.source));
+        }
+        if self.peek_keyword("source")
+            && matches!(self.peek_n(1).kind, TokenKind::Ident(_))
+            && self.peek_n(2).kind == TokenKind::LBrace
+        {
+            return self.parse_source_block(statement_start.location(&self.source));
+        }
         if self.eat(&TokenKind::AtSign) {
             let location = statement_start.location(&self.source);
             let annotation = self.expect_ident()?;
@@ -130,6 +142,51 @@ impl Parser {
             body,
             rule_origin(RuleLayer::Unknown, &self.source, &statement_start),
         )))
+    }
+
+    fn parse_config_block(&mut self, location: SourceLocation) -> Result<Statement, ParseError> {
+        self.expect_keyword("config")?;
+        let section = self.expect_ident()?;
+        let declarations = self.parse_declaration_block()?;
+        Ok(Statement::ConfigBlock(ConfigBlock::new(
+            section,
+            declarations,
+            location,
+        )))
+    }
+
+    fn parse_source_block(&mut self, location: SourceLocation) -> Result<Statement, ParseError> {
+        self.expect_keyword("source")?;
+        let source = self.expect_ident()?;
+        let declarations = self.parse_declaration_block()?;
+        Ok(Statement::SourceBlock(SourceBlock::new(
+            source,
+            declarations,
+            location,
+        )))
+    }
+
+    fn parse_declaration_block(&mut self) -> Result<Vec<Declaration>, ParseError> {
+        self.expect(&TokenKind::LBrace)?;
+        let mut declarations = Vec::new();
+        while !self.eat(&TokenKind::RBrace) {
+            declarations.push(self.parse_declaration()?);
+        }
+        Ok(declarations)
+    }
+
+    fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {
+        let location = self.peek().location(&self.source);
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        let args = if self.at(&TokenKind::RParen) {
+            Vec::new()
+        } else {
+            self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+        };
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::Dot)?;
+        Ok(Declaration::new(name, args, location))
     }
 
     fn parse_doc_annotation(
@@ -1155,6 +1212,42 @@ mod tests {
         };
         assert_eq!(doc.name(), "convergence");
         assert_eq!(doc.doc(), "Convergence vocabulary.");
+    }
+
+    #[test]
+    fn parses_static_config_and_source_blocks() {
+        let program = parse_program(
+            "anneal.dl",
+            r#"
+            config convergence {
+              ordering(["raw", "draft", "current"]).
+              active(["draft", "current"]).
+            }
+
+            source md {
+              file_extension(".md").
+              label_pattern("OQ", regex: "OQ-(\\d+)", scope: "any").
+            }
+            "#,
+        )
+        .expect("program parses");
+
+        let Statement::ConfigBlock(config) = &program.statements[0] else {
+            panic!("expected config block");
+        };
+        assert_eq!(config.section.as_str(), "convergence");
+        assert_eq!(config.declarations.len(), 2);
+        assert_eq!(config.declarations[0].name.as_str(), "ordering");
+
+        let Statement::SourceBlock(source) = &program.statements[1] else {
+            panic!("expected source block");
+        };
+        assert_eq!(source.source.as_str(), "md");
+        assert_eq!(source.declarations.len(), 2);
+        assert!(matches!(
+            &source.declarations[1].args[1],
+            CallArg::Named { name, .. } if name.as_str() == "regex"
+        ));
     }
 
     #[test]

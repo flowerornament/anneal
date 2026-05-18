@@ -48,7 +48,7 @@ CORE CONCEPTS:
               Discharges — obligation fulfillment
 
   Status    Frontmatter `status:` field. Partitioned into active (in-progress)
-            and terminal (settled). Configure in anneal.toml [convergence].
+            and terminal (settled). Configure in anneal.dl `config convergence`.
 
   Lattice   The convergence lattice tracks how handles move from active toward
             terminal. If ordering is configured, anneal shows a pipeline
@@ -62,21 +62,29 @@ CORE CONCEPTS:
 
 START HERE:
 
-  anneal context \"goal\"       Search, read, and graph context in one response
-  anneal status               Compact programmable-runtime status
-  anneal search TEXT          Ranked content retrieval
-  anneal read HANDLE          Budgeted content spans for one handle
-  anneal broken               Runtime diagnostic blockers
-  anneal garden               Ranked maintenance tasks with hints
-  anneal vocab                Observed status, edge, namespace, and metadata vocabulary
-  anneal work                 Ranked work candidates
-  anneal -e '? query.'        Raw Datalog query over corpus facts
-  anneal prime                Full bundled agent skill briefing
-  anneal health               Compatibility corpus health and convergence
-  anneal check                Compatibility diagnostics
-  anneal get REQ-12           Compatibility handle inspection
-  anneal find ADR             Compatibility handle-identity search
-  anneal impact docs/v3.md    Reverse dependencies for safe edits
+  Cold start:
+    anneal context \"goal\"     Search, read, and graph context in one response
+    anneal status             Compact corpus status
+    anneal prime              Full bundled agent skill briefing
+
+  Retrieval:
+    anneal search TEXT        Ranked content retrieval
+    anneal read HANDLE        Budgeted content spans for one handle
+    anneal handle HANDLE      Incoming and outgoing edges for one handle
+    anneal -e '? query.'      Raw Datalog query over corpus facts
+
+  Health:
+    anneal broken             Diagnostic blockers
+    anneal work               Ranked work candidates
+    anneal vocab              Observed corpus vocabulary
+
+  Compatibility:
+    anneal health             Corpus health and convergence
+    anneal check              Diagnostics
+    anneal get REQ-12         Handle inspection
+    anneal find ADR           Handle-identity search
+    anneal garden             Maintenance tasks with hints
+    anneal impact docs/v3.md  Reverse dependencies for safe edits
 
 PAIRED WORKFLOWS:
 
@@ -97,7 +105,7 @@ ROOT DIRECTORY:
     3. docs/           if it exists
     4. .               current directory (fallback)
 
-  anneal.toml (if present) is read from the root.
+  anneal.dl (if present) is read from the root.
   Machine-local anneal config (if present) is read from:
     $XDG_CONFIG_HOME/anneal/config.toml
     ~/.config/anneal/config.toml        (fallback)
@@ -107,12 +115,20 @@ ROOT DIRECTORY:
 
 CONFIGURATION:
 
-  anneal.toml is optional. Without it, anneal infers structure and runs in
-  existence-lattice mode (reference checking only). With it, you get pipeline
-  tracking, obligation monitoring, concern groups, and targeted suggestions.
+  New installs work without configuration. The built-in prelude supplies
+  standard rules and verbs; anneal.dl owns corpus semantics, adapter discovery,
+  project rules, and @verb declarations.
 
-  Run `anneal init` to generate a repo config from inferred structure, then
-  tune it. Local runtime preferences like history location live in user config.
+  anneal.dl is optional. Without it, anneal infers structure and runs in
+  existence-lattice mode (reference checking only). With it, you get pipeline
+  tracking, obligation monitoring, concern groups, project rules, and targeted
+  suggestions.
+
+  Run `anneal init --dry-run` to preview a repo config from inferred structure.
+  `anneal init` writes anneal.dl only when no repo config exists. If an older
+  anneal.toml exists, `anneal init --force` writes unified anneal.dl and moves
+  the TOML file to anneal.toml.legacy. Local runtime preferences like history
+  location live in user config.
 
 OUTPUT:
 
@@ -143,7 +159,7 @@ struct Cli {
     #[arg(long, global = true)]
     area: Option<String>,
 
-    /// Filter to files within the default recent window (configurable via [temporal] recent_days)
+    /// Filter to files within the default recent window (config temporal recent_days)
     #[arg(long, global = true)]
     recent: bool,
 
@@ -373,10 +389,10 @@ EXAMPLES:
         context: bool,
     },
 
-    /// Generate anneal.toml from inferred structure
+    /// Generate anneal.dl from inferred structure
     #[command(
         long_about = "\
-Analyze the corpus and generate an anneal.toml configuration file.
+Analyze the corpus and generate an anneal.dl project declaration file.
 
 Infers:
   - Active/terminal status partition from directory conventions
@@ -389,28 +405,37 @@ Does NOT infer (requires domain knowledge):
   - Linear namespaces (which labels are obligations)
   - Concern groups (which namespaces cluster together)
 
-Review the generated file and tune these sections manually.
+Review the generated file and tune these declarations manually.
 Machine-local user config (for example, history_dir in XDG config) is separate
 and is not generated by `anneal init`.
-Use --dry-run to preview without writing.",
+Use --dry-run to preview without writing.
+
+Safety: `anneal init` will not overwrite an existing anneal.dl. If an older
+anneal.toml exists, --force writes unified anneal.dl and moves the TOML file to
+anneal.toml.legacy.",
         after_help = "\
 EXAMPLES:
-  anneal init                     # Write anneal.toml
+  anneal init                     # Write anneal.dl if no config exists
   anneal init --dry-run           # Preview without writing
+  anneal init --force             # Migrate anneal.toml or replace anneal.dl
   anneal init --json              # JSON output of inferred config"
     )]
     Init {
         /// Show what would be written without writing
         #[arg(long)]
         dry_run: bool,
+        /// Replace an existing anneal.dl or migrate anneal.toml
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show what's affected if a handle changes
     #[command(
         long_about = "\
 Reverse graph traversal from a handle. Shows which other handles depend on it,
-directly and transitively. Traverses edge kinds configured in [impact] traverse
-in anneal.toml (defaults to DependsOn, Supersedes, Verifies when absent).
+directly and transitively. Traverses edge kinds configured with
+`config impact { traverse([...]). }` in anneal.dl (defaults to DependsOn,
+Supersedes, Verifies when absent).
 
 Corpora with custom edge kinds for structural relationships (Synthesizes,
 Implements, Reconciles) should configure the traversal set for accurate
@@ -460,7 +485,7 @@ EXAMPLES:
         /// Render mode: summary (default), text, or dot
         #[arg(long, alias = "format", value_enum)]
         render: Option<MapRender>,
-        /// Show only handles in this concern group (from anneal.toml [concerns])
+        /// Show only handles in this concern group (from anneal.dl config concerns)
         #[arg(long)]
         concern: Option<String>,
         /// Show BFS neighborhood around this handle
@@ -595,7 +620,7 @@ EXAMPLES:
         long_about = "\
 Show outstanding, discharged, and mooted obligations for linear namespaces.
 
-Linear namespaces are configured in anneal.toml [handles] linear = [...].
+Linear namespaces are configured with `config handles { linear([...]). }`.
 Each label in a linear namespace is an obligation that must be discharged
 exactly once by a Discharges edge from another handle.
 
@@ -646,8 +671,8 @@ GRADES:
   [D]  Degraded: has errors and low connectivity
 
 Areas are auto-detected from the top-level directory structure. Files in the
-corpus root are grouped under \"(root)\". When [concerns] is configured in
-anneal.toml, concern groups can also act as areas.",
+corpus root are grouped under \"(root)\". When `config concerns` is declared in
+anneal.dl, concern groups can also act as areas.",
         after_help = "\
 EXAMPLES:
   anneal areas                    # Per-area health table
@@ -709,10 +734,10 @@ Context-budgeted reading list for onboarding or resuming. Answers:
 Output splits into tiers (agents read top-to-bottom):
 
 TIERS:
-  pinned       Files listed in [orient] pin — always first
+  pinned       Files listed in `config orient { pin([...]). }` — always first
   frontier    Where work is now. Per-area newest file with a Frontier-
               eligible status. If the corpus declares a pipeline
-              ([convergence] ordering), only statuses IN the ordering
+              (`config convergence { ordering([...]). }`), only statuses IN the ordering
               count — off-pipeline alive statuses like `reference` or
               `stable` stay out of Frontier without being hidden.
               Without an ordering, any non-terminal declared status
@@ -737,8 +762,8 @@ FILTERED OUT:
   • terminal status (per the corpus lattice — tool-wide canon shared
     with every other surface, not an orient-specific list)
   • files with a `superseded-by:` frontmatter pointer (the replacement wins)
-  • files smaller than [orient] stub_bytes (default 1000) unless they're
-    a curated hub
+  • files smaller than `config orient { stub_bytes(N). }` (default 1000)
+    unless they're a curated hub
 
 These are hard filters, not penalties — stubs and redirects never take
 budget. The previous soft content-size penalty let 200-byte alias stubs
@@ -769,7 +794,7 @@ EXAMPLES:
         file: Option<String>,
     },
 
-    /// Programmable-runtime status
+    /// Compact corpus status -- work, blockers, broken
     #[command(long_about = "\
 Print compact corpus status from the programmable runtime.
 
@@ -778,66 +803,67 @@ overview. That compatibility report is now `anneal health`; `status` is the
 runtime work-prioritization view.")]
     Status,
 
-    /// Programmable-runtime cold-agent context bundle
+    /// Cold-agent orientation bundle (search + read + neighborhood)
     #[command(
         long_about = "Compose search, bounded read spans, and graph neighborhood into one JSON object."
     )]
     Context,
 
-    /// Programmable-runtime ranked content search
+    /// Ranked content search over handles and spans
     #[command(long_about = "Search handles and spans with scores, reasons, and fields.")]
     Search,
 
-    /// Programmable-runtime bounded content read
+    /// Bounded content read for one handle
     #[command(long_about = "Read bounded content spans for a handle.")]
     Read,
 
-    /// Programmable-runtime handle view
+    /// Handle view with incoming and outgoing edges
     #[command(
-        name = "H",
+        name = "handle",
+        visible_alias = "H",
         long_about = "Show one handle plus bounded incoming/outgoing references."
     )]
     H,
 
-    /// Programmable-runtime ranked work candidates
+    /// Ranked work candidates
     #[command(long_about = "Show ranked work candidates from the standard-library work verb.")]
     Work,
 
-    /// Programmable-runtime blocker view for one handle
+    /// Why one handle is blocked
     #[command(long_about = "Show why a handle is blocked according to convergence rules.")]
     Blocked,
 
-    /// Programmable-runtime diagnostic blockers
+    /// Diagnostic blockers
     #[command(long_about = "Show diagnostic blockers from the checks prelude.")]
     Broken,
 
-    /// Programmable-runtime status-change rows when snapshot history exists
+    /// Status changes between snapshots
     #[command(long_about = "Show status changes when snapshot history exists.")]
     Trend,
 
-    /// Programmable-runtime corpus vocabulary
+    /// Observed status, edge, namespace, and frontmatter vocabulary
     #[command(
         long_about = "List observed status values, edge kinds, namespaces, and frontmatter fields."
     )]
     Vocab,
 
-    /// Programmable-runtime object description
+    /// Runtime primitive, predicate, or verb description
     #[command(long_about = "Describe a runtime primitive, predicate, or verb.")]
     Describe,
 
-    /// Programmable-runtime linked source/adapters
+    /// Linked adapters and capabilities
     #[command(long_about = "List linked sources/adapters and their capabilities.")]
     Sources,
 
-    /// Programmable-runtime predicate and primitive catalog
+    /// Predicate, primitive, and stored-relation catalog
     #[command(long_about = "List runtime predicates, primitives, signatures, and provenance.")]
     Schema,
 
-    /// Programmable-runtime available standard-library and project verbs
+    /// Standard-library and project @verb declarations
     #[command(long_about = "List standard-library and project @verb declarations.")]
     Verbs,
 
-    /// Programmable-runtime raw Datalog query
+    /// Raw Datalog query
     #[command(long_about = "Run a raw Datalog query against the programmable runtime.")]
     Eval,
 
@@ -980,7 +1006,45 @@ fn run() -> anyhow::Result<()> {
         parse::infer_root(&cwd)
     };
 
-    let config = config::load_config(root.as_std_path())?;
+    let init_mode = match cli_args.command {
+        Some(Command::Init { dry_run, force }) => Some((dry_run, force)),
+        _ => None,
+    };
+    if matches!(init_mode, Some((false, false)))
+        && (root.join("anneal.dl").exists() || root.join("anneal.toml").exists())
+    {
+        anyhow::bail!("{}", cli::existing_config_message(&root));
+    }
+    if let Some((dry_run, force)) = init_mode
+        && (dry_run || force)
+        && (root.join("anneal.dl").exists() || root.join("anneal.toml").exists())
+    {
+        let config = if let Some(legacy_config) = config::load_legacy_config(root.as_std_path())? {
+            legacy_config
+        } else {
+            config::load_config(root.as_std_path())?
+        };
+        let output =
+            cli::cmd_init_from_config(&root, config, cli::InitMode::from_flags(dry_run, force))?;
+        emit_rendered(
+            &output,
+            Some(cli::OutputMeta::full()),
+            cli_args.json,
+            json_style,
+            output_style,
+            "failed to write init output",
+        )?;
+        return Ok(());
+    }
+    let config = if init_mode.is_some() {
+        if let Some(legacy_config) = config::load_legacy_config(root.as_std_path())? {
+            legacy_config
+        } else {
+            config::load_config(root.as_std_path())?
+        }
+    } else {
+        config::load_config(root.as_std_path())?
+    };
     let user_config = match config::load_user_config() {
         Ok(config) => config,
         Err(err) => {
@@ -1276,14 +1340,15 @@ fn run() -> anyhow::Result<()> {
             )?;
         }
 
-        Some(Command::Init { dry_run }) => {
-            let output = cli::cmd_init(
-                &root,
-                &lattice,
-                &stats,
-                &result.observed_frontmatter_keys,
-                dry_run,
-            )?;
+        Some(Command::Init { dry_run, force }) => {
+            let output = cli::cmd_init(cli::InitRequest {
+                root: &root,
+                existing_config: &config,
+                lattice: &lattice,
+                stats: &stats,
+                observed_frontmatter_keys: &result.observed_frontmatter_keys,
+                mode: cli::InitMode::from_flags(dry_run, force),
+            })?;
             emit_rendered(
                 &output,
                 Some(cli::OutputMeta::full()),
@@ -1733,7 +1798,7 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         for name in [
-            "status", "context", "search", "read", "H", "work", "blocked", "broken", "trend",
+            "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
             "vocab", "describe", "sources", "schema", "verbs", "eval", "health",
         ] {
             assert!(

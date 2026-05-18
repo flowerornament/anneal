@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use anneal_core::runtime::{CallArg, Expr, Literal, NumberLiteral, Statement, parse_program};
+use anneal_core::runtime_config_declaration_for;
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -99,7 +101,7 @@ pub(crate) struct SuppressRule {
 }
 
 /// Configuration for the `anneal areas` command.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AreasConfig {
     /// Orphan count at or above this threshold downgrades an area to grade B.
@@ -115,7 +117,7 @@ impl Default for AreasConfig {
 }
 
 /// Configuration for temporal features (`--recent`, `--since`, file dates).
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct TemporalConfig {
     /// Default window in days for the `--recent` flag.
@@ -129,7 +131,7 @@ impl Default for TemporalConfig {
 }
 
 /// Configuration for the `anneal orient` command.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct OrientConfig {
     /// Weight applied to incoming+outgoing edge count in the score.
@@ -185,12 +187,12 @@ impl Default for OrientConfig {
     }
 }
 
-/// Top-level configuration from `anneal.toml`.
+/// Top-level repository configuration.
 ///
-/// An absent `anneal.toml` is a valid coloring (zero-config case, KB-P3).
+/// An absent repo config is a valid coloring (zero-config case, KB-P3).
 /// `deny_unknown_fields` catches config typos early.
 /// Impact analysis configuration.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ImpactConfig {
     /// Edge kinds to traverse during impact analysis. When empty (default),
@@ -215,7 +217,7 @@ impl ImpactConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AnnealConfig {
     /// Root directory to scan (defaults to inferred: `.design/` > `docs/` > `.`).
@@ -284,7 +286,7 @@ pub(crate) struct ResolvedStateConfig {
 }
 
 /// Configuration for the convergence lattice (active/terminal partition).
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ConvergenceConfig {
     /// Status values considered active (in-progress, not yet settled).
@@ -299,7 +301,7 @@ pub(crate) struct ConvergenceConfig {
 }
 
 /// Configuration for handle namespace recognition.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct HandlesConfig {
     /// Namespace prefixes confirmed as real label namespaces.
@@ -321,7 +323,7 @@ impl HandlesConfig {
 }
 
 /// Configuration for check command behavior.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct CheckConfig {
     /// Default filter for `anneal check`. `"active-only"` skips diagnostics
@@ -338,7 +340,7 @@ impl Default for CheckConfig {
 }
 
 /// Configuration for freshness thresholds.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct FreshnessConfig {
     /// Days before a file's age triggers a warning.
@@ -356,27 +358,299 @@ impl Default for FreshnessConfig {
     }
 }
 
-/// Load configuration from `anneal.toml` at the given root path.
+/// Load repository configuration at the given root path.
 ///
 /// Returns `Ok(AnnealConfig::default())` if the file does not exist (CONFIG-02:
 /// zero-config is valid). Returns an error on malformed TOML.
 pub(crate) fn load_config(root: &Path) -> Result<AnnealConfig> {
-    let config_path = root.join("anneal.toml");
+    let Some(config) = load_legacy_config(root)? else {
+        return load_unified_config(root);
+    };
 
+    if unified_config_declared(root)? {
+        anyhow::bail!(
+            "both anneal.toml and anneal.dl config blocks are present; keep one repo config authority. Run `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+        );
+    }
+
+    Ok(config)
+}
+
+pub(crate) fn load_legacy_config(root: &Path) -> Result<Option<AnnealConfig>> {
+    let config_path = root.join("anneal.toml");
     let content = match std::fs::read_to_string(&config_path) {
         Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AnnealConfig::default());
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(err).with_context(|| format!("failed to read {}", config_path.display()));
         }
     };
 
-    let config: AnnealConfig = toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", config_path.display()))
+        .map(Some)
+}
 
+fn unified_config_declared(root: &Path) -> Result<bool> {
+    let path = root.join("anneal.dl");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let program = parse_program(&path.display().to_string(), &content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(program
+        .statements
+        .iter()
+        .any(|statement| matches!(statement, Statement::ConfigBlock(_))))
+}
+
+fn load_unified_config(root: &Path) -> Result<AnnealConfig> {
+    let path = root.join("anneal.dl");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AnnealConfig::default());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    parse_unified_config(&path.display().to_string(), &content)
+        .with_context(|| format!("failed to parse config declarations in {}", path.display()))
+}
+
+fn parse_unified_config(source_name: &str, content: &str) -> Result<AnnealConfig> {
+    let program = parse_program(source_name, content)?;
+    let mut config = AnnealConfig::default();
+    for statement in program.statements {
+        match statement {
+            Statement::ConfigBlock(block) => {
+                for declaration in block.declarations {
+                    let values = declaration_values(&declaration.args).with_context(|| {
+                        format!("invalid config declaration '{}'", declaration.name)
+                    })?;
+                    apply_config_declaration(
+                        &mut config,
+                        block.section.as_str(),
+                        declaration.name.as_str(),
+                        values,
+                    )?;
+                }
+            }
+            // v1-parity compatibility only: the legacy command set can project
+            // markdown source config, but future adapters stay on the runtime path.
+            Statement::SourceBlock(block) if block.source.as_str() == "md" => {
+                for declaration in block.declarations {
+                    let values = declaration_values(&declaration.args).with_context(|| {
+                        format!("invalid source declaration '{}'", declaration.name)
+                    })?;
+                    apply_markdown_source_declaration(
+                        &mut config,
+                        declaration.name.as_str(),
+                        values,
+                    )?;
+                }
+            }
+            Statement::SourceBlock(block) => {
+                // The legacy command set is markdown-only. Future adapters are
+                // handled by the runtime surface rather than this v1 bridge.
+                anyhow::bail!("unknown source block source {} {{ ... }}", block.source);
+            }
+            _ => {}
+        }
+    }
     Ok(config)
+}
+
+fn apply_markdown_source_declaration(
+    config: &mut AnnealConfig,
+    name: &str,
+    values: Vec<String>,
+) -> Result<()> {
+    match name {
+        "scan_root" => config.root = one_string("source md.scan_root", values)?,
+        "scan_exclude" => config.exclude.extend(values),
+        "file_extension" | "label_pattern" | "linear_namespace" | "version_pattern" => {}
+        _ => anyhow::bail!("unknown source declaration source md {{ {name}(...) }}"),
+    }
+    Ok(())
+}
+
+fn apply_config_declaration(
+    config: &mut AnnealConfig,
+    section: &str,
+    name: &str,
+    values: Vec<String>,
+) -> Result<()> {
+    if !matches!(
+        (section, name),
+        ("convergence", "description")
+            | ("frontmatter", "field")
+            | ("suppress", "rule")
+            | ("concerns", "group")
+    ) && runtime_config_declaration_for(section, name).is_none()
+    {
+        anyhow::bail!("unknown config declaration config {section} {{ {name}(...) }}");
+    }
+
+    match (section, name) {
+        ("corpus", "exclude") => config.exclude = values,
+        ("corpus", "root") => config.root = one_string("corpus.root", values)?,
+        ("convergence", "active") => config.convergence.active = values,
+        ("convergence", "terminal") => config.convergence.terminal = values,
+        ("convergence", "ordering") => config.convergence.ordering = values,
+        ("convergence", "description") => {
+            if values.len() != 2 {
+                anyhow::bail!("convergence.description expects status and description");
+            }
+            config
+                .convergence
+                .descriptions
+                .insert(values[0].clone(), values[1].clone());
+        }
+        ("handles", "confirmed") => config.handles.confirmed = values,
+        ("handles", "rejected") => config.handles.rejected = values,
+        ("handles", "linear") => config.handles.linear = values,
+        ("frontmatter", "field") => {
+            if values.len() != 3 {
+                anyhow::bail!("frontmatter.field expects key, edge_kind, and direction");
+            }
+            config.frontmatter.fields.insert(
+                values[0].clone(),
+                FrontmatterFieldMapping {
+                    edge_kind: values[1].clone(),
+                    direction: match values[2].as_str() {
+                        "forward" => Direction::Forward,
+                        "inverse" => Direction::Inverse,
+                        other => anyhow::bail!(
+                            "frontmatter.field direction must be forward or inverse; got {other:?}"
+                        ),
+                    },
+                },
+            );
+        }
+        ("freshness", "warn") => config.freshness.warn = one_u32("freshness.warn", values)?,
+        ("freshness", "error") => config.freshness.error = one_u32("freshness.error", values)?,
+        ("state", "history_mode") => {
+            config.state.history_mode =
+                Some(match one_string("state.history_mode", values)?.as_str() {
+                    "xdg" => HistoryMode::Xdg,
+                    "repo" => HistoryMode::Repo,
+                    "off" => HistoryMode::Off,
+                    other => {
+                        anyhow::bail!("state.history_mode must be xdg, repo, or off; got {other:?}")
+                    }
+                });
+        }
+        ("check", "default_filter") => {
+            config.check.default_filter = Some(one_string("check.default_filter", values)?);
+        }
+        ("suppress", "code") => config.suppress.codes = values,
+        ("suppress", "rule") => {
+            if values.len() != 2 {
+                anyhow::bail!("suppress.rule expects code and target");
+            }
+            config.suppress.rules.push(SuppressRule {
+                code: values[0].clone(),
+                target: values[1].clone(),
+            });
+        }
+        ("concerns", "group") => {
+            if values.len() < 2 {
+                anyhow::bail!("concerns.group expects a name and one or more patterns");
+            }
+            config
+                .concerns
+                .insert(values[0].clone(), values[1..].to_vec());
+        }
+        ("impact", "traverse") => config.impact.traverse = values,
+        ("areas", "orphan_threshold") => {
+            config.areas.orphan_threshold = one_string("areas.orphan_threshold", values)?
+                .parse::<usize>()
+                .with_context(|| "areas.orphan_threshold expects an unsigned integer")?;
+        }
+        ("temporal", "recent_days") => {
+            config.temporal.recent_days = one_u32("temporal.recent_days", values)?;
+        }
+        ("orient", "edge_weight") => {
+            config.orient.edge_weight = one_f64("orient.edge_weight", values)?;
+        }
+        ("orient", "label_weight") => {
+            config.orient.label_weight = one_f64("orient.label_weight", values)?;
+        }
+        ("orient", "recency_weight") => {
+            config.orient.recency_weight = one_f64("orient.recency_weight", values)?;
+        }
+        ("orient", "recency_half_life_days") => {
+            config.orient.recency_half_life_days =
+                one_u32("orient.recency_half_life_days", values)?;
+        }
+        ("orient", "budget") => config.orient.budget = one_string("orient.budget", values)?,
+        ("orient", "depth") => config.orient.depth = one_u32("orient.depth", values)?,
+        ("orient", "pin") => config.orient.pin = values,
+        ("orient", "exclude") => config.orient.exclude = values,
+        ("orient", "stub_bytes") => {
+            config.orient.stub_bytes = one_u32("orient.stub_bytes", values)?;
+        }
+        ("orient", "curated_hub_weight") => {
+            config.orient.curated_hub_weight = one_f64("orient.curated_hub_weight", values)?;
+        }
+        _ => {
+            anyhow::bail!("unknown config declaration config {section} {{ {name}(...) }}");
+        }
+    }
+    Ok(())
+}
+
+fn one_string(key: &str, values: Vec<String>) -> Result<String> {
+    let [value]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
+        anyhow::anyhow!("{key} expects exactly one value; got {}", values.len())
+    })?;
+    Ok(value)
+}
+
+fn one_u32(key: &str, values: Vec<String>) -> Result<u32> {
+    let value = one_string(key, values)?;
+    value
+        .parse::<u32>()
+        .with_context(|| format!("{key} expects an unsigned integer"))
+}
+
+fn one_f64(key: &str, values: Vec<String>) -> Result<f64> {
+    let value = one_string(key, values)?;
+    value
+        .parse::<f64>()
+        .with_context(|| format!("{key} expects a number"))
+}
+
+fn declaration_values(args: &[CallArg]) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    for arg in args {
+        let Expr::Literal(literal) = arg.expr() else {
+            anyhow::bail!("values must be static literals");
+        };
+        push_literal_values(&mut values, literal);
+    }
+    Ok(values)
+}
+
+fn push_literal_values(out: &mut Vec<String>, literal: &Literal) {
+    match literal {
+        Literal::String(value) => out.push(value.clone()),
+        Literal::Number(NumberLiteral::Int(value)) => out.push(value.to_string()),
+        Literal::Number(NumberLiteral::Float(value)) => out.push(value.to_string()),
+        Literal::Bool(value) => out.push(value.to_string()),
+        Literal::Null => out.push("null".to_string()),
+        Literal::List(items) => {
+            for item in items {
+                push_literal_values(out, item);
+            }
+        }
+    }
 }
 
 /// Load machine-local user configuration from XDG config.
@@ -494,6 +768,99 @@ default_filter = "all"
         assert!(config.suppress.rules.is_empty());
         assert_eq!(config.state.history_mode, None);
         assert_eq!(config.state.history_dir, None);
+    }
+
+    #[test]
+    fn unified_datalog_config_parses_to_legacy_config() {
+        let config = parse_unified_config(
+            "anneal.dl",
+            r#"
+            source md {
+              scan_exclude(["feedback"]).
+            }
+
+            config convergence {
+              ordering(["raw", "draft", "current"]).
+              active(["draft", "current"]).
+              terminal(["archived"]).
+            }
+
+            config handles {
+              confirmed(["OQ", "CR-D"]).
+              linear(["OQ"]).
+            }
+
+            config suppress {
+              rule("E001", "synthesis/v17.md").
+            }
+            "#,
+        )
+        .expect("unified config parses");
+
+        assert_eq!(config.exclude, ["feedback"]);
+        assert_eq!(config.convergence.ordering, ["raw", "draft", "current"]);
+        assert_eq!(config.convergence.active, ["draft", "current"]);
+        assert_eq!(config.convergence.terminal, ["archived"]);
+        assert_eq!(config.handles.confirmed, ["OQ", "CR-D"]);
+        assert_eq!(config.handles.linear, ["OQ"]);
+        assert_eq!(config.suppress.rules.len(), 1);
+        assert_eq!(config.suppress.rules[0].code, "E001");
+        assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
+    }
+
+    #[test]
+    fn unified_datalog_config_rejects_unknown_source_blocks() {
+        let err = parse_unified_config(
+            "anneal.dl",
+            r#"
+            source host {
+              endpoint("https://example.invalid").
+            }
+            "#,
+        )
+        .expect_err("unknown source block rejected");
+
+        assert!(err.to_string().contains("unknown source block"));
+    }
+
+    #[test]
+    fn load_config_rejects_two_repo_config_authorities() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("anneal.toml"),
+            "[convergence]\nactive = [\"draft\"]\n",
+        )
+        .expect("write toml");
+        std::fs::write(
+            dir.path().join("anneal.dl"),
+            "config convergence { active([\"current\"]). }",
+        )
+        .expect("write dl");
+
+        let err = load_config(dir.path()).expect_err("two authorities rejected");
+
+        assert!(err.to_string().contains("one repo config authority"));
+    }
+
+    #[test]
+    fn load_legacy_config_reads_toml_even_when_unified_config_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("anneal.toml"),
+            "[convergence]\nactive = [\"legacy-active\"]\n",
+        )
+        .expect("write toml");
+        std::fs::write(
+            dir.path().join("anneal.dl"),
+            "config convergence { active([\"unified-active\"]). }",
+        )
+        .expect("write dl");
+
+        let config = load_legacy_config(dir.path())
+            .expect("legacy config loads")
+            .expect("legacy config present");
+
+        assert_eq!(config.convergence.active, ["legacy-active"]);
     }
 
     #[test]

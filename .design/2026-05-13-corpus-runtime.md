@@ -268,14 +268,17 @@ runtime executes these phases in order:
 
 ```
 1. Adapter registration: link Source impls into the binary.
-2. Phase A — config parse:
-   a. Read anneal.toml (lattice, [convergence], policies, source bindings).
-   b. Parse anneal.dl, splitting into:
-      - discovery facts (file_extension, label_pattern, code_language, …)
+2. Phase A — project parse:
+   a. Parse anneal.dl, splitting static declarations from rule-layer
+      statements:
+      - `config` blocks for runtime config rows
+      - `source` blocks for adapter-qualified discovery facts
       - rule clauses (Horn rules with `:=`)
       - verb declarations (@verb annotations)
+   b. Existing anneal.toml files are upgrade input for conversion, not
+      a second runtime config authority.
 3. Phase B — Source extraction:
-   a. For each enabled Source, build SourceContext from anneal.toml + discovery facts.
+   a. For each enabled Source, build SourceContext from config and discovery facts.
    b. Source.extract(cx) → FactBatch.
    c. Runtime merges batches with generation tracking:
       - FullSnapshot replaces all current facts for (corpus, source).
@@ -448,7 +451,7 @@ populates and every rule may join on.
 
 *concern{name, member, source, corpus, generation}
 
-*config{key, value, ordinal, corpus}      // from anneal.toml; runtime-populated
+*config{key, value, ordinal, corpus}      // from anneal.dl config blocks; runtime-populated
 *snapshot{snapshot, at, id, key, value, corpus}
 *trail{...}                                // see §13
 *generation{corpus, source, current}       // current generation per (corpus, source)
@@ -661,8 +664,9 @@ set.
 - Provider raw scores are **not** directly comparable. Provenance may
   expose both `raw_score` and calibrated `score`; ordinary queries
   see only calibrated `score`. The default `Ranker` ships with
-  documented calibration; projects override via `[ranking]` in
-  `anneal.toml`.
+  documented calibration; projects override by supplying project rules
+  or by using surface flags until ranking config declarations are
+  explicitly designed.
 - `reason` is a short string explaining the match
   (`"title-substring"`, `"semantic-cluster"`,
   `"frontmatter-key-match"`). Adapters document their reason
@@ -735,8 +739,8 @@ not a ranked list of fragments that hides the document to read.
 `low_confidence` flag. Surfaced search result sets that use `TopK`
 (`anneal search`, `anneal context`, and prelude search templates)
 filter with `low_confidence = false` before `TopK` by default.
-`search_include_low_confidence` in `anneal.toml` `[ranking]` or
-`--include-low-confidence` removes that predicate. This is an
+`--include-low-confidence` removes that predicate; a project-level
+config default remains CR-OQ9. This is an
 ordinary query/surface policy, not special aggregator behavior, so
 custom Datalog can inspect low-confidence rows directly and opt into
 them explicitly.
@@ -801,7 +805,7 @@ every candidate a ranking surface showed.
 redactor redacts string literal values and meta/config values whose
 keys contain `secret`, `password`, `token`, `api_key`, or
 `private_key`, case-insensitively. Projects may extend or replace this
-set through `[trail]` configuration. Redaction patterns are policy
+set through trail configuration. Redaction patterns are policy
 inputs, not relation fields. Rationale: mandatory trail capture needs
 a conservative local default while leaving project-specific secret
 vocabularies configurable.
@@ -1621,7 +1625,7 @@ recently_advanced(h) :=
 not.** A code corpus where handles are functions/types doesn't have
 "status: draft" frontmatter. It has coverage state, deprecation
 markers, public/private visibility. Projects define their own
-lifecycle by declaring `[convergence] ordering` in `anneal.toml` and
+lifecycle by declaring `config convergence { ordering([...]). }` and
 the predicates `terminal/1`, `active/1`, `pipeline_position_for/2`
 in `anneal.dl` if the defaults don't fit.
 
@@ -1835,12 +1839,14 @@ at the corpus root. Section headers organize the file:
 ```dl
 # === discovery ===
 # Consumed by Sources in Phase B of ingestion.
-# Adapter-qualified: each fact names the source it targets.
-md.file_extension(".md").
-md.scan_root(".").
-md.scan_exclude("node_modules").
-md.label_pattern("OQ",    "OQ-(\d+)",    "any").
-md.linear_namespace("OQ").
+# Adapter-qualified: declarations are scoped to the source they target.
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude("node_modules").
+  label_pattern("OQ",    "OQ-(\d+)",    "any").
+  linear_namespace("OQ").
+}
 
 # === imports ===
 # Use namespaced imports for adapter helpers or shared verb libraries.
@@ -1878,14 +1884,15 @@ release_blocker(h, "blocking_oq")  :=
 )
 ```
 
-**Discovery facts are adapter-qualified** (`md.file_extension`,
-`code.module_pattern`, etc.) so two adapters can't silently fight
-over the same key. The runtime errors at load if a discovery fact
-prefix names an adapter that isn't linked, unless the prefix is
-declared optional:
+**Discovery declarations are adapter-qualified** through their
+`source <adapter-prefix>` block, so two adapters can't silently fight
+over the same key. Raw adapter-qualified facts remain accepted for
+optional discovery declarations. The runtime errors at load if a
+discovery fact prefix names an adapter that isn't linked, unless the
+prefix is declared optional:
 
 ```
-md.file_extension(".md").                 # error if anneal-md not linked
+source md { file_extension(".md"). }       # error if anneal-md not linked
 optional code.module_pattern("**/*.rs").  # silently skipped if anneal-code absent
 ```
 
@@ -1946,13 +1953,22 @@ required discovery fact whose prefix is recognized by no linked
 adapter. The user fixes by linking the adapter, qualifying the fact
 for a linked adapter, or marking the fact `optional`.
 
-**Single-adapter sugar.** When exactly one adapter is linked, the
-runtime auto-qualifies unqualified discovery facts to that adapter:
+**Single-adapter sugar.** The canonical form is an explicit source
+block, even when only one adapter is linked:
 
 ```dl
-# In a markdown-only project, this is allowed:
+# In a markdown-only project:
+source md {
+  file_extension(".md").
+  label_pattern("OQ", "OQ-(\d+)", "any").
+}
+```
+
+For transitional snippets, when exactly one adapter is linked, the
+runtime also auto-qualifies unqualified discovery facts to that adapter:
+
+```dl
 file_extension(".md").              # auto-qualified to md.file_extension
-label_pattern("OQ", "OQ-(\d+)", "any").
 
 # In a multi-adapter project, the same line errors at load:
 error: anneal.dl:4: ambiguous discovery fact 'file_extension'
@@ -2057,7 +2073,7 @@ Plus meta forms:
 | Form | Purpose |
 |---|---|
 | `anneal -e '<q>'` | custom query; `-e -` reads from stdin |
-| `anneal init` | scaffold a corpus with starter `anneal.toml` + `anneal.dl` |
+| `anneal init` | scaffold repo-local `anneal.dl` project declarations |
 | `anneal --prelude-path` | print the embedded-prelude inspection path |
 | `anneal --inspect S` | parse-test a string against handle conventions |
 
@@ -2297,7 +2313,7 @@ Default MCP tool surface:
 
 | Tool | Wraps | Capabilities |
 |---|---|---|
-| `eval` | `-e '<query>'` | gated by `eval` capability; default-denied for MCP unless `[mcp] allow_eval = true` or host policy grants it |
+| `eval` | `-e '<query>'` | gated by `eval` capability; default-denied for MCP unless project config or host policy grants it |
 | `search` | `search` primitive | always allowed |
 | `read` | `read` primitive (budgeted) | always allowed |
 | `verbs` | `verbs` primitive | always allowed; agents see all available verbs |
@@ -2308,7 +2324,7 @@ Default MCP tool surface:
 | `run_verb` | invoke any verb by name | gated by per-verb declared capabilities |
 
 `read_full` is **not** a default MCP tool. Projects may expose it
-via explicit configuration in `anneal.toml` `[mcp]` if they accept
+via explicit configuration in `anneal.dl` if they accept
 the data-exfiltration risk.
 
 `run_verb` is the agent's entry to project-defined verbs without
@@ -2424,11 +2440,38 @@ retained, and summarized.
 
 ## Part VIII: Onboarding [CR-O]
 
-### §39 Lattice-on default [CR-D28]
+### §39 Configuration ladder and lattice-on default [CR-D28, CR-D89]
 
-**Definition CR-D28 (Init defaults).** `anneal init` always scaffolds
-a minimal lattice and a starter `anneal.dl` referencing the
-prelude's convergence vocabulary:
+**Definition CR-D89 (Configuration ladder).** A corpus has three
+configuration layers, in increasing project specificity:
+
+1. Embedded prelude: the standard library shipped inside the binary
+   (`graph.dl`, `convergence.dl`, `checks.dl`, `ranking.dl`,
+   `views.dl`). It is loaded automatically and is not copied into a
+   project by default.
+2. `anneal.dl`: repo-local project declarations. It owns source
+   settings, convergence statuses, terminal/active sets, ordering,
+   namespaces, frontmatter mappings, source excludes, history mode, adapter
+   discovery facts, project rules, overrides, and `@verb`
+   declarations. Static `config` and `source` blocks are lowered
+   before Source extraction; rules and verbs load after extraction.
+3. User config: machine-local preferences under XDG config. It owns
+   workstation paths and local preferences that must not be committed
+   into repo config.
+
+New installs work with no files at all: the embedded prelude and
+markdown defaults are enough to run status, search, read, context, and
+raw queries. Existing `anneal.toml` files are upgrade input for
+`anneal init --force`, but runtime commands use `anneal.dl`. If
+`anneal.toml` is still present, runtime commands fail with a migration
+diagnostic rather than merging two config authorities. `anneal init` is a
+scaffold and conversion operation: it previews with `--dry-run`,
+refuses to overwrite existing repo config, and with `--force` writes
+unified `anneal.dl` and moves an older TOML file to
+`anneal.toml.legacy`.
+
+**Definition CR-D28 (Init defaults).** `anneal init` scaffolds a
+minimal lattice in `anneal.dl`:
 
 ```
 $ anneal init
@@ -2439,16 +2482,17 @@ scanning corpus...
   status frontmatter: present in 41/47 (87%)
   inferred lattice: raw → draft → current → stable
 
-wrote anneal.toml
-  [convergence]
-  ordering = ["raw", "draft", "current", "stable"]
-  active = ["draft", "current", "stable"]
-  terminal = ["superseded", "archived"]
+wrote anneal.dl
+  source md {
+    file_extension(".md").
+    scan_root(".").
+  }
 
-wrote anneal.dl (16 lines)
-  # === discovery ===
-  md.file_extension(".md").
-  …
+  config convergence {
+    ordering(["raw", "draft", "current", "stable"]).
+    active(["draft", "current", "stable"]).
+    terminal(["superseded", "archived"]).
+  }
 
 next steps:
   anneal status                see the landscape
@@ -2457,8 +2501,9 @@ next steps:
 ```
 
 The agent's first session lands in convergence mode, not graph mode.
-Graph mode (lattice-off) requires `[convergence] disabled = true`
-in `anneal.toml`.
+Graph mode is the zero-config fallback when no convergence config is
+declared. Project rules and verbs are opt-in extensions inside the
+same `anneal.dl` file, not a prerequisite for ordinary configuration.
 
 ### §40 The agent loop [CR-D29]
 
@@ -2510,16 +2555,18 @@ per CR-D41; internal identity is `(corpus, source, kind, native_id)`.
 Adapter-qualified discovery facts per §32. The markdown adapter's
 shape:
 
-```
-md.file_extension(".md").
-md.scan_root(".").
-md.scan_exclude("node_modules").
-md.label_pattern("OQ",    "OQ-(\d+)",    "any").
-md.label_pattern("KB-D",  "KB-D(\d+)",   ".design/**").
-md.linear_namespace("OQ").
-md.version_pattern("formal-model", "formal-model-v(\d+)\.md").
-md.section_min_depth(1).
-md.section_max_depth(3).
+```dl
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude("node_modules").
+  label_pattern("OQ",    "OQ-(\d+)",    "any").
+  label_pattern("KB-D",  "KB-D(\d+)",   ".design/**").
+  linear_namespace("OQ").
+  version_pattern("formal-model", "formal-model-v(\d+)\.md").
+  section_min_depth(1).
+  section_max_depth(3).
+}
 ```
 
 Other adapters declare their own (`code.module_pattern`,
@@ -2606,8 +2653,7 @@ anneal describe handles
 
 ```
 <corpus>/
-  anneal.toml           # engine config: lattice, [convergence], [ranking], [mcp], [policy]
-  anneal.dl             # discovery facts + project predicates + verbs + overrides
+  anneal.dl             # config blocks + source declarations + project predicates + verbs
   .anneal/
     history.jsonl       # snapshot append log
     trails/             # session paths
@@ -2834,6 +2880,134 @@ for evidence kind, subject, locator, related handle, observed value,
 and confidence. The goal is to keep diagnostic and provenance evidence
 queryable without smuggling structure through strings.
 
+### §55.3 Unified project declaration polish (v0.12+) [CR-Fw7]
+
+CR-D89 makes `anneal.dl` the unified project declaration file in
+v0.11.0. The remaining forward-looking work is polish around richer
+literal syntax and generated reference documentation, not a second
+project-file migration.
+
+The target is not "TOML embedded as strings" and not "rules compute
+configuration." Configuration needed by Sources must be known before
+extraction, so it cannot depend on fixpoint evaluation. The target is
+a small declaration layer inside the Datalog language that lowers to
+the same relational facts and SourceContext inputs the runtime already
+uses.
+
+Current unified file shape:
+
+```dl
+config convergence {
+  ordering(["raw", "draft", "current", "stable"]).
+  active(["draft", "current", "stable"]).
+  terminal(["archived", "superseded"]).
+}
+
+config handles {
+  linear(["OQ"]).
+  confirmed(["ADR", "OQ", "REQ"]).
+}
+
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude(["archive", "node_modules"]).
+}
+
+# ordinary project rules and verbs continue in the same file
+release_blocker(h, "broken_ref") :=
+  diagnostic("E001", severity, h, file, line, evidence).
+
+@verb(
+  name: "release-blockers",
+  query: "? release_blocker(h, why).",
+  doc: "Open blockers gating the next release.",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  capabilities: ["read"]
+).
+```
+
+Lowering rules:
+
+- The chosen surface is **block-scoped predicate declarations**. It
+  deliberately rejects `key = value.` assignment syntax so `.dl` does
+  not become a second TOML-shaped language. Inside a declaration block,
+  every line is still a predicate call terminated by `.`.
+- `config <section> { key(value). }` lowers to one or more `*config`
+  rows with `key = "<section>.<key>"`. Scalar values lower to one row
+  with `ordinal = null`.
+- `config <section> { key([a, b]). }` lowers according to the core
+  schema for that key. Ordered-list keys emit ordinals `0`, `1`, ...
+  per CR-D40. Unordered-set keys emit one row per element with
+  `ordinal = null`.
+- `source <adapter-prefix> { declaration(...) }` lowers to
+  adapter-qualified discovery facts (`md.label_pattern(...)`) before
+  Source extraction. The block name is the adapter prefix, not a
+  human-readable adapter label, so the lowering target is unambiguous.
+- Declaration blocks are static. They may contain literals and lists,
+  but not variables, rule bodies, primitive calls, negation, or
+  aggregation.
+- Core owns schemas for built-in config sections. Adapters declare
+  their source-block keys through SourceInfo. Unknown sections, unknown
+  keys, wrong value types, and duplicate ordered ordinals are load
+  errors with source spans.
+- `schema`, `describe`, and future generated reference docs expose
+  these declaration schemas so an agent can discover config vocabulary
+  without reading Rust source.
+- After lowering, the rest of the file follows the existing
+  `anneal.dl` semantics: project rules, imports, docs, and `@verb`
+  declarations load after the embedded prelude per CR-D21.
+
+Rejected alternatives:
+
+- Raw fact rows such as `config.convergence.ordering("raw", 0).`
+  expose the correct relational shape but are too verbose for
+  onboarding and make ordinary config feel like storage plumbing.
+- TOML-like assignments such as `ordering = ["raw", ...].` are
+  familiar, but they create a second expression form and make `=` mean
+  "declaration assignment" in one place and "logical equality" in
+  another.
+- `@config(...)` directives reuse the existing annotation shape, but
+  deeply nested directive arguments recreate JSON-in-a-string pressure
+  and make adapter schemas harder to read.
+
+The next language-polish slice should resolve CR-OQ12 by adding typed
+object literals for directive fields such as `@verb.output_schema`.
+The unified project file works without that syntax, but
+JSON-in-a-string remains the most visible wart in the authoring
+surface.
+
+Phase order in the unified-file mode:
+
+1. Parse the project file.
+2. Lower static `config` declarations and adapter discovery
+   declarations.
+3. Build SourceContext and extract facts.
+4. Load embedded prelude.
+5. Load the project's rule, import, doc, and verb declarations.
+6. Evaluate queries.
+
+Migration ladder:
+
+- v0.11.x: `anneal.dl` is generated and documented as the canonical
+  repo config. Existing `anneal.toml` files are upgrade input for
+  `anneal init --force`, not a second runtime config authority.
+- v0.11.x: `anneal init --dry-run` previews the unified file;
+  `anneal init --force` writes `anneal.dl` and moves `anneal.toml` to
+  `anneal.toml.legacy`.
+- v1.0 candidate: remove the transitional TOML reader unless renewed
+  by explicit decision.
+
+Conflict rule: a corpus has one repo config authority. Existing
+`anneal.toml` is accepted as input to the conversion path, but runtime
+commands use `anneal.dl`. If TOML remains at runtime, the command must
+fail with a migration diagnostic rather than merging two config authorities.
+
+Rationale: this gives agents one project vocabulary and makes config
+queryable as facts, while preserving the adoption lesson that language
+migrations must interoperate with existing files instead of requiring
+all-at-once conversion.
+
 ---
 
 ## Part XIV: Open questions [CR-OQ]
@@ -2899,7 +3073,7 @@ not as an implicit change to `SearchProvider`.
 
 Resolved by CR-D78: the default pattern set is `secret`, `password`,
 `token`, `api_key`, and `private_key`, case-insensitive and
-project-overridable through `[trail]`.
+project-overridable through trail config declarations.
 
 ### §64 Distinguishing consumed-by-read from consumed-by-display
 
@@ -3036,6 +3210,7 @@ config key.
 - CR-D86: Corpus vocabulary verb (§33)
 - CR-D87: CLI output mode selection (§36)
 - CR-D88: Aggregate body stratification (§20)
+- CR-D89: Configuration ladder (§39)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
@@ -3071,6 +3246,7 @@ config key.
 - CR-Fw4: Host Corpus embedding (§55)
 - CR-Fw5: Structural primitives (§55.1)
 - CR-Fw6: Typed evidence rows (§55.2)
+- CR-Fw7: Unified project declaration file (§55.3)
 
 ### CR-OQ (Open questions)
 - CR-OQ6: Performance ceiling (§66)

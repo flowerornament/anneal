@@ -15,7 +15,6 @@ pub mod project;
 pub mod ranking;
 pub mod retrieval;
 pub mod runtime;
-pub mod runtime_config;
 pub mod source;
 pub mod store;
 mod time;
@@ -42,8 +41,9 @@ pub use policy::{
     authorize_action, authorize_capability_action, authorize_trail_private,
 };
 pub use project::{
-    PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, ShadowWarning, load_project_extension,
-    merge_program_layers,
+    PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, RUNTIME_CONFIG_DECLARATIONS,
+    RuntimeConfigDeclaration, RuntimeConfigValueMode, ShadowWarning, load_project_extension,
+    merge_program_layers, runtime_config_declaration_for,
 };
 pub use ranking::{
     DefaultRanker, REASON_PARENT_CLUSTER, Ranker, RankingContext, SearchHit, SearchScore,
@@ -54,13 +54,10 @@ pub use retrieval::{
     ReadFullRequest, ReadRequest, RetrievalContext, SearchContext, SearchError, SearchProvider,
     SearchRequest, SearchSpanScope,
 };
-pub use runtime_config::{
-    RuntimeConfigError, load_runtime_configs, load_runtime_configs_if_present,
-};
 pub use source::{
-    ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey, Pattern,
-    RuntimeCapability, SearchInfo, Source, SourceCapabilities, SourceContext, SourceError,
-    SourceInfo, TimeRef,
+    ActorCapability, ActorContext, CancellationToken, ConfigEntry, ConfigFacts, ConfigKey,
+    ConfigValueShape, Pattern, RuntimeCapability, SearchInfo, Source, SourceCapabilities,
+    SourceContext, SourceError, SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};
 pub use trail::{

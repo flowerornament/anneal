@@ -4,21 +4,26 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.11.0 - 2026-05-16
+
 ### Added
 
-- Programmable Corpus Runtime substrate: a Datalog parser/evaluator with
-  typed IR, stratified negation, safety checks, aggregation, runtime
-  primitives, content retrieval, self-description, standard-library preludes,
-  project `anneal.dl` extension, trail/provenance capture, and
-  capability/policy gates.
-- New additive programmable-runtime command surface in the same `anneal` binary:
-  `status`, `context`, `search`, `read`, `H`, `work`, `blocked`, `broken`, `trend`,
-  `describe`, `sources`, `schema`, `verbs`, `eval`, and `-e`.
+- Programmable Corpus Runtime: a Datalog substrate for corpora.
+  - Typed IR with stratified negation, safety checks, and aggregation.
+  - Engine-derived primitives for graph reach, citation counts, and snapshots.
+  - Stored relations exposed through a `Source` trait; markdown ships.
+  - Standard-library preludes for graph, convergence, checks, and ranking.
+  - Project `anneal.dl` files for corpus config, adapter discovery, project
+    rules, and `@verb` declarations.
+  - Trail/provenance capture and capability/policy gates on every query.
+- New additive runtime command surface in the same `anneal` binary: `status`,
+  `context`, `search`, `read`, `handle`, `work`, `blocked`, `broken`, `trend`,
+  `describe`, `sources`, `schema`, `verbs`, and `eval` (also `-e`).
   `anneal --help`, `anneal <command> --help`, and
   `anneal help <command>` expose the surface.
 - `anneal context GOAL` composes search hits, bounded read spans, and graph
-  neighborhood into one JSON object. Its `--budget` now derives a per-hit read
-  cap that is applied independently to each winning hit, so a strong long-form
+  neighborhood into one response. Its `--budget` derives a per-hit read cap
+  that is applied independently to each winning hit, so a strong long-form
   result is not dropped merely because several hits were selected.
 - `--explain` derivation traces for raw Datalog queries and runtime verbs,
   including rule/provenance paths back through the prelude and project layers.
@@ -29,33 +34,46 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
-- Existing corpus-health workflows remain available during the compatibility
-  window. The new runtime commands ship in the same installed binary.
+- Existing corpus-health workflows remain available. The runtime commands ship
+  in the same installed binary.
 - `trend` now degrades cleanly on corpora without snapshot history by emitting
   zero rows instead of failing.
 - `anneal status` is the named runtime status command, and bare `anneal` also
   routes to that status view. The older compatibility health report is
   available as `anneal health`.
-- Renames: users of 0.10 and earlier should run `anneal health` for the old
-  corpus-health overview that used to live at `anneal status`. `anneal status`
-  is now the runtime work-prioritization view.
 - README and the bundled `anneal` skill lead with the programmable runtime
   while still documenting compatibility commands (`health`, `check`, `get`,
   `find`, `map`, `impact`, `diff`, `obligations`, `init`, and `prime`).
+- `anneal init` now scaffolds unified `anneal.dl`. It is non-destructive by
+  default; with `--force`, it writes `anneal.dl` from the loaded repo config
+  and moves an older `anneal.toml` to `anneal.toml.legacy`.
+
+### Migration from 0.10.x
+
+- `anneal status` is the runtime work-prioritization view. Use
+  `anneal health` for the corpus-health overview that previously lived at
+  `anneal status`.
+- New runtime commands are additive; existing `check`, `get`, `find`, `map`,
+  `impact`, `diff`, `obligations`, `init`, and `prime` workflows remain in the
+  same binary.
+- Existing `anneal.toml` files are upgrade input. Runtime commands use
+  `anneal.dl`; use `anneal init --dry-run` to preview the unified form, then
+  `anneal init --force` to write `anneal.dl` and move the old TOML file to
+  `anneal.toml.legacy`.
 
 ### Known Limitations
 
-- `anneal-mcp` ships as a crate/library surface. The installed root
-  binary does not yet expose `anneal --mcp` or `anneal mcp`; source checkouts
+- `anneal-mcp` ships as a crate/library surface for this release. The installed
+  root binary does not expose `anneal --mcp` or `anneal mcp`; source checkouts
   can inspect the crate-level tool catalog with
   `cargo run -p anneal-mcp -- --tools`.
 - The default ranker is still lexical retrieval. It includes light stemming and
   a small built-in abbreviation table for common planning terms, but broader
   domain synonyms still require explicit wording or a custom search/ranking
   provider.
-- Remaining polish and edge-case correctness work is tracked in `bd`,
-  including introspection field polish, stricter empty-result diagnostics, and
-  runtime edge cases that are not acceptance blockers for the next release.
+- Long-range follow-up work is tracked in `bd`, including multi-corpus
+  federation, section-parent query ergonomics, and profile evaluation at larger
+  corpus scales.
 
 ## 0.10.1 - 2026-04-23
 
@@ -91,8 +109,8 @@ All notable changes to `anneal` are documented in this file.
   signals outrank graph-centrality guesses (`KB-P9`).
 
   **Frontier** picks per-area newest file with a Frontier-eligible
-  status. When the corpus declares `[convergence] ordering = [...]`
-  in `anneal.toml`, a status is Frontier-eligible if it appears in
+  status. When the corpus declares `config convergence { ordering([...]). }`
+  in `anneal.dl`, a status is Frontier-eligible if it appears in
   that ordering — so off-pipeline alive statuses like `reference` or
   `stable` stay out of Frontier and flow to Foundation where they
   belong. Without an ordering, any non-terminal declared status

@@ -33,7 +33,9 @@ pub(crate) use get::{
     cmd_batch_get, cmd_get,
 };
 pub(crate) use impact::cmd_impact;
-pub(crate) use init::cmd_init;
+pub(crate) use init::{
+    InitMode, InitRequest, cmd_init, cmd_init_from_config, existing_config_message,
+};
 pub(crate) use map::{MapByAreaOptions, MapOptions, TraversalDirection, cmd_map, cmd_map_by_area};
 pub(crate) use obligations::cmd_obligations;
 pub(crate) use orient::{OrientOptions, cmd_orient, parse_budget};

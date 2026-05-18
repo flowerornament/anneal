@@ -545,6 +545,8 @@ impl ProgramScanner {
                     }
                 }
                 Statement::Query(_)
+                | Statement::ConfigBlock(_)
+                | Statement::SourceBlock(_)
                 | Statement::Verb(_)
                 | Statement::Include(_)
                 | Statement::Import(_)

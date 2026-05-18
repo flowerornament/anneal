@@ -1,13 +1,18 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::facts::ConfigFact;
+use crate::ids::CorpusId;
 use crate::runtime::analysis::{StaticError, analyze};
 use crate::runtime::ast::{
-    Expr, Head, Literal, NumberLiteral, Program, SourceLocation, Statement, Term,
+    CallArg, Declaration, Expr, Head, Literal, NumberLiteral, Program, SourceLocation, Statement,
+    Term,
 };
 use crate::runtime::loader::{LoadError, load_program};
 use crate::runtime::parser::ParseError;
-use crate::source::{ConfigEntry, ConfigFacts, DuplicateConfigOrdinal, SourceInfo};
+use crate::source::{
+    ConfigEntry, ConfigFacts, ConfigKey, ConfigValueShape, DuplicateConfigOrdinal, SourceInfo,
+};
 use crate::verbs::{VerbRegistryError, validate_project_verb_query_program};
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
@@ -15,7 +20,15 @@ pub const PROJECT_RULE_FILE: &str = "anneal.dl";
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectExtension {
     discovery: ConfigFacts,
+    runtime_config: ConfigFacts,
     program: Program,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectExtensionParts {
+    pub discovery: ConfigFacts,
+    pub runtime_config: ConfigFacts,
+    pub program: Program,
 }
 
 impl ProjectExtension {
@@ -23,12 +36,33 @@ impl ProjectExtension {
         &self.discovery
     }
 
+    pub fn runtime_config(&self) -> &ConfigFacts {
+        &self.runtime_config
+    }
+
+    pub fn runtime_config_facts(&self, corpus: &CorpusId) -> Vec<ConfigFact> {
+        self.runtime_config
+            .entries()
+            .iter()
+            .map(|entry| ConfigFact {
+                corpus: corpus.clone(),
+                key: entry.key.clone(),
+                value: entry.value.clone(),
+                ordinal: entry.ordinal,
+            })
+            .collect()
+    }
+
     pub fn program(&self) -> &Program {
         &self.program
     }
 
-    pub fn into_parts(self) -> (ConfigFacts, Program) {
-        (self.discovery, self.program)
+    pub fn into_parts(self) -> ProjectExtensionParts {
+        ProjectExtensionParts {
+            discovery: self.discovery,
+            runtime_config: self.runtime_config,
+            program: self.program,
+        }
     }
 }
 
@@ -38,9 +72,13 @@ pub fn load_project_extension(
     base_program: &Program,
 ) -> Result<ProjectExtension, ProjectLoadError> {
     let loaded = load_program(root, PROJECT_RULE_FILE)?;
-    let (discovery, program) = split_project_program(loaded, sources)?;
+    let (discovery, runtime_config, program) = split_project_program(loaded, sources)?;
     validate_verbs(&program, base_program)?;
-    Ok(ProjectExtension { discovery, program })
+    Ok(ProjectExtension {
+        discovery,
+        runtime_config,
+        program,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +150,8 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
         )),
         Statement::Doc(doc) => Some((doc.name().to_string(), doc.location().clone())),
         Statement::Query(_)
+        | Statement::ConfigBlock(_)
+        | Statement::SourceBlock(_)
         | Statement::Include(_)
         | Statement::Import(_)
         | Statement::AtBlock { .. }
@@ -122,13 +162,20 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
 fn split_project_program(
     program: Program,
     sources: &[SourceInfo],
-) -> Result<(ConfigFacts, Program), ProjectLoadError> {
+) -> Result<(ConfigFacts, ConfigFacts, Program), ProjectLoadError> {
     let resolver = DiscoveryResolver::new(sources);
     let mut discovery = Vec::new();
+    let mut runtime_config = Vec::new();
     let mut statements = Vec::new();
 
     for statement in program.statements {
         match statement {
+            Statement::ConfigBlock(block) => {
+                runtime_config.extend(config_block_entries(&block)?);
+            }
+            Statement::SourceBlock(block) => {
+                discovery.extend(resolver.entries_for_source_block(&block)?);
+            }
             Statement::Fact(head) => match resolver.entries_for_required_fact(&head)? {
                 Some(entries) => discovery.extend(entries),
                 None => statements.push(Statement::Fact(head)),
@@ -142,30 +189,32 @@ fn split_project_program(
 
     let discovery = ConfigFacts::try_from_entries(discovery)
         .map_err(ProjectLoadError::DuplicateDiscoveryOrdinal)?;
-    Ok((discovery, Program::new(statements)))
+    let runtime_config = ConfigFacts::try_from_entries(runtime_config)
+        .map_err(ProjectLoadError::DuplicateRuntimeConfigOrdinal)?;
+    Ok((discovery, runtime_config, Program::new(statements)))
 }
 
 struct DiscoveryResolver {
-    exact: BTreeSet<String>,
+    schemas: BTreeMap<String, ConfigKey>,
     by_local: BTreeMap<String, Vec<String>>,
 }
 
 impl DiscoveryResolver {
     fn new(sources: &[SourceInfo]) -> Self {
-        let mut exact = BTreeSet::new();
+        let mut schemas = BTreeMap::new();
         let mut by_local = BTreeMap::<String, Vec<String>>::new();
         for source in sources {
             for key in &source.config_keys {
-                exact.insert(key.key.clone());
-                if let Some((_, local)) = key.key.split_once('.') {
+                schemas.insert(key.key().to_string(), key.clone());
+                if let Some((_, local)) = key.key().split_once('.') {
                     by_local
                         .entry(local.to_string())
                         .or_default()
-                        .push(key.key.clone());
+                        .push(key.key().to_string());
                 }
             }
         }
-        Self { exact, by_local }
+        Self { schemas, by_local }
     }
 
     fn entries_for_required_fact(
@@ -175,20 +224,40 @@ impl DiscoveryResolver {
         let Some(key) = self.resolve_required_key(head)? else {
             return Ok(None);
         };
-        Ok(Some(config_entries(key, head)?))
+        let schema = self.schema(&key).expect("resolved key has schema");
+        Ok(Some(config_entries(schema, head)?))
     }
 
     fn entries_for_optional_fact(&self, head: &Head) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
         let Some(key) = self.resolve_optional_key(head)? else {
             return Ok(Vec::new());
         };
-        config_entries(key, head)
+        let schema = self.schema(&key).expect("resolved key has schema");
+        config_entries(schema, head)
+    }
+
+    fn entries_for_source_block(
+        &self,
+        block: &crate::runtime::ast::SourceBlock,
+    ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+        let mut entries = Vec::new();
+        for declaration in &block.declarations {
+            let key = format!("{}.{}", block.source, declaration.name);
+            let Some(schema) = self.schema(&key) else {
+                return Err(ProjectLoadError::UnknownDiscoveryKey {
+                    key,
+                    location: declaration.location.clone(),
+                });
+            };
+            entries.extend(declaration_entries(schema, declaration)?);
+        }
+        Ok(entries)
     }
 
     fn resolve_required_key(&self, head: &Head) -> Result<Option<String>, ProjectLoadError> {
         if head.predicate.module.is_some() {
             let key = head.predicate.display_name();
-            if self.exact.contains(&key) {
+            if self.schemas.contains_key(&key) {
                 return Ok(Some(key));
             }
             return if is_project_rule_file(&head.location) {
@@ -207,7 +276,7 @@ impl DiscoveryResolver {
     fn resolve_optional_key(&self, head: &Head) -> Result<Option<String>, ProjectLoadError> {
         if head.predicate.module.is_some() {
             let key = head.predicate.display_name();
-            if self.exact.contains(&key) {
+            if self.schemas.contains_key(&key) {
                 return Ok(Some(key));
             }
             return Ok(None);
@@ -231,42 +300,341 @@ impl DiscoveryResolver {
             }),
         }
     }
+
+    fn schema(&self, key: &str) -> Option<&ConfigKey> {
+        self.schemas.get(key)
+    }
 }
 
 fn is_project_rule_file(location: &crate::runtime::ast::SourceLocation) -> bool {
     location.source_name == PROJECT_RULE_FILE
 }
 
-fn config_entries(key: String, head: &Head) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+fn config_entries(schema: &ConfigKey, head: &Head) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
     let mut values = Vec::new();
     for term in &head.terms {
         let Some(value) = config_value(term) else {
             return Err(ProjectLoadError::NonLiteralDiscoveryValue {
-                key,
+                key: schema.key().to_string(),
                 location: head.location.clone(),
             });
         };
         values.push(value);
     }
 
-    if values.len() <= 1 {
-        return Ok(vec![ConfigEntry::scalar(
-            key,
-            values.into_iter().next().unwrap_or_default(),
-        )]);
+    discovery_entries(schema, values)
+}
+
+fn config_block_entries(
+    block: &crate::runtime::ast::ConfigBlock,
+) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    let mut entries = Vec::new();
+    for declaration in &block.declarations {
+        let section = block.section.as_str();
+        let name = declaration.name.as_str();
+        if let Some(grouped) = grouped_config_entries(section, name, declaration)? {
+            entries.extend(grouped);
+            continue;
+        }
+        let Some(schema) = runtime_config_declaration_for(section, name) else {
+            return Err(ProjectLoadError::UnknownConfigDeclaration {
+                section: section.to_string(),
+                key: name.to_string(),
+                location: declaration.location.clone(),
+            });
+        };
+        let key = format!("{section}.{name}");
+        let values = declaration_values(declaration)?;
+        entries.extend(schema.entries(key, values)?);
+    }
+    Ok(entries)
+}
+
+fn grouped_config_entries(
+    section: &str,
+    name: &str,
+    declaration: &Declaration,
+) -> Result<Option<Vec<ConfigEntry>>, ProjectLoadError> {
+    let values = declaration_values(declaration)?;
+    let entries = match (section, name) {
+        ("convergence", "description") => {
+            let [status, description]: [String; 2] =
+                values.try_into().map_err(|values: Vec<String>| {
+                    ProjectLoadError::InvalidConfigArity {
+                        key: "convergence.description".to_string(),
+                        expected: "status and description",
+                        actual: values.len(),
+                    }
+                })?;
+            vec![ConfigEntry::scalar(
+                format!("convergence.description.{status}"),
+                description,
+            )]
+        }
+        ("frontmatter", "field") => {
+            let [field, edge_kind, direction]: [String; 3] =
+                values.try_into().map_err(|values: Vec<String>| {
+                    ProjectLoadError::InvalidConfigArity {
+                        key: "frontmatter.field".to_string(),
+                        expected: "field, edge kind, and direction",
+                        actual: values.len(),
+                    }
+                })?;
+            vec![
+                ConfigEntry::scalar(format!("frontmatter.field.{field}.edge_kind"), edge_kind),
+                ConfigEntry::scalar(format!("frontmatter.field.{field}.direction"), direction),
+            ]
+        }
+        ("suppress", "rule") => {
+            let [code, target]: [String; 2] =
+                values.try_into().map_err(|values: Vec<String>| {
+                    ProjectLoadError::InvalidConfigArity {
+                        key: "suppress.rule".to_string(),
+                        expected: "code and target",
+                        actual: values.len(),
+                    }
+                })?;
+            vec![ConfigEntry::scalar(format!("suppress.rule.{code}"), target)]
+        }
+        ("concerns", "group") => {
+            if values.len() < 2 {
+                return Err(ProjectLoadError::InvalidConfigArity {
+                    key: "concerns.group".to_string(),
+                    expected: "name and one or more patterns",
+                    actual: values.len(),
+                });
+            }
+            let mut values = values;
+            let name = values.remove(0);
+            values
+                .into_iter()
+                .map(|value| ConfigEntry::scalar(format!("concerns.group.{name}"), value))
+                .collect()
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(entries))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeConfigValueMode {
+    Scalar,
+    OrderedList,
+    UnorderedSet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeConfigDeclaration {
+    section: &'static str,
+    name: &'static str,
+    mode: RuntimeConfigValueMode,
+}
+
+impl RuntimeConfigDeclaration {
+    pub const fn section(self) -> &'static str {
+        self.section
     }
 
-    Ok(values
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    pub const fn mode(self) -> RuntimeConfigValueMode {
+        self.mode
+    }
+
+    fn entries(
+        self,
+        key: String,
+        values: Vec<String>,
+    ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+        match self.mode {
+            RuntimeConfigValueMode::Scalar => {
+                let [value]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
+                    ProjectLoadError::InvalidConfigArity {
+                        key: key.clone(),
+                        expected: "exactly one scalar value",
+                        actual: values.len(),
+                    }
+                })?;
+                Ok(vec![ConfigEntry::scalar(key, value)])
+            }
+            RuntimeConfigValueMode::OrderedList => ordered_entries(&key, values),
+            RuntimeConfigValueMode::UnorderedSet => Ok(values
+                .into_iter()
+                .map(|value| ConfigEntry::scalar(key.clone(), value))
+                .collect()),
+        }
+    }
+}
+
+const fn runtime_config_declaration(
+    section: &'static str,
+    name: &'static str,
+    mode: RuntimeConfigValueMode,
+) -> RuntimeConfigDeclaration {
+    RuntimeConfigDeclaration {
+        section,
+        name,
+        mode,
+    }
+}
+
+pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
+    runtime_config_declaration("corpus", "root", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("corpus", "exclude", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration(
+        "convergence",
+        "ordering",
+        RuntimeConfigValueMode::OrderedList,
+    ),
+    runtime_config_declaration(
+        "convergence",
+        "active",
+        RuntimeConfigValueMode::UnorderedSet,
+    ),
+    runtime_config_declaration(
+        "convergence",
+        "terminal",
+        RuntimeConfigValueMode::UnorderedSet,
+    ),
+    runtime_config_declaration("handles", "confirmed", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("handles", "rejected", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("handles", "linear", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("freshness", "warn", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("freshness", "error", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("state", "history_mode", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("check", "default_filter", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("suppress", "code", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("impact", "traverse", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("areas", "orphan_threshold", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("temporal", "recent_days", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("orient", "edge_weight", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("orient", "label_weight", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("orient", "recency_weight", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration(
+        "orient",
+        "recency_half_life_days",
+        RuntimeConfigValueMode::Scalar,
+    ),
+    runtime_config_declaration("orient", "budget", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("orient", "depth", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration("orient", "pin", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("orient", "exclude", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("orient", "stub_bytes", RuntimeConfigValueMode::Scalar),
+    runtime_config_declaration(
+        "orient",
+        "curated_hub_weight",
+        RuntimeConfigValueMode::Scalar,
+    ),
+];
+
+pub fn runtime_config_declaration_for(
+    section: &str,
+    name: &str,
+) -> Option<RuntimeConfigDeclaration> {
+    RUNTIME_CONFIG_DECLARATIONS
+        .iter()
+        .copied()
+        .find(|declaration| declaration.section == section && declaration.name == name)
+}
+
+fn ordered_entries(key: &str, values: Vec<String>) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    values
         .into_iter()
         .enumerate()
         .map(|(idx, value)| {
-            ConfigEntry::ordered(
-                key.clone(),
-                value,
-                u32::try_from(idx).expect("config arity fits u32"),
-            )
+            let ordinal = u32::try_from(idx)
+                .map_err(|_| ProjectLoadError::OrderedConfigIndexOverflow { key: key.into() })?;
+            Ok(ConfigEntry::ordered(key, value, ordinal))
         })
-        .collect())
+        .collect()
+}
+
+fn declaration_entries(
+    schema: &ConfigKey,
+    declaration: &Declaration,
+) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    if let Some(arg) = declaration
+        .args
+        .iter()
+        .find(|arg| matches!(arg, CallArg::Named { .. }))
+    {
+        return Err(ProjectLoadError::NamedDiscoveryArgument {
+            key: schema.key().to_string(),
+            location: arg.location().clone(),
+        });
+    }
+    let values = declaration_values(declaration)?;
+    discovery_entries(schema, values)
+}
+
+fn discovery_entries(
+    schema: &ConfigKey,
+    values: Vec<String>,
+) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    validate_discovery_shape(schema, values.len())?;
+    if values.len() <= 1 {
+        return Ok(vec![ConfigEntry::scalar(
+            schema.key().to_string(),
+            values.into_iter().next().unwrap_or_default(),
+        )]);
+    }
+    ordered_entries(schema.key(), values)
+}
+
+fn validate_discovery_shape(schema: &ConfigKey, actual: usize) -> Result<(), ProjectLoadError> {
+    let ok = match schema.shape() {
+        ConfigValueShape::Any => true,
+        ConfigValueShape::Exactly(expected) => actual == expected,
+        ConfigValueShape::AtLeast(minimum) => actual >= minimum,
+    };
+    if ok {
+        return Ok(());
+    }
+    let expected = match schema.shape() {
+        ConfigValueShape::Any => "any number of values",
+        ConfigValueShape::Exactly(1) => "exactly one value",
+        ConfigValueShape::Exactly(_) => "an exact tuple arity",
+        ConfigValueShape::AtLeast(1) => "one or more values",
+        ConfigValueShape::AtLeast(_) => "a minimum tuple arity",
+    };
+    Err(ProjectLoadError::InvalidDiscoveryArity {
+        key: schema.key().to_string(),
+        expected,
+        actual,
+    })
+}
+
+fn declaration_values(declaration: &Declaration) -> Result<Vec<String>, ProjectLoadError> {
+    let mut values = Vec::new();
+    for arg in &declaration.args {
+        let literal =
+            literal_arg(arg).ok_or_else(|| ProjectLoadError::NonLiteralDeclarationValue {
+                name: declaration.name.to_string(),
+                location: arg.location().clone(),
+            })?;
+        push_literal_values(&mut values, literal);
+    }
+    Ok(values)
+}
+
+fn literal_arg(arg: &CallArg) -> Option<&Literal> {
+    match arg.expr() {
+        Expr::Literal(literal) => Some(literal),
+        _ => None,
+    }
+}
+
+fn push_literal_values(out: &mut Vec<String>, literal: &Literal) {
+    match literal {
+        Literal::List(items) => {
+            for item in items {
+                push_literal_values(out, item);
+            }
+        }
+        _ => out.push(literal_value(literal)),
+    }
 }
 
 fn config_value(term: &Term) -> Option<String> {
@@ -274,13 +642,22 @@ fn config_value(term: &Term) -> Option<String> {
         return None;
     };
     Some(match literal {
+        Literal::String(_) | Literal::Number(_) | Literal::Bool(_) | Literal::Null => {
+            literal_value(literal)
+        }
+        Literal::List(_) => return None,
+    })
+}
+
+fn literal_value(literal: &Literal) -> String {
+    match literal {
         Literal::String(value) => value.clone(),
         Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
         Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
         Literal::Bool(value) => value.to_string(),
         Literal::Null => "null".to_string(),
-        Literal::List(_) => return None,
-    })
+        Literal::List(_) => unreachable!("list values are flattened before scalar conversion"),
+    }
 }
 
 fn validate_verbs(program: &Program, base_program: &Program) -> Result<(), ProjectLoadError> {
@@ -344,8 +721,40 @@ pub enum ProjectLoadError {
         key: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error("discovery declaration '{key}' expects {expected}; got {actual} values")]
+    InvalidDiscoveryArity {
+        key: String,
+        expected: &'static str,
+        actual: usize,
+    },
+    #[error("{location}: discovery declaration '{key}' does not support named arguments yet")]
+    NamedDiscoveryArgument {
+        key: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
     #[error("discovery facts contain {0}")]
     DuplicateDiscoveryOrdinal(DuplicateConfigOrdinal),
+    #[error("runtime config declarations contain {0}")]
+    DuplicateRuntimeConfigOrdinal(DuplicateConfigOrdinal),
+    #[error("{location}: unknown config declaration 'config {section} {{ {key}(...) }}'")]
+    UnknownConfigDeclaration {
+        section: String,
+        key: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: declaration '{name}' values must be static literals")]
+    NonLiteralDeclarationValue {
+        name: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("config declaration '{key}' expects {expected}; got {actual} values")]
+    InvalidConfigArity {
+        key: String,
+        expected: &'static str,
+        actual: usize,
+    },
+    #[error("ordered config declaration '{key}' overflowed u32 ordinals")]
+    OrderedConfigIndexOverflow { key: String },
     #[error("{location}: @verb missing string field '{field}'")]
     MissingVerbField {
         field: String,
@@ -528,6 +937,167 @@ mod tests {
     }
 
     #[test]
+    fn project_config_blocks_lower_to_runtime_config_facts() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config convergence {
+              ordering(["raw", "draft", "current"]).
+              active(["draft", "current"]).
+              terminal("archived").
+            }
+
+            config handles {
+              linear(["OQ"]).
+            }
+
+            config frontmatter {
+              field("depends-on", "DependsOn", "forward").
+            }
+
+            config concerns {
+              group("release", ["REQ", "REL"]).
+            }
+            "#,
+        );
+
+        let extension =
+            load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+                .expect("project loads");
+
+        assert_eq!(
+            extension.runtime_config().entries(),
+            &[
+                ConfigEntry::ordered("convergence.ordering", "raw", 0),
+                ConfigEntry::ordered("convergence.ordering", "draft", 1),
+                ConfigEntry::ordered("convergence.ordering", "current", 2),
+                ConfigEntry::scalar("convergence.active", "draft"),
+                ConfigEntry::scalar("convergence.active", "current"),
+                ConfigEntry::scalar("convergence.terminal", "archived"),
+                ConfigEntry::scalar("handles.linear", "OQ"),
+                ConfigEntry::scalar("frontmatter.field.depends-on.edge_kind", "DependsOn"),
+                ConfigEntry::scalar("frontmatter.field.depends-on.direction", "forward"),
+                ConfigEntry::scalar("concerns.group.release", "REQ"),
+                ConfigEntry::scalar("concerns.group.release", "REL"),
+            ]
+        );
+        assert!(extension.program().statements.is_empty());
+    }
+
+    #[test]
+    fn project_source_blocks_lower_to_adapter_discovery_facts() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            source md {
+              file_extension(".md").
+              scan_root("notes").
+              scan_exclude("archive").
+              label_pattern("OQ", "OQ-(\\d+)", "any").
+            }
+            "#,
+        );
+        let sources = [source(
+            "markdown",
+            vec![
+                ConfigKey::required("md.file_extension"),
+                ConfigKey::required("md.scan_root"),
+                ConfigKey::optional("md.scan_exclude"),
+                ConfigKey::optional_exact("md.label_pattern", 3),
+            ],
+        )];
+
+        let extension =
+            load_project_extension(root.path(), &sources, &standard_prelude_program().unwrap())
+                .expect("project loads");
+
+        assert_eq!(
+            extension.discovery().entries(),
+            &[
+                ConfigEntry::scalar("md.file_extension", ".md"),
+                ConfigEntry::scalar("md.scan_root", "notes"),
+                ConfigEntry::scalar("md.scan_exclude", "archive"),
+                ConfigEntry::ordered("md.label_pattern", "OQ", 0),
+                ConfigEntry::ordered("md.label_pattern", r"OQ-(\d+)", 1),
+                ConfigEntry::ordered("md.label_pattern", "any", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_source_blocks_validate_adapter_declared_arity() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            source md {
+              label_pattern("OQ", "OQ-(\\d+)").
+            }
+            "#,
+        );
+        let sources = [source(
+            "markdown",
+            vec![ConfigKey::optional_exact("md.label_pattern", 3)],
+        )];
+
+        let err = load_project_extension(root.path(), &sources, &Program::new(Vec::new()))
+            .expect_err("bad source declaration arity rejected");
+
+        assert!(matches!(
+            err,
+            ProjectLoadError::InvalidDiscoveryArity { .. }
+        ));
+    }
+
+    #[test]
+    fn project_source_blocks_reject_named_arguments_until_source_schemas_name_fields() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            source md {
+              label_pattern("OQ", regex: "OQ-(\\d+)", scope: "any").
+            }
+            "#,
+        );
+        let sources = [source(
+            "markdown",
+            vec![ConfigKey::optional_exact("md.label_pattern", 3)],
+        )];
+
+        let err = load_project_extension(root.path(), &sources, &Program::new(Vec::new()))
+            .expect_err("named source declaration args rejected");
+
+        assert!(matches!(
+            err,
+            ProjectLoadError::NamedDiscoveryArgument { .. }
+        ));
+    }
+
+    #[test]
+    fn project_config_blocks_reject_unknown_keys() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config convergence {
+              typo(["draft"]).
+            }
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("unknown config rejected");
+
+        assert!(matches!(
+            err,
+            ProjectLoadError::UnknownConfigDeclaration { .. }
+        ));
+    }
+
+    #[test]
     fn multi_adapter_unqualified_discovery_fact_errors() {
         let root = tempdir().expect("tempdir");
         write_project(root.path(), r#"file_extension(".md")."#);
@@ -643,9 +1213,8 @@ mod tests {
 
         let mut program = standard_prelude_program().unwrap();
         let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
-        program
-            .statements
-            .extend(extension.into_parts().1.statements);
+        let extension = extension.into_parts();
+        program.statements.extend(extension.program.statements);
         let query_program =
             parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
         program.statements.extend(query_program.statements);
@@ -687,9 +1256,8 @@ mod tests {
 
         let mut program = standard_prelude_program().unwrap();
         let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
-        program
-            .statements
-            .extend(extension.into_parts().1.statements);
+        let extension = extension.into_parts();
+        program.statements.extend(extension.program.statements);
         let query_program =
             parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
         program.statements.extend(query_program.statements);

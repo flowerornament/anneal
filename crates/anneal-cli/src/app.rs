@@ -11,8 +11,8 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFacts, CorpusId, FactStore, Generation,
-    Source, SourceContext, SourceInfo, VerbLayer, VerbRegistry, load_project_extension,
-    load_runtime_configs_if_present, merge_program_layers,
+    ProjectExtension, Source, SourceContext, SourceInfo, VerbLayer, VerbRegistry,
+    load_project_extension, merge_program_layers,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -61,7 +61,7 @@ pub fn main_entry() -> Result<()> {
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let invocation = Invocation::parse(args)?;
     if let RuntimeCommand::Help { topic } = invocation.command {
-        return write_text(io::stdout().lock(), topic.render());
+        return write_text(io::stdout().lock(), &topic.render());
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
@@ -222,7 +222,7 @@ impl HelpTopic {
             "context" => Self::Context,
             "search" => Self::Search,
             "read" => Self::Read,
-            "H" => Self::Handle,
+            "handle" | "H" => Self::Handle,
             "work" => Self::Work,
             "blocked" => Self::Blocked,
             "broken" => Self::Broken,
@@ -237,8 +237,8 @@ impl HelpTopic {
         })
     }
 
-    const fn render(self) -> &'static str {
-        match self {
+    fn render(self) -> String {
+        let body = match self {
             Self::Status => {
                 "\
 Usage: anneal [OPTIONS] status
@@ -305,9 +305,11 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
             }
             Self::Handle => {
                 "\
-Usage: anneal [OPTIONS] H <HANDLE>
+Usage: anneal [OPTIONS] handle <HANDLE>
 
 Show one handle plus bounded incoming/outgoing references.
+
+Alias: anneal H <HANDLE>
 
 Arguments:
   <HANDLE>                       Handle id to inspect
@@ -424,9 +426,17 @@ Options:
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
-        }
+        };
+        format!("{body}{RUNTIME_HELP_OPTIONS}")
     }
 }
+
+const RUNTIME_HELP_OPTIONS: &str = "\
+Global options:
+      --root <PATH>              Corpus root (default: .design, docs, or .)
+      --json                     Force JSON/NDJSON output
+      --format <text|json>       Force readable text or JSON/NDJSON output
+";
 
 impl RuntimeCommand {
     fn parse(args: &[String]) -> Result<Self> {
@@ -455,8 +465,8 @@ impl RuntimeCommand {
             "context" => parse_context(rest),
             "search" => parse_search(rest),
             "read" => parse_read(rest),
-            "H" => Ok(Self::Handle {
-                handle: required_positional(rest, "H requires a handle")?.to_string(),
+            "handle" | "H" => Ok(Self::Handle {
+                handle: required_positional(rest, "handle requires a handle")?.to_string(),
             }),
             "work" => {
                 ensure_no_args(rest, "work")?;
@@ -525,20 +535,26 @@ impl RuntimeSession {
     fn load(root: &camino::Utf8Path) -> Result<Self> {
         let actor = ActorContext::trusted_cli();
         let corpus = CorpusId::from(DEFAULT_CORPUS);
-        let source = MarkdownSource;
-        let sources = vec![source.describe()];
+        let source_info = MarkdownSource::default().describe();
+        let sources = vec![source_info];
         let loaded_prelude = LoadedPrelude::load_active().map_err(prelude_error)?;
         let mut program = loaded_prelude.program().clone();
         let mut discovery = default_markdown_config();
+        let has_legacy_toml = root.join("anneal.toml").is_file();
+        if has_legacy_toml {
+            bail!(
+                "anneal.toml is a legacy config file. Runtime commands use anneal.dl; run `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+            );
+        }
         let project = if root.join(anneal_core::PROJECT_RULE_FILE).is_file() {
             let extension = load_project_extension(root.as_std_path(), &sources, &program)?;
             merge_discovery(&mut discovery, extension.discovery());
-            Some(extension.program().clone())
+            Some(extension)
         } else {
             None
         };
         if let Some(project) = &project {
-            let (merged, warnings) = merge_program_layers(program, project.clone());
+            let (merged, warnings) = merge_program_layers(program, project.program().clone());
             for warning in warnings {
                 eprintln!(
                     "warning: {}:{}: '{}' overrides prelude ({} clauses)",
@@ -551,7 +567,14 @@ impl RuntimeSession {
             program = merged;
         }
 
+        let runtime_config = project
+            .as_ref()
+            .map_or_else(ConfigFacts::default, |project| {
+                project.runtime_config().clone()
+            });
         let config_facts = ConfigFacts::from_entries(discovery);
+        let source = MarkdownSource::with_runtime_config(&runtime_config)
+            .map_err(|err| anyhow!("markdown config failed: {err}"))?;
         let roots = vec![root.to_path_buf()];
         let context = SourceContext {
             corpus: corpus.clone(),
@@ -569,7 +592,7 @@ impl RuntimeSession {
         store
             .merge(batch)
             .context("failed to merge markdown facts")?;
-        let configs = load_runtime_configs_if_present(root, &corpus)?;
+        let configs = runtime_config_facts(project.as_ref(), &corpus);
         if !configs.is_empty() {
             store
                 .replace_configs(&corpus, configs)
@@ -578,7 +601,7 @@ impl RuntimeSession {
         let registry = match &project {
             Some(project) => VerbRegistry::from_layers(&[
                 (VerbLayer::Prelude, loaded_prelude.program()),
-                (VerbLayer::Project, project),
+                (VerbLayer::Project, project.program()),
             ])?,
             None => VerbRegistry::from_layers(&[(VerbLayer::Prelude, loaded_prelude.program())])?,
         };
@@ -619,39 +642,47 @@ impl RuntimeSession {
                     .with_limit(limit)
                     .include_low_confidence(include_low_confidence)
                     .datalog();
-                self.run_query(&query, ExplainOptions::disabled())
+                self.run_query(&query, ExplainOptions::disabled(), RowView::Search)
             }
             RuntimeCommand::Read { handle, budget } => {
                 let query = ReadCommand::new(handle).with_budget(budget).datalog();
-                self.run_query(&query, ExplainOptions::disabled())
+                self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
             }
-            RuntimeCommand::Handle { handle } => {
-                self.run_query(&handle_query(&handle), ExplainOptions::disabled())
-            }
-            RuntimeCommand::Work => self.run_verb("work"),
-            RuntimeCommand::Blocked { handle } => {
-                self.run_query(&blocked_query(&handle), ExplainOptions::disabled())
-            }
-            RuntimeCommand::Broken => self.run_verb("broken"),
-            RuntimeCommand::Trend => self.run_verb("trend"),
-            RuntimeCommand::Vocab => self.run_verb("vocab"),
+            RuntimeCommand::Handle { handle } => self.run_query(
+                &handle_query(&handle),
+                ExplainOptions::disabled(),
+                RowView::Handle { handle },
+            ),
+            RuntimeCommand::Work => self.run_verb("work", RowView::Work),
+            RuntimeCommand::Blocked { handle } => self.run_query(
+                &blocked_query(&handle),
+                ExplainOptions::disabled(),
+                RowView::Blocked,
+            ),
+            RuntimeCommand::Broken => self.run_verb("broken", RowView::Broken),
+            RuntimeCommand::Trend => self.run_verb("trend", RowView::Trend),
+            RuntimeCommand::Vocab => self.run_verb("vocab", RowView::Vocab),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(name).datalog();
-                self.run_query(&query, ExplainOptions::disabled())
+                self.run_query(&query, ExplainOptions::disabled(), RowView::Describe)
             }
-            RuntimeCommand::Sources => {
-                self.run_query(SourcesCommand.datalog(), ExplainOptions::disabled())
+            RuntimeCommand::Sources => self.run_query(
+                SourcesCommand.datalog(),
+                ExplainOptions::disabled(),
+                RowView::Sources,
+            ),
+            RuntimeCommand::Schema => self.run_verb("schema", RowView::Schema),
+            RuntimeCommand::Verbs => self.run_verb("verbs", RowView::Verbs),
+            RuntimeCommand::Eval { query, explain } => {
+                self.run_query(&query, explain, RowView::Eval)
             }
-            RuntimeCommand::Schema => self.run_verb("schema"),
-            RuntimeCommand::Verbs => self.run_verb("verbs"),
-            RuntimeCommand::Eval { query, explain } => self.run_query(&query, explain),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
         }
     }
 
-    fn run_verb(&self, name: &str) -> Result<CommandOutput> {
+    fn run_verb(&self, name: &str, view: RowView) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor(name, &self.actor)?;
-        self.run_query(plan.query_source(), ExplainOptions::disabled())
+        self.run_query(plan.query_source(), ExplainOptions::disabled(), view)
     }
 
     fn run_status(&self) -> Result<CommandOutput> {
@@ -660,9 +691,17 @@ impl RuntimeSession {
         Ok(CommandOutput::Status(output.rows))
     }
 
-    fn run_query(&self, query: &str, explain: ExplainOptions) -> Result<CommandOutput> {
+    fn run_query(
+        &self,
+        query: &str,
+        explain: ExplainOptions,
+        view: RowView,
+    ) -> Result<CommandOutput> {
         let output = self.eval(query, explain)?;
-        Ok(CommandOutput::Rows(output.rows))
+        Ok(CommandOutput::Rows {
+            rows: output.rows,
+            view,
+        })
     }
 
     fn eval(&self, query_source: &str, explain: ExplainOptions) -> Result<QueryOutput> {
@@ -690,20 +729,36 @@ impl RuntimeSession {
     }
 }
 
+fn runtime_config_facts(
+    project: Option<&ProjectExtension>,
+    corpus: &CorpusId,
+) -> Vec<anneal_core::ConfigFact> {
+    project.map_or_else(Vec::new, |project| project.runtime_config_facts(corpus))
+}
+
 enum CommandOutput {
-    Rows(Vec<Row>),
+    Rows { rows: Vec<Row>, view: RowView },
     Status(Vec<Row>),
     Context(ContextOutput),
-    Text(&'static str),
+    Text(String),
 }
 
 impl CommandOutput {
     fn empty_rows_diagnostic(&self, mode: OutputMode) -> Option<&'static str> {
         match (mode, self) {
-            (_, Self::Rows(rows)) | (OutputMode::Json, Self::Status(rows)) if rows.is_empty() => {
+            (
+                OutputMode::Human,
+                Self::Rows {
+                    rows,
+                    view: RowView::Trend,
+                },
+            ) if rows.is_empty() => None,
+            (_, Self::Rows { rows, .. }) | (OutputMode::Json, Self::Status(rows))
+                if rows.is_empty() =>
+            {
                 Some(EMPTY_ROWS_DIAGNOSTIC)
             }
-            (_, Self::Status(_) | Self::Rows(_) | Self::Context(_) | Self::Text(_)) => None,
+            (_, Self::Status(_) | Self::Rows { .. } | Self::Context(_) | Self::Text(_)) => None,
         }
     }
 
@@ -711,12 +766,52 @@ impl CommandOutput {
         match (mode, self) {
             (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
             (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
-            (OutputMode::Human, Self::Rows(rows)) => write_rows_text(writer, &rows)?,
-            (_, Self::Status(rows) | Self::Rows(rows)) => write_ndjson(writer, rows)?,
+            (OutputMode::Human, Self::Rows { rows, view }) => {
+                write_rows_text(writer, &rows, &view)?;
+            }
+            (_, Self::Status(rows) | Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
             (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
-            (_, Self::Text(text)) => write_text(writer, text)?,
+            (_, Self::Text(text)) => write_text(writer, &text)?,
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RowView {
+    Search,
+    Read,
+    Handle { handle: String },
+    Work,
+    Blocked,
+    Broken,
+    Trend,
+    Vocab,
+    Describe,
+    Sources,
+    Schema,
+    Verbs,
+    Eval,
+}
+
+impl RowView {
+    fn heading(&self, count: usize) -> Option<String> {
+        let heading = match self {
+            Self::Search => format!("Search ({count})"),
+            Self::Read => format!("Read ({count})"),
+            Self::Handle { handle } => format!("Handle {handle} ({count} edges)"),
+            Self::Work => format!("Work ({count})"),
+            Self::Blocked => format!("Blocked ({count})"),
+            Self::Broken => format!("Broken ({count})"),
+            Self::Trend => format!("Trend ({count})"),
+            Self::Vocab => format!("Vocabulary ({count})"),
+            Self::Describe => return None,
+            Self::Sources => format!("Sources ({count})"),
+            Self::Schema => format!("Schema ({count})"),
+            Self::Verbs => format!("Verbs ({count})"),
+            Self::Eval => format!("Results ({count})"),
+        };
+        Some(heading)
     }
 }
 
@@ -857,8 +952,23 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
     Ok(())
 }
 
-fn write_rows_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
-    writeln!(writer, "Rows")?;
+fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Result<()> {
+    if let RowView::Handle { handle } = view {
+        return write_handle_text(writer, handle, rows);
+    }
+
+    if *view == RowView::Describe {
+        return write_describe_text(writer, rows);
+    }
+
+    if *view == RowView::Trend && rows.is_empty() {
+        writeln!(writer, "No trend rows -- snapshot history is empty.")?;
+        return Ok(());
+    }
+
+    if let Some(heading) = view.heading(rows.len()) {
+        writeln!(writer, "{heading}")?;
+    }
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
         return Ok(());
@@ -870,6 +980,110 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
             write!(writer, " {field}={}", display_value(value))?;
         }
         writeln!(writer)?;
+    }
+    Ok(())
+}
+
+fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    if rows.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        return Ok(());
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        if let Some(doc) = optional_string(row, "doc")? {
+            writeln!(writer, "{doc}")?;
+        } else {
+            write!(writer, "{:>2}.", index + 1)?;
+            for (field, value) in &row.fields {
+                write!(writer, " {field}={}", display_value(value))?;
+            }
+            writeln!(writer)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_handle_text<W: Write>(mut writer: W, handle: &str, rows: &[Row]) -> Result<()> {
+    let edge_count = rows
+        .iter()
+        .filter(|row| !matches!(required_string(row, "relation"), Ok("self")))
+        .count();
+
+    writeln!(writer, "Handle {handle} ({edge_count} edges)")?;
+    if rows.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        return Ok(());
+    }
+
+    let mut incoming = Vec::new();
+    let mut outgoing = Vec::new();
+    let mut wrote_self = false;
+    for row in rows {
+        let relation = required_string(row, "relation")?;
+        match relation {
+            "self" => {
+                wrote_self = true;
+                let kind = required_string(row, "kind")?;
+                let status = optional_string(row, "status")?.unwrap_or("unknown");
+                let file = required_string(row, "file")?;
+                let line = required_number(row, "line")?;
+                writeln!(
+                    writer,
+                    "kind={kind}  status={status}  at={file}:{}",
+                    display_number(line)
+                )?;
+                if let Some(summary) = optional_string(row, "summary")?
+                    && !summary.trim().is_empty()
+                {
+                    writeln!(writer, "summary={}", display_string_value(summary))?;
+                }
+            }
+            "in" => incoming.push(row),
+            "out" => outgoing.push(row),
+            _ => {}
+        }
+    }
+
+    if !wrote_self {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+    }
+    write_handle_edges(&mut writer, "Outgoing", "->", &outgoing)?;
+    write_handle_edges(&mut writer, "Incoming", "<-", &incoming)?;
+    Ok(())
+}
+
+fn write_handle_edges<W: Write>(
+    writer: &mut W,
+    heading: &str,
+    arrow: &str,
+    rows: &[&Row],
+) -> Result<()> {
+    const MAX_HANDLE_EDGES_PER_SECTION: usize = 24;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+    writeln!(writer)?;
+    writeln!(writer, "{heading}")?;
+    for (index, row) in rows.iter().take(MAX_HANDLE_EDGES_PER_SECTION).enumerate() {
+        let other = required_string(row, "other")?;
+        let kind = required_string(row, "kind")?;
+        let file = required_string(row, "file")?;
+        let line = required_number(row, "line")?;
+        writeln!(
+            writer,
+            "{:>2}. {kind} {arrow} {other}  at={file}:{}",
+            index + 1,
+            display_number(line)
+        )?;
+    }
+    let omitted = rows.len().saturating_sub(MAX_HANDLE_EDGES_PER_SECTION);
+    if omitted > 0 {
+        writeln!(writer, "    ... {omitted} more")?;
     }
     Ok(())
 }
@@ -905,6 +1119,14 @@ fn required_string<'a>(row: &'a Row, field: &str) -> Result<&'a str> {
         Some(Value::String(value)) => Ok(value),
         Some(_) => bail!("status row field {field:?} must be a string"),
         None => bail!("status row missing field {field:?}"),
+    }
+}
+
+fn optional_string<'a>(row: &'a Row, field: &str) -> Result<Option<&'a str>> {
+    match row.fields.get(field) {
+        Some(Value::String(value)) => Ok(Some(value)),
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => bail!("row field {field:?} must be a string"),
     }
 }
 
@@ -1485,12 +1707,28 @@ mod tests {
     #[test]
     fn empty_row_outputs_report_zero_rows_to_stderr() {
         assert_eq!(
-            CommandOutput::Rows(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
+            CommandOutput::Rows {
+                rows: Vec::new(),
+                view: RowView::Eval,
+            }
+            .empty_rows_diagnostic(OutputMode::Json),
             Some(EMPTY_ROWS_DIAGNOSTIC)
         );
         assert_eq!(
-            CommandOutput::Rows(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
+            CommandOutput::Rows {
+                rows: Vec::new(),
+                view: RowView::Eval,
+            }
+            .empty_rows_diagnostic(OutputMode::Human),
             Some(EMPTY_ROWS_DIAGNOSTIC)
+        );
+        assert_eq!(
+            CommandOutput::Rows {
+                rows: Vec::new(),
+                view: RowView::Trend,
+            }
+            .empty_rows_diagnostic(OutputMode::Human),
+            None
         );
         assert_eq!(
             CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
@@ -1552,11 +1790,14 @@ mod tests {
 
     #[test]
     fn generic_rows_human_render_is_readable() {
-        let output = CommandOutput::Rows(vec![row(&[
-            ("category", Value::String("status".to_string())),
-            ("value", Value::String("open question".to_string())),
-            ("count", Value::Number(NumberValue::Int(2))),
-        ])]);
+        let output = CommandOutput::Rows {
+            rows: vec![row(&[
+                ("category", Value::String("status".to_string())),
+                ("value", Value::String("open question".to_string())),
+                ("count", Value::Number(NumberValue::Int(2))),
+            ])],
+            view: RowView::Eval,
+        };
         let mut rendered = Vec::new();
 
         output
@@ -1564,10 +1805,26 @@ mod tests {
             .expect("render rows");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
-        assert!(rendered.starts_with("Rows\n 1."));
+        assert!(rendered.starts_with("Results (1)\n 1."));
         assert!(rendered.contains("category=status"));
         assert!(rendered.contains(r#"value="open question""#));
         assert!(rendered.contains("count=2"));
+    }
+
+    #[test]
+    fn trend_human_empty_render_is_specific() {
+        let output = CommandOutput::Rows {
+            rows: Vec::new(),
+            view: RowView::Trend,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render trend");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(rendered, "No trend rows -- snapshot history is empty.\n");
     }
 
     #[test]
@@ -1652,7 +1909,7 @@ mod tests {
             .join("../../.fixtures/sample-corpus");
         let session = RuntimeSession::load(&fixture).expect("fixture session loads");
         let output = session.run(RuntimeCommand::Sources).expect("sources runs");
-        let CommandOutput::Rows(rows) = output else {
+        let CommandOutput::Rows { rows, .. } = output else {
             panic!("sources should emit rows");
         };
         assert!(rows.iter().any(|row| {
@@ -1667,9 +1924,11 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
         fs::create_dir(&root).expect("create corpus root");
         fs::create_dir(root.join("included")).expect("create included");
-        fs::write(root.join("anneal.toml"), "").expect("write config");
-        fs::write(root.join("anneal.dl"), r#"md.scan_root("included")."#)
-            .expect("write project rules");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"source md { scan_root("included"). }"#,
+        )
+        .expect("write project rules");
         fs::write(
             root.join("a.md"),
             "---\nstatus: draft\n---\n# Excluded\nshared marker\n",
@@ -1689,7 +1948,7 @@ mod tests {
                 include_low_confidence: false,
             })
             .expect("search runs");
-        let CommandOutput::Rows(rows) = output else {
+        let CommandOutput::Rows { rows, .. } = output else {
             panic!("search should emit rows");
         };
 
@@ -1702,5 +1961,27 @@ mod tests {
         assert!(!rows.iter().any(|row| {
             row.fields.get("h") == Some(&anneal_core::runtime::Value::String("a.md".to_string()))
         }));
+    }
+
+    #[test]
+    fn runtime_rejects_legacy_toml_config() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.toml"),
+            "[convergence]\nactive = [\"draft\"]\n",
+        )
+        .expect("write legacy config");
+
+        let Err(err) = RuntimeSession::load(&root) else {
+            panic!("legacy TOML should be migration-only");
+        };
+
+        assert!(
+            err.to_string()
+                .contains("anneal.toml is a legacy config file")
+        );
+        assert!(err.to_string().contains("anneal init --force"));
     }
 }

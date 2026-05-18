@@ -425,8 +425,16 @@ impl Pattern {
 /// Adapter-qualified discovery fact key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ConfigKey {
-    pub key: String,
-    pub required: bool,
+    key: String,
+    required: bool,
+    shape: ConfigValueShape,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ConfigValueShape {
+    Any,
+    Exactly(usize),
+    AtLeast(usize),
 }
 
 impl ConfigKey {
@@ -434,6 +442,7 @@ impl ConfigKey {
         Self {
             key: key.into(),
             required: true,
+            shape: ConfigValueShape::Any,
         }
     }
 
@@ -441,7 +450,44 @@ impl ConfigKey {
         Self {
             key: key.into(),
             required: false,
+            shape: ConfigValueShape::Any,
         }
+    }
+
+    pub fn required_exact(key: impl Into<String>, arity: usize) -> Self {
+        Self {
+            key: key.into(),
+            required: true,
+            shape: ConfigValueShape::Exactly(arity),
+        }
+    }
+
+    pub fn optional_exact(key: impl Into<String>, arity: usize) -> Self {
+        Self {
+            key: key.into(),
+            required: false,
+            shape: ConfigValueShape::Exactly(arity),
+        }
+    }
+
+    pub fn optional_at_least(key: impl Into<String>, arity: usize) -> Self {
+        Self {
+            key: key.into(),
+            required: false,
+            shape: ConfigValueShape::AtLeast(arity),
+        }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub const fn required_flag(&self) -> bool {
+        self.required
+    }
+
+    pub const fn shape(&self) -> ConfigValueShape {
+        self.shape
     }
 }
 

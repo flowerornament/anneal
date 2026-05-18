@@ -296,7 +296,12 @@ fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeS
                 collect_statement_definitions(statement, definitions);
             }
         }
-        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) | Statement::Doc(_) => {}
+        Statement::ConfigBlock(_)
+        | Statement::SourceBlock(_)
+        | Statement::Include(_)
+        | Statement::Import(_)
+        | Statement::Verb(_)
+        | Statement::Doc(_) => {}
     }
 }
 
@@ -330,7 +335,12 @@ fn qualify_statement(
         Statement::AtBlock { statements, .. } => {
             qualify_statements(statements, module, local_definitions);
         }
-        Statement::Include(_) | Statement::Import(_) | Statement::Verb(_) | Statement::Doc(_) => {}
+        Statement::ConfigBlock(_)
+        | Statement::SourceBlock(_)
+        | Statement::Include(_)
+        | Statement::Import(_)
+        | Statement::Verb(_)
+        | Statement::Doc(_) => {}
     }
 }
 

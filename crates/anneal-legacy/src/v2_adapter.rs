@@ -23,6 +23,19 @@ pub struct MarkdownExtractionOptions {
     pub linear_namespaces: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct MarkdownLegacyConfig {
+    config: config::AnnealConfig,
+}
+
+impl MarkdownLegacyConfig {
+    pub fn from_runtime_facts(facts: &anneal_core::ConfigFacts) -> Result<Self> {
+        let mut config = config::AnnealConfig::default();
+        apply_runtime_config_facts(&mut config, facts)?;
+        Ok(Self { config })
+    }
+}
+
 pub fn extract_markdown_facts(
     root: &Utf8Path,
     corpus: anneal_core::CorpusId,
@@ -46,6 +59,17 @@ pub fn extract_markdown_facts_with_options(
     options: &MarkdownExtractionOptions,
 ) -> Result<FactBatch> {
     let mut config = config::load_config(root.as_std_path())?;
+    extract_markdown_facts_with_config(root, corpus, source, generation, &mut config, options)
+}
+
+fn extract_markdown_facts_with_config(
+    root: &Utf8Path,
+    corpus: anneal_core::CorpusId,
+    source: SourceName,
+    generation: Generation,
+    config: &mut config::AnnealConfig,
+    options: &MarkdownExtractionOptions,
+) -> Result<FactBatch> {
     config.exclude.extend(options.exclude.iter().cloned());
     config
         .handles
@@ -56,12 +80,12 @@ pub fn extract_markdown_facts_with_options(
     } else {
         options.scan_roots.clone()
     };
-    let mut result = parse::build_graph_scoped(root, &config, &scan_roots)?;
+    let mut result = parse::build_graph_scoped(root, config, &scan_roots)?;
     let _stats = crate::resolve::resolve_all(
         &mut result.graph,
         &result.label_candidates,
         &result.pending_edges,
-        &config,
+        config,
         root,
         &result.filename_index,
     );
@@ -86,7 +110,7 @@ pub fn extract_markdown_facts_with_options(
 
     let edge_order_context = EdgeOrderContext {
         root,
-        config: &config,
+        config,
         result: &result,
         pre_cascade_index: &pre_cascade_index,
         node_index: &node_index,
@@ -100,9 +124,228 @@ pub fn extract_markdown_facts_with_options(
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
     emit_content_spans(&mut batch, &mut revisions, root, &result);
-    emit_concerns(&mut batch, &mut revisions, &config, &result);
+    emit_concerns(&mut batch, &mut revisions, config, &result);
 
     Ok(batch)
+}
+
+pub fn extract_markdown_facts_with_legacy_config(
+    root: &Utf8Path,
+    corpus: anneal_core::CorpusId,
+    source: SourceName,
+    generation: Generation,
+    legacy_config: &MarkdownLegacyConfig,
+    options: &MarkdownExtractionOptions,
+) -> Result<FactBatch> {
+    let mut config = legacy_config.config.clone();
+    extract_markdown_facts_with_config(root, corpus, source, generation, &mut config, options)
+}
+
+fn apply_runtime_config_facts(
+    config: &mut config::AnnealConfig,
+    facts: &anneal_core::ConfigFacts,
+) -> Result<()> {
+    config.root = facts.first("corpus.root").unwrap_or_default().to_string();
+    config.exclude = facts.values("corpus.exclude").map(str::to_string).collect();
+    config.convergence.ordering = facts
+        .values("convergence.ordering")
+        .map(str::to_string)
+        .collect();
+    config.convergence.active = facts
+        .values("convergence.active")
+        .map(str::to_string)
+        .collect();
+    config.convergence.terminal = facts
+        .values("convergence.terminal")
+        .map(str::to_string)
+        .collect();
+    config.handles.confirmed = facts
+        .values("handles.confirmed")
+        .map(str::to_string)
+        .collect();
+    config.handles.rejected = facts
+        .values("handles.rejected")
+        .map(str::to_string)
+        .collect();
+    config.handles.linear = facts.values("handles.linear").map(str::to_string).collect();
+    config.suppress.codes = facts.values("suppress.code").map(str::to_string).collect();
+    config.impact.traverse = facts
+        .values("impact.traverse")
+        .map(str::to_string)
+        .collect();
+    config.orient.pin = facts.values("orient.pin").map(str::to_string).collect();
+    config.orient.exclude = facts.values("orient.exclude").map(str::to_string).collect();
+
+    apply_first_u32(facts, "freshness.warn", &mut config.freshness.warn)?;
+    apply_first_u32(facts, "freshness.error", &mut config.freshness.error)?;
+    apply_first_string(
+        facts,
+        "check.default_filter",
+        &mut config.check.default_filter,
+    );
+    apply_history_mode(facts, &mut config.state.history_mode)?;
+    apply_first_usize(
+        facts,
+        "areas.orphan_threshold",
+        &mut config.areas.orphan_threshold,
+    )?;
+    apply_first_u32(
+        facts,
+        "temporal.recent_days",
+        &mut config.temporal.recent_days,
+    )?;
+    apply_first_f64(facts, "orient.edge_weight", &mut config.orient.edge_weight)?;
+    apply_first_f64(
+        facts,
+        "orient.label_weight",
+        &mut config.orient.label_weight,
+    )?;
+    apply_first_f64(
+        facts,
+        "orient.recency_weight",
+        &mut config.orient.recency_weight,
+    )?;
+    apply_first_u32(
+        facts,
+        "orient.recency_half_life_days",
+        &mut config.orient.recency_half_life_days,
+    )?;
+    apply_first_plain_string(facts, "orient.budget", &mut config.orient.budget);
+    apply_first_u32(facts, "orient.depth", &mut config.orient.depth)?;
+    apply_first_u32(facts, "orient.stub_bytes", &mut config.orient.stub_bytes)?;
+    apply_first_f64(
+        facts,
+        "orient.curated_hub_weight",
+        &mut config.orient.curated_hub_weight,
+    )?;
+
+    for entry in facts.entries() {
+        if let Some(status) = entry.key.strip_prefix("convergence.description.") {
+            config
+                .convergence
+                .descriptions
+                .insert(status.to_string(), entry.value.clone());
+        } else if let Some(code) = entry.key.strip_prefix("suppress.rule.") {
+            config.suppress.rules.push(config::SuppressRule {
+                code: code.to_string(),
+                target: entry.value.clone(),
+            });
+        } else if let Some(name) = entry.key.strip_prefix("concerns.group.") {
+            config
+                .concerns
+                .entry(name.to_string())
+                .or_default()
+                .push(entry.value.clone());
+        }
+    }
+
+    apply_frontmatter_fields(config, facts)?;
+    Ok(())
+}
+
+fn apply_frontmatter_fields(
+    config: &mut config::AnnealConfig,
+    facts: &anneal_core::ConfigFacts,
+) -> Result<()> {
+    let mut fields = std::collections::BTreeMap::<String, (Option<String>, Option<String>)>::new();
+    for entry in facts.entries() {
+        let Some(rest) = entry.key.strip_prefix("frontmatter.field.") else {
+            continue;
+        };
+        let Some((field, property)) = rest.rsplit_once('.') else {
+            continue;
+        };
+        let slot = fields.entry(field.to_string()).or_default();
+        match property {
+            "edge_kind" => slot.0 = Some(entry.value.clone()),
+            "direction" => slot.1 = Some(entry.value.clone()),
+            _ => {}
+        }
+    }
+
+    for (field, (edge_kind, direction)) in fields {
+        let Some(edge_kind) = edge_kind else {
+            bail!("frontmatter.field.{field} is missing edge_kind");
+        };
+        let Some(direction) = direction else {
+            bail!("frontmatter.field.{field} is missing direction");
+        };
+        let direction = match direction.as_str() {
+            "forward" => config::Direction::Forward,
+            "inverse" => config::Direction::Inverse,
+            other => bail!(
+                "frontmatter.field.{field}.direction must be forward or inverse; got {other:?}"
+            ),
+        };
+        config.frontmatter.fields.insert(
+            field,
+            config::FrontmatterFieldMapping {
+                edge_kind,
+                direction,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn apply_first_string(facts: &anneal_core::ConfigFacts, key: &str, target: &mut Option<String>) {
+    if let Some(value) = facts.first(key) {
+        *target = Some(value.to_string());
+    }
+}
+
+fn apply_first_plain_string(facts: &anneal_core::ConfigFacts, key: &str, target: &mut String) {
+    if let Some(value) = facts.first(key) {
+        *target = value.to_string();
+    }
+}
+
+fn apply_history_mode(
+    facts: &anneal_core::ConfigFacts,
+    target: &mut Option<config::HistoryMode>,
+) -> Result<()> {
+    let Some(value) = facts.first("state.history_mode") else {
+        return Ok(());
+    };
+    *target = Some(match value {
+        "xdg" => config::HistoryMode::Xdg,
+        "repo" => config::HistoryMode::Repo,
+        "off" => config::HistoryMode::Off,
+        other => bail!("state.history_mode must be xdg, repo, or off; got {other:?}"),
+    });
+    Ok(())
+}
+
+fn apply_first_u32(facts: &anneal_core::ConfigFacts, key: &str, target: &mut u32) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<u32>()
+            .with_context(|| format!("{key} expects an unsigned integer"))?;
+    }
+    Ok(())
+}
+
+fn apply_first_usize(
+    facts: &anneal_core::ConfigFacts,
+    key: &str,
+    target: &mut usize,
+) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<usize>()
+            .with_context(|| format!("{key} expects an unsigned integer"))?;
+    }
+    Ok(())
+}
+
+fn apply_first_f64(facts: &anneal_core::ConfigFacts, key: &str, target: &mut f64) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<f64>()
+            .with_context(|| format!("{key} expects a number"))?;
+    }
+    Ok(())
 }
 
 pub fn health_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {

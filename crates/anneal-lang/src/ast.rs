@@ -146,6 +146,8 @@ impl Statement {
             }
             Self::Fact(_)
             | Self::OptionalFact(_)
+            | Self::ConfigBlock(_)
+            | Self::SourceBlock(_)
             | Self::Include(_)
             | Self::Import(_)
             | Self::Verb(_)
@@ -158,6 +160,8 @@ impl Statement {
 pub enum Statement {
     Fact(Head),
     OptionalFact(Head),
+    ConfigBlock(ConfigBlock),
+    SourceBlock(SourceBlock),
     Rule(Rule),
     Query(Query),
     Include(IncludeDirective),
@@ -168,6 +172,63 @@ pub enum Statement {
     },
     Verb(VerbDecl),
     Doc(DocDecl),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ConfigBlock {
+    pub section: Ident,
+    pub declarations: Vec<Declaration>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+impl ConfigBlock {
+    pub fn new(section: Ident, declarations: Vec<Declaration>, location: SourceLocation) -> Self {
+        Self {
+            section,
+            declarations,
+            location,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SourceBlock {
+    pub source: Ident,
+    pub declarations: Vec<Declaration>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+impl SourceBlock {
+    pub fn new(source: Ident, declarations: Vec<Declaration>, location: SourceLocation) -> Self {
+        Self {
+            source,
+            declarations,
+            location,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Declaration {
+    pub name: Ident,
+    pub args: Vec<CallArg>,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+impl Declaration {
+    pub fn new(name: Ident, args: Vec<CallArg>, location: SourceLocation) -> Self {
+        Self {
+            name,
+            args,
+            location,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

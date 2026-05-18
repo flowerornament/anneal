@@ -10,7 +10,20 @@ const SOURCE_NAME: &str = "markdown";
 
 /// Markdown `Source` implementation.
 #[derive(Clone, Debug, Default)]
-pub struct MarkdownSource;
+pub struct MarkdownSource {
+    legacy_config: Option<anneal_legacy::v2_adapter::MarkdownLegacyConfig>,
+}
+
+impl MarkdownSource {
+    pub fn with_runtime_config(config: &ConfigFacts) -> Result<Self, SourceError> {
+        let legacy_config =
+            anneal_legacy::v2_adapter::MarkdownLegacyConfig::from_runtime_facts(config)
+                .map_err(|err| SourceError::Other(err.to_string()))?;
+        Ok(Self {
+            legacy_config: Some(legacy_config),
+        })
+    }
+}
 
 impl Source for MarkdownSource {
     fn describe(&self) -> SourceInfo {
@@ -19,14 +32,14 @@ impl Source for MarkdownSource {
             recognizes: vec![Pattern::new("**/*.md")],
             doc: "Extracts markdown files through the v1 parse/resolve pipeline and emits stored relation facts.",
             config_keys: vec![
-                ConfigKey::required("md.file_extension"),
-                ConfigKey::required("md.scan_root"),
-                ConfigKey::optional("md.scan_exclude"),
-                ConfigKey::optional("md.label_pattern"),
-                ConfigKey::optional("md.linear_namespace"),
-                ConfigKey::optional("md.version_pattern"),
-                ConfigKey::optional("md.section_min_depth"),
-                ConfigKey::optional("md.section_max_depth"),
+                ConfigKey::required_exact("md.file_extension", 1),
+                ConfigKey::required_exact("md.scan_root", 1),
+                ConfigKey::optional_at_least("md.scan_exclude", 1),
+                ConfigKey::optional_exact("md.label_pattern", 3),
+                ConfigKey::optional_exact("md.linear_namespace", 1),
+                ConfigKey::optional_exact("md.version_pattern", 2),
+                ConfigKey::optional_exact("md.section_min_depth", 1),
+                ConfigKey::optional_exact("md.section_max_depth", 1),
             ],
             capabilities: SourceCapabilities {
                 supports_git_ref: false,
@@ -55,13 +68,24 @@ impl Source for MarkdownSource {
         );
         for root in cx.roots {
             cx.cancellation.check()?;
-            let batch = anneal_legacy::v2_adapter::extract_markdown_facts_with_options(
-                root,
-                cx.corpus.clone(),
-                SourceName::from(SOURCE_NAME),
-                generation,
-                &config.options,
-            )
+            let batch = if let Some(legacy_config) = &self.legacy_config {
+                anneal_legacy::v2_adapter::extract_markdown_facts_with_legacy_config(
+                    root,
+                    cx.corpus.clone(),
+                    SourceName::from(SOURCE_NAME),
+                    generation,
+                    legacy_config,
+                    &config.options,
+                )
+            } else {
+                anneal_legacy::v2_adapter::extract_markdown_facts_with_options(
+                    root,
+                    cx.corpus.clone(),
+                    SourceName::from(SOURCE_NAME),
+                    generation,
+                    &config.options,
+                )
+            }
             .map_err(|err| SourceError::Other(err.to_string()))?;
             combined.visibility.extend(batch.visibility);
             combined.handles.extend(batch.handles);
@@ -203,7 +227,7 @@ mod tests {
             ("md.scan_root".to_string(), ".".to_string()),
         ]);
 
-        let batch = MarkdownSource
+        let batch = MarkdownSource::default()
             .extract(&context(&root, &config, Some(Generation::new(7))))
             .expect("extract");
 
@@ -241,7 +265,7 @@ mod tests {
             ("md.scan_root".to_string(), "included".to_string()),
         ]);
 
-        let batch = MarkdownSource
+        let batch = MarkdownSource::default()
             .extract(&context(&root, &config, Some(Generation::new(0))))
             .expect("extract");
 
@@ -259,11 +283,46 @@ mod tests {
             ("md.scan_root".to_string(), ".".to_string()),
         ]);
 
-        let err = MarkdownSource
+        let err = MarkdownSource::default()
             .extract(&context(&root, &config, Some(Generation::new(0))))
             .expect_err("unsupported extension rejects");
 
         assert!(err.to_string().contains("md.file_extension"));
+    }
+
+    #[test]
+    fn markdown_source_rejects_invalid_runtime_config_values() {
+        let config = ConfigFacts::new(vec![(
+            "state.history_mode".to_string(),
+            "sideways".to_string(),
+        )]);
+
+        let err =
+            MarkdownSource::with_runtime_config(&config).expect_err("invalid history mode rejects");
+
+        assert!(err.to_string().contains("state.history_mode"));
+    }
+
+    #[test]
+    fn markdown_source_rejects_invalid_frontmatter_direction() {
+        let config = ConfigFacts::new(vec![
+            (
+                "frontmatter.field.depends-on.edge_kind".to_string(),
+                "DependsOn".to_string(),
+            ),
+            (
+                "frontmatter.field.depends-on.direction".to_string(),
+                "sideways".to_string(),
+            ),
+        ]);
+
+        let err = MarkdownSource::with_runtime_config(&config)
+            .expect_err("invalid frontmatter direction rejects");
+
+        assert!(
+            err.to_string()
+                .contains("frontmatter.field.depends-on.direction")
+        );
     }
 
     #[test]
@@ -282,7 +341,7 @@ mod tests {
             ("md.scan_root".to_string(), ".".to_string()),
         ]);
         let mut store = FactStore::default();
-        let driver = OneShotSourceDriver::new(MarkdownSource);
+        let driver = OneShotSourceDriver::new(MarkdownSource::default());
         let request = SourceRefreshRequest::new("test", std::slice::from_ref(&root), &config)
             .with_actor(ActorContext {
                 actor: "test".to_string(),

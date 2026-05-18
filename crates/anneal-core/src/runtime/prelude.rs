@@ -1679,6 +1679,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 }
                 Statement::AtBlock { statements, .. } => assert_prelude_layers(statements),
                 Statement::Fact(_)
+                | Statement::ConfigBlock(_)
+                | Statement::SourceBlock(_)
                 | Statement::OptionalFact(_)
                 | Statement::Include(_)
                 | Statement::Import(_)

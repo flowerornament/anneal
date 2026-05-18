@@ -414,6 +414,8 @@ fn check_no_optional_discovery_fact(statement: &Statement) -> Result<(), StaticE
             Ok(())
         }
         Statement::Fact(_)
+        | Statement::ConfigBlock(_)
+        | Statement::SourceBlock(_)
         | Statement::Rule(_)
         | Statement::Query(_)
         | Statement::Include(_)
@@ -615,6 +617,8 @@ fn normalize_global_statement_named_calls(
             Ok(())
         }
         Statement::Query(_)
+        | Statement::ConfigBlock(_)
+        | Statement::SourceBlock(_)
         | Statement::OptionalFact(_)
         | Statement::Include(_)
         | Statement::Import(_)

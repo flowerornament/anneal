@@ -1,0 +1,13 @@
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude(["feedback"]).
+}
+
+config handles {
+  confirmed(["OQ", "PD", "CR-D", "CR-R", "CR-OQ", "HR-D", "HR-OQ", "MVS", "SP-Q"]).
+}
+
+config suppress {
+  rule("E001", "synthesis/v17.md").
+}

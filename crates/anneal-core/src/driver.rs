@@ -177,8 +177,22 @@ where
     }
 
     fn refresh(&self, cx: &SourceContext<'_>) -> Result<FactBatch, SourceError> {
+        validate_required_config(&self.info, cx.config_facts)?;
         self.source.extract(cx)
     }
+}
+
+fn validate_required_config(info: &SourceInfo, facts: &ConfigFacts) -> Result<(), SourceError> {
+    for key in &info.config_keys {
+        if key.required_flag() && facts.first(key.key()).is_none() {
+            return Err(SourceError::InvalidConfig(format!(
+                "source {} requires config fact {}",
+                info.name,
+                key.key()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Failure while refreshing a source into a store.
@@ -311,6 +325,30 @@ mod tests {
         }
     }
 
+    struct RequiredConfigSource;
+
+    impl Source for RequiredConfigSource {
+        fn describe(&self) -> SourceInfo {
+            SourceInfo {
+                name: SOURCE_NAME,
+                recognizes: vec![Pattern::new("**/*.md")],
+                doc: "test source",
+                config_keys: vec![ConfigKey::required("test.required")],
+                capabilities: SourceCapabilities::default(),
+                search: None,
+            }
+        }
+
+        fn extract(&self, cx: &SourceContext<'_>) -> Result<FactBatch, SourceError> {
+            Ok(FactBatch::new(
+                cx.corpus.clone(),
+                SourceName::from(SOURCE_NAME),
+                FactBatchMode::FullSnapshot,
+                cx.next_generation(),
+            ))
+        }
+    }
+
     #[test]
     fn one_shot_driver_threads_generation_and_commits_snapshot_swap() {
         let roots = Vec::new();
@@ -362,6 +400,21 @@ mod tests {
             } if expected_source == SourceName::from(SOURCE_NAME)
                 && actual_source == SourceName::from("other-source")
         ));
+        assert!(store.generations().is_empty());
+    }
+
+    #[test]
+    fn one_shot_driver_rejects_missing_required_config() {
+        let roots = Vec::new();
+        let config = ConfigFacts::default();
+        let request = SourceRefreshRequest::new("test", &roots, &config);
+        let driver = OneShotSourceDriver::new(RequiredConfigSource);
+        let mut store = FactStore::default();
+
+        let err = refresh_source(&driver, &request, &mut store)
+            .expect_err("missing required config rejects");
+
+        assert!(err.to_string().contains("test.required"));
         assert!(store.generations().is_empty());
     }
 }

@@ -634,7 +634,7 @@ mod tests {
             actor: "test".to_string(),
             capabilities: BTreeSet::new(),
         };
-        let source = anneal_md::MarkdownSource;
+        let source = anneal_md::MarkdownSource::default();
         let request = SourceRefreshRequest::new("large-corpus", &roots, &config)
             .with_actor(actor)
             .with_cancellation(CancellationToken::new());

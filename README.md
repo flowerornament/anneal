@@ -25,8 +25,8 @@ anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
 
-The same substrate also keeps the older corpus-health loop reachable during the
-compatibility window:
+The same substrate also keeps the older corpus-health loop reachable when exact
+continuity matters:
 
 ```bash
 anneal health --json --compact
@@ -128,7 +128,7 @@ optionally install the bundled skill into agent-managed skill directories.
 }
 ```
 
-Repo-owned corpus behavior still lives in `anneal.toml`. User preferences and
+Repo-owned corpus behavior lives in `anneal.dl`. User preferences and
 derived history live under XDG paths.
 
 ## Agent Loop
@@ -144,7 +144,7 @@ anneal search "v17 conformance audit" --limit 3
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000
 
 # 3. Graph and health checks
-anneal H reviews/2026-04-28-formal-model-v17-conformance-audit.md
+anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md
 anneal broken
 anneal work
 anneal trend  # emits rows when snapshot history exists; otherwise zero rows
@@ -164,6 +164,41 @@ The programmable runtime surface remains machine-friendly when piped. At a
 terminal, runtime commands render readable text; use `--json` or `--format=json`
 when you want JSON/NDJSON contracts explicitly. Use `--format=text` to force
 the readable renderer through pipe-only harnesses.
+
+## Configuration Ladder
+
+New installs work without configuration. `anneal` loads a built-in standard
+library prelude from the binary, scans markdown with default adapter settings,
+and runs the runtime commands immediately.
+
+The layers are:
+
+- Built-in prelude: standard rules, diagnostics, ranking, and verbs. It is
+  automatic and should not be copied into a project.
+- `anneal.dl`: repo-local project declarations. Use it for adapter discovery,
+  convergence statuses, terminal/active sets, pipeline ordering, linear
+  namespaces, frontmatter edge mappings, excludes, project rules, and `@verb`
+  declarations.
+- User config: machine-local preferences at
+  `$XDG_CONFIG_HOME/anneal/config.toml` or `~/.config/anneal/config.toml`.
+  Repo config cannot choose arbitrary machine-local paths.
+
+`anneal init --dry-run` previews a scaffolded `anneal.dl`. `anneal init`
+writes only when no config exists. If an older `anneal.toml` exists,
+`anneal init --force` writes unified `anneal.dl` and moves the TOML file to
+`anneal.toml.legacy`.
+
+### Upgrading
+
+Existing `anneal.toml` files are treated as upgrade input. Runtime commands use
+`anneal.dl`; if a TOML file is still present, run `anneal init --dry-run` to
+preview the unified file, then `anneal init --force` to convert. The force path
+writes `anneal.dl` from the currently loaded config and moves `anneal.toml` to
+`anneal.toml.legacy`.
+
+Snapshot history is the one automatic migration path: when XDG history is
+enabled, legacy repo-local `.anneal/history.jsonl` is copied into XDG state on
+the first write so trend and diff history continue.
 
 ## Commands
 
@@ -206,17 +241,18 @@ anneal read formal-model/v17.md --budget 4000
 `read` is bounded by default so agents can safely compose it with search
 without dumping the whole corpus.
 
-### `anneal H HANDLE`
+### `anneal handle HANDLE`
 
 Handle neighborhood summary. Use it after search or when a handle is already
-known and relationship shape matters more than text.
+known and relationship shape matters more than text. `anneal H HANDLE` remains
+available as a short alias.
 
 ### Starter Verbs
 
 The standard library ships starter verbs as ordinary `@verb` definitions:
 
 - `status`: compact corpus status
-- `H`: handle neighborhood
+- `handle`: handle neighborhood
 - `find`: identity-oriented handle lookup
 - `work`: ranked work candidates
 - `blocked`: blockers for one handle
@@ -251,14 +287,24 @@ anneal -e '? *handle{id: h, kind: "file"}.'
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
 
-The query language is Datalog-shaped. Stored source facts use `*` prefixes, for
+The query language is Datalog-shaped. Stored relations use `*` prefixes, for
 example `*handle`, `*edge`, `*meta`, `*content`, `*span`, `*config`,
 `*snapshot`, and `*generation`. Derived predicates come from the standard
 library, project `anneal.dl`, and inline query-local rules.
 
+### Utilities
+
+```bash
+anneal init
+anneal prime
+```
+
+Use `init` to scaffold corpus configuration. Use `prime` to print the bundled
+agent skill briefing from the installed binary.
+
 ### Compatibility Commands
 
-During the compatibility window the older corpus-health commands remain available:
+The older corpus-health commands remain available:
 
 ```bash
 anneal health
@@ -269,11 +315,9 @@ anneal map --around=HANDLE
 anneal impact HANDLE
 anneal diff --days=7
 anneal obligations
-anneal init
-anneal prime
 ```
 
-Use them when you need exact compatibility with the pre-runtime surface. New agent
+Use them when you need exact continuity with the pre-runtime surface. New agent
 workflows should prefer `context`, `search`, `read`, verbs, and raw Datalog.
 
 For compatibility commands, `--root` selects the corpus path. `--area` selects
@@ -282,15 +326,28 @@ concern group; it is not a path selector.
 
 ## Project Extension
 
-`anneal.dl` lives at the corpus root. It can declare discovery facts, project
-rules, and verbs.
+`anneal.dl` lives at the corpus root. It can declare config blocks, source
+blocks, project rules, and verbs.
 
 ```dl
-# discovery facts are consumed by adapters before extraction
-md.file_extension(".md").
-md.scan_root(".").
-md.scan_exclude("node_modules").
-md.linear_namespace("OQ").
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude("node_modules").
+  scan_exclude("vendor").
+}
+
+config convergence {
+  ordering(["raw", "draft", "review", "approved", "published"]).
+  active(["draft", "review", "approved"]).
+  terminal(["published", "archived", "superseded"]).
+}
+
+config handles {
+  confirmed(["REQ", "ADR", "RFC"]).
+  rejected(["SHA", "GPT"]).
+  linear(["REQ"]).
+}
 
 # rules run after source facts exist
 release_blocker(h, "broken_ref") :=
@@ -311,40 +368,44 @@ predicates shadow prelude predicates by name and arity.
 
 ## Configuration
 
-`anneal.toml` at the corpus root controls corpus semantics. It is optional;
-without it, anneal falls back to an existence lattice and reference checking.
+`anneal.dl` at the corpus root controls corpus semantics and project rules. It
+is optional; without it, anneal falls back to default markdown extraction, an
+existence lattice, and reference checking.
 
-```toml
-exclude = ["vendor", "**/README.md"]
+```dl
+source md {
+  file_extension(".md").
+  scan_root(".").
+  scan_exclude(["vendor", "**/README.md"]).
+}
 
-[convergence]
-active = ["draft", "review", "approved"]
-terminal = ["published", "archived", "superseded"]
-ordering = ["raw", "draft", "review", "approved", "published"]
+config convergence {
+  ordering(["raw", "draft", "review", "approved", "published"]).
+  active(["draft", "review", "approved"]).
+  terminal(["published", "archived", "superseded"]).
+  description("draft", "Under construction; may change substantially").
+  description("approved", "Settled primary artifact; changes require review").
+  description("archived", "Superseded or retired; no further changes expected").
+}
 
-[convergence.descriptions]
-draft = "Under construction; may change substantially"
-approved = "Settled primary artifact; changes require review"
-archived = "Superseded or retired; no further changes expected"
+config handles {
+  confirmed(["REQ", "ADR", "RFC"]).
+  rejected(["SHA", "GPT"]).
+  linear(["REQ"]).
+}
 
-[handles]
-confirmed = ["REQ", "ADR", "RFC"]
-rejected = ["SHA", "GPT"]
-linear = ["REQ"]
+config frontmatter {
+  field("depends-on", "DependsOn", "forward").
+  field("superseded-by", "Supersedes", "forward").
+}
 
-[frontmatter.fields.depends-on]
-edge_kind = "DependsOn"
-direction = "forward"
+config impact {
+  traverse(["DependsOn", "Supersedes", "Verifies"]).
+}
 
-[frontmatter.fields.superseded-by]
-edge_kind = "Supersedes"
-direction = "forward"
-
-[impact]
-traverse = ["DependsOn", "Supersedes", "Verifies"]
-
-[state]
-history_mode = "xdg"  # xdg | repo | off
+config state {
+  history_mode("xdg").  # xdg | repo | off
+}
 ```
 
 User config lives at `$XDG_CONFIG_HOME/anneal/config.toml` with fallback
@@ -354,9 +415,9 @@ User config lives at `$XDG_CONFIG_HOME/anneal/config.toml` with fallback
 Repo config can choose whether history is machine-local, repo-local, or
 disabled. Only user config can choose an arbitrary machine-local history path.
 
-## Stored Facts
+## Stored Relations
 
-Adapters emit stored facts. Rules and queries consume them.
+Adapters emit stored relations. Rules and queries consume them.
 
 - `*handle`: handle id, kind, status, namespace, file, line, area, summary,
   identity, revision, generation
@@ -370,8 +431,7 @@ Adapters emit stored facts. Rules and queries consume them.
 - `*generation`: source refresh bookkeeping
 
 Every stored row carries enough identity to distinguish corpus, source,
-origin, revision, and generation. Engine choice is internal to `anneal-core`;
-dynamic IR owns prelude, project, and inline rules.
+origin, revision, and generation.
 
 ## Diagnostics
 
