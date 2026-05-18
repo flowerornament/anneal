@@ -483,6 +483,12 @@ fn apply_config_declaration(
     name: &str,
     values: Vec<String>,
 ) -> Result<()> {
+    if section == "handles" && name == "confirmed" {
+        anyhow::bail!(
+            "config handles confirmed(...) is no longer valid. Label namespaces are inferred automatically; delete this declaration, or use config handles force([...]) only for sparse prefixes that need an explicit override"
+        );
+    }
+
     if !matches!(
         (section, name),
         ("convergence", "description")
@@ -803,6 +809,24 @@ default_filter = "all"
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");
         assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
+    }
+
+    #[test]
+    fn unified_datalog_config_rejects_confirmed_with_upgrade_hint() {
+        let err = parse_unified_config(
+            "anneal.dl",
+            r#"
+            config handles {
+              confirmed(["OQ"]).
+            }
+            "#,
+        )
+        .expect_err("confirmed is not a unified config declaration");
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("confirmed(...) is no longer valid"), "{msg}");
+        assert!(err.to_string().contains("inferred automatically"));
+        assert!(err.to_string().contains("force"));
     }
 
     #[test]

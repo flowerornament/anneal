@@ -1805,7 +1805,9 @@ handles as observed vocabulary. Project config must not snapshot every
 observed namespace as a manual allow-list. `config handles { force([...]). }`
 is reserved for sparse namespaces that cannot yet satisfy inference;
 `rejected([...])` blocks false positives; `linear([...])` assigns
-obligation semantics.
+obligation semantics. Legacy `[handles].confirmed` entries are dropped
+during TOML-to-Datalog conversion; existing unified configs that still
+use `confirmed(...)` fail with a migration diagnostic.
 
 Rationale: forcing agents to append every new prefix to project config
 turns ordinary corpus growth into schema maintenance. The stable
@@ -2474,7 +2476,10 @@ diagnostic rather than merging two config authorities. `anneal init` is a
 scaffold and conversion operation: it previews with `--dry-run`,
 refuses to overwrite existing repo config, and with `--force` writes
 unified `anneal.dl` and moves an older TOML file to
-`anneal.toml.legacy`.
+`anneal.toml.legacy`. Conversion must not preserve legacy
+`[handles].confirmed` inventories as `force` policy; confirmed
+namespaces were an old manual allow-list, while unified config treats
+namespace recognition as inferred corpus evidence.
 
 **Definition CR-D28 (Init defaults).** `anneal init` scaffolds a
 minimal lattice in `anneal.dl`:

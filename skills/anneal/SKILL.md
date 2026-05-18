@@ -98,6 +98,7 @@ Do not copy the built-in prelude into a project. Use `anneal init --dry-run` to
 inspect the current `anneal.dl` scaffold. `anneal init` refuses to overwrite an
 existing config unless `--force` is passed; for older installs, `--force`
 writes unified `anneal.dl` and moves `anneal.toml` to `anneal.toml.legacy`.
+Legacy `confirmed` namespace inventories are dropped during conversion.
 
 ### Health and Compatibility
 

@@ -214,8 +214,17 @@ pub(crate) fn cmd_init(request: InitRequest<'_>) -> anyhow::Result<InitOutput> {
         orient: crate::config::OrientConfig::default(),
     };
 
-    let config = if root.join("anneal.toml").exists() || root.join("anneal.dl").exists() {
-        existing_config.clone()
+    let legacy_config_exists = root.join("anneal.toml").exists();
+    let unified_config_exists = root.join("anneal.dl").exists();
+    let config = if legacy_config_exists || unified_config_exists {
+        let mut config = existing_config.clone();
+        if legacy_config_exists && !unified_config_exists {
+            // Legacy `[handles].confirmed` was an inventory of observed
+            // namespaces. In unified config, `force` is policy for sparse
+            // prefixes only, so migration deliberately drops the old list.
+            config.handles.force.clear();
+        }
+        config
     } else {
         inferred_config
     };
@@ -225,7 +234,7 @@ pub(crate) fn cmd_init(request: InitRequest<'_>) -> anyhow::Result<InitOutput> {
 
 pub(crate) fn cmd_init_from_config(
     root: &Utf8Path,
-    config: AnnealConfig,
+    mut config: AnnealConfig,
     mode: InitMode,
 ) -> anyhow::Result<InitOutput> {
     let config_path = root.join("anneal.dl");
@@ -233,6 +242,12 @@ pub(crate) fn cmd_init_from_config(
     let backup_path = root.join("anneal.toml.legacy");
     let path_str = config_path.to_string();
     let migrating_legacy = legacy_path.exists();
+    if migrating_legacy && !config_path.exists() {
+        // The app entrypoint can migrate directly from a loaded legacy config,
+        // bypassing `cmd_init`; keep the confirmed-inventory drop centralized
+        // at the final render/write boundary too.
+        config.handles.force.clear();
+    }
     let body = render_unified_config(&config);
 
     let (written, backup_path) = if mode.dry_run() {
@@ -631,5 +646,74 @@ mod tests {
         assert!(written.contains("custom"));
         assert!(root.join("anneal.toml.legacy").exists());
         assert!(!root.join("anneal.toml").exists());
+    }
+
+    #[test]
+    fn init_drops_legacy_confirmed_namespace_inventory() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(dir.path()).expect("tempdir path is utf8");
+        std::fs::write(
+            root.join("anneal.toml"),
+            "[handles]\nconfirmed = [\"OQ\", \"REQ\"]\n",
+        )
+        .expect("write legacy config");
+        let lattice = Lattice::test_empty();
+        let stats = ResolveStats {
+            namespaces: HashSet::new(),
+            labels_resolved: 0,
+            labels_skipped: 0,
+            versions_resolved: 0,
+            pending_edges_resolved: 0,
+            pending_edges_unresolved: 0,
+        };
+        let existing_config = AnnealConfig {
+            handles: HandlesConfig {
+                force: vec!["OQ".to_string(), "REQ".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+
+        let output = cmd_init(InitRequest {
+            root,
+            existing_config: &existing_config,
+            lattice: &lattice,
+            stats: &stats,
+            observed_frontmatter_keys: &HashMap::new(),
+            mode: InitMode::DryRun,
+        })
+        .expect("dry run renders");
+
+        assert!(
+            !output.body.contains("force("),
+            "legacy confirmed inventory should not become sparse force policy"
+        );
+        assert!(
+            !output.body.contains("config handles"),
+            "empty handle policy should be omitted from generated config"
+        );
+    }
+
+    #[test]
+    fn init_from_loaded_legacy_config_drops_confirmed_namespace_inventory() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(dir.path()).expect("tempdir path is utf8");
+        std::fs::write(
+            root.join("anneal.toml"),
+            "[handles]\nconfirmed = [\"OQ\", \"REQ\"]\n",
+        )
+        .expect("write legacy config");
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                force: vec!["OQ".to_string(), "REQ".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+
+        let output = cmd_init_from_config(root, config, InitMode::DryRun).expect("dry run renders");
+
+        assert!(!output.body.contains("force("));
+        assert!(!output.body.contains("config handles"));
     }
 }
