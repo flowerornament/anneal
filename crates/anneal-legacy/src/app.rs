@@ -202,7 +202,7 @@ CHECK RULES:
 
 SUGGESTION RULES (shown with --suggest):
   S001  Orphaned handles — non-file handles with no incoming edges
-  S002  Candidate namespaces — recurring label prefixes not yet confirmed
+  S002  Reserved — namespaces are inferred automatically
   S003  Pipeline stalls — status levels with no outflow to next level
   S004  Abandoned namespaces — all members terminal or stale
   S005  Concern group candidates — label prefixes co-occurring across files
@@ -396,7 +396,7 @@ Analyze the corpus and generate an anneal.dl project declaration file.
 
 Infers:
   - Active/terminal status partition from directory conventions
-  - Confirmed label namespaces from sequential cardinality (e.g., OQ-1..OQ-69)
+  - Label namespaces from sequential cardinality (e.g., OQ-1..OQ-69)
   - Frontmatter field-to-edge mappings from observed field names
   - Freshness thresholds (defaults: warn=30d, error=90d)
 

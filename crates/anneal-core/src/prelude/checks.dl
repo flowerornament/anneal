@@ -119,9 +119,6 @@ diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", h)) :=
   s001_orphaned(h),
   handle_file(h, file).
 
-confirmed_namespace(namespace) :=
-  *config{key: "handles.confirmed", value: namespace}.
-
 rejected_namespace(namespace) :=
   *config{key: "handles.rejected", value: namespace}.
 
@@ -135,20 +132,6 @@ namespace_present(namespace) :=
 namespace_label_count(namespace, count) :=
   namespace_present(namespace),
   count = Count{ h : namespace_label(namespace, h) }.
-
-s002_candidate_namespace(namespace, count) :=
-  namespace_label_count(namespace, count),
-  count >= 3,
-  not confirmed_namespace(namespace),
-  not rejected_namespace(namespace).
-
-namespace_representative_file(namespace, file) :=
-  s002_candidate_namespace(namespace, count),
-  file = Min{ f : namespace_label(namespace, h), handle_file(h, f) }.
-
-diagnostic("S002", "suggestion", namespace, file, null, ("candidate_namespace", namespace, count)) :=
-  s002_candidate_namespace(namespace, count),
-  namespace_representative_file(namespace, file).
 
 next_pipeline_status(status, next_status) :=
   configured_pipeline_status(status, level),
@@ -194,46 +177,50 @@ s003_pipeline_stall(status, count, null, true) :=
 diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
   s003_pipeline_stall(status, count, next_status, based_on_history).
 
-confirmed_namespace_member(namespace, h) :=
-  confirmed_namespace(namespace),
+active_namespace(namespace) :=
+  namespace_present(namespace),
+  not rejected_namespace(namespace).
+
+active_namespace_member(namespace, h) :=
+  active_namespace(namespace),
   namespace_label(namespace, h).
 
-confirmed_namespace_size(namespace, total) :=
-  confirmed_namespace(namespace),
-  total = Count{ h : confirmed_namespace_member(namespace, h) },
+active_namespace_size(namespace, total) :=
+  active_namespace(namespace),
+  total = Count{ h : active_namespace_member(namespace, h) },
   total >= 2.
 
 abandoned_terminal_member(namespace, h) :=
-  confirmed_namespace_member(namespace, h),
+  active_namespace_member(namespace, h),
   terminal(h).
 
 abandoned_stale_member(namespace, h) :=
-  confirmed_namespace_member(namespace, h),
+  active_namespace_member(namespace, h),
   not terminal(h),
   freshness(h, days),
   days >= 90.
 
 abandoned_terminal_count(namespace, count) :=
-  confirmed_namespace_size(namespace, total),
+  active_namespace_size(namespace, total),
   count = Count{ h : abandoned_terminal_member(namespace, h) }.
 
 abandoned_stale_count(namespace, count) :=
-  confirmed_namespace_size(namespace, total),
+  active_namespace_size(namespace, total),
   count = Count{ h : abandoned_stale_member(namespace, h) }.
 
 s004_abandoned_namespace(namespace, total, terminal_count, stale_count) :=
-  confirmed_namespace_size(namespace, total),
+  active_namespace_size(namespace, total),
   abandoned_terminal_count(namespace, terminal_count),
   abandoned_stale_count(namespace, stale_count),
   terminal_count + stale_count = total.
 
-confirmed_namespace_representative_file(namespace, file) :=
-  confirmed_namespace_size(namespace, total),
-  file = Min{ f : confirmed_namespace_member(namespace, h), handle_file(h, f) }.
+active_namespace_representative_file(namespace, file) :=
+  active_namespace_size(namespace, total),
+  file = Min{ f : active_namespace_member(namespace, h), handle_file(h, f) }.
 
 diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
   s004_abandoned_namespace(namespace, total, terminal_count, stale_count),
-  confirmed_namespace_representative_file(namespace, file).
+  active_namespace_representative_file(namespace, file).
 
 file_prefix(file, prefix) :=
   *handle{id: file, kind: "file"},
@@ -255,8 +242,8 @@ same_concern_pair(left_prefix, right_prefix) :=
   left_prefix < right_prefix.
 
 prefix_pair_candidate(left_prefix, right_prefix) :=
-  confirmed_namespace(left_prefix),
-  confirmed_namespace(right_prefix),
+  active_namespace(left_prefix),
+  active_namespace(right_prefix),
   left_prefix < right_prefix.
 
 s005_pair_count(left_prefix, right_prefix, count) :=

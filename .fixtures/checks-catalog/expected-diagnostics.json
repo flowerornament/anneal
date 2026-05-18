@@ -40,14 +40,6 @@
     "evidence": ["orphaned_handle", "ORPH-1"]
   },
   {
-    "code": "S002",
-    "severity": "suggestion",
-    "subject": "NEW",
-    "file": "NEW-1.md",
-    "line": null,
-    "evidence": ["candidate_namespace", "NEW", 3]
-  },
-  {
     "code": "S003",
     "severity": "suggestion",
     "subject": "draft",

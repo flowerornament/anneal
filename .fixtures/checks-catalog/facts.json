@@ -68,8 +68,8 @@
     { "key": "convergence.ordering", "value": "stable", "ordinal": 1 },
     { "key": "convergence.ordering", "value": "archived", "ordinal": 2 },
     { "key": "handles.linear", "value": "OQ" },
-    { "key": "handles.confirmed", "value": "OLD" },
-    { "key": "handles.confirmed", "value": "AA" },
-    { "key": "handles.confirmed", "value": "BB" }
+    { "key": "handles.force", "value": "OLD" },
+    { "key": "handles.force", "value": "AA" },
+    { "key": "handles.force", "value": "BB" }
   ]
 }

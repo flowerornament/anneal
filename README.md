@@ -344,7 +344,6 @@ config convergence {
 }
 
 config handles {
-  confirmed(["REQ", "ADR", "RFC"]).
   rejected(["SHA", "GPT"]).
   linear(["REQ"]).
 }
@@ -389,7 +388,6 @@ config convergence {
 }
 
 config handles {
-  confirmed(["REQ", "ADR", "RFC"]).
   rejected(["SHA", "GPT"]).
   linear(["REQ"]).
 }
@@ -407,6 +405,11 @@ config state {
   history_mode("xdg").  # xdg | repo | off
 }
 ```
+
+Label namespaces are inferred from recurring label references. Use
+`force(["REQ"])` only for a sparse namespace that should be recognized before it
+has enough examples; use `rejected([...])` for false positives and
+`linear([...])` for obligation namespaces.
 
 User config lives at `$XDG_CONFIG_HOME/anneal/config.toml` with fallback
 `~/.config/anneal/config.toml`. Derived snapshot history lives under
@@ -448,7 +451,7 @@ The `checks.dl` catalog mirrors the shipped compatibility diagnostic membership.
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on one obligation |
 | S001 | Suggestion | Orphaned handle |
-| S002 | Suggestion | Candidate namespace |
+| S002 | Suggestion | Reserved; namespaces are inferred automatically |
 | S003 | Suggestion | Pipeline stall |
 | S004 | Suggestion | Abandoned namespace |
 | S005 | Suggestion | Concern group candidate |

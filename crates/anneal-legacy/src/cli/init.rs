@@ -167,12 +167,11 @@ pub(crate) fn cmd_init(request: InitRequest<'_>) -> anyhow::Result<InitOutput> {
         descriptions: HashMap::new(),
     };
 
-    // Build handles section from namespaces
-    let mut confirmed: Vec<String> = stats.namespaces.iter().cloned().collect();
-    confirmed.sort();
-
+    // Namespaces are inferred from the corpus at extraction time. Config only
+    // carries explicit policy, so init does not snapshot observed prefixes.
+    let _ = stats;
     let handles = HandlesConfig {
-        confirmed,
+        force: Vec::new(),
         rejected: Vec::new(),
         linear: Vec::new(),
     };
@@ -339,13 +338,13 @@ fn render_unified_config(config: &AnnealConfig) -> String {
         out.push_str("}\n\n");
     }
 
-    if !config.handles.confirmed.is_empty()
+    if !config.handles.force.is_empty()
         || !config.handles.rejected.is_empty()
         || !config.handles.linear.is_empty()
     {
         out.push_str("config handles {\n");
-        if !config.handles.confirmed.is_empty() {
-            list_call(&mut out, "confirmed", &config.handles.confirmed);
+        if !config.handles.force.is_empty() {
+            list_call(&mut out, "force", &config.handles.force);
         }
         if !config.handles.rejected.is_empty() {
             list_call(&mut out, "rejected", &config.handles.rejected);

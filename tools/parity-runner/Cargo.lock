@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-cli"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anneal-core",
  "anneal-md",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-core"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anneal-lang",
  "camino",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-lang"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-legacy"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anneal-core",
  "anyhow",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-md"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anneal-core",
  "anneal-legacy",

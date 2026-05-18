@@ -1413,10 +1413,6 @@ mod tests {
                     r#"? diagnostic("S001", severity, "ORPH-1", file, line, evidence)."#,
                 ),
                 (
-                    "S002",
-                    r#"? diagnostic("S002", severity, "NEW", file, line, evidence)."#,
-                ),
-                (
                     "S003",
                     r#"? diagnostic("S003", severity, "draft", file, line, evidence)."#,
                 ),
@@ -1537,16 +1533,6 @@ mod tests {
                 (
                     "evidence",
                     list(vec![string("orphaned_handle"), string("ORPH-1")])
-                )
-            ]
-        ));
-        assert!(has_row(
-            output(&outputs, "S002"),
-            &[
-                ("severity", string("suggestion")),
-                (
-                    "evidence",
-                    list(vec![string("candidate_namespace"), string("NEW"), int(3)])
                 )
             ]
         ));
@@ -1911,9 +1897,9 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                     config(&corpus, "convergence.ordering", "stable", Some(1)),
                     config(&corpus, "convergence.ordering", "archived", Some(2)),
                     config(&corpus, "handles.linear", "OQ", None),
-                    config(&corpus, "handles.confirmed", "OLD", None),
-                    config(&corpus, "handles.confirmed", "AA", None),
-                    config(&corpus, "handles.confirmed", "BB", None),
+                    config(&corpus, "handles.force", "OLD", None),
+                    config(&corpus, "handles.force", "AA", None),
+                    config(&corpus, "handles.force", "BB", None),
                 ],
             )
             .expect("replace diagnostic fixture config");

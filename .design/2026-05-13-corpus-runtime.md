@@ -1788,22 +1788,29 @@ historical display anchors. Agents querying the diagnostic relation need
 the scope to be explicit instead of inferring corpus-level meaning from
 an arbitrary source path.
 
-### §28.3 Concern-candidate namespace scope [CR-D50]
+### §28.3 Namespace inference and concern-candidate scope [CR-D50, CR-D90]
 
-**Definition CR-D50 (S005 confirmed namespace scope).** The standard
-S005 concern-group suggestion considers pairs of confirmed label
-namespaces only. Repeated unconfirmed prefixes are surfaced by S002
-first; after the user confirms the namespace, S005 may propose concern
-groups involving it. Because S005 describes a corpus-level
-co-occurrence pattern rather than a single source location, its
-`diagnostic(...)` row uses `file = null` and carries the concrete
-prefix pair plus file count in evidence; surfaces may choose a
-representative file for compatibility displays.
+**Definition CR-D50 (S005 observed namespace scope).** The standard
+S005 concern-group suggestion considers pairs of resolved label
+namespaces. Because S005 describes a corpus-level co-occurrence pattern
+rather than a single source location, its `diagnostic(...)` row uses
+`file = null` and carries the concrete prefix pair plus file count in
+evidence; surfaces may choose a representative file for compatibility
+displays.
 
-Rationale: running co-occurrence over every discovered prefix scales
-with noisy parser output and creates low-signal suggestions. Confirmed
-namespaces are the stable vocabulary the agent can safely use for
-cross-file concern discovery. The representative file in v1.x was an
+**Definition CR-D90 (Namespace config is policy, not inventory).**
+Label namespace discovery is corpus-derived. A markdown Source infers
+namespaces from recurring sequential labels and emits resolved label
+handles as observed vocabulary. Project config must not snapshot every
+observed namespace as a manual allow-list. `config handles { force([...]). }`
+is reserved for sparse namespaces that cannot yet satisfy inference;
+`rejected([...])` blocks false positives; `linear([...])` assigns
+obligation semantics.
+
+Rationale: forcing agents to append every new prefix to project config
+turns ordinary corpus growth into schema maintenance. The stable
+contract is observed namespace facts plus explicit policy overrides, not
+a hand-curated inventory. The representative file in v1.x was an
 iteration-order artifact, not part of the semantic diagnostic.
 
 ### §29 Diagnostic ID rules [CR-R1, CR-R2, CR-R3]
@@ -1878,8 +1885,7 @@ release_blocker(h, "blocking_oq")  :=
   name: "release-blockers",
   query: "? release_blocker(h, why).",
   doc: "Open OQs and broken references gating the next release.",
-  output_schema: { h: HandleId, why: String },
-  default_args: {},
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
   capabilities: ["read"]
 )
 ```
@@ -2905,7 +2911,7 @@ config convergence {
 
 config handles {
   linear(["OQ"]).
-  confirmed(["ADR", "OQ", "REQ"]).
+  rejected(["SHA", "GPT"]).
 }
 
 source md {
@@ -3171,7 +3177,7 @@ config key.
 - CR-D47: Structural graph vocabulary (§27.1)
 - CR-D48: Work ranking vocabulary (§27.2)
 - CR-D49: Relational diagnostic contract (§28.1)
-- CR-D50: S005 confirmed namespace scope (§28.3)
+- CR-D50: S005 observed namespace scope (§28.3)
 - CR-D51: Embeddable language boundary (§8.1)
 - CR-D52: Retrieval provider boundary (§6)
 - CR-D53: Fact visibility boundary (§16)
@@ -3211,6 +3217,7 @@ config key.
 - CR-D87: CLI output mode selection (§36)
 - CR-D88: Aggregate body stratification (§20)
 - CR-D89: Configuration ladder (§39)
+- CR-D90: Namespace config is policy, not inventory (§28.3)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

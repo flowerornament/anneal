@@ -159,10 +159,7 @@ fn apply_runtime_config_facts(
         .values("convergence.terminal")
         .map(str::to_string)
         .collect();
-    config.handles.confirmed = facts
-        .values("handles.confirmed")
-        .map(str::to_string)
-        .collect();
+    config.handles.force = facts.values("handles.force").map(str::to_string).collect();
     config.handles.rejected = facts
         .values("handles.rejected")
         .map(str::to_string)

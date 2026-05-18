@@ -304,8 +304,9 @@ pub(crate) struct ConvergenceConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct HandlesConfig {
-    /// Namespace prefixes confirmed as real label namespaces.
-    pub(crate) confirmed: Vec<String>,
+    /// Namespace prefixes forced as real label namespaces despite sparse evidence.
+    #[serde(alias = "confirmed")]
+    pub(crate) force: Vec<String>,
     /// Namespace prefixes rejected (false positives like SHA, AVX).
     pub(crate) rejected: Vec<String>,
     /// Namespace prefixes whose handles are linear (must be discharged exactly once).
@@ -315,10 +316,6 @@ pub(crate) struct HandlesConfig {
 impl HandlesConfig {
     pub(crate) fn linear_set(&self) -> HashSet<&str> {
         self.linear.iter().map(String::as_str).collect()
-    }
-
-    pub(crate) fn confirmed_set(&self) -> HashSet<&str> {
-        self.confirmed.iter().map(String::as_str).collect()
     }
 }
 
@@ -512,7 +509,7 @@ fn apply_config_declaration(
                 .descriptions
                 .insert(values[0].clone(), values[1].clone());
         }
-        ("handles", "confirmed") => config.handles.confirmed = values,
+        ("handles", "force") => config.handles.force = values,
         ("handles", "rejected") => config.handles.rejected = values,
         ("handles", "linear") => config.handles.linear = values,
         ("frontmatter", "field") => {
@@ -786,7 +783,7 @@ default_filter = "all"
             }
 
             config handles {
-              confirmed(["OQ", "CR-D"]).
+              force(["OQ", "CR-D"]).
               linear(["OQ"]).
             }
 
@@ -801,7 +798,7 @@ default_filter = "all"
         assert_eq!(config.convergence.ordering, ["raw", "draft", "current"]);
         assert_eq!(config.convergence.active, ["draft", "current"]);
         assert_eq!(config.convergence.terminal, ["archived"]);
-        assert_eq!(config.handles.confirmed, ["OQ", "CR-D"]);
+        assert_eq!(config.handles.force, ["OQ", "CR-D"]);
         assert_eq!(config.handles.linear, ["OQ"]);
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");

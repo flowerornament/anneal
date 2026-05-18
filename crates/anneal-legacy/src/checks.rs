@@ -381,7 +381,7 @@ fn diagnostic_descriptor(code: DiagnosticCode) -> DiagnosticDescriptor {
         },
         DiagnosticCode::S002 => DiagnosticDescriptor {
             family: DiagnosticFamily::Suggestion,
-            rule_name: "SUGGEST-02 candidate namespaces",
+            rule_name: "SUGGEST-02 reserved namespace suggestions",
             stale_alias: false,
             obligation_alias: false,
         },
@@ -955,60 +955,18 @@ fn suggest_orphaned(graph: &DiGraph) -> Vec<Diagnostic> {
 }
 
 // ---------------------------------------------------------------------------
-// SUGGEST-02: Candidate namespaces
+// SUGGEST-02: Reserved namespace suggestions
 // ---------------------------------------------------------------------------
 
-/// Suggest candidate namespaces: recurring label-like prefixes not yet confirmed.
+/// Suggest candidate namespaces.
 ///
-/// Groups Label handles by prefix. Prefixes not in confirmed or rejected with
-/// count >= 3 are candidates. One diagnostic per candidate prefix.
+/// Namespace discovery is now automatic: resolved label prefixes are corpus
+/// facts, while config only carries explicit policy (`force`, `rejected`,
+/// `linear`). The legacy S002 diagnostic is retained as an ID for older
+/// snapshots, but no longer asks users to curate namespace inventory.
 fn suggest_candidate_namespaces(graph: &DiGraph, config: &AnnealConfig) -> Vec<Diagnostic> {
-    let confirmed = config.handles.confirmed_set();
-    let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
-
-    // Count labels per prefix
-    let mut prefix_counts: HashMap<&str, (usize, Option<String>)> = HashMap::new();
-    for (_, handle) in graph.nodes() {
-        if let HandleKind::Label { ref prefix, .. } = handle.kind {
-            let entry = prefix_counts
-                .entry(prefix.as_str())
-                .or_insert((0, handle.file_path.as_ref().map(ToString::to_string)));
-            entry.0 += 1;
-            if entry.1.is_none() {
-                entry.1 = handle.file_path.as_ref().map(ToString::to_string);
-            }
-        }
-    }
-
-    let mut diagnostics = Vec::new();
-    // Sort for deterministic output
-    let mut candidates: Vec<_> = prefix_counts
-        .into_iter()
-        .filter(|(prefix, (count, _))| {
-            *count >= 3 && !confirmed.contains(prefix) && !rejected.contains(prefix)
-        })
-        .collect();
-    candidates.sort_by_key(|(prefix, _)| *prefix);
-
-    for (prefix, (count, representative_file)) in candidates {
-        diagnostics.push(Diagnostic {
-            severity: Severity::Suggestion,
-            code: DiagnosticCode::S002,
-            message: format!(
-                "candidate namespace: {prefix} ({count} labels found, not in confirmed namespaces)"
-            ),
-            file: representative_file,
-            line: None,
-            evidence: Some(Evidence::Suggestion {
-                suggestion: SuggestionEvidence::CandidateNamespace {
-                    prefix: prefix.to_string(),
-                    count,
-                },
-            }),
-        });
-    }
-
-    diagnostics
+    let _ = (graph, config);
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,13 +1084,14 @@ fn suggest_abandoned_namespaces(
     lattice: &Lattice,
     config: &AnnealConfig,
 ) -> Vec<Diagnostic> {
-    let confirmed = config.handles.confirmed_set();
+    let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
-    // Group Label handles by prefix (confirmed namespaces only)
+    // Group resolved Label handles by prefix. Resolution has already applied
+    // namespace inference plus explicit force/reject policy.
     let mut by_prefix: BTreeMap<&str, Vec<(NodeId, &crate::handle::Handle)>> = BTreeMap::new();
     for (node_id, handle) in graph.nodes() {
         if let HandleKind::Label { ref prefix, .. } = handle.kind
-            && confirmed.contains(prefix.as_str())
+            && !rejected.contains(prefix.as_str())
         {
             by_prefix
                 .entry(prefix.as_str())
@@ -1766,13 +1725,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // SUGGEST-02: Candidate namespaces
+    // SUGGEST-02: Reserved namespace suggestions
     // -----------------------------------------------------------------------
 
     #[test]
-    fn suggest_s002_for_recurring_unconfirmed_prefix() {
+    fn suggest_s002_no_longer_requires_namespace_inventory() {
         let mut graph = DiGraph::new();
-        // 3 labels with prefix "NEW" -- not in confirmed namespaces
+        // Resolved labels are already observed namespace facts; they should not
+        // ask the user to add a manual config inventory.
         let _a = graph.add_node(Handle::test_label("NEW", 1, None));
         let _b = graph.add_node(Handle::test_label("NEW", 2, None));
         let _c = graph.add_node(Handle::test_label("NEW", 3, None));
@@ -1780,27 +1740,14 @@ mod tests {
         let config = AnnealConfig::default();
 
         let diags = suggest_candidate_namespaces(&graph, &config);
-        assert_eq!(
-            diags.len(),
-            1,
-            "Expected 1 S002 diagnostic for candidate namespace"
+        assert!(
+            diags.is_empty(),
+            "S002 should not ask for namespace inventory"
         );
-        assert_eq!(diags[0].severity, Severity::Suggestion);
-        assert_eq!(diags[0].code, DiagnosticCode::S002);
-        assert!(diags[0].message.contains("NEW"));
-        match &diags[0].evidence {
-            Some(Evidence::Suggestion {
-                suggestion: SuggestionEvidence::CandidateNamespace { prefix, count },
-            }) => {
-                assert_eq!(prefix, "NEW");
-                assert_eq!(*count, 3);
-            }
-            other => panic!("Expected candidate-namespace evidence, got {other:?}"),
-        }
     }
 
     #[test]
-    fn suggest_s002_not_for_confirmed_prefix() {
+    fn suggest_s002_not_for_forced_prefix() {
         let mut graph = DiGraph::new();
         let _a = graph.add_node(Handle::test_label("OQ", 1, None));
         let _b = graph.add_node(Handle::test_label("OQ", 2, None));
@@ -1808,7 +1755,7 @@ mod tests {
 
         let config = AnnealConfig {
             handles: HandlesConfig {
-                confirmed: vec!["OQ".to_string()],
+                force: vec!["OQ".to_string()],
                 ..HandlesConfig::default()
             },
             ..AnnealConfig::default()
@@ -1817,7 +1764,7 @@ mod tests {
         let diags = suggest_candidate_namespaces(&graph, &config);
         assert!(
             diags.is_empty(),
-            "S002 should not be produced for already-confirmed prefixes"
+            "S002 should not be produced for forced prefixes"
         );
     }
 
@@ -1970,7 +1917,7 @@ mod tests {
 
         let config = AnnealConfig {
             handles: HandlesConfig {
-                confirmed: vec!["OLD".to_string()],
+                force: vec!["OLD".to_string()],
                 ..HandlesConfig::default()
             },
             ..AnnealConfig::default()
@@ -2018,13 +1965,7 @@ mod tests {
         let _a = graph.add_node(h1);
         let _b = graph.add_node(h2);
 
-        let config = AnnealConfig {
-            handles: HandlesConfig {
-                confirmed: vec!["STALE".to_string()],
-                ..HandlesConfig::default()
-            },
-            ..AnnealConfig::default()
-        };
+        let config = AnnealConfig::default();
         let lattice = Lattice::test_with_ordering(&["draft"], &[], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);
@@ -2047,13 +1988,7 @@ mod tests {
         let _a = graph.add_node(h1);
         let _b = graph.add_node(h2);
 
-        let config = AnnealConfig {
-            handles: HandlesConfig {
-                confirmed: vec!["ACTIVE".to_string()],
-                ..HandlesConfig::default()
-            },
-            ..AnnealConfig::default()
-        };
+        let config = AnnealConfig::default();
         let lattice = Lattice::test_with_ordering(&["draft"], &[], &[]);
 
         let diags = suggest_abandoned_namespaces(&graph, &lattice, &config);

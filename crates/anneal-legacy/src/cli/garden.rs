@@ -566,18 +566,9 @@ fn has_recent_neighbor(
 }
 
 fn collect_drift_tasks(opts: &GardenOptions<'_>, out: &mut Vec<GardenTask>) {
-    let confirmed: HashSet<&str> = opts
-        .config
-        .handles
-        .confirmed
-        .iter()
-        .map(String::as_str)
-        .collect();
-
     let mut prefix_areas: BTreeMap<String, HashSet<String>> = BTreeMap::new();
     for (_, handle) in opts.graph.nodes() {
         if let HandleKind::Label { prefix, .. } = &handle.kind
-            && confirmed.contains(prefix.as_str())
             && let Some(fp) = handle.file_path.as_deref()
         {
             prefix_areas

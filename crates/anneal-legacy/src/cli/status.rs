@@ -479,7 +479,7 @@ pub(crate) fn cmd_health(
 
     let suggestion_labels: &[(DiagnosticCode, &str)] = &[
         (DiagnosticCode::S001, "orphaned handles"),
-        (DiagnosticCode::S002, "candidate namespaces"),
+        (DiagnosticCode::S002, "reserved namespace suggestions"),
         (DiagnosticCode::S003, "pipeline stalls"),
         (DiagnosticCode::S004, "abandoned namespaces"),
         (DiagnosticCode::S005, "concern group candidates"),

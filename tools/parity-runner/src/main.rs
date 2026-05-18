@@ -13,8 +13,9 @@ use anneal_core::runtime::{
 use anneal_core::{
     ActorContext, CancellationToken, ConfigFact, ConfigFacts, CorpusId, EdgeFact, FactBatch,
     FactBatchMode, FactIdentity, FactStore, Generation, HandleFact, MetaFact, NativeId, OriginUri,
-    Revision, Source, SourceContext, SourceName, load_runtime_configs,
+    Revision, Source, SourceContext, SourceName,
 };
+use anneal_core::{ConfigEntry, load_project_extension};
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
@@ -368,11 +369,11 @@ fn resolve_corpus(repo: &Path, corpus: &str) -> Result<PathBuf> {
     } else {
         PathBuf::from(corpus)
     };
-    if path.join("anneal.toml").exists() {
+    if path.join(anneal_core::PROJECT_RULE_FILE).exists() || path.join("anneal.toml").exists() {
         Ok(path)
     } else {
         bail!(
-            "corpus root {} does not contain anneal.toml",
+            "corpus root {} does not contain anneal.dl or anneal.toml",
             path.display()
         )
     }
@@ -1039,10 +1040,38 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
         .map_err(|path| anyhow!("corpus path is not valid UTF-8: {}", path.display()))?;
     let roots = vec![root.clone()];
     let corpus = CorpusId::from("parity");
-    let config_facts = ConfigFacts::new(vec![
-        ("md.file_extension".to_string(), ".md".to_string()),
-        ("md.scan_root".to_string(), ".".to_string()),
-    ]);
+    let source_info = MarkdownSource::default().describe();
+    let sources = vec![source_info];
+    let prelude = standard_prelude_program().context("standard prelude failed to parse")?;
+    let project = if root.join(anneal_core::PROJECT_RULE_FILE).is_file() {
+        Some(load_project_extension(
+            root.as_std_path(),
+            &sources,
+            &prelude,
+        )?)
+    } else {
+        None
+    };
+    let mut discovery = vec![
+        ConfigEntry::scalar("md.file_extension", ".md"),
+        ConfigEntry::scalar("md.scan_root", "."),
+    ];
+    if let Some(project) = &project {
+        for entry in project.discovery().entries() {
+            if entry.ordinal.is_none() {
+                discovery.retain(|existing| {
+                    existing.key != entry.key || existing.ordinal.is_some()
+                });
+            }
+            discovery.push(entry.clone());
+        }
+    }
+    let runtime_config = project
+        .as_ref()
+        .map_or_else(ConfigFacts::default, |project| {
+            project.runtime_config().clone()
+        });
+    let config_facts = ConfigFacts::from_entries(discovery);
     let context = SourceContext {
         corpus: corpus.clone(),
         roots: roots.as_slice(),
@@ -1052,10 +1081,14 @@ fn extract_anneal_md(corpus_root: &Path) -> Result<FactRight> {
         actor: ActorContext::anonymous_cli(),
         cancellation: CancellationToken::new(),
     };
-    let batch = MarkdownSource
+    let source = MarkdownSource::with_runtime_config(&runtime_config)
+        .map_err(|err| anyhow!("markdown config failed: {err}"))?;
+    let batch = source
         .extract(&context)
         .map_err(|err| anyhow!("anneal-md extraction failed: {err}"))?;
-    let configs = load_runtime_configs(&root, &corpus)?;
+    let configs = project
+        .as_ref()
+        .map_or_else(Vec::new, |project| project.runtime_config_facts(&corpus));
     Ok(FactRight {
         root,
         batch,

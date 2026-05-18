@@ -212,8 +212,8 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
         fs::create_dir(&root).expect("create corpus root");
         fs::write(
-            root.join("anneal.toml"),
-            "[handles]\nconfirmed = [\"OQ\"]\n\n[frontmatter.fields.depends-on]\nedge_kind = \"DependsOn\"\ndirection = \"forward\"\n",
+            root.join("anneal.dl"),
+            "config handles {\n  force([\"OQ\"]).\n}\n\nconfig frontmatter {\n  field(\"depends-on\", \"DependsOn\", \"forward\").\n}\n",
         )
         .expect("write config");
         fs::write(

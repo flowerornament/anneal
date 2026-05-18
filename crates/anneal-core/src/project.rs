@@ -498,7 +498,7 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         "terminal",
         RuntimeConfigValueMode::UnorderedSet,
     ),
-    runtime_config_declaration("handles", "confirmed", RuntimeConfigValueMode::UnorderedSet),
+    runtime_config_declaration("handles", "force", RuntimeConfigValueMode::UnorderedSet),
     runtime_config_declaration("handles", "rejected", RuntimeConfigValueMode::UnorderedSet),
     runtime_config_declaration("handles", "linear", RuntimeConfigValueMode::UnorderedSet),
     runtime_config_declaration("freshness", "warn", RuntimeConfigValueMode::Scalar),
@@ -949,6 +949,7 @@ mod tests {
             }
 
             config handles {
+              force(["REQ"]).
               linear(["OQ"]).
             }
 
@@ -975,6 +976,7 @@ mod tests {
                 ConfigEntry::scalar("convergence.active", "draft"),
                 ConfigEntry::scalar("convergence.active", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
+                ConfigEntry::scalar("handles.force", "REQ"),
                 ConfigEntry::scalar("handles.linear", "OQ"),
                 ConfigEntry::scalar("frontmatter.field.depends-on.edge_kind", "DependsOn"),
                 ConfigEntry::scalar("frontmatter.field.depends-on.direction", "forward"),

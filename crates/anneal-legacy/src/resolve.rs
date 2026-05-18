@@ -63,15 +63,15 @@ pub(crate) struct ResolveStats {
 
 /// Infer which label prefixes are real namespaces based on sequential cardinality.
 ///
-/// A prefix is confirmed if it has N >= 3 distinct sequential numbers across
-/// M >= 2 distinct files. Config overrides (`handles.confirmed`, `handles.rejected`)
+/// A prefix is inferred if it has N >= 3 distinct sequential numbers across
+/// M >= 2 distinct files. Config overrides (`handles.force`, `handles.rejected`)
 /// take precedence over inference. Prefixes with only large isolated numbers
 /// (e.g., SHA-256, AVX-512) are rejected.
 pub(crate) fn infer_namespaces(
     candidates: &[LabelCandidate],
     config: &AnnealConfig,
 ) -> HashSet<String> {
-    let mut confirmed: HashSet<String> = config.handles.confirmed.iter().cloned().collect();
+    let mut namespaces: HashSet<String> = config.handles.force.iter().cloned().collect();
     let rejected: HashSet<&str> = config.handles.rejected.iter().map(String::as_str).collect();
 
     // Group candidates by prefix, borrowing from the candidates slice
@@ -84,7 +84,7 @@ pub(crate) fn infer_namespaces(
     }
 
     for (prefix, occurrences) in &by_prefix {
-        if rejected.contains(prefix) || confirmed.contains(*prefix) {
+        if rejected.contains(prefix) || namespaces.contains(*prefix) {
             continue;
         }
 
@@ -101,10 +101,10 @@ pub(crate) fn infer_namespaces(
             continue;
         }
 
-        confirmed.insert((*prefix).to_string());
+        namespaces.insert((*prefix).to_string());
     }
 
-    confirmed
+    namespaces
 }
 
 /// Check whether a set of numbers contains at least 3 consecutive values.
@@ -133,7 +133,7 @@ fn has_sequential_run(numbers: &BTreeSet<u32>) -> bool {
 
 /// Resolve label candidates into graph nodes and edges.
 ///
-/// For each candidate whose prefix is in a confirmed namespace:
+/// For each candidate whose prefix is in an inferred or forced namespace:
 /// - Create a Label handle node if not already present
 /// - Create an edge from the file node to the label node with the candidate's edge kind
 ///

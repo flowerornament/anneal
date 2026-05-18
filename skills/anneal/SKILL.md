@@ -90,6 +90,10 @@ The ladder is:
   lattice, namespaces, frontmatter edges, excludes, rules, and `@verb`s
 - user config: machine-local preferences under XDG config
 
+Label namespaces are inferred from corpus evidence. Project config should only
+carry namespace policy such as false-positive rejection, sparse-prefix forcing,
+or linear obligation semantics.
+
 Do not copy the built-in prelude into a project. Use `anneal init --dry-run` to
 inspect the current `anneal.dl` scaffold. `anneal init` refuses to overwrite an
 existing config unless `--force` is passed; for older installs, `--force`
