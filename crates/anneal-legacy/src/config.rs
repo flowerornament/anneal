@@ -406,6 +406,17 @@ fn unified_config_declared(root: &Path) -> Result<bool> {
 }
 
 fn load_unified_config(root: &Path) -> Result<AnnealConfig> {
+    load_unified_config_with_mode(root, ObsoleteConfirmedMode::Reject)
+}
+
+pub(crate) fn load_unified_config_for_init(root: &Path) -> Result<AnnealConfig> {
+    load_unified_config_with_mode(root, ObsoleteConfirmedMode::Drop)
+}
+
+fn load_unified_config_with_mode(
+    root: &Path,
+    obsolete_confirmed: ObsoleteConfirmedMode,
+) -> Result<AnnealConfig> {
     let path = root.join("anneal.dl");
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
@@ -416,17 +427,37 @@ fn load_unified_config(root: &Path) -> Result<AnnealConfig> {
             return Err(err).with_context(|| format!("failed to read {}", path.display()));
         }
     };
-    parse_unified_config(&path.display().to_string(), &content)
+    parse_unified_config_with_mode(&path.display().to_string(), &content, obsolete_confirmed)
         .with_context(|| format!("failed to parse config declarations in {}", path.display()))
 }
 
 fn parse_unified_config(source_name: &str, content: &str) -> Result<AnnealConfig> {
+    parse_unified_config_with_mode(source_name, content, ObsoleteConfirmedMode::Reject)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ObsoleteConfirmedMode {
+    Reject,
+    Drop,
+}
+
+fn parse_unified_config_with_mode(
+    source_name: &str,
+    content: &str,
+    obsolete_confirmed: ObsoleteConfirmedMode,
+) -> Result<AnnealConfig> {
     let program = parse_program(source_name, content)?;
     let mut config = AnnealConfig::default();
     for statement in program.statements {
         match statement {
             Statement::ConfigBlock(block) => {
                 for declaration in block.declarations {
+                    if obsolete_confirmed == ObsoleteConfirmedMode::Drop
+                        && block.section.as_str() == "handles"
+                        && declaration.name.as_str() == "confirmed"
+                    {
+                        continue;
+                    }
                     let values = declaration_values(&declaration.args).with_context(|| {
                         format!("invalid config declaration '{}'", declaration.name)
                     })?;
@@ -485,7 +516,7 @@ fn apply_config_declaration(
 ) -> Result<()> {
     if section == "handles" && name == "confirmed" {
         anyhow::bail!(
-            "config handles confirmed(...) is no longer valid. Label namespaces are inferred automatically; delete this declaration, or use config handles force([...]) only for sparse prefixes that need an explicit override"
+            "config handles confirmed(...) is no longer valid. Label namespaces are inferred automatically; delete this declaration, or use config handles force([...]) only for sparse prefixes that need an explicit override. Run `anneal init --dry-run` to preview the repaired config"
         );
     }
 
@@ -827,6 +858,27 @@ default_filter = "all"
         assert!(msg.contains("confirmed(...) is no longer valid"), "{msg}");
         assert!(err.to_string().contains("inferred automatically"));
         assert!(err.to_string().contains("force"));
+    }
+
+    #[test]
+    fn unified_datalog_config_for_init_drops_confirmed_inventory() {
+        let config = parse_unified_config_with_mode(
+            "anneal.dl",
+            r#"
+            config handles {
+              confirmed(["OQ", "REQ"]).
+              linear(["OQ"]).
+              rejected(["SHA"]).
+              force(["SPARSE"]).
+            }
+            "#,
+            ObsoleteConfirmedMode::Drop,
+        )
+        .expect("init repair mode drops confirmed");
+
+        assert_eq!(config.handles.force, ["SPARSE"]);
+        assert_eq!(config.handles.linear, ["OQ"]);
+        assert_eq!(config.handles.rejected, ["SHA"]);
     }
 
     #[test]

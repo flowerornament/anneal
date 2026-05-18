@@ -90,15 +90,23 @@ The ladder is:
   lattice, namespaces, frontmatter edges, excludes, rules, and `@verb`s
 - user config: machine-local preferences under XDG config
 
-Label namespaces are inferred from corpus evidence. Project config should only
-carry namespace policy such as false-positive rejection, sparse-prefix forcing,
-or linear obligation semantics.
+Label namespaces are inferred from corpus evidence. Do not maintain a manual
+namespace inventory. Project config carries namespace policy only:
+
+- `linear([...])`: obligation prefixes whose labels must be discharged exactly
+  once
+- `rejected([...])`: false-positive prefixes such as hashes or all-caps words
+- `force([...])`: rare sparse prefixes that should count as labels before they
+  have enough examples
 
 Do not copy the built-in prelude into a project. Use `anneal init --dry-run` to
 inspect the current `anneal.dl` scaffold. `anneal init` refuses to overwrite an
 existing config unless `--force` is passed; for older installs, `--force`
 writes unified `anneal.dl` and moves `anneal.toml` to `anneal.toml.legacy`.
-Legacy `confirmed` namespace inventories are dropped during conversion.
+Legacy `confirmed` namespace inventories are dropped during conversion. If an
+existing `anneal.dl` still contains `confirmed(...)`, rerun `anneal init
+--dry-run` to preview the cleaned config and `anneal init --force` to rewrite
+it.
 
 ### Health and Compatibility
 

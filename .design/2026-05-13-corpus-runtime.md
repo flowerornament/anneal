@@ -2480,6 +2480,10 @@ unified `anneal.dl` and moves an older TOML file to
 `[handles].confirmed` inventories as `force` policy; confirmed
 namespaces were an old manual allow-list, while unified config treats
 namespace recognition as inferred corpus evidence.
+Existing unified `anneal.dl` files that contain obsolete
+`confirmed(...)` declarations are repairable through `anneal init`:
+`--dry-run` previews the cleaned config, and `--force` rewrites the
+file with the obsolete declaration dropped.
 
 **Definition CR-D28 (Init defaults).** `anneal init` scaffolds a
 minimal lattice in `anneal.dl`:

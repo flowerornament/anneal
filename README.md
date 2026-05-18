@@ -196,7 +196,10 @@ preview the unified file, then `anneal init --force` to convert. The force path
 writes `anneal.dl` from the currently loaded config and moves `anneal.toml` to
 `anneal.toml.legacy`. Legacy `[handles].confirmed` inventories are not carried
 forward; namespaces are inferred automatically. Add `force([...])` manually only
-for sparse prefixes that need an explicit policy override.
+for sparse prefixes that need an explicit policy override. If an existing
+`anneal.dl` still contains `confirmed(...)`, `anneal init --dry-run` previews a
+cleaned file and `anneal init --force` rewrites it without the obsolete
+inventory.
 
 Snapshot history is the one automatic migration path: when XDG history is
 enabled, legacy repo-local `.anneal/history.jsonl` is copied into XDG state on

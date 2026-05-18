@@ -1022,7 +1022,7 @@ fn run() -> anyhow::Result<()> {
         let config = if let Some(legacy_config) = config::load_legacy_config(root.as_std_path())? {
             legacy_config
         } else {
-            config::load_config(root.as_std_path())?
+            config::load_unified_config_for_init(root.as_std_path())?
         };
         let output =
             cli::cmd_init_from_config(&root, config, cli::InitMode::from_flags(dry_run, force))?;

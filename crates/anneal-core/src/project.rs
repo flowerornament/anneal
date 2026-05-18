@@ -337,6 +337,11 @@ fn config_block_entries(
             continue;
         }
         let Some(schema) = runtime_config_declaration_for(section, name) else {
+            if section == "handles" && name == "confirmed" {
+                return Err(ProjectLoadError::ObsoleteConfirmedNamespaceConfig {
+                    location: declaration.location.clone(),
+                });
+            }
             return Err(ProjectLoadError::UnknownConfigDeclaration {
                 section: section.to_string(),
                 key: name.to_string(),
@@ -742,6 +747,12 @@ pub enum ProjectLoadError {
         key: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error(
+        "{location}: config handles confirmed(...) is no longer valid. Label namespaces are inferred automatically; delete this declaration, or use config handles force([...]) only for sparse prefixes that need an explicit override. Run `anneal init --dry-run` to preview the repaired config"
+    )]
+    ObsoleteConfirmedNamespaceConfig {
+        location: crate::runtime::ast::SourceLocation,
+    },
     #[error("{location}: declaration '{name}' values must be static literals")]
     NonLiteralDeclarationValue {
         name: String,
@@ -1097,6 +1108,30 @@ mod tests {
             err,
             ProjectLoadError::UnknownConfigDeclaration { .. }
         ));
+    }
+
+    #[test]
+    fn project_config_blocks_reject_confirmed_with_upgrade_hint() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config handles {
+              confirmed(["OQ"]).
+            }
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("obsolete confirmed rejected");
+
+        assert!(matches!(
+            err,
+            ProjectLoadError::ObsoleteConfirmedNamespaceConfig { .. }
+        ));
+        let msg = err.to_string();
+        assert!(msg.contains("confirmed(...) is no longer valid"), "{msg}");
+        assert!(msg.contains("anneal init --dry-run"), "{msg}");
     }
 
     #[test]

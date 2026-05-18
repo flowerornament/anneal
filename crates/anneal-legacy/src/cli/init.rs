@@ -716,4 +716,27 @@ mod tests {
         assert!(!output.body.contains("force("));
         assert!(!output.body.contains("config handles"));
     }
+
+    #[test]
+    fn init_rewrites_loaded_unified_config_without_confirmed_inventory() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(dir.path()).expect("tempdir path is utf8");
+        std::fs::write(
+            root.join("anneal.dl"),
+            "config handles { confirmed([\"OQ\"]). }",
+        )
+        .expect("write unified config");
+        let config = AnnealConfig {
+            handles: HandlesConfig {
+                linear: vec!["OQ".to_string()],
+                ..HandlesConfig::default()
+            },
+            ..AnnealConfig::default()
+        };
+
+        let output = cmd_init_from_config(root, config, InitMode::DryRun).expect("dry run renders");
+
+        assert!(!output.body.contains("confirmed"));
+        assert!(output.body.contains("linear([\"OQ\"])"));
+    }
 }
