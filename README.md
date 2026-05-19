@@ -3,17 +3,19 @@
 Convergence assistant for knowledge corpora.
 
 `anneal` reads a directory of markdown, turns it into a typed knowledge graph,
-and gives agents a shared way to feel the physics of context: what is active,
-what is settled, what is blocked, what is drifting, and what changed since the
-last session.
+evaluates a Datalog-shaped rule layer against those facts, and exposes a small
+set of agent-friendly commands for orientation, retrieval, health, and
+extension.
 
-It is built for disconnected intelligences. When agents arrive with no shared
-memory and hundreds or thousands of documents available, the useful signal is
-not just retrieval. It is convergence: ideas becoming more precise, obligations
-getting discharged, decisions replacing open questions, and stale paths falling
-out of the active frontier.
+It is built for disconnected intelligences: agents across sessions with no
+shared memory that need to recover what matters, read enough context, and leave
+the corpus more settled than they found it.
 
-`anneal` keeps that signal visible.
+The larger idea is convergence. In a large corpus, the useful signal is not just
+what can be retrieved. It is what is becoming more precise, which obligations
+are getting discharged, which decisions have replaced open questions, and which
+paths are falling out of the active frontier. `anneal` keeps that signal
+visible.
 
 ## Why
 
