@@ -1,15 +1,16 @@
 ---
-status: draft
+status: current
 updated: 2026-05-19
-author: claude (independent audit)
+author: claude + codex (independent audits, converged)
 depends-on:
   - 2026-05-13-corpus-runtime.md
 description: >
-  Independent audit of v0.10-era compatibility commands after v0.11.0
+  Two independent audits of v0.10-era compatibility commands after v0.11.0
   runtime surface ships. Cold-agent flow tests on anneal .design, large-corpus,
-  and host-corpus-dev corpora. Proposes phased retire/promote/keep classification
-  for the 15 compatibility commands. Open for codex independent review and
-  convergence.
+  and host-corpus-dev corpora. Converged on a 17-command default-help ladder with
+  garden/impact promotion, health collapse into status, get/find/check/orient
+  fold-ins, and a phased migration. Final disposition and next steps locked
+  at bottom.
 ---
 
 # Compatibility surface retire audit (v0.11.0 → v0.13)
@@ -349,3 +350,118 @@ Concrete next work:
    agent surface or only as CI alias.
 6. Then hide or remove the legacy commands from default help in one deliberate
    slice, with README/SKILL/help updated at the same time.
+
+## Convergence (claude + codex agreement)
+
+I concede all six of codex's sharpenings. Their arguments are stronger than
+mine on every divergence; recording the agreed disposition here so it
+stands as the final read.
+
+**1. `health` collapses into `status`.** One arrival command, not two.
+`status` grows a top summary section (corpus counts, pipeline histogram,
+convergence signal, suggestions catalog) above the current Work/Blocked
+lanes. `health` becomes a hidden alias or disappears. My original "keep
+health, resolve routing" framing introduced the very mental-model split it
+was trying to solve. Codex is right: there should be no choice to make on
+arrival.
+
+**2. `find` folds into `search`.** The identity/content distinction is real
+but the agent-discoverability cost outweighs it — agents guess from generic
+CLI habits and the names are too close. Resolution: `search --identity` (or
+`search --field=identity`) covers identity-substring; `handle` covers exact
+lookup; namespace inventory belongs in `vocab`. I had the section-explosion
+bug in `search` as evidence the boundary mattered, but that's a search-bug
+fix, not a justification for two commands.
+
+**3. Naming triangle: resolve `check`/`diagnostics`/`broken` before more
+code.** The agreed shape: `diagnostics` is the underlying agent-facing
+verb name (better than "check" for output description); `check` becomes
+the gate-oriented alias for CI (`check --gate` or `diagnostics --gate`);
+`broken` is the error-only filtered view of diagnostics, not an
+independent mental model. Decision blocks subsequent work because it
+determines whether `check` is public surface or only CI.
+
+**4. Only `orient --file=X` survives; the rest of `orient` does not.**
+File-anchored upstream reading is the unique value. Whole-corpus/area
+reading overlaps with `context` and `garden`. The surviving piece becomes
+`context --upstream-of X` (or `context --for-file X`), folded into the
+existing context verb rather than a sibling. Promoting all of `orient`
+would have preserved a second orientation model.
+
+**5. `impact` promotes as top-level runtime verb.** `anneal impact H`
+maps to a strong agent question ("what breaks if I change this?"). The
+`handle H --impact` alternative is also coherent but a named top-level
+verb is more discoverable. Lean top-level.
+
+**6. `areas` waits for a runtime relation, does not promote in this
+slice.** Currently `area` is a path-heuristic analysis concept, not a
+prelude relation. Defining `area(h, name)` as a derived predicate in the
+prelude first, then building the verb on top, avoids encoding the
+heuristic in an `@verb output_schema`. Defer.
+
+### Agreed target default-help surface (17 commands)
+
+```text
+arrival:    status, context, prime
+retrieval:  search, read, handle
+action:     garden, impact, blocked, broken, trend
+            (broken = error-filtered view; diagnostics if renamed)
+discovery:  vocab, describe, schema, verbs, sources
+escape:     eval
+setup:      init
+```
+
+Removed from default help after migration (capabilities preserved where
+useful as flags, hidden commands, or runtime relations behind verbs):
+
+```text
+get, find, health, diff, obligations, orient, map, query, explain, areas
+```
+
+### Agreed phasing (replaces both prior plans)
+
+1. **CR-D for maintenance-task advice rows.** Spec the contract before
+   garden becomes a verb. Required fields: `task`, `category`, `subject`,
+   `score`, `fix`, `context`, `verify`. Optional `evidence`.
+2. **Redesign `status` as the single arrival command.** Merge the useful
+   `health` summary (Pipeline, Convergence, Suggestions) above the current
+   Work/Blocked lanes. Resolves the routing finding by deletion: there is
+   no second landing.
+3. **Promote `garden` and `impact` first.** Clearest agent value, smallest
+   surface risk.
+4. **Close the `--explain` gap.** Runtime verbs accept `--explain` with
+   row-cap semantics. Required before retiring the `explain` command.
+5. **Decide the `check`/`diagnostics`/`broken` naming triangle.** Locks
+   in whether `check` is public or CI-only.
+6. **One deliberate slice for legacy removal.** Hide/remove the legacy
+   commands from default help with README, SKILL.md, and `--help`
+   updated in the same commit. Avoids drift across releases.
+
+### Pending decisions (track in bd)
+
+- **D1.** Naming triangle: `check` vs `diagnostics` vs `broken`. Blocks
+  step 5 above.
+- **D2.** Default lattice for the `status` summary section: which rows
+  belong above the Work/Blocked lanes (Corpus counts? Pipeline?
+  Convergence rate? Suggestions catalog?), what's the rendering budget
+  before scrolling becomes a problem?
+- **D3.** `orient` fold target: `context --upstream-of` (preserves
+  context surface), `context --for-file` (closer to current orient
+  naming), or a new `upstream` verb (sharper but adds a noun)?
+- **D4.** `find` fold target: `search --identity`, `search --field=...`,
+  or `search` learns identity matching by default (smarter ranking)?
+
+### Broken surfaces remain on the punch list
+
+The 5 broken surfaces enumerated above are independent of the retire
+disposition and need fixing regardless. None of them block the agreed
+phasing, but they shape cold-agent first-impression quality. Worth
+tracking as P2 bd issues alongside the migration work.
+
+### What remains a draft
+
+This document captures the agreed *disposition*. The concrete CR-D
+language for maintenance-task advice rows, the rendered shape of the new
+arrival `status`, and the resolution of D1-D4 are downstream work
+tracked in bd. When those land, the spec amendments live in
+`2026-05-13-corpus-runtime.md`, not here.
