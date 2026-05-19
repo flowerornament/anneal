@@ -85,7 +85,6 @@ pub struct ContextOutput {
 impl ContextOutput {
     pub fn from_rows(goal: impl Into<String>, rows: &[Row]) -> Result<Self, ContextGroupError> {
         let mut hits = Vec::new();
-        let mut hit_keys = BTreeSet::new();
         let mut spans = Vec::new();
         let mut span_keys = BTreeSet::new();
         let mut neighborhood = Vec::new();
@@ -101,14 +100,7 @@ impl ContextOutput {
                         reason: string_field(row, "reason")?,
                         field: string_field(row, "field")?,
                     };
-                    if hit_keys.insert((
-                        hit.handle.clone(),
-                        hit.span_id.clone(),
-                        hit.reason.clone(),
-                        hit.field.clone(),
-                    )) {
-                        hits.push(hit);
-                    }
+                    hits.push(hit);
                 }
                 ContextSection::Span => {
                     let span = ContextSpan {
@@ -144,15 +136,20 @@ impl ContextOutput {
                 .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.span_id.cmp(&right.span_id))
         });
+        let mut hit_handles = BTreeSet::new();
+        hits.retain(|hit| hit_handles.insert(hit.handle.clone()));
+
         spans.sort_by(|left, right| {
-            left.handle
-                .cmp(&right.handle)
+            handle_order(&left.handle, &hits)
+                .cmp(&handle_order(&right.handle, &hits))
+                .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.start_line.cmp(&right.start_line))
                 .then_with(|| left.span_id.cmp(&right.span_id))
         });
         neighborhood.sort_by(|left, right| {
-            left.handle
-                .cmp(&right.handle)
+            handle_order(&left.handle, &hits)
+                .cmp(&handle_order(&right.handle, &hits))
+                .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.neighbor.cmp(&right.neighbor))
         });
 
@@ -163,6 +160,12 @@ impl ContextOutput {
             neighborhood,
         })
     }
+}
+
+fn handle_order(handle: &str, hits: &[ContextHit]) -> usize {
+    hits.iter()
+        .position(|hit| hit.handle == handle)
+        .unwrap_or(usize::MAX)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -428,7 +431,7 @@ mod tests {
         let output = ContextOutput::from_rows("v17 conformance audit", &rows).expect("rows group");
 
         assert_eq!(output.goal, "v17 conformance audit");
-        assert_eq!(output.hits.len(), 2);
+        assert_eq!(output.hits.len(), 1);
         assert_eq!(output.spans.len(), 1);
         assert_eq!(
             output.neighborhood,
@@ -442,6 +445,46 @@ mod tests {
                     neighbor: "formal-model/v17.md".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn context_output_dedupes_hits_and_orders_sections_by_hit_rank() {
+        let rows = vec![
+            context_hit_row("second.md", "body", 0.7),
+            context_hit_row("first.md", "body", 0.9),
+            context_hit_row("first.md", "details", 0.8),
+            context_span_row("second.md", "body"),
+            context_span_row("first.md", "details"),
+            context_neighbor_row("second.md", "late.md"),
+            context_neighbor_row("first.md", "early.md"),
+        ];
+
+        let output = ContextOutput::from_rows("ranked context", &rows).expect("rows group");
+
+        assert_eq!(
+            output
+                .hits
+                .iter()
+                .map(|hit| hit.handle.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first.md", "second.md"]
+        );
+        assert_eq!(
+            output
+                .spans
+                .iter()
+                .map(|span| span.handle.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first.md", "second.md"]
+        );
+        assert_eq!(
+            output
+                .neighborhood
+                .iter()
+                .map(|neighbor| neighbor.handle.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first.md", "second.md"]
         );
     }
 

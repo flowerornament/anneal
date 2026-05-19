@@ -265,6 +265,7 @@ Arguments:
 Options:
       --budget <N>               Derives one per-hit read cap; not divided by hits
       --hits <N>                 Number of search winners (default: 3)
+      --limit <N>                Alias for --hits
       --depth <N>                Alias for --neighborhood-depth
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
@@ -750,7 +751,7 @@ impl CommandOutput {
                 OutputMode::Human,
                 Self::Rows {
                     rows,
-                    view: RowView::Trend,
+                    view: RowView::Trend | RowView::Handle { .. },
                 },
             ) if rows.is_empty() => None,
             (_, Self::Rows { rows, .. }) | (OutputMode::Json, Self::Status(rows))
@@ -911,13 +912,7 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
                 "{}:{}-{}  tokens={}",
                 span.handle, span.start_line, span.end_line, span.tokens
             )?;
-            let mut lines = span.text.lines();
-            for line in lines.by_ref().take(MAX_TEXT_LINES_PER_SPAN) {
-                writeln!(writer, "  {}", line.trim_end())?;
-            }
-            if lines.next().is_some() {
-                writeln!(writer, "  ...")?;
-            }
+            write_text_block(&mut writer, &span.text, MAX_TEXT_LINES_PER_SPAN)?;
         }
     }
 
@@ -961,6 +956,10 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         return write_describe_text(writer, rows);
     }
 
+    if *view == RowView::Read {
+        return write_read_text(writer, rows);
+    }
+
     if *view == RowView::Trend && rows.is_empty() {
         writeln!(writer, "No trend rows -- snapshot history is empty.")?;
         return Ok(());
@@ -984,7 +983,10 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
     Ok(())
 }
 
-fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    const MAX_TEXT_LINES_PER_SPAN: usize = 80;
+
+    writeln!(writer, "Read ({})", rows.len())?;
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
         return Ok(());
@@ -994,15 +996,63 @@ fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         if index > 0 {
             writeln!(writer)?;
         }
+
+        let span_id = required_string(row, "span_id")?;
+        let start_line = required_number(row, "start_line")?;
+        let end_line = required_number(row, "end_line")?;
+        let tokens = required_number(row, "tokens")?;
+        let text = required_string(row, "text")?;
+
+        writeln!(
+            writer,
+            "{:>2}. {}  lines={}-{}  tokens={}",
+            index + 1,
+            span_id,
+            display_number(start_line),
+            display_number(end_line),
+            display_number(tokens)
+        )?;
+
+        write_text_block(&mut writer, text, MAX_TEXT_LINES_PER_SPAN)?;
+    }
+    Ok(())
+}
+
+fn write_text_block<W: Write>(writer: &mut W, text: &str, max_lines: usize) -> Result<()> {
+    let mut lines = text.lines().skip_while(|line| line.trim().is_empty());
+    for line in lines.by_ref().take(max_lines) {
+        writeln!(writer, "  {}", line.trim_end())?;
+    }
+    if lines.next().is_some() {
+        writeln!(writer, "  ...")?;
+    }
+    Ok(())
+}
+
+fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    if rows.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        return Ok(());
+    }
+
+    let mut wrote_any = false;
+    for (index, row) in rows.iter().enumerate() {
         if let Some(doc) = optional_string(row, "doc")? {
+            if wrote_any {
+                break;
+            }
             writeln!(writer, "{doc}")?;
         } else {
+            if wrote_any {
+                writeln!(writer)?;
+            }
             write!(writer, "{:>2}.", index + 1)?;
             for (field, value) in &row.fields {
                 write!(writer, " {field}={}", display_value(value))?;
             }
             writeln!(writer)?;
         }
+        wrote_any = true;
     }
     Ok(())
 }
@@ -1204,7 +1254,7 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--budget" => budget = parse_i64(next_value(&mut iter, "--budget")?, "--budget")?,
-            "--hits" => hits = parse_usize(next_value(&mut iter, "--hits")?, "--hits")?,
+            "--hits" | "--limit" => hits = parse_usize(next_value(&mut iter, arg)?, arg)?,
             "--depth" | "--neighborhood-depth" => {
                 depth = parse_i64(next_value(&mut iter, arg)?, arg)?;
             }
@@ -1212,8 +1262,9 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
             value if value.starts_with("--budget=") => {
                 budget = parse_i64(value_after_equals(value), "--budget")?;
             }
-            value if value.starts_with("--hits=") => {
-                hits = parse_usize(value_after_equals(value), "--hits")?;
+            value if value.starts_with("--hits=") || value.starts_with("--limit=") => {
+                let flag = value.split_once('=').map_or(value, |(flag, _)| flag);
+                hits = parse_usize(value_after_equals(value), flag)?;
             }
             value if value.starts_with("--depth=") => {
                 depth = parse_i64(value_after_equals(value), "--depth")?;
@@ -1520,6 +1571,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_context_limit_alias() {
+        let parsed =
+            Invocation::parse(os(&["anneal", "context", "v17 audit", "--limit=4"])).expect("parse");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Context {
+                goal: "v17 audit".to_string(),
+                budget: DEFAULT_READ_BUDGET,
+                hits: 4,
+                depth: crate::DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH,
+                include_low_confidence: false,
+            }
+        );
+    }
+
+    #[test]
     fn parses_eval_explain_depth() {
         let parsed = Invocation::parse(os(&[
             "anneal",
@@ -1731,6 +1798,16 @@ mod tests {
             None
         );
         assert_eq!(
+            CommandOutput::Rows {
+                rows: Vec::new(),
+                view: RowView::Handle {
+                    handle: "missing.md".to_string(),
+                },
+            }
+            .empty_rows_diagnostic(OutputMode::Human),
+            None
+        );
+        assert_eq!(
             CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
             Some(EMPTY_ROWS_DIAGNOSTIC)
         );
@@ -1809,6 +1886,58 @@ mod tests {
         assert!(rendered.contains("category=status"));
         assert!(rendered.contains(r#"value="open question""#));
         assert!(rendered.contains("count=2"));
+    }
+
+    #[test]
+    fn read_human_render_shows_content_blocks() {
+        let output = CommandOutput::Rows {
+            rows: vec![row(&[
+                ("span_id", Value::String("plan.md#full".to_string())),
+                ("start_line", Value::Number(NumberValue::Int(10))),
+                ("end_line", Value::Number(NumberValue::Int(12))),
+                ("tokens", Value::Number(NumberValue::Int(8))),
+                (
+                    "text",
+                    Value::String("Release blocker details.\nNext line.".to_string()),
+                ),
+            ])],
+            view: RowView::Read,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render read");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.starts_with("Read (1)\n 1. plan.md#full  lines=10-12  tokens=8"));
+        assert!(rendered.contains("\n  Release blocker details.\n  Next line.\n"));
+        assert!(!rendered.contains("text="));
+    }
+
+    #[test]
+    fn describe_human_render_shows_one_doc_paragraph() {
+        let output = CommandOutput::Rows {
+            rows: vec![
+                row(&[(
+                    "doc",
+                    Value::String("Search handle, metadata, and content text.".to_string()),
+                )]),
+                row(&[(
+                    "doc",
+                    Value::String("Search stored handle and content text.".to_string()),
+                )]),
+            ],
+            view: RowView::Describe,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render describe");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(rendered, "Search handle, metadata, and content text.\n");
     }
 
     #[test]

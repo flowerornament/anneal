@@ -14,6 +14,10 @@ retrieval primitives, and raw Datalog queries.
 Run `anneal help <command>` for exact flags. Do not guess CLI details from
 memory when a command matters.
 
+Runtime commands render readable text at a terminal and JSON/NDJSON when piped.
+In pipe-only agent harnesses, add `--format=text` when you want to read the
+answer directly.
+
 If this skill is not preloaded, run `anneal prime` to print the shipped
 briefing from the installed binary.
 
@@ -24,25 +28,26 @@ Pick the smallest command that can answer the next agent question.
 ### Arriving Cold
 
 ```bash
-anneal context "<goal>"
-anneal status
-anneal describe
-anneal vocab
+anneal context "<goal>" --hits 5 --budget 8000 --format=text
+anneal status --format=text
+anneal describe --format=text
+anneal vocab --format=text
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
-`anneal status` when the question is corpus state. Use `describe` for
-predicates, verbs, primitives, and runtime objects; use `vocab` for observed
-status values, edge kinds, namespaces, and frontmatter fields.
+`--hits` to choose the number of search winners; `--limit` is also accepted as
+an alias. Use `anneal status` when the question is corpus state. Use
+`describe` for predicates, verbs, primitives, and runtime objects; use `vocab`
+for observed status values, edge kinds, namespaces, and frontmatter fields.
 
 ### Finding and Reading
 
 ```bash
-anneal search "<text>" --limit 5
-anneal read <handle> --budget 4000
-anneal handle <handle>
+anneal search "<text>" --limit 5 --format=text
+anneal read <handle> --budget 4000 --format=text
+anneal handle <handle> --format=text
 ```
 
 Use `search` for content retrieval. It handles light stemming and common

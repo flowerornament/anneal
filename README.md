@@ -24,22 +24,29 @@ supersede each other, encode obligations, accumulate local vocabulary, and move
 through stages of settledness. Without tooling, every new agent burns context
 reconstructing the same map.
 
-`anneal` gives the agent a few reliable invocations:
+`anneal` gives the agent a programmable retrieval surface:
 
 ```bash
 anneal context "what should I read before changing the release path?"
-anneal status
-anneal garden
-anneal trend
 anneal search "conformance audit" --limit 5
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000
+anneal schema
+anneal vocab
+anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
 
-The command names are intentionally mnemonic. `context` gathers the first
-orientation bundle. `status` shows the current convergence shape. `garden`
-surfaces maintenance work. `trend` shows movement over time. `orient`, `impact`,
-and `check` support the edit loop: read upstream, change deliberately, verify
-downstream.
+The important move is that corpus structure becomes queryable. Markdown files,
+frontmatter, labels, body text, spans, references, snapshots, and project
+configuration are all exposed as typed relations. The built-in prelude derives
+standard convergence facts and verbs from those relations, and project
+`anneal.dl` files can add local rules or `@verb` declarations without changing
+the binary.
+
+The command names are still intentionally mnemonic. `context` gathers the first
+orientation bundle. `search` and `read` make retrieval explicit. `schema`,
+`vocab`, `verbs`, and `describe` let agents inspect the runtime before guessing.
+`status`, `garden`, and `trend` keep the convergence frontier visible once the
+agent is ready to act.
 
 ## Install
 
@@ -221,6 +228,7 @@ prints the bundled agent skill briefing from the installed binary.
 Useful `context` flags:
 
 - `--hits N`: number of search winners
+- `--limit N`: alias for `--hits`, for parity with `search`
 - `--budget N`: per-hit read cap; it is not divided by `--hits`
 - `--depth N`: graph distance around winners
 - `--include-low-confidence`: include lower-confidence search hits
