@@ -3,7 +3,9 @@ use std::fmt;
 
 use serde_json::Value as JsonValue;
 
-use crate::runtime::ast::{Expr, Literal, Program, Query, SourceLocation, Statement, VerbDecl};
+use crate::runtime::ast::{
+    Expr, Ident, Literal, Program, Query, SourceLocation, Statement, VerbDecl,
+};
 use crate::runtime::parser::{ParseError, parse_program};
 use crate::source::ActorContext;
 
@@ -134,6 +136,54 @@ impl VerbSource {
     }
 }
 
+/// Typed argument declared by `@verb(args: [...])`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerbArg {
+    name: String,
+    kind: VerbArgKind,
+    default: Option<String>,
+}
+
+impl VerbArg {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn kind(&self) -> VerbArgKind {
+        self.kind
+    }
+
+    pub fn default(&self) -> Option<&str> {
+        self.default.as_deref()
+    }
+}
+
+/// Value type accepted by a verb argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerbArgKind {
+    String,
+    HandleId,
+    Number,
+    Bool,
+}
+
+impl VerbArgKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "String",
+            Self::HandleId => "HandleId",
+            Self::Number => "Number",
+            Self::Bool => "Bool",
+        }
+    }
+}
+
+impl fmt::Display for VerbArgKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One resolved verb entry exposed to surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerbEntry {
@@ -142,7 +192,7 @@ pub struct VerbEntry {
     query: Query,
     doc: String,
     output_schema: JsonValue,
-    default_args: Vec<String>,
+    args: Vec<VerbArg>,
     capabilities: Vec<VerbCapability>,
     examples: Vec<String>,
     source: VerbSource,
@@ -170,8 +220,8 @@ impl VerbEntry {
         &self.output_schema
     }
 
-    pub fn default_args(&self) -> &[String] {
-        &self.default_args
+    pub fn args(&self) -> &[VerbArg] {
+        &self.args
     }
 
     pub fn capabilities(&self) -> &[VerbCapability] {
@@ -204,6 +254,7 @@ impl VerbEntry {
 pub struct VerbRunPlan {
     name: VerbName,
     query_source: String,
+    args: Vec<VerbArg>,
 }
 
 impl VerbRunPlan {
@@ -211,6 +262,7 @@ impl VerbRunPlan {
         Self {
             name: entry.name.clone(),
             query_source: entry.query_source.clone(),
+            args: entry.args.clone(),
         }
     }
 
@@ -220,6 +272,10 @@ impl VerbRunPlan {
 
     pub fn query_source(&self) -> &str {
         &self.query_source
+    }
+
+    pub fn args(&self) -> &[VerbArg] {
+        &self.args
     }
 }
 
@@ -381,7 +437,7 @@ impl VerbEntry {
             query: spec.query,
             doc: spec.doc,
             output_schema: spec.output_schema,
-            default_args: spec.default_args,
+            args: spec.args,
             capabilities: spec.capabilities,
             source: VerbSource::new(layer, verb.location().clone()),
             shadowed: Vec::new(),
@@ -392,7 +448,10 @@ impl VerbEntry {
 pub(crate) fn validate_project_verb_query_program(
     verb: &VerbDecl,
 ) -> Result<Program, VerbRegistryError> {
-    parse_verb_decl(verb, SchemaPolicy::Exact).map(|spec| spec.query_program)
+    let spec = parse_verb_decl(verb, SchemaPolicy::Exact)?;
+    let mut program = sample_arg_facts(&spec.args, verb.location())?;
+    program.statements.extend(spec.query_program.statements);
+    Ok(program)
 }
 
 struct ParsedVerbDecl {
@@ -402,7 +461,7 @@ struct ParsedVerbDecl {
     query: Query,
     doc: String,
     output_schema: JsonValue,
-    default_args: Vec<String>,
+    args: Vec<VerbArg>,
     capabilities: Vec<VerbCapability>,
 }
 
@@ -421,7 +480,7 @@ fn parse_verb_decl(
     let query_source = required_string(verb, "query")?.to_string();
     let doc = required_string(verb, "doc")?.to_string();
     let output_schema = parse_output_schema(verb)?;
-    let default_args = required_string_list(verb, "default_args")?;
+    let args = parse_args(verb)?;
     let capabilities = required_string_list(verb, "capabilities")?
         .into_iter()
         .map(VerbCapability::new)
@@ -443,7 +502,7 @@ fn parse_verb_decl(
         query,
         doc,
         output_schema,
-        default_args,
+        args,
         capabilities,
     })
 }
@@ -471,6 +530,112 @@ fn parse_output_schema(verb: &VerbDecl) -> Result<JsonValue, VerbRegistryError> 
     }
     validate_schema_value(&value, verb.location())?;
     Ok(value)
+}
+
+fn parse_args(verb: &VerbDecl) -> Result<Vec<VerbArg>, VerbRegistryError> {
+    let mut args = Vec::new();
+    let mut seen = BTreeSet::new();
+    for spec in required_string_list(verb, "args")? {
+        let arg = parse_arg_spec(&spec, verb.location())?;
+        if !seen.insert(arg.name.clone()) {
+            return Err(VerbRegistryError::DuplicateArg {
+                name: arg.name,
+                location: verb.location().clone(),
+            });
+        }
+        args.push(arg);
+    }
+    Ok(args)
+}
+
+fn sample_arg_facts(
+    args: &[VerbArg],
+    location: &SourceLocation,
+) -> Result<Program, VerbRegistryError> {
+    let mut source = String::new();
+    for arg in args {
+        source.push_str("verb_arg(");
+        source.push_str(&datalog_string_literal(arg.name()));
+        source.push_str(", ");
+        source.push_str(match arg.kind() {
+            VerbArgKind::String | VerbArgKind::HandleId => "\"sample\"",
+            VerbArgKind::Number => "1",
+            VerbArgKind::Bool => "true",
+        });
+        source.push_str(").\n");
+    }
+    parse_program(&format!("{location}:@verb:args"), &source).map_err(|source| {
+        VerbRegistryError::ArgFactParse {
+            location: location.clone(),
+            source: Box::new(source),
+        }
+    })
+}
+
+fn datalog_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("string literal serialization cannot fail")
+}
+
+fn parse_arg_spec(spec: &str, location: &SourceLocation) -> Result<VerbArg, VerbRegistryError> {
+    let (name, rest) = spec
+        .split_once(':')
+        .ok_or_else(|| VerbRegistryError::InvalidArgSpec {
+            spec: spec.to_string(),
+            location: location.clone(),
+        })?;
+    let name = name.trim();
+    if Ident::new(name).is_err() {
+        return Err(VerbRegistryError::InvalidArgSpec {
+            spec: spec.to_string(),
+            location: location.clone(),
+        });
+    }
+    let (kind, default) = rest
+        .split_once('=')
+        .map_or((rest.trim(), None), |(kind, default)| {
+            (kind.trim(), Some(default.trim().to_string()))
+        });
+    let kind = match kind {
+        "String" => VerbArgKind::String,
+        "HandleId" => VerbArgKind::HandleId,
+        "Number" => VerbArgKind::Number,
+        "Bool" => VerbArgKind::Bool,
+        _ => {
+            return Err(VerbRegistryError::InvalidArgSpec {
+                spec: spec.to_string(),
+                location: location.clone(),
+            });
+        }
+    };
+    if default.as_ref().is_some_and(String::is_empty) {
+        return Err(VerbRegistryError::InvalidArgSpec {
+            spec: spec.to_string(),
+            location: location.clone(),
+        });
+    }
+    if let Some(default) = &default {
+        validate_arg_default(kind, default).map_err(|()| VerbRegistryError::InvalidArgSpec {
+            spec: spec.to_string(),
+            location: location.clone(),
+        })?;
+    }
+    Ok(VerbArg {
+        name: name.to_string(),
+        kind,
+        default,
+    })
+}
+
+fn validate_arg_default(kind: VerbArgKind, value: &str) -> Result<(), ()> {
+    match kind {
+        VerbArgKind::String | VerbArgKind::HandleId => Ok(()),
+        VerbArgKind::Number => value
+            .parse::<i64>()
+            .map(|_| ())
+            .or_else(|_| value.parse::<f64>().map(|_| ()))
+            .map_err(|_| ()),
+        VerbArgKind::Bool => matches!(value, "true" | "false").then_some(()).ok_or(()),
+    }
 }
 
 fn validate_schema_value(
@@ -644,6 +809,21 @@ pub enum VerbRegistryError {
         field: String,
         location: SourceLocation,
     },
+    #[error("{location}: @verb args entry '{spec}' must use name:Type or name:Type=default")]
+    InvalidArgSpec {
+        spec: String,
+        location: SourceLocation,
+    },
+    #[error("{location}: duplicate @verb arg '{name}'")]
+    DuplicateArg {
+        name: String,
+        location: SourceLocation,
+    },
+    #[error("{location}: @verb argument facts could not be generated: {source}")]
+    ArgFactParse {
+        location: SourceLocation,
+        source: Box<ParseError>,
+    },
     #[error("{location}: @verb output_schema uses an unsupported shape")]
     UnsupportedSchema { location: SourceLocation },
     #[error(
@@ -694,7 +874,7 @@ mod tests {
               query: "? prelude_work(h).",
               doc: "Prelude work.",
               output_schema: "{\"h\":\"HandleId\"}",
-              default_args: [],
+              args: [],
               capabilities: ["read"]
             ).
             prelude_work("p").
@@ -708,7 +888,7 @@ mod tests {
               query: "? project_work(h).",
               doc: "Project work.",
               output_schema: "{\"h\":\"HandleId\"}",
-              default_args: [],
+              args: [],
               capabilities: ["read"]
             ).
             project_work("p").
@@ -734,8 +914,8 @@ mod tests {
         let project = program(
             "anneal.dl",
             r#"
-            @verb(name: "x", query: "? a(h).", doc: "A.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: []).
-            @verb(name: "x", query: "? b(h).", doc: "B.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: []).
+            @verb(name: "x", query: "? a(h).", doc: "A.", output_schema: "{\"h\":\"String\"}", args: [], capabilities: []).
+            @verb(name: "x", query: "? b(h).", doc: "B.", output_schema: "{\"h\":\"String\"}", args: [], capabilities: []).
             a("a").
             b("b").
             "#,
@@ -744,6 +924,28 @@ mod tests {
         let err = VerbRegistry::from_layers(&[(VerbLayer::Project, &project)])
             .expect_err("duplicate rejected");
         assert!(matches!(err, VerbRegistryError::DuplicateInLayer { .. }));
+    }
+
+    #[test]
+    fn registry_rejects_mistyped_verb_arg_defaults() {
+        let project = program(
+            "anneal.dl",
+            r#"
+            @verb(
+              name: "searchish",
+              query: "? item(h).",
+              doc: "Searchish.",
+              output_schema: "{\"h\":\"String\"}",
+              args: ["limit:Number=many"],
+              capabilities: []
+            ).
+            item("h").
+            "#,
+        );
+
+        let err = VerbRegistry::from_layers(&[(VerbLayer::Project, &project)])
+            .expect_err("mistyped default rejected");
+        assert!(matches!(err, VerbRegistryError::InvalidArgSpec { .. }));
     }
 
     #[test]
@@ -756,7 +958,7 @@ mod tests {
               query: "? release_blocker(h, why).",
               doc: "Open blockers.",
               output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
-              default_args: ["milestone"],
+              args: ["milestone:String"],
               capabilities: ["read", "release"]
             ).
             release_blocker("h", "why").
@@ -767,7 +969,10 @@ mod tests {
             VerbRegistry::from_layers(&[(VerbLayer::Project, &project)]).expect("registry builds");
         let entry = registry.require("release-blockers").expect("verb resolves");
 
-        assert_eq!(entry.default_args(), &["milestone".to_string()]);
+        assert_eq!(entry.args().len(), 1);
+        assert_eq!(entry.args()[0].name(), "milestone");
+        assert_eq!(entry.args()[0].kind(), VerbArgKind::String);
+        assert_eq!(entry.args()[0].default(), None);
         assert_eq!(
             entry
                 .capabilities()
@@ -797,7 +1002,7 @@ mod tests {
               query: "? deploy_target(h).",
               doc: "Deploy target.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: ["release"]
             ).
             deploy_target("prod").
@@ -834,7 +1039,7 @@ mod tests {
               query: "? item(h).",
               doc: "Public read.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: ["read"]
             ).
             item("h").

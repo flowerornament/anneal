@@ -7679,7 +7679,7 @@ mod tests {
         let outputs = evaluate_queries(
             r#"issue("a", "error").
 release_blocker(code) := issue(code, "error").
-@verb(name: "broken", query: "? release_blocker(code).", doc: "Show release blockers.", output_schema: "{\"code\":\"String\"}", default_args: [], capabilities: []).
+@verb(name: "broken", query: "? release_blocker(code).", doc: "Show release blockers.", output_schema: "{\"code\":\"String\"}", args: [], capabilities: []).
 ? schema("search", kind, signature, determinism, provenance).
 ? schema("release_blocker", kind, signature, determinism, provenance).
 ? predicates("release_blocker", doc, file, lines).

@@ -8,7 +8,7 @@ mod context;
 
 pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
 use anneal_core::runtime::prelude::{datalog_string_literal, low_confidence_filter};
-use anneal_core::{ActorContext, VerbDispatchError, VerbEntry, VerbRegistry, VerbRunPlan};
+use anneal_core::{ActorContext, VerbArg, VerbDispatchError, VerbEntry, VerbRegistry, VerbRunPlan};
 
 pub use context::{
     ContextCommand, ContextGroupError, ContextHit, ContextNeighbor, ContextOutput, ContextSpan,
@@ -24,7 +24,7 @@ pub const DEFAULT_READ_BUDGET: i64 = 4_000;
 pub struct CliVerb {
     name: String,
     doc: String,
-    default_args: Vec<String>,
+    args: Vec<VerbArg>,
 }
 
 impl CliVerb {
@@ -32,7 +32,7 @@ impl CliVerb {
         Self {
             name: entry.name().to_string(),
             doc: entry.doc().to_string(),
-            default_args: entry.default_args().to_vec(),
+            args: entry.args().to_vec(),
         }
     }
 
@@ -44,8 +44,8 @@ impl CliVerb {
         &self.doc
     }
 
-    pub fn default_args(&self) -> &[String] {
-        &self.default_args
+    pub fn args(&self) -> &[VerbArg] {
+        &self.args
     }
 }
 
@@ -182,8 +182,8 @@ impl SourcesCommand {
 mod tests {
     use anneal_core::runtime::prelude::standard_prelude_program;
     use anneal_core::runtime::{
-        Database, EvalOptions, Evaluator, Expr, Literal, NumberLiteral, Program, QueryOutput, Row,
-        Statement, analyze, parse_program,
+        Database, EvalOptions, Evaluator, Literal, NumberLiteral, Program, QueryOutput, Row,
+        analyze, parse_program,
     };
     use anneal_core::{
         ActorContext, ConfigFact, ConfigKey, ContentFact, CorpusId, EdgeFact, FactBatch,
@@ -255,7 +255,7 @@ mod tests {
               query: "? item(h).",
               doc: "Show work.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: ["limit"],
+              args: ["limit:Number"],
               capabilities: ["read"]
             ).
             item("h").
@@ -265,7 +265,8 @@ mod tests {
         let projection = CliVerbProjection::from_registry(&registry);
         assert_eq!(projection.verbs().len(), 1);
         assert_eq!(projection.verbs()[0].name(), "work");
-        assert_eq!(projection.verbs()[0].default_args(), &["limit".to_string()]);
+        assert_eq!(projection.verbs()[0].args().len(), 1);
+        assert_eq!(projection.verbs()[0].args()[0].name(), "limit");
         let plan = projection
             .run_plan(&registry, &ActorContext::trusted_cli(), "work")
             .expect("work dispatches");
@@ -281,7 +282,7 @@ mod tests {
               query: "? handle(h).",
               doc: "Show handle.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: ["h"],
+              args: ["h:HandleId"],
               capabilities: ["read"]
             ).
             handle("ticket-1").
@@ -341,7 +342,7 @@ mod tests {
               query: "? item(h).",
               doc: "Release.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: ["release"]
             ).
             item("h").
@@ -383,121 +384,74 @@ mod tests {
 
     fn bind_surface_args(name: &str, program: &mut Program) {
         match canonical_cli_verb_name(name) {
-            "handle" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("handle_focus", "h", "ticket-1"),
-            ),
-            "find" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("find_text", "text", "ticket"),
-            ),
+            "handle" | "blocked" => {
+                bind_parameter_fact(program, ParameterBinding::string("h", "ticket-1"));
+            }
+            "find" => bind_parameter_fact(program, ParameterBinding::string("text", "ticket")),
             "search" => {
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::string("search_query", "query", "ticket"),
-                );
-                bind_parameter_fact(program, ParameterBinding::int("search_limit", "limit", 10));
+                bind_parameter_fact(program, ParameterBinding::string("query", "ticket"));
+                bind_parameter_fact(program, ParameterBinding::int("limit", 10));
             }
             "context" => {
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::string("context_goal", "goal", "ticket"),
-                );
-                bind_parameter_fact(program, ParameterBinding::int("context_hits", "hits", 3));
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::int("context_read_budget", "per_hit_budget", 2400),
-                );
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::int("context_neighborhood_depth", "depth", 1),
-                );
+                bind_parameter_fact(program, ParameterBinding::string("goal", "ticket"));
+                bind_parameter_fact(program, ParameterBinding::int("hits", 3));
+                bind_parameter_fact(program, ParameterBinding::int("budget", 2400));
+                bind_parameter_fact(program, ParameterBinding::int("depth", 1));
             }
             "read" => {
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::string("read_handle", "h", "ticket-1"),
-                );
-                bind_parameter_fact(
-                    program,
-                    ParameterBinding::int("read_budget", "budget", 4000),
-                );
+                bind_parameter_fact(program, ParameterBinding::string("h", "ticket-1"));
+                bind_parameter_fact(program, ParameterBinding::int("budget", 4000));
             }
-            "blocked" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("blocked_focus", "h", "ticket-1"),
-            ),
-            "describe" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("describe_name", "name", "runtime"),
-            ),
-            "source-of" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("source_of_name", "name", "top_work"),
-            ),
-            "examples" => bind_parameter_fact(
-                program,
-                ParameterBinding::string("examples_name", "name", "search"),
-            ),
+            "describe" => bind_parameter_fact(program, ParameterBinding::string("name", "runtime")),
+            "source-of" => {
+                bind_parameter_fact(program, ParameterBinding::string("name", "top_work"));
+            }
+            "examples" => bind_parameter_fact(program, ParameterBinding::string("name", "search")),
             _ => {}
         }
     }
 
     struct ParameterBinding {
-        predicate: &'static str,
-        variable: &'static str,
+        name: &'static str,
         value: Literal,
     }
 
     impl ParameterBinding {
-        fn string(predicate: &'static str, variable: &'static str, value: &str) -> Self {
+        fn string(name: &'static str, value: &str) -> Self {
             Self {
-                predicate,
-                variable,
+                name,
                 value: Literal::String(value.to_string()),
             }
         }
 
-        fn int(predicate: &'static str, variable: &'static str, value: i64) -> Self {
+        fn int(name: &'static str, value: i64) -> Self {
             Self {
-                predicate,
-                variable,
+                name,
                 value: Literal::Number(NumberLiteral::Int(value)),
             }
         }
     }
 
     fn bind_parameter_fact(program: &mut Program, binding: ParameterBinding) {
-        let ParameterBinding {
-            predicate,
-            variable,
-            value,
-        } = binding;
-        let mut matched = false;
-        for statement in &mut program.statements {
-            let Statement::Fact(head) = statement else {
-                continue;
-            };
-            if head.predicate.module.is_some() || head.predicate.name.as_str() != predicate {
-                continue;
-            }
-            assert_eq!(head.terms.len(), 1, "{predicate} arity");
-            let Some(expr) = head.terms[0].expr_mut() else {
-                panic!("{predicate} parameter fact must bind a variable");
-            };
-            match expr {
-                Expr::Var(var) if var.as_str() == variable => {
-                    *expr = Expr::Literal(value.clone());
-                    matched = true;
-                }
-                Expr::Var(var) => panic!("{predicate} expected variable {variable}, found {var}"),
-                Expr::Literal(_)
-                | Expr::FunctionCall { .. }
-                | Expr::Binary { .. }
-                | Expr::Tuple(_) => panic!("{predicate} parameter fact was already lowered"),
-            }
+        let ParameterBinding { name, value } = binding;
+        let fact_source = format!(
+            "verb_arg({}, {}).",
+            datalog_string_literal(name),
+            literal_to_datalog(&value)
+        );
+        let facts = parse_program("verb-arg", &fact_source).expect("verb_arg fact should parse");
+        program.statements.splice(0..0, facts.statements);
+    }
+
+    fn literal_to_datalog(value: &Literal) -> String {
+        match value {
+            Literal::String(value) => datalog_string_literal(value),
+            Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
+            Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
+            Literal::Bool(value) => value.to_string(),
+            Literal::Null => "null".to_string(),
+            Literal::List(_) => panic!("test helper only supports scalar verb args"),
         }
-        assert!(matched, "missing parameter fact {predicate}");
     }
 
     fn encode_ndjson(rows: &[Row]) -> String {

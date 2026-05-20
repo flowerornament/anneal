@@ -28,52 +28,52 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "status_item(\"work\", h, energy, \"potential\") :=\n  top_work(h, energy).\n\nstatus_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  entropy(h, source).\n\nstatus_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nstatus_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? status_item(section, h, score, why).",
   doc: "Show the compact corpus status an agent should read first: work candidates, blocked handles, advancing handles, and broken diagnostics.",
   output_schema: "{\"section\":\"String\",\"h\":\"HandleId\",\"score\":\"Number\",\"why\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "handle",
-  query: "handle_focus(h).\n\nhandle_row(h, \"self\", h, kind, status, file, line, summary) :=\n  handle_focus(h),\n  *handle{id: h, kind: kind, status: status, file: file, line: line, summary: summary}.\n\nhandle_row(h, \"out\", other, kind, null, file, line, \"\") :=\n  handle_focus(h),\n  *edge{from: h, to: other, kind: kind, file: file, line: line}.\n\nhandle_row(h, \"in\", other, kind, null, file, line, \"\") :=\n  handle_focus(h),\n  *edge{to: h, from: other, kind: kind, file: file, line: line}.\n\n? handle_row(h, relation, other, kind, status, file, line, summary).",
+  query: "handle_row(h, \"self\", h, kind, status, file, line, summary) :=\n  verb_arg(\"h\", h),\n  *handle{id: h, kind: kind, status: status, file: file, line: line, summary: summary}.\n\nhandle_row(h, \"out\", other, kind, null, file, line, \"\") :=\n  verb_arg(\"h\", h),\n  *edge{from: h, to: other, kind: kind, file: file, line: line}.\n\nhandle_row(h, \"in\", other, kind, null, file, line, \"\") :=\n  verb_arg(\"h\", h),\n  *edge{to: h, from: other, kind: kind, file: file, line: line}.\n\n? handle_row(h, relation, other, kind, status, file, line, summary).",
   doc: "Show one handle and its immediate incoming and outgoing edges. The CLI projects bare `anneal H` to this verb.",
   output_schema: "{\"h\":\"HandleId\",\"relation\":\"String\",\"other\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
-  default_args: ["h"],
+  args: ["h:HandleId"],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "find",
-  query: "find_text(text).\n\nfind_row(h, kind, status, namespace, file, line, summary) :=\n  find_text(text),\n  *handle{id: h, kind: kind, status: status, namespace: namespace, file: file, line: line, summary: summary},\n  h contains text.\n\n? find_row(h, kind, status, namespace, file, line, summary).",
+  query: "find_row(h, kind, status, namespace, file, line, summary) :=\n  verb_arg(\"text\", text),\n  *handle{id: h, kind: kind, status: status, namespace: namespace, file: file, line: line, summary: summary},\n  h contains text.\n\n? find_row(h, kind, status, namespace, file, line, summary).",
   doc: "Find handles by identity substring.",
   output_schema: "{\"h\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"namespace\":\"String\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
-  default_args: ["text"],
+  args: ["text:String"],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "search",
-  query: "search_query(query).\nsearch_limit(limit).\n\nsearch_row(h, span_id, score, reason, field, low_confidence) :=\n  search_query(query),\n  search_limit(limit),\n  (h, span_id, score, reason, field, low_confidence) = TopK{ k: limit, key: score :\n    (h, span_id, score, reason, field, low_confidence) :\n      search(query, h, span_id, score, reason, field, low_confidence),\n      low_confidence = false\n  }.\n\n? search_row(h, span_id, score, reason, field, low_confidence).",
+  query: "search_row(h, span_id, score, reason, field, low_confidence) :=\n  verb_arg(\"query\", query),\n  verb_arg(\"limit\", limit),\n  (h, span_id, score, reason, field, low_confidence) = TopK{ k: limit, key: score :\n    (h, span_id, score, reason, field, low_confidence) :\n      search(query, h, span_id, score, reason, field, low_confidence),\n      low_confidence = false\n  }.\n\n? search_row(h, span_id, score, reason, field, low_confidence).",
   doc: "Search handle, metadata, and content text with source-calibrated ranking.",
   output_schema: "{\"h\":\"HandleId\",\"span_id\":\"String|null\",\"score\":\"Number\",\"reason\":\"String\",\"field\":\"String\",\"low_confidence\":\"Bool\"}",
-  default_args: ["query", "limit"],
+  args: ["query:String", "limit:Number=25"],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "context",
-  query: "context_goal(goal).\ncontext_hits(hits).\ncontext_read_budget(per_hit_budget).\ncontext_neighborhood_depth(depth).\n\ncontext_readable(h) :=\n  *handle{id: h},\n  context_read_budget(per_hit_budget),\n  *content{handle: h, tokens}.\n\ncontext_hit(h, hit_span_id, score, reason, field) :=\n  context_goal(goal),\n  context_hits(hits),\n  (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :\n    (h, hit_span_id, score, reason, field) :\n      search(goal, h, hit_span_id, score, reason, field, low_confidence),\n        low_confidence = false,\n      context_readable(h)\n  }.\n\ncontext_hit_handle(h) := context_hit(h, hit_span_id, score, reason, field).\n\ncontext_neighbor(h, h) := context_hit_handle(h).\ncontext_neighbor(h, neighbor) :=\n  context_hit_handle(h),\n  context_neighborhood_depth(depth),\n  neighborhood(h, depth, neighbor).\n\ncontext_span(h, span_id, text, start_line, end_line, tokens) :=\n  context_hit_handle(h),\n  context_read_budget(per_hit_budget),\n  (span_id, text, start_line, end_line, tokens) = TakeUntil{\n    budget: per_hit_budget, sum: tokens, key: start_line :\n    (span_id, text, start_line, end_line, tokens) :\n      read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)\n  }.\n\ncontext_output(\"hit\", h, hit_span_id, score, reason, field, null, null, null, null, null, null) :=\n  context_hit(h, hit_span_id, score, reason, field).\n\ncontext_output(\"span\", h, null, null, null, null, span_id, text, start_line, end_line, tokens, null) :=\n  context_span(h, span_id, text, start_line, end_line, tokens).\n\ncontext_output(\"neighbor\", h, null, null, null, null, null, null, null, null, null, neighbor) :=\n  context_neighbor(h, neighbor).\n\n? context_output(section, h, hit_span_id, score, reason, field, span_id, text, start_line, end_line, tokens, neighbor).",
+  query: "context_readable(h) :=\n  verb_arg(\"budget\", per_hit_budget),\n  *handle{id: h},\n  *content{handle: h, tokens}.\n\ncontext_hit(h, hit_span_id, score, reason, field) :=\n  verb_arg(\"goal\", goal),\n  verb_arg(\"hits\", hits),\n  (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :\n    (h, hit_span_id, score, reason, field) :\n      search(goal, h, hit_span_id, score, reason, field, low_confidence),\n        low_confidence = false,\n      context_readable(h)\n  }.\n\ncontext_hit_handle(h) := context_hit(h, hit_span_id, score, reason, field).\n\ncontext_neighbor(h, h) := context_hit_handle(h).\ncontext_neighbor(h, neighbor) :=\n  verb_arg(\"depth\", depth),\n  context_hit_handle(h),\n  neighborhood(h, depth, neighbor).\n\ncontext_span(h, span_id, text, start_line, end_line, tokens) :=\n  verb_arg(\"budget\", per_hit_budget),\n  context_hit_handle(h),\n  (span_id, text, start_line, end_line, tokens) = TakeUntil{\n    budget: per_hit_budget, sum: tokens, key: start_line :\n    (span_id, text, start_line, end_line, tokens) :\n      read(h, per_hit_budget, span_id, text, start_line, end_line, tokens)\n  }.\n\ncontext_output(\"hit\", h, hit_span_id, score, reason, field, null, null, null, null, null, null) :=\n  context_hit(h, hit_span_id, score, reason, field).\n\ncontext_output(\"span\", h, null, null, null, null, span_id, text, start_line, end_line, tokens, null) :=\n  context_span(h, span_id, text, start_line, end_line, tokens).\n\ncontext_output(\"neighbor\", h, null, null, null, null, null, null, null, null, null, neighbor) :=\n  context_neighbor(h, neighbor).\n\n? context_output(section, h, hit_span_id, score, reason, field, span_id, text, start_line, end_line, tokens, neighbor).",
   doc: "Find the most relevant handles for a goal, read bounded spans, and include a small neighborhood so a cold agent can localize work in one call.",
   output_schema: "{\"goal\":\"String\",\"hits\":[{\"handle\":\"HandleId\",\"span_id\":\"String|null\",\"score\":\"Number\",\"reason\":\"String\",\"field\":\"String\"}],\"spans\":[{\"handle\":\"HandleId\",\"span_id\":\"String\",\"start_line\":\"Number\",\"end_line\":\"Number\",\"tokens\":\"Number\",\"text\":\"String\"}],\"neighborhood\":[{\"handle\":\"HandleId\",\"neighbor\":\"HandleId\"}]}",
-  default_args: ["goal", "budget", "neighborhood_depth", "hits"],
+  args: ["goal:String", "budget:Number=4000", "depth:Number=1", "hits:Number=3"],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "read",
-  query: "read_handle(h).\nread_budget(budget).\n\nread_row(span_id, text, start_line, end_line, tokens) :=\n  read_handle(h),\n  read_budget(budget),\n  read(h, budget, span_id, text, start_line, end_line, tokens).\n\n? read_row(span_id, text, start_line, end_line, tokens).",
+  query: "read_row(span_id, text, start_line, end_line, tokens) :=\n  verb_arg(\"h\", h),\n  verb_arg(\"budget\", budget),\n  read(h, budget, span_id, text, start_line, end_line, tokens).\n\n? read_row(span_id, text, start_line, end_line, tokens).",
   doc: "Read bounded content spans for a handle.",
   output_schema: "{\"span_id\":\"String\",\"text\":\"String\",\"start_line\":\"Number\",\"end_line\":\"Number\",\"tokens\":\"Number\"}",
-  default_args: ["h", "budget"],
+  args: ["h:HandleId", "budget:Number=4000"],
   capabilities: ["read"]
 ).
 
@@ -82,16 +82,16 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? top_work(h, energy), *handle{id: h, kind: kind, status: status, file: file, summary: summary}.",
   doc: "List the highest-potential work candidates from the convergence standard library.",
   output_schema: "{\"h\":\"HandleId\",\"energy\":\"Number\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\",\"summary\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: ["read"]
 ).
 
 @verb(
   name: "blocked",
-  query: "blocked_focus(h).\n\nblocked_row(h, energy, source, kind, status, file) :=\n  blocked_focus(h),\n  potential(h, energy),\n  entropy(h, source),\n  *handle{id: h, kind: kind, status: status, file: file}.\n\n? blocked_row(h, energy, source, kind, status, file).",
+  query: "blocked_row(h, energy, source, kind, status, file) :=\n  verb_arg(\"h\", h),\n  potential(h, energy),\n  entropy(h, source),\n  *handle{id: h, kind: kind, status: status, file: file}.\n\n? blocked_row(h, energy, source, kind, status, file).",
   doc: "Show the entropy sources explaining what is blocking one handle.",
   output_schema: "{\"h\":\"HandleId\",\"energy\":\"Number\",\"source\":\"String\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\"}",
-  default_args: ["h"],
+  args: ["h:HandleId"],
   capabilities: ["read"]
 ).
 
@@ -100,7 +100,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "trend_row(h, prior_status, current_status) :=\n  snapshot_history_present(count),\n  at(\"snapshot:last\") { *handle{id: h, status: prior_status} },\n  *handle{id: h, status: current_status},\n  prior_status != current_status.\n\n? trend_row(h, prior_status, current_status).",
   doc: "Show handle status changes between the latest snapshot fallback and the current corpus.",
   output_schema: "{\"h\":\"HandleId\",\"prior_status\":\"String|null\",\"current_status\":\"String|null\"}",
-  default_args: [],
+  args: [],
   capabilities: ["read"]
 ).
 
@@ -109,7 +109,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? diagnostic(code, \"error\", subject, file, line, evidence).",
   doc: "Show standard-library error diagnostics.",
   output_schema: "{\"code\":\"String\",\"subject\":\"HandleId\",\"file\":\"String|null\",\"line\":\"Number|null\",\"evidence\":\"Value\"}",
-  default_args: [],
+  args: [],
   capabilities: ["read"]
 ).
 
@@ -118,7 +118,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "vocab_row(\"status\", status, \"handle.status\") :=\n  *handle{status: status},\n  status != null.\n\nvocab_row(\"status\", value, \"config.convergence.active\") :=\n  *config{key: \"convergence.active\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.terminal\") :=\n  *config{key: \"convergence.terminal\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.ordering\") :=\n  *config{key: \"convergence.ordering\", value: value}.\n\nvocab_row(\"edge-kind\", kind, \"edge.kind\") :=\n  *edge{kind: kind}.\n\nvocab_row(\"namespace\", namespace, \"handle.namespace\") :=\n  *handle{namespace: namespace},\n  namespace != \"\".\n\nvocab_row(\"frontmatter-field\", key, \"meta.key\") :=\n  *meta{key: key}.\n\n? vocab_row(category, value, source).",
   doc: "List observed corpus vocabulary: status values, edge kinds, namespaces, and frontmatter fields.",
   output_schema: "{\"category\":\"String\",\"value\":\"String\",\"source\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: ["read"]
 ).
 
@@ -127,7 +127,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? schema(name, kind, signature, determinism, provenance).",
   doc: "List queryable stored relations, derived predicates, and engine primitives. The signature column is both the positional argument order and the accepted named-call parameter set.",
   output_schema: "{\"name\":\"String\",\"kind\":\"String\",\"signature\":\"String\",\"determinism\":\"String\",\"provenance\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: []
 ).
 
@@ -136,7 +136,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? predicates(name, doc, file, lines).",
   doc: "List rule-defined predicates with documentation and source locations.",
   output_schema: "{\"name\":\"String\",\"doc\":\"String\",\"file\":\"String\",\"lines\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: []
 ).
 
@@ -145,34 +145,34 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? verbs(name, query, doc, output_schema).",
   doc: "List declared verbs with query, documentation, and output schema.",
   output_schema: "{\"name\":\"String\",\"query\":\"String\",\"doc\":\"String\",\"output_schema\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: []
 ).
 
 @verb(
   name: "describe",
-  query: "describe_name(name).\n\ndescribe_row(name, doc) :=\n  describe_name(name),\n  describe(name, doc).\n\n? describe_row(name, doc).",
+  query: "describe_row(name, doc) :=\n  verb_arg(\"name\", name),\n  describe(name, doc).\n\n? describe_row(name, doc).",
   doc: "Return documentation for runtime names.",
   output_schema: "{\"name\":\"String\",\"doc\":\"String\"}",
-  default_args: ["name"],
+  args: ["name:String"],
   capabilities: []
 ).
 
 @verb(
   name: "source-of",
-  query: "source_of_name(name).\n\nsource_of_row(name, file, lines) :=\n  source_of_name(name),\n  source_of(name, file, lines).\n\n? source_of_row(name, file, lines).",
+  query: "source_of_row(name, file, lines) :=\n  verb_arg(\"name\", name),\n  source_of(name, file, lines).\n\n? source_of_row(name, file, lines).",
   doc: "Return source file and line information for queryable runtime names.",
   output_schema: "{\"name\":\"String\",\"file\":\"String\",\"lines\":\"String\"}",
-  default_args: ["name"],
+  args: ["name:String"],
   capabilities: []
 ).
 
 @verb(
   name: "examples",
-  query: "examples_name(name).\n\nexamples_row(name, example) :=\n  examples_name(name),\n  examples(name, example).\n\n? examples_row(name, example).",
+  query: "examples_row(name, example) :=\n  verb_arg(\"name\", name),\n  examples(name, example).\n\n? examples_row(name, example).",
   doc: "Return worked query examples for runtime names.",
   output_schema: "{\"name\":\"String\",\"example\":\"String\"}",
-  default_args: ["name"],
+  args: ["name:String"],
   capabilities: []
 ).
 
@@ -181,6 +181,6 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "? sources(name, recognizes, capabilities, doc).",
   doc: "List linked adapters with recognition patterns, capabilities, and documentation.",
   output_schema: "{\"name\":\"String\",\"recognizes\":\"List<String>\",\"capabilities\":\"List<String>\",\"doc\":\"String\"}",
-  default_args: [],
+  args: [],
   capabilities: []
 ).

@@ -15,6 +15,10 @@ All notable changes to `anneal` are documented in this file.
 - Expanded `anneal help eval` with syntax notes, introspection guidance,
   stored-relation examples, primitive examples, stdin usage, and bounded
   exploration guidance.
+- Project `@verb` declarations are now callable by name from the CLI with
+  typed arguments. Required arguments can be passed positionally in declaration
+  order or as named flags; defaults and bool flags are read from the
+  `@verb(args: [...])` contract.
 
 ### Added
 

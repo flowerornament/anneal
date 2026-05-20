@@ -15,7 +15,7 @@ pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
 pub const CONTEXT_VERB_DOC: &str = "Find the most relevant handles for a goal, read bounded spans, and include a small neighborhood so a cold agent can localize work in one call.";
 pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
-pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "neighborhood_depth", "hits"];
+pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
 pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
 pub const GRAPH_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/graph.dl";
@@ -586,30 +586,17 @@ fn render_context_query_terms(
     include_low_confidence: bool,
 ) -> String {
     let mut query = CONTEXT_QUERY_TEMPLATE.clone();
-    replace_required(
-        &mut query,
-        "context_goal(goal).",
-        &format!("context_goal({goal_term})."),
-    );
-    replace_required(
-        &mut query,
-        "context_hits(hits).",
-        &format!("context_hits({hits_term})."),
-    );
-    replace_required(
-        &mut query,
-        "context_read_budget(per_hit_budget).",
-        &format!("context_read_budget({read_budget_term})."),
-    );
-    replace_required(
-        &mut query,
-        "context_neighborhood_depth(depth).",
-        &format!("context_neighborhood_depth({neighborhood_depth_term})."),
-    );
     if include_low_confidence {
         replace_required(&mut query, low_confidence_filter(false), "");
     }
-    query
+    format!(
+        "\
+verb_arg(\"goal\", {goal_term}).
+verb_arg(\"hits\", {hits_term}).
+verb_arg(\"budget\", {read_budget_term}).
+verb_arg(\"depth\", {neighborhood_depth_term}).
+{query}"
+    )
 }
 
 fn replace_required(query: &mut String, from: &str, to: &str) {
@@ -631,7 +618,7 @@ mod tests {
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::QueryOutput;
     use crate::runtime::ast::Statement;
-    use crate::runtime::ast::{Expr, Literal, NumberLiteral, Program, RuleLayer};
+    use crate::runtime::ast::{Literal, NumberLiteral, Program, RuleLayer};
     use crate::runtime::eval::NumberValue;
     use crate::runtime::{Database, Evaluator, Value, analyze, parse_program};
     use crate::source::{ConfigKey, Pattern, SourceCapabilities, SourceInfo};
@@ -945,68 +932,37 @@ mod tests {
         let mut program = parse_program(&format!("views.dl:{name}.query"), query)
             .unwrap_or_else(|err| panic!("{name} query should parse: {err}"));
         match name {
-            "handle" => bind_parameter_fact(
-                &mut program,
-                ParameterBinding::string("handle_focus", "h", "ticket-1"),
-            ),
-            "find" => bind_parameter_fact(
-                &mut program,
-                ParameterBinding::string("find_text", "text", "ticket"),
-            ),
+            "handle" => {
+                bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
+            }
+            "find" => bind_parameter_fact(&mut program, ParameterBinding::string("text", "ticket")),
             "search" => {
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::string("search_query", "query", "ticket"),
-                );
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::int("search_limit", "limit", 10),
-                );
+                bind_parameter_fact(&mut program, ParameterBinding::string("query", "ticket"));
+                bind_parameter_fact(&mut program, ParameterBinding::int("limit", 10));
             }
             CONTEXT_VERB_NAME => {
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::string("context_goal", "goal", "ticket"),
-                );
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::int("context_hits", "hits", 3),
-                );
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::int("context_read_budget", "per_hit_budget", 2400),
-                );
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::int("context_neighborhood_depth", "depth", 1),
-                );
+                bind_parameter_fact(&mut program, ParameterBinding::string("goal", "ticket"));
+                bind_parameter_fact(&mut program, ParameterBinding::int("hits", 3));
+                bind_parameter_fact(&mut program, ParameterBinding::int("budget", 2400));
+                bind_parameter_fact(&mut program, ParameterBinding::int("depth", 1));
             }
             "read" => {
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::string("read_handle", "h", "ticket-1"),
-                );
-                bind_parameter_fact(
-                    &mut program,
-                    ParameterBinding::int("read_budget", "budget", 4000),
-                );
+                bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
+                bind_parameter_fact(&mut program, ParameterBinding::int("budget", 4000));
             }
-            "blocked" => bind_parameter_fact(
-                &mut program,
-                ParameterBinding::string("blocked_focus", "h", "ticket-1"),
-            ),
-            "describe" => bind_parameter_fact(
-                &mut program,
-                ParameterBinding::string("describe_name", "name", "runtime"),
-            ),
+            "blocked" => {
+                bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
+            }
+            "describe" => {
+                bind_parameter_fact(&mut program, ParameterBinding::string("name", "runtime"));
+            }
             "source-of" => bind_parameter_fact(
                 &mut program,
-                ParameterBinding::string("source_of_name", "name", "ranked_work"),
+                ParameterBinding::string("name", "ranked_work"),
             ),
-            "examples" => bind_parameter_fact(
-                &mut program,
-                ParameterBinding::string("examples_name", "name", "search"),
-            ),
+            "examples" => {
+                bind_parameter_fact(&mut program, ParameterBinding::string("name", "search"));
+            }
             _ => {}
         }
         program
@@ -1014,62 +970,46 @@ mod tests {
 
     #[derive(Clone, Debug)]
     struct ParameterBinding {
-        predicate: &'static str,
-        variable: &'static str,
+        name: &'static str,
         value: Literal,
     }
 
     impl ParameterBinding {
-        fn string(predicate: &'static str, variable: &'static str, value: &str) -> Self {
+        fn string(name: &'static str, value: &str) -> Self {
             Self {
-                predicate,
-                variable,
+                name,
                 value: Literal::String(value.to_string()),
             }
         }
 
-        fn int(predicate: &'static str, variable: &'static str, value: i64) -> Self {
+        fn int(name: &'static str, value: i64) -> Self {
             Self {
-                predicate,
-                variable,
+                name,
                 value: Literal::Number(NumberLiteral::Int(value)),
             }
         }
     }
 
     fn bind_parameter_fact(program: &mut Program, binding: ParameterBinding) {
-        let ParameterBinding {
-            predicate,
-            variable,
-            value,
-        } = binding;
-        let mut matched = false;
-        for statement in &mut program.statements {
-            let Statement::Fact(head) = statement else {
-                continue;
-            };
-            if head.predicate.module.is_some() || head.predicate.name.as_str() != predicate {
-                continue;
-            }
-            assert_eq!(head.terms.len(), 1, "{predicate} arity");
-            let Some(expr) = head.terms[0].expr_mut() else {
-                panic!("{predicate} parameter fact must bind a variable");
-            };
-            match expr {
-                Expr::Var(var) if var.as_str() == variable => {
-                    *expr = Expr::Literal(value.clone());
-                    matched = true;
-                }
-                Expr::Var(var) => panic!("{predicate} expected variable {variable}, found {var}"),
-                Expr::Literal(_)
-                | Expr::FunctionCall { .. }
-                | Expr::Binary { .. }
-                | Expr::Tuple(_) => {
-                    panic!("{predicate} parameter fact was already lowered")
-                }
-            }
+        let ParameterBinding { name, value } = binding;
+        let fact_source = format!(
+            "verb_arg({}, {}).",
+            datalog_string_literal(name),
+            literal_to_datalog(&value)
+        );
+        let facts = parse_program("verb-arg", &fact_source).expect("verb_arg fact should parse");
+        program.statements.splice(0..0, facts.statements);
+    }
+
+    fn literal_to_datalog(value: &Literal) -> String {
+        match value {
+            Literal::String(value) => datalog_string_literal(value),
+            Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
+            Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
+            Literal::Bool(value) => value.to_string(),
+            Literal::Null => "null".to_string(),
+            Literal::List(_) => panic!("test helper only supports scalar verb args"),
         }
-        assert!(matched, "missing parameter fact {predicate}");
     }
 
     fn evaluate_verb_query(name: &str, query: &str, database: Database) -> QueryOutput {

@@ -1885,9 +1885,15 @@ release_blocker(h, "blocking_oq")  :=
 # === verbs ===
 @verb(
   name: "release-blockers",
-  query: "? release_blocker(h, why).",
+  query: "release_row(h, why, milestone) :=
+    verb_arg(\"milestone\", milestone),
+    release_blocker(h, why),
+    *meta{handle: h, key: \"milestone\", value: milestone}.
+
+    ? release_row(h, why, milestone).",
   doc: "Open OQs and broken references gating the next release.",
-  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
+  args: ["milestone:String"],
   capabilities: ["read"]
 )
 ```
@@ -1914,6 +1920,8 @@ shipped in the prelude. Identical:
 - Help: `anneal describe <verb>` works for both
 - Output envelope: same NDJSON shape, same `--explain` support, same
   declared `output_schema`
+- CLI projection: project verbs are callable by name through the same
+  `VerbRegistry` projection as standard-library verbs
 - Callable shape: a rule body references the verb's *underlying
   predicate* (verbs are predicates with a query body and declared
   output schema; not opaque saved strings)
@@ -1922,7 +1930,7 @@ shipped in the prelude. Identical:
 
 `@verb` is structured: `name` (snake-or-hyphen-case), `query`
 (string, parsed at load to AST), `doc` (string), `output_schema`
-(field name → type), `default_args` (argument bindings), and
+(field name -> type), `args` (typed argument bindings), and
 `capabilities` (list of required ActorContext capabilities). The
 runtime validates `query` against `output_schema` at load.
 
@@ -1936,6 +1944,28 @@ are specification notation until `anneal-lang` grows object literal
 syntax; surfaces and registries consume the parsed schema, not the raw
 string. Rationale: this preserves typed load-time validation without
 making Phase 7 also carry a broader expression-grammar expansion.
+
+**Definition CR-D92 (CLI dynamic verb projection).** The CLI projects
+resolved verbs from `VerbRegistry` dynamically. A first argument that is
+not a reserved setup or compatibility command is treated as a candidate
+verb name, loaded from the prelude/project registry, and executed with
+the standard verb envelope.
+
+Verb arguments are declared as ordered strings in `@verb(args: [...])`
+using `name:Type` or `name:Type=default`. Supported v0.11.x argument
+types are `String`, `HandleId`, `Number`, and `Bool`. The CLI accepts
+required arguments positionally in declaration order and accepts all
+arguments as named flags (`--name value` or `--name=value`); bare bool
+flags mean `true`. Before evaluation, the surface injects query-local
+facts of the form `verb_arg("name", value).`, and the verb query binds
+typed parameters by joining those facts.
+
+Dynamic verb projections support `--format`, `--json`, `--rows`,
+`--explain`, `--explain-first`, `--explain-all`, `--explain-depth`, and
+`--help`. `--rows` caps rows after evaluation and is intentionally
+separate from verb-specific arguments such as `limit` or `budget`.
+Rationale: this closes Steele's criterion for saved project verbs
+without making every parameterized workflow fall back to raw `anneal -e`.
 
 ### §32 Discovery fact contract
 
@@ -2107,11 +2137,15 @@ Underlying composition contract (from `views.dl`):
 ```dl
 @verb(
   name: "context",
+  doc: "Find relevant handles, read bounded spans, and include a small neighborhood.",
   query: "
     context_readable(h) :=
-      *content{handle: h, tokens}, tokens <= per_hit_budget.
+      verb_arg(\"budget\", per_hit_budget),
+      *content{handle: h, tokens}.
 
     context_hit(h, hit_span_id, score, reason, field) :=
+      verb_arg(\"goal\", goal),
+      verb_arg(\"hits\", hits),
       (h, hit_span_id, score, reason, field) = TopK{ k: hits, key: score :
         (h, hit_span_id, score, reason, field) :
         search(goal, h, hit_span_id, score, reason, field, low_confidence),
@@ -2121,6 +2155,7 @@ Underlying composition contract (from `views.dl`):
 
     context_neighbor(h, h) := context_hit(h, hit_span_id, score, reason, field).
     context_neighbor(h, neighbor) :=
+      verb_arg(\"depth\", neighborhood_depth),
       context_hit(h, hit_span_id, score, reason, field),
       neighborhood(h, neighborhood_depth, neighbor).
 
@@ -2134,6 +2169,7 @@ Underlying composition contract (from `views.dl`):
       context_neighbor(h, neighbor).
   ",
   output_schema: "{\"goal\":\"String\",\"hits\":\"List<{handle,span_id,score,reason,field}>\",\"spans\":\"List<{handle,span_id,start_line,end_line,tokens,text}>\",\"neighborhood\":\"List<{handle,neighbor}>\"}",
+  args: ["goal:String", "budget:Number=4000", "depth:Number=1", "hits:Number=3"],
   capabilities: ["read"]
 )
 ```
@@ -2146,7 +2182,7 @@ isolated top hit still returns its read span. Phase 1 must pin this
 as an executable `views.dl` fixture before `context` is treated as a
 shipped verb.
 
-Budget allocation: v0.11.0 derives a per-hit `context_read_budget`
+Budget allocation: v0.11.0 derives the per-hit `budget` verb argument
 from the requested `--budget` and applies that cap independently to
 each top hit's `read`. It does not divide the read cap by `K`; doing so makes
 increasing `--hits` silently exclude the most relevant document before
@@ -2162,10 +2198,9 @@ counted including any required follow-ups.
 **Definition CR-D45 (Executable context lowering fixture).** The
 executable `context` contract in v0.11.0 is the lowered Datalog
 program used by `views.dl` and `anneal-cli`: the surface introduces
-parameter facts (`context_goal`,
-`context_hits`, `context_read_budget`, `context_neighborhood_depth`).
-`context_read_budget` is the already-allocated per-hit span budget,
-not the total invocation budget. The query then runs over `TopK`,
+typed `verb_arg` facts for `goal`, `hits`, `budget`, and `depth`.
+`budget` is the already-allocated per-hit span budget, not the total
+invocation budget. The query then runs over `TopK`,
 `TakeUntil`, `read`, and `context_neighbor`. The `TopK` result is
 first materialized as `context_hit` before joining reads or neighbors;
 otherwise later positive atoms can bind `h` early and accidentally
@@ -2192,8 +2227,8 @@ Rationale: this pins the shipped agent-visible behavior while leaving
 future typed object-literal ergonomics to CR-OQ12.
 
 **Definition CR-D71 (Context per-hit read cap).** The CLI derives
-`context_read_budget` from `--budget` once and applies it as the cap
-for each selected hit; it must not divide that cap by `context_hits`.
+the `context` `budget` argument from `--budget` once and applies it as the cap
+for each selected hit; it must not divide that cap by `hits`.
 `context_readable(h)` may use content metadata to avoid choosing
 handles that cannot produce any span under that cap, but it must not
 make the top hit unreadable merely because the caller requested more
@@ -2961,9 +2996,15 @@ release_blocker(h, "broken_ref") :=
 
 @verb(
   name: "release-blockers",
-  query: "? release_blocker(h, why).",
+  query: "release_row(h, why, milestone) :=
+    verb_arg(\"milestone\", milestone),
+    release_blocker(h, why),
+    *meta{handle: h, key: \"milestone\", value: milestone}.
+
+    ? release_row(h, why, milestone).",
   doc: "Open blockers gating the next release.",
-  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
+  args: ["milestone:String"],
   capabilities: ["read"]
 ).
 ```
@@ -3088,7 +3129,7 @@ until a host adapter forces them.
 
 ### §60 Context budget allocation [CR-OQ11]
 
-CR-D71 locks the important invariant: `context_read_budget` is a
+CR-D71 locks the important invariant: the `context` `budget` argument is a
 per-hit cap and is not divided by `--hits`. The exact allocation from
 the user-facing `--budget` is a tuning default. v0.11.0 uses the
 current CLI heuristic; later releases should tune response-wide
@@ -3254,6 +3295,7 @@ config key.
 - CR-D89: Configuration ladder (§39)
 - CR-D90: Namespace config is policy, not inventory (§28.3)
 - CR-D91: Language-first help ladder (§35)
+- CR-D92: CLI dynamic verb projection (§31)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

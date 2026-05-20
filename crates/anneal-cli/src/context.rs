@@ -317,7 +317,7 @@ mod tests {
             .with_budget(4_000)
             .datalog();
 
-        assert!(query.contains("context_read_budget(2400)"));
+        assert!(query.contains("verb_arg(\"budget\", 2400)"));
         assert!(query.contains("*content{handle: h, tokens}"));
         assert!(query.contains("TopK{ k: hits"));
         assert!(query.contains("TakeUntil{"));

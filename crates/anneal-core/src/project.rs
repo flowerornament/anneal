@@ -806,6 +806,16 @@ pub enum ProjectLoadError {
         field: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error("{location}: @verb args entry '{spec}' must use name:Type or name:Type=default")]
+    InvalidVerbArgSpec {
+        spec: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: duplicate @verb arg '{name}'")]
+    DuplicateVerbArg {
+        name: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
     #[error("{location}: @verb output_schema uses an unsupported shape")]
     UnsupportedVerbSchema {
         location: crate::runtime::ast::SourceLocation,
@@ -867,9 +877,20 @@ impl From<VerbRegistryError> for ProjectLoadError {
             VerbRegistryError::InvalidListField { field, location } => {
                 Self::InvalidVerbListField { field, location }
             }
+            VerbRegistryError::InvalidArgSpec { spec, location } => {
+                Self::InvalidVerbArgSpec { spec, location }
+            }
+            VerbRegistryError::DuplicateArg { name, location } => {
+                Self::DuplicateVerbArg { name, location }
+            }
             VerbRegistryError::UnsupportedSchema { location } => {
                 Self::UnsupportedVerbSchema { location }
             }
+            VerbRegistryError::ArgFactParse { location, source } => Self::VerbQueryParse {
+                name: "@verb args".to_string(),
+                location,
+                source,
+            },
             VerbRegistryError::SchemaMismatch {
                 name,
                 expected,
@@ -1220,7 +1241,7 @@ mod tests {
               query: "? project_seed(h).",
               doc: "List project seed facts.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,
@@ -1242,7 +1263,7 @@ mod tests {
               query: "? project_seed(h).",
               doc: "List project seed facts.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,
@@ -1285,7 +1306,7 @@ mod tests {
               query: "? project_seed(h).",
               doc: "Project work view.",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,
@@ -1374,7 +1395,7 @@ mod tests {
               query: "? project_seed(h).",
               doc: "List project seed facts.",
               output_schema: "{\"other\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,
@@ -1396,7 +1417,7 @@ mod tests {
               name: "project-seeds",
               query: "? project_seed(h).",
               output_schema: "{\"h\":\"String\"}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,
@@ -1422,7 +1443,7 @@ mod tests {
               query: "? project_seed(h).",
               doc: "List project seed facts.",
               output_schema: "{\"h\":[\"String\"]}",
-              default_args: [],
+              args: [],
               capabilities: []
             ).
             "#,

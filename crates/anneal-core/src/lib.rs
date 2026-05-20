@@ -68,7 +68,7 @@ pub use trail::{
     summarize_trail_session,
 };
 pub use verbs::{
-    VerbBuiltinPermission, VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbName,
-    VerbRegistry, VerbRegistryError, VerbRunPlan, VerbSource,
+    VerbArg, VerbArgKind, VerbBuiltinPermission, VerbCapability, VerbDispatchError, VerbEntry,
+    VerbLayer, VerbName, VerbRegistry, VerbRegistryError, VerbRunPlan, VerbSource,
 };
 pub use visibility::FactVisibility;

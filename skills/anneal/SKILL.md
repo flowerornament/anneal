@@ -157,8 +157,8 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
   corpora emit zero rows
 
 Project `@verb` declarations in `anneal.dl` appear beside these in
-`anneal verbs` as saved query examples. Use `anneal -e` for custom composition
-when a verb has not been projected as a dedicated CLI command.
+`anneal verbs` and are callable by name. Use `anneal -e` for custom composition
+when you need a parameterized or one-off query.
 
 ### Raw Query Surface
 
@@ -228,9 +228,15 @@ release_blocker(h, "broken_ref") :=
 
 @verb(
   name: "release-blockers",
-  query: "? release_blocker(h, why).",
+  query: "release_row(h, why, milestone) :=
+    verb_arg(\"milestone\", milestone),
+    release_blocker(h, why),
+    *meta{handle: h, key: \"milestone\", value: milestone}.
+
+    ? release_row(h, why, milestone).",
   doc: "Open blockers for the next release.",
-  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
+  args: ["milestone:String"],
   capabilities: ["read"]
 )
 ```

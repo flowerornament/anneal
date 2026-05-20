@@ -395,6 +395,7 @@ EXAMPLES:
 
     /// Generate anneal.dl from inferred structure
     #[command(
+        display_order = 900,
         long_about = "\
 Analyze the corpus and generate an anneal.dl project declaration file.
 
@@ -646,6 +647,7 @@ EXAMPLES:
 
     /// Print the agent skill briefing (first moves, command map, agent rules)
     #[command(
+        display_order = 30,
         long_about = "\
 Print the anneal skill briefing — the same guidance the agent skill loader
 would inject into a session that has the anneal skill installed.
@@ -807,29 +809,40 @@ EXAMPLES:
     },
 
     /// Compact corpus status -- work, blockers, broken
-    #[command(long_about = "\
+    #[command(
+        display_order = 10,
+        long_about = "\
 Print compact corpus status from the programmable runtime.
 
 Use this as the arrival command: it summarizes the active convergence frontier
-and points at work, blockers, and broken facts.")]
+and points at work, blockers, and broken facts."
+    )]
     Status,
 
     /// Cold-agent orientation bundle (search + read + neighborhood)
     #[command(
+        display_order = 20,
         long_about = "Compose search, bounded read spans, and graph neighborhood into one JSON object."
     )]
     Context,
 
     /// Ranked content search over handles and spans
-    #[command(long_about = "Search handles and spans with scores, reasons, and fields.")]
+    #[command(
+        display_order = 100,
+        long_about = "Search handles and spans with scores, reasons, and fields."
+    )]
     Search,
 
     /// Bounded content read for one handle
-    #[command(long_about = "Read bounded content spans for a handle.")]
+    #[command(
+        display_order = 110,
+        long_about = "Read bounded content spans for a handle."
+    )]
     Read,
 
     /// Handle view with incoming and outgoing edges
     #[command(
+        display_order = 120,
         name = "handle",
         visible_alias = "H",
         long_about = "Show one handle plus bounded incoming/outgoing references."
@@ -837,45 +850,73 @@ and points at work, blockers, and broken facts.")]
     H,
 
     /// Ranked work candidates
-    #[command(long_about = "Show ranked work candidates from the standard-library work verb.")]
+    #[command(
+        display_order = 130,
+        long_about = "Show ranked work candidates from the standard-library work verb."
+    )]
     Work,
 
     /// Why one handle is blocked
-    #[command(long_about = "Show why a handle is blocked according to convergence rules.")]
+    #[command(
+        display_order = 140,
+        long_about = "Show why a handle is blocked according to convergence rules."
+    )]
     Blocked,
 
     /// Diagnostic blockers
-    #[command(long_about = "Show diagnostic blockers from the checks prelude.")]
+    #[command(
+        display_order = 150,
+        long_about = "Show diagnostic blockers from the checks prelude."
+    )]
     Broken,
 
     /// Status changes between snapshots
-    #[command(long_about = "Show status changes when snapshot history exists.")]
+    #[command(
+        display_order = 160,
+        long_about = "Show status changes when snapshot history exists."
+    )]
     Trend,
 
     /// Observed status, edge, namespace, and frontmatter vocabulary
     #[command(
+        display_order = 70,
         long_about = "List observed status values, edge kinds, namespaces, and frontmatter fields."
     )]
     Vocab,
 
     /// Runtime primitive, predicate, or verb description
-    #[command(long_about = "Describe a runtime primitive, predicate, or verb.")]
+    #[command(
+        display_order = 50,
+        long_about = "Describe a runtime primitive, predicate, or verb."
+    )]
     Describe,
 
     /// Linked adapters and capabilities
-    #[command(long_about = "List linked sources/adapters and their capabilities.")]
+    #[command(
+        display_order = 80,
+        long_about = "List linked sources/adapters and their capabilities."
+    )]
     Sources,
 
     /// Predicate, primitive, and stored-relation catalog
-    #[command(long_about = "List runtime predicates, primitives, signatures, and provenance.")]
+    #[command(
+        display_order = 40,
+        long_about = "List runtime predicates, primitives, signatures, and provenance."
+    )]
     Schema,
 
     /// Standard-library and project @verb declarations
-    #[command(long_about = "List standard-library and project @verb declarations.")]
+    #[command(
+        display_order = 60,
+        long_about = "List standard-library and project @verb declarations."
+    )]
     Verbs,
 
     /// Datalog query over corpus facts
-    #[command(long_about = "Run a Datalog query against corpus facts.")]
+    #[command(
+        display_order = 90,
+        long_about = "Run a Datalog query against corpus facts."
+    )]
     Eval,
 
     /// Query structural facts derived from the current corpus

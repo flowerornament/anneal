@@ -39,8 +39,8 @@ The important move is that corpus structure becomes queryable. Markdown files,
 frontmatter, labels, body text, spans, references, snapshots, and project
 configuration are all exposed as typed relations. The built-in prelude derives
 standard convergence facts and verbs from those relations, and project
-`anneal.dl` files can add local rules and inspectable `@verb` declarations
-without changing the binary.
+`anneal.dl` files can add local rules and callable `@verb` declarations without
+changing the binary.
 
 The command names are intentionally mnemonic, but they are not the whole tool.
 `context` gathers the first orientation bundle. `schema`, `describe`, `verbs`,
@@ -369,16 +369,27 @@ release_blocker(h, "broken_ref") :=
 
 @verb(
   name: "release-blockers",
-  query: "? release_blocker(h, why).",
+  query: "release_row(h, why, milestone) :=
+    verb_arg(\"milestone\", milestone),
+    release_blocker(h, why),
+    *meta{handle: h, key: \"milestone\", value: milestone}.
+
+    ? release_row(h, why, milestone).",
   doc: "Open blockers for the next release.",
-  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\"}",
+  output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
+  args: ["milestone:String"],
   capabilities: ["read"]
 )
 ```
 
 Load order is fixed: config and discovery facts first, source extraction
 second, prelude and project rules third, evaluation last. Project predicates
-shadow prelude predicates by name and arity.
+shadow prelude predicates by name and arity. Project verbs are callable by name:
+
+```bash
+anneal release-blockers v0.11.0 --format=text
+anneal release-blockers --milestone v0.11.0 --explain
+```
 
 ### Upgrading From Pre-0.11.0
 

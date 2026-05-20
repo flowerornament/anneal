@@ -100,13 +100,13 @@ mod tests {
         let prelude = parse_prelude_program(
             "views.dl",
             r#"
-            @verb(name: "work", query: "? prelude_work(h).", doc: "Prelude work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
+            @verb(name: "work", query: "? prelude_work(h).", doc: "Prelude work.", output_schema: "{\"h\":\"String\"}", args: [], capabilities: ["read"]).
             prelude_work("p").
             "#,
         )
         .expect("prelude parses");
         let mut project_source = r#"
-        @verb(name: "work", query: "? project_work(h).", doc: "Project work.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["read"]).
+        @verb(name: "work", query: "? project_work(h).", doc: "Project work.", output_schema: "{\"h\":\"String\"}", args: [], capabilities: ["read"]).
         project_work("p").
         "#
         .to_string();
@@ -114,7 +114,7 @@ mod tests {
             write!(
                 &mut project_source,
                 r#"
-                @verb(name: "project-{index}", query: "? project_item_{index}(h).", doc: "Project verb.", output_schema: "{{\"h\":\"String\"}}", default_args: [], capabilities: ["read"]).
+                @verb(name: "project-{index}", query: "? project_item_{index}(h).", doc: "Project verb.", output_schema: "{{\"h\":\"String\"}}", args: [], capabilities: ["read"]).
                 project_item_{index}("h-{index}").
                 "#
             )
@@ -145,7 +145,7 @@ mod tests {
         let project = parse_program(
             "anneal.dl",
             r#"
-            @verb(name: "release", query: "? item(h).", doc: "Release.", output_schema: "{\"h\":\"String\"}", default_args: [], capabilities: ["release"]).
+            @verb(name: "release", query: "? item(h).", doc: "Release.", output_schema: "{\"h\":\"String\"}", args: [], capabilities: ["release"]).
             item("h").
             "#,
         )
