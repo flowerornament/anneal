@@ -2,7 +2,7 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## v0.11.1 - 2026-05-20
 
 ### Changed
 
@@ -19,11 +19,34 @@ All notable changes to `anneal` are documented in this file.
   typed arguments. Required arguments can be passed positionally in declaration
   order or as named flags; defaults and bool flags are read from the
   `@verb(args: [...])` contract.
+- Standard-library verbs now dispatch through the same registry path as project
+  verbs, so prelude and project verbs share help, argument handling, and
+  `--explain` behavior.
+- Search and context ranking now prefer canonical source documents over
+  synthetic label-index or broad-hub hits when clustered child evidence points
+  back to a parent file.
+- Runtime configuration declarations now live in one typed schema. Project
+  loading, `anneal init`, unified `anneal.dl` parsing, and the markdown
+  transition bridge consume the same schema-lowered config facts.
 
 ### Added
 
 - `anneal -e` / `anneal eval` now accepts `--limit N` to cap broad exploratory
   query output after evaluation.
+
+### Fixed
+
+- Label namespaces are inferred from corpus evidence instead of maintained as a
+  manual inventory. Legacy `confirmed` namespace config is dropped during
+  conversion, and stale unified config can be repaired with `anneal init
+  --dry-run` followed by `anneal init --force`.
+- Public docs, CLI help, and the bundled skill now describe the shipped
+  language-first surface consistently, including Home Manager boundaries and
+  `anneal.dl` configuration.
+- Runtime verb UX is more predictable in agent harnesses: TTY/text rendering is
+  available through `--format=text`, empty result sets report clearly, typoed
+  stored-relation fields produce diagnostics, and broad `--explain` output is
+  capped by default.
 
 ## v0.11.0 - 2026-05-16
 
