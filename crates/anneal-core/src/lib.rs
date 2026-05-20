@@ -5,6 +5,7 @@
 //! merge semantics. Adapters depend on this crate; this crate must not
 //! depend on any adapter.
 
+pub mod config_schema;
 pub mod driver;
 pub mod facts;
 pub mod hash;
@@ -22,6 +23,11 @@ pub mod trail;
 pub mod verbs;
 pub mod visibility;
 
+pub use config_schema::{
+    RUNTIME_CONFIG_DECLARATIONS, RuntimeConfigDeclaration, RuntimeConfigEntryError,
+    RuntimeConfigKey, RuntimeConfigLifecycle, RuntimeConfigValueMode,
+    runtime_config_declaration_by_key, runtime_config_declaration_for,
+};
 pub use driver::{
     OneShotSourceDriver, SourceDriver, SourceDriverError, SourceRefreshReport,
     SourceRefreshRequest, refresh_source,
@@ -41,9 +47,8 @@ pub use policy::{
     authorize_action, authorize_capability_action, authorize_trail_private,
 };
 pub use project::{
-    PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, RUNTIME_CONFIG_DECLARATIONS,
-    RuntimeConfigDeclaration, RuntimeConfigValueMode, ShadowWarning, load_project_extension,
-    merge_program_layers, runtime_config_declaration_for,
+    PROJECT_RULE_FILE, ProjectExtension, ProjectLoadError, ShadowWarning, load_project_extension,
+    merge_program_layers,
 };
 pub use ranking::{
     DefaultRanker, REASON_PARENT_CLUSTER, Ranker, RankingContext, SearchHit, SearchScore,

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anneal_core::runtime::prelude::datalog_string_literal;
+use anneal_core::{RuntimeConfigKey, runtime_config_declaration_by_key};
 use anyhow::Context;
 use camino::Utf8Path;
 use serde::Serialize;
@@ -339,16 +340,32 @@ fn render_unified_config(config: &AnnealConfig) -> String {
     {
         out.push_str("config convergence {\n");
         if !config.convergence.ordering.is_empty() {
-            list_call(&mut out, "ordering", &config.convergence.ordering);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceOrdering,
+                &config.convergence.ordering,
+            );
         }
         if !config.convergence.active.is_empty() {
-            list_call(&mut out, "active", &config.convergence.active);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceActive,
+                &config.convergence.active,
+            );
         }
         if !config.convergence.terminal.is_empty() {
-            list_call(&mut out, "terminal", &config.convergence.terminal);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceTerminal,
+                &config.convergence.terminal,
+            );
         }
         for (status, description) in sorted_map(&config.convergence.descriptions) {
-            line_call(&mut out, "description", &[status, description]);
+            line_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceDescription,
+                &[status, description],
+            );
         }
         out.push_str("}\n\n");
     }
@@ -359,13 +376,25 @@ fn render_unified_config(config: &AnnealConfig) -> String {
     {
         out.push_str("config handles {\n");
         if !config.handles.force.is_empty() {
-            list_call(&mut out, "force", &config.handles.force);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesForce,
+                &config.handles.force,
+            );
         }
         if !config.handles.rejected.is_empty() {
-            list_call(&mut out, "rejected", &config.handles.rejected);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesRejected,
+                &config.handles.rejected,
+            );
         }
         if !config.handles.linear.is_empty() {
-            list_call(&mut out, "linear", &config.handles.linear);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesLinear,
+                &config.handles.linear,
+            );
         }
         out.push_str("}\n\n");
     }
@@ -376,22 +405,30 @@ fn render_unified_config(config: &AnnealConfig) -> String {
             Direction::Forward => "forward",
             Direction::Inverse => "inverse",
         };
-        line_call(
+        line_config_call(
             &mut out,
-            "field",
+            RuntimeConfigKey::FrontmatterField,
             &[field, mapping.edge_kind.as_str(), direction],
         );
     }
     out.push_str("}\n\n");
 
     out.push_str("config freshness {\n");
-    scalar_call(&mut out, "warn", config.freshness.warn);
-    scalar_call(&mut out, "error", config.freshness.error);
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::FreshnessWarn,
+        config.freshness.warn,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::FreshnessError,
+        config.freshness.error,
+    );
     out.push_str("}\n\n");
 
     out.push_str("config check {\n");
     if let Some(filter) = &config.check.default_filter {
-        line_call(&mut out, "default_filter", &[filter]);
+        line_config_call(&mut out, RuntimeConfigKey::CheckDefaultFilter, &[filter]);
     }
     out.push_str("}\n\n");
 
@@ -403,7 +440,7 @@ fn render_unified_config(config: &AnnealConfig) -> String {
                 crate::config::HistoryMode::Repo => "repo",
                 crate::config::HistoryMode::Off => "off",
             };
-            line_call(&mut out, "history_mode", &[value]);
+            line_config_call(&mut out, RuntimeConfigKey::StateHistoryMode, &[value]);
         }
         out.push_str("}\n\n");
     }
@@ -411,12 +448,16 @@ fn render_unified_config(config: &AnnealConfig) -> String {
     if !config.suppress.codes.is_empty() || !config.suppress.rules.is_empty() {
         out.push_str("config suppress {\n");
         if !config.suppress.codes.is_empty() {
-            list_call(&mut out, "code", &config.suppress.codes);
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::SuppressCode,
+                &config.suppress.codes,
+            );
         }
         for rule in &config.suppress.rules {
-            line_call(
+            line_config_call(
                 &mut out,
-                "rule",
+                RuntimeConfigKey::SuppressRule,
                 &[rule.code.as_str(), rule.target.as_str()],
             );
         }
@@ -428,45 +469,81 @@ fn render_unified_config(config: &AnnealConfig) -> String {
         let mut values = Vec::with_capacity(patterns.len() + 1);
         values.push(name);
         values.extend(patterns.iter().map(String::as_str));
-        line_call(&mut out, "group", &values);
+        line_config_call(&mut out, RuntimeConfigKey::ConcernsGroup, &values);
         out.push_str("}\n\n");
     }
 
     if !config.impact.traverse.is_empty() {
         out.push_str("config impact {\n");
-        list_call(&mut out, "traverse", &config.impact.traverse);
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::ImpactTraverse,
+            &config.impact.traverse,
+        );
         out.push_str("}\n\n");
     }
 
     out.push_str("config areas {\n");
-    scalar_call(&mut out, "orphan_threshold", config.areas.orphan_threshold);
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::AreasOrphanThreshold,
+        config.areas.orphan_threshold,
+    );
     out.push_str("}\n\n");
 
     out.push_str("config temporal {\n");
-    scalar_call(&mut out, "recent_days", config.temporal.recent_days);
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::TemporalRecentDays,
+        config.temporal.recent_days,
+    );
     out.push_str("}\n\n");
 
     out.push_str("config orient {\n");
-    scalar_call(&mut out, "edge_weight", config.orient.edge_weight);
-    scalar_call(&mut out, "label_weight", config.orient.label_weight);
-    scalar_call(&mut out, "recency_weight", config.orient.recency_weight);
-    scalar_call(
+    scalar_config_call(
         &mut out,
-        "recency_half_life_days",
+        RuntimeConfigKey::OrientEdgeWeight,
+        config.orient.edge_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientLabelWeight,
+        config.orient.label_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientRecencyWeight,
+        config.orient.recency_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientRecencyHalfLifeDays,
         config.orient.recency_half_life_days,
     );
-    line_call(&mut out, "budget", &[config.orient.budget.as_str()]);
-    scalar_call(&mut out, "depth", config.orient.depth);
+    line_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientBudget,
+        &[config.orient.budget.as_str()],
+    );
+    scalar_config_call(&mut out, RuntimeConfigKey::OrientDepth, config.orient.depth);
     if !config.orient.pin.is_empty() {
-        list_call(&mut out, "pin", &config.orient.pin);
+        list_config_call(&mut out, RuntimeConfigKey::OrientPin, &config.orient.pin);
     }
     if !config.orient.exclude.is_empty() {
-        list_call(&mut out, "exclude", &config.orient.exclude);
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::OrientExclude,
+            &config.orient.exclude,
+        );
     }
-    scalar_call(&mut out, "stub_bytes", config.orient.stub_bytes);
-    scalar_call(
+    scalar_config_call(
         &mut out,
-        "curated_hub_weight",
+        RuntimeConfigKey::OrientStubBytes,
+        config.orient.stub_bytes,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientCuratedHubWeight,
         config.orient.curated_hub_weight,
     );
     out.push_str("}\n");
@@ -515,6 +592,24 @@ fn scalar_call(out: &mut String, name: &str, value: impl std::fmt::Display) {
     out.push('(');
     out.push_str(&value.to_string());
     out.push_str(").\n");
+}
+
+fn line_config_call(out: &mut String, key: RuntimeConfigKey, values: &[&str]) {
+    line_call(out, runtime_config_name(key), values);
+}
+
+fn list_config_call(out: &mut String, key: RuntimeConfigKey, values: &[String]) {
+    list_call(out, runtime_config_name(key), values);
+}
+
+fn scalar_config_call(out: &mut String, key: RuntimeConfigKey, value: impl std::fmt::Display) {
+    scalar_call(out, runtime_config_name(key), value);
+}
+
+fn runtime_config_name(key: RuntimeConfigKey) -> &'static str {
+    runtime_config_declaration_by_key(key)
+        .expect("runtime config key has declaration")
+        .name()
 }
 
 fn dl_string(value: &str) -> String {

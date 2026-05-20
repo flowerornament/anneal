@@ -2557,6 +2557,21 @@ Existing unified `anneal.dl` files that contain obsolete
 `--dry-run` previews the cleaned config, and `--force` rewrites the
 file with the obsolete declaration dropped.
 
+**Definition CR-D93 (Config declaration schema).** Runtime config
+declarations are owned by a single typed schema in `anneal-core`. The
+schema names each `config <section> { <declaration>(...) }` form, its
+value shape, lifecycle status, and lowering to `*config` facts. The
+project loader, legacy bridge, and `anneal init` renderer consume that
+schema rather than maintaining independent string vocabularies. Legacy
+projection may still contain typed value parsing and field assignment,
+but adding or removing a declaration must start from the shared schema.
+
+Rationale: repo-local configuration is part of the language surface.
+If validation, migration, and scaffolding each carry their own list of
+accepted keys, agents learn stale knobs and upgrades regress into manual
+repair. A single schema keeps `anneal.dl` syntax, queryable `*config`
+facts, and generated config examples moving together.
+
 **Definition CR-D28 (Init defaults).** `anneal init` scaffolds a
 minimal lattice in `anneal.dl`:
 
@@ -3307,6 +3322,7 @@ config key.
 - CR-D90: Namespace config is policy, not inventory (§28.3)
 - CR-D91: Language-first help ladder (§35)
 - CR-D92: CLI dynamic verb projection (§31)
+- CR-D93: Config declaration schema (§39)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

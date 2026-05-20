@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anneal_core::runtime::{CallArg, Expr, Literal, NumberLiteral, Statement, parse_program};
-use anneal_core::runtime_config_declaration_for;
+use anneal_core::{
+    ConfigEntry, ConfigFacts, RuntimeConfigLifecycle, runtime_config_declaration_for,
+};
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -448,6 +450,8 @@ fn parse_unified_config_with_mode(
 ) -> Result<AnnealConfig> {
     let program = parse_program(source_name, content)?;
     let mut config = AnnealConfig::default();
+    let mut runtime_entries = Vec::new();
+    let mut markdown_source_declarations = Vec::new();
     for statement in program.statements {
         match statement {
             Statement::ConfigBlock(block) => {
@@ -461,12 +465,11 @@ fn parse_unified_config_with_mode(
                     let values = declaration_values(&declaration.args).with_context(|| {
                         format!("invalid config declaration '{}'", declaration.name)
                     })?;
-                    apply_config_declaration(
-                        &mut config,
+                    runtime_entries.extend(config_declaration_entries(
                         block.section.as_str(),
                         declaration.name.as_str(),
                         values,
-                    )?;
+                    )?);
                 }
             }
             // v1-parity compatibility only: the legacy command set can project
@@ -476,11 +479,7 @@ fn parse_unified_config_with_mode(
                     let values = declaration_values(&declaration.args).with_context(|| {
                         format!("invalid source declaration '{}'", declaration.name)
                     })?;
-                    apply_markdown_source_declaration(
-                        &mut config,
-                        declaration.name.as_str(),
-                        values,
-                    )?;
+                    markdown_source_declarations.push((declaration.name, values));
                 }
             }
             Statement::SourceBlock(block) => {
@@ -490,6 +489,12 @@ fn parse_unified_config_with_mode(
             }
             _ => {}
         }
+    }
+    let runtime_facts = ConfigFacts::try_from_entries(runtime_entries)
+        .context("runtime config declarations contain duplicate ordered entries")?;
+    apply_runtime_config_facts(&mut config, &runtime_facts)?;
+    for (name, values) in markdown_source_declarations {
+        apply_markdown_source_declaration(&mut config, name.as_str(), values)?;
     }
     Ok(config)
 }
@@ -508,157 +513,29 @@ fn apply_markdown_source_declaration(
     Ok(())
 }
 
-fn apply_config_declaration(
-    config: &mut AnnealConfig,
+fn config_declaration_entries(
     section: &str,
     name: &str,
     values: Vec<String>,
-) -> Result<()> {
-    if section == "handles" && name == "confirmed" {
+) -> Result<Vec<ConfigEntry>> {
+    let Some(declaration) = runtime_config_declaration_for(section, name) else {
+        anyhow::bail!("unknown config declaration config {section} {{ {name}(...) }}");
+    };
+    if declaration.lifecycle() == RuntimeConfigLifecycle::ObsoleteConfirmedNamespace {
         anyhow::bail!(
             "config handles confirmed(...) is no longer valid. Label namespaces are inferred automatically; delete this declaration, or use config handles force([...]) only for sparse prefixes that need an explicit override. Run `anneal init --dry-run` to preview the repaired config"
         );
     }
-
-    if !matches!(
-        (section, name),
-        ("convergence", "description")
-            | ("frontmatter", "field")
-            | ("suppress", "rule")
-            | ("concerns", "group")
-    ) && runtime_config_declaration_for(section, name).is_none()
-    {
-        anyhow::bail!("unknown config declaration config {section} {{ {name}(...) }}");
-    }
-
-    match (section, name) {
-        ("corpus", "exclude") => config.exclude = values,
-        ("corpus", "root") => config.root = one_string("corpus.root", values)?,
-        ("convergence", "active") => config.convergence.active = values,
-        ("convergence", "terminal") => config.convergence.terminal = values,
-        ("convergence", "ordering") => config.convergence.ordering = values,
-        ("convergence", "description") => {
-            if values.len() != 2 {
-                anyhow::bail!("convergence.description expects status and description");
-            }
-            config
-                .convergence
-                .descriptions
-                .insert(values[0].clone(), values[1].clone());
-        }
-        ("handles", "force") => config.handles.force = values,
-        ("handles", "rejected") => config.handles.rejected = values,
-        ("handles", "linear") => config.handles.linear = values,
-        ("frontmatter", "field") => {
-            if values.len() != 3 {
-                anyhow::bail!("frontmatter.field expects key, edge_kind, and direction");
-            }
-            config.frontmatter.fields.insert(
-                values[0].clone(),
-                FrontmatterFieldMapping {
-                    edge_kind: values[1].clone(),
-                    direction: match values[2].as_str() {
-                        "forward" => Direction::Forward,
-                        "inverse" => Direction::Inverse,
-                        other => anyhow::bail!(
-                            "frontmatter.field direction must be forward or inverse; got {other:?}"
-                        ),
-                    },
-                },
-            );
-        }
-        ("freshness", "warn") => config.freshness.warn = one_u32("freshness.warn", values)?,
-        ("freshness", "error") => config.freshness.error = one_u32("freshness.error", values)?,
-        ("state", "history_mode") => {
-            config.state.history_mode =
-                Some(match one_string("state.history_mode", values)?.as_str() {
-                    "xdg" => HistoryMode::Xdg,
-                    "repo" => HistoryMode::Repo,
-                    "off" => HistoryMode::Off,
-                    other => {
-                        anyhow::bail!("state.history_mode must be xdg, repo, or off; got {other:?}")
-                    }
-                });
-        }
-        ("check", "default_filter") => {
-            config.check.default_filter = Some(one_string("check.default_filter", values)?);
-        }
-        ("suppress", "code") => config.suppress.codes = values,
-        ("suppress", "rule") => {
-            if values.len() != 2 {
-                anyhow::bail!("suppress.rule expects code and target");
-            }
-            config.suppress.rules.push(SuppressRule {
-                code: values[0].clone(),
-                target: values[1].clone(),
-            });
-        }
-        ("concerns", "group") => {
-            if values.len() < 2 {
-                anyhow::bail!("concerns.group expects a name and one or more patterns");
-            }
-            config
-                .concerns
-                .insert(values[0].clone(), values[1..].to_vec());
-        }
-        ("impact", "traverse") => config.impact.traverse = values,
-        ("areas", "orphan_threshold") => {
-            config.areas.orphan_threshold = one_string("areas.orphan_threshold", values)?
-                .parse::<usize>()
-                .with_context(|| "areas.orphan_threshold expects an unsigned integer")?;
-        }
-        ("temporal", "recent_days") => {
-            config.temporal.recent_days = one_u32("temporal.recent_days", values)?;
-        }
-        ("orient", "edge_weight") => {
-            config.orient.edge_weight = one_f64("orient.edge_weight", values)?;
-        }
-        ("orient", "label_weight") => {
-            config.orient.label_weight = one_f64("orient.label_weight", values)?;
-        }
-        ("orient", "recency_weight") => {
-            config.orient.recency_weight = one_f64("orient.recency_weight", values)?;
-        }
-        ("orient", "recency_half_life_days") => {
-            config.orient.recency_half_life_days =
-                one_u32("orient.recency_half_life_days", values)?;
-        }
-        ("orient", "budget") => config.orient.budget = one_string("orient.budget", values)?,
-        ("orient", "depth") => config.orient.depth = one_u32("orient.depth", values)?,
-        ("orient", "pin") => config.orient.pin = values,
-        ("orient", "exclude") => config.orient.exclude = values,
-        ("orient", "stub_bytes") => {
-            config.orient.stub_bytes = one_u32("orient.stub_bytes", values)?;
-        }
-        ("orient", "curated_hub_weight") => {
-            config.orient.curated_hub_weight = one_f64("orient.curated_hub_weight", values)?;
-        }
-        _ => {
-            anyhow::bail!("unknown config declaration config {section} {{ {name}(...) }}");
-        }
-    }
-    Ok(())
+    declaration
+        .entries(values)
+        .with_context(|| format!("invalid config declaration config {section} {{ {name}(...) }}"))
 }
 
-fn one_string(key: &str, values: Vec<String>) -> Result<String> {
+fn one_string(key: impl std::fmt::Display, values: Vec<String>) -> Result<String> {
     let [value]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
         anyhow::anyhow!("{key} expects exactly one value; got {}", values.len())
     })?;
     Ok(value)
-}
-
-fn one_u32(key: &str, values: Vec<String>) -> Result<u32> {
-    let value = one_string(key, values)?;
-    value
-        .parse::<u32>()
-        .with_context(|| format!("{key} expects an unsigned integer"))
-}
-
-fn one_f64(key: &str, values: Vec<String>) -> Result<f64> {
-    let value = one_string(key, values)?;
-    value
-        .parse::<f64>()
-        .with_context(|| format!("{key} expects a number"))
 }
 
 fn declaration_values(args: &[CallArg]) -> Result<Vec<String>> {
@@ -685,6 +562,200 @@ fn push_literal_values(out: &mut Vec<String>, literal: &Literal) {
             }
         }
     }
+}
+
+pub(crate) fn apply_runtime_config_facts(
+    config: &mut AnnealConfig,
+    facts: &ConfigFacts,
+) -> Result<()> {
+    config.root = facts.first("corpus.root").unwrap_or_default().to_string();
+    config.exclude = facts.values("corpus.exclude").map(str::to_string).collect();
+    config.convergence.ordering = facts
+        .values("convergence.ordering")
+        .map(str::to_string)
+        .collect();
+    config.convergence.active = facts
+        .values("convergence.active")
+        .map(str::to_string)
+        .collect();
+    config.convergence.terminal = facts
+        .values("convergence.terminal")
+        .map(str::to_string)
+        .collect();
+    config.handles.force = facts.values("handles.force").map(str::to_string).collect();
+    config.handles.rejected = facts
+        .values("handles.rejected")
+        .map(str::to_string)
+        .collect();
+    config.handles.linear = facts.values("handles.linear").map(str::to_string).collect();
+    config.suppress.codes = facts.values("suppress.code").map(str::to_string).collect();
+    config.impact.traverse = facts
+        .values("impact.traverse")
+        .map(str::to_string)
+        .collect();
+    config.orient.pin = facts.values("orient.pin").map(str::to_string).collect();
+    config.orient.exclude = facts.values("orient.exclude").map(str::to_string).collect();
+
+    apply_first_u32(facts, "freshness.warn", &mut config.freshness.warn)?;
+    apply_first_u32(facts, "freshness.error", &mut config.freshness.error)?;
+    apply_first_string(
+        facts,
+        "check.default_filter",
+        &mut config.check.default_filter,
+    );
+    apply_history_mode(facts, &mut config.state.history_mode)?;
+    apply_first_usize(
+        facts,
+        "areas.orphan_threshold",
+        &mut config.areas.orphan_threshold,
+    )?;
+    apply_first_u32(
+        facts,
+        "temporal.recent_days",
+        &mut config.temporal.recent_days,
+    )?;
+    apply_first_f64(facts, "orient.edge_weight", &mut config.orient.edge_weight)?;
+    apply_first_f64(
+        facts,
+        "orient.label_weight",
+        &mut config.orient.label_weight,
+    )?;
+    apply_first_f64(
+        facts,
+        "orient.recency_weight",
+        &mut config.orient.recency_weight,
+    )?;
+    apply_first_u32(
+        facts,
+        "orient.recency_half_life_days",
+        &mut config.orient.recency_half_life_days,
+    )?;
+    apply_first_plain_string(facts, "orient.budget", &mut config.orient.budget);
+    apply_first_u32(facts, "orient.depth", &mut config.orient.depth)?;
+    apply_first_u32(facts, "orient.stub_bytes", &mut config.orient.stub_bytes)?;
+    apply_first_f64(
+        facts,
+        "orient.curated_hub_weight",
+        &mut config.orient.curated_hub_weight,
+    )?;
+
+    for entry in facts.entries() {
+        if let Some(status) = entry.key.strip_prefix("convergence.description.") {
+            config
+                .convergence
+                .descriptions
+                .insert(status.to_string(), entry.value.clone());
+        } else if let Some(code) = entry.key.strip_prefix("suppress.rule.") {
+            config.suppress.rules.push(SuppressRule {
+                code: code.to_string(),
+                target: entry.value.clone(),
+            });
+        } else if let Some(name) = entry.key.strip_prefix("concerns.group.") {
+            config
+                .concerns
+                .entry(name.to_string())
+                .or_default()
+                .push(entry.value.clone());
+        }
+    }
+
+    apply_frontmatter_fields(config, facts)?;
+    Ok(())
+}
+
+fn apply_frontmatter_fields(config: &mut AnnealConfig, facts: &ConfigFacts) -> Result<()> {
+    let mut fields = std::collections::BTreeMap::<String, (Option<String>, Option<String>)>::new();
+    for entry in facts.entries() {
+        let Some(rest) = entry.key.strip_prefix("frontmatter.field.") else {
+            continue;
+        };
+        let Some((field, property)) = rest.rsplit_once('.') else {
+            continue;
+        };
+        let slot = fields.entry(field.to_string()).or_default();
+        match property {
+            "edge_kind" => slot.0 = Some(entry.value.clone()),
+            "direction" => slot.1 = Some(entry.value.clone()),
+            _ => {}
+        }
+    }
+
+    for (field, (edge_kind, direction)) in fields {
+        let Some(edge_kind) = edge_kind else {
+            anyhow::bail!("frontmatter.field.{field} is missing edge_kind");
+        };
+        let Some(direction) = direction else {
+            anyhow::bail!("frontmatter.field.{field} is missing direction");
+        };
+        let direction = match direction.as_str() {
+            "forward" => Direction::Forward,
+            "inverse" => Direction::Inverse,
+            other => anyhow::bail!(
+                "frontmatter.field.{field}.direction must be forward or inverse; got {other:?}"
+            ),
+        };
+        config.frontmatter.fields.insert(
+            field,
+            FrontmatterFieldMapping {
+                edge_kind,
+                direction,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn apply_first_string(facts: &ConfigFacts, key: &str, target: &mut Option<String>) {
+    if let Some(value) = facts.first(key) {
+        *target = Some(value.to_string());
+    }
+}
+
+fn apply_first_plain_string(facts: &ConfigFacts, key: &str, target: &mut String) {
+    if let Some(value) = facts.first(key) {
+        *target = value.to_string();
+    }
+}
+
+fn apply_history_mode(facts: &ConfigFacts, target: &mut Option<HistoryMode>) -> Result<()> {
+    let Some(value) = facts.first("state.history_mode") else {
+        return Ok(());
+    };
+    *target = Some(match value {
+        "xdg" => HistoryMode::Xdg,
+        "repo" => HistoryMode::Repo,
+        "off" => HistoryMode::Off,
+        other => anyhow::bail!("state.history_mode must be xdg, repo, or off; got {other:?}"),
+    });
+    Ok(())
+}
+
+fn apply_first_u32(facts: &ConfigFacts, key: &str, target: &mut u32) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<u32>()
+            .with_context(|| format!("{key} expects an unsigned integer"))?;
+    }
+    Ok(())
+}
+
+fn apply_first_usize(facts: &ConfigFacts, key: &str, target: &mut usize) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<usize>()
+            .with_context(|| format!("{key} expects an unsigned integer"))?;
+    }
+    Ok(())
+}
+
+fn apply_first_f64(facts: &ConfigFacts, key: &str, target: &mut f64) -> Result<()> {
+    if let Some(value) = facts.first(key) {
+        *target = value
+            .parse::<f64>()
+            .with_context(|| format!("{key} expects a number"))?;
+    }
+    Ok(())
 }
 
 /// Load machine-local user configuration from XDG config.
@@ -817,6 +888,7 @@ default_filter = "all"
               ordering(["raw", "draft", "current"]).
               active(["draft", "current"]).
               terminal(["archived"]).
+              description("draft", "needs work").
             }
 
             config handles {
@@ -824,8 +896,17 @@ default_filter = "all"
               linear(["OQ"]).
             }
 
+            config frontmatter {
+              field("relates-to", "Cites", "forward").
+            }
+
             config suppress {
+              code(["I001"]).
               rule("E001", "synthesis/v17.md").
+            }
+
+            config concerns {
+              group("runtime", "CR-D*", "LR-*").
             }
             "#,
         )
@@ -835,11 +916,31 @@ default_filter = "all"
         assert_eq!(config.convergence.ordering, ["raw", "draft", "current"]);
         assert_eq!(config.convergence.active, ["draft", "current"]);
         assert_eq!(config.convergence.terminal, ["archived"]);
+        assert_eq!(
+            config
+                .convergence
+                .descriptions
+                .get("draft")
+                .map(String::as_str),
+            Some("needs work")
+        );
         assert_eq!(config.handles.force, ["OQ", "CR-D"]);
         assert_eq!(config.handles.linear, ["OQ"]);
+        let frontmatter = config
+            .frontmatter
+            .fields
+            .get("relates-to")
+            .expect("frontmatter field");
+        assert_eq!(frontmatter.edge_kind, "Cites");
+        assert!(matches!(frontmatter.direction, Direction::Forward));
+        assert_eq!(config.suppress.codes, ["I001"]);
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");
         assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
+        assert_eq!(
+            config.concerns.get("runtime").expect("concern group"),
+            &["CR-D*", "LR-*"]
+        );
     }
 
     #[test]

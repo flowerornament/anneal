@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::config_schema::{
+    RuntimeConfigEntryError, RuntimeConfigLifecycle, runtime_config_declaration_for,
+};
 use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
 use crate::runtime::analysis::{StaticError, analyze};
@@ -335,228 +338,22 @@ fn config_block_entries(
     for declaration in &block.declarations {
         let section = block.section.as_str();
         let name = declaration.name.as_str();
-        if let Some(grouped) = grouped_config_entries(section, name, declaration)? {
-            entries.extend(grouped);
-            continue;
-        }
         let Some(schema) = runtime_config_declaration_for(section, name) else {
-            if section == "handles" && name == "confirmed" {
-                return Err(ProjectLoadError::ObsoleteConfirmedNamespaceConfig {
-                    location: declaration.location.clone(),
-                });
-            }
             return Err(ProjectLoadError::UnknownConfigDeclaration {
                 section: section.to_string(),
                 key: name.to_string(),
                 location: declaration.location.clone(),
             });
         };
-        let key = format!("{section}.{name}");
+        if schema.lifecycle() == RuntimeConfigLifecycle::ObsoleteConfirmedNamespace {
+            return Err(ProjectLoadError::ObsoleteConfirmedNamespaceConfig {
+                location: declaration.location.clone(),
+            });
+        }
         let values = declaration_values(declaration)?;
-        entries.extend(schema.entries(key, values)?);
+        entries.extend(schema.entries(values)?);
     }
     Ok(entries)
-}
-
-fn grouped_config_entries(
-    section: &str,
-    name: &str,
-    declaration: &Declaration,
-) -> Result<Option<Vec<ConfigEntry>>, ProjectLoadError> {
-    let values = declaration_values(declaration)?;
-    let entries = match (section, name) {
-        ("convergence", "description") => {
-            let [status, description]: [String; 2] =
-                values.try_into().map_err(|values: Vec<String>| {
-                    ProjectLoadError::InvalidConfigArity {
-                        key: "convergence.description".to_string(),
-                        expected: "status and description",
-                        actual: values.len(),
-                    }
-                })?;
-            vec![ConfigEntry::scalar(
-                format!("convergence.description.{status}"),
-                description,
-            )]
-        }
-        ("frontmatter", "field") => {
-            let [field, edge_kind, direction]: [String; 3] =
-                values.try_into().map_err(|values: Vec<String>| {
-                    ProjectLoadError::InvalidConfigArity {
-                        key: "frontmatter.field".to_string(),
-                        expected: "field, edge kind, and direction",
-                        actual: values.len(),
-                    }
-                })?;
-            vec![
-                ConfigEntry::scalar(format!("frontmatter.field.{field}.edge_kind"), edge_kind),
-                ConfigEntry::scalar(format!("frontmatter.field.{field}.direction"), direction),
-            ]
-        }
-        ("suppress", "rule") => {
-            let [code, target]: [String; 2] =
-                values.try_into().map_err(|values: Vec<String>| {
-                    ProjectLoadError::InvalidConfigArity {
-                        key: "suppress.rule".to_string(),
-                        expected: "code and target",
-                        actual: values.len(),
-                    }
-                })?;
-            vec![ConfigEntry::scalar(format!("suppress.rule.{code}"), target)]
-        }
-        ("concerns", "group") => {
-            if values.len() < 2 {
-                return Err(ProjectLoadError::InvalidConfigArity {
-                    key: "concerns.group".to_string(),
-                    expected: "name and one or more patterns",
-                    actual: values.len(),
-                });
-            }
-            let mut values = values;
-            let name = values.remove(0);
-            values
-                .into_iter()
-                .map(|value| ConfigEntry::scalar(format!("concerns.group.{name}"), value))
-                .collect()
-        }
-        _ => return Ok(None),
-    };
-    Ok(Some(entries))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuntimeConfigValueMode {
-    Scalar,
-    OrderedList,
-    UnorderedSet,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RuntimeConfigDeclaration {
-    section: &'static str,
-    name: &'static str,
-    mode: RuntimeConfigValueMode,
-}
-
-impl RuntimeConfigDeclaration {
-    pub const fn section(self) -> &'static str {
-        self.section
-    }
-
-    pub const fn name(self) -> &'static str {
-        self.name
-    }
-
-    pub const fn mode(self) -> RuntimeConfigValueMode {
-        self.mode
-    }
-
-    fn entries(
-        self,
-        key: String,
-        values: Vec<String>,
-    ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
-        match self.mode {
-            RuntimeConfigValueMode::Scalar => {
-                let [value]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
-                    ProjectLoadError::InvalidConfigArity {
-                        key: key.clone(),
-                        expected: "exactly one scalar value",
-                        actual: values.len(),
-                    }
-                })?;
-                Ok(vec![ConfigEntry::scalar(key, value)])
-            }
-            RuntimeConfigValueMode::OrderedList => ordered_entries(&key, values),
-            RuntimeConfigValueMode::UnorderedSet => Ok(values
-                .into_iter()
-                .map(|value| ConfigEntry::scalar(key.clone(), value))
-                .collect()),
-        }
-    }
-}
-
-const fn runtime_config_declaration(
-    section: &'static str,
-    name: &'static str,
-    mode: RuntimeConfigValueMode,
-) -> RuntimeConfigDeclaration {
-    RuntimeConfigDeclaration {
-        section,
-        name,
-        mode,
-    }
-}
-
-pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
-    runtime_config_declaration("corpus", "root", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("corpus", "exclude", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration(
-        "convergence",
-        "ordering",
-        RuntimeConfigValueMode::OrderedList,
-    ),
-    runtime_config_declaration(
-        "convergence",
-        "active",
-        RuntimeConfigValueMode::UnorderedSet,
-    ),
-    runtime_config_declaration(
-        "convergence",
-        "terminal",
-        RuntimeConfigValueMode::UnorderedSet,
-    ),
-    runtime_config_declaration("handles", "force", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("handles", "rejected", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("handles", "linear", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("freshness", "warn", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("freshness", "error", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("state", "history_mode", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("check", "default_filter", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("suppress", "code", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("impact", "traverse", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("areas", "orphan_threshold", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("temporal", "recent_days", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("orient", "edge_weight", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("orient", "label_weight", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("orient", "recency_weight", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration(
-        "orient",
-        "recency_half_life_days",
-        RuntimeConfigValueMode::Scalar,
-    ),
-    runtime_config_declaration("orient", "budget", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("orient", "depth", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration("orient", "pin", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("orient", "exclude", RuntimeConfigValueMode::UnorderedSet),
-    runtime_config_declaration("orient", "stub_bytes", RuntimeConfigValueMode::Scalar),
-    runtime_config_declaration(
-        "orient",
-        "curated_hub_weight",
-        RuntimeConfigValueMode::Scalar,
-    ),
-];
-
-pub fn runtime_config_declaration_for(
-    section: &str,
-    name: &str,
-) -> Option<RuntimeConfigDeclaration> {
-    RUNTIME_CONFIG_DECLARATIONS
-        .iter()
-        .copied()
-        .find(|declaration| declaration.section == section && declaration.name == name)
-}
-
-fn ordered_entries(key: &str, values: Vec<String>) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(idx, value)| {
-            let ordinal = u32::try_from(idx)
-                .map_err(|_| ProjectLoadError::OrderedConfigIndexOverflow { key: key.into() })?;
-            Ok(ConfigEntry::ordered(key, value, ordinal))
-        })
-        .collect()
 }
 
 fn declaration_entries(
@@ -589,6 +386,18 @@ fn discovery_entries(
         )]);
     }
     ordered_entries(schema.key(), values)
+}
+
+fn ordered_entries(key: &str, values: Vec<String>) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            let ordinal = u32::try_from(idx)
+                .map_err(|_| ProjectLoadError::OrderedConfigIndexOverflow { key: key.into() })?;
+            Ok(ConfigEntry::ordered(key, value, ordinal))
+        })
+        .collect()
 }
 
 fn validate_discovery_shape(schema: &ConfigKey, actual: usize) -> Result<(), ProjectLoadError> {
@@ -853,6 +662,33 @@ pub enum ProjectLoadError {
         actual: Vec<String>,
         location: crate::runtime::ast::SourceLocation,
     },
+}
+
+impl From<RuntimeConfigEntryError> for ProjectLoadError {
+    fn from(source: RuntimeConfigEntryError) -> Self {
+        match source {
+            RuntimeConfigEntryError::InvalidArity {
+                key,
+                expected,
+                actual,
+            } => Self::InvalidConfigArity {
+                key,
+                expected,
+                actual,
+            },
+            RuntimeConfigEntryError::OrderedConfigIndexOverflow { key } => {
+                Self::OrderedConfigIndexOverflow { key }
+            }
+            RuntimeConfigEntryError::MissingLowering { key } => Self::InvalidConfigArity {
+                key,
+                expected: "a schema-backed fact lowering",
+                actual: 0,
+            },
+            RuntimeConfigEntryError::Obsolete(_) => Self::ObsoleteConfirmedNamespaceConfig {
+                location: SourceLocation::unknown(),
+            },
+        }
+    }
 }
 
 impl From<VerbRegistryError> for ProjectLoadError {
