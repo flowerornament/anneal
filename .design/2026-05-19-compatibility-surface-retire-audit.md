@@ -399,17 +399,26 @@ prelude relation. Defining `area(h, name)` as a derived predicate in the
 prelude first, then building the verb on top, avoids encoding the
 heuristic in an `@verb output_schema`. Defer.
 
-### Agreed target default-help surface (17 commands)
+### Agreed target default-help surface
 
 ```text
 arrival:    status, context, prime
+program:    schema, describe, verbs, vocab, sources, eval
 retrieval:  search, read, handle
-action:     garden, impact, blocked, broken, trend
+action:     blocked, broken, trend
+future:     garden, impact (after promotion from compatibility code)
             (broken = error-filtered view; diagnostics if renamed)
-discovery:  vocab, describe, schema, verbs, sources
-escape:     eval
 setup:      init
 ```
+
+2026-05-20 framing correction: the ladder above is language-first, not
+command-first. The `program` tier is load-bearing and should appear before the
+retrieval/action tiers in agent-facing help: agents arrive with `status` or
+`context`, inspect the runtime with `schema`/`describe`/`verbs`/`vocab`, then
+write `anneal -e` queries when saved verbs are too broad. Compatibility-era
+commands, including `garden` and `impact` until their runtime promotion lands,
+remain callable during the legacy boundary but do not appear as peer nouns in
+default help.
 
 Removed from default help after migration (capabilities preserved where
 useful as flags, hidden commands, or runtime relations behind verbs):

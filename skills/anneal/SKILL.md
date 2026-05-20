@@ -1,6 +1,6 @@
 ---
 name: anneal
-description: "Orient in knowledge corpora, retrieve relevant context, inspect graph structure, run corpus health checks, and ask Datalog queries over anneal facts. Use when a repo has `.design/`, `docs/`, or `anneal.dl`, or the user asks about convergence, blockers, broken refs, what changed, or what depends on X."
+description: "Orient in knowledge corpora, retrieve relevant context, inspect graph structure, track convergence, and ask Datalog queries over anneal facts. Use when a repo has `.design/`, `docs/`, or `anneal.dl`, or the user asks about convergence, blockers, broken refs, what changed, or what depends on X."
 metadata:
   short-description: Query knowledge corpora with anneal
 ---
@@ -8,8 +8,9 @@ metadata:
 # Anneal
 
 Use `anneal` as the runtime for a knowledge corpus. It turns corpus files into
-facts, loads the standard library and project `anneal.dl`, and exposes verbs,
-retrieval primitives, and raw Datalog queries.
+facts, loads the standard library and project `anneal.dl`, and exposes a small
+ladder: arrive, discover the language, retrieve evidence, then use Datalog for
+precise composite questions.
 
 Run `anneal help <command>` for exact flags. Do not guess CLI details from
 memory when a command matters.
@@ -23,24 +24,36 @@ briefing from the installed binary.
 
 ## First Moves
 
-Pick the smallest command that can answer the next agent question.
+Pick the smallest surface that can answer the next agent question.
 
 ### Arriving Cold
 
 ```bash
 anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal status --format=text
-anneal describe --format=text
-anneal vocab --format=text
 ```
 
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
 `--hits` to choose the number of search winners; `--limit` is also accepted as
-an alias. Use `anneal status` when the question is corpus state. Use
-`describe` for predicates, verbs, primitives, and runtime objects; use `vocab`
-for observed status values, edge kinds, namespaces, and frontmatter fields.
+an alias. Use `anneal status` when the question is corpus state.
+
+### Discovering The Language
+
+```bash
+anneal schema --format=text
+anneal describe search --format=text
+anneal verbs --format=text
+anneal vocab --format=text
+anneal sources --format=text
+```
+
+Use these before inventing names. `schema` shows queryable relations and
+signatures. `describe` explains one primitive, predicate, or verb. `verbs`
+shows saved query examples from the prelude and project. `vocab` shows observed
+status values, edge kinds, namespaces, and frontmatter fields. `sources` shows
+linked adapters and capabilities.
 
 ### Finding and Reading
 
@@ -66,25 +79,12 @@ anneal -e '? upstream("formal-model/v17.md", h).'
 ```
 
 Use raw Datalog when the built-in verbs are too broad. Stored relations use
-`*` prefixes; prelude and project predicates do not.
+`*` prefixes; prelude and project predicates do not. `anneal -e -` reads a
+query from stdin when a scratch file is clearer than a one-liner.
 
 Use `--explain` when you need provenance for why a row exists. It explains the
 first 3 rows by default; use `--explain-first N` for a different cap or
 `--explain-all` only when you really want every row's derivation tree.
-
-### Discovering the Runtime
-
-```bash
-anneal sources
-anneal verbs
-anneal schema
-anneal vocab
-anneal describe convergence
-```
-
-Use these before inventing names. Agents should discover the active adapters,
-verbs, predicates, corpus vocabulary, output contracts, and capability
-requirements from the runtime.
 
 ### Config and Extensions
 
@@ -113,55 +113,59 @@ existing `anneal.dl` still contains `confirmed(...)`, rerun `anneal init
 --dry-run` to preview the cleaned config and `anneal init --force` to rewrite
 it.
 
-### Health and Compatibility
+### Working The Convergence Frontier
 
 ```bash
 anneal broken
 anneal work
-anneal garden
 anneal trend  # emits rows when snapshot history exists; otherwise zero rows
-anneal health --json --compact
-anneal check --scope=active
-anneal get <handle> --context
 ```
 
-Prefer runtime verbs for new workflows. Use `garden` when you want ranked
-maintenance tasks with fix/context/verify hints. The older health commands
-remain available when exact compatibility matters.
+Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
+`work` for ranked active candidates, and `trend` when snapshot history exists.
 
 ## Command Map
 
-### Retrieval
+### Arrive
 
 - `anneal context GOAL`: grouped cold-agent context from search, read, and
   neighborhood
+- `anneal status`: compact corpus status
+- `anneal prime`: bundled agent briefing from the installed binary
+
+### Discover The Language
+
+- `anneal schema`: predicates, primitives, stored relations, and signatures
+- `anneal describe NAME`: docs for one runtime name
+- `anneal verbs`: saved query examples from the prelude and project
+- `anneal vocab`: observed status, edge, namespace, and metadata vocabulary
+- `anneal sources`: linked adapters and capabilities
+
+### Retrieve Evidence
+
 - `anneal search TEXT`: ranked content hits with handle, span, score, reason,
   field, and low-confidence marker
 - `anneal read HANDLE`: bounded content spans
 - `anneal handle HANDLE`: handle neighborhood
 
-### Standard Verbs
+### Work The Convergence Frontier
 
-- `anneal status`: compact corpus status
-- `handle`: handle neighborhood
-- `find`: identity-oriented handle lookup
-- `work`: ranked work candidates
-- `blocked`: blockers for one handle
-- `broken`: diagnostic gate
-- `trend`: convergence movement rows when snapshot history exists; no-history
+- `anneal work`: ranked work candidates
+- `anneal blocked HANDLE`: blockers for one handle
+- `anneal broken`: diagnostic gate
+- `anneal trend`: convergence movement rows when snapshot history exists; no-history
   corpora emit zero rows
-- `vocab`: observed status, edge, namespace, and metadata vocabulary
-- `context`: cold-agent retrieval bundle
 
 Project `@verb` declarations in `anneal.dl` appear beside these in
-`anneal verbs` and are callable through the same surface.
+`anneal verbs` as saved query examples. Use `anneal -e` for custom composition
+when a verb has not been projected as a dedicated CLI command.
 
 ### Raw Query Surface
 
 ```bash
 anneal -e '? *handle{id: h, kind: "label", status: "open"}.'
 anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
-anneal -e '? search("conformance", h, span, score, reason, field, low).'
+anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
 anneal -e '? read("formal-model/v17.md", 4000, span, text, start, end, tokens).'
 ```
 
@@ -192,17 +196,18 @@ Common prelude families:
 - Use `sources`, `verbs`, `schema`, and `describe` before writing a custom
   query against unfamiliar vocabulary.
 - Use `anneal -e` for composite questions. Keep queries narrow and project only
-  fields you need.
+  fields you need. Add `--limit N` while exploring broad predicates.
 - Use `--json` or NDJSON streams for tool consumption. Runtime commands render
   readable text at a terminal; use `--format=text` to force that renderer
   through pipe-only harnesses.
 - Use `--root` for the corpus path. Use `--area` only for an area name inside
   that corpus, usually a top-level directory or configured concern group.
-- Use legacy `health`, `check`, `get`, `find`, `map`, `impact`, `diff`,
-  `garden`, and `obligations` when exact pre-runtime behavior is required.
-- After editing corpus files, run `anneal broken` or `anneal check
-  --scope=active`, depending on whether you are exercising the programmable
-  runtime or the compatibility surface.
+- Use hidden compatibility commands such as `health`, `check`, `get`, `find`,
+  `map`, `impact`, `diff`, `garden`, and `obligations` only when exact
+  pre-0.11.0 behavior is required.
+- After editing corpus files, run `anneal broken`. Use `anneal check
+  --scope=active` only when you are deliberately exercising the compatibility
+  surface or CI gate.
 - If a command returns too much, rerun with a lower `--limit`, smaller
   `--budget`, or a more specific query.
 

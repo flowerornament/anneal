@@ -2261,6 +2261,32 @@ commands first; configured external URLs may be appended through
 `[help].doc_url_base`. Rationale: help is not a parallel documentation
 system; it is a projection layer over the runtime vocabulary.
 
+**Definition CR-D91 (Language-first help ladder).** Agent-facing help
+must present the rule language as the primary compositional surface.
+Default help teaches a short ladder:
+
+1. arrive with `status`, `context`, and `prime`;
+2. program the corpus with `schema`, `describe`, `verbs`, `vocab`,
+   `sources`, and `eval` / `-e`;
+3. retrieve evidence with `search`, `read`, and `handle`;
+4. work the convergence frontier with `work`, `blocked`, `broken`, and
+   `trend`;
+5. configure with `init`.
+
+Compatibility-era commands remain callable while the legacy boundary
+exists, but they do not appear as peer nouns in default help. Verbs are
+saved query examples and `eval` is the escape hatch for composite
+questions, so `eval --help` must show syntax, stored-relation examples,
+function-primitive examples, stdin form, explain flags, and an explicit
+"discover before guessing" chain through `schema`, `describe`, and
+`verbs`. The eval surface must support an explicit row cap for broad
+exploratory queries.
+
+Rationale: primitives-first did not replace Code Mode; it made Code
+Mode usable by giving agents retrieval and introspection primitives.
+Help must teach that shape directly instead of re-creating a wide
+command taxonomy.
+
 ### §36 I/O contract [CR-D25]
 
 **Definition CR-D25 (I/O contract).**
@@ -3227,6 +3253,7 @@ config key.
 - CR-D88: Aggregate body stratification (§20)
 - CR-D89: Configuration ladder (§39)
 - CR-D90: Namespace config is policy, not inventory (§28.3)
+- CR-D91: Language-first help ladder (§35)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

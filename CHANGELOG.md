@@ -4,6 +4,23 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Reframed `anneal --help`, README, and the bundled skill around the
+  language-first ladder: arrive with `status`/`context`, discover the runtime
+  with `schema`/`describe`/`verbs`/`vocab`, retrieve evidence with
+  `search`/`read`/`handle`, and use `anneal -e` for precise corpus questions.
+  Compatibility-era commands remain callable but no longer appear as peer nouns
+  in default help.
+- Expanded `anneal help eval` with syntax notes, introspection guidance,
+  stored-relation examples, primitive examples, stdin usage, and bounded
+  exploration guidance.
+
+### Added
+
+- `anneal -e` / `anneal eval` now accepts `--limit N` to cap broad exploratory
+  query output after evaluation.
+
 ## v0.11.0 - 2026-05-16
 
 ### Added

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 
 use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
@@ -59,9 +59,28 @@ pub fn main_entry() -> Result<()> {
 }
 
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
-    let invocation = Invocation::parse(args)?;
+    let mut invocation = Invocation::parse(args)?;
     if let RuntimeCommand::Help { topic } = invocation.command {
         return write_text(io::stdout().lock(), &topic.render());
+    }
+    let stdin_explain = match &invocation.command {
+        RuntimeCommand::Eval {
+            query,
+            explain,
+            limit,
+        } if query == "-" => Some((explain.clone(), *limit)),
+        _ => None,
+    };
+    if let Some((explain, limit)) = stdin_explain {
+        let mut stdin_query = String::new();
+        io::stdin()
+            .read_to_string(&mut stdin_query)
+            .context("failed to read eval query from stdin")?;
+        invocation.command = RuntimeCommand::Eval {
+            query: stdin_query,
+            explain,
+            limit,
+        };
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
@@ -190,6 +209,7 @@ enum RuntimeCommand {
     Eval {
         query: String,
         explain: ExplainOptions,
+        limit: Option<usize>,
     },
     Help {
         topic: HelpTopic,
@@ -245,9 +265,8 @@ Usage: anneal [OPTIONS] status
 
 Print compact corpus status from the programmable runtime.
 
-Migration note: in 0.10 and earlier, `anneal status` printed the corpus health
-overview. That compatibility report is now `anneal health`; `status` is the
-runtime work-prioritization view.
+Use this as the arrival command: it summarizes the active convergence frontier
+and points at work, blockers, and broken facts.
 
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -413,16 +432,41 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 Usage: anneal [OPTIONS] -e [OPTIONS] <QUERY>
        anneal [OPTIONS] eval [OPTIONS] <QUERY>
 
-Run a raw Datalog query against the programmable runtime.
+Run a Datalog query against corpus facts. This is anneal's compositional
+surface: use commands to orient, introspection to discover vocabulary, and
+`-e` when you need a precise question.
 
 Arguments:
   <QUERY>                        Query string
 
 Options:
+      --limit <N>                Cap returned rows after evaluation
       --explain                  Include derivation trees for first 3 rows
       --explain-first <N>        Include derivation trees for first N rows
       --explain-all              Include derivation trees for every row
       --explain-depth <N>        Derivation expansion depth
+
+Syntax:
+  ? atom(arg), other_atom(named: value).
+  local_rule(x) := body_atom(x), not excluded(x).
+  Stored relations use `*` prefixes; prelude/project predicates do not.
+
+Discover before guessing:
+  anneal schema --format=text
+  anneal describe search --format=text
+  anneal verbs --format=text
+  anneal sources --format=text
+  anneal -e '? source_of(\"work\", file, lines).'
+
+Examples:
+  anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
+  anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
+  anneal -e '? search(\"conformance\", h, span, score, reason, field, low).' --limit 20
+  anneal -e '? read(\"formal-model/v17.md\", 4000, span, text, start, end, tokens).'
+  anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+  anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
+  anneal -e '? source_of(\"work\", file, lines).'
+  anneal -e - < query.dl
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -674,8 +718,19 @@ impl RuntimeSession {
             ),
             RuntimeCommand::Schema => self.run_verb("schema", RowView::Schema),
             RuntimeCommand::Verbs => self.run_verb("verbs", RowView::Verbs),
-            RuntimeCommand::Eval { query, explain } => {
-                self.run_query(&query, explain, RowView::Eval)
+            RuntimeCommand::Eval {
+                query,
+                explain,
+                limit,
+            } => {
+                let mut output = self.eval(&query, explain)?;
+                if let Some(limit) = limit {
+                    output.rows.truncate(limit);
+                }
+                Ok(CommandOutput::Rows {
+                    rows: output.rows,
+                    view: RowView::Eval,
+                })
             }
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
         }
@@ -1333,9 +1388,16 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
 fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut explain = ExplainOptions::disabled();
+    let mut limit = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--limit" => {
+                limit = Some(parse_usize(next_value(&mut iter, "--limit")?, "--limit")?);
+            }
+            value if value.starts_with("--limit=") => {
+                limit = Some(parse_usize(value_after_equals(value), "--limit")?);
+            }
             "--explain" => explain = explain.with_first_rows(3),
             "--explain-depth" => {
                 let depth = parse_positive_usize(
@@ -1360,6 +1422,7 @@ fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
                 explain = explain.with_first_rows(rows);
             }
             "--explain-all" => explain = explain.with_all_rows(),
+            "-" => assign_once(&mut query, "-", "eval accepts one query string")?,
             value if value.starts_with('-') => bail!("unknown eval option {value:?}"),
             value => assign_once(&mut query, value, "eval accepts one query string")?,
         }
@@ -1367,6 +1430,7 @@ fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     Ok(RuntimeCommand::Eval {
         query: query.context("eval requires a query")?,
         explain,
+        limit,
     })
 }
 
@@ -1596,7 +1660,12 @@ mod tests {
             "4",
         ]))
         .expect("parse");
-        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+        let RuntimeCommand::Eval {
+            query,
+            explain,
+            limit,
+        } = parsed.command
+        else {
             panic!("expected eval command");
         };
         assert_eq!(
@@ -1607,6 +1676,7 @@ mod tests {
         assert_eq!(explain.depth().get(), 4);
         assert!(explain.explicit_depth());
         assert_eq!(explain.row_limit(), ExplainRowLimit::default());
+        assert_eq!(limit, None);
     }
 
     #[test]
@@ -1620,7 +1690,7 @@ mod tests {
             "4",
         ]))
         .expect("parse explain first");
-        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+        let RuntimeCommand::Eval { query, explain, .. } = parsed.command else {
             panic!("expected eval command");
         };
         assert_eq!(query, "? blocked(h).");
@@ -1633,7 +1703,7 @@ mod tests {
 
         let parsed = Invocation::parse(os(&["anneal", "-e", "? blocked(h).", "--explain-all"]))
             .expect("parse explain all");
-        let RuntimeCommand::Eval { query, explain } = parsed.command else {
+        let RuntimeCommand::Eval { query, explain, .. } = parsed.command else {
             panic!("expected eval command");
         };
         assert_eq!(query, "? blocked(h).");
@@ -1676,9 +1746,9 @@ mod tests {
                 .contains(&format!("default: {DEFAULT_READ_BUDGET}"))
         );
         assert!(
-            HelpTopic::Status.render().contains("0.10 and earlier")
-                && HelpTopic::Status.render().contains("anneal health"),
-            "status help should explain the health rename"
+            HelpTopic::Status.render().contains("arrival command")
+                && !HelpTopic::Status.render().contains("0.10 and earlier"),
+            "status help should teach the current arrival surface"
         );
     }
 
@@ -1695,6 +1765,41 @@ mod tests {
         assert!(HelpTopic::Eval.render().contains("--explain-depth"));
         assert!(HelpTopic::Eval.render().contains("--explain-first"));
         assert!(HelpTopic::Eval.render().contains("--explain-all"));
+        assert!(
+            HelpTopic::Eval
+                .render()
+                .contains("Discover before guessing")
+        );
+        assert!(HelpTopic::Eval.render().contains("source_of"));
+        assert!(HelpTopic::Eval.render().contains("anneal -e - < query.dl"));
+    }
+
+    #[test]
+    fn parses_eval_stdin_marker() {
+        let parsed = Invocation::parse(os(&["anneal", "-e", "-"])).expect("parse stdin eval");
+
+        let RuntimeCommand::Eval {
+            query,
+            explain,
+            limit,
+        } = parsed.command
+        else {
+            panic!("expected eval command");
+        };
+        assert_eq!(query, "-");
+        assert!(!explain.is_enabled());
+        assert_eq!(limit, None);
+    }
+
+    #[test]
+    fn parses_eval_limit() {
+        let parsed = Invocation::parse(os(&["anneal", "-e", "? *handle{id: h}.", "--limit=7"]))
+            .expect("parse eval limit");
+
+        let RuntimeCommand::Eval { limit, .. } = parsed.command else {
+            panic!("expected eval command");
+        };
+        assert_eq!(limit, Some(7));
     }
 
     #[test]

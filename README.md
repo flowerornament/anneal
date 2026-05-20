@@ -2,9 +2,9 @@
 
 Convergence assistant for knowledge corpora.
 
-`anneal` reads a directory of markdown, turns it into a typed knowledge graph,
-evaluates a Datalog-shaped rule layer against those facts, and exposes a small
-set of agent-friendly commands for orientation, retrieval, health, and
+`anneal` reads a directory of markdown, turns it into typed facts, evaluates a
+Datalog-shaped rule layer against those facts, and exposes a small
+agent-friendly surface for orientation, retrieval, convergence work, and
 extension.
 
 It is built for disconnected intelligences: agents across sessions with no
@@ -24,13 +24,13 @@ supersede each other, encode obligations, accumulate local vocabulary, and move
 through stages of settledness. Without tooling, every new agent burns context
 reconstructing the same map.
 
-`anneal` gives the agent a programmable retrieval surface:
+`anneal` gives the agent a programmable corpus surface:
 
 ```bash
 anneal context "what should I read before changing the release path?"
-anneal search "conformance audit" --limit 5
-anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000
 anneal schema
+anneal describe search
+anneal verbs
 anneal vocab
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 ```
@@ -39,14 +39,15 @@ The important move is that corpus structure becomes queryable. Markdown files,
 frontmatter, labels, body text, spans, references, snapshots, and project
 configuration are all exposed as typed relations. The built-in prelude derives
 standard convergence facts and verbs from those relations, and project
-`anneal.dl` files can add local rules or `@verb` declarations without changing
-the binary.
+`anneal.dl` files can add local rules and inspectable `@verb` declarations
+without changing the binary.
 
-The command names are still intentionally mnemonic. `context` gathers the first
-orientation bundle. `search` and `read` make retrieval explicit. `schema`,
-`vocab`, `verbs`, and `describe` let agents inspect the runtime before guessing.
-`status`, `garden`, and `trend` keep the convergence frontier visible once the
-agent is ready to act.
+The command names are intentionally mnemonic, but they are not the whole tool.
+`context` gathers the first orientation bundle. `schema`, `describe`, `verbs`,
+and `vocab` teach the runtime vocabulary. `search`, `read`, and `handle`
+retrieve evidence. `status`, `work`, `broken`, and `trend` keep the convergence
+frontier visible. When those saved forms are too broad, `anneal -e` is the
+normal way to ask the corpus a precise question.
 
 ## Install
 
@@ -149,33 +150,33 @@ history live under XDG paths.
 
 ## First Moves
 
-Use the narrowest command that answers the next question.
+Use the narrowest surface that answers the next question. The ladder is:
+arrive, discover the language, retrieve evidence, then write a query when the
+built-in verbs are too broad.
 
 ```bash
 # Arrive cold
 anneal context "find the most urgent thing blocking v17 conformance" --format=text
 anneal status --format=text
 
+# Discover the language before guessing
+anneal describe convergence --format=text
+anneal verbs --format=text
+anneal schema --format=text
+anneal vocab --format=text
+
 # Read enough to act
 anneal search "v17 conformance audit" --limit 3 --format=text
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000 --format=text
 anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=text
 
+# Ask a precise corpus question
+anneal -e '? *handle{id: h, kind: "file", status: s}.'
+
 # Work the convergence frontier
-anneal garden
 anneal work --format=text
 anneal broken --format=text
 anneal trend --format=text
-
-# Inspect the runtime before writing a query
-anneal describe convergence --format=text
-anneal sources --format=text
-anneal verbs --format=text
-anneal schema --format=text
-anneal vocab --format=text
-
-# Drop to raw Datalog when the built-in verbs are too coarse
-anneal -e '? *handle{id: h, kind: "file", status: s}.'
 ```
 
 Runtime commands render readable text at a terminal and JSON/NDJSON when piped.
@@ -204,8 +205,8 @@ artifacts becoming authoritative.
 
 **Snapshot**  
 A point-in-time capture of graph state, stored in local anneal history. Snapshot
-history powers `trend`, `diff`, and movement predicates such as advancing,
-holding, and drifting.
+history powers `trend` and movement predicates such as advancing, holding, and
+drifting.
 
 **Prelude**  
 The built-in standard library of rules, diagnostics, ranking, and verbs. It is
@@ -213,7 +214,7 @@ loaded automatically and should not be copied into a project.
 
 ## Command Map
 
-### Orientation
+### Arrive
 
 ```bash
 anneal context "goal"
@@ -233,75 +234,65 @@ Useful `context` flags:
 - `--depth N`: graph distance around winners
 - `--include-low-confidence`: include lower-confidence search hits
 
-### Retrieval And Inspection
+### Program The Corpus
+
+```bash
+anneal schema
+anneal describe search
+anneal verbs
+anneal vocab
+anneal sources
+anneal -e '? search("conformance", h, span, score, reason, field, low).'
+```
+
+Use `schema` to see queryable relations and signatures. Use `describe` for one
+primitive, predicate, or verb. Use `verbs` to inspect the saved query examples
+shipped by the prelude and project. Use `vocab` for corpus-local words before
+filtering. Use `sources` to see linked adapters and capabilities. Use `-e` when
+you need to compose a question directly.
+
+### Retrieve Evidence
 
 ```bash
 anneal search "conformance audit" --limit 5
 anneal read formal-model/v17.md --budget 4000
 anneal handle formal-model/v17.md
-anneal find ADR --limit 25
-anneal get REQ-12 --context
 ```
 
 `search` ranks content and metadata hits. `read` retrieves bounded content spans
-for one handle. `handle` shows incoming and outgoing edges; `anneal H HANDLE` is
-available as a short alias. `find` and `get` remain useful for identity-oriented
-handle lookup.
+for one handle. `handle` shows incoming and outgoing edges; `anneal H HANDLE`
+is available as a short alias.
 
-### Convergence Work
+### Work The Convergence Frontier
 
 ```bash
-anneal garden
 anneal work
 anneal broken
 anneal blocked HANDLE
 anneal trend
-anneal diff --days=7
 ```
 
-`garden` is the maintenance view: ranked tasks with hints for how to inspect
-and verify them. `work` ranks active candidates. `broken` shows diagnostic
-blockers. `blocked` explains one handle. `trend` and `diff` show movement
-between snapshots.
-
-### Edit Loop
-
-```bash
-anneal orient --file=design.md
-anneal impact design.md
-anneal check --scope=active
-anneal obligations
-```
-
-Use `orient` before editing to find upstream context. Use `impact` after editing
-to see downstream review targets. Use `check` and `obligations` to keep
-references, lifecycle constraints, and linear namespaces honest.
-
-### Introspection
-
-```bash
-anneal describe convergence
-anneal sources
-anneal verbs
-anneal schema
-anneal vocab
-```
-
-Use introspection before inventing a query. Agents should be able to discover
-which sources are linked, which verbs exist, what a predicate means, which
-capabilities a command needs, and which vocabulary the corpus already uses.
+`work` ranks active candidates. `broken` shows diagnostic blockers. `blocked`
+explains one handle. `trend` shows movement between snapshots when history
+exists.
 
 ### Raw Queries
 
 ```bash
 anneal -e '? *handle{id: h, kind: "file"}.'
+anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
+anneal -e '? source_of("work", file, lines).'
+anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
 ```
 
 The query language is Datalog-shaped. Stored relations use `*` prefixes, for
 example `*handle`, `*edge`, `*meta`, `*content`, `*span`, `*config`,
 `*snapshot`, and `*generation`. Derived predicates come from the built-in
-prelude, project `anneal.dl`, and inline query-local rules.
+prelude, project `anneal.dl`, and inline query-local rules. `anneal -e -`
+reads a query from stdin, so agents can keep larger questions in scratch files.
+Use `--limit N` while exploring broad predicates.
 
 ## Configuration Ladder
 
@@ -413,6 +404,13 @@ inventory.
 Snapshot history is the automatic migration path. When XDG history is enabled,
 pre-0.11.0 repo-local `.anneal/history.jsonl` is copied into XDG state on the
 first write so trend and diff history continue.
+
+Older command names such as `check`, `get`, `find`, `health`, `garden`,
+`impact`, `map`, `query`, `explain`, `orient`, `diff`, `areas`, and
+`obligations` remain callable during the transition, but they are not the
+primary surface. Prefer the language-first ladder above: `status`/`context` to
+arrive, `schema`/`describe`/`verbs`/`vocab` to discover, `search`/`read`/`handle`
+to retrieve, and `anneal -e` for precise composite questions.
 
 ## Stored Relations
 

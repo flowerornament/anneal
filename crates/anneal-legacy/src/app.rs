@@ -20,16 +20,17 @@ use crate::{
 Convergence assistant for knowledge corpora.
 
 anneal reads a knowledge corpus, turns it into typed facts, evaluates a
-Datalog-style standard library, and exposes agent-friendly commands for
-orientation, retrieval, health, and extension. It helps disconnected
-intelligences (agents across sessions with no shared memory) orient in a shared
-body of knowledge and push it toward settledness.
+Datalog-style standard library, and exposes a small agent surface for
+orientation, retrieval, convergence work, and custom queries. It helps
+disconnected intelligences (agents across sessions with no shared memory)
+recover what matters, read enough context, and leave the corpus more settled
+than they found it.
 
 Use it to:
-  orient       What exists here? What is active? Where is uncertainty highest?
-  inspect      What does this handle mean? What depends on it?
-  validate     Which references, obligations, or pipeline states are wrong?
-  resume       What changed since the last session?
+  arrive       What exists here? What is active? Where is uncertainty highest?
+  program      Which facts, predicates, and verbs can answer my question?
+  retrieve     What evidence should I read?
+  converge     Which references, obligations, or pipeline states are wrong?
 
 CORE CONCEPTS:
 
@@ -58,7 +59,7 @@ CORE CONCEPTS:
 
   Snapshot  A point-in-time capture of graph state, appended to local anneal
             history (XDG state by default, repo-local only if configured).
-            Enables convergence tracking (advancing/holding/drifting) and diff.
+            Enables convergence tracking (advancing/holding/drifting) and trend.
 
 START HERE:
 
@@ -67,35 +68,34 @@ START HERE:
     anneal status             Compact corpus status
     anneal prime              Full bundled agent skill briefing
 
-  Retrieval:
+  Program the corpus:
+    anneal schema             Queryable relations, predicates, and primitives
+    anneal describe NAME      Documentation for one runtime name
+    anneal verbs              Saved query examples from the prelude/project
+    anneal vocab              Corpus-local vocabulary to use in filters
+    anneal sources            Linked adapters and capabilities
+    anneal -e '? query.'      Datalog query over corpus facts
+
+  Retrieval primitives:
     anneal search TEXT        Ranked content retrieval
     anneal read HANDLE        Budgeted content spans for one handle
     anneal handle HANDLE      Incoming and outgoing edges for one handle
-    anneal -e '? query.'      Raw Datalog query over corpus facts
 
-  Health:
+  Convergence work:
     anneal broken             Diagnostic blockers
     anneal work               Ranked work candidates
-    anneal vocab              Observed corpus vocabulary
+    anneal trend              Movement between snapshots
 
-  Compatibility:
-    anneal health             Corpus health and convergence
-    anneal check              Diagnostics
-    anneal get REQ-12         Handle inspection
-    anneal find ADR           Handle-identity search
-    anneal garden             Maintenance tasks with hints
-    anneal impact docs/v3.md  Reverse dependencies for safe edits
+QUERY EXAMPLES:
 
-PAIRED WORKFLOWS:
+  anneal -e '? *handle{id: h, kind: \"file\", status: s}.'
+  anneal -e '? search(\"conformance\", h, span, score, reason, field, low).'
+  anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 
-  Before → after edit:
-    anneal orient --file=X    Upstream reading list (what feeds into X)
-    anneal impact X           Downstream review (what breaks if X changes)
-
-  Gardening loop:
-    anneal garden             Surface ranked tasks with hints
-    anneal orient --area=X    Follow each task's context: hint
-    anneal check --area=X     Follow each task's verify: hint
+  Use verbs and describe before guessing:
+    anneal verbs --format=text
+    anneal describe search --format=text
+    anneal help eval
 
 ROOT DIRECTORY:
 
@@ -134,13 +134,14 @@ OUTPUT:
 
   Runtime commands render readable text at a terminal and NDJSON when piped.
   Use --format=text to force readable output through a harness, or --json /
-  --format=json for machine consumption. Compatibility commands support --json
-  for machine consumption. Risky commands use progressive disclosure: bounded
-  JSON by default, explicit expansion flags for more detail, and --full for
-  full dumps when intentionally requested. Human output is designed for terminal
-  use with auto-colored diagnostics (disabled when piped).
+  --format=json for machine consumption. Risky commands use progressive
+  disclosure: bounded JSON by default, explicit expansion flags for more
+  detail, and --full for full dumps when intentionally requested. Human output
+  is designed for terminal use with auto-colored diagnostics (disabled when
+  piped).
 
-  Exit code 1 when errors are found (check command), 0 otherwise."
+  Exit code 1 when errors are found by gate-oriented diagnostic commands,
+  0 otherwise."
 )]
 struct Cli {
     /// Root directory to scan (defaults to .design/ > docs/ > current directory)
@@ -187,6 +188,7 @@ struct Cli {
 enum Command {
     /// Run local consistency checks
     #[command(
+        hide = true,
         long_about = "\
 Run five local consistency checks and five structural suggestions against the
 knowledge graph. Produces compiler-style diagnostics with error codes.
@@ -279,6 +281,7 @@ EXAMPLES:
 
     /// Look up a handle by identity
     #[command(
+        hide = true,
         long_about = "\
 Resolve a handle identity and show its kind, status, source file, snippet, and
 edges.
@@ -332,6 +335,7 @@ EXAMPLES:
 
     /// Search handles by text
     #[command(
+        hide = true,
         long_about = "\
 Search handle identities for a substring match. By default, excludes terminal
 (settled) handles to focus on active work. Use --all to include everything.
@@ -431,6 +435,7 @@ EXAMPLES:
 
     /// Show what's affected if a handle changes
     #[command(
+        hide = true,
         long_about = "\
 Reverse graph traversal from a handle. Shows which other handles depend on it,
 directly and transitively. Traverses edge kinds configured with
@@ -455,6 +460,7 @@ EXAMPLES:
 
     /// Render the knowledge graph
     #[command(
+        hide = true,
         long_about = "\
 Render the knowledge graph as text or graphviz DOT.
 
@@ -528,6 +534,7 @@ EXAMPLES:
 
     /// Compatibility corpus health report
     #[command(
+        hide = true,
         name = "health",
         long_about = "\
 Single-screen health report answering: what's the state of this knowledge corpus?
@@ -574,6 +581,7 @@ EXAMPLES:
 
     /// Show what changed since last session
     #[command(
+        hide = true,
         long_about = "\
 Graph-level change tracking. Answers: what changed while I was away?
 
@@ -617,6 +625,7 @@ EXAMPLES:
 
     /// Show linear namespace obligation status
     #[command(
+        hide = true,
         long_about = "\
 Show outstanding, discharged, and mooted obligations for linear namespaces.
 
@@ -657,6 +666,7 @@ EXAMPLES:
 
     /// Show per-area health profiles
     #[command(
+        hide = true,
         long_about = "\
 Show health profiles for each area (top-level directory) in the corpus.
 
@@ -692,6 +702,7 @@ EXAMPLES:
 
     /// Surface ranked maintenance tasks (the \"what's degrading?\" view)
     #[command(
+        hide = true,
         long_about = "\
 Surface maintenance tasks ranked by blast radius. Each task includes fix,
 context, and verify hints so agents can close the garden → orient → fix → check
@@ -727,6 +738,7 @@ EXAMPLES:
 
     /// Generate a context-budgeted reading list for agents
     #[command(
+        hide = true,
         long_about = "\
 Context-budgeted reading list for onboarding or resuming. Answers:
 \"I'm about to work on this — what should I read, within a token budget?\"
@@ -798,9 +810,8 @@ EXAMPLES:
     #[command(long_about = "\
 Print compact corpus status from the programmable runtime.
 
-Migration note: in 0.10 and earlier, `anneal status` printed the corpus health
-overview. That compatibility report is now `anneal health`; `status` is the
-runtime work-prioritization view.")]
+Use this as the arrival command: it summarizes the active convergence frontier
+and points at work, blockers, and broken facts.")]
     Status,
 
     /// Cold-agent orientation bundle (search + read + neighborhood)
@@ -863,12 +874,14 @@ runtime work-prioritization view.")]
     #[command(long_about = "List standard-library and project @verb declarations.")]
     Verbs,
 
-    /// Raw Datalog query
-    #[command(long_about = "Run a raw Datalog query against the programmable runtime.")]
+    /// Datalog query over corpus facts
+    #[command(long_about = "Run a Datalog query against corpus facts.")]
     Eval,
 
     /// Query structural facts derived from the current corpus
-    #[command(long_about = "\
+    #[command(
+        hide = true,
+        long_about = "\
 Run bounded structural queries over anneal's current in-memory graph and
 derived analysis facts.
 
@@ -884,14 +897,17 @@ The current surface is typed by domain:
   suggestions   query structural suggestion outputs
 
 All query domains inherit anneal's bounded-output discipline: limits, offsets,
-scope controls, and explicit --full expansion.")]
+scope controls, and explicit --full expansion."
+    )]
     Query {
         #[command(subcommand)]
         command: query::QueryCommand,
     },
 
     /// Explain why anneal produced a derived result
-    #[command(long_about = "\
+    #[command(
+        hide = true,
+        long_about = "\
 Explain why anneal produced a diagnostic, impact set, convergence signal,
 obligation state, or suggestion.
 
@@ -904,7 +920,8 @@ The current surface is typed by explanation domain:
   impact        explain why impact included each affected handle
   convergence   explain the current status-style convergence signal
   obligation    explain one obligation's current disposition
-  suggestion    explain one suggestion, primarily by suggestion_id")]
+  suggestion    explain one suggestion, primarily by suggestion_id"
+    )]
     Explain {
         #[command(subcommand)]
         command: explain::ExplainCommand,
@@ -1799,33 +1816,45 @@ mod tests {
 
         for name in [
             "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
-            "vocab", "describe", "sources", "schema", "verbs", "eval", "health",
+            "vocab", "describe", "sources", "schema", "verbs", "eval", "init", "prime",
         ] {
             assert!(
                 help.contains(name),
                 "top-level help should list runtime command {name:?}"
             );
         }
+        for hidden in [
+            "health",
+            "check",
+            "get",
+            "find",
+            "garden",
+            "impact",
+            "map",
+            "query",
+            "explain",
+            "areas",
+            "diff",
+            "obligations",
+            "orient",
+        ] {
+            assert!(
+                !help.contains(&format!("\n  {hidden} ")),
+                "top-level help should not list compatibility command {hidden:?}"
+            );
+        }
     }
 
     #[test]
-    fn status_and_health_help_explain_rename() {
+    fn status_help_is_language_first() {
         let mut command = <Cli as clap::CommandFactory>::command();
         let status_help = command
             .find_subcommand_mut("status")
             .expect("status subcommand exists")
             .render_long_help()
             .to_string();
-        assert!(status_help.contains("0.10 and earlier"));
-        assert!(status_help.contains("anneal health"));
-
-        let health_help = command
-            .find_subcommand_mut("health")
-            .expect("health subcommand exists")
-            .render_long_help()
-            .to_string();
-        assert!(health_help.contains("0.10 and earlier"));
-        assert!(health_help.contains("anneal status"));
+        assert!(status_help.contains("arrival command"));
+        assert!(!status_help.contains("0.10 and earlier"));
     }
 
     #[test]
