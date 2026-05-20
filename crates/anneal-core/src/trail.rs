@@ -37,6 +37,7 @@ pub(crate) const TRAIL_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Runtime-populated redacted trail audit rows for agent/session paths.",
         provenance: "runtime",
+        example: r"? *trail{session_id: session, step: step, verb: verb}.",
     },
     StoredRelationDescriptor {
         name: TRAIL_REF_RELATION,
@@ -53,12 +54,14 @@ pub(crate) const TRAIL_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Runtime-populated normalized surfaced and consumed references for trail steps.",
         provenance: "runtime",
+        example: r"? *trail_ref{session_id: session, kind: kind, handle: h}.",
     },
     StoredRelationDescriptor {
         name: TRAIL_GENERATION_RELATION,
         fields: &["session_id", "step", "corpus", "source", "generation"],
         doc: "Runtime-populated source generation stamps for trail steps.",
         provenance: "runtime",
+        example: r"? *trail_generation{session_id: session, source: source, generation: generation}.",
     },
 ];
 

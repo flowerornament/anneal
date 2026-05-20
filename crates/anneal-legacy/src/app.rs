@@ -155,32 +155,42 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Pretty-print JSON output for humans. Only applies with --json.
-    #[arg(long, global = true)]
+    /// Compatibility JSON only: pretty-print object output. Runtime verbs emit NDJSON and use --format.
+    #[arg(long, global = true, help_heading = "Compatibility options")]
     pretty: bool,
 
-    /// Scope output to an area name (top-level directory or concern group), not a filesystem path
-    #[arg(long, global = true)]
+    /// Compatibility filter: scope output to an area name (top-level directory or concern group), not a filesystem path
+    #[arg(long, global = true, help_heading = "Compatibility options")]
     area: Option<String>,
 
-    /// Filter to files within the default recent window (config temporal recent_days)
-    #[arg(long, global = true)]
+    /// Compatibility filter: files within the default recent window (config temporal recent_days)
+    #[arg(long, global = true, help_heading = "Compatibility options")]
     recent: bool,
 
-    /// Filter to files dated within the last N days (e.g. --since=14d)
-    #[arg(long, global = true, conflicts_with = "recent")]
+    /// Compatibility filter: files dated within the last N days (e.g. --since=14d)
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "recent",
+        help_heading = "Compatibility options"
+    )]
     since: Option<String>,
 
-    /// Disable color and Unicode glyphs. Useful for piping, logs, accessibility.
-    #[arg(long, global = true)]
+    /// Compatibility rendering: disable color and Unicode glyphs.
+    #[arg(long, global = true, help_heading = "Compatibility options")]
     plain: bool,
 
-    /// ASCII-only glyphs with color retained. For terminals without Unicode support.
-    #[arg(long, global = true, conflicts_with = "plain")]
+    /// Compatibility rendering: ASCII-only glyphs with color retained.
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "plain",
+        help_heading = "Compatibility options"
+    )]
     minimal: bool,
 
-    /// Force-disable color (color also off under NO_COLOR or when stdout is not a TTY).
-    #[arg(long, global = true)]
+    /// Compatibility rendering: force-disable color.
+    #[arg(long, global = true, help_heading = "Compatibility options")]
     no_color: bool,
 
     #[command(subcommand)]
@@ -1917,13 +1927,15 @@ mod tests {
 
         for name in [
             "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
-            "vocab", "describe", "sources", "schema", "verbs", "eval", "init", "prime",
+            "vocab", "describe", "sources", "schema", "verbs", "examples", "eval", "init", "prime",
         ] {
             assert!(
                 help.contains(name),
                 "top-level help should list runtime command {name:?}"
             );
         }
+        assert!(help.contains("Compatibility options"));
+        assert!(help.contains("Runtime verbs emit NDJSON and use --format"));
         for hidden in [
             "health",
             "check",

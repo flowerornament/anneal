@@ -37,11 +37,15 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         if matches!(arg, "-e" | "--eval") {
             return true;
         }
-        if matches!(arg, "--root" | "--format") {
+        if matches!(arg, "--root" | "--format" | "--area" | "--since") {
             let _ = iter.next();
             continue;
         }
-        if arg.starts_with("--root=") || arg.starts_with("--format=") || is_ignored_global_flag(arg)
+        if arg.starts_with("--root=")
+            || arg.starts_with("--format=")
+            || arg.starts_with("--area=")
+            || arg.starts_with("--since=")
+            || is_routing_only_flag(arg)
         {
             continue;
         }
@@ -167,7 +171,15 @@ impl Invocation {
                 )?;
             } else if let Some(value) = arg.strip_prefix("--format=") {
                 output = parse_output_format(value)?;
-            } else if !is_ignored_global_flag(&arg) {
+            } else if rest.is_empty() && is_compatibility_filter_flag(&arg) {
+                bail!(
+                    "{arg} is a compatibility filter, not a runtime verb option; use it with compatibility commands such as check/find/map/garden/orient, or express the filter in Datalog with `anneal -e`"
+                );
+            } else if rest.is_empty() && is_compatibility_render_flag(&arg) {
+                bail!(
+                    "{arg} is a compatibility rendering flag; runtime verbs use `--format=text`, `--format=json`, or `--json`"
+                );
+            } else {
                 rest.push(arg);
             }
         }
@@ -300,7 +312,6 @@ Arguments:
 Options:
       --budget <N>               Derives one per-hit read cap; not divided by hits
       --hits <N>                 Number of search winners (default: 3)
-      --limit <N>                Alias for --hits; if both are supplied, last wins
       --depth <N>                Alias for --neighborhood-depth
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
@@ -591,15 +602,17 @@ impl RuntimeCommand {
             "search" => parse_search(rest),
             "read" => parse_read(rest),
             "handle" | "H" => Ok(Self::Handle {
-                handle: required_positional(rest, "handle requires a handle")?.to_string(),
+                handle: required_runtime_positional(rest, "handle", "handle requires a handle")?
+                    .to_string(),
             }),
             "work" => {
                 ensure_no_args(rest, "work")?;
                 Ok(Self::Work)
             }
             "blocked" => Ok(Self::Blocked {
-                handle: required_positional(
+                handle: required_runtime_positional(
                     rest,
+                    "blocked",
                     "blocked inspects one handle; pass `anneal blocked <HANDLE>` or use `anneal status` for a corpus-wide blocked list",
                 )?
                 .to_string(),
@@ -620,11 +633,17 @@ impl RuntimeCommand {
                 [] => Ok(Self::Describe {
                     name: "runtime".to_string(),
                 }),
+                [name] if name.starts_with('-') => {
+                    reject_runtime_compatibility_flag("describe", name)?;
+                    Ok(Self::Describe { name: name.clone() })
+                }
                 [name] => Ok(Self::Describe { name: name.clone() }),
-                _ => bail!(
-                    "describe accepts at most one name; got {:?}",
-                    rest.join(" ")
-                ),
+                _ => {
+                    if let Some(flag) = rest.first().filter(|arg| arg.starts_with('-')) {
+                        reject_runtime_compatibility_flag("describe", flag)?;
+                    }
+                    bail!("describe accepts at most one name; got {:?}", rest.join(" "))
+                }
             },
             "sources" => {
                 ensure_no_args(rest, "sources")?;
@@ -1181,7 +1200,14 @@ impl<'a> DynamicVerbParser<'a> {
             .map_or((without_prefix, Option::<&str>::None), |(name, value)| {
                 (name, Some(value))
             });
-        let arg = self.arg(name)?;
+        if is_compatibility_render_flag(raw) {
+            bail!(
+                "verb '{}' has no argument '{}'; {raw} is a compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
+                self.entry.name(),
+                name,
+            );
+        }
+        let arg = self.arg(raw, name)?;
         let value = match (inline_value, arg.kind()) {
             (Some(value), _) => value.to_string(),
             (None, VerbArgKind::Bool) => "true".to_string(),
@@ -1240,18 +1266,32 @@ impl<'a> DynamicVerbParser<'a> {
         })
     }
 
-    fn arg(&self, name: &str) -> Result<&'a VerbArg> {
+    fn arg(&self, raw: &str, name: &str) -> Result<&'a VerbArg> {
         self.entry
             .args()
             .iter()
             .find(|arg| arg.name() == name)
-            .with_context(|| {
-                format!(
+            .ok_or_else(|| {
+                if is_compatibility_filter_flag(raw) {
+                    anyhow::anyhow!(
+                        "verb '{}' has no argument '{}'; {raw} is a compatibility filter, not a runtime verb option. Use a declared verb argument, or express the filter in Datalog with `anneal -e`",
+                        self.entry.name(),
+                        name,
+                    )
+                } else if is_compatibility_render_flag(raw) {
+                    anyhow::anyhow!(
+                        "verb '{}' has no argument '{}'; {raw} is a compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
+                        self.entry.name(),
+                        name,
+                    )
+                } else {
+                    anyhow::anyhow!(
                     "verb '{}' has no argument '{}'; expected args: {}",
                     self.entry.name(),
                     name,
                     self.expected_args()
-                )
+                    )
+                }
             })
     }
 
@@ -1732,17 +1772,26 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--budget" => budget = parse_i64(next_value(&mut iter, "--budget")?, "--budget")?,
-            "--hits" | "--limit" => hits = parse_usize(next_value(&mut iter, arg)?, arg)?,
+            "--hits" => hits = parse_usize(next_value(&mut iter, arg)?, arg)?,
             "--depth" | "--neighborhood-depth" => {
                 depth = parse_i64(next_value(&mut iter, arg)?, arg)?;
             }
             "--include-low-confidence" => include_low_confidence = true,
+            "--limit" => {
+                bail!(
+                    "context uses --hits for search winners; use `anneal context <GOAL> --hits N`"
+                )
+            }
             value if value.starts_with("--budget=") => {
                 budget = parse_i64(value_after_equals(value), "--budget")?;
             }
-            value if value.starts_with("--hits=") || value.starts_with("--limit=") => {
-                let flag = value.split_once('=').map_or(value, |(flag, _)| flag);
-                hits = parse_usize(value_after_equals(value), flag)?;
+            value if value.starts_with("--hits=") => {
+                hits = parse_usize(value_after_equals(value), "--hits")?;
+            }
+            value if value.starts_with("--limit=") => {
+                bail!(
+                    "context uses --hits for search winners; use `anneal context <GOAL> --hits N`"
+                )
             }
             value if value.starts_with("--depth=") => {
                 depth = parse_i64(value_after_equals(value), "--depth")?;
@@ -1750,7 +1799,10 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
             value if value.starts_with("--neighborhood-depth=") => {
                 depth = parse_i64(value_after_equals(value), "--neighborhood-depth")?;
             }
-            value if value.starts_with('-') => bail!("unknown context option {value:?}"),
+            value if value.starts_with('-') => {
+                reject_runtime_compatibility_flag("context", value)?;
+                bail!("unknown context option {value:?}");
+            }
             value => assign_once(&mut goal, value, "context accepts one goal")?,
         }
     }
@@ -1775,7 +1827,10 @@ fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
             value if value.starts_with("--limit=") => {
                 limit = parse_usize(value_after_equals(value), "--limit")?;
             }
-            value if value.starts_with('-') => bail!("unknown search option {value:?}"),
+            value if value.starts_with('-') => {
+                reject_runtime_compatibility_flag("search", value)?;
+                bail!("unknown search option {value:?}");
+            }
             value => assign_once(&mut query, value, "search accepts one query")?,
         }
     }
@@ -1798,7 +1853,10 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
             value if value.starts_with("--budget=") => {
                 budget = parse_i64(value_after_equals(value), "--budget")?;
             }
-            value if value.starts_with('-') => bail!("unknown read option {value:?}"),
+            value if value.starts_with('-') => {
+                reject_runtime_compatibility_flag("read", value)?;
+                bail!("unknown read option {value:?}");
+            }
             value => assign_once(&mut handle, value, "read accepts one handle")?,
         }
     }
@@ -1846,7 +1904,10 @@ fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
             }
             "--explain-all" => explain = explain.with_all_rows(),
             "-" => assign_once(&mut query, "-", "eval accepts one query string")?,
-            value if value.starts_with('-') => bail!("unknown eval option {value:?}"),
+            value if value.starts_with('-') => {
+                reject_runtime_compatibility_flag("eval", value)?;
+                bail!("unknown eval option {value:?}");
+            }
             value => assign_once(&mut query, value, "eval accepts one query string")?,
         }
     }
@@ -1902,17 +1963,52 @@ fn is_explain_option(value: &str) -> bool {
         || value.starts_with("--explain-first=")
 }
 
-fn required_positional<'a>(args: &'a [String], message: &str) -> Result<&'a str> {
+fn required_runtime_positional<'a>(
+    args: &'a [String],
+    command: &str,
+    message: &str,
+) -> Result<&'a str> {
     match args {
+        [value] if value.starts_with('-') => {
+            reject_runtime_compatibility_flag(command, value)?;
+            Ok(value)
+        }
         [value] => Ok(value),
         [] => bail!("{message}"),
-        _ => bail!("{message}; got extra arguments"),
+        _ => {
+            if let Some(flag) = args.first().filter(|arg| arg.starts_with('-')) {
+                reject_runtime_compatibility_flag(command, flag)?;
+            }
+            bail!("{message}; got extra arguments")
+        }
     }
+}
+
+fn reject_runtime_compatibility_flag(command: &str, flag: &str) -> Result<()> {
+    if is_compatibility_filter_flag(flag) {
+        bail!(
+            "{command} does not accept compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
+        );
+    }
+    if is_compatibility_render_flag(flag) {
+        bail!(
+            "{command} does not accept compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
+        );
+    }
+    Ok(())
 }
 
 fn ensure_no_args(args: &[String], command: &str) -> Result<()> {
     if args.is_empty() {
         Ok(())
+    } else if let Some(flag) = args.first().filter(|arg| is_compatibility_filter_flag(arg)) {
+        bail!(
+            "{command} does not accept compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
+        )
+    } else if let Some(flag) = args.first().filter(|arg| is_compatibility_render_flag(arg)) {
+        bail!(
+            "{command} does not accept compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
+        )
     } else {
         bail!("{command} accepts no arguments; got {:?}", args.join(" "))
     }
@@ -1968,11 +2064,25 @@ fn value_after_equals(value: &str) -> &str {
         .1
 }
 
-fn is_ignored_global_flag(arg: &str) -> bool {
+fn is_routing_only_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "--json" | "--pretty" | "--plain" | "--minimal" | "--no-color"
+        "--json" | "--pretty" | "--plain" | "--minimal" | "--no-color" | "--recent"
     )
+}
+
+fn is_compatibility_filter_flag(arg: &str) -> bool {
+    matches!(arg, "--area" | "--recent" | "--since")
+        || arg.starts_with("--area=")
+        || arg.starts_with("--since=")
+}
+
+fn is_compatibility_render_flag(arg: &str) -> bool {
+    matches!(arg, "--pretty" | "--plain" | "--minimal" | "--no-color")
+        || arg.starts_with("--pretty=")
+        || arg.starts_with("--plain=")
+        || arg.starts_with("--minimal=")
+        || arg.starts_with("--no-color=")
 }
 
 fn is_legacy_surface_command(arg: &str) -> bool {
@@ -2110,8 +2220,15 @@ mod tests {
             "--format=text",
             "vocab"
         ])));
+        assert!(should_handle_args(&os(&[
+            "anneal", "--area", "compiler", "status"
+        ])));
+        assert!(should_handle_args(&os(&["anneal", "--pretty", "status"])));
         assert!(!should_handle_args(&os(&[
             "anneal", "--root", ".design", "health"
+        ])));
+        assert!(!should_handle_args(&os(&[
+            "anneal", "--area", "compiler", "check"
         ])));
         assert!(!should_handle_args(&os(&["anneal", "init"])));
         assert!(!should_handle_args(&os(&["anneal", "prime"])));
@@ -2119,6 +2236,38 @@ mod tests {
         assert!(!should_handle_args(&os(&["anneal", "--help"])));
         assert!(!should_handle_args(&os(&["anneal", "check", "--json"])));
         assert!(!should_handle_args(&os(&["anneal", "--mcp"])));
+    }
+
+    #[test]
+    fn runtime_rejects_compatibility_dialect_flags() {
+        let err = Invocation::parse(os(&["anneal", "--area=compiler", "status"]))
+            .expect_err("runtime should reject compatibility filters");
+        assert!(err.to_string().contains("compatibility filter"), "{err}");
+
+        let err = Invocation::parse(os(&["anneal", "--pretty", "status"]))
+            .expect_err("runtime should reject compatibility render flags");
+        assert!(
+            err.to_string().contains("compatibility rendering flag"),
+            "{err}"
+        );
+
+        let err = Invocation::parse(os(&["anneal", "status", "--area=compiler"]))
+            .expect_err("standard runtime verbs should reject compatibility filters");
+        assert!(
+            err.to_string()
+                .contains("does not accept compatibility filter"),
+            "{err}"
+        );
+
+        let parsed = Invocation::parse(os(&["anneal", "release-blockers", "--area", "compiler"]))
+            .expect("dynamic verbs may declare their own area argument");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Verb {
+                name: "release-blockers".to_string(),
+                args: vec!["--area".to_string(), "compiler".to_string()],
+            }
+        );
     }
 
     #[test]
@@ -2148,19 +2297,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_context_limit_alias() {
-        let parsed =
-            Invocation::parse(os(&["anneal", "context", "v17 audit", "--limit=4"])).expect("parse");
-        assert_eq!(
-            parsed.command,
-            RuntimeCommand::Context {
-                goal: "v17 audit".to_string(),
-                budget: DEFAULT_READ_BUDGET,
-                hits: 4,
-                depth: crate::DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH,
-                include_low_confidence: false,
-            }
-        );
+    fn rejects_context_limit_alias() {
+        let err = Invocation::parse(os(&["anneal", "context", "v17 audit", "--limit=4"]))
+            .expect_err("context has hits, not a generic limit");
+        assert!(err.to_string().contains("context uses --hits"), "{err}");
     }
 
     #[test]

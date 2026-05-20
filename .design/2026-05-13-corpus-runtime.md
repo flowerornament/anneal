@@ -1978,6 +1978,27 @@ separate from verb-specific arguments such as `limit` or `budget`.
 Rationale: this closes Steele's criterion for saved project verbs
 without making every parameterized workflow fall back to raw `anneal -e`.
 
+**Definition CR-D94 (CLI flag dialect boundary).** The runtime verb
+surface accepts only runtime-global options (`--root`, `--json`,
+`--format`) plus verb/declaration options and provenance options. Legacy
+compatibility filters and render controls (`--area`, `--recent`,
+`--since`, `--pretty`, `--plain`, `--minimal`, `--no-color`) are not
+runtime globals; runtime verbs must reject them with a recovery hint
+rather than silently ignore them or route through compatibility code.
+
+Hidden compatibility commands may continue to accept their historical
+filter/render flags while they exist, but top-level help must label
+those flags as compatibility options. Runtime row limits are `--rows`
+for dynamically projected verbs and `--limit` only where a fixed verb
+explicitly declares row/sample semantics; domain concepts such as
+`context --hits`, `context --budget`, and `read --budget` must document
+their own unit rather than borrowing generic limit language.
+
+Rationale: the language-first surface should be predictable from the
+help text. A flag either belongs to the runtime verb envelope or to the
+compatibility window; it should not sometimes filter, sometimes no-op,
+and sometimes change dispatch based only on argument position.
+
 ### §32 Discovery fact contract
 
 Adapters declare their consumed discovery facts in `SourceInfo.config_keys`:
@@ -2102,9 +2123,9 @@ Projects override or extend any.
 | `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
 | `anneal vocab` | what words does this corpus use | observed statuses, edge kinds, namespaces, metadata keys |
 
-Plus self-description surfaces from §11. v0.11.0 ships CLI verbs for
-`schema`, `verbs`, `describe`, `sources`, and `vocab`; `predicates`,
-`source_of`, and `examples` are query primitives available through
+Plus self-description surfaces from §11. v0.11.x ships CLI verbs for
+`schema`, `verbs`, `describe`, `examples`, `sources`, and `vocab`;
+`predicates` and `source_of` remain query primitives available through
 `anneal -e` until promoted to CLI verbs.
 
 **Definition CR-D86 (Corpus vocabulary verb).** `anneal vocab` is a
@@ -2268,29 +2289,29 @@ the echo.
 
 ### §35 CLI flags
 
-Most flags are operational. Any flag that changes result policy is
-called out explicitly and mirrored by config or query predicates;
-filters still belong in queries.
+The runtime CLI has a small, explicit flag envelope. Flags that change
+domain policy live on the verb that owns the unit (`context --hits`,
+`read --budget`, `search --limit`) or in Datalog. Compatibility-era
+filter/render flags remain available only on hidden compatibility
+commands while that boundary exists.
 
 | Flag | Effect | Scope |
 |---|---|---|
-| `--root=PATH` | operate on a different corpus | global |
-| `--at=<ref>` | evaluate at a historical reference | global |
-| `--limit=N` | cap output records | global |
-| `--explain` | include `_derivation` on first 3 records | `-e` / `eval` |
-| `--explain-first=N` | include `_derivation` on first N records | `-e` / `eval` |
-| `--explain-all` | include `_derivation` on every record | `-e` / `eval` |
-| `--explain-depth=N` | derivation expansion depth (default 5) | `-e` / `eval` |
-| `--meta` | emit `_meta` envelope record on stdout | global |
-| `--no-snapshot` | don't append history on this run | global |
-| `--quiet` | suppress stderr chatter | global |
-| `--budget=N` | token budget for `work` / `read` / `context` | verb-specific |
+| `--root=PATH` | operate on a different corpus | runtime global |
+| `--json` | force machine output | runtime global |
+| `--format=text|json` | force human or machine output | runtime global |
+| `--rows=N` | cap rows after dynamic verb evaluation | dynamic verbs |
+| `--limit=N` | cap rows or samples only where a fixed verb explicitly declares that unit | fixed verb-specific |
+| `--hits=N` | number of context search winners | `context` |
+| `--budget=N` | token/read budget for retrieval verbs | `read` / `context` |
+| `--include-low-confidence` | include low-confidence search/context hits | `search` / `context` |
+| `--explain` | include `_derivation` on first 3 records | runtime verbs / `eval` |
+| `--explain-first=N` | include `_derivation` on first N records | runtime verbs / `eval` |
+| `--explain-all` | include `_derivation` on every record | runtime verbs / `eval` |
+| `--explain-depth=N` | derivation expansion depth (default 5) | runtime verbs / `eval` |
 | `--gate` | exit 1 if any results | `broken` |
-| `--source=NAME` | restrict ingestion to one Source | global |
-| `--mcp` | planned MCP launcher; v2.0 ships `anneal-mcp` as crate/library surface | global |
-| `--color=auto` | TTY detect; pipes get plain text | global |
-| `--pretty` | human-readable formatted JSON (breaks NDJSON contract) | global |
-| `--include-low-confidence` | omit the default `low_confidence = false` predicate from search/context `TopK` templates | global, search-relevant |
+| `--area`, `--recent`, `--since` | historical filters | compatibility commands only |
+| `--pretty`, `--plain`, `--minimal`, `--no-color` | historical render controls | compatibility commands only |
 
 **Definition CR-D82 (Help and reference projection).** CLI help is a
 projection of the same runtime self-description that backs
@@ -2340,10 +2361,9 @@ command taxonomy.
 - **machine stdout: pure NDJSON.** Bare record stream; `--meta` adds
   one envelope record at the top. Machine mode is selected when stdout
   is piped or when `--json` / `--format=json` is passed. Human mode is
-  governed by CR-D87. The `--pretty` flag is also available for
-  in-process formatting; it emits multi-line JSON and breaks the NDJSON
-  contract, so it is human-only and never used in agent pipelines or
-  `--mcp` mode.
+  governed by CR-D87. Runtime verbs do not accept `--pretty`; callers
+  that want readable output use `--format=text`, and callers that want
+  machine output use NDJSON.
 - **stderr: human text.** Verb-banner echo, progress, warnings,
   parse errors. Never NDJSON.
 - **stdin: `-` means stdin.** `anneal blocked -` reads handles, one
@@ -3323,6 +3343,7 @@ config key.
 - CR-D91: Language-first help ladder (§35)
 - CR-D92: CLI dynamic verb projection (§31)
 - CR-D93: Config declaration schema (§39)
+- CR-D94: CLI flag dialect boundary (§31)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -129,6 +129,7 @@ pub(crate) struct StoredRelationDescriptor {
     pub(crate) fields: &'static [&'static str],
     pub(crate) doc: &'static str,
     pub(crate) provenance: &'static str,
+    pub(crate) example: &'static str,
 }
 
 pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
@@ -153,6 +154,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored corpus handles emitted by linked sources.",
         provenance: "source",
+        example: r#"? *handle{id: h, kind: "file", status: status}."#,
     },
     StoredRelationDescriptor {
         name: "edge",
@@ -171,6 +173,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored typed edges between corpus handles.",
         provenance: "source",
+        example: r#"? *edge{from: src, to: dst, kind: "DependsOn"}."#,
     },
     StoredRelationDescriptor {
         name: "meta",
@@ -187,6 +190,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored key/value metadata attached to handles.",
         provenance: "source",
+        example: r"? *meta{handle: h, key: key, value: value}.",
     },
     StoredRelationDescriptor {
         name: "content",
@@ -205,6 +209,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored retrievable content spans for handles.",
         provenance: "source",
+        example: r"? *content{handle: h, span_id: span, tokens: tokens}.",
     },
     StoredRelationDescriptor {
         name: "span",
@@ -223,6 +228,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored source spans with line ranges and summaries.",
         provenance: "source",
+        example: r"? *span{id: span, handle: h, start_line: start, end_line: end}.",
     },
     StoredRelationDescriptor {
         name: "concern",
@@ -238,24 +244,28 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         ],
         doc: "Stored concern membership facts.",
         provenance: "source",
+        example: r"? *concern{name: concern, member: h}.",
     },
     StoredRelationDescriptor {
         name: "config",
         fields: &["corpus", "key", "value", "ordinal"],
         doc: "Runtime-populated configuration facts.",
         provenance: "runtime",
+        example: r"? *config{key: key, value: value, ordinal: ordinal}.",
     },
     StoredRelationDescriptor {
         name: "snapshot",
         fields: &["corpus", "snapshot", "at", "id", "key", "value"],
         doc: "Runtime-populated historical snapshot facts.",
         provenance: "runtime",
+        example: r"? *snapshot{snapshot: snapshot, id: h, key: key, value: value}.",
     },
     StoredRelationDescriptor {
         name: "generation",
         fields: &["corpus", "source", "current"],
         doc: "Runtime-populated current generation per source.",
         provenance: "runtime",
+        example: r"? *generation{source: source, current: generation}.",
     },
 ];
 
