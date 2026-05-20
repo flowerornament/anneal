@@ -28,6 +28,8 @@ in
           description = ''
             Optional override for anneal's history backend mode in user config.
             This maps to `state.history_mode` in `anneal/config.toml`.
+            This is machine-local state policy only; corpus semantics belong in
+            each repository's `anneal.dl`.
           '';
         };
 
@@ -38,6 +40,7 @@ in
           description = ''
             Optional base directory for anneal's machine-local derived history.
             This maps to `state.history_dir` in `anneal/config.toml`.
+            This must not be used for repo-local corpus configuration.
           '';
         };
       };

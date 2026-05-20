@@ -4,10 +4,14 @@ use std::fmt;
 use serde_json::Value as JsonValue;
 
 use crate::runtime::ast::{
-    Expr, Ident, Literal, Program, Query, SourceLocation, Statement, VerbDecl,
+    Atom, Body, CallArg, Expr, Ident, Literal, NumberLiteral, Program, Query, Rule, SourceLocation,
+    Statement, VerbDecl,
 };
 use crate::runtime::parser::{ParseError, parse_program};
+use crate::runtime::prelude::datalog_string_literal;
 use crate::source::ActorContext;
+
+pub const VERB_ARG_PREDICATE: &str = "verb_arg";
 
 /// Layer that contributed a verb declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -156,6 +160,18 @@ impl VerbArg {
     pub fn default(&self) -> Option<&str> {
         self.default.as_deref()
     }
+
+    pub fn parse_literal(&self, value: &str) -> Result<Literal, VerbArgValueError> {
+        self.kind.parse_literal(&self.name, value)
+    }
+
+    fn sample_literal(&self) -> Literal {
+        match self.kind {
+            VerbArgKind::String | VerbArgKind::HandleId => Literal::String("sample".to_string()),
+            VerbArgKind::Int | VerbArgKind::Number => Literal::Number(NumberLiteral::Int(1)),
+            VerbArgKind::Bool => Literal::Bool(true),
+        }
+    }
 }
 
 /// Value type accepted by a verb argument.
@@ -163,6 +179,7 @@ impl VerbArg {
 pub enum VerbArgKind {
     String,
     HandleId,
+    Int,
     Number,
     Bool,
 }
@@ -172,15 +189,91 @@ impl VerbArgKind {
         match self {
             Self::String => "String",
             Self::HandleId => "HandleId",
+            Self::Int => "Int",
             Self::Number => "Number",
             Self::Bool => "Bool",
         }
     }
+
+    fn parse_literal(self, name: &str, value: &str) -> Result<Literal, VerbArgValueError> {
+        match self {
+            Self::String | Self::HandleId => Ok(Literal::String(value.to_string())),
+            Self::Int => value
+                .parse::<i64>()
+                .map(|number| Literal::Number(NumberLiteral::Int(number)))
+                .map_err(|_| VerbArgValueError::Invalid {
+                    name: name.to_string(),
+                    kind: self,
+                    value: value.to_string(),
+                }),
+            Self::Number => {
+                if let Ok(number) = value.parse::<i64>() {
+                    return Ok(Literal::Number(NumberLiteral::Int(number)));
+                }
+                if let Ok(number) = value.parse::<f64>()
+                    && number.is_finite()
+                {
+                    return Ok(Literal::Number(NumberLiteral::Float(number)));
+                }
+                Err(VerbArgValueError::Invalid {
+                    name: name.to_string(),
+                    kind: self,
+                    value: value.to_string(),
+                })
+            }
+            Self::Bool => match value {
+                "true" => Ok(Literal::Bool(true)),
+                "false" => Ok(Literal::Bool(false)),
+                _ => Err(VerbArgValueError::Invalid {
+                    name: name.to_string(),
+                    kind: self,
+                    value: value.to_string(),
+                }),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum VerbArgValueError {
+    #[error("argument '{name}' expects {kind}; got {value:?}")]
+    Invalid {
+        name: String,
+        kind: VerbArgKind,
+        value: String,
+    },
 }
 
 impl fmt::Display for VerbArgKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+pub fn render_verb_arg_facts(bindings: &[(String, Literal)]) -> String {
+    let mut rendered = String::new();
+    for (name, value) in bindings {
+        rendered.push_str(&render_verb_arg_fact(name, value));
+    }
+    rendered
+}
+
+pub fn render_verb_arg_fact(name: &str, value: &Literal) -> String {
+    format!(
+        "{VERB_ARG_PREDICATE}({}, {}).\n",
+        datalog_string_literal(name),
+        literal_to_datalog(value)
+    )
+}
+
+fn literal_to_datalog(value: &Literal) -> String {
+    match value {
+        Literal::String(value) => datalog_string_literal(value),
+        Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
+        Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
+        Literal::Bool(value) => value.to_string(),
+        Literal::Null => "null".to_string(),
+        Literal::List(_) => unreachable!("verb arg literals are scalar"),
     }
 }
 
@@ -449,9 +542,22 @@ pub(crate) fn validate_project_verb_query_program(
     verb: &VerbDecl,
 ) -> Result<Program, VerbRegistryError> {
     let spec = parse_verb_decl(verb, SchemaPolicy::Exact)?;
+    validate_verb_arg_references(
+        spec.name.as_str(),
+        &spec.query_program,
+        &spec.args,
+        verb.location(),
+    )?;
     let mut program = sample_arg_facts(&spec.args, verb.location())?;
     program.statements.extend(spec.query_program.statements);
     Ok(program)
+}
+
+pub(crate) fn validate_no_verb_arg_definitions(program: &Program) -> Result<(), VerbRegistryError> {
+    for statement in &program.statements {
+        validate_statement_has_no_verb_arg_definition(statement)?;
+    }
+    Ok(())
 }
 
 struct ParsedVerbDecl {
@@ -554,15 +660,7 @@ fn sample_arg_facts(
 ) -> Result<Program, VerbRegistryError> {
     let mut source = String::new();
     for arg in args {
-        source.push_str("verb_arg(");
-        source.push_str(&datalog_string_literal(arg.name()));
-        source.push_str(", ");
-        source.push_str(match arg.kind() {
-            VerbArgKind::String | VerbArgKind::HandleId => "\"sample\"",
-            VerbArgKind::Number => "1",
-            VerbArgKind::Bool => "true",
-        });
-        source.push_str(").\n");
+        source.push_str(&render_verb_arg_fact(arg.name(), &arg.sample_literal()));
     }
     parse_program(&format!("{location}:@verb:args"), &source).map_err(|source| {
         VerbRegistryError::ArgFactParse {
@@ -572,8 +670,159 @@ fn sample_arg_facts(
     })
 }
 
-fn datalog_string_literal(value: &str) -> String {
-    serde_json::to_string(value).expect("string literal serialization cannot fail")
+fn validate_statement_has_no_verb_arg_definition(
+    statement: &Statement,
+) -> Result<(), VerbRegistryError> {
+    match statement {
+        Statement::Fact(head) | Statement::OptionalFact(head)
+            if is_verb_arg_predicate(&head.predicate) =>
+        {
+            Err(VerbRegistryError::ReservedArgDefinition {
+                location: head.location.clone(),
+            })
+        }
+        Statement::Rule(rule) if is_verb_arg_predicate(&rule.head.predicate) => {
+            Err(VerbRegistryError::ReservedArgDefinition {
+                location: rule.head.location.clone(),
+            })
+        }
+        Statement::AtBlock { statements, .. } => {
+            for nested in statements {
+                validate_statement_has_no_verb_arg_definition(nested)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_verb_arg_references(
+    name: &str,
+    program: &Program,
+    args: &[VerbArg],
+    location: &SourceLocation,
+) -> Result<(), VerbRegistryError> {
+    for statement in &program.statements {
+        validate_statement_verb_arg_references(name, statement, args, location)?;
+    }
+    Ok(())
+}
+
+fn validate_statement_verb_arg_references(
+    name: &str,
+    statement: &Statement,
+    args: &[VerbArg],
+    location: &SourceLocation,
+) -> Result<(), VerbRegistryError> {
+    match statement {
+        Statement::Fact(head) | Statement::OptionalFact(head)
+            if is_verb_arg_predicate(&head.predicate) =>
+        {
+            Err(VerbRegistryError::ReservedArgDefinition {
+                location: head.location.clone(),
+            })
+        }
+        Statement::Rule(rule) => {
+            if is_verb_arg_predicate(&rule.head.predicate) {
+                return Err(VerbRegistryError::ReservedArgDefinition {
+                    location: rule.head.location.clone(),
+                });
+            }
+            validate_rule_verb_arg_references(name, rule, args, location)
+        }
+        Statement::Query(query) => {
+            for rule in &query.local_rules {
+                validate_rule_verb_arg_references(name, rule, args, location)?;
+            }
+            validate_body_verb_arg_references(name, &query.body, args, location)
+        }
+        Statement::AtBlock { statements, .. } => {
+            for nested in statements {
+                validate_statement_verb_arg_references(name, nested, args, location)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_rule_verb_arg_references(
+    name: &str,
+    rule: &Rule,
+    args: &[VerbArg],
+    location: &SourceLocation,
+) -> Result<(), VerbRegistryError> {
+    validate_body_verb_arg_references(name, &rule.body, args, location)
+}
+
+fn validate_body_verb_arg_references(
+    name: &str,
+    body: &Body,
+    args: &[VerbArg],
+    location: &SourceLocation,
+) -> Result<(), VerbRegistryError> {
+    for atom in &body.atoms {
+        match atom {
+            Atom::Derived(atom) if is_verb_arg_predicate(&atom.predicate) => {
+                validate_verb_arg_atom(name, &atom.args, args, &atom.location, location)?;
+            }
+            Atom::Negation(negation) => {
+                if let crate::runtime::ast::NegatedAtom::Derived(atom) = &negation.atom
+                    && is_verb_arg_predicate(&atom.predicate)
+                {
+                    validate_verb_arg_atom(name, &atom.args, args, &atom.location, location)?;
+                }
+            }
+            Atom::TimeBlock(time_block) => {
+                validate_body_verb_arg_references(name, &time_block.body, args, location)?;
+            }
+            Atom::Aggregation(aggregate) => {
+                validate_body_verb_arg_references(name, &aggregate.body, args, location)?;
+            }
+            Atom::Stored(_) | Atom::Derived(_) | Atom::Comparison(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_verb_arg_atom(
+    name: &str,
+    call_args: &[CallArg],
+    args: &[VerbArg],
+    atom_location: &SourceLocation,
+    verb_location: &SourceLocation,
+) -> Result<(), VerbRegistryError> {
+    let [first, _second] = call_args else {
+        return Err(VerbRegistryError::InvalidArgReference {
+            name: name.to_string(),
+            location: atom_location.clone(),
+            message: format!("{VERB_ARG_PREDICATE}/2 expects a string arg name and a value"),
+        });
+    };
+    let Expr::Literal(Literal::String(arg_name)) = first.expr() else {
+        return Err(VerbRegistryError::InvalidArgReference {
+            name: name.to_string(),
+            location: first.location().clone(),
+            message: format!("{VERB_ARG_PREDICATE}/2 first argument must be a string literal"),
+        });
+    };
+    if args.iter().any(|arg| arg.name() == arg_name) {
+        Ok(())
+    } else {
+        Err(VerbRegistryError::UnknownArgReference {
+            name: name.to_string(),
+            arg: arg_name.clone(),
+            expected: args
+                .iter()
+                .map(|arg| arg.name().to_string())
+                .collect::<Vec<_>>(),
+            location: verb_location.clone(),
+        })
+    }
+}
+
+fn is_verb_arg_predicate(predicate: &crate::runtime::ast::PredicateRef) -> bool {
+    predicate.module.is_none() && predicate.name.as_str() == VERB_ARG_PREDICATE
 }
 
 fn parse_arg_spec(spec: &str, location: &SourceLocation) -> Result<VerbArg, VerbRegistryError> {
@@ -598,6 +847,7 @@ fn parse_arg_spec(spec: &str, location: &SourceLocation) -> Result<VerbArg, Verb
     let kind = match kind {
         "String" => VerbArgKind::String,
         "HandleId" => VerbArgKind::HandleId,
+        "Int" => VerbArgKind::Int,
         "Number" => VerbArgKind::Number,
         "Bool" => VerbArgKind::Bool,
         _ => {
@@ -627,15 +877,9 @@ fn parse_arg_spec(spec: &str, location: &SourceLocation) -> Result<VerbArg, Verb
 }
 
 fn validate_arg_default(kind: VerbArgKind, value: &str) -> Result<(), ()> {
-    match kind {
-        VerbArgKind::String | VerbArgKind::HandleId => Ok(()),
-        VerbArgKind::Number => value
-            .parse::<i64>()
-            .map(|_| ())
-            .or_else(|_| value.parse::<f64>().map(|_| ()))
-            .map_err(|_| ()),
-        VerbArgKind::Bool => matches!(value, "true" | "false").then_some(()).ok_or(()),
-    }
+    kind.parse_literal("<default>", value)
+        .map(|_| ())
+        .map_err(|_| ())
 }
 
 fn validate_schema_value(
@@ -819,6 +1063,23 @@ pub enum VerbRegistryError {
         name: String,
         location: SourceLocation,
     },
+    #[error("{location}: 'verb_arg' is reserved for runtime verb invocation arguments")]
+    ReservedArgDefinition { location: SourceLocation },
+    #[error("{location}: @verb '{name}' has invalid verb_arg reference: {message}")]
+    InvalidArgReference {
+        name: String,
+        location: SourceLocation,
+        message: String,
+    },
+    #[error(
+        "{location}: @verb '{name}' references undeclared argument '{arg}'; declared args: {expected:?}"
+    )]
+    UnknownArgReference {
+        name: String,
+        arg: String,
+        expected: Vec<String>,
+        location: SourceLocation,
+    },
     #[error("{location}: @verb argument facts could not be generated: {source}")]
     ArgFactParse {
         location: SourceLocation,
@@ -946,6 +1207,50 @@ mod tests {
         let err = VerbRegistry::from_layers(&[(VerbLayer::Project, &project)])
             .expect_err("mistyped default rejected");
         assert!(matches!(err, VerbRegistryError::InvalidArgSpec { .. }));
+    }
+
+    #[test]
+    fn project_verb_validation_rejects_unknown_arg_reference() {
+        let project = program(
+            "anneal.dl",
+            r#"
+            @verb(
+              name: "release-blockers",
+              query: "release_row(h) := verb_arg(\"milestone\", milestone), h = milestone. ? release_row(h).",
+              doc: "Open blockers.",
+              output_schema: "{\"h\":\"String\"}",
+              args: ["target:String"],
+              capabilities: []
+            ).
+            "#,
+        );
+        let verb = project
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Verb(verb) => Some(verb),
+                _ => None,
+            })
+            .expect("verb present");
+
+        let err = validate_project_verb_query_program(verb).expect_err("unknown arg rejected");
+
+        assert!(matches!(
+            err,
+            VerbRegistryError::UnknownArgReference { arg, .. } if arg == "milestone"
+        ));
+    }
+
+    #[test]
+    fn project_program_rejects_global_verb_arg_definitions() {
+        let project = program("anneal.dl", r#"verb_arg("milestone", "v0.11")."#);
+
+        let err = validate_no_verb_arg_definitions(&project).expect_err("reserved fact rejected");
+
+        assert!(matches!(
+            err,
+            VerbRegistryError::ReservedArgDefinition { .. }
+        ));
     }
 
     #[test]

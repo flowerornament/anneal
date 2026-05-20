@@ -1895,7 +1895,7 @@ release_blocker(h, "blocking_oq")  :=
   output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
   args: ["milestone:String"],
   capabilities: ["read"]
-)
+).
 ```
 
 **Discovery declarations are adapter-qualified** through their
@@ -1953,12 +1953,14 @@ the standard verb envelope.
 
 Verb arguments are declared as ordered strings in `@verb(args: [...])`
 using `name:Type` or `name:Type=default`. Supported v0.11.x argument
-types are `String`, `HandleId`, `Number`, and `Bool`. The CLI accepts
+types are `String`, `HandleId`, `Int`, `Number`, and `Bool`. The CLI accepts
 required arguments positionally in declaration order and accepts all
 arguments as named flags (`--name value` or `--name=value`); bare bool
-flags mean `true`. Before evaluation, the surface injects query-local
+flags mean `true`. Before evaluation, the surface injects invocation
 facts of the form `verb_arg("name", value).`, and the verb query binds
-typed parameters by joining those facts.
+typed parameters by joining those facts. `verb_arg` is reserved: project
+rules must not define it globally, and every `verb_arg("name", value)`
+reference inside an `@verb.query` must use a declared argument name.
 
 Dynamic verb projections support `--format`, `--json`, `--rows`,
 `--explain`, `--explain-first`, `--explain-all`, `--explain-depth`, and
@@ -2169,9 +2171,9 @@ Underlying composition contract (from `views.dl`):
       context_neighbor(h, neighbor).
   ",
   output_schema: "{\"goal\":\"String\",\"hits\":\"List<{handle,span_id,score,reason,field}>\",\"spans\":\"List<{handle,span_id,start_line,end_line,tokens,text}>\",\"neighborhood\":\"List<{handle,neighbor}>\"}",
-  args: ["goal:String", "budget:Number=4000", "depth:Number=1", "hits:Number=3"],
+  args: ["goal:String", "budget:Int=4000", "depth:Int=1", "hits:Int=3"],
   capabilities: ["read"]
-)
+).
 ```
 
 The `context` output is grouped by the verb surface from relational

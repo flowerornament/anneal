@@ -7,13 +7,14 @@ use std::path::Path;
 use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
-    Database, EvalOptions, Evaluator, Literal, NumberLiteral, Program, QueryOutput, Row, Value,
-    analyze, parse_program, write_ndjson,
+    Database, EvalOptions, Evaluator, Literal, Program, QueryOutput, Row, Value, analyze,
+    parse_program, write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFacts, CorpusId, FactStore, Generation,
     ProjectExtension, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability,
     VerbEntry, VerbLayer, VerbRegistry, load_project_extension, merge_program_layers,
+    render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -83,6 +84,15 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             explain,
             limit,
         };
+    }
+    if let RuntimeCommand::Verb { name, args } = &invocation.command
+        && args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        let registry = RuntimeRegistry::load(&invocation.root)?;
+        let entry = registry.registry.resolve_for_actor(name, &registry.actor)?;
+        return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
@@ -515,6 +525,14 @@ impl RuntimeCommand {
         {
             return Ok(Self::Help { topic });
         }
+        if rest.iter().any(|arg| is_explain_option(arg))
+            && let Some(name) = standard_verb_name_for_explain(command)
+        {
+            return Ok(parse_dynamic_verb(
+                name,
+                &defaulted_dynamic_args_for_explain(name, rest),
+            ));
+        }
         match command.as_str() {
             "status" => {
                 ensure_no_args(rest, "status")?;
@@ -584,6 +602,42 @@ struct RuntimeSession {
     registry: VerbRegistry,
     actor: ActorContext,
     sources: Vec<SourceInfo>,
+}
+
+struct RuntimeRegistry {
+    registry: VerbRegistry,
+    actor: ActorContext,
+}
+
+impl RuntimeRegistry {
+    fn load(root: &camino::Utf8Path) -> Result<Self> {
+        let actor = ActorContext::trusted_cli();
+        let source_info = MarkdownSource::default().describe();
+        let sources = vec![source_info];
+        let loaded_prelude = LoadedPrelude::load_active().map_err(prelude_error)?;
+        if root.join("anneal.toml").is_file() {
+            bail!(
+                "anneal.toml is a legacy config file. Runtime commands use anneal.dl; run `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+            );
+        }
+        let project = if root.join(anneal_core::PROJECT_RULE_FILE).is_file() {
+            Some(load_project_extension(
+                root.as_std_path(),
+                &sources,
+                loaded_prelude.program(),
+            )?)
+        } else {
+            None
+        };
+        let registry = match &project {
+            Some(project) => VerbRegistry::from_layers(&[
+                (VerbLayer::Prelude, loaded_prelude.program()),
+                (VerbLayer::Project, project.program()),
+            ])?,
+            None => VerbRegistry::from_layers(&[(VerbLayer::Prelude, loaded_prelude.program())])?,
+        };
+        Ok(Self { registry, actor })
+    }
 }
 
 impl RuntimeSession {
@@ -1074,7 +1128,7 @@ impl<'a> DynamicVerbParser<'a> {
         let value = match (inline_value, arg.kind()) {
             (Some(value), _) => value.to_string(),
             (None, VerbArgKind::Bool) => "true".to_string(),
-            (None, _) => next_value(iter, raw)?.to_string(),
+            (None, _) => next_verb_arg_value(iter, raw)?.to_string(),
         };
         self.insert_value(arg, &value)
     }
@@ -1088,7 +1142,7 @@ impl<'a> DynamicVerbParser<'a> {
             .nth(self.next_positional)
         else {
             bail!(
-                "verb {:?} accepts no more positional arguments; expected args: {}",
+                "verb '{}' accepts no more positional arguments; expected args: {}",
                 self.entry.name(),
                 self.expected_args()
             );
@@ -1115,7 +1169,7 @@ impl<'a> DynamicVerbParser<'a> {
                 continue;
             }
             bail!(
-                "verb {:?} missing required argument '{}'; expected args: {}",
+                "verb '{}' missing required argument '{}'; expected args: {}",
                 self.entry.name(),
                 arg.name(),
                 self.expected_args()
@@ -1136,7 +1190,7 @@ impl<'a> DynamicVerbParser<'a> {
             .find(|arg| arg.name() == name)
             .with_context(|| {
                 format!(
-                    "verb {:?} has no argument '{}'; expected args: {}",
+                    "verb '{}' has no argument '{}'; expected args: {}",
                     self.entry.name(),
                     name,
                     self.expected_args()
@@ -1145,14 +1199,14 @@ impl<'a> DynamicVerbParser<'a> {
     }
 
     fn insert_value(&mut self, arg: &VerbArg, value: &str) -> Result<()> {
-        let literal = parse_verb_arg_literal(arg, value)?;
+        let literal = arg.parse_literal(value)?;
         if self
             .values
             .insert(arg.name().to_string(), literal)
             .is_some()
         {
             bail!(
-                "verb {:?} argument '{}' was provided twice",
+                "verb '{}' argument '{}' was provided twice",
                 self.entry.name(),
                 arg.name()
             );
@@ -1177,48 +1231,10 @@ impl<'a> DynamicVerbParser<'a> {
     }
 }
 
-fn parse_verb_arg_literal(arg: &VerbArg, value: &str) -> Result<Literal> {
-    match arg.kind() {
-        VerbArgKind::String | VerbArgKind::HandleId => Ok(Literal::String(value.to_string())),
-        VerbArgKind::Number => value
-            .parse::<i64>()
-            .map(|number| Literal::Number(NumberLiteral::Int(number)))
-            .or_else(|_| {
-                value
-                    .parse::<f64>()
-                    .map(|number| Literal::Number(NumberLiteral::Float(number)))
-            })
-            .with_context(|| format!("argument '{}' expects Number; got {value:?}", arg.name())),
-        VerbArgKind::Bool => match value {
-            "true" => Ok(Literal::Bool(true)),
-            "false" => Ok(Literal::Bool(false)),
-            _ => bail!("argument '{}' expects Bool; got {value:?}", arg.name()),
-        },
-    }
-}
-
 fn render_dynamic_verb_query(query_source: &str, bindings: &[(String, Literal)]) -> String {
-    let mut rendered = String::new();
-    for (name, value) in bindings {
-        rendered.push_str("verb_arg(");
-        rendered.push_str(&datalog_string_literal(name));
-        rendered.push_str(", ");
-        rendered.push_str(&literal_to_datalog(value));
-        rendered.push_str(").\n");
-    }
+    let mut rendered = render_verb_arg_facts(bindings);
     rendered.push_str(query_source);
     rendered
-}
-
-fn literal_to_datalog(value: &Literal) -> String {
-    match value {
-        Literal::String(value) => datalog_string_literal(value),
-        Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
-        Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
-        Literal::Bool(value) => value.to_string(),
-        Literal::Null => "null".to_string(),
-        Literal::List(_) => unreachable!("verb arg literals are scalar"),
-    }
 }
 
 fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
@@ -1791,6 +1807,44 @@ fn parse_dynamic_verb(name: &str, args: &[String]) -> RuntimeCommand {
     }
 }
 
+fn standard_verb_name_for_explain(command: &str) -> Option<&'static str> {
+    Some(match command {
+        "status" => "status",
+        "context" => "context",
+        "search" => "search",
+        "read" => "read",
+        "handle" | "H" => "handle",
+        "work" => "work",
+        "blocked" => "blocked",
+        "broken" => "broken",
+        "trend" => "trend",
+        "vocab" => "vocab",
+        "describe" => "describe",
+        "sources" => "sources",
+        "schema" => "schema",
+        "verbs" => "verbs",
+        _ => return None,
+    })
+}
+
+fn defaulted_dynamic_args_for_explain(name: &str, raw_args: &[String]) -> Vec<String> {
+    if name == "describe" && raw_args.iter().all(|arg| arg.starts_with('-')) {
+        let mut args = vec!["runtime".to_string()];
+        args.extend_from_slice(raw_args);
+        args
+    } else {
+        raw_args.to_vec()
+    }
+}
+
+fn is_explain_option(value: &str) -> bool {
+    matches!(
+        value,
+        "--explain" | "--explain-all" | "--explain-depth" | "--explain-first"
+    ) || value.starts_with("--explain-depth=")
+        || value.starts_with("--explain-first=")
+}
+
 fn required_positional<'a>(args: &'a [String], message: &str) -> Result<&'a str> {
     match args {
         [value] => Ok(value),
@@ -1818,6 +1872,15 @@ fn next_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result
     iter.next()
         .map(String::as_str)
         .with_context(|| format!("{flag} requires a value"))
+}
+
+fn next_verb_arg_value<'a>(iter: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a str> {
+    let value = next_value(iter, flag)?;
+    ensure!(
+        !value.starts_with("--"),
+        "{flag} requires a value; got option {value:?}"
+    );
+    Ok(value)
 }
 
 fn parse_i64(value: &str, flag: &str) -> Result<i64> {
@@ -2218,6 +2281,20 @@ mod tests {
             RuntimeCommand::Verb {
                 name: "release-blockers".to_string(),
                 args: vec!["--help".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn standard_verb_explain_routes_through_dynamic_projection() {
+        let parsed = Invocation::parse(os(&["anneal", "blocked", "OQ-1", "--explain"]))
+            .expect("parse standard explain");
+
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Verb {
+                name: "blocked".to_string(),
+                args: vec!["OQ-1".to_string(), "--explain".to_string()],
             }
         );
     }
@@ -2702,6 +2779,38 @@ mod tests {
             rows[0].fields.get("strict"),
             Some(&anneal_core::runtime::Value::Bool(true))
         );
+    }
+
+    #[test]
+    fn project_verb_named_arg_rejects_option_as_missing_value() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n").expect("write doc");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            @verb(
+              name: "release-blockers",
+              query: "release_blocker(\"ok\").\nrelease_row(h, milestone, strict) :=\n  verb_arg(\"milestone\", milestone),\n  verb_arg(\"strict\", strict),\n  release_blocker(h).\n\n? release_row(h, milestone, strict).",
+              doc: "Project-specific blockers.",
+              output_schema: "{\"h\":\"String\",\"milestone\":\"String\",\"strict\":\"Bool\"}",
+              args: ["milestone:String", "strict:Bool=false"],
+              capabilities: ["read"]
+            ).
+            "#,
+        )
+        .expect("write project rules");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let Err(err) = session.run(RuntimeCommand::Verb {
+            name: "release-blockers".to_string(),
+            args: vec!["--milestone".to_string(), "--strict".to_string()],
+        }) else {
+            panic!("missing value should fail");
+        };
+
+        assert!(err.to_string().contains("--milestone requires a value"));
     }
 
     #[test]

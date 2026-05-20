@@ -238,7 +238,7 @@ release_blocker(h, "broken_ref") :=
   output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
   args: ["milestone:String"],
   capabilities: ["read"]
-)
+).
 ```
 
 Discovery facts are consumed by adapters before extraction. Rules and verbs are

@@ -273,13 +273,13 @@ pub(crate) fn existing_config_message(root: &Utf8Path) -> String {
     let legacy_path = root.join("anneal.toml");
     match (config_path.exists(), legacy_path.exists()) {
         (true, true) => format!(
-            "{config_path} and {legacy_path} already exist; rerun `anneal init --dry-run` to preview or `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+            "{config_path} and {legacy_path} already exist; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to replace anneal.dl and move anneal.toml aside"
         ),
         (true, false) => format!(
-            "{config_path} already exists; rerun `anneal init --dry-run` to preview or `anneal init --force` to replace it"
+            "{config_path} already exists; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to replace it"
         ),
         (false, true) => format!(
-            "{legacy_path} already exists; rerun `anneal init --dry-run` to preview or `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+            "{legacy_path} already exists; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
         ),
         (false, false) => "config already exists".to_string(),
     }
@@ -603,6 +603,31 @@ mod tests {
 
         assert!(error.to_string().contains("already exists"));
         assert!(error.to_string().contains("--force"));
+        assert!(error.to_string().contains("no files were changed"));
+    }
+
+    #[test]
+    fn init_existing_config_message_names_actual_paths() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(dir.path()).expect("tempdir path is utf8");
+
+        std::fs::write(root.join("anneal.dl"), "").expect("write unified");
+        let unified_only = existing_config_message(root);
+        assert!(unified_only.contains(&root.join("anneal.dl").to_string()));
+        assert!(!unified_only.contains(&root.join("anneal.toml").to_string()));
+        assert!(unified_only.contains("replace it"));
+
+        std::fs::remove_file(root.join("anneal.dl")).expect("remove unified");
+        std::fs::write(root.join("anneal.toml"), "").expect("write legacy");
+        let legacy_only = existing_config_message(root);
+        assert!(legacy_only.contains(&root.join("anneal.toml").to_string()));
+        assert!(!legacy_only.contains(&root.join("anneal.dl").to_string()));
+        assert!(legacy_only.contains("move anneal.toml aside"));
+
+        std::fs::write(root.join("anneal.dl"), "").expect("rewrite unified");
+        let both = existing_config_message(root);
+        assert!(both.contains(&root.join("anneal.dl").to_string()));
+        assert!(both.contains(&root.join("anneal.toml").to_string()));
     }
 
     #[test]

@@ -13,7 +13,9 @@ use crate::runtime::parser::ParseError;
 use crate::source::{
     ConfigEntry, ConfigFacts, ConfigKey, ConfigValueShape, DuplicateConfigOrdinal, SourceInfo,
 };
-use crate::verbs::{VerbRegistryError, validate_project_verb_query_program};
+use crate::verbs::{
+    VerbRegistryError, validate_no_verb_arg_definitions, validate_project_verb_query_program,
+};
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
 
@@ -73,6 +75,7 @@ pub fn load_project_extension(
 ) -> Result<ProjectExtension, ProjectLoadError> {
     let loaded = load_program(root, PROJECT_RULE_FILE)?;
     let (discovery, runtime_config, program) = split_project_program(loaded, sources)?;
+    validate_no_verb_arg_definitions(&program)?;
     validate_verbs(&program, base_program)?;
     Ok(ProjectExtension {
         discovery,
@@ -816,6 +819,25 @@ pub enum ProjectLoadError {
         name: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error("{location}: verb_arg is reserved for runtime verb invocation arguments")]
+    ReservedVerbArgDefinition {
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error("{location}: @verb '{name}' has invalid verb_arg reference: {message}")]
+    InvalidVerbArgReference {
+        name: String,
+        message: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error(
+        "{location}: @verb '{name}' references undeclared argument '{arg}'; declared args: {expected:?}"
+    )]
+    UnknownVerbArgReference {
+        name: String,
+        arg: String,
+        expected: Vec<String>,
+        location: crate::runtime::ast::SourceLocation,
+    },
     #[error("{location}: @verb output_schema uses an unsupported shape")]
     UnsupportedVerbSchema {
         location: crate::runtime::ast::SourceLocation,
@@ -883,6 +905,29 @@ impl From<VerbRegistryError> for ProjectLoadError {
             VerbRegistryError::DuplicateArg { name, location } => {
                 Self::DuplicateVerbArg { name, location }
             }
+            VerbRegistryError::ReservedArgDefinition { location } => {
+                Self::ReservedVerbArgDefinition { location }
+            }
+            VerbRegistryError::InvalidArgReference {
+                name,
+                location,
+                message,
+            } => Self::InvalidVerbArgReference {
+                name,
+                message,
+                location,
+            },
+            VerbRegistryError::UnknownArgReference {
+                name,
+                arg,
+                expected,
+                location,
+            } => Self::UnknownVerbArgReference {
+                name,
+                arg,
+                expected,
+                location,
+            },
             VerbRegistryError::UnsupportedSchema { location } => {
                 Self::UnsupportedVerbSchema { location }
             }

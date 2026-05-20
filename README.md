@@ -145,8 +145,10 @@ install the bundled skill into agent-managed skill directories.
 }
 ```
 
-Repo-owned corpus behavior lives in `anneal.dl`. User preferences and derived
-history live under XDG paths.
+Repo-owned corpus behavior lives in `anneal.dl` and should be committed with
+the corpus. Home Manager does not write project rules, source discovery, handle
+policy, or convergence config; it only installs the binary/skill and writes
+machine-local preferences such as history storage under XDG paths.
 
 ## First Moves
 
@@ -379,7 +381,7 @@ release_blocker(h, "broken_ref") :=
   output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
   args: ["milestone:String"],
   capabilities: ["read"]
-)
+).
 ```
 
 Load order is fixed: config and discovery facts first, source extraction
