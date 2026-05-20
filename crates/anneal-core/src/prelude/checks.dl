@@ -2,12 +2,12 @@
 
 @doc(
   name: "checks",
-  doc: "Diagnostic standard-library rules for the v1.x check catalog: broken references, obligations, stale dependencies, confidence gaps, convention drift, and convergence suggestions."
+  doc: "Diagnostic rules find corpus problems agents can act on: broken references, unfinished obligations, stale dependencies, confidence gaps, convention drift, and maintenance suggestions."
 ).
 
 @doc(
   name: "diagnostic",
-  doc: "Bind standard diagnostic rows as code, severity, subject, file, line, and evidence. Surfaces lower these relation rows into rendered messages, JSON records, diagnostic IDs, and suggestion IDs."
+  doc: "Return every standard diagnostic as data: code, severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations."
 ).
 
 section_ref(target) :=

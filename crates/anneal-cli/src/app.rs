@@ -1481,7 +1481,7 @@ fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
     for (index, row) in rows.iter().enumerate() {
         if let Some(doc) = optional_string(row, "doc")? {
             if wrote_any {
-                break;
+                writeln!(writer)?;
             }
             writeln!(writer, "{doc}")?;
         } else {
@@ -2553,7 +2553,7 @@ mod tests {
     }
 
     #[test]
-    fn describe_human_render_shows_one_doc_paragraph() {
+    fn describe_human_render_shows_all_doc_cards() {
         let output = CommandOutput::Rows {
             rows: vec![
                 row(&[(
@@ -2574,7 +2574,10 @@ mod tests {
             .expect("render describe");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
-        assert_eq!(rendered, "Search handle, metadata, and content text.\n");
+        assert_eq!(
+            rendered,
+            "Search handle, metadata, and content text.\n\nSearch stored handle and content text.\n"
+        );
     }
 
     #[test]

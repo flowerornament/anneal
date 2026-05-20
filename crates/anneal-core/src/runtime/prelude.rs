@@ -13,7 +13,7 @@ use crate::hash::Fnv1a64;
 pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
 pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
-pub const CONTEXT_VERB_DOC: &str = "Find the most relevant handles for a goal, read bounded spans, and include a small neighborhood so a cold agent can localize work in one call.";
+pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked hits, bounded reading spans, and nearby handles in one call.";
 pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
@@ -1128,7 +1128,10 @@ mod tests {
 
         assert!(matches!(
             outputs[0].rows[0].fields.get("doc"),
-            Some(Value::String(doc)) if doc.contains("potential") && doc.contains("blocked")
+            Some(Value::String(doc))
+                if doc.contains("action map")
+                    && doc.contains("agent should read")
+                    && doc.contains("Source:")
         ));
         assert_eq!(
             outputs[1].rows[0].fields.get("file"),
@@ -1219,6 +1222,7 @@ mod tests {
                 ("top_work", r"? top_work(h, energy)."),
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
+                ("examples", r#"? examples("incoming_edge", example)."#),
             ],
             standard_library_database(),
         );
@@ -1304,12 +1308,18 @@ mod tests {
         ));
         assert!(matches!(
             output(&outputs, "describe").rows[0].fields.get("doc"),
-            Some(Value::String(doc)) if doc.contains("convergence energy")
+            Some(Value::String(doc))
+                if doc.contains("unsettled-work")
+                    && doc.contains("Signature: potential(h, energy)")
         ));
         assert_eq!(
             output(&outputs, "source_of").rows[0].fields.get("file"),
             Some(&Value::String(RANKING_PRELUDE_SOURCE.to_string()))
         );
+        assert!(matches!(
+            output(&outputs, "examples").rows[0].fields.get("example"),
+            Some(Value::String(example)) if example.contains("incoming_edge")
+        ));
     }
 
     #[test]
@@ -1549,10 +1559,10 @@ topic(x) := fact(x).
             .collect::<Vec<_>>();
 
         assert_eq!(outputs[0].rows.len(), 1);
-        assert_eq!(
+        assert!(matches!(
             outputs[0].rows[0].fields.get("doc"),
-            Some(&Value::String("second".to_string()))
-        );
+            Some(Value::String(doc)) if doc.contains("second") && doc.contains("Signature: topic(x)")
+        ));
         assert_eq!(
             outputs[1].rows[0].fields.get("doc"),
             Some(&Value::String("second".to_string()))

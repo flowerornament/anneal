@@ -2,12 +2,12 @@
 
 @doc(
   name: "graph",
-  doc: "Graph standard-library helpers for structural corpus shapes such as orphan, stub, hub, neighborhood-friendly relation views, and source-neutral graph maintenance queries."
+  doc: "Graph helpers expose simple structural questions over the corpus: where a handle lives, what points at it, what it points to, and which handles look isolated or overly central."
 ).
 
 @doc(
   name: "area_of",
-  doc: "Bind the non-empty area for a handle."
+  doc: "Return the area field for handles that have one, usually the first path segment or adapter-provided grouping."
 ).
 area_of(h, area) :=
   *handle{id: h, area: area},
@@ -15,7 +15,7 @@ area_of(h, area) :=
 
 @doc(
   name: "namespace_of",
-  doc: "Bind the non-empty namespace for a handle."
+  doc: "Return the label namespace for handles like OQ-1 or CR-D42; file and section handles usually have no namespace."
 ).
 namespace_of(h, namespace) :=
   *handle{id: h, namespace: namespace},
@@ -23,7 +23,7 @@ namespace_of(h, namespace) :=
 
 @doc(
   name: "status_of",
-  doc: "Bind the status for a handle when the source provided one."
+  doc: "Return the frontmatter or adapter-provided status for a handle, when the source supplied one."
 ).
 status_of(h, status) :=
   *handle{id: h, status: status},
@@ -31,28 +31,28 @@ status_of(h, status) :=
 
 @doc(
   name: "incoming_edge",
-  doc: "Bind incoming edges as handle, source, and edge kind."
+  doc: "Return handles that point to the given handle, with the edge kind that connects them."
 ).
 incoming_edge(h, from, kind) :=
   *edge{to: h, from: from, kind: kind}.
 
 @doc(
   name: "outgoing_edge",
-  doc: "Bind outgoing edges as handle, target, and edge kind."
+  doc: "Return handles that the given handle points to, with the edge kind that connects them."
 ).
 outgoing_edge(h, to, kind) :=
   *edge{from: h, to: to, kind: kind}.
 
 @doc(
   name: "incident",
-  doc: "Bind handles adjacent to a handle by either incoming or outgoing edge."
+  doc: "Return neighbors of a handle in either direction."
 ).
 incident(h, other) := incoming_edge(h, other, kind).
 incident(h, other) := outgoing_edge(h, other, kind).
 
 @doc(
   name: "orphan",
-  doc: "Bind non-file, non-section handles with no incoming edges."
+  doc: "Return labels and version handles that nothing cites; these often need removal, linking, or explanation."
 ).
 orphan(h) :=
   *handle{id: h, kind: kind},
@@ -62,7 +62,7 @@ orphan(h) :=
 
 @doc(
   name: "stub",
-  doc: "Bind file handles with no stored content tokens."
+  doc: "Return files with no readable stored content, which usually means an empty file or extraction problem."
 ).
 stub(h) :=
   *handle{id: h, kind: "file"},
@@ -70,7 +70,7 @@ stub(h) :=
 
 @doc(
   name: "hub",
-  doc: "Bind handles with at least ten distinct adjacent handles."
+  doc: "Return handles connected to at least ten distinct neighbors; these may be useful maps or broad hubs that dominate search."
 ).
 hub(h, degree) :=
   *handle{id: h},

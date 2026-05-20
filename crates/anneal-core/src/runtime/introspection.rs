@@ -170,9 +170,16 @@ impl IntrospectionBuilder {
     fn add_runtime_overview(&mut self) {
         self.describe.insert(Tuple(vec![
             string_value("runtime"),
-            string_value(
-                "anneal runtime: query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model with schema, predicates, verbs, describe, source_of, examples, and sources.",
-            ),
+            string_value(&describe_card(DescribeCard {
+                summary: "Query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model.",
+                kind: Some("runtime topic"),
+                examples: vec![
+                    "? schema(name, kind, signature, determinism, provenance).",
+                    "? describe(\"search\", doc).",
+                    "? examples(\"search\", example).",
+                ],
+                ..DescribeCard::default()
+            })),
         ]));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
@@ -224,10 +231,34 @@ impl IntrospectionBuilder {
             "input",
             provenance,
         ));
-        self.describe
-            .insert(Tuple(vec![string_value(name), string_value(doc)]));
+        let signature = stored_signature(name, fields);
+        self.describe.insert(Tuple(vec![
+            string_value(name),
+            string_value(&describe_card(DescribeCard {
+                summary: doc,
+                kind: Some("stored relation"),
+                signature: Some(&signature),
+                source: Some(".design/2026-05-13-corpus-runtime.md"),
+                ..DescribeCard::default()
+            })),
+        ]));
+        self.describe.insert(Tuple(vec![
+            string_value(&format!("*{name}")),
+            string_value(&describe_card(DescribeCard {
+                summary: doc,
+                kind: Some("stored relation"),
+                signature: Some(&signature),
+                source: Some(".design/2026-05-13-corpus-runtime.md"),
+                ..DescribeCard::default()
+            })),
+        ]));
         self.source_of.insert(Tuple(vec![
             string_value(name),
+            string_value(".design/2026-05-13-corpus-runtime.md"),
+            string_value("unknown"),
+        ]));
+        self.source_of.insert(Tuple(vec![
+            string_value(&format!("*{name}")),
             string_value(".design/2026-05-13-corpus-runtime.md"),
             string_value("unknown"),
         ]));
@@ -246,7 +277,15 @@ impl IntrospectionBuilder {
             ));
             self.describe.insert(Tuple(vec![
                 string_value(name),
-                string_value(primitive_doc(*primitive)),
+                string_value(&describe_card(DescribeCard {
+                    summary: primitive_doc(*primitive),
+                    kind: Some("engine primitive"),
+                    signature: Some(&call_signature(name, signature.parameters)),
+                    source: Some("crates/anneal-core/src/runtime/primitives.rs"),
+                    requires: primitive_requires(*primitive),
+                    examples: primitive_example(*primitive).into_iter().collect(),
+                    ..DescribeCard::default()
+                })),
             ]));
             self.source_of.insert(Tuple(vec![
                 string_value(name),
@@ -262,8 +301,9 @@ impl IntrospectionBuilder {
 
     fn add_program(&mut self, program: &Program) {
         let scanned = ProgramScanner::scan(program);
+        let predicate_names = scanned.predicates.keys().cloned().collect::<BTreeSet<_>>();
         self.add_predicates(scanned.predicates, &scanned.docs);
-        self.add_docs(&scanned.docs);
+        self.add_docs(&scanned.docs, &predicate_names);
 
         let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
         for entry in registry.iter() {
@@ -275,7 +315,18 @@ impl IntrospectionBuilder {
             ]));
             self.describe.insert(Tuple(vec![
                 string_value(entry.name().as_str()),
-                string_value(entry.doc()),
+                string_value(&describe_card(DescribeCard {
+                    summary: entry.doc(),
+                    kind: Some("verb"),
+                    signature: Some(&format!("anneal {}", entry.name())),
+                    source: Some(&format!(
+                        "{}:{}",
+                        entry.source().location().source_name,
+                        source_line_text(entry.source().location())
+                    )),
+                    extra_lines: vec![format!("Output schema: {}", entry.output_schema())],
+                    ..DescribeCard::default()
+                })),
             ]));
             self.source_of.insert(Tuple(vec![
                 string_value(entry.name().as_str()),
@@ -304,10 +355,20 @@ impl IntrospectionBuilder {
         self.add_predicates(predicates, &BTreeMap::new());
     }
 
-    fn add_docs(&mut self, docs: &BTreeMap<String, DocInfo>) {
+    fn add_docs(&mut self, docs: &BTreeMap<String, DocInfo>, predicate_names: &BTreeSet<String>) {
         for (name, info) in docs {
-            self.describe
-                .insert(Tuple(vec![string_value(name), string_value(&info.doc)]));
+            if predicate_names.contains(name) {
+                continue;
+            }
+            self.describe.insert(Tuple(vec![
+                string_value(name),
+                string_value(&describe_card(DescribeCard {
+                    summary: &info.doc,
+                    kind: Some("runtime topic"),
+                    source: info.primary_source().as_deref(),
+                    ..DescribeCard::default()
+                })),
+            ]));
             for (file, line_text) in info.source_lines.iter_line_text() {
                 self.source_of.insert(Tuple(vec![
                     string_value(name),
@@ -347,8 +408,33 @@ impl IntrospectionBuilder {
                     string_value(&line_text),
                 ]));
             }
-            self.describe
-                .insert(Tuple(vec![string_value(&name), string_value(doc)]));
+            if let Some(doc_info) = docs.get(&name) {
+                for (file, line_text) in doc_info.source_lines.iter_line_text() {
+                    self.source_of.insert(Tuple(vec![
+                        string_value(&name),
+                        string_value(file),
+                        string_value(&line_text),
+                    ]));
+                }
+            }
+            if let Some(example) = predicate_example(&name) {
+                self.examples
+                    .insert(Tuple(vec![string_value(&name), string_value(example)]));
+            }
+            let signature = info.signature();
+            let source = info.source_lines.first_line_text();
+            self.describe.insert(Tuple(vec![
+                string_value(&name),
+                string_value(&describe_card(DescribeCard {
+                    summary: doc,
+                    kind: Some("derived predicate"),
+                    signature: Some(&signature),
+                    source: source.as_deref(),
+                    requires: predicate_requires(&name),
+                    examples: predicate_example(&name).into_iter().collect(),
+                    ..DescribeCard::default()
+                })),
+            ]));
         }
     }
 
@@ -416,12 +502,31 @@ impl PredicateInfo {
             .parameters
             .iter()
             .enumerate()
-            .map(|(idx, parameter)| match parameter {
-                ParameterName::Named(name) => name.as_str().to_string(),
-                ParameterName::Unknown | ParameterName::Ambiguous => format!("arg{idx}"),
-            })
+            .map(|(idx, parameter)| display_parameter_name(&self.name, idx, parameter))
             .collect::<Vec<_>>();
         call_signature(&self.name, &parameters)
+    }
+}
+
+fn display_parameter_name(predicate_name: &str, idx: usize, parameter: &ParameterName) -> String {
+    if let ParameterName::Named(name) = parameter {
+        return name.clone();
+    }
+    if let Some(names) = documented_parameter_names(predicate_name)
+        && let Some(name) = names.get(idx)
+    {
+        return (*name).to_string();
+    }
+    format!("arg{idx}")
+}
+
+fn documented_parameter_names(predicate_name: &str) -> Option<&'static [&'static str]> {
+    match predicate_name {
+        "diagnostic" => Some(&["code", "severity", "subject", "file", "line", "evidence"]),
+        "entropy" => Some(&["h", "source"]),
+        "potential_weight" => Some(&["source", "weight"]),
+        "profile_doc_corpus" | "profile_code_corpus" | "profile_issue_corpus" => Some(&["profile"]),
+        _ => None,
     }
 }
 
@@ -475,6 +580,19 @@ impl SourceLines {
         self.0
             .iter()
             .map(|(file, lines)| (file.as_str(), line_list(lines)))
+    }
+
+    fn first_line_text(&self) -> Option<String> {
+        self.0
+            .iter()
+            .next()
+            .map(|(file, lines)| format!("{file}:{}", line_list(lines)))
+    }
+}
+
+impl DocInfo {
+    fn primary_source(&self) -> Option<String> {
+        self.source_lines.first_line_text()
     }
 }
 
@@ -661,6 +779,41 @@ fn call_signature(name: &str, parameters: &[impl AsRef<str>]) -> String {
     format!("{name}({params})")
 }
 
+#[derive(Default)]
+struct DescribeCard<'a> {
+    summary: &'a str,
+    kind: Option<&'a str>,
+    signature: Option<&'a str>,
+    source: Option<&'a str>,
+    requires: &'a [&'a str],
+    examples: Vec<&'a str>,
+    extra_lines: Vec<String>,
+}
+
+fn describe_card(card: DescribeCard<'_>) -> String {
+    // `describe(name, doc)` is the prose teaching surface. Machine callers should
+    // use schema/source_of/examples for the same facts as structured relations.
+    let mut lines = Vec::new();
+    lines.push(card.summary.trim().to_string());
+    if let Some(kind) = card.kind {
+        lines.push(format!("Kind: {kind}."));
+    }
+    if let Some(signature) = card.signature {
+        lines.push(format!("Signature: {signature}."));
+    }
+    lines.extend(card.extra_lines);
+    for requirement in card.requires {
+        lines.push(format!("Requires: {requirement}"));
+    }
+    for example in card.examples {
+        lines.push(format!("Example: {example}"));
+    }
+    if let Some(source) = card.source {
+        lines.push(format!("Source: {source}."));
+    }
+    lines.join("\n")
+}
+
 fn primitive_determinism(primitive: PrimitivePredicate) -> &'static str {
     match primitive {
         PrimitivePredicate::Search => "ranker-dependent deterministic",
@@ -670,44 +823,66 @@ fn primitive_determinism(primitive: PrimitivePredicate) -> &'static str {
 
 fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
     match primitive {
-        PrimitivePredicate::Upstream => "Bind ancestors reachable through incoming edges.",
-        PrimitivePredicate::Downstream => "Bind descendants reachable through outgoing edges.",
-        PrimitivePredicate::Impact => "Bind graph nodes impacted by a handle with traversal depth.",
-        PrimitivePredicate::Neighborhood => "Bind nearby graph nodes within a depth budget.",
+        PrimitivePredicate::Upstream => {
+            "Find handles that the starting handle depends on, following incoming dependency-style edges through the graph."
+        }
+        PrimitivePredicate::Downstream => {
+            "Find handles that depend on the starting handle, following outgoing dependency-style edges through the graph."
+        }
+        PrimitivePredicate::Impact => {
+            "Find graph nodes that could be affected if a handle changes, with the number of hops from the starting handle."
+        }
+        PrimitivePredicate::Neighborhood => {
+            "Find handles near a starting handle within a bounded number of graph hops."
+        }
         PrimitivePredicate::Terminal => {
-            "Bind handles whose status is terminal in the configured lattice."
+            "Return handles whose status means the work is done, archived, rejected, or otherwise no longer active."
         }
         PrimitivePredicate::Active => {
-            "Bind handles whose status is active in the configured lattice."
+            "Return handles whose status means an agent may still need to read, change, or resolve them."
         }
-        PrimitivePredicate::Settled => "Bind handles considered settled by the configured lattice.",
+        PrimitivePredicate::Settled => {
+            "Return handles that the corpus considers resolved enough to use as stable context."
+        }
         PrimitivePredicate::PipelinePosition => {
-            "Bind a handle and its configured status pipeline position."
+            "Return the numeric order for a handle's status, so queries can compare whether one status is ahead of another."
         }
         PrimitivePredicate::PipelinePositionFor => {
-            "Bind a status and its configured pipeline position."
+            "Return the numeric order for a status value, so queries can compare lifecycle progress."
         }
-        PrimitivePredicate::Obligation => "Bind handles that are open obligations.",
-        PrimitivePredicate::Discharged => "Bind obligations with a discharge edge.",
-        PrimitivePredicate::Undischarged => "Bind obligations without a discharge edge.",
-        PrimitivePredicate::CiteCount => "Bind per-handle incoming citation counts.",
-        PrimitivePredicate::InDegree => "Bind per-handle incoming edge counts.",
-        PrimitivePredicate::OutDegree => "Bind per-handle outgoing edge counts.",
-        PrimitivePredicate::DischargeCount => "Bind per-handle incoming discharge edge counts.",
+        PrimitivePredicate::Obligation => {
+            "Return labels in namespaces that the project treats as obligations: promises, questions, requirements, or tasks that must be discharged."
+        }
+        PrimitivePredicate::Discharged => {
+            "Return handles that already have at least one incoming Discharges edge."
+        }
+        PrimitivePredicate::Undischarged => {
+            "Return obligations that still need a Discharges edge and are not terminal."
+        }
+        PrimitivePredicate::CiteCount => "Count incoming Cites edges for each handle.",
+        PrimitivePredicate::InDegree => "Count all incoming graph edges for each handle.",
+        PrimitivePredicate::OutDegree => "Count all outgoing graph edges for each handle.",
+        PrimitivePredicate::DischargeCount => "Count incoming Discharges edges for each handle.",
         PrimitivePredicate::Freshness => {
-            "Bind days since the handle's dated observation at the active time reference."
+            "Return how many days have passed since a handle's dated observation at the active time reference."
         }
-        PrimitivePredicate::Flux => "Bind status-change count over a grounded day window.",
-        PrimitivePredicate::TokenEstimate => "Bind estimated stored content tokens for a handle.",
+        PrimitivePredicate::Flux => {
+            "Count status changes for a handle over a recent day window, using snapshot history."
+        }
+        PrimitivePredicate::TokenEstimate => {
+            "Return the estimated number of stored content tokens for a handle."
+        }
         PrimitivePredicate::Search => {
-            "Search stored handle, metadata, and content text with source-calibrated ranking."
+            "Search handle identities, metadata, and content text, returning ranked hits with a reason for each score."
         }
-        PrimitivePredicate::Read => "Read stored content spans for a handle within a token budget.",
+        PrimitivePredicate::Read => {
+            "Read content spans for one handle, stopping when the token budget is reached."
+        }
         PrimitivePredicate::ReadFull => {
-            "Read complete stored content for a handle behind the read_full capability."
+            "Read all stored content for one handle. This bypasses the normal budget guard and requires the read_full capability."
         }
         PrimitivePredicate::Match => {
-            "Match a regular expression against stored content for one bound handle."
+            "Run a regular expression against stored content for one already-bound handle and return matching lines."
         }
         PrimitivePredicate::Schema => {
             "List queryable stored relations, derived predicates, and engine primitives. The signature column is both the positional argument order and the accepted named-call parameter set."
@@ -731,8 +906,84 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
     }
 }
 
+fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] {
+    match primitive {
+        PrimitivePredicate::Obligation | PrimitivePredicate::Undischarged => &[
+            "`config handles { linear([...]). }` in anneal.dl. Without a linear namespace policy, no labels become obligations.",
+        ],
+        PrimitivePredicate::Flux => {
+            &["snapshot history. On a corpus with no snapshots, status-change counts are zero."]
+        }
+        PrimitivePredicate::ReadFull => &[
+            "the read_full runtime capability. Prefer read(handle, budget, ...) unless the full file is intentional.",
+        ],
+        PrimitivePredicate::Match => &[
+            "the handle argument must already be bound; match does not scan the whole corpus by itself.",
+        ],
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact
+        | PrimitivePredicate::Neighborhood
+        | PrimitivePredicate::Terminal
+        | PrimitivePredicate::Active
+        | PrimitivePredicate::Settled
+        | PrimitivePredicate::PipelinePosition
+        | PrimitivePredicate::PipelinePositionFor
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::CiteCount
+        | PrimitivePredicate::InDegree
+        | PrimitivePredicate::OutDegree
+        | PrimitivePredicate::DischargeCount
+        | PrimitivePredicate::Freshness
+        | PrimitivePredicate::TokenEstimate
+        | PrimitivePredicate::Search
+        | PrimitivePredicate::Read
+        | PrimitivePredicate::Schema
+        | PrimitivePredicate::Predicates
+        | PrimitivePredicate::Verbs
+        | PrimitivePredicate::Describe
+        | PrimitivePredicate::SourceOf
+        | PrimitivePredicate::Examples
+        | PrimitivePredicate::Sources => &[],
+    }
+}
+
+fn predicate_requires(name: &str) -> &'static [&'static str] {
+    match name {
+        "entropy" | "potential_subject" | "potential" | "work_candidate" | "top_work"
+        | "ranked_work" => &[
+            "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
+        ],
+        "blocked" => {
+            &["active lifecycle config, at least one potential signal, and no recent status flux."]
+        }
+        "advancing" | "recently_advanced" | "snapshot_history_present" => &[
+            "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
+        ],
+        "configured_pipeline_status"
+        | "next_pipeline_status"
+        | "status_population"
+        | "previous_status_population" => {
+            &["`config convergence { ordering([...]). }` in anneal.dl."]
+        }
+        _ => &[],
+    }
+}
+
 fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
     match primitive {
+        PrimitivePredicate::Obligation => Some("? obligation(h)."),
+        PrimitivePredicate::Discharged => Some("? discharged(h)."),
+        PrimitivePredicate::Undischarged => Some("? undischarged(h)."),
+        PrimitivePredicate::DischargeCount => Some("? discharge_count(h, n)."),
+        PrimitivePredicate::Upstream => Some(r#"? upstream("formal-model/v17.md", ancestor)."#),
+        PrimitivePredicate::Downstream => {
+            Some(r#"? downstream("formal-model/v17.md", dependent)."#)
+        }
+        PrimitivePredicate::Neighborhood => {
+            Some(r#"? neighborhood("formal-model/v17.md", 1, member)."#)
+        }
+        PrimitivePredicate::Impact => Some(r#"? impact("formal-model/v17.md", affected, depth)."#),
         PrimitivePredicate::Search => {
             Some(r#"? search("v17 conformance audit", h, span_id, score, reason, field, low)."#)
         }
@@ -748,27 +999,40 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Predicates => Some("? predicates(name, doc, file, lines)."),
         PrimitivePredicate::Verbs => Some("? verbs(name, query, doc, output_schema)."),
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
-        PrimitivePredicate::Upstream
-        | PrimitivePredicate::Downstream
-        | PrimitivePredicate::Impact
-        | PrimitivePredicate::Neighborhood
-        | PrimitivePredicate::Terminal
+        PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
-        | PrimitivePredicate::Obligation
-        | PrimitivePredicate::Discharged
-        | PrimitivePredicate::Undischarged
         | PrimitivePredicate::CiteCount
         | PrimitivePredicate::InDegree
         | PrimitivePredicate::OutDegree
-        | PrimitivePredicate::DischargeCount
         | PrimitivePredicate::Freshness
         | PrimitivePredicate::Flux
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::ReadFull
         | PrimitivePredicate::Match => None,
+    }
+}
+
+fn predicate_example(name: &str) -> Option<&'static str> {
+    match name {
+        "entropy" => Some("? entropy(h, source)."),
+        "potential" => Some("? potential(h, energy)."),
+        "blocked" => Some("? blocked(h)."),
+        "advancing" => Some("? advancing(h)."),
+        "top_work" => Some("? top_work(h, energy)."),
+        "ranked_work" => Some("? ranked_work(h, energy, rank)."),
+        "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
+        "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
+        "area_of" => Some("? area_of(h, area)."),
+        "namespace_of" => Some("? namespace_of(h, namespace)."),
+        "status_of" => Some("? status_of(h, status)."),
+        "hub" => Some("? hub(h, degree)."),
+        "orphan" => Some("? orphan(h)."),
+        "stub" => Some("? stub(h)."),
+        "diagnostic" => Some("? diagnostic(code, severity, subject, file, line, evidence)."),
+        _ => None,
     }
 }
 

@@ -2,7 +2,7 @@
 
 @doc(
   name: "convergence",
-  doc: "Anneal's convergence vocabulary: potential, entropy, blocked, advancing, lifecycle position, and related predicates that help agents find unsettled work in a source-neutral handle graph."
+  doc: "Convergence rules turn a pile of documents into an action map: what looks unfinished, what is broken, what recently moved, and what an agent should read or repair next."
 ).
 
 potential_weight("undischarged", 5).
@@ -15,12 +15,12 @@ potential_weight("orphan_label", 1).
 
 @doc(
   name: "potential_weight",
-  doc: "Bind default convergence energy weights by entropy source."
+  doc: "Return the default score weight for each kind of unsettled-work signal, such as an undischarged obligation or a broken reference."
 ).
 
 @doc(
   name: "entropy",
-  doc: "Bind source labels explaining why a handle has convergence energy."
+  doc: "Return one reason a handle looks unsettled: missing metadata, stale dependency, broken reference, lonely label, old active file, or unfinished obligation."
 ).
 entropy(h, "undischarged") :=
   obligation(h),
@@ -59,13 +59,13 @@ entropy(h, "orphan_label") :=
 
 @doc(
   name: "potential_subject",
-  doc: "Bind handles with at least one entropy source."
+  doc: "Return handles that have at least one unsettled-work reason."
 ).
 potential_subject(h) := entropy(h, source).
 
 @doc(
   name: "potential",
-  doc: "Bind total convergence energy for each handle by summing weighted entropy sources."
+  doc: "Score each unsettled handle by adding the weights of its reasons, so higher scores usually deserve attention first."
 ).
 potential(h, energy) :=
   potential_subject(h),
@@ -73,7 +73,7 @@ potential(h, energy) :=
 
 @doc(
   name: "blocked",
-  doc: "Bind active handles with meaningful potential and no recent flux."
+  doc: "Return active handles that look important but have not changed recently; these are good candidates for unblock/fix work."
 ).
 blocked(h) :=
   active(h),
@@ -83,7 +83,7 @@ blocked(h) :=
 
 @doc(
   name: "advancing",
-  doc: "Bind active handles whose lifecycle position advanced since the last snapshot."
+  doc: "Return active handles whose status moved forward since the latest snapshot, such as draft to review."
 ).
 advancing(h) :=
   active(h),
@@ -91,7 +91,7 @@ advancing(h) :=
 
 @doc(
   name: "snapshot_history_present",
-  doc: "Bind the count of available historical snapshots when snapshot fallback history exists."
+  doc: "Return the number of saved snapshots when the corpus has history available for trend and advancement queries."
 ).
 snapshot_history_present(count) :=
   count = Count{ snapshot : *snapshot{snapshot: snapshot} },
@@ -99,7 +99,7 @@ snapshot_history_present(count) :=
 
 @doc(
   name: "recently_advanced",
-  doc: "Bind handles whose current status outranks their last snapshot status."
+  doc: "Return handles whose current status is later in the configured lifecycle than their status in the latest snapshot."
 ).
 recently_advanced(h) :=
   snapshot_history_present(count),

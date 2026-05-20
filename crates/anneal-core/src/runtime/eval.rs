@@ -7732,8 +7732,8 @@ release_blocker(code) := issue(code, "error").
                 outputs[4][0].get("doc"),
                 Some(Value::String(doc))
                     if doc.contains("schema")
-                        && doc.contains("sources")
-                        && doc.contains("search primitives")
+                        && doc.contains("describe")
+                        && doc.contains("discover")
             ),
             "runtime description should orient a cold agent"
         );
