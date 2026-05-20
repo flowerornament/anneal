@@ -702,7 +702,8 @@ Raw adapter or field scores are internal. Public `score` is the
 active ranker's calibrated score clamped to `[0.0, 1.0]`; the default
 ranker multiplies lexical match quality by field weights, clamps the
 result, and then orders by descending calibrated score, `source`,
-reason priority, `handle`, `span_id`, `field`, and `reason`. Scores
+reason priority, file handles before fragment handles, `handle`,
+`span_id`, `field`, and `reason`. Scores
 below the active low-confidence threshold set `low_confidence: true`.
 The lexical match quality includes light deterministic stemming and a
 small built-in abbreviation table for corpus-planning idioms such as
@@ -724,12 +725,20 @@ stored `file` field names the same canonical parent handle, and that
 parent handle exists in the same corpus/source, it emits an additional
 handle-level `SearchHit` for the parent with reason `parent-cluster`
 and field `identifier`. The cluster hit uses the best child raw score
-plus a small deterministic boost, clamped to `[0.0, 1.0]`; at equal
-calibrated scores, `parent-cluster` sorts before ordinary lexical
-reasons. If the parent already has an equal-or-stronger direct
-identifier/title hit by raw lexical match quality, or an
-equal-or-stronger direct calibrated score, no extra cluster hit is
-emitted. Single child hits do not synthesize a parent.
+plus a small deterministic boost, clamped to `[0.0, 1.0]`. A cluster
+hit is only emitted when the best child hit is already strong enough
+before the boost; repeated weak matches on a generic query term must not
+synthesize a parent. Label inventory files such as `LABELS.md` do not
+receive synthetic parent-cluster hits. If the parent already has an
+equal-or-stronger direct identifier/title hit by raw lexical match
+quality, or an equal-or-stronger direct calibrated score, no extra
+cluster hit is emitted. At equal calibrated scores, direct
+identifier/title hits sort before `parent-cluster`; `parent-cluster`
+sorts before body/frontmatter lexical reasons. Single child hits do not
+synthesize a parent. Synthetic `parent-cluster` hits do not receive
+inbound-authority boosts and are capped below exact direct-match score,
+so prelude `TopK` queries that key only by score still prefer an exact
+canonical source over a synthetic parent.
 Rationale: agents asking orientation questions need canonical source
 documents when many local labels or sections point to the same source,
 not a ranked list of fragments that hides the document to read.

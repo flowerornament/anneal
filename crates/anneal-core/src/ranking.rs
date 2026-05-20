@@ -6,11 +6,15 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
+use camino::Utf8Path;
+
 use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
 pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 const PARENT_CLUSTER_RAW_SCORE_BOOST: f32 = 0.15;
+const PARENT_CLUSTER_MIN_CHILD_RAW_SCORE: f32 = 0.70;
+const PARENT_CLUSTER_MAX_SCORE: f32 = 0.99;
 const INBOUND_AUTHORITY_SCORE_BOOST: f32 = 0.12;
 const INBOUND_AUTHORITY_MIN_EDGES: u32 = 8;
 const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
@@ -194,7 +198,10 @@ impl Ranker for DefaultRanker {
         a.corpus()
             .cmp(b.corpus())
             .then_with(|| a.source().cmp(b.source()))
-            .then_with(|| reason_priority(a.reason()).cmp(&reason_priority(b.reason())))
+            .then_with(|| hit_tie_priority(a).cmp(&hit_tie_priority(b)))
+            .then_with(|| {
+                handle_fragment_priority(a.handle()).cmp(&handle_fragment_priority(b.handle()))
+            })
             .then_with(|| a.handle().cmp(b.handle()))
             .then_with(|| a.span_id().cmp(&b.span_id()))
             .then_with(|| a.field().cmp(b.field()))
@@ -202,8 +209,20 @@ impl Ranker for DefaultRanker {
     }
 }
 
-fn reason_priority(reason: &str) -> u8 {
-    u8::from(reason != REASON_PARENT_CLUSTER)
+fn hit_tie_priority(hit: &SearchHit) -> u8 {
+    match (hit.reason(), hit.field()) {
+        (REASON_IDENTIFIER_SUBSTRING, FIELD_IDENTIFIER) | (REASON_TITLE_SUBSTRING, FIELD_TITLE) => {
+            0
+        }
+        (REASON_PARENT_CLUSTER, FIELD_IDENTIFIER) => 1,
+        (REASON_FRONTMATTER_KEY_MATCH | REASON_FRONTMATTER_VALUE_MATCH, _) => 2,
+        (REASON_BODY_SUBSTRING, FIELD_BODY) => 3,
+        _ => 4,
+    }
+}
+
+fn handle_fragment_priority(handle: &str) -> u8 {
+    u8::from(handle.contains('#'))
 }
 
 fn field_weight(field: &str) -> f32 {
@@ -468,24 +487,31 @@ impl SearchIndex {
                 .record_child(hit.handle(), hit.raw_score().get());
         }
 
-        hits.extend(clusters.into_iter().filter_map(|(parent_key, cluster)| {
-            let cluster_score = cluster.cluster_score(query);
-            let direct_signal = self.direct_parent_signal(&parent_key, query);
-            (cluster.is_actionable()
-                && cluster.best_raw_score > direct_signal.structural_raw_score
-                && cluster_score > direct_signal.calibrated_score)
-                .then(|| {
-                    SearchHit::new(
-                        parent_key.corpus,
-                        parent_key.source,
-                        parent_key.handle,
-                        None,
-                        cluster_score,
-                        REASON_PARENT_CLUSTER,
-                        FIELD_IDENTIFIER,
-                    )
+        hits.extend(
+            clusters
+                .into_iter()
+                .filter(|(parent_key, cluster)| {
+                    cluster.is_actionable()
+                        && !is_label_inventory_handle(parent_key.handle.as_str())
                 })
-        }));
+                .filter_map(|(parent_key, cluster)| {
+                    let cluster_score = cluster.cluster_score(query);
+                    let direct_signal = self.direct_parent_signal(&parent_key, query);
+                    (cluster.best_raw_score > direct_signal.structural_raw_score
+                        && cluster_score > direct_signal.calibrated_score)
+                        .then(|| {
+                            SearchHit::new(
+                                parent_key.corpus,
+                                parent_key.source,
+                                parent_key.handle,
+                                None,
+                                cluster_score,
+                                REASON_PARENT_CLUSTER,
+                                FIELD_IDENTIFIER,
+                            )
+                        })
+                }),
+        );
     }
 
     fn direct_parent_signal(
@@ -506,13 +532,25 @@ impl SearchIndex {
                 }
                 signal.calibrated_score = signal
                     .calibrated_score
-                    .max(DefaultRanker.calibrate(&hit, &ctx));
+                    .max(self.calibrate_direct_hit(&hit, &ctx));
                 signal
             })
     }
 
+    fn calibrate_direct_hit(&self, hit: &SearchHit, ctx: &RankingContext) -> f32 {
+        let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+        let count = self.incoming_edge_counts.get(&key).copied().unwrap_or(0);
+        let mut boosted = hit.clone();
+        boosted.score_boost =
+            SearchScore::new(boosted.score_boost().get() + authority_score_boost(count));
+        DefaultRanker.calibrate(&boosted, ctx)
+    }
+
     fn apply_authority_boosts(&self, hits: &mut [SearchHit]) {
         for hit in hits {
+            if hit.reason() == REASON_PARENT_CLUSTER {
+                continue;
+            }
             let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
             let count = self.incoming_edge_counts.get(&key).copied().unwrap_or(0);
             hit.score_boost =
@@ -540,7 +578,7 @@ impl ParentCluster {
     }
 
     fn is_actionable(&self) -> bool {
-        self.children.len() >= 2
+        self.children.len() >= 2 && self.best_raw_score >= PARENT_CLUSTER_MIN_CHILD_RAW_SCORE
     }
 
     fn cluster_score(&self, query: &SearchQuery) -> f32 {
@@ -554,8 +592,16 @@ impl ParentCluster {
             FIELD_IDENTIFIER,
         );
         let ctx = RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD);
-        DefaultRanker.calibrate(&hit, &ctx)
+        DefaultRanker
+            .calibrate(&hit, &ctx)
+            .min(PARENT_CLUSTER_MAX_SCORE)
     }
+}
+
+fn is_label_inventory_handle(handle: &str) -> bool {
+    Utf8Path::new(handle)
+        .file_name()
+        .is_some_and(|file_name| file_name.eq_ignore_ascii_case("labels.md"))
 }
 
 impl SearchDocument {
@@ -1094,6 +1140,107 @@ mod tests {
         assert!(!hits.iter().any(
             |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
         ));
+    }
+
+    #[test]
+    fn weak_repeated_child_hits_do_not_promote_parent_file() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/code-review.md",
+            "docs/code-review.md",
+            "Code review",
+        );
+        insert_handle(
+            &mut index,
+            "docs/code-review.md#medium-type-system-finding",
+            "docs/code-review.md",
+            "medium type system finding",
+        );
+        insert_handle(
+            &mut index,
+            "docs/code-review.md#medium-performance-finding",
+            "docs/code-review.md",
+            "medium performance finding",
+        );
+
+        let query =
+            SearchQuery::parse("medium content decomposition milestones").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+
+        assert!(
+            !hits.iter().any(|hit| hit.handle() == "docs/code-review.md"
+                && hit.reason() == REASON_PARENT_CLUSTER)
+        );
+    }
+
+    #[test]
+    fn direct_structural_hit_beats_equal_parent_cluster_tie() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/codebase-review.md",
+            "docs/codebase-review.md",
+            "Codebase review",
+        );
+        insert_handle(
+            &mut index,
+            "docs/codebase-review.md#formal-model-v17-conformance-audit",
+            "docs/codebase-review.md",
+            "Formal model v17 conformance audit",
+        );
+        insert_handle(
+            &mut index,
+            "docs/codebase-review.md#formal-model-v17-conformance-audit-followup",
+            "docs/codebase-review.md",
+            "Formal model v17 conformance audit followup",
+        );
+        insert_handle(
+            &mut index,
+            "docs/formal-model-v17-conformance-audit.md",
+            "docs/formal-model-v17-conformance-audit.md",
+            "Formal model v17 conformance audit",
+        );
+
+        let query = SearchQuery::parse("formal model v17 conformance audit").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("formal model v17 conformance audit", 0.5),
+            &DefaultRanker,
+        );
+
+        let first = ranked.first().expect("ranked hit").hit();
+        assert_eq!(first.handle(), "docs/formal-model-v17-conformance-audit.md");
+        assert_eq!(first.reason(), REASON_IDENTIFIER_SUBSTRING);
+    }
+
+    #[test]
+    fn label_inventory_files_do_not_receive_parent_cluster_hits() {
+        let mut index = SearchIndex::default();
+        insert_handle(&mut index, "LABELS.md", "LABELS.md", "Label inventory");
+        insert_handle(
+            &mut index,
+            "MCD-1",
+            "LABELS.md",
+            "medium content decomposition milestone one",
+        );
+        insert_handle(
+            &mut index,
+            "MCD-2",
+            "LABELS.md",
+            "medium content decomposition milestone two",
+        );
+
+        let query =
+            SearchQuery::parse("medium content decomposition milestones").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+
+        assert!(
+            !hits
+                .iter()
+                .any(|hit| hit.handle() == "LABELS.md" && hit.reason() == REASON_PARENT_CLUSTER)
+        );
     }
 
     #[test]
