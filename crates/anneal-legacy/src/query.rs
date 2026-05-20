@@ -212,14 +212,19 @@ pub(crate) struct DiagnosticQueryArgs {
 pub(crate) struct ObligationQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+    /// Filter by linear namespace
     #[arg(long)]
     pub(crate) namespace: Option<String>,
+    /// Show obligations with no Discharges edge
     #[arg(long)]
     pub(crate) undischarged: bool,
+    /// Show obligations with exactly one Discharges edge
     #[arg(long)]
     pub(crate) discharged: bool,
+    /// Show obligations with more than one Discharges edge
     #[arg(long)]
     pub(crate) multi_discharged: bool,
+    /// Show terminal obligations that no longer need discharge
     #[arg(long)]
     pub(crate) mooted: bool,
 }
@@ -228,6 +233,7 @@ pub(crate) struct ObligationQueryArgs {
 pub(crate) struct SuggestionQueryArgs {
     #[command(flatten)]
     pub(crate) page: QueryPageArgs,
+    /// Filter by suggestion code
     #[arg(long)]
     pub(crate) code: Option<String>,
 }

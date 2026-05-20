@@ -286,6 +286,22 @@ fn build_graph_at_git_ref(
 ) -> anyhow::Result<crate::snapshot::Snapshot> {
     use std::process::Command as ProcessCommand;
 
+    let verify_ref = format!("{git_ref}^{{tree}}");
+    let verify = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(root.as_str())
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg(&verify_ref)
+        .output()
+        .context("failed to validate git ref")?;
+    if !verify.status.success() {
+        anyhow::bail!(
+            "git ref {git_ref:?} was not found; use --days=N, omit REF for the latest snapshot, or pass an existing git ref"
+        );
+    }
+
     let temp_dir = std::env::temp_dir().join(format!(
         "anneal-diff-{}-{}",
         std::process::id(),

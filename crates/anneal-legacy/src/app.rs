@@ -4,6 +4,7 @@ use std::io::Write;
 use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use crate::{
     MapRender, analysis, area, checks, cli, config, emit_rendered, explain, graph, impact, lattice,
@@ -371,8 +372,8 @@ EXAMPLES:
         #[arg(long)]
         status: Option<String>,
         /// Filter by handle kind: file, label, section, version, external
-        #[arg(long)]
-        kind: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<FindKind>,
         /// Maximum number of matches to return (default: 25 unless --full)
         #[arg(long)]
         limit: Option<usize>,
@@ -978,6 +979,28 @@ enum FindSort {
     Date,
 }
 
+/// Handle kind filter for `find --kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum FindKind {
+    File,
+    Label,
+    Section,
+    Version,
+    External,
+}
+
+impl FindKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Label => "label",
+            Self::Section => "section",
+            Self::Version => "version",
+            Self::External => "external",
+        }
+    }
+}
+
 fn parse_since_days(s: &str) -> anyhow::Result<u32> {
     let s = s.trim().to_lowercase();
     let num_str = s.strip_suffix('d').unwrap_or(&s);
@@ -1005,6 +1028,11 @@ pub fn main_entry() {
 /// `anneal prime` output never drifts from skills/anneal/SKILL.md.
 const SKILL_MARKDOWN: &str = include_str!("../../../skills/anneal/SKILL.md");
 
+#[derive(Serialize)]
+struct PrimeJson<'a> {
+    briefing: &'a str,
+}
+
 /// Return the SKILL.md body with its YAML frontmatter stripped. The
 /// frontmatter is metadata for the skill loader, not useful as terminal
 /// output. Leading blank lines are also trimmed.
@@ -1025,10 +1053,21 @@ fn run() -> anyhow::Result<()> {
     // `anneal prime` is pure output — no graph, no config, no disk I/O.
     // Handle it before any expensive loading so onboarding stays instant.
     if matches!(cli_args.command, Some(Command::Prime)) {
-        let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        lock.write_all(skill_briefing_body(SKILL_MARKDOWN).as_bytes())
-            .context("failed to write skill briefing")?;
+        ensure_prime_flags(&cli_args)?;
+        let body = skill_briefing_body(SKILL_MARKDOWN);
+        if cli_args.json {
+            let style = if cli_args.pretty {
+                cli::JsonStyle::Pretty
+            } else {
+                cli::JsonStyle::Compact
+            };
+            cli::print_json(&PrimeJson { briefing: body }, style)?;
+        } else {
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            lock.write_all(body.as_bytes())
+                .context("failed to write skill briefing")?;
+        }
         return Ok(());
     }
 
@@ -1376,7 +1415,7 @@ fn run() -> anyhow::Result<()> {
                 &cli::FindFilters {
                     namespace: namespace.as_deref(),
                     status: status.as_deref(),
-                    kind: kind.as_deref(),
+                    kind: kind.map(FindKind::as_str),
                     include_all: all,
                     limit,
                     offset,
@@ -1486,11 +1525,6 @@ fn run() -> anyhow::Result<()> {
                 (None, false, true) => MapRender::Around,
                 _ => MapRender::Summary,
             };
-            if matches!(render, MapRender::Text | MapRender::Dot) && !full && !has_focus {
-                anyhow::bail!(
-                    "full graph rendering requires --full; use `anneal map --render=text --full` or focus with --around/--concern/--area"
-                );
-            }
             let direction = if upstream {
                 cli::TraversalDirection::Upstream
             } else if downstream {
@@ -1765,6 +1799,22 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn ensure_prime_flags(cli: &Cli) -> anyhow::Result<()> {
+    if cli.area.is_some() {
+        anyhow::bail!("prime does not support --area; it prints the bundled agent briefing");
+    }
+    if cli.recent {
+        anyhow::bail!("prime does not support --recent; it prints the bundled agent briefing");
+    }
+    if cli.since.is_some() {
+        anyhow::bail!("prime does not support --since; it prints the bundled agent briefing");
+    }
+    if cli.pretty && !cli.json {
+        anyhow::bail!("prime --pretty requires --json");
+    }
     Ok(())
 }
 

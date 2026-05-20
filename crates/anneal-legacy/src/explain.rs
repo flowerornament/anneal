@@ -28,21 +28,28 @@ pub(crate) enum ExplainCommand {
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct DiagnosticExplainArgs {
+    /// Explain the diagnostic with this stable diagnostic_id
     #[arg(long)]
     pub(crate) id: Option<String>,
+    /// Filter diagnostics by code (for example E001, W001, S003)
     #[arg(long)]
     pub(crate) code: Option<String>,
+    /// Filter diagnostics to one source file
     #[arg(long)]
     pub(crate) file: Option<String>,
+    /// Filter diagnostics to one source line
     #[arg(long)]
     pub(crate) line: Option<u32>,
+    /// Filter diagnostics involving this handle id
     #[arg(long)]
     pub(crate) handle: Option<String>,
 }
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ImpactExplainArgs {
+    /// Root handle whose impact set should be explained
     pub(crate) handle: String,
+    /// Include full impact paths instead of bounded summaries
     #[arg(long)]
     pub(crate) full: bool,
 }
@@ -52,14 +59,18 @@ pub(crate) struct ConvergenceExplainArgs {}
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ObligationExplainArgs {
+    /// Obligation handle to explain
     pub(crate) handle: String,
 }
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct SuggestionExplainArgs {
+    /// Explain the suggestion with this stable suggestion_id
     #[arg(long)]
     pub(crate) id: Option<String>,
+    /// Filter suggestions by code (for example S001)
     pub(crate) code: Option<String>,
+    /// Filter suggestions involving this handle id
     #[arg(long)]
     pub(crate) handle: Option<String>,
 }

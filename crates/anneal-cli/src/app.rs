@@ -300,7 +300,7 @@ Arguments:
 Options:
       --budget <N>               Derives one per-hit read cap; not divided by hits
       --hits <N>                 Number of search winners (default: 3)
-      --limit <N>                Alias for --hits
+      --limit <N>                Alias for --hits; if both are supplied, last wins
       --depth <N>                Alias for --neighborhood-depth
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
@@ -488,9 +488,22 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 "
             }
         };
-        format!("{body}{RUNTIME_HELP_OPTIONS}")
+        if self == Self::Eval {
+            format!("{body}{RUNTIME_HELP_OPTIONS}")
+        } else {
+            format!("{body}{RUNTIME_PROVENANCE_OPTIONS}{RUNTIME_HELP_OPTIONS}")
+        }
     }
 }
+
+const RUNTIME_PROVENANCE_OPTIONS: &str = "\
+Provenance options:
+      --explain                  Include derivation trees for first 3 rows
+      --explain-first <N>        Include derivation trees for first N rows
+      --explain-all              Include derivation trees for every row
+      --explain-depth <N>        Derivation expansion depth
+
+";
 
 const RUNTIME_HELP_OPTIONS: &str = "\
 Global options:
@@ -772,8 +785,16 @@ impl RuntimeSession {
             RuntimeCommand::Trend => self.run_verb("trend", RowView::Trend),
             RuntimeCommand::Vocab => self.run_verb("vocab", RowView::Vocab),
             RuntimeCommand::Describe { name } => {
-                let query = DescribeCommand::new(name).datalog();
-                self.run_query(&query, ExplainOptions::disabled(), RowView::Describe)
+                let query = DescribeCommand::new(&name).datalog();
+                let output = self.eval(&query, ExplainOptions::disabled())?;
+                ensure!(
+                    !output.rows.is_empty(),
+                    "unknown runtime name {name:?}; use `anneal verbs`, `anneal schema`, or `anneal describe runtime`"
+                );
+                Ok(CommandOutput::Rows {
+                    rows: output.rows,
+                    view: RowView::Describe,
+                })
             }
             RuntimeCommand::Sources => self.run_query(
                 SourcesCommand.datalog(),

@@ -163,15 +163,10 @@ pub(crate) fn cmd_find(
                 return false;
             }
 
-            if let Some(ns) = filters.namespace {
-                match &h.kind {
-                    HandleKind::Label { prefix, .. } => {
-                        if prefix != ns {
-                            return false;
-                        }
-                    }
-                    _ => return false,
-                }
+            if let Some(ns) = filters.namespace
+                && !handle_matches_namespace(h, ns)
+            {
+                return false;
             }
 
             if let Some(sf) = filters.status {
@@ -298,6 +293,28 @@ fn build_find_facets(matches: &[FindMatch]) -> FindFacets {
     FindFacets { kind, status }
 }
 
+fn namespace_matches(prefix: &str, filter: &str) -> bool {
+    prefix == filter
+        || prefix
+            .strip_prefix(filter)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
+fn handle_matches_namespace(handle: &crate::handle::Handle, filter: &str) -> bool {
+    if let HandleKind::Label { prefix, .. } = &handle.kind
+        && namespace_matches(prefix, filter)
+    {
+        return true;
+    }
+
+    // Section handles often own design-decision labels like
+    // `...#§10-stored-relations-[cr-d8]` rather than resolving them as
+    // standalone label handles. Treat `--namespace=CR` as "CR-* handle
+    // identities" so agents do not need to know this storage detail.
+    let needle = format!("{}-", filter.to_ascii_uppercase());
+    handle.id.to_ascii_uppercase().contains(&needle)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::handle::Handle;
@@ -334,5 +351,61 @@ mod tests {
             Ok(_) => panic!("empty query should fail"),
             Err(err) => assert!(err.to_string().contains("empty query")),
         }
+    }
+
+    #[test]
+    fn find_namespace_matches_dashed_subnamespace() {
+        let mut graph = DiGraph::new();
+        graph.add_node(Handle::test_label("CR-D", 93, Some("current")));
+        graph.add_node(Handle::test_label("CR-R", 11, Some("current")));
+        graph.add_node(Handle::test_label("OQ", 1, Some("current")));
+
+        let output = cmd_find(
+            &graph,
+            &Lattice::test_empty(),
+            "",
+            &FindFilters {
+                namespace: Some("CR"),
+                include_all: true,
+                ..FindFilters::default()
+            },
+        )
+        .expect("find output");
+
+        assert_eq!(output.total, 2);
+        assert!(output.matches.iter().any(|entry| entry.id == "CR-D-93"));
+        assert!(output.matches.iter().any(|entry| entry.id == "CR-R-11"));
+    }
+
+    #[test]
+    fn find_namespace_matches_section_identity_labels() {
+        let mut graph = DiGraph::new();
+        let parent = graph.add_node(Handle::test_file("spec.md", Some("current")));
+        let mut decision_section = Handle::section(
+            parent,
+            "§10 stored relations [cr-d8]".to_string(),
+            "spec.md".into(),
+        );
+        decision_section.status = Some("current".to_string());
+        graph.add_node(decision_section);
+        let mut ordinary_section =
+            Handle::section(parent, "cross reference".to_string(), "spec.md".into());
+        ordinary_section.status = Some("current".to_string());
+        graph.add_node(ordinary_section);
+
+        let output = cmd_find(
+            &graph,
+            &Lattice::test_empty(),
+            "",
+            &FindFilters {
+                namespace: Some("CR"),
+                include_all: true,
+                ..FindFilters::default()
+            },
+        )
+        .expect("find output");
+
+        assert_eq!(output.total, 1);
+        assert_eq!(output.matches[0].id, "spec.md#§10-stored-relations-[cr-d8]");
     }
 }
