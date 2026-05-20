@@ -462,14 +462,50 @@ Options:
       --explain-all              Include derivation trees for every row
       --explain-depth <N>        Derivation expansion depth
 
-Syntax:
-  ? atom(arg), other_atom(named: value).
-  local_rule(x) := body_atom(x), not excluded(x).
-  Stored relations use `*` prefixes; prelude/project predicates do not.
+Grammar tour:
+  Queries ask for rows:
+    ? predicate(arg), other(arg2).
+
+  Stored relations are source/runtime facts. They use `*name{field: value}`:
+    ? *handle{id: h, kind: \"file\", status: s}.
+    ? *edge{from: src, to: dst, kind: \"DependsOn\"}.
+    `id: h` binds a variable. `kind: \"file\"` filters to a literal.
+
+  Derived predicates and primitives use call syntax:
+    ? top_work(h, energy).
+    ? search(\"conformance\", h, span, score, reason, field, low).
+
+  Local rules name reusable subqueries before the final `?` query:
+    open_file(h) := *handle{id: h, kind: \"file\"}, active(h).
+    ? open_file(h).
+
+  Negation uses `not` after variables are positively bound:
+    missing_discharge(h) := obligation(h), not discharged(h).
+
+  Aggregates bind tuples from grouped rows:
+    area(area) := area_of(h, area).
+    area_count(area, n) :=
+      area(area),
+      n = Count{ h : area_of(h, area) }.
+
+    ? (h, energy) = TopK{ k: 10, key: energy :
+        (h, energy) : top_work(h, energy)
+      }.
+
+  Time blocks query supported historical references:
+    ? at(\"snapshot:last\") { *handle{id: h, status: old} },
+      *handle{id: h, status: now},
+      old != now.
+
+  Stratification rule of thumb:
+    recursive rules are fine; negation and aggregates must not depend on
+    themselves through a cycle. If analysis rejects a query, split the negative
+    or aggregate part into a later rule.
 
 Discover before guessing:
   anneal schema --format=text
   anneal describe search --format=text
+  anneal examples search --format=text
   anneal verbs --format=text
   anneal sources --format=text
   anneal -e '? source_of(\"work\", file, lines).'

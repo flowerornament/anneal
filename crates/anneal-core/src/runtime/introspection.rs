@@ -224,6 +224,7 @@ impl IntrospectionBuilder {
         doc: &str,
         provenance: &str,
     ) {
+        let example = stored_relation_example(name, fields);
         self.schema.insert(schema_tuple(
             name,
             "stored",
@@ -239,6 +240,7 @@ impl IntrospectionBuilder {
                 kind: Some("stored relation"),
                 signature: Some(&signature),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
+                examples: vec![example.as_str()],
                 ..DescribeCard::default()
             })),
         ]));
@@ -249,6 +251,7 @@ impl IntrospectionBuilder {
                 kind: Some("stored relation"),
                 signature: Some(&signature),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
+                examples: vec![example.as_str()],
                 ..DescribeCard::default()
             })),
         ]));
@@ -261,6 +264,12 @@ impl IntrospectionBuilder {
             string_value(&format!("*{name}")),
             string_value(".design/2026-05-13-corpus-runtime.md"),
             string_value("unknown"),
+        ]));
+        self.examples
+            .insert(Tuple(vec![string_value(name), string_value(&example)]));
+        self.examples.insert(Tuple(vec![
+            string_value(&format!("*{name}")),
+            string_value(&example),
         ]));
     }
 
@@ -1012,6 +1021,47 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::ReadFull
         | PrimitivePredicate::Match => None,
+    }
+}
+
+fn stored_relation_example(name: &str, fields: &[impl AsRef<str>]) -> String {
+    match name {
+        "handle" => r#"? *handle{id: h, kind: "file", status: status}."#.to_string(),
+        "edge" => r#"? *edge{from: src, to: dst, kind: "DependsOn"}."#.to_string(),
+        "meta" => r"? *meta{handle: h, key: key, value: value}.".to_string(),
+        "content" => r"? *content{handle: h, span_id: span, tokens: tokens}.".to_string(),
+        "span" => r"? *span{id: span, handle: h, start_line: start, end_line: end}.".to_string(),
+        "concern" => r"? *concern{name: concern, member: h}.".to_string(),
+        "config" => r"? *config{key: key, value: value, ordinal: ordinal}.".to_string(),
+        "snapshot" => {
+            r"? *snapshot{snapshot: snapshot, id: h, key: key, value: value}.".to_string()
+        }
+        "generation" => r"? *generation{source: source, current: generation}.".to_string(),
+        "trail" => r"? *trail{session_id: session, step: step, verb: verb}.".to_string(),
+        "trail_ref" => r"? *trail_ref{session_id: session, kind: kind, handle: h}.".to_string(),
+        "trail_generation" => {
+            r"? *trail_generation{session_id: session, source: source, generation: generation}."
+                .to_string()
+        }
+        _ => {
+            let field = fields
+                .iter()
+                .find_map(|field| {
+                    let field = field.as_ref();
+                    (!matches!(
+                        field,
+                        "corpus"
+                            | "source"
+                            | "native_id"
+                            | "origin_uri"
+                            | "revision"
+                            | "generation"
+                    ))
+                    .then_some(field)
+                })
+                .unwrap_or_else(|| fields.first().map_or("value", AsRef::as_ref));
+            format!("? *{name}{{{field}: value}}.")
+        }
     }
 }
 

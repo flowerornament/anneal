@@ -72,6 +72,7 @@ START HERE:
   Program the corpus:
     anneal schema             Queryable relations, predicates, and primitives
     anneal describe NAME      Documentation for one runtime name
+    anneal examples NAME      Runnable examples for a runtime name
     anneal verbs              Saved query examples from the prelude/project
     anneal vocab              Corpus-local vocabulary to use in filters
     anneal sources            Linked adapters and capabilities
@@ -96,6 +97,7 @@ QUERY EXAMPLES:
   Use verbs and describe before guessing:
     anneal verbs --format=text
     anneal describe search --format=text
+    anneal examples search --format=text
     anneal help eval
 
 ROOT DIRECTORY:
@@ -912,6 +914,13 @@ and points at work, blockers, and broken facts."
         long_about = "List standard-library and project @verb declarations."
     )]
     Verbs,
+
+    /// Runnable examples for one runtime name
+    #[command(
+        display_order = 65,
+        long_about = "Show runnable examples for a primitive, predicate, stored relation, or verb."
+    )]
+    Examples,
 
     /// Datalog query over corpus facts
     #[command(
@@ -1774,6 +1783,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Sources
             | Command::Schema
             | Command::Verbs
+            | Command::Examples
             | Command::Eval,
         ) => {
             anyhow::bail!(

@@ -132,11 +132,12 @@ pub struct Stratum {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StaticError {
-    #[error("{location}: unknown predicate '{predicate}/{arity}'")]
+    #[error("{location}: unknown predicate '{predicate}/{arity}'{suggestion}")]
     UnknownPredicate {
         predicate: PredicateRef,
         arity: usize,
         location: SourceLocation,
+        suggestion: Box<str>,
     },
     #[error(
         "{location}: predicate '{predicate}' used with arity {actual}, expected {expected}; signature: {expected_signature}"
@@ -730,6 +731,29 @@ fn stored_relation_descriptor(name: &str) -> Option<StoredRelationDescriptor> {
         .copied()
 }
 
+fn unknown_predicate_error(
+    predicate: PredicateRef,
+    arity: usize,
+    location: SourceLocation,
+) -> StaticError {
+    let suggestion = if predicate.module.is_none()
+        && stored_relation_descriptor(predicate.name.as_str()).is_some()
+    {
+        format!(
+            ". Did you mean '*{}{{...}}'? '{}' is a stored relation; stored relations use a '*' prefix and named fields.",
+            predicate.name, predicate.name
+        )
+    } else {
+        String::new()
+    };
+    StaticError::UnknownPredicate {
+        predicate,
+        arity,
+        location,
+        suggestion: suggestion.into_boxed_str(),
+    }
+}
+
 fn normalize_aggregate_named_calls(
     aggregate: &mut Aggregate,
     signatures: &SignatureMap,
@@ -786,14 +810,13 @@ fn normalize_derived_named_args(
         return Ok(());
     }
 
-    let signature =
-        signatures
-            .get(&derived.predicate)
-            .ok_or_else(|| StaticError::UnknownPredicate {
-                predicate: derived.predicate.clone(),
-                arity: derived.args.len(),
-                location: derived.location.clone(),
-            })?;
+    let signature = signatures.get(&derived.predicate).ok_or_else(|| {
+        unknown_predicate_error(
+            derived.predicate.clone(),
+            derived.args.len(),
+            derived.location.clone(),
+        )
+    })?;
     let normalized = normalize_call_args(&derived.predicate, &derived.args, signature)?;
     derived.args = normalized;
     for arg in &mut derived.args {
@@ -1061,11 +1084,11 @@ fn check_derived_call(
     match signatures.get(predicate) {
         Some(signature) if signature.arity == arity => Ok(()),
         Some(signature) => Err(arity_mismatch(predicate, signature, arity, location)),
-        None => Err(StaticError::UnknownPredicate {
-            predicate: predicate.clone(),
+        None => Err(unknown_predicate_error(
+            predicate.clone(),
             arity,
-            location: location.clone(),
-        }),
+            location.clone(),
+        )),
     }
 }
 
@@ -1612,6 +1635,21 @@ mod tests {
         assert!(
             err.to_string()
                 .contains(&location("inline", input, "missing(h)").to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_predicate_suggests_stored_relation_prefix() {
+        let input = r#"? handle(id: h, kind: "file")."#;
+        let err = analyze_err("inline", input);
+        assert!(
+            err.to_string().contains("Did you mean '*handle{...}'?"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("stored relations use a '*' prefix and named fields"),
+            "{err}"
         );
     }
 
