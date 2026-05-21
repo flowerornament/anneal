@@ -1131,7 +1131,7 @@ mod tests {
             Some(Value::String(doc))
                 if doc.contains("action map")
                     && doc.contains("agent should read")
-                    && doc.contains("Source:")
+                    && doc.contains("Topic source:")
         ));
         assert_eq!(
             outputs[1].rows[0].fields.get("file"),

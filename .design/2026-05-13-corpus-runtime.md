@@ -2382,7 +2382,10 @@ query errors rather than empty-result successes.
 render readable text when stdout is a terminal, preserve NDJSON when
 stdout is piped, and accept `--format=text` to force readable text
 through pipe-only harnesses. `--json` and `--format=json` force machine
-mode. Human rendering is a CLI projection only: library, MCP, and
+mode. Teaching-card projections such as `describe` default to readable
+text even in auto/piped mode because their primary payload is prose;
+`--json` and `--format=json` still force NDJSON for machine callers.
+Human rendering is a CLI projection only: library, MCP, and
 machine-mode CLI callers continue to consume the CR-D20/CR-D25 NDJSON
 contract. Rationale: cold agents often run through pipe-only harnesses
 but still need the same low-friction orientation humans get at a TTY.

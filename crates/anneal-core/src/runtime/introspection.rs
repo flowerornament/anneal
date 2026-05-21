@@ -12,7 +12,7 @@ use super::primitives::PrimitivePredicate;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct IntrospectionIndex {
-    source_descriptions: Vec<Tuple>,
+    source_descriptions: Vec<DescribeEntry>,
     source_rows: Vec<Tuple>,
     program: ProgramIntrospection,
 }
@@ -29,7 +29,33 @@ impl IntrospectionIndex {
         sources.sort_by(|left, right| left.name.cmp(right.name));
         let source_descriptions = sources
             .iter()
-            .map(|source| Tuple(vec![string_value(source.name), string_value(source.doc)]))
+            .map(|source| {
+                let recognizes = source
+                    .recognizes
+                    .iter()
+                    .map(|pattern| pattern.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let capabilities =
+                    source_capability_names(&source.capabilities, source.search.is_some())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                describe_entry(
+                    source.name,
+                    DescribeKind::SourceAdapter,
+                    &describe_card(DescribeCard {
+                        summary: source.doc,
+                        kind: Some(DescribeKind::SourceAdapter),
+                        source_label: Some("Adapter"),
+                        source: Some(source.name),
+                        extra_lines: vec![
+                            format!("Recognizes: {recognizes}."),
+                            format!("Capabilities: [{capabilities}]."),
+                        ],
+                        ..DescribeCard::default()
+                    }),
+                )
+            })
             .collect();
         let source_rows = sources.iter().map(source_tuple).collect();
         Self {
@@ -101,13 +127,16 @@ impl IntrospectionIndex {
     }
 
     fn describe_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
-        self.program
+        let mut entries = self
+            .program
             .describe
             .iter()
             .chain(&self.source_descriptions)
-            .filter(|tuple| tuple.matches_constraints(constraints))
+            .filter(|entry| entry.matches_constraints(constraints))
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries.into_iter().map(|entry| entry.tuple).collect()
     }
 }
 
@@ -123,7 +152,7 @@ struct ProgramIntrospection {
     schema: Vec<Tuple>,
     predicates: Vec<Tuple>,
     verbs: Vec<Tuple>,
-    describe: Vec<Tuple>,
+    describe: Vec<DescribeEntry>,
     source_of: Vec<Tuple>,
     examples: Vec<Tuple>,
 }
@@ -150,9 +179,64 @@ struct IntrospectionBuilder {
     schema: BTreeSet<Tuple>,
     predicates: BTreeSet<Tuple>,
     verbs: BTreeSet<Tuple>,
-    describe: BTreeSet<Tuple>,
+    describe: BTreeSet<DescribeEntry>,
     source_of: BTreeSet<Tuple>,
     examples: BTreeSet<Tuple>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DescribeKind {
+    RuntimeTopic,
+    SourceAdapter,
+    StoredRelation,
+    EnginePrimitive,
+    DerivedPredicate,
+    Verb,
+}
+
+impl DescribeKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::RuntimeTopic => "runtime topic",
+            Self::SourceAdapter => "source adapter",
+            Self::StoredRelation => "stored relation",
+            Self::EnginePrimitive => "engine primitive",
+            Self::DerivedPredicate => "derived predicate",
+            Self::Verb => "verb",
+        }
+    }
+
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Verb => 0,
+            Self::DerivedPredicate => 1,
+            Self::EnginePrimitive => 2,
+            Self::StoredRelation => 3,
+            Self::RuntimeTopic => 4,
+            Self::SourceAdapter => 5,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DescribeEntry {
+    rank: u8,
+    name: String,
+    tuple: Tuple,
+}
+
+impl DescribeEntry {
+    fn matches_constraints(&self, constraints: &[(usize, Value)]) -> bool {
+        self.tuple.matches_constraints(constraints)
+    }
+}
+
+fn describe_entry(name: &str, kind: DescribeKind, doc: &str) -> DescribeEntry {
+    DescribeEntry {
+        rank: kind.rank(),
+        name: name.to_string(),
+        tuple: Tuple(vec![string_value(name), string_value(doc)]),
+    }
 }
 
 impl IntrospectionBuilder {
@@ -168,19 +252,21 @@ impl IntrospectionBuilder {
     }
 
     fn add_runtime_overview(&mut self) {
-        self.describe.insert(Tuple(vec![
-            string_value("runtime"),
-            string_value(&describe_card(DescribeCard {
+        self.describe.insert(describe_entry(
+            "runtime",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
                 summary: "Query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model.",
-                kind: Some("runtime topic"),
+                kind: Some(DescribeKind::RuntimeTopic),
+                source_label: Some("Topic source"),
                 examples: vec![
                     "? schema(name, kind, signature, determinism, provenance).",
                     "? describe(\"search\", doc).",
                     "? examples(\"search\", example).",
                 ],
                 ..DescribeCard::default()
-            })),
-        ]));
+            }),
+        ));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
             string_value(r#"? describe("runtime", doc)."#),
@@ -235,28 +321,33 @@ impl IntrospectionBuilder {
             provenance,
         ));
         let signature = stored_signature(name, fields);
-        self.describe.insert(Tuple(vec![
-            string_value(name),
-            string_value(&describe_card(DescribeCard {
+        self.describe.insert(describe_entry(
+            name,
+            DescribeKind::StoredRelation,
+            &describe_card(DescribeCard {
                 summary: doc,
-                kind: Some("stored relation"),
+                kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
+                source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
                 examples: vec![example],
                 ..DescribeCard::default()
-            })),
-        ]));
-        self.describe.insert(Tuple(vec![
-            string_value(&format!("*{name}")),
-            string_value(&describe_card(DescribeCard {
+            }),
+        ));
+        let star_name = format!("*{name}");
+        self.describe.insert(describe_entry(
+            &star_name,
+            DescribeKind::StoredRelation,
+            &describe_card(DescribeCard {
                 summary: doc,
-                kind: Some("stored relation"),
+                kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
+                source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
                 examples: vec![example],
                 ..DescribeCard::default()
-            })),
-        ]));
+            }),
+        ));
         self.source_of.insert(Tuple(vec![
             string_value(name),
             string_value(".design/2026-05-13-corpus-runtime.md"),
@@ -286,18 +377,22 @@ impl IntrospectionBuilder {
                 primitive_determinism(*primitive),
                 "engine",
             ));
-            self.describe.insert(Tuple(vec![
-                string_value(name),
-                string_value(&describe_card(DescribeCard {
+            self.describe.insert(describe_entry(
+                name,
+                DescribeKind::EnginePrimitive,
+                &describe_card(DescribeCard {
                     summary: primitive_doc(*primitive),
-                    kind: Some("engine primitive"),
+                    kind: Some(DescribeKind::EnginePrimitive),
                     signature: Some(&call_signature(name, signature.parameters)),
+                    relationship: primitive_relationship(*primitive),
+                    source_label: Some("Implementation"),
                     source: Some("crates/anneal-core/src/runtime/primitives.rs"),
                     requires: primitive_requires(*primitive),
+                    see_also: primitive_see_also(*primitive),
                     examples: primitive_example(*primitive).into_iter().collect(),
                     ..DescribeCard::default()
-                })),
-            ]));
+                }),
+            ));
             self.source_of.insert(Tuple(vec![
                 string_value(name),
                 string_value("crates/anneal-core/src/runtime/primitives.rs"),
@@ -324,21 +419,26 @@ impl IntrospectionBuilder {
                 string_value(entry.doc()),
                 string_value(&entry.output_schema().to_string()),
             ]));
-            self.describe.insert(Tuple(vec![
-                string_value(entry.name().as_str()),
-                string_value(&describe_card(DescribeCard {
+            self.describe.insert(describe_entry(
+                entry.name().as_str(),
+                DescribeKind::Verb,
+                &describe_card(DescribeCard {
                     summary: entry.doc(),
-                    kind: Some("verb"),
+                    kind: Some(DescribeKind::Verb),
                     signature: Some(&format!("anneal {}", entry.name())),
+                    relationship: Some(verb_relationship(entry.name().as_str())),
+                    source_label: Some("Verb source"),
                     source: Some(&format!(
                         "{}:{}",
                         entry.source().location().source_name,
                         source_line_text(entry.source().location())
                     )),
+                    see_also: verb_see_also(entry.name().as_str()),
+                    examples: verb_example(entry.name().as_str()).into_iter().collect(),
                     extra_lines: vec![format!("Output schema: {}", entry.output_schema())],
                     ..DescribeCard::default()
-                })),
-            ]));
+                }),
+            ));
             self.source_of.insert(Tuple(vec![
                 string_value(entry.name().as_str()),
                 string_value(&entry.source().location().source_name),
@@ -371,15 +471,17 @@ impl IntrospectionBuilder {
             if predicate_names.contains(name) {
                 continue;
             }
-            self.describe.insert(Tuple(vec![
-                string_value(name),
-                string_value(&describe_card(DescribeCard {
+            self.describe.insert(describe_entry(
+                name,
+                DescribeKind::RuntimeTopic,
+                &describe_card(DescribeCard {
                     summary: &info.doc,
-                    kind: Some("runtime topic"),
+                    kind: Some(DescribeKind::RuntimeTopic),
+                    source_label: Some("Topic source"),
                     source: info.primary_source().as_deref(),
                     ..DescribeCard::default()
-                })),
-            ]));
+                }),
+            ));
             for (file, line_text) in info.source_lines.iter_line_text() {
                 self.source_of.insert(Tuple(vec![
                     string_value(name),
@@ -433,19 +535,23 @@ impl IntrospectionBuilder {
                     .insert(Tuple(vec![string_value(&name), string_value(example)]));
             }
             let signature = info.signature();
-            let source = info.source_lines.first_line_text();
-            self.describe.insert(Tuple(vec![
-                string_value(&name),
-                string_value(&describe_card(DescribeCard {
+            let source = info.source_lines.compact_rule_source();
+            self.describe.insert(describe_entry(
+                &name,
+                DescribeKind::DerivedPredicate,
+                &describe_card(DescribeCard {
                     summary: doc,
-                    kind: Some("derived predicate"),
+                    kind: Some(DescribeKind::DerivedPredicate),
                     signature: Some(&signature),
+                    relationship: predicate_relationship(&name),
+                    source_label: Some("Rule source"),
                     source: source.as_deref(),
                     requires: predicate_requires(&name),
+                    see_also: predicate_see_also(&name),
                     examples: predicate_example(&name).into_iter().collect(),
                     ..DescribeCard::default()
-                })),
-            ]));
+                }),
+            ));
         }
     }
 
@@ -598,6 +704,16 @@ impl SourceLines {
             .iter()
             .next()
             .map(|(file, lines)| format!("{file}:{}", line_list(lines)))
+    }
+
+    fn compact_rule_source(&self) -> Option<String> {
+        self.0.iter().next().map(|(file, lines)| {
+            if lines.len() > 4 {
+                format!("{file} ({} rules)", lines.len())
+            } else {
+                format!("{file}:{}", line_list(lines))
+            }
+        })
     }
 }
 
@@ -793,10 +909,13 @@ fn call_signature(name: &str, parameters: &[impl AsRef<str>]) -> String {
 #[derive(Default)]
 struct DescribeCard<'a> {
     summary: &'a str,
-    kind: Option<&'a str>,
+    kind: Option<DescribeKind>,
     signature: Option<&'a str>,
+    relationship: Option<&'a str>,
+    source_label: Option<&'a str>,
     source: Option<&'a str>,
     requires: &'a [&'a str],
+    see_also: &'a [&'a str],
     examples: Vec<&'a str>,
     extra_lines: Vec<String>,
 }
@@ -807,20 +926,27 @@ fn describe_card(card: DescribeCard<'_>) -> String {
     let mut lines = Vec::new();
     lines.push(card.summary.trim().to_string());
     if let Some(kind) = card.kind {
-        lines.push(format!("Kind: {kind}."));
+        lines.push(format!("Kind: {}.", kind.label()));
     }
     if let Some(signature) = card.signature {
         lines.push(format!("Signature: {signature}."));
+    }
+    if let Some(relationship) = card.relationship {
+        lines.push(format!("Relationship: {relationship}"));
     }
     lines.extend(card.extra_lines);
     for requirement in card.requires {
         lines.push(format!("Requires: {requirement}"));
     }
+    if !card.see_also.is_empty() {
+        lines.push(format!("See also: {}.", card.see_also.join(", ")));
+    }
     for example in card.examples {
         lines.push(format!("Example: {example}"));
     }
     if let Some(source) = card.source {
-        lines.push(format!("Source: {source}."));
+        let label = card.source_label.unwrap_or("Source");
+        lines.push(format!("{label}: {source}."));
     }
     lines.join("\n")
 }
@@ -959,6 +1085,50 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
     }
 }
 
+fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str> {
+    match primitive {
+        PrimitivePredicate::Search => Some(
+            "The `search` verb wraps this primitive with TopK ranking and filters out low-confidence hits by default.",
+        ),
+        PrimitivePredicate::Read => Some(
+            "The `read` verb wraps this primitive with typed CLI arguments for handle and budget.",
+        ),
+        PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
+        PrimitivePredicate::Verbs => Some("The `verbs` verb projects this primitive directly."),
+        PrimitivePredicate::Describe => {
+            Some("The `describe` verb projects this primitive as teaching cards.")
+        }
+        PrimitivePredicate::SourceOf => {
+            Some("The `source-of` verb projects this primitive directly.")
+        }
+        PrimitivePredicate::Examples => {
+            Some("The `examples` verb projects this primitive directly.")
+        }
+        PrimitivePredicate::Sources => Some("The `sources` verb projects this primitive directly."),
+        _ => None,
+    }
+}
+
+fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] {
+    match primitive {
+        PrimitivePredicate::Search => &["search", "context", "read", "examples"],
+        PrimitivePredicate::Read | PrimitivePredicate::ReadFull => &["read", "*content", "*span"],
+        PrimitivePredicate::Schema => &["describe", "examples", "verbs"],
+        PrimitivePredicate::Describe => &["schema", "examples", "verbs"],
+        PrimitivePredicate::Examples => &["describe", "schema", "verbs"],
+        PrimitivePredicate::Upstream
+        | PrimitivePredicate::Downstream
+        | PrimitivePredicate::Impact => {
+            &["incoming_edge", "outgoing_edge", "neighborhood", "*edge"]
+        }
+        PrimitivePredicate::Obligation
+        | PrimitivePredicate::Discharged
+        | PrimitivePredicate::Undischarged
+        | PrimitivePredicate::DischargeCount => &["diagnostic", "blocked", "*config"],
+        _ => &[],
+    }
+}
+
 fn predicate_requires(name: &str) -> &'static [&'static str] {
     match name {
         "entropy" | "potential_subject" | "potential" | "work_candidate" | "top_work"
@@ -978,6 +1148,105 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
             &["`config convergence { ordering([...]). }` in anneal.dl."]
         }
         _ => &[],
+    }
+}
+
+fn predicate_relationship(name: &str) -> Option<&'static str> {
+    match name {
+        "diagnostic" => Some(
+            "Shared diagnostic stream used by `broken`, `status`, and `work`; individual rules contribute rows by diagnostic code.",
+        ),
+        "top_work" => Some("Used by the `work` verb and the work section of `status`."),
+        "blocked" => Some("Used by the `blocked` verb and the blocked section of `status`."),
+        "area_of" => Some(
+            "Source-neutral area lens over `*handle.area`; use it to group queries by corpus area.",
+        ),
+        _ => None,
+    }
+}
+
+fn predicate_see_also(name: &str) -> &'static [&'static str] {
+    match name {
+        "diagnostic" => &[
+            "broken",
+            "broken_reference",
+            "obligation",
+            "s001_orphaned",
+            "s003_pipeline_stall",
+            "s004_abandoned_namespace",
+            "s005_top_pair",
+        ],
+        "entropy" | "potential" | "potential_subject" | "work_candidate" | "top_work"
+        | "ranked_work" => &["diagnostic", "obligation", "freshness", "hub", "orphan"],
+        "blocked" => &["potential", "entropy", "flux", "status"],
+        "area_of" => &["*handle", "*concern", "vocab"],
+        "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
+        _ => &[],
+    }
+}
+
+fn verb_relationship(name: &str) -> &'static str {
+    match name {
+        "search" => {
+            "Saved query over the `search` primitive; applies TopK by score and filters `low_confidence = false`."
+        }
+        "context" => {
+            "Saved query that composes `search`, `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
+        }
+        "read" => "Saved query over the `read` primitive.",
+        "handle" => "Saved query over `*handle` and `*edge` for one focused handle.",
+        "blocked" => {
+            "Saved query over `potential`, `entropy`, and `*handle` for one focused handle."
+        }
+        "broken" => "Saved query over `diagnostic` filtered to severity `error`.",
+        "work" => "Saved query over `top_work` joined to `*handle` metadata.",
+        "describe" => "Saved query over the `describe` primitive.",
+        "examples" => "Saved query over the `examples` primitive.",
+        "schema" => "Saved query over the `schema` primitive.",
+        "verbs" => "Saved query over the `verbs` primitive.",
+        "sources" => "Saved query over the `sources` primitive.",
+        "vocab" => {
+            "Saved query over stored relations and config rows that reveal observed corpus vocabulary."
+        }
+        "find" => {
+            "Saved query over `*handle.id contains text`; use `search` for ranked content retrieval."
+        }
+        _ => "Saved @verb projected from the resolved prelude/project registry.",
+    }
+}
+
+fn verb_see_also(name: &str) -> &'static [&'static str] {
+    match name {
+        "status" => &["work", "blocked", "broken", "trend"],
+        "context" => &["search", "read", "handle"],
+        "search" => &["context", "read", "schema"],
+        "handle" => &["*handle", "*edge", "search"],
+        "blocked" => &["potential", "entropy", "status"],
+        "broken" => &["diagnostic", "status"],
+        "work" => &["top_work", "ranked_work", "status"],
+        "describe" => &["schema", "examples", "source-of"],
+        "schema" => &["describe", "examples", "verbs"],
+        "vocab" => &["*handle", "*edge", "*meta", "*config"],
+        _ => &[],
+    }
+}
+
+fn verb_example(name: &str) -> Option<&'static str> {
+    match name {
+        "status" => Some("anneal status"),
+        "context" => Some(r#"anneal context "v17 conformance audit" --hits 3"#),
+        "search" => Some(r#"anneal search "v17 conformance audit" --limit 5"#),
+        "read" => Some("anneal read formal-model/v17.md --budget 4000"),
+        "handle" => Some("anneal handle formal-model/v17.md"),
+        "blocked" => Some("anneal blocked formal-model/v17.md --explain"),
+        "broken" => Some("anneal broken"),
+        "work" => Some("anneal work"),
+        "describe" => Some("anneal describe search"),
+        "schema" => Some("anneal schema"),
+        "verbs" => Some("anneal verbs"),
+        "examples" => Some("anneal examples search"),
+        "vocab" => Some("anneal vocab"),
+        _ => None,
     }
 }
 
@@ -1043,21 +1312,21 @@ fn fallback_stored_relation_example(name: &str, fields: &[impl AsRef<str>]) -> S
 
 fn predicate_example(name: &str) -> Option<&'static str> {
     match name {
-        "entropy" => Some("? entropy(h, source)."),
-        "potential" => Some("? potential(h, energy)."),
-        "blocked" => Some("? blocked(h)."),
-        "advancing" => Some("? advancing(h)."),
+        "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
+        "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
+        "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
+        "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
         "top_work" => Some("? top_work(h, energy)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),
         "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
         "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
-        "area_of" => Some("? area_of(h, area)."),
-        "namespace_of" => Some("? namespace_of(h, namespace)."),
-        "status_of" => Some("? status_of(h, status)."),
+        "area_of" => Some(r#"? area_of("formal-model/v17.md", area)."#),
+        "namespace_of" => Some(r#"? namespace_of("OQ-1", namespace)."#),
+        "status_of" => Some(r#"? status_of("formal-model/v17.md", status)."#),
         "hub" => Some("? hub(h, degree)."),
         "orphan" => Some("? orphan(h)."),
         "stub" => Some("? stub(h)."),
-        "diagnostic" => Some("? diagnostic(code, severity, subject, file, line, evidence)."),
+        "diagnostic" => Some(r#"? diagnostic("E001", severity, subject, file, line, evidence)."#),
         _ => None,
     }
 }

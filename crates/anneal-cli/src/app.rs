@@ -127,7 +127,8 @@ impl OutputPreference {
     const fn resolve(self, stdout_is_terminal: bool) -> OutputMode {
         match self {
             Self::Auto if stdout_is_terminal => OutputMode::Human,
-            Self::Auto | Self::Json => OutputMode::Json,
+            Self::Auto => OutputMode::Json,
+            Self::Json => OutputMode::JsonExplicit,
             Self::Human => OutputMode::Human,
         }
     }
@@ -137,6 +138,7 @@ impl OutputPreference {
 enum OutputMode {
     Human,
     Json,
+    JsonExplicit,
 }
 
 impl Invocation {
@@ -424,7 +426,7 @@ Describe a runtime primitive, predicate, or verb. Defaults to runtime.
 Arguments:
   [NAME]                         Object to describe
 
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+Output: readable teaching cards by default, including when piped; use --json or --format=json for NDJSON rows.
 "
             }
             Self::Sources => {
@@ -970,7 +972,8 @@ impl CommandOutput {
                     view: RowView::Trend | RowView::Handle { .. },
                 },
             ) if rows.is_empty() => None,
-            (_, Self::Rows { rows, .. }) | (OutputMode::Json, Self::Status(rows))
+            (_, Self::Rows { rows, .. })
+            | (OutputMode::Json | OutputMode::JsonExplicit, Self::Status(rows))
                 if rows.is_empty() =>
             {
                 Some(EMPTY_ROWS_DIAGNOSTIC)
@@ -986,6 +989,13 @@ impl CommandOutput {
             (OutputMode::Human, Self::Rows { rows, view }) => {
                 write_rows_text(writer, &rows, &view)?;
             }
+            (
+                OutputMode::Json,
+                Self::Rows {
+                    rows,
+                    view: RowView::Describe,
+                },
+            ) => write_describe_text(writer, &rows)?,
             (_, Self::Status(rows) | Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
             (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
             (_, Self::Text(text)) => write_text(writer, &text)?,
@@ -1554,22 +1564,33 @@ fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
     }
 
     let mut wrote_any = false;
-    for (index, row) in rows.iter().enumerate() {
+    let mut doc_rows = Vec::new();
+    let mut other_rows = Vec::new();
+    for row in rows {
         if let Some(doc) = optional_string(row, "doc")? {
-            if wrote_any {
-                writeln!(writer)?;
-            }
-            writeln!(writer, "{doc}")?;
+            doc_rows.push(doc.to_string());
         } else {
-            if wrote_any {
-                writeln!(writer)?;
-            }
-            write!(writer, "{:>2}.", index + 1)?;
-            for (field, value) in &row.fields {
-                write!(writer, " {field}={}", display_value(value))?;
-            }
+            other_rows.push(row);
+        }
+    }
+
+    for doc in doc_rows {
+        if wrote_any {
             writeln!(writer)?;
         }
+        writeln!(writer, "{doc}")?;
+        wrote_any = true;
+    }
+
+    for (index, row) in other_rows.iter().enumerate() {
+        if wrote_any {
+            writeln!(writer)?;
+        }
+        write!(writer, "{:>2}.", index + 1)?;
+        for (field, value) in &row.fields {
+            write!(writer, " {field}={}", display_value(value))?;
+        }
+        writeln!(writer)?;
         wrote_any = true;
     }
     Ok(())
@@ -2734,11 +2755,13 @@ mod tests {
             rows: vec![
                 row(&[(
                     "doc",
-                    Value::String("Search handle, metadata, and content text.".to_string()),
+                    Value::String(
+                        "Search primitive internals.\nKind: engine primitive.".to_string(),
+                    ),
                 )]),
                 row(&[(
                     "doc",
-                    Value::String("Search stored handle and content text.".to_string()),
+                    Value::String("Search command surface.\nKind: verb.".to_string()),
                 )]),
             ],
             view: RowView::Describe,
@@ -2752,7 +2775,48 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Search handle, metadata, and content text.\n\nSearch stored handle and content text.\n"
+            "Search primitive internals.\nKind: engine primitive.\n\nSearch command surface.\nKind: verb.\n"
+        );
+    }
+
+    #[test]
+    fn describe_auto_json_mode_still_renders_teaching_cards() {
+        let output = CommandOutput::Rows {
+            rows: vec![row(&[(
+                "doc",
+                Value::String("Search command surface.\nKind: verb.".to_string()),
+            )])],
+            view: RowView::Describe,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Json)
+            .expect("render describe");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(rendered, "Search command surface.\nKind: verb.\n");
+    }
+
+    #[test]
+    fn describe_explicit_json_preserves_ndjson() {
+        let output = CommandOutput::Rows {
+            rows: vec![row(&[(
+                "doc",
+                Value::String("Search command surface.\nKind: verb.".to_string()),
+            )])],
+            view: RowView::Describe,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::JsonExplicit)
+            .expect("render describe");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(
+            rendered,
+            "{\"doc\":\"Search command surface.\\nKind: verb.\"}\n"
         );
     }
 
