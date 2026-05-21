@@ -17,10 +17,10 @@ mod primitives;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
 pub use ast::{
-    Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, DocDecl, Expr,
-    FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal, NegatedAtom, Negation,
-    NumberLiteral, PredicateRef, Program, Query, Rule, SourceLocation, Statement, StoredAtom, Term,
-    TimeBlock, VerbDecl,
+    Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, ComparisonOp,
+    DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal,
+    NegatedAtom, Negation, NumberLiteral, PredicateDecl, PredicateRef, Program, Query, Rule,
+    SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
 };
 pub use eval::{
     Binding, Database, DerivationKind, DerivationNode, EvalError, EvalOptions, Evaluator,

@@ -66,6 +66,16 @@ impl PredicateRef {
         }
     }
 
+    pub fn parse(value: &str) -> Result<Self, IdentError> {
+        if let Some((module, name)) = value.split_once('.') {
+            if name.contains('.') {
+                return Err(IdentError(value.to_string()));
+            }
+            return Ok(Self::qualified(Ident::new(module)?, Ident::new(name)?));
+        }
+        Ok(Self::new(Ident::new(value)?))
+    }
+
     pub fn display_name(&self) -> String {
         match &self.module {
             Some(module) => format!("{module}.{}", self.name),
@@ -151,7 +161,8 @@ impl Statement {
             | Self::Include(_)
             | Self::Import(_)
             | Self::Verb(_)
-            | Self::Doc(_) => {}
+            | Self::Doc(_)
+            | Self::Predicate(_) => {}
         }
     }
 }
@@ -172,6 +183,7 @@ pub enum Statement {
     },
     Verb(VerbDecl),
     Doc(DocDecl),
+    Predicate(PredicateDecl),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -264,6 +276,10 @@ impl VerbDecl {
         self.annotation.string_arg(name)
     }
 
+    pub fn string_list_arg(&self, name: &str) -> Option<Vec<&str>> {
+        self.annotation.string_list_arg(name)
+    }
+
     pub fn location(&self) -> &SourceLocation {
         self.annotation.location()
     }
@@ -302,6 +318,41 @@ impl DocDecl {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+pub struct PredicateDecl {
+    #[serde(flatten)]
+    pub annotation: AnnotationDecl,
+}
+
+impl PredicateDecl {
+    pub fn new(args: Vec<NamedArg>, location: SourceLocation) -> Self {
+        Self {
+            annotation: AnnotationDecl::new(args, location),
+        }
+    }
+
+    pub fn string_arg(&self, name: &str) -> Option<&str> {
+        self.annotation.string_arg(name)
+    }
+
+    pub fn string_list_arg(&self, name: &str) -> Option<Vec<&str>> {
+        self.annotation.string_list_arg(name)
+    }
+
+    pub fn predicate_ref(&self) -> Option<Result<PredicateRef, IdentError>> {
+        self.string_arg("name").map(PredicateRef::parse)
+    }
+
+    pub fn args(&self) -> &[NamedArg] {
+        &self.annotation.args
+    }
+
+    pub fn location(&self) -> &SourceLocation {
+        self.annotation.location()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AnnotationDecl {
     pub args: Vec<NamedArg>,
     #[serde(default, skip_serializing)]
@@ -315,6 +366,10 @@ impl AnnotationDecl {
 
     pub fn string_arg(&self, name: &str) -> Option<&str> {
         named_string_arg(&self.args, name)
+    }
+
+    pub fn string_list_arg(&self, name: &str) -> Option<Vec<&str>> {
+        named_string_list_arg(&self.args, name)
     }
 
     pub fn location(&self) -> &SourceLocation {
@@ -515,7 +570,9 @@ impl StoredAtom {
 impl DerivedAtom {
     pub fn collect_binding_variables(&self, out: &mut BTreeSet<Ident>) {
         for arg in &self.args {
-            arg.expr().binding_variables(out);
+            if let Some(expr) = arg.expr() {
+                expr.binding_variables(out);
+            }
         }
     }
 }
@@ -543,8 +600,23 @@ pub struct FieldPattern {
 pub struct DerivedAtom {
     pub predicate: PredicateRef,
     pub args: Vec<CallArg>,
+    #[serde(default, skip_serializing_if = "CallStyle::is_complete")]
+    pub style: CallStyle,
     #[serde(default, skip_serializing)]
     pub location: SourceLocation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallStyle {
+    #[default]
+    Complete,
+    Pattern,
+}
+
+impl CallStyle {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -637,6 +709,25 @@ pub(crate) fn named_string_arg<'a>(args: &'a [NamedArg], name: &str) -> Option<&
     })
 }
 
+pub(crate) fn named_string_list_arg<'a>(args: &'a [NamedArg], name: &str) -> Option<Vec<&'a str>> {
+    args.iter().find_map(|arg| {
+        if arg.name.as_str() != name {
+            return None;
+        }
+        let Expr::Literal(Literal::List(items)) = &arg.expr else {
+            return None;
+        };
+        let mut strings = Vec::with_capacity(items.len());
+        for item in items {
+            let Literal::String(value) = item else {
+                return None;
+            };
+            strings.push(value.as_str());
+        }
+        Some(strings)
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TimeBlock {
@@ -659,24 +750,32 @@ pub enum CallArg {
         #[serde(default, skip_serializing)]
         location: SourceLocation,
     },
+    Wildcard {
+        #[serde(default, skip_serializing)]
+        location: SourceLocation,
+    },
 }
 
 impl CallArg {
-    pub fn expr(&self) -> &Expr {
+    pub fn expr(&self) -> Option<&Expr> {
         match self {
-            Self::Positional { expr, .. } | Self::Named { expr, .. } => expr,
+            Self::Positional { expr, .. } | Self::Named { expr, .. } => Some(expr),
+            Self::Wildcard { .. } => None,
         }
     }
 
-    pub fn expr_mut(&mut self) -> &mut Expr {
+    pub fn expr_mut(&mut self) -> Option<&mut Expr> {
         match self {
-            Self::Positional { expr, .. } | Self::Named { expr, .. } => expr,
+            Self::Positional { expr, .. } | Self::Named { expr, .. } => Some(expr),
+            Self::Wildcard { .. } => None,
         }
     }
 
     pub fn location(&self) -> &SourceLocation {
         match self {
-            Self::Positional { location, .. } | Self::Named { location, .. } => location,
+            Self::Positional { location, .. }
+            | Self::Named { location, .. }
+            | Self::Wildcard { location } => location,
         }
     }
 }
@@ -752,7 +851,9 @@ impl Expr {
             Self::Literal(_) => {}
             Self::FunctionCall { args, .. } => {
                 for arg in args {
-                    arg.expr().variables(out);
+                    if let Some(expr) = arg.expr() {
+                        expr.variables(out);
+                    }
                 }
             }
             Self::Binary { left, right, .. } => {
@@ -786,7 +887,9 @@ impl Expr {
             Self::Var(_) | Self::Literal(_) => {}
             Self::FunctionCall { args, .. } => {
                 for arg in args {
-                    arg.expr().variables(out);
+                    if let Some(expr) = arg.expr() {
+                        expr.variables(out);
+                    }
                 }
             }
             Self::Binary { left, right, .. } => {

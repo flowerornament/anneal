@@ -1,9 +1,9 @@
 use crate::ast::{
-    Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, Comparison, ComparisonOp,
-    ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,
+    Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, CallStyle, Comparison,
+    ComparisonOp, ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,
     ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation, NumberLiteral,
-    PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin, SourceBlock, SourceLocation,
-    Statement, StoredAtom, Term, TimeBlock, VerbDecl, named_string_arg,
+    PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin, SourceBlock,
+    SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl, named_string_arg,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -109,6 +109,7 @@ impl Parser {
                 "doc" => self
                     .parse_doc_annotation(&args, location, &statement_start)
                     .map(Statement::Doc),
+                "predicate" => Ok(Statement::Predicate(PredicateDecl::new(args, location))),
                 other => Err(ParseError::new(
                     &self.source,
                     &statement_start,
@@ -368,16 +369,28 @@ impl Parser {
     fn parse_derived_atom(&mut self) -> Result<DerivedAtom, ParseError> {
         let location = self.peek().location(&self.source);
         let predicate = self.parse_predicate_ref()?;
-        self.expect(&TokenKind::LParen)?;
-        let args = if self.at(&TokenKind::RParen) {
-            Vec::new()
+        let (args, style) = if self.eat(&TokenKind::LParen) {
+            let args = if self.at(&TokenKind::RParen) {
+                Vec::new()
+            } else {
+                self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+            };
+            self.expect(&TokenKind::RParen)?;
+            (args, CallStyle::Complete)
         } else {
-            self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+            self.expect(&TokenKind::LBrace)?;
+            let args = if self.at(&TokenKind::RBrace) {
+                Vec::new()
+            } else {
+                self.parse_comma_list(&TokenKind::RBrace, Parser::parse_pattern_call_arg)?
+            };
+            self.expect(&TokenKind::RBrace)?;
+            (args, CallStyle::Pattern)
         };
-        self.expect(&TokenKind::RParen)?;
         Ok(DerivedAtom {
             predicate,
             args,
+            style,
             location,
         })
     }
@@ -394,6 +407,9 @@ impl Parser {
 
     fn parse_call_arg(&mut self) -> Result<CallArg, ParseError> {
         let location = self.peek().location(&self.source);
+        if self.eat(&TokenKind::Underscore) {
+            return Ok(CallArg::Wildcard { location });
+        }
         if matches!(self.peek().kind, TokenKind::Ident(_))
             && self.peek_n(1).kind == TokenKind::Colon
         {
@@ -408,6 +424,43 @@ impl Parser {
         }
         let expr = self.parse_expr()?;
         Ok(CallArg::Positional { expr, location })
+    }
+
+    fn parse_function_call_arg(&mut self) -> Result<CallArg, ParseError> {
+        let location = self.peek().location(&self.source);
+        if matches!(self.peek().kind, TokenKind::Ident(_))
+            && self.peek_n(1).kind == TokenKind::Colon
+        {
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let expr = self.parse_expr()?;
+            return Ok(CallArg::Named {
+                name,
+                expr,
+                location,
+            });
+        }
+        let expr = self.parse_expr()?;
+        Ok(CallArg::Positional { expr, location })
+    }
+
+    fn parse_pattern_call_arg(&mut self) -> Result<CallArg, ParseError> {
+        let location = self.peek().location(&self.source);
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        if self.eat(&TokenKind::Underscore) {
+            return Ok(CallArg::Named {
+                name,
+                expr: Expr::Var(Ident::new_unchecked("_")),
+                location,
+            });
+        }
+        let expr = self.parse_expr()?;
+        Ok(CallArg::Named {
+            name,
+            expr,
+            location,
+        })
     }
 
     fn parse_named_args(&mut self, end: &TokenKind) -> Result<Vec<NamedArg>, ParseError> {
@@ -460,7 +513,7 @@ impl Parser {
                     let args = if self.at(&TokenKind::RParen) {
                         Vec::new()
                     } else {
-                        self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+                        self.parse_comma_list(&TokenKind::RParen, Parser::parse_function_call_arg)?
                     };
                     self.expect(&TokenKind::RParen)?;
                     Ok(Expr::FunctionCall {
@@ -628,9 +681,10 @@ impl Parser {
     fn starts_derived_atom(&self) -> bool {
         self.at_ident()
             && (self.peek_n(1).kind == TokenKind::LParen
+                || self.peek_n(1).kind == TokenKind::LBrace
                 || (self.peek_n(1).kind == TokenKind::Dot
                     && matches!(self.peek_n(2).kind, TokenKind::Ident(_))
-                    && self.peek_n(3).kind == TokenKind::LParen))
+                    && matches!(self.peek_n(3).kind, TokenKind::LParen | TokenKind::LBrace)))
     }
 
     fn next_named_arg_before_colon(&self) -> bool {
@@ -1201,17 +1255,19 @@ mod tests {
             optional code.module_pattern("**/*.rs").
             @verb(name: "broken", query: "diagnostic(code)").
             @doc(name: "convergence", doc: "Convergence vocabulary.").
+            @predicate(name: "diagnostic", args: ["code", "severity", "subject"]).
             at("HEAD~1") { old(h) := *handle{id: h}. }
             "#,
         )
         .expect("program parses");
-        assert_eq!(program.statements.len(), 6);
+        assert_eq!(program.statements.len(), 7);
         assert!(matches!(program.statements[2], Statement::OptionalFact(_)));
         let Statement::Doc(doc) = &program.statements[4] else {
             panic!("expected @doc");
         };
         assert_eq!(doc.name(), "convergence");
         assert_eq!(doc.doc(), "Convergence vocabulary.");
+        assert!(matches!(program.statements[5], Statement::Predicate(_)));
     }
 
     #[test]
@@ -1359,6 +1415,36 @@ mod tests {
             panic!("expected function call");
         };
         assert!(matches!(args[0], CallArg::Named { .. }));
+    }
+
+    #[test]
+    fn parses_relation_pattern_calls_and_positional_wildcards() {
+        let program = parse_program(
+            "inline",
+            r#"? diagnostic{code: "E001", subject: h}, search{query: "x", handle: h}, diagnostic(_, "error", h, _, _, _)."#,
+        )
+        .expect("program parses");
+        let query = program.queries().next().expect("query");
+        let Atom::Derived(first) = &query.body.atoms[0] else {
+            panic!("expected first derived atom");
+        };
+        assert_eq!(first.style, CallStyle::Pattern);
+        assert_eq!(first.args.len(), 2);
+        assert!(matches!(first.args[0], CallArg::Named { .. }));
+
+        let Atom::Derived(third) = &query.body.atoms[2] else {
+            panic!("expected third derived atom");
+        };
+        assert_eq!(third.style, CallStyle::Complete);
+        assert!(matches!(third.args[0], CallArg::Wildcard { .. }));
+        assert!(matches!(third.args[3], CallArg::Wildcard { .. }));
+    }
+
+    #[test]
+    fn rejects_wildcard_inside_expression_function_calls() {
+        let err = parse_program("inline", r#"? lower(_) = "x"."#)
+            .expect_err("wildcard is not an expression argument");
+        assert!(err.to_string().contains("expected expression"));
     }
 
     #[test]

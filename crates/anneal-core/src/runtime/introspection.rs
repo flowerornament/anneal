@@ -6,7 +6,9 @@ use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 use crate::verbs::VerbRegistry;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
-use super::ast::{DocDecl, Expr, Head, Program, RuleLayer, SourceLocation, Statement};
+use super::ast::{
+    DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement,
+};
 use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
 
@@ -590,9 +592,28 @@ impl PredicateInfo {
         info
     }
 
+    fn from_decl(name: &str, decl: &PredicateDecl) -> Self {
+        let mut info = Self {
+            name: name.to_string(),
+            parameters: predicate_decl_parameters(decl).unwrap_or_default(),
+            doc: format!("Rule-defined predicate {name}."),
+            layers: BTreeSet::new(),
+            source_lines: SourceLines::default(),
+        };
+        info.source_lines.add(decl.location());
+        info
+    }
+
     fn add_head(&mut self, head: &Head, layer: RuleLayer, location: &SourceLocation) {
         merge_parameter_names(&mut self.parameters, &head_parameter_names(head));
         self.add_source(layer, location);
+    }
+
+    fn apply_decl(&mut self, decl: &PredicateDecl) {
+        if let Some(parameters) = predicate_decl_parameters(decl) {
+            self.parameters = parameters;
+        }
+        self.source_lines.add(decl.location());
     }
 
     fn add_source(&mut self, layer: RuleLayer, location: &SourceLocation) {
@@ -652,6 +673,15 @@ fn documented_parameter_names(predicate_name: &str) -> Option<&'static [&'static
         "profile_doc_corpus" | "profile_code_corpus" | "profile_issue_corpus" => Some(&["profile"]),
         _ => None,
     }
+}
+
+fn predicate_decl_parameters(decl: &PredicateDecl) -> Option<Vec<ParameterName>> {
+    Some(
+        decl.string_list_arg("args")?
+            .into_iter()
+            .map(|value| ParameterName::Named(value.to_string()))
+            .collect(),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -794,6 +824,14 @@ impl ProgramScanner {
                     } else {
                         self.docs
                             .insert(doc.name().to_string(), DocInfo::from_decl(doc));
+                    }
+                }
+                Statement::Predicate(decl) => {
+                    if let Some(name) = decl.string_arg("name") {
+                        self.predicates
+                            .entry(name.to_string())
+                            .and_modify(|info| info.apply_decl(decl))
+                            .or_insert_with(|| PredicateInfo::from_decl(name, decl));
                     }
                 }
                 Statement::Query(_)
@@ -1377,8 +1415,8 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         }
         "area_error_count" => Some("? area_error_count(area, errors)."),
         "area_cross_edges" => Some("? area_cross_edges(area, cross_edges)."),
-        "area_health" => Some("? area_health(area, grade, files, errors, cross_edges)."),
-        "area_frontier" => Some("? area_frontier(area, h, score, why)."),
+        "area_health" => Some("? area_health{area: area, grade: grade}."),
+        "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
@@ -1386,13 +1424,15 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),
         "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
         "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
-        "area_of" => Some(r#"? area_of("formal-model/v17.md", area)."#),
+        "area_of" => Some(r#"? area_of{h: "formal-model/v17.md", area: area}."#),
         "namespace_of" => Some(r#"? namespace_of("OQ-1", namespace)."#),
         "status_of" => Some(r#"? status_of("formal-model/v17.md", status)."#),
         "hub" => Some("? hub(h, degree)."),
         "orphan" => Some("? orphan(h)."),
         "stub" => Some("? stub(h)."),
-        "diagnostic" => Some(r#"? diagnostic("E001", severity, subject, file, line, evidence)."#),
+        "diagnostic" => {
+            Some(r#"? diagnostic{code: "E001", severity: severity, subject: subject}."#)
+        }
         _ => None,
     }
 }

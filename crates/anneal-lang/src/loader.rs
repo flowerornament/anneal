@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::ast::{
-    Atom, Body, Head, Ident, ImportDirective, IncludeDirective, NegatedAtom, PredicateRef, Program,
-    Query, Rule, RuleLayer, SourceLocation, Statement, TimeBlock,
+    Atom, Body, Expr, Head, Ident, ImportDirective, IncludeDirective, Literal, NegatedAtom,
+    PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer, SourceLocation, Statement,
+    TimeBlock,
 };
 use crate::parser::{ParseError, parse_program};
 
@@ -301,7 +302,8 @@ fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeS
         | Statement::Include(_)
         | Statement::Import(_)
         | Statement::Verb(_)
-        | Statement::Doc(_) => {}
+        | Statement::Doc(_)
+        | Statement::Predicate(_) => {}
     }
 }
 
@@ -335,6 +337,7 @@ fn qualify_statement(
         Statement::AtBlock { statements, .. } => {
             qualify_statements(statements, module, local_definitions);
         }
+        Statement::Predicate(decl) => qualify_predicate_decl(decl, module, local_definitions),
         Statement::ConfigBlock(_)
         | Statement::SourceBlock(_)
         | Statement::Include(_)
@@ -391,6 +394,28 @@ fn qualify_predicate(
 ) {
     if predicate.module.is_none() && local_definitions.contains(&predicate.name) {
         *predicate = PredicateRef::qualified(module.clone(), predicate.name.clone());
+    }
+}
+
+fn qualify_predicate_decl(
+    decl: &mut PredicateDecl,
+    module: &Ident,
+    local_definitions: &BTreeSet<Ident>,
+) {
+    let Some(Ok(predicate)) = decl.predicate_ref() else {
+        return;
+    };
+    if predicate.module.is_some() || !local_definitions.contains(&predicate.name) {
+        return;
+    }
+    let qualified = PredicateRef::qualified(module.clone(), predicate.name).to_string();
+    if let Some(arg) = decl
+        .annotation
+        .args
+        .iter_mut()
+        .find(|arg| arg.name.as_str() == "name")
+    {
+        arg.expr = Expr::Literal(Literal::String(qualified));
     }
 }
 
@@ -545,7 +570,10 @@ mod tests {
         );
         write(
             &root.join("strict.dl"),
-            r#"diagnostic("PROJ-001", "error", h) := *handle{id: h}."#,
+            r#"
+            @predicate(name: "diagnostic", args: ["code", "severity", "subject"]).
+            diagnostic("PROJ-001", "error", h) := *handle{id: h}.
+            "#,
         );
 
         let program = load_program(&root, "anneal.dl").expect("program loads");
@@ -555,6 +583,14 @@ mod tests {
             panic!("expected diagnostic id literal");
         };
         assert_eq!(id, "PROJ-001");
+        let Statement::Predicate(decl) = &program.statements[0] else {
+            panic!("expected imported predicate declaration");
+        };
+        assert_eq!(
+            decl.string_arg("name"),
+            Some("strict.diagnostic"),
+            "explicit signatures qualify with imported rules"
+        );
     }
 
     #[test]

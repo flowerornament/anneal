@@ -35,6 +35,11 @@ entropy_priority("orphan_label", 6).
   name: "entropy",
   doc: "Return one reason a handle looks unsettled: missing metadata, stale dependency, broken reference, lonely label, old active file, or unfinished obligation."
 ).
+
+@predicate(
+  name: "entropy",
+  args: ["h", "source"]
+).
 entropy(h, "undischarged") :=
   obligation(h),
   not discharged(h),

@@ -10,6 +10,11 @@
   doc: "Return every standard diagnostic as data: code, severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations."
 ).
 
+@predicate(
+  name: "diagnostic",
+  args: ["code", "severity", "subject", "file", "line", "evidence"]
+).
+
 section_ref(target) :=
   *edge{to: target},
   target starts_with "section:".

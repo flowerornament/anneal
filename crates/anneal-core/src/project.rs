@@ -161,7 +161,8 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
         | Statement::Include(_)
         | Statement::Import(_)
         | Statement::AtBlock { .. }
-        | Statement::Verb(_) => None,
+        | Statement::Verb(_)
+        | Statement::Predicate(_) => None,
     }
 }
 
@@ -437,7 +438,7 @@ fn declaration_values(declaration: &Declaration) -> Result<Vec<String>, ProjectL
 }
 
 fn literal_arg(arg: &CallArg) -> Option<&Literal> {
-    match arg.expr() {
+    match arg.expr()? {
         Expr::Literal(literal) => Some(literal),
         _ => None,
     }

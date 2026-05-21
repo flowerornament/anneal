@@ -541,7 +541,7 @@ fn one_string(key: impl std::fmt::Display, values: Vec<String>) -> Result<String
 fn declaration_values(args: &[CallArg]) -> Result<Vec<String>> {
     let mut values = Vec::new();
     for arg in args {
-        let Expr::Literal(literal) = arg.expr() else {
+        let Some(Expr::Literal(literal)) = arg.expr() else {
             anyhow::bail!("values must be static literals");
         };
         push_literal_values(&mut values, literal);

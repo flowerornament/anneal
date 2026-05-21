@@ -500,9 +500,16 @@ Grammar tour:
     ? *edge{from: src, to: dst, kind: \"DependsOn\"}.
     `id: h` binds a variable. `kind: \"file\"` filters to a literal.
 
-  Derived predicates and primitives use call syntax:
+  Derived predicates and primitives use complete call syntax:
     ? top_work(h, energy).
-    ? search(\"conformance\", h, span, score, reason, field, low).
+    ? search(query: \"conformance\", handle: h, span_id: span, score: score,
+        reason: reason, field: field, low_confidence: low).
+
+  Relation-pattern calls use braces when you only care about some fields:
+    ? diagnostic{severity: \"error\", subject: h}.
+    ? search{query: \"conformance\", handle: h, score: score}.
+    ? diagnostic{subject: h}, area_of{h: h, area: \"language\"}.
+    Omitted fields behave like hidden wildcards and are not output columns.
 
   Local rules name reusable subqueries before the final `?` query:
     open_file(h) := *handle{id: h, kind: \"file\"}, active(h).
@@ -542,9 +549,9 @@ Discover before guessing:
 Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
-  anneal -e '? search(\"conformance\", h, span, score, reason, field, low).' --limit 20
-  anneal -e '? read(\"formal-model/v17.md\", 4000, span, text, start, end, tokens).'
-  anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+  anneal -e '? search{query: \"conformance\", handle: h, score: score}.' --limit 20
+  anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
+  anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
   anneal -e '? source_of(\"work\", file, lines).'
   anneal -e - < query.dl

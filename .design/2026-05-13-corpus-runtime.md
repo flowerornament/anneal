@@ -1135,6 +1135,7 @@ directive   := 'include' string '.'
              | 'at' '(' string ')' '{' statement* '}'
              | '@verb' '(' verb_args ')'
              | '@doc' '(' doc_args ')'
+             | '@predicate' '(' predicate_args ')'
              | 'import' ident 'from' string '.'   // see §28
 
 head        := ident '(' positional_arg_list ')'
@@ -1143,6 +1144,7 @@ body        := atom (',' atom)*
 atom        := stored | derived | comparison | aggregation | negation | time_block
 stored      := '*' ident '{' field_list '}'
 derived     := ident '(' call_arg_list ')'
+             | ident '{' pattern_field_list '}'
 comparison  := expr op expr
 negation    := 'not' (stored | derived)
 aggregation := value_or_tuple '=' agg_fn '{' [agg_args ':'] value_or_tuple ':' body '}'
@@ -1151,12 +1153,15 @@ time_block  := 'at' '(' string ')' '{' body '}'
 field_list  := field (',' field)*
 field       := ident                        # bind: same name as variable
              | ident ':' value_or_var       # bind: explicit
+pattern_field_list := pattern_field (',' pattern_field)*
+pattern_field := ident ':' value_or_var
 positional_arg_list := value_or_var (',' value_or_var)*
 call_arg_list := call_arg (',' call_arg)*
 call_arg    := expr                         # positional
              | ident ':' expr               # named call-site sugar
 agg_args    := named_arg (',' named_arg)*
 doc_args    := 'name' ':' string ',' 'doc' ':' string
+predicate_args := 'name' ':' string ',' 'args' ':' list
 named_arg   := ident ':' expr
 value_or_tuple := expr | tuple
 tuple       := '(' expr (',' expr)+ ')'
@@ -1182,8 +1187,12 @@ Named predicate arguments are call-site sugar over the predicate's
 declared signature. Rule heads are canonical positional definitions;
 calls may use positional arguments followed by named arguments.
 Named arguments are not records and do not introduce field access.
+Brace pattern calls (`predicate{field: term}`) are relation-pattern
+calls over the same signature registry: omitted fields behave as hidden
+wildcards and do not project output columns.
 
 **Definition CR-D79 (Directive reification).** `@verb`, `@doc`,
+`@predicate`,
 `include`, `import`, and `at` are syntax directives, not facts that
 participate in fixpoint evaluation. `@verb` and `@doc` are also
 reified into runtime introspection rows (`verbs`, `describe`,
@@ -1191,6 +1200,30 @@ reified into runtime introspection rows (`verbs`, `describe`,
 shadowing rules resolve the program. Rationale: authors write
 declarative annotations, while agents query a relational
 self-description surface.
+
+**Definition CR-D97 (Relation-pattern call syntax).** Pattern-style
+calls on predicates use brace syntax: `predicate{name: term, ...}`.
+Omitted fields are hidden anonymous wildcards and do not leak as output
+columns. Brace syntax applies uniformly to primitives and derived
+predicates; stored relations retain their existing `*relation{...}`
+form with the `*` prefix as the engine-populated marker. Paren syntax
+`predicate(x, y)` and `predicate(name: x, other: y)` continue to mean
+complete-call positional and complete-call named, respectively. The `_`
+positional wildcard is accepted inside paren calls for generated
+queries and compatibility with Datalog users. Rationale: symmetric with
+stored relations, additive to the existing grammar, no overload of
+paren semantics, no new visual category.
+
+**Definition CR-D98 (Predicate signature registry).** Analysis,
+schema, and describe consume one internal predicate signature registry.
+Sources, in precedence order: explicit `@predicate(name: ..., args:
+[...])` metadata; runtime primitive signatures; unambiguous rule-head
+variable names; then Unknown/Ambiguous fallback. Explicit metadata is
+authoritative and required for constant-headed predicates such as
+`diagnostic`. `@doc` remains teaching prose; signatures are executable
+language metadata. Pattern calls against predicates without a registered
+or inferred signature error with a recovery hint pointing at
+`@predicate`.
 
 ### §18 Types and operators
 
@@ -3401,6 +3434,8 @@ config key.
 - CR-D94: CLI flag dialect boundary (§31)
 - CR-D95: Status arrival projection (§33)
 - CR-D96: Area convergence vocabulary (§27.3)
+- CR-D97: Relation-pattern call syntax (§17)
+- CR-D98: Predicate signature registry (§17)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -799,7 +799,7 @@ fn validate_verb_arg_atom(
             message: format!("{VERB_ARG_PREDICATE}/2 expects a string arg name and a value"),
         });
     };
-    let Expr::Literal(Literal::String(arg_name)) = first.expr() else {
+    let Some(Expr::Literal(Literal::String(arg_name))) = first.expr() else {
         return Err(VerbRegistryError::InvalidArgReference {
             name: name.to_string(),
             location: first.location().clone(),

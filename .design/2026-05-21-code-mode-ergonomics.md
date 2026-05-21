@@ -53,9 +53,9 @@ The strategic alternative: make eval composition genuinely first-class so
 that agents *prefer* it. The eval form for the first observation is verbose
 because derived predicates like `diagnostic` lack the named-field affordance
 that stored relations have. Fix that, and the same workflow becomes
-`anneal -e '? diagnostic{area: "language"}.'` — shorter than the would-be
-flag chain, composable, and a natural extension of the syntax agents
-already know from `*handle{...}`.
+`anneal -e '? diagnostic{subject: h}, area_of{h: h, area: "language"}.'`
+— shorter than the would-be flag chain, composable, and a natural
+extension of the syntax agents already know from `*handle{...}`.
 
 This spec resolves the asymmetry. It also folds in the long-pending D1
 naming triangle (check / diagnostics / broken) from the converged audit
@@ -145,7 +145,7 @@ Brace syntax is chosen deliberately:
    'X' for 'diagnostic'; expected one of: code, severity, subject, file,
    line, evidence." Matches the `*handle{...}` error shape.
 4. **Repeated named fields error.** `diagnostic{code: x, code: y}` is a
-   parse error.
+   static-analysis error with a source span.
 5. **Pattern calls work uniformly on primitives, derived predicates, and
    stored relations** — the stored-relation `*` prefix continues to
    indicate engine-populated facts, but the field syntax is the same.
@@ -225,6 +225,9 @@ The eval form is shorter than the equivalent flag chain in every case,
   every predicate to its canonical parameter names. Pattern calls
   normalize against this registry; omitted fields lower to hidden
   anonymous wildcards (not visible in output).
+- Language metadata: add `@predicate(name: ..., args: [...])` for
+  explicit predicate signatures when rule heads cannot provide stable
+  parameter names.
 - `_` positional wildcard accepted inside paren calls.
 - Unknown field, duplicate field, and mixed-paren-with-brace errors mirror
   the stored-relation error shapes.
@@ -349,10 +352,10 @@ existing grammar, no overload of paren semantics, no new visual category.
 registry maps every predicate to its canonical parameter names. Sources,
 in precedence order:
 
-1. **Explicit metadata** via `@doc(args: [...])` extension or new
-   `@predicate(name: ..., args: [...])` declaration. Authoritative
-   when present. Required for constant-headed predicates like
-   `diagnostic` whose rule heads contain literals.
+1. **Explicit metadata** via `@predicate(name: ..., args: [...])`.
+   Authoritative when present. Required for constant-headed predicates
+   like `diagnostic` whose rule heads contain literals. `@doc` remains
+   teaching prose; signatures are executable language metadata.
 2. **Primitive signatures** declared in the runtime
    (`crates/anneal-core/src/runtime/primitives.rs`). Already populated.
 3. **Rule head inspection** when all rules for a predicate agree on

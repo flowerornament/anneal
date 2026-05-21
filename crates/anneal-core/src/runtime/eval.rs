@@ -3725,9 +3725,10 @@ fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<
     };
     let graph_ready = primitive.graph_anchor_positions().is_none_or(|positions| {
         positions.iter().any(|idx| {
-            atom.args
-                .get(*idx)
-                .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
+            atom.args.get(*idx).is_some_and(|arg| {
+                arg.expr()
+                    .is_some_and(|expr| expr_variables_are_bound(expr, bound))
+            })
         })
     });
     graph_ready && content_primitive_inputs_ready(atom, primitive, bound)
@@ -3739,9 +3740,10 @@ fn content_primitive_inputs_ready(
     bound: &BTreeSet<Ident>,
 ) -> bool {
     primitive.required_bound_inputs().iter().all(|input| {
-        atom.args
-            .get(input.position)
-            .is_some_and(|arg| expr_variables_are_bound(arg.expr(), bound))
+        atom.args.get(input.position).is_some_and(|arg| {
+            arg.expr()
+                .is_some_and(|expr| expr_variables_are_bound(expr, bound))
+        })
     })
 }
 
@@ -3877,7 +3879,9 @@ fn collect_derived_atom_variables(
     out: &mut BTreeSet<Ident>,
 ) {
     for arg in &atom.args {
-        arg.expr().variables(out);
+        if let Some(expr) = arg.expr() {
+            expr.variables(out);
+        }
     }
 }
 
@@ -3894,7 +3898,9 @@ fn collect_derived_atom_binding_variables(
     out: &mut BTreeSet<Ident>,
 ) {
     for arg in &atom.args {
-        arg.expr().binding_variables(out);
+        if let Some(expr) = arg.expr() {
+            expr.binding_variables(out);
+        }
     }
 }
 
@@ -3911,7 +3917,9 @@ fn stored_atom_input_variables(atom: &StoredAtom) -> BTreeSet<Ident> {
 fn derived_atom_input_variables(atom: &crate::runtime::ast::DerivedAtom) -> BTreeSet<Ident> {
     let mut vars = BTreeSet::new();
     for arg in &atom.args {
-        arg.expr().input_variables(&mut vars);
+        if let Some(expr) = arg.expr() {
+            expr.input_variables(&mut vars);
+        }
     }
     vars
 }
@@ -4832,7 +4840,10 @@ fn stored_constraints(
 fn call_constraints(args: &[CallArg], binding: &Binding) -> Result<Vec<(usize, Value)>, EvalError> {
     let mut constraints = Vec::new();
     for (idx, arg) in args.iter().enumerate() {
-        if let Some(value) = bound_value_for_expr(arg.expr(), binding)? {
+        let Some(expr) = arg.expr() else {
+            continue;
+        };
+        if let Some(value) = bound_value_for_expr(expr, binding)? {
             constraints.push((idx, value));
         }
     }
@@ -4884,7 +4895,10 @@ fn unify_call_args(
 ) -> Result<Option<Binding>, EvalError> {
     let mut next = None;
     for (arg, value) in args.iter().zip(&tuple.0) {
-        if !unify_expr(arg.expr(), value, binding, &mut next)? {
+        let Some(expr) = arg.expr() else {
+            continue;
+        };
+        if !unify_expr(expr, value, binding, &mut next)? {
             return Ok(None);
         }
     }
@@ -9692,6 +9706,36 @@ release_blocker(code) := issue(code, "error").
         assert_eq!(output.rows.len(), 1);
         assert_eq!(output.rows[0].fields.get("l"), Some(&s("a")));
         assert_eq!(output.rows[0].fields.get("r"), Some(&s("b")));
+    }
+
+    #[test]
+    fn relation_pattern_calls_omit_hidden_fields() {
+        let output = evaluate_query_output(
+            r#"
+            @predicate(name: "diagnostic", args: ["code", "severity", "subject", "file", "line", "evidence"]).
+            diagnostic("E001", "error", "h1", "a.md", 7, "broken").
+            diagnostic("W001", "warning", "h2", "b.md", 9, "stale").
+            ? diagnostic{severity: "error", subject: h}.
+            "#,
+            Database::default(),
+        );
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].fields.get("h"), Some(&s("h1")));
+        assert_eq!(output.rows[0].fields.len(), 1);
+    }
+
+    #[test]
+    fn positional_wildcards_do_not_project() {
+        let output = evaluate_query_output(
+            r#"
+            diagnostic("E001", "error", "h1").
+            ? diagnostic(_, "error", h).
+            "#,
+            Database::default(),
+        );
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0].fields.get("h"), Some(&s("h1")));
+        assert_eq!(output.rows[0].fields.len(), 1);
     }
 
     #[test]
