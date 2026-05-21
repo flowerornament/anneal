@@ -2,18 +2,50 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## v0.11.2 - 2026-05-21
+
+This release makes anneal more self-teaching. The runtime now explains itself
+more clearly, rejects misleading flag combinations with recovery hints, and
+gives agents a cleaner convergence landing before they decide what to read or
+fix next.
 
 ### Added
 
-- `anneal areas` is now a runtime verb over `area_health` and `area_frontier`,
-  giving agents a per-area drill-down from `status` without falling back to the
-  compatibility health table.
+- `anneal areas` is now a runtime verb over `area_health` and `area_frontier`.
+  It gives agents a per-area drill-down from `status`: health grades for each
+  area plus the local work frontier.
+- `anneal help eval` now teaches the Datalog dialect directly, including stored
+  relations, derived predicates, local rules, negation, aggregation, `at(...)`
+  time blocks, and stratification.
+- `anneal examples NAME` now covers stored relations and primitives as well as
+  saved verbs, so agents can copy and modify real query shapes.
 
 ### Fixed
 
+- `anneal status` now renders as a convergence landing: one row per handle,
+  disjoint `Blocked` and `Other work` sections, deterministic reason priority,
+  and a compact `Convergence` summary header.
+- `anneal describe NAME` now renders teaching cards by default, with kind,
+  signature, relationships, preconditions, examples, cross-references, and
+  source labels. Collision cases such as `search` show both the verb and the
+  primitive relationship instead of hiding one behind the other.
+- Runtime and compatibility flag dialects now fail loudly when mixed. For
+  example, runtime verbs reject compatibility filters such as `--area` and
+  point agents toward the equivalent Datalog query shape.
+- Surface bugs from the audit are fixed: `prime --json` emits JSON, `diff`
+  validates refs, `find --kind` validates enum values, section-owned labels are
+  discoverable with `find --namespace`, unknown `describe` names teach recovery
+  commands, and `map --render=text` works.
+- Datalog parse errors now suggest the stored-relation `*` prefix when an agent
+  writes `handle(...)` where `*handle{...}` was intended.
 - Root-level markdown files now share the `(root)` area instead of each becoming
   a one-file area.
+
+### Migration
+
+- No config migration is required from v0.11.1. The visible behavior change is
+  stricter flag handling: harnesses that passed compatibility flags to runtime
+  verbs will now receive a diagnostic with the intended replacement.
 
 ## v0.11.1 - 2026-05-20
 
