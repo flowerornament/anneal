@@ -299,7 +299,7 @@ arguments, not workflow filters.
   - One-line explanation of what each predicate contributes
   - When to reach for it
 - Cookbook content is part of the prelude, extensible via project
-  `@cookbook(name: "...", question: "...", query: "...", explanation: "...")`
+  `@cookbook(name: "...", question: "...", query: "...", doc: "...")`
   declarations in `anneal.dl`.
 - describe and help eval are updated to reference the cookbook
   ("`anneal cookbook` for worked recipes by question").
@@ -322,6 +322,10 @@ arguments, not workflow filters.
 - Validates the query parses, the args match `verb_arg` references in the
   query, and the verb name does not conflict with prelude verbs unless
   `--force` is passed.
+- If a declared arg name appears as a variable in the final query body and the
+  query does not already bind it through `verb_arg("name", name)`, `save`
+  injects that binding into the generated `@verb.query`. More complex local-rule
+  shapes can still write `verb_arg(...)` explicitly.
 - After save, the verb is callable as `anneal <name>` and shows up in
   `anneal verbs` / `anneal describe <name>` / `anneal help <name>`.
 
@@ -329,7 +333,7 @@ arguments, not workflow filters.
 
 - Agent workflow: write an eval query, validate it, then
   `anneal save my-area-check '<query>' --args 'area:String' --doc '...'`.
-- Subsequent invocation: `anneal my-area-check --area=language` works
+- Subsequent invocation: `anneal my-area-check language` works
   (typed verb args, going through the same dispatch as project verbs).
 - Project verbs persist across sessions; `anneal verbs` shows them
   alongside prelude verbs (Steele's criterion).

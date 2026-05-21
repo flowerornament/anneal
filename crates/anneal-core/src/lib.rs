@@ -75,6 +75,6 @@ pub use trail::{
 pub use verbs::{
     VerbArg, VerbArgKind, VerbBuiltinPermission, VerbCapability, VerbDispatchError, VerbEntry,
     VerbLayer, VerbName, VerbRegistry, VerbRegistryError, VerbRunPlan, VerbSource,
-    render_verb_arg_fact, render_verb_arg_facts,
+    render_verb_arg_fact, render_verb_arg_facts, validate_project_verb_query_program,
 };
 pub use visibility::FactVisibility;

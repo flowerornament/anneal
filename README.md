@@ -30,9 +30,12 @@ reconstructing the same map.
 anneal context "what should I read before changing the release path?"
 anneal schema
 anneal describe search
+anneal cookbook
 anneal verbs
 anneal vocab
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
+  --args area:String --doc 'Diagnostics in one area.'
 ```
 
 The important move is that corpus structure becomes queryable. Markdown files,
@@ -48,6 +51,8 @@ and `vocab` teach the runtime vocabulary. `search`, `read`, and `handle`
 retrieve evidence. `status`, `work`, `broken`, and `trend` keep the convergence
 frontier visible. When those saved forms are too broad, `anneal -e` is the
 normal way to ask the corpus a precise question.
+When a precise question becomes reusable, `anneal save` promotes the working
+query into a project verb in `anneal.dl`.
 
 ## Install
 
@@ -174,6 +179,10 @@ anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=
 
 # Ask a precise corpus question
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
+anneal cookbook --format=text
+anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
+  --args area:String --doc 'Diagnostics in one area.'
+anneal broken-area language --format=text
 
 # Work the convergence frontier
 anneal work --format=text
@@ -241,17 +250,21 @@ Useful `context` flags:
 ```bash
 anneal schema
 anneal describe search
+anneal cookbook
 anneal verbs
 anneal vocab
 anneal sources
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
+anneal save stale-active '? freshness(h, days), days > 30, active(h).' \
+  --doc 'Old active handles.'
 ```
 
 Use `schema` to see queryable relations and signatures. Use `describe` for one
 primitive, predicate, or verb. Use `verbs` to inspect the saved query examples
 shipped by the prelude and project. Use `vocab` for corpus-local words before
 filtering. Use `sources` to see linked adapters and capabilities. Use `-e` when
-you need to compose a question directly.
+you need to compose a question directly. Use `save` when a working query should
+become a named project verb.
 
 ### Retrieve Evidence
 
@@ -393,6 +406,17 @@ shadow prelude predicates by name and arity. Project verbs are callable by name:
 anneal release-blockers v0.11.0 --format=text
 anneal release-blockers --milestone v0.11.0 --explain
 ```
+
+You can write `@verb` declarations by hand or promote a working query:
+
+```bash
+anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
+  --args area:String --doc 'Diagnostics in one area.'
+anneal broken-area language --format=text
+```
+
+If a saved query is wrong, edit `anneal.dl` and remove the generated
+`@verb(...)` block, or rerun `anneal save ... --force` to replace it.
 
 ### Upgrading From Pre-0.11.0
 

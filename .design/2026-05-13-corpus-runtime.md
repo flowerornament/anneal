@@ -1239,6 +1239,23 @@ examples for recurring workflows, and those examples should be
 discoverable through the same introspection surface as schema,
 describe, examples, and verbs.
 
+**Definition CR-D101 (Save-as-verb promotion).** `anneal save <name>
+<query> --doc <text> [--args <name:Type>,...] [--force]` promotes a
+working eval query into a normal project `@verb` declaration in
+`anneal.dl`. The saved declaration uses the same `@verb` shape as
+hand-written project verbs and therefore participates in `anneal verbs`,
+`anneal describe <name>`, `anneal help <name>`, dynamic CLI dispatch,
+and derivation explanation. The command validates the generated
+declaration before writing: the query must parse, output fields must
+match the generated schema, and declared args must be bound through
+`verb_arg` facts either explicitly or by save-time injection when the
+arg variable appears in the final query body. Name collisions error
+unless `--force` is passed; force replaces an existing project verb or
+shadows a prelude verb with explicit feedback. Writes are atomic via a
+temporary file and rename. Rationale: Code Mode becomes complete only
+when an agent can move from exploration (`anneal -e`) to durable local
+vocabulary without hand-authoring directive syntax.
+
 ### §18 Types and operators
 
 Dynamic, four primitive types plus one composite:
@@ -3465,6 +3482,7 @@ config key.
 - CR-D98: Predicate signature registry (§17)
 - CR-D99: Diagnostic verb naming (§33)
 - CR-D100: Cookbook recipes as language metadata (§17)
+- CR-D101: Save-as-verb promotion (§17)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

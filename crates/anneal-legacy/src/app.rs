@@ -74,6 +74,7 @@ START HERE:
     anneal describe NAME      Documentation for one runtime name
     anneal examples NAME      Runnable examples for a runtime name
     anneal cookbook           Worked recipes for common corpus questions
+    anneal save               Save a working query as a project verb
     anneal verbs              Saved query examples from the prelude/project
     anneal vocab              Corpus-local vocabulary to use in filters
     anneal sources            Linked adapters and capabilities
@@ -100,6 +101,7 @@ QUERY EXAMPLES:
     anneal describe search --format=text
     anneal examples search --format=text
     anneal cookbook --format=text
+    anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' --args area:String --doc 'Diagnostics in one area.'
     anneal help eval
 
 ROOT DIRECTORY:
@@ -928,6 +930,13 @@ and points at work, blockers, and broken facts."
         long_about = "List worked Code Mode recipes with copyable eval queries and join patterns."
     )]
     Cookbook,
+
+    /// Save an eval query as a project @verb declaration
+    #[command(
+        display_order = 68,
+        long_about = "Promote a working eval query into a project @verb declaration in anneal.dl."
+    )]
+    Save,
 
     /// Datalog query over corpus facts
     #[command(
@@ -1771,6 +1780,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Verbs
             | Command::Examples
             | Command::Cookbook
+            | Command::Save
             | Command::Eval,
         ) => {
             anyhow::bail!(
@@ -1905,7 +1915,7 @@ mod tests {
         for name in [
             "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
             "areas", "vocab", "describe", "sources", "schema", "verbs", "examples", "eval", "init",
-            "prime",
+            "cookbook", "save", "prime",
         ] {
             assert!(
                 help.contains(name),

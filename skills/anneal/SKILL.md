@@ -44,16 +44,18 @@ an alias. Use `anneal status` when the question is corpus state.
 ```bash
 anneal schema --format=text
 anneal describe search --format=text
+anneal cookbook --format=text
 anneal verbs --format=text
 anneal vocab --format=text
 anneal sources --format=text
 ```
 
 Use these before inventing names. `schema` shows queryable relations and
-signatures. `describe` explains one primitive, predicate, or verb. `verbs`
-shows saved query examples from the prelude and project. `vocab` shows observed
-status values, edge kinds, namespaces, and frontmatter fields. `sources` shows
-linked adapters and capabilities.
+signatures. `describe` explains one primitive, predicate, or verb. `cookbook`
+shows worked join recipes by question shape. `verbs` shows saved query examples
+from the prelude and project. `vocab` shows observed status values, edge kinds,
+namespaces, and frontmatter fields. `sources` shows linked adapters and
+capabilities.
 
 ### Finding and Reading
 
@@ -76,7 +78,16 @@ for pipes.
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 anneal -e '? upstream("formal-model/v17.md", h).'
+anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
+  --args area:String --doc 'Diagnostics in one area.'
 ```
+
+Use `anneal save` when an eval query becomes a reusable project move. It writes
+a normal `@verb` declaration to `anneal.dl`, so the next session can call it as
+`anneal broken-area language` and inspect it with `anneal verbs` or
+`anneal describe broken-area`. If the saved query is wrong, remove the
+generated `@verb(...)` block from `anneal.dl` or rerun `anneal save ... --force`
+to replace it.
 
 Use raw Datalog when the built-in verbs are too broad. Stored relations use
 `*` prefixes; prelude and project predicates do not. `anneal -e -` reads a
@@ -137,6 +148,7 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
 
 - `anneal schema`: predicates, primitives, stored relations, and signatures
 - `anneal describe NAME`: docs for one runtime name
+- `anneal cookbook`: worked recipes for common question shapes
 - `anneal verbs`: saved query examples from the prelude and project
 - `anneal vocab`: observed status, edge, namespace, and metadata vocabulary
 - `anneal sources`: linked adapters and capabilities
@@ -159,7 +171,8 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
 
 Project `@verb` declarations in `anneal.dl` appear beside these in
 `anneal verbs` and are callable by name. Use `anneal -e` for custom composition
-when you need a parameterized or one-off query.
+when you need a parameterized or one-off query. Use `anneal save` to promote a
+working query into a reusable project verb.
 
 ### Raw Query Surface
 
@@ -168,6 +181,8 @@ anneal -e '? *handle{id: h, kind: "label", status: "open"}.'
 anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
 anneal -e '? read("formal-model/v17.md", 4000, span, text, start, end, tokens).'
+anneal save stale-active '? freshness(h, days), days > 30, active(h).' \
+  --doc 'Old active handles.'
 ```
 
 Common stored relations:

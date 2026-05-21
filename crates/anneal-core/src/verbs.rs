@@ -538,9 +538,7 @@ impl VerbEntry {
     }
 }
 
-pub(crate) fn validate_project_verb_query_program(
-    verb: &VerbDecl,
-) -> Result<Program, VerbRegistryError> {
+pub fn validate_project_verb_query_program(verb: &VerbDecl) -> Result<Program, VerbRegistryError> {
     let spec = parse_verb_decl(verb, SchemaPolicy::Exact)?;
     validate_verb_arg_references(
         spec.name.as_str(),
