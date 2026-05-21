@@ -34,20 +34,22 @@ jobs:
           # Pin to the version in Cargo.toml instead of "latest" — the
           # Release workflow runs in parallel with CI on a tag push, so
           # "latest" races and fetches the previous release's SKILL.md.
-          # Wait (up to 3 minutes) for the matching release to publish.
+          # Wait for the matching release to publish. The macOS release build is
+          # often the long pole, so this must be comfortably longer than the
+          # release workflow's normal build window.
           version=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
           tag="v$version"
           repo="${{ github.repository }}"
 
-          for attempt in $(seq 1 36); do
+          for attempt in $(seq 1 120); do
             if curl -sf -o /dev/null "https://api.github.com/repos/$repo/releases/tags/$tag"; then
               break
             fi
-            if [ "$attempt" -eq 36 ]; then
-              echo "::error::release $tag not published after 180s — Release workflow may have failed"
+            if [ "$attempt" -eq 120 ]; then
+              echo "::error::release $tag not published after 600s — Release workflow may have failed"
               exit 1
             fi
-            echo "waiting for release $tag (attempt $attempt/36)..."
+            echo "waiting for release $tag (attempt $attempt/120)..."
             sleep 5
           done
 
