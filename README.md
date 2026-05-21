@@ -269,14 +269,15 @@ is available as a short alias.
 
 ```bash
 anneal work
+anneal areas
 anneal broken
 anneal blocked HANDLE
 anneal trend
 ```
 
-`work` ranks active candidates. `broken` shows diagnostic blockers. `blocked`
-explains one handle. `trend` shows movement between snapshots when history
-exists.
+`work` ranks active candidates. `areas` shows per-area health and frontier
+drill-down. `broken` shows diagnostic blockers. `blocked` explains one handle.
+`trend` shows movement between snapshots when history exists.
 
 ### Raw Queries
 
@@ -419,7 +420,7 @@ pre-0.11.0 repo-local `.anneal/history.jsonl` is copied into XDG state on the
 first write so trend and diff history continue.
 
 Older command names such as `check`, `get`, `find`, `health`, `garden`,
-`impact`, `map`, `query`, `explain`, `orient`, `diff`, `areas`, and
+`impact`, `map`, `query`, `explain`, `orient`, `diff`, and
 `obligations` remain callable during the transition, but they are not the
 primary surface. Prefer the language-first ladder above: `status`/`context` to
 arrive, `schema`/`describe`/`verbs`/`vocab` to discover, `search`/`read`/`handle`

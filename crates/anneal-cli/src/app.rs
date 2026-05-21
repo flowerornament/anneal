@@ -224,6 +224,7 @@ enum RuntimeCommand {
         handle: String,
     },
     Broken,
+    Areas,
     Trend,
     Vocab,
     Describe {
@@ -256,6 +257,7 @@ enum HelpTopic {
     Work,
     Blocked,
     Broken,
+    Areas,
     Trend,
     Vocab,
     Describe,
@@ -276,6 +278,7 @@ impl HelpTopic {
             "work" => Self::Work,
             "blocked" => Self::Blocked,
             "broken" => Self::Broken,
+            "areas" => Self::Areas,
             "trend" => Self::Trend,
             "vocab" => Self::Vocab,
             "describe" => Self::Describe,
@@ -394,6 +397,19 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 Usage: anneal [OPTIONS] broken
 
 Show diagnostic blockers from the standard-library checks prelude.
+
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+"
+            }
+            Self::Areas => {
+                "\
+Usage: anneal [OPTIONS] areas
+
+Show per-area health grades and the strongest unsettled-work frontier inside
+each area.
+
+Use this after `anneal status` when the convergence frontier points at a broad
+area and you need a smaller place to start.
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -623,6 +639,10 @@ impl RuntimeCommand {
                 ensure_no_args(rest, "broken")?;
                 Ok(Self::Broken)
             }
+            "areas" => {
+                ensure_no_args(rest, "areas")?;
+                Ok(Self::Areas)
+            }
             "trend" => {
                 ensure_no_args(rest, "trend")?;
                 Ok(Self::Trend)
@@ -839,6 +859,7 @@ impl RuntimeSession {
                 RowView::Blocked,
             ),
             RuntimeCommand::Broken => self.run_verb("broken", RowView::Broken),
+            RuntimeCommand::Areas => self.run_verb("areas", RowView::Areas),
             RuntimeCommand::Trend => self.run_verb("trend", RowView::Trend),
             RuntimeCommand::Vocab => self.run_verb("vocab", RowView::Vocab),
             RuntimeCommand::Describe { name } => {
@@ -1012,6 +1033,7 @@ enum RowView {
     Work,
     Blocked,
     Broken,
+    Areas,
     Trend,
     Vocab,
     Describe,
@@ -1031,6 +1053,7 @@ impl RowView {
             Self::Work => format!("Work ({count})"),
             Self::Blocked => format!("Blocked ({count})"),
             Self::Broken => format!("Broken ({count})"),
+            Self::Areas => format!("Areas ({count})"),
             Self::Trend => format!("Trend ({count})"),
             Self::Vocab => format!("Vocabulary ({count})"),
             Self::Describe => return None,
@@ -1523,6 +1546,10 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         return write_read_text(writer, rows);
     }
 
+    if *view == RowView::Areas {
+        return write_areas_text(writer, rows);
+    }
+
     if *view == RowView::Trend && rows.is_empty() {
         writeln!(writer, "No trend rows -- snapshot history is empty.")?;
         return Ok(());
@@ -1543,6 +1570,91 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         }
         writeln!(writer)?;
     }
+    Ok(())
+}
+
+fn write_areas_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    let mut health = Vec::new();
+    let mut frontier = Vec::new();
+
+    for row in rows {
+        match required_string(row, "section")? {
+            "health" => health.push(row),
+            "frontier" => frontier.push(row),
+            section => bail!("areas row has unknown section {section:?}"),
+        }
+    }
+
+    health.sort_by(|left, right| {
+        let left_grade = optional_string(left, "grade").ok().flatten().unwrap_or("");
+        let right_grade = optional_string(right, "grade").ok().flatten().unwrap_or("");
+        area_grade_rank(left_grade)
+            .cmp(&area_grade_rank(right_grade))
+            .then_with(|| {
+                required_string(left, "area")
+                    .unwrap_or("")
+                    .cmp(required_string(right, "area").unwrap_or(""))
+            })
+    });
+    frontier.sort_by(|left, right| {
+        let left_score = required_number(left, "score")
+            .ok()
+            .copied()
+            .unwrap_or(NumberValue::Int(0));
+        let right_score = required_number(right, "score")
+            .ok()
+            .copied()
+            .unwrap_or(NumberValue::Int(0));
+        required_string(left, "area")
+            .unwrap_or("")
+            .cmp(required_string(right, "area").unwrap_or(""))
+            .then_with(|| right_score.cmp(&left_score))
+            .then_with(|| {
+                required_string(left, "h")
+                    .unwrap_or("")
+                    .cmp(required_string(right, "h").unwrap_or(""))
+            })
+    });
+
+    writeln!(writer, "Areas")?;
+    writeln!(writer, "Health ({})", health.len())?;
+    if health.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+    } else {
+        for (index, row) in health.iter().enumerate() {
+            let area = required_string(row, "area")?;
+            let grade = optional_string(row, "grade")?.unwrap_or("-");
+            let files = required_number(row, "files")?;
+            let errors = required_number(row, "errors")?;
+            let cross_edges = required_number(row, "cross_edges")?;
+            writeln!(
+                writer,
+                "{:>2}. {area}  grade={grade}  files={}  errors={}  cross_edges={}",
+                index + 1,
+                display_number(files),
+                display_number(errors),
+                display_number(cross_edges)
+            )?;
+        }
+    }
+
+    if !frontier.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Frontier ({})", frontier.len())?;
+        for (index, row) in frontier.iter().enumerate() {
+            let area = required_string(row, "area")?;
+            let handle = optional_string(row, "h")?.unwrap_or("-");
+            let score = required_number(row, "score")?;
+            let why = optional_string(row, "why")?.unwrap_or("-");
+            writeln!(
+                writer,
+                "{:>2}. {area}  {handle}  score={}  {why}",
+                index + 1,
+                display_number(score)
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1579,6 +1691,16 @@ fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         write_text_block(&mut writer, text, MAX_TEXT_LINES_PER_SPAN)?;
     }
     Ok(())
+}
+
+fn area_grade_rank(grade: &str) -> u8 {
+    match grade {
+        "D" => 0,
+        "C" => 1,
+        "B" => 2,
+        "A" => 3,
+        _ => 4,
+    }
 }
 
 fn write_text_block<W: Write>(writer: &mut W, text: &str, max_lines: usize) -> Result<()> {
@@ -1995,6 +2117,7 @@ fn standard_verb_name_for_explain(command: &str) -> Option<&'static str> {
         "work" => "work",
         "blocked" => "blocked",
         "broken" => "broken",
+        "areas" => "areas",
         "trend" => "trend",
         "vocab" => "vocab",
         "describe" => "describe",
@@ -2159,7 +2282,6 @@ fn is_legacy_surface_command(arg: &str) -> bool {
             | "health"
             | "diff"
             | "obligations"
-            | "areas"
             | "garden"
             | "orient"
             | "query"
@@ -2280,6 +2402,8 @@ mod tests {
             "--format=text",
             "vocab"
         ])));
+        assert!(should_handle_args(&os(&["anneal", "areas"])));
+        assert!(should_handle_args(&os(&["anneal", "help", "areas"])));
         assert!(should_handle_args(&os(&[
             "anneal", "--area", "compiler", "status"
         ])));
@@ -2616,6 +2740,13 @@ mod tests {
     }
 
     #[test]
+    fn parses_areas_as_runtime_command() {
+        let parsed = Invocation::parse(os(&["anneal", "areas"])).expect("parse areas");
+
+        assert_eq!(parsed.command, RuntimeCommand::Areas);
+    }
+
+    #[test]
     fn describe_rejects_extra_names() {
         let error = Invocation::parse(os(&["anneal", "describe", "runtime", "extra"]))
             .expect_err("extra describe args should fail");
@@ -2798,6 +2929,49 @@ mod tests {
         assert!(rendered.contains("category=status"));
         assert!(rendered.contains(r#"value="open question""#));
         assert!(rendered.contains("count=2"));
+    }
+
+    #[test]
+    fn areas_human_render_groups_health_and_frontier() {
+        let output = CommandOutput::Rows {
+            rows: vec![
+                row(&[
+                    ("section", Value::String("frontier".to_string())),
+                    ("area", Value::String("compiler".to_string())),
+                    ("grade", Value::Null),
+                    ("files", Value::Null),
+                    ("errors", Value::Null),
+                    ("cross_edges", Value::Null),
+                    ("h", Value::String("compiler/plan.md".to_string())),
+                    ("score", Value::Number(NumberValue::Int(7))),
+                    ("why", Value::String("broken_ref".to_string())),
+                ]),
+                row(&[
+                    ("section", Value::String("health".to_string())),
+                    ("area", Value::String("compiler".to_string())),
+                    ("grade", Value::String("C".to_string())),
+                    ("files", Value::Number(NumberValue::Int(12))),
+                    ("errors", Value::Number(NumberValue::Int(1))),
+                    ("cross_edges", Value::Number(NumberValue::Int(4))),
+                    ("h", Value::Null),
+                    ("score", Value::Null),
+                    ("why", Value::Null),
+                ]),
+            ],
+            view: RowView::Areas,
+        };
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render areas");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.starts_with("Areas\nHealth (1)\n"));
+        assert!(rendered.contains("compiler  grade=C  files=12  errors=1  cross_edges=4"));
+        assert!(
+            rendered.contains("Frontier (1)\n 1. compiler  compiler/plan.md  score=7  broken_ref")
+        );
     }
 
     #[test]

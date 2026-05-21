@@ -1729,6 +1729,42 @@ These are starter predicates, not a surface mandate. Surfaces may add
 budgeting, capability checks, or output shaping, but the default
 meaning of "work" remains "highest potential first."
 
+### §27.3 Area convergence vocabulary [CR-D96]
+
+**Definition CR-D96 (Area convergence vocabulary).** Predicates
+defined in `convergence.dl` expose per-area drill-down over the same
+facts used by `status` and `work`:
+
+```
+area(area) := area_of(h, area).
+
+area_health(area, grade, files, errors, cross_edges) :=
+  area_file_count(area, files),
+  area_error_count(area, errors),
+  area_cross_edges(area, cross_edges),
+  ...
+
+area_frontier(area, h, score, why) :=
+  area(area),
+  (h, score, why) = TopK{ k: 3, key: score * 100 - priority :
+    (h, score, why) :
+      area_of(h, area),
+      work_candidate(h, score),
+      primary_entropy(h, why),
+      entropy_priority(why, priority)
+  }.
+```
+
+`anneal areas` is a standard-library saved verb over `area_health/5`
+and `area_frontier/4`. It is the per-area drill-down from
+`anneal status`, not a compatibility health table with independent
+flags. Agents should use `area_of`, `area_health`, and `area_frontier`
+directly from `anneal -e` when they need area filters or custom area
+budgets.
+Rationale: "area" is useful enough to keep, but it belongs in the
+runtime language as explainable relations rather than as a path-shaped
+legacy command.
+
 ### §28 Check rules [CR-D23]
 
 **Definition CR-D23 (Check rule).** A rule whose head is
@@ -2352,8 +2388,8 @@ Default help teaches a short ladder:
 2. program the corpus with `schema`, `describe`, `verbs`, `vocab`,
    `sources`, and `eval` / `-e`;
 3. retrieve evidence with `search`, `read`, and `handle`;
-4. work the convergence frontier with `work`, `blocked`, `broken`, and
-   `trend`;
+4. work the convergence frontier with `work`, `areas`, `blocked`,
+   `broken`, and `trend`;
 5. configure with `init`.
 
 Compatibility-era commands remain callable while the legacy boundary
@@ -2845,7 +2881,7 @@ Every v1.x command is reachable in v2.0:
 | `anneal impact H` | `anneal -e '? impact("H", x, depth).'` |
 | `anneal obligations` | `anneal -e '? obligation(h), disposition(h).'` |
 | `anneal diff` | `anneal trend` |
-| `anneal areas` | `anneal -e '? area_health(area, grade, ...).'` |
+| `anneal areas` | `anneal areas` or `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` |
 | `anneal orient` | `anneal work` |
 | `anneal garden` | `anneal -e '? maintenance_task(t, category, blast).'` |
 | `anneal init` | `anneal init` (now lattice-on by default) |
@@ -3364,6 +3400,7 @@ config key.
 - CR-D93: Config declaration schema (§39)
 - CR-D94: CLI flag dialect boundary (§31)
 - CR-D95: Status arrival projection (§33)
+- CR-D96: Area convergence vocabulary (§27.3)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

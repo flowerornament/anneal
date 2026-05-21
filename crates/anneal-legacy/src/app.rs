@@ -679,41 +679,22 @@ EXAMPLES:
     )]
     Prime,
 
-    /// Show per-area health profiles
+    /// Per-area health and work frontier
     #[command(
-        hide = true,
+        display_order = 135,
         long_about = "\
-Show health profiles for each area (top-level directory) in the corpus.
+Show per-area health grades and the strongest unsettled-work frontier inside
+each area from the programmable runtime.
 
-Each area gets a grade (A-D) based on error count, connectivity, and metadata
-coverage. The table shows file count, edges per handle (connectivity), cross-area
-edges, and a signal summary.
-
-GRADES:
-  [A]  Healthy: no errors, adequate connectivity, has active files
-  [B]  Attention: no errors, but low connectivity, no active metadata, or orphans
-  [C]  Action required: has errors (E001/E002)
-  [D]  Degraded: has errors and low connectivity
-
-Areas are auto-detected from the top-level directory structure. Files in the
-corpus root are grouped under \"(root)\". When `config concerns` is declared in
-anneal.dl, concern groups can also act as areas.",
+Use this after `anneal status` when the convergence frontier points at a broad
+area and you need a smaller place to start.",
         after_help = "\
 EXAMPLES:
-  anneal areas                    # Per-area health table
-  anneal areas --sort=grade       # Worst areas first
-  anneal areas --sort=name        # Alphabetical
-  anneal areas --include-terminal # Include terminal-only areas
-  anneal areas --json             # Machine-readable output"
+  anneal areas                    # Per-area health + frontier
+  anneal areas --format=text      # Force readable text
+  anneal areas --json             # Machine-readable rows"
     )]
-    Areas {
-        /// Sort order for the area table
-        #[arg(long, value_enum, default_value = "files")]
-        sort: cli::AreaSort,
-        /// Include areas that contain only terminal files
-        #[arg(long)]
-        include_terminal: bool,
-    },
+    Areas,
 
     /// Surface ranked maintenance tasks (the \"what's degrading?\" view)
     #[command(
@@ -1691,29 +1672,6 @@ fn run() -> anyhow::Result<()> {
             unreachable!("`prime` is handled before graph construction");
         }
 
-        Some(Command::Areas {
-            sort,
-            include_terminal,
-        }) => {
-            let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
-            let output = cli::cmd_areas(
-                graph,
-                &lattice,
-                &diagnostics,
-                &config.areas,
-                sort,
-                include_terminal,
-            );
-            emit_rendered(
-                &output,
-                Some(cli::OutputMeta::full()),
-                cli_args.json,
-                json_style,
-                output_style,
-                "failed to write areas output",
-            )?;
-        }
-
         Some(Command::Garden { category, limit }) => {
             let diagnostics = analysis::build_analysis_artifacts(&analysis).diagnostics;
             let areas = area::compute_areas(graph, &lattice, &diagnostics, &config.areas);
@@ -1787,6 +1745,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Work
             | Command::Blocked
             | Command::Broken
+            | Command::Areas
             | Command::Trend
             | Command::Vocab
             | Command::Describe
@@ -1927,7 +1886,8 @@ mod tests {
 
         for name in [
             "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
-            "vocab", "describe", "sources", "schema", "verbs", "examples", "eval", "init", "prime",
+            "areas", "vocab", "describe", "sources", "schema", "verbs", "examples", "eval", "init",
+            "prime",
         ] {
             assert!(
                 help.contains(name),
@@ -1946,7 +1906,6 @@ mod tests {
             "map",
             "query",
             "explain",
-            "areas",
             "diff",
             "obligations",
             "orient",

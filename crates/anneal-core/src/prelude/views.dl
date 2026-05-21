@@ -87,6 +87,15 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
+  name: "areas",
+  query: "areas_row(\"health\", area, grade, files, errors, cross_edges, null, null, null) :=\n  area_health(area, grade, files, errors, cross_edges).\n\nareas_row(\"frontier\", area, null, null, null, null, h, score, why) :=\n  area_frontier(area, h, score, why).\n\n? areas_row(section, area, grade, files, errors, cross_edges, h, score, why).",
+  doc: "Show area health grades and the strongest unsettled-work frontier inside each area.",
+  output_schema: "{\"section\":\"String\",\"area\":\"String\",\"grade\":\"String|null\",\"files\":\"Number|null\",\"errors\":\"Number|null\",\"cross_edges\":\"Number|null\",\"h\":\"HandleId|null\",\"score\":\"Number|null\",\"why\":\"String|null\"}",
+  args: [],
+  capabilities: ["read"]
+).
+
+@verb(
   name: "blocked",
   query: "blocked_row(h, energy, source, kind, status, file) :=\n  verb_arg(\"h\", h),\n  potential(h, energy),\n  entropy(h, source),\n  *handle{id: h, kind: kind, status: status, file: file}.\n\n? blocked_row(h, energy, source, kind, status, file).",
   doc: "Explain why one handle looks stalled or important, as the specific unsettled-work signals behind its score.",

@@ -632,6 +632,7 @@ mod tests {
         CONTEXT_VERB_NAME,
         "read",
         "work",
+        "areas",
         "blocked",
         "trend",
         "broken",
@@ -1118,7 +1119,7 @@ mod tests {
                 matches!(value, Value::Number(_)),
                 "{field} should be numeric"
             ),
-            "String|null" => assert!(
+            "HandleId|null" | "String|null" => assert!(
                 matches!(value, Value::String(_) | Value::Null),
                 "{field} should be string or null"
             ),
@@ -1257,6 +1258,12 @@ mod tests {
                     "primary_entropy",
                     r#"? primary_entropy("ticket-1", source)."#,
                 ),
+                ("area", r"? area(area)."),
+                (
+                    "area_health",
+                    r"? area_health(area, grade, files, errors, cross_edges).",
+                ),
+                ("area_frontier", r"? area_frontier(area, h, score, why)."),
                 ("potential", r#"? potential("ticket-1", energy)."#),
                 ("blocked", r#"? blocked("ticket-1")."#),
                 ("advancing", r#"? advancing("ticket-2")."#),
@@ -1322,6 +1329,37 @@ mod tests {
             output(&outputs, "primary_entropy"),
             &[("source", string("broken_ref"))]
         ));
+        assert!(has_row(
+            output(&outputs, "area"),
+            &[("area", string("host"))]
+        ));
+        assert!(
+            has_row(
+                output(&outputs, "area_health"),
+                &[
+                    ("area", string("host")),
+                    ("grade", string("D")),
+                    ("files", int(1)),
+                    ("errors", int(2)),
+                    ("cross_edges", int(0)),
+                ]
+            ),
+            "area_health rows: {:?}",
+            output(&outputs, "area_health").rows
+        );
+        assert!(
+            has_row(
+                output(&outputs, "area_frontier"),
+                &[
+                    ("area", string("host")),
+                    ("h", string("ticket-1")),
+                    ("score", int(7)),
+                    ("why", string("broken_ref")),
+                ]
+            ),
+            "area_frontier rows: {:?}",
+            output(&outputs, "area_frontier").rows
+        );
         assert!(has_row(
             output(&outputs, "potential"),
             &[("energy", int(7))]

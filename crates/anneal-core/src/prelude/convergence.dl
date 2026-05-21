@@ -98,6 +98,100 @@ primary_entropy(h, source) :=
   }.
 
 @doc(
+  name: "area",
+  doc: "Return each corpus area observed in source facts, usually top-level directories or adapter-provided groupings."
+).
+area(area) := area_of(h, area).
+
+@doc(
+  name: "area_file_count",
+  doc: "Count file handles in each area."
+).
+area_file_count(area, files) :=
+  area(area),
+  files = Count{ h : area_of(h, area), *handle{id: h, kind: "file"} }.
+
+@doc(
+  name: "area_error_count",
+  doc: "Count error diagnostics whose subject belongs to each area."
+).
+@doc(
+  name: "area_error_location_count",
+  doc: "Count area diagnostics by code, subject, file, and line before area_error_count sums them."
+).
+area_error_location_count(area, code, subject, file, line, count) :=
+  area(area),
+  area_of(subject, area),
+  diagnostic(code, "error", subject, file, line, anchor),
+  count = Count{ evidence :
+    area_of(subject, area),
+    diagnostic(code, "error", subject, file, line, evidence)
+  }.
+
+area_error_count(area, errors) :=
+  area(area),
+  errors = Sum{ count : area_error_location_count(area, code, subject, file, line, count) }.
+
+@doc(
+  name: "area_cross_edges",
+  doc: "Count distinct outbound cross-area targets from each area."
+).
+area_cross_edges(area, cross_edges) :=
+  area(area),
+  cross_edges = Count{ to :
+    area_of(from, area),
+    *edge{from: from, to: to},
+    area_of(to, other_area),
+    other_area != area
+  }.
+
+@doc(
+  name: "area_health",
+  doc: "Grade each area from A to D using local errors and cross-area connectivity, so agents can drill down from corpus status to area health."
+).
+area_health(area, "D", files, errors, cross_edges) :=
+  area_file_count(area, files),
+  area_error_count(area, errors),
+  area_cross_edges(area, cross_edges),
+  errors > 0,
+  cross_edges = 0.
+
+area_health(area, "C", files, errors, cross_edges) :=
+  area_file_count(area, files),
+  area_error_count(area, errors),
+  area_cross_edges(area, cross_edges),
+  errors > 0,
+  cross_edges > 0.
+
+area_health(area, "B", files, errors, cross_edges) :=
+  area_file_count(area, files),
+  area_error_count(area, errors),
+  area_cross_edges(area, cross_edges),
+  errors = 0,
+  cross_edges = 0.
+
+area_health(area, "A", files, errors, cross_edges) :=
+  area_file_count(area, files),
+  area_error_count(area, errors),
+  area_cross_edges(area, cross_edges),
+  errors = 0,
+  cross_edges > 0.
+
+@doc(
+  name: "area_frontier",
+  doc: "Return the strongest unsettled-work handles per area, with one primary reason for each handle."
+).
+area_frontier(area, h, score, why) :=
+  area(area),
+  (h, score, why) = TopK{ k: 3, key: score * 100 - priority :
+    (h, score, why) :
+      area_of(h, area),
+      work_candidate(h, score),
+      primary_entropy(h, why),
+      entropy_priority(why, priority)
+  }.
+
+@doc(
   name: "blocked",
   doc: "Return active handles that look important but have not changed recently; these are good candidates for unblock/fix work."
 ).

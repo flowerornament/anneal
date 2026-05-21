@@ -642,6 +642,13 @@ fn documented_parameter_names(predicate_name: &str) -> Option<&'static [&'static
         "diagnostic" => Some(&["code", "severity", "subject", "file", "line", "evidence"]),
         "entropy" => Some(&["h", "source"]),
         "potential_weight" => Some(&["source", "weight"]),
+        "area" => Some(&["area"]),
+        "area_file_count" => Some(&["area", "files"]),
+        "area_error_location_count" => Some(&["area", "code", "subject", "file", "line", "count"]),
+        "area_error_count" => Some(&["area", "errors"]),
+        "area_cross_edges" => Some(&["area", "cross_edges"]),
+        "area_health" => Some(&["area", "grade", "files", "errors", "cross_edges"]),
+        "area_frontier" => Some(&["area", "h", "score", "why"]),
         "profile_doc_corpus" | "profile_code_corpus" | "profile_issue_corpus" => Some(&["profile"]),
         _ => None,
     }
@@ -1138,6 +1145,15 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "entropy_priority" => {
             &["`potential_weight` rows for the same source; lower priority values win ties."]
         }
+        "area"
+        | "area_file_count"
+        | "area_error_location_count"
+        | "area_error_count"
+        | "area_cross_edges"
+        | "area_health"
+        | "area_frontier" => &[
+            "`area_of` rows from source facts. Area health also uses diagnostics, edges, and work-candidate convergence signals.",
+        ],
         "blocked" => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
         }
@@ -1166,6 +1182,12 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "area_of" => Some(
             "Source-neutral area lens over `*handle.area`; use it to group queries by corpus area.",
         ),
+        "area_health" => Some(
+            "Used by the `areas` verb; grades each corpus area by local errors and cross-area connectivity.",
+        ),
+        "area_frontier" => Some(
+            "Used by the `areas` verb; picks the strongest unsettled-work handles inside each area.",
+        ),
         _ => None,
     }
 }
@@ -1191,7 +1213,20 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "entropy_priority",
         ],
         "blocked" => &["potential", "entropy", "flux", "status"],
-        "area_of" => &["*handle", "*concern", "vocab"],
+        "area_of" => &["area", "area_health", "area_frontier", "*handle", "vocab"],
+        "area"
+        | "area_file_count"
+        | "area_error_location_count"
+        | "area_error_count"
+        | "area_cross_edges"
+        | "area_health"
+        | "area_frontier" => &[
+            "area_of",
+            "diagnostic",
+            "work_candidate",
+            "primary_entropy",
+            "areas",
+        ],
         "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
         _ => &[],
     }
@@ -1215,6 +1250,9 @@ fn verb_relationship(name: &str) -> &'static str {
         }
         "broken" => "Saved query over `diagnostic` filtered to severity `error`.",
         "work" => "Saved query over `top_work` joined to `*handle` metadata.",
+        "areas" => {
+            "Saved query over `area_health` and `area_frontier`; it is the per-area drill-down from `status`."
+        }
         "describe" => "Saved query over the `describe` primitive.",
         "examples" => "Saved query over the `examples` primitive.",
         "schema" => "Saved query over the `schema` primitive.",
@@ -1239,6 +1277,7 @@ fn verb_see_also(name: &str) -> &'static [&'static str] {
         "blocked" => &["potential", "entropy", "status"],
         "broken" => &["diagnostic", "status"],
         "work" => &["top_work", "ranked_work", "status"],
+        "areas" => &["area_health", "area_frontier", "area_of", "status"],
         "describe" => &["schema", "examples", "source-of"],
         "schema" => &["describe", "examples", "verbs"],
         "vocab" => &["*handle", "*edge", "*meta", "*config"],
@@ -1256,6 +1295,7 @@ fn verb_example(name: &str) -> Option<&'static str> {
         "blocked" => Some("anneal blocked formal-model/v17.md --explain"),
         "broken" => Some("anneal broken"),
         "work" => Some("anneal work"),
+        "areas" => Some("anneal areas"),
         "describe" => Some("anneal describe search"),
         "schema" => Some("anneal schema"),
         "verbs" => Some("anneal verbs"),
@@ -1330,6 +1370,15 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
         "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
         "primary_entropy" => Some(r#"? primary_entropy("formal-model/v17.md", source)."#),
+        "area" => Some("? area(area)."),
+        "area_file_count" => Some("? area_file_count(area, files)."),
+        "area_error_location_count" => {
+            Some("? area_error_location_count(area, code, subject, file, line, count).")
+        }
+        "area_error_count" => Some("? area_error_count(area, errors)."),
+        "area_cross_edges" => Some("? area_cross_edges(area, cross_edges)."),
+        "area_health" => Some("? area_health(area, grade, files, errors, cross_edges)."),
+        "area_frontier" => Some("? area_frontier(area, h, score, why)."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),

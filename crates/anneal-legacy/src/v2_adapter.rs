@@ -821,10 +821,11 @@ fn native_id_for(handle: &Handle) -> String {
 }
 
 fn area_for(file: &str) -> String {
-    Utf8Path::new(file)
-        .components()
-        .next()
-        .map_or_else(String::new, |component| component.as_str().to_string())
+    if file.is_empty() {
+        String::new()
+    } else {
+        crate::area::area_of(file).to_string()
+    }
 }
 
 fn token_count(text: &str) -> u32 {
@@ -1110,4 +1111,17 @@ fn snippets_from_facts(batch: &FactBatch) -> (HashMap<String, String>, HashMap<S
         }
     }
     (files, labels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::area_for;
+
+    #[test]
+    fn area_for_groups_root_files_under_root_area() {
+        assert_eq!(area_for("README.md"), "(root)");
+        assert_eq!(area_for("compiler/design.md"), "compiler");
+        assert_eq!(area_for("compiler/sub/design.md"), "compiler");
+        assert_eq!(area_for(""), "");
+    }
 }

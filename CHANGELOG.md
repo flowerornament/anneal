@@ -2,6 +2,19 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- `anneal areas` is now a runtime verb over `area_health` and `area_frontier`,
+  giving agents a per-area drill-down from `status` without falling back to the
+  compatibility health table.
+
+### Fixed
+
+- Root-level markdown files now share the `(root)` area instead of each becoming
+  a one-file area.
+
 ## v0.11.1 - 2026-05-20
 
 ### Changed

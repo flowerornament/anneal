@@ -151,6 +151,7 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
 ### Work The Convergence Frontier
 
 - `anneal work`: ranked work candidates
+- `anneal areas`: per-area health grades and frontier work
 - `anneal blocked HANDLE`: blockers for one handle
 - `anneal broken`: diagnostic gate
 - `anneal trend`: convergence movement rows when snapshot history exists; no-history
