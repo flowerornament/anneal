@@ -2,6 +2,61 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.12.0 - 2026-05-21
+
+This release makes the language loop complete: agents can discover the corpus
+vocabulary, compose precise Datalog questions, study worked recipes, and save a
+successful query as a project verb for the next session.
+
+### Added
+
+- Relation-pattern calls for derived predicates and primitives. Queries can now
+  use the same partial-field shape as stored relations:
+  `diagnostic{code: "E001", file: "x.md"}`. Omitted fields act as hidden
+  wildcards, so agents can filter by the fields they care about without
+  spelling every positional column.
+- A predicate signature registry shared by analysis and introspection. Names
+  shown by `schema` and `describe` are now the same names accepted by the
+  analyzer, including constant-headed predicates such as `diagnostic`.
+- `anneal diagnostics` as the canonical full diagnostic stream. `broken`
+  remains the error-only view, and `check` remains callable as a hidden
+  CI-friendly gate alias.
+- `describe` cards now include Common joins for primary predicates, so agents
+  can learn how to combine relations such as `diagnostic` with `area_of` or
+  `top_work` with `blocked`.
+- `anneal cookbook` lists worked recipes by question shape. The bundled prelude
+  ships recipes for diagnostics by file, diagnostics by area, blocked work by
+  area, open obligations, citation lookups, stale work, and broken-reference
+  review.
+- `anneal save` promotes a working eval query into a project `@verb` in
+  `anneal.dl`. Saved verbs are callable by name, listed by `anneal verbs`,
+  documented by `anneal describe` and `anneal help`, and support the same typed
+  argument dispatch as built-in verbs.
+
+### Changed
+
+- `anneal help eval` now teaches relation-pattern syntax, the cookbook loop,
+  and the save-as-verb workflow.
+- `anneal help save`, README, and the bundled skill document the recovery path
+  for a bad saved query: edit `anneal.dl` or rerun `anneal save ... --force`.
+- Gate semantics for diagnostics are independent of display flags, so
+  `anneal diagnostics --gate --rows=0` still exits nonzero when errors exist.
+
+### Migration
+
+- No config migration is required from v0.11.2.
+- Existing positional calls and exact named calls continue to work. Brace-style
+  relation-pattern calls are additive.
+- `anneal check` remains callable for CI and pre-commit muscle memory, but it is
+  intentionally hidden from the default command ladder in favor of
+  `diagnostics` and `broken`.
+
+### Known Limitations
+
+- Comparisons inside relation-pattern braces are not supported. Write
+  comparisons as normal body atoms, for example:
+  `? freshness(h, days), days > 30, active(h).`
+
 ## v0.11.2 - 2026-05-21
 
 This release makes anneal more self-teaching. The runtime now explains itself

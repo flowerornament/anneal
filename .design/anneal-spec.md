@@ -210,7 +210,7 @@ Edge kind determines **what checks apply** [KB-P7]:
 
 **Cites** edges are the default. Most references in prose are citations — "see OQ-64 for future work." They create a link in the graph (for navigation and impact analysis) but don't impose consistency constraints. The formal model's convergence state is not affected by whether OQ-64 is open or resolved.
 
-**DependsOn** edges are for genuine dependencies — "this section incorporates the analysis from synthesis/v17.md." The source's convergence state should not exceed the target's. A `formal` document depending on a `provisional` source is a warning.
+**DependsOn** edges are for genuine dependencies — "this section incorporates the analysis from `synthesis/v17.md`." The source's convergence state should not exceed the target's. A `formal` document depending on a `provisional` source is a warning.
 
 Edge kind is **inferred from context** where possible (a file in `synthesis/` citing a file in `research-log/` is likely DependsOn) and can be made explicit in frontmatter or via keywords near the reference ("incorporates," "builds on," "extends" suggest DependsOn; "see also," "cf.," "related" suggest Cites).
 
