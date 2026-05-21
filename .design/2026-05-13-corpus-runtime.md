@@ -2138,6 +2138,22 @@ Rationale: cold agents need to discover the corpus's actual words
 before writing Datalog filters, and this should take one compact
 command rather than a sequence of schema guesses.
 
+**Definition CR-D95 (Status arrival projection).** `anneal status` is
+the default arrival projection for a cold agent. The saved verb itself
+MUST collapse blocked handles to their strongest entropy source and
+avoid repeating handles as generic work when they already appear in the
+blocked section. Its human rendering MUST summarize convergence section
+counts from the full projected row set before listing rows, cap the
+visible rows per section, and sort each section by descending score and
+then by deterministic convergence-signal priority. Machine mode remains
+the same projected `status` row stream, without additional human
+formatting. The human heading for the generic `work` section SHOULD make
+clear that those rows are other work not already listed as blocked; the
+standalone `work` verb may still expose the full ranked work vocabulary.
+Rationale: the first screen should reveal convergence shape and the
+next useful action, not expose arbitrary tuple order, duplicate ties, or
+pre-capped totals.
+
 Plus meta forms:
 
 | Form | Purpose |
@@ -3347,6 +3363,7 @@ config key.
 - CR-D92: CLI dynamic verb projection (§31)
 - CR-D93: Config declaration schema (§39)
 - CR-D94: CLI flag dialect boundary (§31)
+- CR-D95: Status arrival projection (§33)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

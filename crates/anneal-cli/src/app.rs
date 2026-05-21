@@ -1364,8 +1364,19 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         let row = StatusRow::from_row(row)?;
         sections.entry(row.section).or_default().push(row);
     }
+    for section_rows in sections.values_mut() {
+        section_rows.sort_by(compare_status_rows);
+    }
 
-    let mut wrote_section = false;
+    writeln!(
+        writer,
+        "Convergence  broken={}  blocked={}  work={}  advancing={}",
+        section_len(&sections, "broken"),
+        section_len(&sections, "blocked"),
+        section_len(&sections, "work"),
+        section_len(&sections, "advancing")
+    )?;
+
     for section in SECTION_ORDER
         .into_iter()
         .chain(sections.keys().copied().filter(|section| {
@@ -1377,10 +1388,7 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         let Some(section_rows) = sections.get(section) else {
             continue;
         };
-        if wrote_section {
-            writeln!(writer)?;
-        }
-        wrote_section = true;
+        writeln!(writer)?;
         writeln!(writer, "{}", section_title(section))?;
         for (index, row) in section_rows.iter().take(MAX_ROWS_PER_SECTION).enumerate() {
             writeln!(
@@ -1398,6 +1406,33 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn section_len(sections: &BTreeMap<&str, Vec<StatusRow<'_>>>, section: &str) -> usize {
+    sections.get(section).map_or(0, Vec::len)
+}
+
+fn compare_status_rows(left: &StatusRow<'_>, right: &StatusRow<'_>) -> std::cmp::Ordering {
+    right
+        .score
+        .cmp(left.score)
+        .then_with(|| status_reason_rank(left.why).cmp(&status_reason_rank(right.why)))
+        .then_with(|| left.handle.cmp(right.handle))
+}
+
+fn status_reason_rank(reason: &str) -> u8 {
+    match reason {
+        "E001" | "broken_ref" => 0,
+        "undischarged" => 1,
+        "stale_dep" => 2,
+        "confidence_gap" => 3,
+        "freshness_decay" => 4,
+        "missing_meta" => 5,
+        "orphan_label" => 6,
+        "potential" => 7,
+        "recently_advanced" => 8,
+        _ => 9,
+    }
 }
 
 fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result<()> {
@@ -1678,6 +1713,10 @@ fn write_handle_edges<W: Write>(
 }
 
 fn section_title(section: &str) -> String {
+    if section == "work" {
+        return "Other work".to_string();
+    }
+
     let mut chars = section.chars();
     let Some(first) = chars.next() else {
         return "Other".to_string();
@@ -2675,8 +2714,47 @@ mod tests {
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.starts_with("Status\n"));
+        assert!(rendered.contains("Convergence  broken=1  blocked=0  work=1  advancing=0"));
         assert!(rendered.contains("Broken\n 1. bad.md"));
-        assert!(rendered.contains("Work\n 1. plan.md"));
+        assert!(rendered.contains("Other work\n 1. plan.md"));
+    }
+
+    #[test]
+    fn status_human_render_sorts_by_score_and_reason_signal() {
+        let output = CommandOutput::Status(vec![
+            row(&[
+                ("section", Value::String("blocked".to_string())),
+                ("h", Value::String("metadata.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(3))),
+                ("why", Value::String("missing_meta".to_string())),
+            ]),
+            row(&[
+                ("section", Value::String("blocked".to_string())),
+                ("h", Value::String("dependency.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(3))),
+                ("why", Value::String("stale_dep".to_string())),
+            ]),
+            row(&[
+                ("section", Value::String("blocked".to_string())),
+                ("h", Value::String("broken.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(4))),
+                ("why", Value::String("broken_ref".to_string())),
+            ]),
+        ]);
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render status");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        let broken = rendered.find("broken.md").expect("broken row");
+        let dependency = rendered.find("dependency.md").expect("dependency row");
+        let metadata = rendered.find("metadata.md").expect("metadata row");
+        assert!(
+            broken < dependency && dependency < metadata,
+            "rendered status should order high scores first, then stronger reasons:\n{rendered}"
+        );
     }
 
     #[test]

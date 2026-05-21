@@ -913,6 +913,44 @@ mod tests {
         assert!(output.rows.is_empty());
     }
 
+    #[test]
+    fn status_verb_projects_disjoint_arrival_sections() {
+        let verbs = views_verb_declarations();
+        let status = verbs.get("status").expect("status verb is declared");
+        let query = status.string_arg("query").expect("@verb has query");
+
+        let output = evaluate_verb_query("status", query, standard_library_database());
+
+        assert!(has_row(
+            &output,
+            &[
+                ("section", string("blocked")),
+                ("h", string("ticket-1")),
+                ("score", int(7)),
+                ("why", string("broken_ref")),
+            ],
+        ));
+        assert!(
+            !has_row(
+                &output,
+                &[("section", string("work")), ("h", string("ticket-1"))]
+            ),
+            "blocked handles should not repeat in the generic work section: {:?}",
+            output.rows
+        );
+        assert!(
+            output
+                .rows
+                .iter()
+                .filter(|row| row.fields.get("h") == Some(&string("ticket-1"))
+                    && row.fields.get("section") == Some(&string("blocked")))
+                .count()
+                == 1,
+            "blocked handles should collapse to their primary entropy source: {:?}",
+            output.rows
+        );
+    }
+
     fn views_verb_declarations() -> BTreeMap<String, crate::runtime::ast::VerbDecl> {
         let program = parse_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE).expect("views.dl parses");
         program
@@ -1215,6 +1253,10 @@ mod tests {
                     r#"? diagnostic("E001", severity, "ticket-1", file, line, evidence)."#,
                 ),
                 ("entropy", r#"? entropy("ticket-1", source)."#),
+                (
+                    "primary_entropy",
+                    r#"? primary_entropy("ticket-1", source)."#,
+                ),
                 ("potential", r#"? potential("ticket-1", energy)."#),
                 ("blocked", r#"? blocked("ticket-1")."#),
                 ("advancing", r#"? advancing("ticket-2")."#),
@@ -1275,6 +1317,10 @@ mod tests {
         assert!(has_row(
             output(&outputs, "entropy"),
             &[("source", string("stale_dep"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "primary_entropy"),
+            &[("source", string("broken_ref"))]
         ));
         assert!(has_row(
             output(&outputs, "potential"),

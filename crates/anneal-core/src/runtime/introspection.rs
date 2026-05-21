@@ -1131,10 +1131,13 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
 
 fn predicate_requires(name: &str) -> &'static [&'static str] {
     match name {
-        "entropy" | "potential_subject" | "potential" | "work_candidate" | "top_work"
-        | "ranked_work" => &[
+        "entropy" | "primary_entropy" | "potential_subject" | "potential" | "work_candidate"
+        | "top_work" | "ranked_work" => &[
             "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
         ],
+        "entropy_priority" => {
+            &["`potential_weight` rows for the same source; lower priority values win ties."]
+        }
         "blocked" => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
         }
@@ -1156,7 +1159,9 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "diagnostic" => Some(
             "Shared diagnostic stream used by `broken`, `status`, and `work`; individual rules contribute rows by diagnostic code.",
         ),
-        "top_work" => Some("Used by the `work` verb and the work section of `status`."),
+        "top_work" => Some(
+            "Used by the `work` verb; `status` uses the same work-candidate vocabulary but removes already-blocked handles from its arrival projection.",
+        ),
         "blocked" => Some("Used by the `blocked` verb and the blocked section of `status`."),
         "area_of" => Some(
             "Source-neutral area lens over `*handle.area`; use it to group queries by corpus area.",
@@ -1176,8 +1181,15 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "s004_abandoned_namespace",
             "s005_top_pair",
         ],
-        "entropy" | "potential" | "potential_subject" | "work_candidate" | "top_work"
-        | "ranked_work" => &["diagnostic", "obligation", "freshness", "hub", "orphan"],
+        "entropy" | "primary_entropy" | "potential" | "potential_subject" | "work_candidate"
+        | "top_work" | "ranked_work" => &[
+            "diagnostic",
+            "obligation",
+            "freshness",
+            "hub",
+            "orphan",
+            "entropy_priority",
+        ],
         "blocked" => &["potential", "entropy", "flux", "status"],
         "area_of" => &["*handle", "*concern", "vocab"],
         "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
@@ -1187,6 +1199,9 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
 
 fn verb_relationship(name: &str) -> &'static str {
     match name {
+        "status" => {
+            "Saved query over `primary_entropy`, non-blocked `work_candidate` rows, `advancing`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
+        }
         "search" => {
             "Saved query over the `search` primitive; applies TopK by score and filters `low_confidence = false`."
         }
@@ -1313,6 +1328,8 @@ fn fallback_stored_relation_example(name: &str, fields: &[impl AsRef<str>]) -> S
 fn predicate_example(name: &str) -> Option<&'static str> {
     match name {
         "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
+        "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
+        "primary_entropy" => Some(r#"? primary_entropy("formal-model/v17.md", source)."#),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),

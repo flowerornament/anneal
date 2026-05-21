@@ -13,9 +13,22 @@ potential_weight("freshness_decay", 2).
 potential_weight("missing_meta", 1).
 potential_weight("orphan_label", 1).
 
+entropy_priority("broken_ref", 0).
+entropy_priority("undischarged", 1).
+entropy_priority("stale_dep", 2).
+entropy_priority("confidence_gap", 3).
+entropy_priority("freshness_decay", 4).
+entropy_priority("missing_meta", 5).
+entropy_priority("orphan_label", 6).
+
 @doc(
   name: "potential_weight",
   doc: "Return the default score weight for each kind of unsettled-work signal, such as an undischarged obligation or a broken reference."
+).
+
+@doc(
+  name: "entropy_priority",
+  doc: "Return the deterministic tie-break order for unsettled-work signals when two reasons have the same score weight."
 ).
 
 @doc(
@@ -70,6 +83,19 @@ potential_subject(h) := entropy(h, source).
 potential(h, energy) :=
   potential_subject(h),
   energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
+
+@doc(
+  name: "primary_entropy",
+  doc: "Return the strongest reason a handle looks unsettled, so status can show one clear cause instead of repeating the same handle for every signal."
+).
+primary_entropy(h, source) :=
+  potential(h, energy),
+  (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
+    (source, weight, priority) :
+      entropy(h, source),
+      potential_weight(source, weight),
+      entropy_priority(source, priority)
+  }.
 
 @doc(
   name: "blocked",
