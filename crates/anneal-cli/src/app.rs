@@ -246,6 +246,7 @@ enum RuntimeCommand {
     Sources,
     Schema,
     Verbs,
+    Cookbook,
     Eval {
         query: String,
         explain: ExplainOptions,
@@ -278,6 +279,7 @@ enum HelpTopic {
     Sources,
     Schema,
     Verbs,
+    Cookbook,
     Eval,
 }
 
@@ -300,6 +302,7 @@ impl HelpTopic {
             "sources" => Self::Sources,
             "schema" => Self::Schema,
             "verbs" => Self::Verbs,
+            "cookbook" => Self::Cookbook,
             "eval" | "-e" | "--eval" => Self::Eval,
             _ => return None,
         })
@@ -475,6 +478,7 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 Usage: anneal [OPTIONS] describe [NAME]
 
 Describe a runtime primitive, predicate, or verb. Defaults to runtime.
+Use `anneal cookbook` when you need complete worked join patterns.
 
 Arguments:
   [NAME]                         Object to describe
@@ -507,6 +511,20 @@ Usage: anneal [OPTIONS] verbs
 List standard-library and project @verb declarations.
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+"
+            }
+            Self::Cookbook => {
+                "\
+Usage: anneal [OPTIONS] cookbook
+
+List worked Code Mode recipes for common corpus questions. Each recipe gives
+a plain-English question, a copyable eval query, a short explanation, and a
+when-to-use hint.
+
+Use this when `describe` tells you what one predicate means but you need a
+complete join pattern for an actual agent workflow.
+
+Output: readable recipe cards at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Eval => {
@@ -581,6 +599,7 @@ Discover before guessing:
   anneal examples search --format=text
   anneal verbs --format=text
   anneal sources --format=text
+  anneal cookbook --format=text
   anneal -e '? source_of(\"work\", file, lines).'
 
 Examples:
@@ -724,6 +743,10 @@ impl RuntimeCommand {
             "verbs" => {
                 ensure_no_args(rest, "verbs")?;
                 Ok(Self::Verbs)
+            }
+            "cookbook" => {
+                ensure_no_args(rest, "cookbook")?;
+                Ok(Self::Cookbook)
             }
             "-e" | "--eval" | "eval" => parse_eval(rest),
             other if other.starts_with('-') => bail!("unknown runtime option {other:?}"),
@@ -926,6 +949,7 @@ impl RuntimeSession {
             ),
             RuntimeCommand::Schema => self.run_verb("schema", RowView::Schema),
             RuntimeCommand::Verbs => self.run_verb("verbs", RowView::Verbs),
+            RuntimeCommand::Cookbook => self.run_verb("cookbook", RowView::Cookbook),
             RuntimeCommand::Eval {
                 query,
                 explain,
@@ -1145,6 +1169,7 @@ enum RowView {
     Sources,
     Schema,
     Verbs,
+    Cookbook,
     Eval,
     Verb { name: String },
 }
@@ -1166,6 +1191,7 @@ impl RowView {
             Self::Sources => format!("Sources ({count})"),
             Self::Schema => format!("Schema ({count})"),
             Self::Verbs => format!("Verbs ({count})"),
+            Self::Cookbook => format!("Cookbook ({count})"),
             Self::Eval => format!("Results ({count})"),
             Self::Verb { name } => format!("{name} ({count})"),
         };
@@ -1656,6 +1682,10 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         return write_areas_text(writer, rows);
     }
 
+    if *view == RowView::Cookbook {
+        return write_cookbook_text(writer, rows);
+    }
+
     if *view == RowView::Trend && rows.is_empty() {
         writeln!(writer, "No trend rows -- snapshot history is empty.")?;
         return Ok(());
@@ -1761,6 +1791,41 @@ fn write_areas_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn write_cookbook_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    writeln!(writer, "Cookbook ({})", rows.len())?;
+    if rows.is_empty() {
+        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        return Ok(());
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        let name = required_string(row, "name")?;
+        let question = required_string(row, "question")?;
+        let query = required_string(row, "query")?;
+        let doc = required_string(row, "doc")?;
+        let when = optional_string(row, "when")?.unwrap_or("");
+        let args = row
+            .fields
+            .get("args")
+            .map_or_else(|| "()".to_string(), display_value);
+        let source = optional_string(row, "source")?.unwrap_or("unknown");
+
+        writeln!(writer, "{:>2}. {name}", index + 1)?;
+        writeln!(writer, "    Question: {question}")?;
+        writeln!(writer, "    Query: {query}")?;
+        writeln!(writer, "    How: {doc}")?;
+        if !when.trim().is_empty() {
+            writeln!(writer, "    When: {when}")?;
+        }
+        writeln!(writer, "    Args: {args}")?;
+        writeln!(writer, "    Source: {source}")?;
+    }
     Ok(())
 }
 
@@ -2254,6 +2319,7 @@ fn standard_verb_name_for_explain(command: &str) -> Option<&'static str> {
         "sources" => "sources",
         "schema" => "schema",
         "verbs" => "verbs",
+        "cookbook" => "cookbook",
         _ => return None,
     })
 }
@@ -3421,6 +3487,79 @@ mod tests {
         assert!(!rows.iter().any(|row| {
             row.fields.get("h") == Some(&anneal_core::runtime::Value::String("a.md".to_string()))
         }));
+    }
+
+    #[test]
+    fn project_cookbook_recipes_are_visible_in_runtime_cookbook() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n").expect("write doc");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            @cookbook(
+              name: "project-health",
+              question: "How does this project define local health?",
+              query: "? diagnostic{severity: \"error\", subject: h}.",
+              doc: "Project-local diagnostic recipe.",
+              when: "Use before merging project-specific rule changes.",
+              args: []
+            ).
+            "#,
+        )
+        .expect("write project rules");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Cookbook)
+            .expect("cookbook runs");
+        let CommandOutput::Rows { rows, view, .. } = output else {
+            panic!("cookbook should emit rows");
+        };
+
+        assert_eq!(view, RowView::Cookbook);
+        assert!(rows.iter().any(|row| {
+            row.fields.get("name")
+                == Some(&anneal_core::runtime::Value::String(
+                    "project-health".to_string(),
+                ))
+        }));
+    }
+
+    #[test]
+    fn describe_cards_teach_common_join_patterns() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n").expect("write doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        for name in [
+            "diagnostic",
+            "search",
+            "upstream",
+            "downstream",
+            "top_work",
+            "blocked",
+            "entropy",
+            "undischarged",
+        ] {
+            let output = session
+                .run(RuntimeCommand::Describe {
+                    name: name.to_string(),
+                })
+                .unwrap_or_else(|err| panic!("describe {name} runs: {err}"));
+            let CommandOutput::Rows { rows, .. } = output else {
+                panic!("describe should emit rows");
+            };
+            assert!(
+                rows.iter().any(|row| {
+                    required_string(row, "doc").is_ok_and(|doc| doc.contains("Common joins:"))
+                }),
+                "describe {name} should teach common joins: {rows:?}"
+            );
+        }
     }
 
     #[test]

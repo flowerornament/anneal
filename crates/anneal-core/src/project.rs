@@ -162,7 +162,8 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
         | Statement::Import(_)
         | Statement::AtBlock { .. }
         | Statement::Verb(_)
-        | Statement::Predicate(_) => None,
+        | Statement::Predicate(_)
+        | Statement::Cookbook(_) => None,
     }
 }
 

@@ -31,6 +31,7 @@ pub(crate) enum PrimitivePredicate {
     Describe,
     SourceOf,
     Examples,
+    Cookbook,
     Sources,
 }
 
@@ -83,6 +84,7 @@ impl PrimitivePredicate {
         Self::Describe,
         Self::SourceOf,
         Self::Examples,
+        Self::Cookbook,
         Self::Sources,
     ];
 
@@ -120,6 +122,7 @@ impl PrimitivePredicate {
             "describe" => Some(Self::Describe),
             "source_of" => Some(Self::SourceOf),
             "examples" => Some(Self::Examples),
+            "cookbook" => Some(Self::Cookbook),
             "sources" => Some(Self::Sources),
             _ => None,
         }
@@ -156,6 +159,7 @@ impl PrimitivePredicate {
             Self::Describe => "describe",
             Self::SourceOf => "source_of",
             Self::Examples => "examples",
+            Self::Cookbook => "cookbook",
             Self::Sources => "sources",
         }
     }
@@ -273,6 +277,10 @@ impl PrimitivePredicate {
                 parameters: &["name", "example"],
                 sealed: true,
             },
+            Self::Cookbook => PrimitiveSignature {
+                parameters: &["name", "question", "query", "doc", "when", "args", "source"],
+                sealed: true,
+            },
             Self::Sources => PrimitiveSignature {
                 parameters: &["name", "recognizes", "capabilities", "doc"],
                 sealed: true,
@@ -313,6 +321,7 @@ impl PrimitivePredicate {
             | Self::Describe
             | Self::SourceOf
             | Self::Examples
+            | Self::Cookbook
             | Self::Sources => None,
         }
     }
@@ -372,6 +381,7 @@ impl PrimitivePredicate {
             | Self::Describe
             | Self::SourceOf
             | Self::Examples
+            | Self::Cookbook
             | Self::Sources => &[],
         }
     }

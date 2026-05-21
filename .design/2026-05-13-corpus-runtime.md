@@ -1192,8 +1192,8 @@ calls over the same signature registry: omitted fields behave as hidden
 wildcards and do not project output columns.
 
 **Definition CR-D79 (Directive reification).** `@verb`, `@doc`,
-`@predicate`,
-`include`, `import`, and `at` are syntax directives, not facts that
+`@predicate`, `@cookbook`, `include`, `import`, and `at` are syntax
+directives, not facts that
 participate in fixpoint evaluation. `@verb` and `@doc` are also
 reified into runtime introspection rows (`verbs`, `describe`,
 `source_of`, and `examples` when present) after load-order and
@@ -1224,6 +1224,20 @@ authoritative and required for constant-headed predicates such as
 language metadata. Pattern calls against predicates without a registered
 or inferred signature error with a recovery hint pointing at
 `@predicate`.
+
+**Definition CR-D100 (Cookbook recipes as language metadata).**
+`@cookbook(name: ..., question: ..., query: ..., doc: ..., when: ...,
+args: [...])` declares a worked recipe for a common corpus question.
+The runtime reifies these declarations into the sealed
+`cookbook(name, question, query, doc, when, args, source)` primitive and
+the standard `anneal cookbook` verb. Recipes are teaching metadata, not
+fixpoint facts: they must parse as Datalog query text, but they do not
+participate in rule evaluation until an agent copies or saves the query.
+Projects may add `@cookbook` declarations in `anneal.dl` using the same
+form as the prelude. Rationale: Code Mode needs curated, query-shaped
+examples for recurring workflows, and those examples should be
+discoverable through the same introspection surface as schema,
+describe, examples, and verbs.
 
 ### §18 Types and operators
 
@@ -3450,6 +3464,7 @@ config key.
 - CR-D97: Relation-pattern call syntax (§17)
 - CR-D98: Predicate signature registry (§17)
 - CR-D99: Diagnostic verb naming (§33)
+- CR-D100: Cookbook recipes as language metadata (§17)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

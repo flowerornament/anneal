@@ -73,6 +73,7 @@ START HERE:
     anneal schema             Queryable relations, predicates, and primitives
     anneal describe NAME      Documentation for one runtime name
     anneal examples NAME      Runnable examples for a runtime name
+    anneal cookbook           Worked recipes for common corpus questions
     anneal verbs              Saved query examples from the prelude/project
     anneal vocab              Corpus-local vocabulary to use in filters
     anneal sources            Linked adapters and capabilities
@@ -91,13 +92,14 @@ START HERE:
 QUERY EXAMPLES:
 
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.'
-  anneal -e '? search(\"conformance\", h, span, score, reason, field, low).'
-  anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
+  anneal -e '? search{query: \"conformance\", handle: h, score: score}.'
+  anneal -e '? diagnostic{severity: \"error\", subject: h}.'
 
   Use verbs and describe before guessing:
     anneal verbs --format=text
     anneal describe search --format=text
     anneal examples search --format=text
+    anneal cookbook --format=text
     anneal help eval
 
 ROOT DIRECTORY:
@@ -919,6 +921,13 @@ and points at work, blockers, and broken facts."
         long_about = "Show runnable examples for a primitive, predicate, stored relation, or verb."
     )]
     Examples,
+
+    /// Worked recipes for common corpus questions
+    #[command(
+        display_order = 67,
+        long_about = "List worked Code Mode recipes with copyable eval queries and join patterns."
+    )]
+    Cookbook,
 
     /// Datalog query over corpus facts
     #[command(
@@ -1761,6 +1770,7 @@ fn run() -> anyhow::Result<()> {
             | Command::Schema
             | Command::Verbs
             | Command::Examples
+            | Command::Cookbook
             | Command::Eval,
         ) => {
             anyhow::bail!(

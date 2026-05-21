@@ -2354,6 +2354,7 @@ impl GraphIndex {
             | PrimitivePredicate::Describe
             | PrimitivePredicate::SourceOf
             | PrimitivePredicate::Examples
+            | PrimitivePredicate::Cookbook
             | PrimitivePredicate::Sources => Vec::new(),
         }
     }
@@ -4306,6 +4307,7 @@ fn primitive_tuples(
         | PrimitivePredicate::Describe
         | PrimitivePredicate::SourceOf
         | PrimitivePredicate::Examples
+        | PrimitivePredicate::Cookbook
         | PrimitivePredicate::Sources => Ok(database.introspection.tuples(primitive, constraints)),
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream

@@ -7,7 +7,7 @@ use crate::verbs::VerbRegistry;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
 use super::ast::{
-    DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement,
+    CookbookDecl, DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement,
 };
 use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
@@ -101,6 +101,7 @@ impl IntrospectionIndex {
             PrimitivePredicate::Describe => self.describe_tuples(constraints),
             PrimitivePredicate::SourceOf => matching_tuples(&self.program.source_of, constraints),
             PrimitivePredicate::Examples => matching_tuples(&self.program.examples, constraints),
+            PrimitivePredicate::Cookbook => matching_tuples(&self.program.cookbook, constraints),
             PrimitivePredicate::Sources => matching_tuples(&self.source_rows, constraints),
             PrimitivePredicate::Upstream
             | PrimitivePredicate::Downstream
@@ -157,6 +158,7 @@ struct ProgramIntrospection {
     describe: Vec<DescribeEntry>,
     source_of: Vec<Tuple>,
     examples: Vec<Tuple>,
+    cookbook: Vec<Tuple>,
 }
 
 impl ProgramIntrospection {
@@ -184,6 +186,7 @@ struct IntrospectionBuilder {
     describe: BTreeSet<DescribeEntry>,
     source_of: BTreeSet<Tuple>,
     examples: BTreeSet<Tuple>,
+    cookbook: BTreeSet<Tuple>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +253,7 @@ impl IntrospectionBuilder {
             describe: existing.describe.iter().cloned().collect(),
             source_of: existing.source_of.iter().cloned().collect(),
             examples: existing.examples.iter().cloned().collect(),
+            cookbook: existing.cookbook.iter().cloned().collect(),
         }
     }
 
@@ -265,6 +269,8 @@ impl IntrospectionBuilder {
                     "? schema(name, kind, signature, determinism, provenance).",
                     "? describe(\"search\", doc).",
                     "? examples(\"search\", example).",
+                    "? cookbook(name, question, query, doc, when, args, source).",
+                    "anneal cookbook",
                 ],
                 ..DescribeCard::default()
             }),
@@ -272,6 +278,10 @@ impl IntrospectionBuilder {
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
             string_value(r#"? describe("runtime", doc)."#),
+        ]));
+        self.examples.insert(Tuple(vec![
+            string_value("runtime"),
+            string_value("? cookbook(name, question, query, doc, when, args, source)."),
         ]));
     }
 
@@ -330,6 +340,7 @@ impl IntrospectionBuilder {
                 summary: doc,
                 kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
+                common_joins: common_joins(name),
                 source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
                 examples: vec![example],
@@ -344,6 +355,7 @@ impl IntrospectionBuilder {
                 summary: doc,
                 kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
+                common_joins: common_joins(name),
                 source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
                 examples: vec![example],
@@ -387,6 +399,7 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::EnginePrimitive),
                     signature: Some(&call_signature(name, signature.parameters)),
                     relationship: primitive_relationship(*primitive),
+                    common_joins: common_joins(name),
                     source_label: Some("Implementation"),
                     source: Some("crates/anneal-core/src/runtime/primitives.rs"),
                     requires: primitive_requires(*primitive),
@@ -412,6 +425,7 @@ impl IntrospectionBuilder {
         let predicate_names = scanned.predicates.keys().cloned().collect::<BTreeSet<_>>();
         self.add_predicates(scanned.predicates, &scanned.docs);
         self.add_docs(&scanned.docs, &predicate_names);
+        self.add_cookbook(scanned.cookbook);
 
         let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
         for entry in registry.iter() {
@@ -429,6 +443,7 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::Verb),
                     signature: Some(&format!("anneal {}", entry.name())),
                     relationship: Some(verb_relationship(entry.name().as_str())),
+                    common_joins: common_joins(entry.name().as_str()),
                     source_label: Some("Verb source"),
                     source: Some(&format!(
                         "{}:{}",
@@ -546,6 +561,7 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::DerivedPredicate),
                     signature: Some(&signature),
                     relationship: predicate_relationship(&name),
+                    common_joins: common_joins(&name),
                     source_label: Some("Rule source"),
                     source: source.as_deref(),
                     requires: predicate_requires(&name),
@@ -557,6 +573,20 @@ impl IntrospectionBuilder {
         }
     }
 
+    fn add_cookbook(&mut self, recipes: Vec<CookbookInfo>) {
+        for recipe in recipes {
+            self.cookbook.insert(Tuple(vec![
+                string_value(&recipe.name),
+                string_value(&recipe.question),
+                string_value(&recipe.query),
+                string_value(&recipe.doc),
+                string_value(&recipe.when),
+                list_value(recipe.args.iter().map(String::as_str)),
+                string_value(&recipe.source),
+            ]));
+        }
+    }
+
     fn finish(self) -> ProgramIntrospection {
         ProgramIntrospection {
             schema: self.schema.into_iter().collect(),
@@ -565,6 +595,7 @@ impl IntrospectionBuilder {
             describe: self.describe.into_iter().collect(),
             source_of: self.source_of.into_iter().collect(),
             examples: self.examples.into_iter().collect(),
+            cookbook: self.cookbook.into_iter().collect(),
         }
     }
 }
@@ -760,6 +791,44 @@ impl DocInfo {
     }
 }
 
+#[derive(Clone, Debug)]
+struct CookbookInfo {
+    name: String,
+    question: String,
+    query: String,
+    doc: String,
+    when: String,
+    args: Vec<String>,
+    source: String,
+}
+
+impl CookbookInfo {
+    fn from_decl(decl: &CookbookDecl) -> Option<Self> {
+        let name = decl.string_arg("name")?.to_string();
+        let question = decl.string_arg("question")?.to_string();
+        let query = decl.string_arg("query")?.to_string();
+        let doc = decl.string_arg("doc")?.to_string();
+        let when = decl.string_arg("when").unwrap_or("").to_string();
+        let args = decl
+            .string_list_arg("args")
+            .unwrap_or_default()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let location = decl.location().clone();
+        let source = format!("{}:{}", location.source_name, source_line_text(&location));
+        Some(Self {
+            name,
+            question,
+            query,
+            doc,
+            when,
+            args,
+            source,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ParameterName {
     Unknown,
@@ -787,6 +856,7 @@ fn merge_parameter_names(existing: &mut [ParameterName], observed: &[ParameterNa
 struct ProgramScanner {
     docs: BTreeMap<String, DocInfo>,
     predicates: BTreeMap<String, PredicateInfo>,
+    cookbook: Vec<CookbookInfo>,
 }
 
 impl ProgramScanner {
@@ -832,6 +902,11 @@ impl ProgramScanner {
                             .entry(name.to_string())
                             .and_modify(|info| info.apply_decl(decl))
                             .or_insert_with(|| PredicateInfo::from_decl(name, decl));
+                    }
+                }
+                Statement::Cookbook(decl) => {
+                    if let Some(recipe) = CookbookInfo::from_decl(decl) {
+                        self.cookbook.push(recipe);
                     }
                 }
                 Statement::Query(_)
@@ -957,6 +1032,7 @@ struct DescribeCard<'a> {
     kind: Option<DescribeKind>,
     signature: Option<&'a str>,
     relationship: Option<&'a str>,
+    common_joins: &'a [&'a str],
     source_label: Option<&'a str>,
     source: Option<&'a str>,
     requires: &'a [&'a str],
@@ -978,6 +1054,9 @@ fn describe_card(card: DescribeCard<'_>) -> String {
     }
     if let Some(relationship) = card.relationship {
         lines.push(format!("Relationship: {relationship}"));
+    }
+    if !card.common_joins.is_empty() {
+        lines.push(format!("Common joins: {}", card.common_joins.join("; ")));
     }
     lines.extend(card.extra_lines);
     for requirement in card.requires {
@@ -1082,6 +1161,9 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
             "Return source file and line information for queryable runtime names."
         }
         PrimitivePredicate::Examples => "Return worked query examples for runtime names.",
+        PrimitivePredicate::Cookbook => {
+            "Return longer worked recipes for common corpus questions: question, query, explanation, when-to-use hint, arguments, and source."
+        }
         PrimitivePredicate::Sources => {
             "List linked adapters with recognition patterns, capabilities, and documentation."
         }
@@ -1126,6 +1208,7 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
         | PrimitivePredicate::Describe
         | PrimitivePredicate::SourceOf
         | PrimitivePredicate::Examples
+        | PrimitivePredicate::Cookbook
         | PrimitivePredicate::Sources => &[],
     }
 }
@@ -1149,6 +1232,9 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
         PrimitivePredicate::Examples => {
             Some("The `examples` verb projects this primitive directly.")
         }
+        PrimitivePredicate::Cookbook => {
+            Some("The `cookbook` verb projects this primitive as worked Code Mode recipes.")
+        }
         PrimitivePredicate::Sources => Some("The `sources` verb projects this primitive directly."),
         _ => None,
     }
@@ -1159,8 +1245,9 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Search => &["search", "context", "read", "examples"],
         PrimitivePredicate::Read | PrimitivePredicate::ReadFull => &["read", "*content", "*span"],
         PrimitivePredicate::Schema => &["describe", "examples", "verbs"],
-        PrimitivePredicate::Describe => &["schema", "examples", "verbs"],
-        PrimitivePredicate::Examples => &["describe", "schema", "verbs"],
+        PrimitivePredicate::Describe => &["schema", "examples", "cookbook", "verbs"],
+        PrimitivePredicate::Examples => &["describe", "schema", "verbs", "cookbook"],
+        PrimitivePredicate::Cookbook => &["examples", "describe", "schema"],
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact => {
@@ -1227,6 +1314,48 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
             "Used by the `areas` verb; picks the strongest unsettled-work handles inside each area.",
         ),
         _ => None,
+    }
+}
+
+fn common_joins(name: &str) -> &'static [&'static str] {
+    match name {
+        "diagnostic" | "diagnostics" | "broken" => &[
+            "`diagnostic{subject: h}, area_of{h: h, area: \"X\"}` for area filtering",
+            "`diagnostic{subject: h}, *handle{id: h, kind: \"file\"}` for file-handle diagnostics",
+        ],
+        "search" => &[
+            "`search{query: \"text\", handle: h, score: score}, *handle{id: h, file: file}` to add file metadata",
+            "`search{query: \"text\", handle: h}, read{handle: h, budget: 4000, text: text}` to read winners",
+        ],
+        "upstream" => &[
+            "`upstream{h: h, anc: anc}, diagnostic{subject: anc}` to find broken upstream context",
+            "`upstream{h: h, anc: anc}, *handle{id: anc, kind: \"file\"}` to keep upstream files only",
+        ],
+        "downstream" => &[
+            "`downstream{h: h, desc: desc}, diagnostic{subject: desc}` to find affected diagnostics",
+            "`downstream{h: h, desc: desc}, area_of{h: desc, area: area}` to group dependents by area",
+        ],
+        "top_work" | "work" => &[
+            "`top_work(h, energy), diagnostic{subject: h}` to see what blocks the top work",
+            "`top_work(h, energy), area_of{h: h, area: \"X\"}` for area-scoped work",
+        ],
+        "blocked" => &[
+            "`blocked(h), entropy(h, source)` to see the unsettled signal",
+            "`blocked(h), area_of{h: h, area: \"X\"}` for area-scoped blockers",
+        ],
+        "entropy" => &[
+            "`entropy(h, source), potential(h, energy)` to see weighted convergence reasons",
+            "`entropy(h, source), diagnostic{subject: h}` to connect signals to diagnostics",
+        ],
+        "undischarged" => &[
+            "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
+            "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
+        ],
+        "area_of" | "areas" | "area_health" | "area_frontier" => &[
+            "`area_of{h: h, area: \"X\"}, top_work(h, energy)` for area-scoped work",
+            "`area_of{h: h, area: \"X\"}, diagnostic{subject: h}` for area-scoped diagnostics",
+        ],
+        _ => &[],
     }
 }
 
@@ -1372,6 +1501,9 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Predicates => Some("? predicates(name, doc, file, lines)."),
         PrimitivePredicate::Verbs => Some("? verbs(name, query, doc, output_schema)."),
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
+        PrimitivePredicate::Cookbook => {
+            Some("? cookbook(name, question, query, doc, when, args, source).")
+        }
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled

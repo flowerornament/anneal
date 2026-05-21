@@ -303,7 +303,8 @@ fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeS
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
-        | Statement::Predicate(_) => {}
+        | Statement::Predicate(_)
+        | Statement::Cookbook(_) => {}
     }
 }
 
@@ -343,7 +344,8 @@ fn qualify_statement(
         | Statement::Include(_)
         | Statement::Import(_)
         | Statement::Verb(_)
-        | Statement::Doc(_) => {}
+        | Statement::Doc(_)
+        | Statement::Cookbook(_) => {}
     }
 }
 
