@@ -234,10 +234,15 @@ The eval form is shorter than the equivalent flag chain in every case,
 
 **Gate:**
 
-- Both observations expressible cleanly:
-  `anneal -e '? diagnostic{area: "language"}.'` returns rows.
+- Both observations expressible cleanly. `area` is not a `diagnostic`
+  field, so the area-filtered case uses the `area_of` join:
+  `anneal -e '? diagnostic{subject: h}, area_of{h: h, area: "language"}.'` returns rows.
   `anneal -e '? diagnostic{file: "document.md"}.'` returns rows.
-- Pattern calls work on every predicate listed by `anneal schema`.
+- Pattern calls work on every predicate listed by `anneal schema` whose
+  signature is registered — explicit metadata present, or unambiguous
+  rule-head inference succeeded. Predicates falling through to `Unknown` /
+  `Ambiguous` error with a clear hint pointing at the explicit-metadata
+  path (CR-D98).
 - Tests cover all error paths.
 - `just check` green.
 
@@ -271,8 +276,8 @@ arguments, not workflow filters.
 - `anneal check` is an alias for `anneal diagnostics --gate` (hidden from
   default help).
 - `anneal broken` continues to return errors only.
-- describe/help/cookbook teach `diagnostic{...}` pattern composition for
-  filtered cases.
+- `describe` and `anneal help eval` teach the `diagnostic{...}` pattern
+  composition for filtered cases. (Full cookbook recipes land in Slice 3.)
 
 ### Slice 3 — Describe + cookbook learning pass
 
@@ -369,23 +374,29 @@ saved view. `check` is the hidden gate alias `diagnostics --gate`. No
 `--area`/`--code`/`--severity`/`--file` typed flags. Filtering is via
 eval pattern calls. Resolves D1 from the converged compatibility audit.
 
-## Open questions
+## Resolved questions (codex review, 2026-05-21)
 
-- **Q1.** Should `@predicate` be a new annotation or should we extend
-  `@doc` with optional `args: [...]`? Codex leans new annotation;
-  separation of concerns. Worth a five-line decision before Slice 1
-  lands.
-- **Q2.** Should brace pattern calls support **comparisons inside the
-  brace**, e.g., `diagnostic{severity: "error" or "warning"}` or
-  `diagnostic{line: l, l > 100}`? Probably no for v0.12 — keep brace
-  semantics tight; comparisons live in the surrounding query body. But
-  worth stating explicitly.
-- **Q3.** Cookbook extensibility format. Project `@cookbook(...)`
-  declarations in `anneal.dl` is one path; loose `.cookbook.dl` files is
-  another. Decide before Slice 3.
-- **Q4.** `anneal save` and verb-name collisions: should a project verb
-  silently override a prelude verb of the same name, or require
-  `--force`? Lean require `--force` with a warning.
+- **Q1 → `@predicate` declaration, not `@doc(args:)`.** Signatures are
+  executable language metadata; docs are teaching prose. They share
+  surface (introspection) but not contract. A new `@predicate(name: ...,
+  args: [...])` annotation keeps the boundary clean and lets `@doc` stay
+  prose-only.
+- **Q2 → No comparisons inside braces in v0.12.** Braces mean named
+  equality/pattern only — `predicate{field: term}` binds or filters by
+  equality with `term`. Comparisons (`l > 100`, range, regex, etc.) stay
+  as body atoms in the surrounding query. Keeps brace semantics tight
+  and parsing unambiguous. Future versions may revisit if evidence
+  accumulates.
+- **Q3 → Project `@cookbook(...)` in `anneal.dl`.** First version keeps
+  the extension path inside the language. Loose `.cookbook.dl` files are
+  deferred until cookbook volume evidence demands separate files.
+  Consistent with how `@verb` and `@doc` already live in `anneal.dl`.
+- **Q4 → Require `--force` to override verb-name collisions.** A project
+  verb that collides with a prelude verb (by name) errors at load with
+  the conflicting source locations clearly shown, unless `--force` is
+  passed. Silent override is wrong: it teaches projects that they can
+  invisibly redefine prelude semantics, which breaks the cold-agent
+  expectation that prelude vocabulary is stable.
 
 ## What this is NOT
 
