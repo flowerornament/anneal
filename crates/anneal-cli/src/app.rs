@@ -56,6 +56,9 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
             return HelpTopic::parse(topic).is_some()
                 || (!topic.starts_with('-') && !is_legacy_surface_command(topic));
         }
+        if arg == "check" {
+            return true;
+        }
         return !arg.starts_with('-') && !is_legacy_surface_command(arg);
     }
     true
@@ -105,7 +108,12 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
     if let Some(message) = output.empty_rows_diagnostic(mode) {
         writeln!(io::stderr().lock(), "{message}")?;
     }
-    output.write(stdout.lock(), mode)
+    let gate_failed = output.gate_failed();
+    output.write(stdout.lock(), mode)?;
+    if gate_failed {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -223,6 +231,11 @@ enum RuntimeCommand {
     Blocked {
         handle: String,
     },
+    Diagnostics {
+        gate: bool,
+        args: Vec<String>,
+    },
+    Check,
     Broken,
     Areas,
     Trend,
@@ -256,6 +269,7 @@ enum HelpTopic {
     Handle,
     Work,
     Blocked,
+    Diagnostics,
     Broken,
     Areas,
     Trend,
@@ -277,6 +291,7 @@ impl HelpTopic {
             "handle" | "H" => Self::Handle,
             "work" => Self::Work,
             "blocked" => Self::Blocked,
+            "diagnostics" | "check" => Self::Diagnostics,
             "broken" => Self::Broken,
             "areas" => Self::Areas,
             "trend" => Self::Trend,
@@ -392,11 +407,33 @@ For a corpus-wide blocked list, use `anneal status` or `anneal work`.
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
+            Self::Diagnostics => {
+                "\
+Usage: anneal [OPTIONS] diagnostics [--gate]
+       anneal [OPTIONS] check
+
+Show the full diagnostic stream from the checks prelude: errors, warnings,
+suggestions, and informational facts.
+
+Options:
+      --gate                    Exit 1 if any error-severity diagnostic exists
+
+Filtering is compositional. Use eval pattern calls instead of one-off flags:
+  anneal -e '? diagnostic{file: \"document.md\", code: code, severity: severity, subject: h}.'
+  anneal -e '? diagnostic{subject: h, code: code}, area_of{h: h, area: \"language\"}.'
+  anneal -e '? diagnostic{severity: \"warning\", code: code, subject: h, evidence: why}.'
+
+`anneal check` is a hidden CI-friendly alias for `anneal diagnostics --gate`.
+
+Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+"
+            }
             Self::Broken => {
                 "\
 Usage: anneal [OPTIONS] broken
 
-Show diagnostic blockers from the standard-library checks prelude.
+Show error diagnostics only. For the full stream use `anneal diagnostics`;
+for filtered questions use `anneal -e '? diagnostic{...}.'`.
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -642,6 +679,8 @@ impl RuntimeCommand {
                 )?
                 .to_string(),
             }),
+            "diagnostics" => Ok(parse_diagnostics(rest)),
+            "check" => parse_check(rest),
             "broken" => {
                 ensure_no_args(rest, "broken")?;
                 Ok(Self::Broken)
@@ -865,6 +904,8 @@ impl RuntimeSession {
                 ExplainOptions::disabled(),
                 RowView::Blocked,
             ),
+            RuntimeCommand::Diagnostics { gate, args } => self.run_diagnostics(gate, &args),
+            RuntimeCommand::Check => self.run_check_gate(),
             RuntimeCommand::Broken => self.run_verb("broken", RowView::Broken),
             RuntimeCommand::Areas => self.run_verb("areas", RowView::Areas),
             RuntimeCommand::Trend => self.run_verb("trend", RowView::Trend),
@@ -876,10 +917,7 @@ impl RuntimeSession {
                     !output.rows.is_empty(),
                     "unknown runtime name {name:?}; use `anneal verbs`, `anneal schema`, or `anneal describe runtime`"
                 );
-                Ok(CommandOutput::Rows {
-                    rows: output.rows,
-                    view: RowView::Describe,
-                })
+                Ok(CommandOutput::rows(output.rows, RowView::Describe))
             }
             RuntimeCommand::Sources => self.run_query(
                 SourcesCommand.datalog(),
@@ -897,10 +935,7 @@ impl RuntimeSession {
                 if let Some(limit) = limit {
                     output.rows.truncate(limit);
                 }
-                Ok(CommandOutput::Rows {
-                    rows: output.rows,
-                    view: RowView::Eval,
-                })
+                Ok(CommandOutput::rows(output.rows, RowView::Eval))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
@@ -912,7 +947,33 @@ impl RuntimeSession {
         self.run_query(plan.query_source(), ExplainOptions::disabled(), view)
     }
 
+    fn run_diagnostics(&self, gate: bool, args: &[String]) -> Result<CommandOutput> {
+        let output =
+            self.run_dynamic_verb_with_view("diagnostics", args, Some(RowView::Diagnostics))?;
+        let gate_failed = gate && self.error_diagnostics_exist()?;
+        Ok(output.with_gate_failed(gate_failed))
+    }
+
+    fn run_check_gate(&self) -> Result<CommandOutput> {
+        let output = self.run_verb("broken", RowView::Broken)?;
+        let gate_failed = output.has_rows();
+        Ok(output.with_gate_failed(gate_failed))
+    }
+
+    fn error_diagnostics_exist(&self) -> Result<bool> {
+        Ok(self.run_verb("broken", RowView::Broken)?.has_rows())
+    }
+
     fn run_dynamic_verb(&self, name: &str, args: &[String]) -> Result<CommandOutput> {
+        self.run_dynamic_verb_with_view(name, args, None)
+    }
+
+    fn run_dynamic_verb_with_view(
+        &self,
+        name: &str,
+        args: &[String],
+        view: Option<RowView>,
+    ) -> Result<CommandOutput> {
         let entry = self.registry.resolve_for_actor(name, &self.actor)?;
         let invocation = DynamicVerbInvocation::parse(entry, args)?;
         if invocation.help {
@@ -924,12 +985,12 @@ impl RuntimeSession {
         if let Some(rows) = invocation.rows {
             output.rows.truncate(rows);
         }
-        Ok(CommandOutput::Rows {
-            rows: output.rows,
-            view: RowView::Verb {
+        Ok(CommandOutput::rows(
+            output.rows,
+            view.unwrap_or_else(|| RowView::Verb {
                 name: plan.name().to_string(),
-            },
-        })
+            }),
+        ))
     }
 
     fn run_status(&self) -> Result<CommandOutput> {
@@ -945,10 +1006,7 @@ impl RuntimeSession {
         view: RowView,
     ) -> Result<CommandOutput> {
         let output = self.eval(query, explain)?;
-        Ok(CommandOutput::Rows {
-            rows: output.rows,
-            view,
-        })
+        Ok(CommandOutput::rows(output.rows, view))
     }
 
     fn eval(&self, query_source: &str, explain: ExplainOptions) -> Result<QueryOutput> {
@@ -984,20 +1042,58 @@ fn runtime_config_facts(
 }
 
 enum CommandOutput {
-    Rows { rows: Vec<Row>, view: RowView },
+    Rows {
+        rows: Vec<Row>,
+        view: RowView,
+        gate_failed: bool,
+    },
     Status(Vec<Row>),
     Context(ContextOutput),
     Text(String),
 }
 
 impl CommandOutput {
+    const fn rows(rows: Vec<Row>, view: RowView) -> Self {
+        Self::Rows {
+            rows,
+            view,
+            gate_failed: false,
+        }
+    }
+
+    fn with_gate_failed(self, gate_failed: bool) -> Self {
+        match self {
+            Self::Rows { rows, view, .. } => Self::Rows {
+                rows,
+                view,
+                gate_failed,
+            },
+            other => other,
+        }
+    }
+
+    fn has_rows(&self) -> bool {
+        match self {
+            Self::Rows { rows, .. } | Self::Status(rows) => !rows.is_empty(),
+            Self::Context(_) | Self::Text(_) => false,
+        }
+    }
+
+    const fn gate_failed(&self) -> bool {
+        match self {
+            Self::Rows { gate_failed, .. } => *gate_failed,
+            Self::Status(_) | Self::Context(_) | Self::Text(_) => false,
+        }
+    }
+
     fn empty_rows_diagnostic(&self, mode: OutputMode) -> Option<&'static str> {
         match (mode, self) {
             (
                 OutputMode::Human,
                 Self::Rows {
                     rows,
-                    view: RowView::Trend | RowView::Handle { .. },
+                    view: RowView::Trend | RowView::Handle { .. } | RowView::Broken,
+                    ..
                 },
             ) if rows.is_empty() => None,
             (_, Self::Rows { rows, .. })
@@ -1014,7 +1110,7 @@ impl CommandOutput {
         match (mode, self) {
             (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
             (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
-            (OutputMode::Human, Self::Rows { rows, view }) => {
+            (OutputMode::Human, Self::Rows { rows, view, .. }) => {
                 write_rows_text(writer, &rows, &view)?;
             }
             (
@@ -1022,6 +1118,7 @@ impl CommandOutput {
                 Self::Rows {
                     rows,
                     view: RowView::Describe,
+                    ..
                 },
             ) => write_describe_text(writer, &rows)?,
             (_, Self::Status(rows) | Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
@@ -1039,6 +1136,7 @@ enum RowView {
     Handle { handle: String },
     Work,
     Blocked,
+    Diagnostics,
     Broken,
     Areas,
     Trend,
@@ -1059,6 +1157,7 @@ impl RowView {
             Self::Handle { handle } => format!("Handle {handle} ({count} edges)"),
             Self::Work => format!("Work ({count})"),
             Self::Blocked => format!("Blocked ({count})"),
+            Self::Diagnostics => format!("Diagnostics ({count})"),
             Self::Broken => format!("Broken ({count})"),
             Self::Areas => format!("Areas ({count})"),
             Self::Trend => format!("Trend ({count})"),
@@ -2055,6 +2154,30 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
     })
 }
 
+fn parse_diagnostics(args: &[String]) -> RuntimeCommand {
+    let mut gate = false;
+    let mut verb_args = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--gate" => gate = true,
+            value => verb_args.push(value.to_string()),
+        }
+    }
+    RuntimeCommand::Diagnostics {
+        gate,
+        args: verb_args,
+    }
+}
+
+fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
+    if args.is_empty() {
+        return Ok(RuntimeCommand::Check);
+    }
+    bail!(
+        "check is a hidden gate alias for `anneal diagnostics --gate` and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
+    )
+}
+
 fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut explain = ExplainOptions::disabled();
@@ -2418,14 +2541,23 @@ mod tests {
         assert!(!should_handle_args(&os(&[
             "anneal", "--root", ".design", "health"
         ])));
-        assert!(!should_handle_args(&os(&[
+        assert!(should_handle_args(&os(&["anneal", "diagnostics"])));
+        assert!(should_handle_args(&os(&[
+            "anneal",
+            "--format=text",
+            "diagnostics",
+            "--gate"
+        ])));
+        assert!(should_handle_args(&os(&["anneal", "help", "diagnostics"])));
+        assert!(should_handle_args(&os(&["anneal", "check"])));
+        assert!(should_handle_args(&os(&[
             "anneal", "--area", "compiler", "check"
         ])));
         assert!(!should_handle_args(&os(&["anneal", "init"])));
         assert!(!should_handle_args(&os(&["anneal", "prime"])));
-        assert!(!should_handle_args(&os(&["anneal", "help", "check"])));
+        assert!(should_handle_args(&os(&["anneal", "help", "check"])));
         assert!(!should_handle_args(&os(&["anneal", "--help"])));
-        assert!(!should_handle_args(&os(&["anneal", "check", "--json"])));
+        assert!(should_handle_args(&os(&["anneal", "check", "--json"])));
         assert!(!should_handle_args(&os(&["anneal", "--mcp"])));
     }
 
@@ -2485,6 +2617,65 @@ mod tests {
                 include_low_confidence: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_diagnostics_and_gate_alias() {
+        let parsed = Invocation::parse(os(&["anneal", "diagnostics"])).expect("parse diagnostics");
+        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
+            panic!("expected diagnostics command");
+        };
+        assert!(!gate);
+        assert!(args.is_empty());
+
+        let parsed =
+            Invocation::parse(os(&["anneal", "diagnostics", "--gate"])).expect("parse gate");
+        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
+            panic!("expected diagnostics command");
+        };
+        assert!(gate);
+        assert!(args.is_empty());
+
+        let parsed = Invocation::parse(os(&[
+            "anneal",
+            "diagnostics",
+            "--gate",
+            "--explain-first=1",
+        ]))
+        .expect("parse gate with explain");
+        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
+            panic!("expected diagnostics command");
+        };
+        assert!(gate);
+        assert_eq!(args, ["--explain-first=1"]);
+
+        let parsed = Invocation::parse(os(&["anneal", "check"])).expect("parse check");
+        assert_eq!(parsed.command, RuntimeCommand::Check);
+
+        let parsed = Invocation::parse(os(&["anneal", "check", "--json"])).expect("parse check");
+        assert_eq!(parsed.command, RuntimeCommand::Check);
+        assert_eq!(parsed.output, OutputPreference::Json);
+
+        let err = Invocation::parse(os(&["anneal", "check", "--active-only"]))
+            .expect_err("check no longer accepts compatibility filters");
+        assert!(
+            err.to_string().contains("check is a hidden gate alias"),
+            "{err}"
+        );
+
+        let parsed = Invocation::parse(os(&["anneal", "diagnostics", "--area=language"]))
+            .expect("diagnostics lets dynamic verb parsing report argument errors");
+        let RuntimeCommand::Diagnostics { args, .. } = parsed.command else {
+            panic!("expected diagnostics command");
+        };
+        assert_eq!(args, ["--area=language"]);
+
+        let parsed = Invocation::parse(os(&["anneal", "diagnostics", "anneal-spec.md"]))
+            .expect("diagnostics lets dynamic verb parsing report positional errors");
+        let RuntimeCommand::Diagnostics { args, .. } = parsed.command else {
+            panic!("expected diagnostics command");
+        };
+        assert_eq!(args, ["anneal-spec.md"]);
     }
 
     #[test]
@@ -2561,6 +2752,11 @@ mod tests {
             ("context", HelpTopic::Context, "Output: human summary"),
             ("search", HelpTopic::Search, "Output: readable rows"),
             ("read", HelpTopic::Read, "Output: readable rows"),
+            (
+                "diagnostics",
+                HelpTopic::Diagnostics,
+                "`anneal check` is a hidden CI-friendly alias",
+            ),
             ("vocab", HelpTopic::Vocab, "Output: readable rows"),
         ] {
             let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
@@ -2785,37 +2981,31 @@ mod tests {
     #[test]
     fn empty_row_outputs_report_zero_rows_to_stderr() {
         assert_eq!(
-            CommandOutput::Rows {
-                rows: Vec::new(),
-                view: RowView::Eval,
-            }
-            .empty_rows_diagnostic(OutputMode::Json),
+            CommandOutput::rows(Vec::new(), RowView::Eval).empty_rows_diagnostic(OutputMode::Json),
             Some(EMPTY_ROWS_DIAGNOSTIC)
         );
         assert_eq!(
-            CommandOutput::Rows {
-                rows: Vec::new(),
-                view: RowView::Eval,
-            }
-            .empty_rows_diagnostic(OutputMode::Human),
+            CommandOutput::rows(Vec::new(), RowView::Eval).empty_rows_diagnostic(OutputMode::Human),
             Some(EMPTY_ROWS_DIAGNOSTIC)
         );
         assert_eq!(
-            CommandOutput::Rows {
-                rows: Vec::new(),
-                view: RowView::Trend,
-            }
+            CommandOutput::rows(Vec::new(), RowView::Trend)
+                .empty_rows_diagnostic(OutputMode::Human),
+            None
+        );
+        assert_eq!(
+            CommandOutput::rows(
+                Vec::new(),
+                RowView::Handle {
+                    handle: "missing.md".to_string(),
+                },
+            )
             .empty_rows_diagnostic(OutputMode::Human),
             None
         );
         assert_eq!(
-            CommandOutput::Rows {
-                rows: Vec::new(),
-                view: RowView::Handle {
-                    handle: "missing.md".to_string(),
-                },
-            }
-            .empty_rows_diagnostic(OutputMode::Human),
+            CommandOutput::rows(Vec::new(), RowView::Broken)
+                .empty_rows_diagnostic(OutputMode::Human),
             None
         );
         assert_eq!(
@@ -2825,6 +3015,11 @@ mod tests {
         assert_eq!(
             CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
             None
+        );
+        assert_eq!(
+            CommandOutput::rows(Vec::new(), RowView::Diagnostics)
+                .empty_rows_diagnostic(OutputMode::Json),
+            Some(EMPTY_ROWS_DIAGNOSTIC)
         );
     }
 
@@ -2917,14 +3112,14 @@ mod tests {
 
     #[test]
     fn generic_rows_human_render_is_readable() {
-        let output = CommandOutput::Rows {
-            rows: vec![row(&[
+        let output = CommandOutput::rows(
+            vec![row(&[
                 ("category", Value::String("status".to_string())),
                 ("value", Value::String("open question".to_string())),
                 ("count", Value::Number(NumberValue::Int(2))),
             ])],
-            view: RowView::Eval,
-        };
+            RowView::Eval,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -2940,8 +3135,8 @@ mod tests {
 
     #[test]
     fn areas_human_render_groups_health_and_frontier() {
-        let output = CommandOutput::Rows {
-            rows: vec![
+        let output = CommandOutput::rows(
+            vec![
                 row(&[
                     ("section", Value::String("frontier".to_string())),
                     ("area", Value::String("compiler".to_string())),
@@ -2965,8 +3160,8 @@ mod tests {
                     ("why", Value::Null),
                 ]),
             ],
-            view: RowView::Areas,
-        };
+            RowView::Areas,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -2983,8 +3178,8 @@ mod tests {
 
     #[test]
     fn read_human_render_shows_content_blocks() {
-        let output = CommandOutput::Rows {
-            rows: vec![row(&[
+        let output = CommandOutput::rows(
+            vec![row(&[
                 ("span_id", Value::String("plan.md#full".to_string())),
                 ("start_line", Value::Number(NumberValue::Int(10))),
                 ("end_line", Value::Number(NumberValue::Int(12))),
@@ -2994,8 +3189,8 @@ mod tests {
                     Value::String("Release blocker details.\nNext line.".to_string()),
                 ),
             ])],
-            view: RowView::Read,
-        };
+            RowView::Read,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -3010,8 +3205,8 @@ mod tests {
 
     #[test]
     fn describe_human_render_shows_all_doc_cards() {
-        let output = CommandOutput::Rows {
-            rows: vec![
+        let output = CommandOutput::rows(
+            vec![
                 row(&[(
                     "doc",
                     Value::String(
@@ -3023,8 +3218,8 @@ mod tests {
                     Value::String("Search command surface.\nKind: verb.".to_string()),
                 )]),
             ],
-            view: RowView::Describe,
-        };
+            RowView::Describe,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -3040,13 +3235,13 @@ mod tests {
 
     #[test]
     fn describe_auto_json_mode_still_renders_teaching_cards() {
-        let output = CommandOutput::Rows {
-            rows: vec![row(&[(
+        let output = CommandOutput::rows(
+            vec![row(&[(
                 "doc",
                 Value::String("Search command surface.\nKind: verb.".to_string()),
             )])],
-            view: RowView::Describe,
-        };
+            RowView::Describe,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -3059,13 +3254,13 @@ mod tests {
 
     #[test]
     fn describe_explicit_json_preserves_ndjson() {
-        let output = CommandOutput::Rows {
-            rows: vec![row(&[(
+        let output = CommandOutput::rows(
+            vec![row(&[(
                 "doc",
                 Value::String("Search command surface.\nKind: verb.".to_string()),
             )])],
-            view: RowView::Describe,
-        };
+            RowView::Describe,
+        );
         let mut rendered = Vec::new();
 
         output
@@ -3081,10 +3276,7 @@ mod tests {
 
     #[test]
     fn trend_human_empty_render_is_specific() {
-        let output = CommandOutput::Rows {
-            rows: Vec::new(),
-            view: RowView::Trend,
-        };
+        let output = CommandOutput::rows(Vec::new(), RowView::Trend);
         let mut rendered = Vec::new();
 
         output
@@ -3259,7 +3451,7 @@ mod tests {
                 args: vec!["v0.11".to_string()],
             })
             .expect("project verb runs");
-        let CommandOutput::Rows { rows, view } = output else {
+        let CommandOutput::Rows { rows, view, .. } = output else {
             panic!("project verb should emit rows");
         };
         assert_eq!(

@@ -634,6 +634,7 @@ mod tests {
         "work",
         "areas",
         "blocked",
+        "diagnostics",
         "trend",
         "broken",
         "vocab",

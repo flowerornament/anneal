@@ -2189,6 +2189,7 @@ Projects override or extend any.
 | `anneal work` | where should I work | `top_work(h, e)` |
 | `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
+| `anneal diagnostics` | what is unhealthy | full `diagnostic(...)` stream |
 | `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
 | `anneal vocab` | what words does this corpus use | observed statuses, edge kinds, namespaces, metadata keys |
 
@@ -2206,6 +2207,18 @@ runtime must not infer lattice semantics from the verb's rows.
 Rationale: cold agents need to discover the corpus's actual words
 before writing Datalog filters, and this should take one compact
 command rather than a sequence of schema guesses.
+
+**Definition CR-D99 (Diagnostic verb naming).** `diagnostics` is the
+canonical runtime verb for the full diagnostic stream. `broken` remains
+the error-only saved view. `check` is a hidden gate alias for
+`diagnostics --gate`: it is callable for CI and pre-commit scripts, but
+does not appear as a peer noun in default help. `diagnostics`, `broken`,
+and `check` do not grow typed filter flags such as `--area`, `--code`,
+`--severity`, or `--file`; filtered diagnostic workflows use relation
+pattern calls such as `diagnostic{file: "x.md"}` and joins such as
+`diagnostic{subject: h, code: code}, area_of{h: h, area: "language"}`.
+Rationale: preserve the gate workflow while keeping diagnostic filtering
+in Code Mode rather than rebuilding flag soup.
 
 **Definition CR-D95 (Status arrival projection).** `anneal status` is
 the default arrival projection for a cold agent. The saved verb itself
@@ -2394,7 +2407,7 @@ commands while that boundary exists.
 | `--explain-first=N` | include `_derivation` on first N records | runtime verbs / `eval` |
 | `--explain-all` | include `_derivation` on every record | runtime verbs / `eval` |
 | `--explain-depth=N` | derivation expansion depth (default 5) | runtime verbs / `eval` |
-| `--gate` | exit 1 if any results | `broken` |
+| `--gate` | exit 1 if any error-severity diagnostic exists | `diagnostics` |
 | `--area`, `--recent`, `--since` | historical filters | compatibility commands only |
 | `--pretty`, `--plain`, `--minimal`, `--no-color` | historical render controls | compatibility commands only |
 
@@ -3436,6 +3449,7 @@ config key.
 - CR-D96: Area convergence vocabulary (§27.3)
 - CR-D97: Relation-pattern call syntax (§17)
 - CR-D98: Predicate signature registry (§17)
+- CR-D99: Diagnostic verb naming (§33)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

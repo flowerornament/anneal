@@ -114,6 +114,15 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
+  name: "diagnostics",
+  query: "? diagnostic{code: code, severity: severity, subject: subject, file: file, line: line, evidence: evidence}.",
+  doc: "Show the full diagnostic stream: errors, warnings, suggestions, and informational facts from the checks prelude.",
+  output_schema: "{\"code\":\"String\",\"severity\":\"String\",\"subject\":\"HandleId\",\"file\":\"String|null\",\"line\":\"Number|null\",\"evidence\":\"Value\"}",
+  args: [],
+  capabilities: ["read"]
+).
+
+@verb(
   name: "broken",
   query: "? diagnostic(code, \"error\", subject, file, line, evidence).",
   doc: "Show error diagnostics only: problems that make the corpus locally inconsistent or unsafe to trust.",

@@ -857,10 +857,17 @@ and points at work, blockers, and broken facts."
     )]
     Blocked,
 
+    /// Full diagnostic stream
+    #[command(
+        display_order = 145,
+        long_about = "Show the full diagnostic stream from the checks prelude. Use --gate to exit 1 on errors."
+    )]
+    Diagnostics,
+
     /// Diagnostic blockers
     #[command(
         display_order = 150,
-        long_about = "Show diagnostic blockers from the checks prelude."
+        long_about = "Show error diagnostics only from the checks prelude."
     )]
     Broken,
 
@@ -1744,6 +1751,7 @@ fn run() -> anyhow::Result<()> {
             | Command::H
             | Command::Work
             | Command::Blocked
+            | Command::Diagnostics
             | Command::Broken
             | Command::Areas
             | Command::Trend
