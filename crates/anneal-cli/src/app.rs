@@ -1160,17 +1160,9 @@ impl CommandOutput {
 
     fn empty_rows_diagnostic(&self, mode: OutputMode) -> Option<&'static str> {
         match (mode, self) {
-            (
-                OutputMode::Human,
-                Self::Rows {
-                    rows,
-                    view: RowView::Trend | RowView::Handle { .. } | RowView::Broken,
-                    ..
-                },
-            ) if rows.is_empty() => None,
             (_, Self::Rows { rows, .. })
             | (OutputMode::Json | OutputMode::JsonExplicit, Self::Status(rows))
-                if rows.is_empty() =>
+                if !matches!(mode, OutputMode::Human) && rows.is_empty() =>
             {
                 Some(EMPTY_ROWS_DIAGNOSTIC)
             }
@@ -3198,7 +3190,7 @@ mod tests {
         );
         assert_eq!(
             CommandOutput::rows(Vec::new(), RowView::Eval).empty_rows_diagnostic(OutputMode::Human),
-            Some(EMPTY_ROWS_DIAGNOSTIC)
+            None
         );
         assert_eq!(
             CommandOutput::rows(Vec::new(), RowView::Trend)
@@ -3232,6 +3224,11 @@ mod tests {
             CommandOutput::rows(Vec::new(), RowView::Diagnostics)
                 .empty_rows_diagnostic(OutputMode::Json),
             Some(EMPTY_ROWS_DIAGNOSTIC)
+        );
+        assert_eq!(
+            CommandOutput::rows(Vec::new(), RowView::Diagnostics)
+                .empty_rows_diagnostic(OutputMode::Human),
+            None
         );
     }
 

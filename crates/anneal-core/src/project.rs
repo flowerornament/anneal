@@ -412,11 +412,11 @@ fn validate_discovery_shape(schema: &ConfigKey, actual: usize) -> Result<(), Pro
         return Ok(());
     }
     let expected = match schema.shape() {
-        ConfigValueShape::Any => "any number of values",
-        ConfigValueShape::Exactly(1) => "exactly one value",
-        ConfigValueShape::Exactly(_) => "an exact tuple arity",
-        ConfigValueShape::AtLeast(1) => "one or more values",
-        ConfigValueShape::AtLeast(_) => "a minimum tuple arity",
+        ConfigValueShape::Any => "any number of values".to_string(),
+        ConfigValueShape::Exactly(1) => "exactly one value".to_string(),
+        ConfigValueShape::Exactly(expected) => format!("exactly {expected} values"),
+        ConfigValueShape::AtLeast(1) => "one or more values".to_string(),
+        ConfigValueShape::AtLeast(minimum) => format!("at least {minimum} values"),
     };
     Err(ProjectLoadError::InvalidDiscoveryArity {
         key: schema.key().to_string(),
@@ -543,7 +543,7 @@ pub enum ProjectLoadError {
     #[error("discovery declaration '{key}' expects {expected}; got {actual} values")]
     InvalidDiscoveryArity {
         key: String,
-        expected: &'static str,
+        expected: String,
         actual: usize,
     },
     #[error("{location}: discovery declaration '{key}' does not support named arguments yet")]
