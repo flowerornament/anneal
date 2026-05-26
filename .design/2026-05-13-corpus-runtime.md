@@ -1192,7 +1192,7 @@ calls over the same signature registry: omitted fields behave as hidden
 wildcards and do not project output columns.
 
 **Definition CR-D79 (Directive reification).** `@verb`, `@doc`,
-`@predicate`, `@cookbook`, `include`, `import`, and `at` are syntax
+`@predicate`, `include`, `import`, and `at` are syntax
 directives, not facts that
 participate in fixpoint evaluation. `@verb` and `@doc` are also
 reified into runtime introspection rows (`verbs`, `describe`,
@@ -1225,36 +1225,26 @@ language metadata. Pattern calls against predicates without a registered
 or inferred signature error with a recovery hint pointing at
 `@predicate`.
 
-**Definition CR-D100 (Cookbook recipes as language metadata).**
-`@cookbook(name: ..., question: ..., query: ..., doc: ..., when: ...,
-args: [...])` declares a worked recipe for a common corpus question.
-The runtime reifies these declarations into the sealed
-`cookbook(name, question, query, doc, when, args, source)` primitive and
-the standard `anneal cookbook` verb. Recipes are teaching metadata, not
-fixpoint facts: they must parse as Datalog query text, but they do not
-participate in rule evaluation until an agent copies or saves the query.
-Projects may add `@cookbook` declarations in `anneal.dl` using the same
-form as the prelude. Rationale: Code Mode needs curated, query-shaped
-examples for recurring workflows, and those examples should be
-discoverable through the same introspection surface as schema,
-describe, examples, and verbs.
+**Definition CR-D100 (Cookbook cluster retired).** Worked recipes are no
+longer a separate language directive, primitive, or command. The
+`@cookbook(...)` annotation, `cookbook(...)` primitive, and `anneal
+cookbook` verb are retired. Query-shaped teaching belongs on
+`describe NAME` cards through examples and Common joins, or in ordinary
+Datalog shown by `anneal help eval`. Rationale: cookbook was a parallel
+teaching surface for predicate composition; collapsing it into
+`describe` keeps the language discoverable without adding another noun
+agents must memorize.
 
-**Definition CR-D101 (Save-as-verb promotion).** `anneal save <name>
-<query> --doc <text> [--args <name:Type>,...] [--force]` promotes a
-working eval query into a normal project `@verb` declaration in
-`anneal.dl`. The saved declaration uses the same `@verb` shape as
-hand-written project verbs and therefore participates in `anneal verbs`,
-`anneal describe <name>`, `anneal help <name>`, dynamic CLI dispatch,
-and derivation explanation. The command validates the generated
-declaration before writing: the query must parse, output fields must
-match the generated schema, and declared args must be bound through
-`verb_arg` facts either explicitly or by save-time injection when the
-arg variable appears in the final query body. Name collisions error
-unless `--force` is passed; force replaces an existing project verb or
-shadows a prelude verb with explicit feedback. Writes are atomic via a
-temporary file and rename. Rationale: Code Mode becomes complete only
-when an agent can move from exploration (`anneal -e`) to durable local
-vocabulary without hand-authoring directive syntax.
+**Definition CR-D101 (Direct project verb authoring).** Durable project
+vocabulary is authored by editing `anneal.dl` and writing ordinary
+`@verb(...)` declarations. Agents may copy an example from `describe`
+or `help eval`, edit the project file, then verify with `anneal
+describe <name>` and a direct invocation. The experimental `anneal save`
+write path is not part of the public design direction and is scheduled
+for retirement; it should not be referenced by docs or new surfaces.
+Rationale: agents already have Edit/Write tools, and a second CLI write
+path adds collision, locking, and generated-syntax complexity without
+increasing the expressive power of the language.
 
 ### §18 Types and operators
 
@@ -2025,7 +2015,7 @@ optional code.module_pattern("**/*.rs").  # silently skipped if anneal-code abse
 via `@verb(...)` is syntactically indistinguishable from a verb
 shipped in the prelude. Identical:
 
-- Discovery: `anneal verbs` lists both
+- Discovery: `anneal schema` and `anneal -e '? verbs(...) .'` list both
 - Help: `anneal describe <verb>` works for both
 - Output envelope: same NDJSON shape, same `--explain` support, same
   declared `output_schema`
@@ -2222,22 +2212,21 @@ Projects override or extend any.
 | `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
 | `anneal diagnostics` | what is unhealthy | full `diagnostic(...)` stream |
 | `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
-| `anneal vocab` | what words does this corpus use | observed statuses, edge kinds, namespaces, metadata keys |
+| vocabulary recipes | what words does this corpus use | query `*handle.status`, `*edge.kind`, `*handle.namespace`, `*meta.key` directly |
 
 Plus self-description surfaces from §11. v0.11.x ships CLI verbs for
-`schema`, `verbs`, `describe`, `examples`, `sources`, and `vocab`;
-`predicates` and `source_of` remain query primitives available through
-`anneal -e` until promoted to CLI verbs.
+`schema`, `describe`, and `sources`; `verbs`, `examples`, `predicates`,
+and `source_of` remain query primitives available through `anneal -e`
+and folded into `describe` where practical.
 
-**Definition CR-D86 (Corpus vocabulary verb).** `anneal vocab` is a
-standard-library verb that lists observed corpus-local vocabulary
-needed before filtering: status values, edge kinds, namespaces, and
-frontmatter/metadata keys. It is descriptive, not normative; the
-runtime must not infer lattice semantics from the verb's rows.
-
-Rationale: cold agents need to discover the corpus's actual words
-before writing Datalog filters, and this should take one compact
-command rather than a sequence of schema guesses.
+**Definition CR-D86 (Corpus vocabulary through relations).** Corpus-local
+vocabulary remains descriptive, not normative, but it is no longer a
+separate `anneal vocab` command. Agents discover observed words through
+direct relation-pattern queries: `*handle{status: status}`,
+`*edge{kind: kind}`, `*handle{namespace: ns}`, and `*meta{key: key}`.
+`describe runtime` teaches these recipes. Rationale: the vocabulary is
+ordinary corpus data; querying it directly reinforces Code Mode and
+avoids another memorized surface.
 
 **Definition CR-D99 (Diagnostic verb naming).** `diagnostics` is the
 canonical runtime verb for the full diagnostic stream. `broken` remains
@@ -2776,7 +2765,8 @@ For arrival on an unfamiliar corpus, prepend:
 ```
 0a. anneal sources         what adapters are loaded
 0b. anneal describe convergence  what convergence means here
-0c. anneal vocab           what statuses, edge kinds, and namespaces exist
+0c. anneal -e '? *handle{status: status}.'   what statuses exist
+0d. anneal -e '? *edge{kind: kind}.'         what edge kinds exist
 ```
 
 For multi-session handoff, prepend:
@@ -3467,7 +3457,7 @@ config key.
 - CR-D83: Legacy boundary deletion gate (§47)
 - CR-D84: Explain output row cap (§14)
 - CR-D85: Empty row diagnostic (§36)
-- CR-D86: Corpus vocabulary verb (§33)
+- CR-D86: Corpus vocabulary through relations (§33)
 - CR-D87: CLI output mode selection (§36)
 - CR-D88: Aggregate body stratification (§20)
 - CR-D89: Configuration ladder (§39)
@@ -3481,8 +3471,8 @@ config key.
 - CR-D97: Relation-pattern call syntax (§17)
 - CR-D98: Predicate signature registry (§17)
 - CR-D99: Diagnostic verb naming (§33)
-- CR-D100: Cookbook recipes as language metadata (§17)
-- CR-D101: Save-as-verb promotion (§17)
+- CR-D100: Cookbook cluster retired (§17)
+- CR-D101: Direct project verb authoring (§17)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

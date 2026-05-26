@@ -113,7 +113,7 @@ available while leaving the first screen.
 | `trend` | Hide until history story is stronger | Convergence-over-time is real, but empty-history output is common. Fold into status/session-resume design later. |
 | `verbs` | Collapse into `describe runtime` / `schema` | Project verb index is useful; teach it as introspection content, not a command to memorize. |
 | `examples` | Collapse into `describe NAME` | Examples belong on the teaching card. Separate command fragments the learning path. |
-| `cookbook` | Collapse into `describe runtime` / `describe NAME` | Recipes are valuable, but should be progressively revealed from `describe`, not top-level. |
+| `cookbook` | Cut whole cluster | Recipes are valuable, but they belong as examples and Common joins on `describe NAME`; the separate command, primitive, and annotation add a second teaching system. |
 | `vocab` | Collapse into `schema` / `describe runtime` | Prevents hallucinated filters; preserve the content under introspection. |
 | `sources` | Hide | Important for adapter debugging and future federation, not first-screen. |
 | `save` | Deprecate/remove | Duplicates agents' Edit/Write tools and creates a second verb-authoring path. Teach direct `anneal.dl` editing instead. |
@@ -173,9 +173,9 @@ canonical briefing, with `prime` hidden as compatibility.
 
 1. **Hide-first help reduction.** Change default `anneal --help` to the minimal
    visible surface. Keep hidden commands callable while the docs catch up.
-2. **Collapse teaching surfaces into `describe`.** Move examples, cookbook
-   recipes, source locations, vocabulary pointers, and verb listings into
-   `describe runtime` / `describe NAME` where appropriate.
+2. **Collapse teaching surfaces into `describe`.** Move examples, source
+   locations, vocabulary pointers, and verb listings into `describe runtime` /
+   `describe NAME` where appropriate. Cut the cookbook cluster entirely.
 3. **Deprecate `save`.** Replace cookbook `Save:` lines with copyable
    `@verb(...)` blocks under `Add to anneal.dl:`. Teach direct editing.
 4. **Retire compatibility commands.** Remove or hide `query`, `explain`, `get`,

@@ -30,12 +30,7 @@ reconstructing the same map.
 anneal context "what should I read before changing the release path?"
 anneal schema
 anneal describe search
-anneal cookbook
-anneal verbs
-anneal vocab
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
-anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
-  --args area:String --doc 'Diagnostics in one area.'
 ```
 
 The important move is that corpus structure becomes queryable. Markdown files,
@@ -46,13 +41,13 @@ standard convergence facts and verbs from those relations, and project
 changing the binary.
 
 The command names are intentionally mnemonic, but they are not the whole tool.
-`context` gathers the first orientation bundle. `schema`, `describe`, `verbs`,
-and `vocab` teach the runtime vocabulary. `search`, `read`, and `handle`
-retrieve evidence. `status`, `work`, `broken`, and `trend` keep the convergence
-frontier visible. When those saved forms are too broad, `anneal -e` is the
-normal way to ask the corpus a precise question.
-When a precise question becomes reusable, `anneal save` promotes the working
-query into a project verb in `anneal.dl`.
+`context` gathers the first orientation bundle. `schema` maps the language,
+and `describe` teaches one relation, primitive, predicate, or verb at a time.
+`search`, `read`, and `handle` retrieve evidence. `status` keeps the
+convergence frontier visible. When those saved forms are too broad,
+`anneal -e` is the normal way to ask the corpus a precise question. When a
+precise question becomes reusable, edit `anneal.dl` and add an `@verb`
+declaration in the same language.
 
 ## Install
 
@@ -168,9 +163,7 @@ anneal status --format=text
 
 # Discover the language before guessing
 anneal describe convergence --format=text
-anneal verbs --format=text
 anneal schema --format=text
-anneal vocab --format=text
 
 # Read enough to act
 anneal search "v17 conformance audit" --limit 3 --format=text
@@ -179,15 +172,11 @@ anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=
 
 # Ask a precise corpus question
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
-anneal cookbook --format=text
-anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
-  --args area:String --doc 'Diagnostics in one area.'
-anneal broken-area language --format=text
+anneal -e '? diagnostic{subject: h}, area_of{h: h, area: "language"}.'
 
 # Work the convergence frontier
-anneal work --format=text
-anneal broken --format=text
-anneal trend --format=text
+anneal status --format=text
+anneal -e '? diagnostic{severity: "error", subject: h}.'
 ```
 
 Runtime commands render readable text at a terminal and JSON/NDJSON when piped.
@@ -250,21 +239,18 @@ Useful `context` flags:
 ```bash
 anneal schema
 anneal describe search
-anneal cookbook
-anneal verbs
-anneal vocab
 anneal sources
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
-anneal save stale-active '? freshness(h, days), days > 30, active(h).' \
-  --doc 'Old active handles.'
 ```
 
 Use `schema` to see queryable relations and signatures. Use `describe` for one
-primitive, predicate, or verb. Use `verbs` to inspect the saved query examples
-shipped by the prelude and project. Use `vocab` for corpus-local words before
-filtering. Use `sources` to see linked adapters and capabilities. Use `-e` when
-you need to compose a question directly. Use `save` when a working query should
-become a named project verb.
+primitive, predicate, or verb. Use `describe runtime` for the compact map and
+copyable examples. Corpus-local vocabulary is queryable directly through
+relations such as `*handle{status: status}`, `*edge{kind: kind}`,
+`*handle{namespace: ns}`, and `*meta{key: key}`. Use `sources` to see linked
+adapters and capabilities. Use `-e` when you need to compose a question
+directly. When a working query should become a named project move, edit
+`anneal.dl` and add an `@verb` declaration.
 
 ### Retrieve Evidence
 
@@ -407,16 +393,27 @@ anneal release-blockers v0.11.0 --format=text
 anneal release-blockers --milestone v0.11.0 --explain
 ```
 
-You can write `@verb` declarations by hand or promote a working query:
+Reusable project moves are plain `@verb` declarations in `anneal.dl`:
+
+```datalog
+@verb(
+  name: "broken-area",
+  query: "broken_area(h, code, file) :=\n  verb_arg(\"area\", area),\n  diagnostic{subject: h, code: code, severity: \"error\", file: file},\n  area_of{h: h, area: area}.\n\n? broken_area(h, code, file).",
+  doc: "Error diagnostics in one area.",
+  output_schema: "{\"h\":\"HandleId\",\"code\":\"String\",\"file\":\"String|null\"}",
+  args: ["area:String"],
+  capabilities: ["read"]
+).
+```
+
+Then call it like any other verb:
 
 ```bash
-anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \
-  --args area:String --doc 'Diagnostics in one area.'
 anneal broken-area language --format=text
 ```
 
-If a saved query is wrong, edit `anneal.dl` and remove the generated
-`@verb(...)` block, or rerun `anneal save ... --force` to replace it.
+If a project verb is wrong, edit or remove the `@verb(...)` block in
+`anneal.dl`.
 
 ### Upgrading From Pre-0.11.0
 
@@ -447,8 +444,8 @@ Older command names such as `check`, `get`, `find`, `health`, `garden`,
 `impact`, `map`, `query`, `explain`, `orient`, `diff`, and
 `obligations` remain callable during the transition, but they are not the
 primary surface. Prefer the language-first ladder above: `status`/`context` to
-arrive, `schema`/`describe`/`verbs`/`vocab` to discover, `search`/`read`/`handle`
-to retrieve, and `anneal -e` for precise composite questions.
+arrive, `schema`/`describe` to discover, `search`/`read`/`handle` to retrieve,
+and `anneal -e` for precise composite questions.
 
 ## Stored Relations
 

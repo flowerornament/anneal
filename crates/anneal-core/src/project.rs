@@ -162,8 +162,7 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
         | Statement::Import(_)
         | Statement::AtBlock { .. }
         | Statement::Verb(_)
-        | Statement::Predicate(_)
-        | Statement::Cookbook(_) => None,
+        | Statement::Predicate(_) => None,
     }
 }
 
@@ -1173,7 +1172,7 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
 
-        assert!(names.contains("verbs"));
+        assert!(names.contains("schema"));
         assert!(names.contains("project-seeds"));
     }
 

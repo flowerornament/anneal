@@ -5,69 +5,6 @@
   doc: "Saved command templates over the Datalog runtime. Projects can add their own @verb declarations with the same shape as these standard verbs."
 ).
 
-@cookbook(
-  name: "diagnostics-by-file",
-  question: "Which diagnostics came from one edited file?",
-  query: "? diagnostic{file: file, code: code, severity: severity, subject: h, evidence: evidence}.",
-  doc: "Use the diagnostic stream's file field to check a file after editing it.",
-  when: "Reach for this after changing one document and asking whether the edit broke local consistency.",
-  args: ["file:String"]
-).
-
-@cookbook(
-  name: "diagnostics-by-area",
-  question: "Which diagnostics affect handles in one area?",
-  query: "? diagnostic{subject: h, code: code, severity: severity, file: file}, area_of{h: h, area: area}.",
-  doc: "Join diagnostics to area_of through the diagnostic subject handle.",
-  when: "Reach for this when an agent asks for health or blockers inside a project area.",
-  args: ["area:String"]
-).
-
-@cookbook(
-  name: "blocked-work-by-area",
-  question: "What blocked or unsettled work is concentrated in one area?",
-  query: "? top_work(h, energy), area_of{h: h, area: area}, entropy(h, why), *handle{id: h, file: file, summary: summary}.",
-  doc: "Join top_work to area_of, entropy, and handle metadata to explain why an area needs attention.",
-  when: "Reach for this after status or areas points at a broad area and you need the next concrete handle.",
-  args: ["area:String"]
-).
-
-@cookbook(
-  name: "open-oq-obligations",
-  question: "Which OQ obligations are still not discharged?",
-  query: "? undischarged(h), *handle{id: h, namespace: namespace, file: file, summary: summary}.",
-  doc: "Join undischarged obligations to handle metadata and filter by namespace.",
-  when: "Reach for this when open questions should be resolved or explicitly discharged.",
-  args: ["namespace:String"]
-).
-
-@cookbook(
-  name: "handles-citing",
-  question: "Which handles cite a given handle?",
-  query: "? *edge{to: handle, from: citer, kind: \"Cites\", file: file, line: line}.",
-  doc: "Use stored edges directly when the question is about citation structure.",
-  when: "Reach for this before changing a document that other parts of the corpus cite.",
-  args: ["handle:HandleId"]
-).
-
-@cookbook(
-  name: "stale-active-files",
-  question: "Which active files are older than a freshness threshold?",
-  query: "? freshness(h, days), days > min_days, active(h), *handle{id: h, kind: \"file\", file: file, summary: summary}.",
-  doc: "Join freshness, lifecycle state, and handle metadata, then compare the day count.",
-  when: "Reach for this when convergence has slowed and old active documents may need pruning or promotion.",
-  args: ["min_days:Int"]
-).
-
-@cookbook(
-  name: "files-with-broken-refs",
-  question: "Which files contain broken references?",
-  query: "? diagnostic{code: \"E001\", severity: \"error\", subject: h, file: file, line: line}.",
-  doc: "Filter the diagnostic stream to broken-reference errors and project the source file/line.",
-  when: "Reach for this after a refactor, rename, or deletion that may have invalidated links.",
-  args: []
-).
-
 @doc(
   name: "profile_doc_corpus",
   doc: "Return a copyable lifecycle profile for markdown/design corpora that use frontmatter status values like draft, review, stable, and archived."
@@ -85,15 +22,6 @@ profile_code_corpus("# Code corpus lifecycle\npipeline_position_for(\"private\",
   doc: "Return a copyable lifecycle profile for issue or task corpora with open, blocked, review, and closed states."
 ).
 profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 0).\npipeline_position_for(\"blocked\", 0).\npipeline_position_for(\"review\", 1).\npipeline_position_for(\"closed\", 2).\nterminal(h) := status_of(h, \"closed\").\nactive(h) := status_of(h, \"open\").\nactive(h) := status_of(h, \"blocked\").\nactive(h) := status_of(h, \"review\").\nsettled(h) := terminal(h).").
-
-@verb(
-  name: "cookbook",
-  query: "? cookbook(name, question, query, doc, when, args, source).",
-  doc: "List worked Code Mode recipes for common corpus questions, including save-ready query templates and when-to-use hints.",
-  output_schema: "{\"name\":\"String\",\"question\":\"String\",\"query\":\"String\",\"doc\":\"String\",\"when\":\"String\",\"args\":\"List<String>\",\"source\":\"String\"}",
-  args: [],
-  capabilities: []
-).
 
 @verb(
   name: "status",
@@ -204,15 +132,6 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
-  name: "vocab",
-  query: "vocab_row(\"status\", status, \"handle.status\") :=\n  *handle{status: status},\n  status != null.\n\nvocab_row(\"status\", value, \"config.convergence.active\") :=\n  *config{key: \"convergence.active\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.terminal\") :=\n  *config{key: \"convergence.terminal\", value: value}.\n\nvocab_row(\"status\", value, \"config.convergence.ordering\") :=\n  *config{key: \"convergence.ordering\", value: value}.\n\nvocab_row(\"edge-kind\", kind, \"edge.kind\") :=\n  *edge{kind: kind}.\n\nvocab_row(\"namespace\", namespace, \"handle.namespace\") :=\n  *handle{namespace: namespace},\n  namespace != \"\".\n\nvocab_row(\"frontmatter-field\", key, \"meta.key\") :=\n  *meta{key: key}.\n\n? vocab_row(category, value, source).",
-  doc: "List the vocabulary actually observed in the corpus: statuses, edge kinds, label namespaces, and frontmatter fields.",
-  output_schema: "{\"category\":\"String\",\"value\":\"String\",\"source\":\"String\"}",
-  args: [],
-  capabilities: ["read"]
-).
-
-@verb(
   name: "schema",
   query: "? schema(name, kind, signature, determinism, provenance).",
   doc: "List everything a Datalog query can call, including stored relations, derived predicates, and engine primitives. The signature column is the argument order and the named-call field set.",
@@ -231,15 +150,6 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
-  name: "verbs",
-  query: "? verbs(name, query, doc, output_schema).",
-  doc: "List saved verbs, their Datalog queries, documentation, and output schemas.",
-  output_schema: "{\"name\":\"String\",\"query\":\"String\",\"doc\":\"String\",\"output_schema\":\"String\"}",
-  args: [],
-  capabilities: []
-).
-
-@verb(
   name: "describe",
   query: "describe_row(name, doc) :=\n  verb_arg(\"name\", name),\n  describe(name, doc).\n\n? describe_row(name, doc).",
   doc: "Return the teaching card for a runtime name: summary, kind, signature, requirements, examples, and source when known.",
@@ -253,15 +163,6 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
   query: "source_of_row(name, file, lines) :=\n  verb_arg(\"name\", name),\n  source_of(name, file, lines).\n\n? source_of_row(name, file, lines).",
   doc: "Return the file and line where a runtime name is defined, when that name comes from a rule, verb, or prelude declaration.",
   output_schema: "{\"name\":\"String\",\"file\":\"String\",\"lines\":\"String\"}",
-  args: ["name:String"],
-  capabilities: []
-).
-
-@verb(
-  name: "examples",
-  query: "examples_row(name, example) :=\n  verb_arg(\"name\", name),\n  examples(name, example).\n\n? examples_row(name, example).",
-  doc: "Return copyable query examples for runtime names.",
-  output_schema: "{\"name\":\"String\",\"example\":\"String\"}",
   args: ["name:String"],
   capabilities: []
 ).

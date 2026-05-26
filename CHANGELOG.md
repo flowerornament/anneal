@@ -2,6 +2,26 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Default help now teaches the compact Code Mode surface: `status`, `context`,
+  `search`, `read`, `handle`, `schema`, `describe`, `eval`, `init`, and
+  `help`.
+- `describe runtime` now carries the compact command map and vocabulary query
+  recipes. `describe NAME` remains the place to learn examples and Common
+  joins before writing `anneal -e` queries.
+
+### Removed
+
+- Removed the cookbook cluster: `@cookbook(...)`, the `cookbook(...)`
+  primitive, the `anneal cookbook` command, and the bundled cookbook recipe
+  declarations.
+- Removed the prelude command wrappers for `anneal vocab`, `anneal verbs`, and
+  `anneal examples`. The underlying introspection data remains queryable
+  through `schema`, `describe`, `examples(...)`, and `verbs(...)`.
+
 ## v0.12.0 - 2026-05-21
 
 This release makes the language loop complete: agents can discover the corpus

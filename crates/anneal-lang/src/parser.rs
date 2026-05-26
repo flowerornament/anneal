@@ -1,10 +1,9 @@
 use crate::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, CallStyle, Comparison,
-    ComparisonOp, ConfigBlock, CookbookDecl, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern,
-    Head, Ident, ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation,
-    NumberLiteral, PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin,
-    SourceBlock, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
-    named_string_arg,
+    ComparisonOp, ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,
+    ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation, NumberLiteral,
+    PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin, SourceBlock,
+    SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl, named_string_arg,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -111,7 +110,11 @@ impl Parser {
                     .parse_doc_annotation(&args, location, &statement_start)
                     .map(Statement::Doc),
                 "predicate" => Ok(Statement::Predicate(PredicateDecl::new(args, location))),
-                "cookbook" => Ok(Statement::Cookbook(CookbookDecl::new(args, location))),
+                "cookbook" => Err(ParseError::new(
+                    &self.source,
+                    &statement_start,
+                    "@cookbook is retired; move reusable recipes into `@verb(...)` declarations or `@doc` examples surfaced by `anneal describe NAME`",
+                )),
                 other => Err(ParseError::new(
                     &self.source,
                     &statement_start,
@@ -1258,12 +1261,11 @@ mod tests {
             @verb(name: "broken", query: "diagnostic(code)").
             @doc(name: "convergence", doc: "Convergence vocabulary.").
             @predicate(name: "diagnostic", args: ["code", "severity", "subject"]).
-            @cookbook(name: "broken-in-area", question: "Which diagnostics affect an area?", query: "? diagnostic{subject: h}, area_of{h: h, area: \"language\"}.", doc: "Join diagnostics to area_of.").
             at("HEAD~1") { old(h) := *handle{id: h}. }
             "#,
         )
         .expect("program parses");
-        assert_eq!(program.statements.len(), 8);
+        assert_eq!(program.statements.len(), 7);
         assert!(matches!(program.statements[2], Statement::OptionalFact(_)));
         let Statement::Doc(doc) = &program.statements[4] else {
             panic!("expected @doc");
@@ -1271,7 +1273,19 @@ mod tests {
         assert_eq!(doc.name(), "convergence");
         assert_eq!(doc.doc(), "Convergence vocabulary.");
         assert!(matches!(program.statements[5], Statement::Predicate(_)));
-        assert!(matches!(program.statements[6], Statement::Cookbook(_)));
+    }
+
+    #[test]
+    fn retired_cookbook_annotation_reports_migration_hint() {
+        let error = parse_program(
+            "anneal.dl",
+            r#"@cookbook(name: "broken-in-area", query: "? diagnostic{subject: h}.")."#,
+        )
+        .expect_err("retired annotation should fail with a migration hint");
+
+        assert!(error.message.contains("@cookbook is retired"));
+        assert!(error.message.contains("@verb"));
+        assert!(error.message.contains("anneal describe NAME"));
     }
 
     #[test]

@@ -637,14 +637,10 @@ mod tests {
         "diagnostics",
         "trend",
         "broken",
-        "vocab",
         "schema",
         "predicates",
-        "verbs",
         "describe",
         "source-of",
-        "examples",
-        "cookbook",
         "sources",
     ];
 
@@ -1274,10 +1270,6 @@ mod tests {
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
                 ("examples", r#"? examples("incoming_edge", example)."#),
-                (
-                    "cookbook",
-                    r#"? cookbook("diagnostics-by-area", question, query, doc, when, args, source)."#,
-                ),
             ],
             standard_library_database(),
         );
@@ -1409,10 +1401,6 @@ mod tests {
         assert!(matches!(
             output(&outputs, "examples").rows[0].fields.get("example"),
             Some(Value::String(example)) if example.contains("incoming_edge")
-        ));
-        assert!(matches!(
-            output(&outputs, "cookbook").rows[0].fields.get("query"),
-            Some(Value::String(query)) if query.contains("area_of")
         ));
     }
 
@@ -1716,8 +1704,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 | Statement::Import(_)
                 | Statement::Verb(_)
                 | Statement::Doc(_)
-                | Statement::Predicate(_)
-                | Statement::Cookbook(_) => {}
+                | Statement::Predicate(_) => {}
             }
         }
     }

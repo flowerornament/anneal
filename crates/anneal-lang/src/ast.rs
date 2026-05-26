@@ -162,8 +162,7 @@ impl Statement {
             | Self::Import(_)
             | Self::Verb(_)
             | Self::Doc(_)
-            | Self::Predicate(_)
-            | Self::Cookbook(_) => {}
+            | Self::Predicate(_) => {}
         }
     }
 }
@@ -185,7 +184,6 @@ pub enum Statement {
     Verb(VerbDecl),
     Doc(DocDecl),
     Predicate(PredicateDecl),
-    Cookbook(CookbookDecl),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -346,37 +344,6 @@ impl PredicateDecl {
 
     pub fn args(&self) -> &[NamedArg] {
         &self.annotation.args
-    }
-
-    pub fn location(&self) -> &SourceLocation {
-        self.annotation.location()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct CookbookDecl {
-    #[serde(flatten)]
-    pub annotation: AnnotationDecl,
-}
-
-impl CookbookDecl {
-    pub fn new(args: Vec<NamedArg>, location: SourceLocation) -> Self {
-        Self {
-            annotation: AnnotationDecl::new(args, location),
-        }
-    }
-
-    pub fn string_arg(&self, name: &str) -> Option<&str> {
-        self.annotation.string_arg(name)
-    }
-
-    pub fn string_list_arg(&self, name: &str) -> Option<Vec<&str>> {
-        self.annotation.string_list_arg(name)
-    }
-
-    pub fn has_arg(&self, name: &str) -> bool {
-        self.annotation.has_arg(name)
     }
 
     pub fn location(&self) -> &SourceLocation {

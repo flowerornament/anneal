@@ -7,7 +7,7 @@ use crate::verbs::VerbRegistry;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
 use super::ast::{
-    CookbookDecl, DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement,
+    DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement,
 };
 use super::eval::{Tuple, Value};
 use super::primitives::PrimitivePredicate;
@@ -101,7 +101,6 @@ impl IntrospectionIndex {
             PrimitivePredicate::Describe => self.describe_tuples(constraints),
             PrimitivePredicate::SourceOf => matching_tuples(&self.program.source_of, constraints),
             PrimitivePredicate::Examples => matching_tuples(&self.program.examples, constraints),
-            PrimitivePredicate::Cookbook => matching_tuples(&self.program.cookbook, constraints),
             PrimitivePredicate::Sources => matching_tuples(&self.source_rows, constraints),
             PrimitivePredicate::Upstream
             | PrimitivePredicate::Downstream
@@ -158,7 +157,6 @@ struct ProgramIntrospection {
     describe: Vec<DescribeEntry>,
     source_of: Vec<Tuple>,
     examples: Vec<Tuple>,
-    cookbook: Vec<Tuple>,
 }
 
 impl ProgramIntrospection {
@@ -186,7 +184,6 @@ struct IntrospectionBuilder {
     describe: BTreeSet<DescribeEntry>,
     source_of: BTreeSet<Tuple>,
     examples: BTreeSet<Tuple>,
-    cookbook: BTreeSet<Tuple>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,7 +250,6 @@ impl IntrospectionBuilder {
             describe: existing.describe.iter().cloned().collect(),
             source_of: existing.source_of.iter().cloned().collect(),
             examples: existing.examples.iter().cloned().collect(),
-            cookbook: existing.cookbook.iter().cloned().collect(),
         }
     }
 
@@ -265,12 +261,18 @@ impl IntrospectionBuilder {
                 summary: "Query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model.",
                 kind: Some(DescribeKind::RuntimeTopic),
                 source_label: Some("Topic source"),
+                extra_lines: vec![
+                    "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
+                    "Hidden support commands: work, blocked, diagnostics, broken, areas, trend, sources.".to_string(),
+                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
+                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
+                ],
                 examples: vec![
                     "? schema(name, kind, signature, determinism, provenance).",
                     "? describe(\"search\", doc).",
                     "? examples(\"search\", example).",
-                    "? cookbook(name, question, query, doc, when, args, source).",
-                    "anneal cookbook",
+                    "? *handle{status: status}, status != null.",
+                    "? *edge{kind: kind}.",
                 ],
                 ..DescribeCard::default()
             }),
@@ -281,7 +283,7 @@ impl IntrospectionBuilder {
         ]));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
-            string_value("? cookbook(name, question, query, doc, when, args, source)."),
+            string_value("? *handle{namespace: ns}, ns != \"\"."),
         ]));
     }
 
@@ -425,7 +427,6 @@ impl IntrospectionBuilder {
         let predicate_names = scanned.predicates.keys().cloned().collect::<BTreeSet<_>>();
         self.add_predicates(scanned.predicates, &scanned.docs);
         self.add_docs(&scanned.docs, &predicate_names);
-        self.add_cookbook(scanned.cookbook);
 
         let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
         for entry in registry.iter() {
@@ -573,20 +574,6 @@ impl IntrospectionBuilder {
         }
     }
 
-    fn add_cookbook(&mut self, recipes: Vec<CookbookInfo>) {
-        for recipe in recipes {
-            self.cookbook.insert(Tuple(vec![
-                string_value(&recipe.name),
-                string_value(&recipe.question),
-                string_value(&recipe.query),
-                string_value(&recipe.doc),
-                string_value(&recipe.when),
-                list_value(recipe.args.iter().map(String::as_str)),
-                string_value(&recipe.source),
-            ]));
-        }
-    }
-
     fn finish(self) -> ProgramIntrospection {
         ProgramIntrospection {
             schema: self.schema.into_iter().collect(),
@@ -595,7 +582,6 @@ impl IntrospectionBuilder {
             describe: self.describe.into_iter().collect(),
             source_of: self.source_of.into_iter().collect(),
             examples: self.examples.into_iter().collect(),
-            cookbook: self.cookbook.into_iter().collect(),
         }
     }
 }
@@ -791,44 +777,6 @@ impl DocInfo {
     }
 }
 
-#[derive(Clone, Debug)]
-struct CookbookInfo {
-    name: String,
-    question: String,
-    query: String,
-    doc: String,
-    when: String,
-    args: Vec<String>,
-    source: String,
-}
-
-impl CookbookInfo {
-    fn from_decl(decl: &CookbookDecl) -> Option<Self> {
-        let name = decl.string_arg("name")?.to_string();
-        let question = decl.string_arg("question")?.to_string();
-        let query = decl.string_arg("query")?.to_string();
-        let doc = decl.string_arg("doc")?.to_string();
-        let when = decl.string_arg("when").unwrap_or("").to_string();
-        let args = decl
-            .string_list_arg("args")
-            .unwrap_or_default()
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let location = decl.location().clone();
-        let source = format!("{}:{}", location.source_name, source_line_text(&location));
-        Some(Self {
-            name,
-            question,
-            query,
-            doc,
-            when,
-            args,
-            source,
-        })
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ParameterName {
     Unknown,
@@ -856,7 +804,6 @@ fn merge_parameter_names(existing: &mut [ParameterName], observed: &[ParameterNa
 struct ProgramScanner {
     docs: BTreeMap<String, DocInfo>,
     predicates: BTreeMap<String, PredicateInfo>,
-    cookbook: Vec<CookbookInfo>,
 }
 
 impl ProgramScanner {
@@ -902,11 +849,6 @@ impl ProgramScanner {
                             .entry(name.to_string())
                             .and_modify(|info| info.apply_decl(decl))
                             .or_insert_with(|| PredicateInfo::from_decl(name, decl));
-                    }
-                }
-                Statement::Cookbook(decl) => {
-                    if let Some(recipe) = CookbookInfo::from_decl(decl) {
-                        self.cookbook.push(recipe);
                     }
                 }
                 Statement::Query(_)
@@ -1161,9 +1103,6 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
             "Return source file and line information for queryable runtime names."
         }
         PrimitivePredicate::Examples => "Return worked query examples for runtime names.",
-        PrimitivePredicate::Cookbook => {
-            "Return longer worked recipes for common corpus questions: question, query, explanation, when-to-use hint, arguments, and source."
-        }
         PrimitivePredicate::Sources => {
             "List linked adapters with recognition patterns, capabilities, and documentation."
         }
@@ -1208,7 +1147,6 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
         | PrimitivePredicate::Describe
         | PrimitivePredicate::SourceOf
         | PrimitivePredicate::Examples
-        | PrimitivePredicate::Cookbook
         | PrimitivePredicate::Sources => &[],
     }
 }
@@ -1222,19 +1160,16 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
             "The `read` verb wraps this primitive with typed CLI arguments for handle and budget.",
         ),
         PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
-        PrimitivePredicate::Verbs => Some("The `verbs` verb projects this primitive directly."),
+        PrimitivePredicate::Verbs => {
+            Some("Use `schema` for the verb catalog and `describe NAME` for a verb teaching card.")
+        }
         PrimitivePredicate::Describe => {
             Some("The `describe` verb projects this primitive as teaching cards.")
         }
         PrimitivePredicate::SourceOf => {
             Some("The `source-of` verb projects this primitive directly.")
         }
-        PrimitivePredicate::Examples => {
-            Some("The `examples` verb projects this primitive directly.")
-        }
-        PrimitivePredicate::Cookbook => {
-            Some("The `cookbook` verb projects this primitive as worked Code Mode recipes.")
-        }
+        PrimitivePredicate::Examples => Some("`describe NAME` shows these examples inline."),
         PrimitivePredicate::Sources => Some("The `sources` verb projects this primitive directly."),
         _ => None,
     }
@@ -1242,12 +1177,11 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
 
 fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] {
     match primitive {
-        PrimitivePredicate::Search => &["search", "context", "read", "examples"],
+        PrimitivePredicate::Search => &["search", "context", "read", "describe"],
         PrimitivePredicate::Read | PrimitivePredicate::ReadFull => &["read", "*content", "*span"],
-        PrimitivePredicate::Schema => &["describe", "examples", "verbs"],
-        PrimitivePredicate::Describe => &["schema", "examples", "cookbook", "verbs"],
-        PrimitivePredicate::Examples => &["describe", "schema", "verbs", "cookbook"],
-        PrimitivePredicate::Cookbook => &["examples", "describe", "schema"],
+        PrimitivePredicate::Schema => &["describe", "examples"],
+        PrimitivePredicate::Describe => &["schema", "examples"],
+        PrimitivePredicate::Examples => &["describe", "schema"],
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact => {
@@ -1380,7 +1314,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "entropy_priority",
         ],
         "blocked" => &["potential", "entropy", "flux", "status"],
-        "area_of" => &["area", "area_health", "area_frontier", "*handle", "vocab"],
+        "area_of" => &["area", "area_health", "area_frontier", "*handle", "schema"],
         "area"
         | "area_file_count"
         | "area_error_location_count"
@@ -1421,13 +1355,8 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query over `area_health` and `area_frontier`; it is the per-area drill-down from `status`."
         }
         "describe" => "Saved query over the `describe` primitive.",
-        "examples" => "Saved query over the `examples` primitive.",
         "schema" => "Saved query over the `schema` primitive.",
-        "verbs" => "Saved query over the `verbs` primitive.",
         "sources" => "Saved query over the `sources` primitive.",
-        "vocab" => {
-            "Saved query over stored relations and config rows that reveal observed corpus vocabulary."
-        }
         "find" => {
             "Saved query over `*handle.id contains text`; use `search` for ranked content retrieval."
         }
@@ -1446,8 +1375,7 @@ fn verb_see_also(name: &str) -> &'static [&'static str] {
         "work" => &["top_work", "ranked_work", "status"],
         "areas" => &["area_health", "area_frontier", "area_of", "status"],
         "describe" => &["schema", "examples", "source-of"],
-        "schema" => &["describe", "examples", "verbs"],
-        "vocab" => &["*handle", "*edge", "*meta", "*config"],
+        "schema" => &["describe", "examples"],
         _ => &[],
     }
 }
@@ -1465,9 +1393,6 @@ fn verb_example(name: &str) -> Option<&'static str> {
         "areas" => Some("anneal areas"),
         "describe" => Some("anneal describe search"),
         "schema" => Some("anneal schema"),
-        "verbs" => Some("anneal verbs"),
-        "examples" => Some("anneal examples search"),
-        "vocab" => Some("anneal vocab"),
         _ => None,
     }
 }
@@ -1501,9 +1426,6 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Predicates => Some("? predicates(name, doc, file, lines)."),
         PrimitivePredicate::Verbs => Some("? verbs(name, query, doc, output_schema)."),
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
-        PrimitivePredicate::Cookbook => {
-            Some("? cookbook(name, question, query, doc, when, args, source).")
-        }
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled

@@ -90,7 +90,7 @@ QUERY EXAMPLES:
   anneal -e '? search{query: \"conformance\", handle: h, score: score}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h}.'
 
-  Use verbs and describe before guessing:
+  Use schema and describe before guessing:
     anneal schema --format=text
     anneal describe runtime --format=text
     anneal describe search --format=text

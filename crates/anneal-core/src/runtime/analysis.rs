@@ -3,11 +3,10 @@ use std::fmt;
 
 use crate::facts::{STORED_RELATION_DESCRIPTORS, StoredRelationDescriptor};
 use crate::runtime::ast::{
-    Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, CookbookDecl,
-    DerivedAtom, Expr, Head, Ident, Literal, NegatedAtom, Negation, PredicateDecl, PredicateRef,
-    Program, Query, Rule, RuleLayer, SourceLocation, Statement, StoredAtom, Term,
+    Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, DerivedAtom, Expr,
+    Head, Ident, Literal, NegatedAtom, Negation, PredicateDecl, PredicateRef, Program, Query, Rule,
+    RuleLayer, SourceLocation, Statement, StoredAtom, Term,
 };
-use crate::runtime::parser::{ParseError, parse_program};
 use crate::runtime::primitives::{PrimitivePredicate, PrimitiveSignature, primitive_signatures};
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
@@ -218,23 +217,6 @@ pub enum StaticError {
         argument: Ident,
         location: SourceLocation,
     },
-    #[error("{location}: @cookbook missing string field '{field}'")]
-    CookbookMissingString {
-        field: &'static str,
-        location: SourceLocation,
-    },
-    #[error("{location}: @cookbook args must be a list of strings")]
-    CookbookArgsMustBeList { location: SourceLocation },
-    #[error("{location}: @cookbook query must parse: {source}")]
-    CookbookQueryParse {
-        location: SourceLocation,
-        source: Box<ParseError>,
-    },
-    #[error("{location}: @cookbook query must contain exactly one query statement, found {count}")]
-    CookbookQueryStatementCount {
-        count: usize,
-        location: SourceLocation,
-    },
     #[error("{location}: unknown field '{field}' for '*{relation}'; expected one of: {expected}")]
     UnknownStoredField {
         relation: Ident,
@@ -348,7 +330,6 @@ impl Analyzer {
 
     fn analyze(mut self) -> Result<AnalyzedProgram, StaticError> {
         self.check_no_optional_discovery_facts()?;
-        self.check_cookbook_annotations()?;
         self.collect_global_signatures()?;
         normalize_global_named_calls(&mut self.program, &self.signatures)?;
         self.check_facts()?;
@@ -367,13 +348,6 @@ impl Analyzer {
     fn check_no_optional_discovery_facts(&self) -> Result<(), StaticError> {
         for statement in &self.program.statements {
             check_no_optional_discovery_fact(statement)?;
-        }
-        Ok(())
-    }
-
-    fn check_cookbook_annotations(&self) -> Result<(), StaticError> {
-        for statement in &self.program.statements {
-            check_cookbook_annotation(statement)?;
         }
         Ok(())
     }
@@ -473,68 +447,8 @@ fn check_no_optional_discovery_fact(statement: &Statement) -> Result<(), StaticE
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
-        | Statement::Predicate(_)
-        | Statement::Cookbook(_) => Ok(()),
-    }
-}
-
-fn check_cookbook_annotation(statement: &Statement) -> Result<(), StaticError> {
-    match statement {
-        Statement::Cookbook(decl) => check_cookbook_decl(decl),
-        Statement::AtBlock { statements, .. } => {
-            for statement in statements {
-                check_cookbook_annotation(statement)?;
-            }
-            Ok(())
-        }
-        Statement::Fact(_)
-        | Statement::OptionalFact(_)
-        | Statement::ConfigBlock(_)
-        | Statement::SourceBlock(_)
-        | Statement::Rule(_)
-        | Statement::Query(_)
-        | Statement::Include(_)
-        | Statement::Import(_)
-        | Statement::Verb(_)
-        | Statement::Doc(_)
         | Statement::Predicate(_) => Ok(()),
     }
-}
-
-fn check_cookbook_decl(decl: &CookbookDecl) -> Result<(), StaticError> {
-    for field in ["name", "question", "query", "doc"] {
-        if decl.string_arg(field).is_none() {
-            return Err(StaticError::CookbookMissingString {
-                field,
-                location: decl.location().clone(),
-            });
-        }
-    }
-    if decl.has_arg("when") && decl.string_arg("when").is_none() {
-        return Err(StaticError::CookbookMissingString {
-            field: "when",
-            location: decl.location().clone(),
-        });
-    }
-    if decl.has_arg("args") && decl.string_list_arg("args").is_none() {
-        return Err(StaticError::CookbookArgsMustBeList {
-            location: decl.location().clone(),
-        });
-    }
-    let query = decl.string_arg("query").expect("required above");
-    let program = parse_program(&format!("{}:@cookbook:query", decl.location()), query).map_err(
-        |source| StaticError::CookbookQueryParse {
-            location: decl.location().clone(),
-            source: Box::new(source),
-        },
-    )?;
-    if !matches!(program.statements.as_slice(), [Statement::Query(_)]) {
-        return Err(StaticError::CookbookQueryStatementCount {
-            count: program.statements.len(),
-            location: decl.location().clone(),
-        });
-    }
-    Ok(())
 }
 
 fn collect_explicit_predicate_signatures(
@@ -556,8 +470,7 @@ fn collect_explicit_predicate_signatures(
             | Statement::Include(_)
             | Statement::Import(_)
             | Statement::Verb(_)
-            | Statement::Doc(_)
-            | Statement::Cookbook(_) => {}
+            | Statement::Doc(_) => {}
         }
     }
     Ok(())
@@ -836,8 +749,7 @@ fn normalize_global_statement_named_calls(
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
-        | Statement::Predicate(_)
-        | Statement::Cookbook(_) => Ok(()),
+        | Statement::Predicate(_) => Ok(()),
     }
 }
 
@@ -2112,34 +2024,6 @@ mod tests {
                 .contains("signature: verbs(name, query, doc, output_schema)"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn cookbook_declarations_validate_required_shape() {
-        let err = analyze_err(
-            "inline",
-            r#"@cookbook(name: "bad", question: "Bad?", query: "? *handle{id: h}.")."#,
-        );
-
-        assert!(matches!(
-            err,
-            StaticError::CookbookMissingString { field: "doc", .. }
-        ));
-
-        let err = analyze_err(
-            "inline",
-            r#"@cookbook(name: "bad", question: "Bad?", query: "? *handle{id: h}", doc: "Missing dot.")."#,
-        );
-        assert!(matches!(err, StaticError::CookbookQueryParse { .. }));
-
-        let err = analyze_err(
-            "inline",
-            r#"@cookbook(name: "bad", question: "Bad?", query: "helper(h) := *handle{id: h}. ? helper(h).", doc: "Too much program.")."#,
-        );
-        assert!(matches!(
-            err,
-            StaticError::CookbookQueryStatementCount { count: 2, .. }
-        ));
     }
 
     #[test]
