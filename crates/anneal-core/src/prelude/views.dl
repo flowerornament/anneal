@@ -8,7 +8,7 @@
 @cookbook(
   name: "diagnostics-by-file",
   question: "Which diagnostics came from one edited file?",
-  query: "? diagnostic{file: \"document.md\", code: code, severity: severity, subject: h, evidence: evidence}.",
+  query: "? diagnostic{file: file, code: code, severity: severity, subject: h, evidence: evidence}.",
   doc: "Use the diagnostic stream's file field to check a file after editing it.",
   when: "Reach for this after changing one document and asking whether the edit broke local consistency.",
   args: ["file:String"]
@@ -17,7 +17,7 @@
 @cookbook(
   name: "diagnostics-by-area",
   question: "Which diagnostics affect handles in one area?",
-  query: "? diagnostic{subject: h, code: code, severity: severity, file: file}, area_of{h: h, area: \"language\"}.",
+  query: "? diagnostic{subject: h, code: code, severity: severity, file: file}, area_of{h: h, area: area}.",
   doc: "Join diagnostics to area_of through the diagnostic subject handle.",
   when: "Reach for this when an agent asks for health or blockers inside a project area.",
   args: ["area:String"]
@@ -26,7 +26,7 @@
 @cookbook(
   name: "blocked-work-by-area",
   question: "What blocked or unsettled work is concentrated in one area?",
-  query: "? top_work(h, energy), area_of{h: h, area: \"language\"}, entropy(h, why), *handle{id: h, file: file, summary: summary}.",
+  query: "? top_work(h, energy), area_of{h: h, area: area}, entropy(h, why), *handle{id: h, file: file, summary: summary}.",
   doc: "Join top_work to area_of, entropy, and handle metadata to explain why an area needs attention.",
   when: "Reach for this after status or areas points at a broad area and you need the next concrete handle.",
   args: ["area:String"]
@@ -35,7 +35,7 @@
 @cookbook(
   name: "open-oq-obligations",
   question: "Which OQ obligations are still not discharged?",
-  query: "? undischarged(h), *handle{id: h, namespace: \"OQ\", file: file, summary: summary}.",
+  query: "? undischarged(h), *handle{id: h, namespace: namespace, file: file, summary: summary}.",
   doc: "Join undischarged obligations to handle metadata and filter by namespace.",
   when: "Reach for this when open questions should be resolved or explicitly discharged.",
   args: ["namespace:String"]
@@ -44,7 +44,7 @@
 @cookbook(
   name: "handles-citing",
   question: "Which handles cite a given handle?",
-  query: "? *edge{to: \"formal-model/v17.md\", from: citer, kind: \"Cites\", file: file, line: line}.",
+  query: "? *edge{to: handle, from: citer, kind: \"Cites\", file: file, line: line}.",
   doc: "Use stored edges directly when the question is about citation structure.",
   when: "Reach for this before changing a document that other parts of the corpus cite.",
   args: ["handle:HandleId"]
@@ -53,10 +53,10 @@
 @cookbook(
   name: "stale-active-files",
   question: "Which active files are older than a freshness threshold?",
-  query: "? freshness(h, days), days > 30, active(h), *handle{id: h, kind: \"file\", file: file, summary: summary}.",
+  query: "? freshness(h, days), days > min_days, active(h), *handle{id: h, kind: \"file\", file: file, summary: summary}.",
   doc: "Join freshness, lifecycle state, and handle metadata, then compare the day count.",
   when: "Reach for this when convergence has slowed and old active documents may need pruning or promotion.",
-  args: ["days:Int"]
+  args: ["min_days:Int"]
 ).
 
 @cookbook(
@@ -89,7 +89,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 @verb(
   name: "cookbook",
   query: "? cookbook(name, question, query, doc, when, args, source).",
-  doc: "List worked Code Mode recipes for common corpus questions, including copyable eval queries and when-to-use hints.",
+  doc: "List worked Code Mode recipes for common corpus questions, including save-ready query templates and when-to-use hints.",
   output_schema: "{\"name\":\"String\",\"question\":\"String\",\"query\":\"String\",\"doc\":\"String\",\"when\":\"String\",\"args\":\"List<String>\",\"source\":\"String\"}",
   args: [],
   capabilities: []

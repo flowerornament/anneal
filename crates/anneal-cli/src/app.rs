@@ -1881,19 +1881,54 @@ fn write_cookbook_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
             .fields
             .get("args")
             .map_or_else(|| "()".to_string(), display_value);
+        let has_args = row
+            .fields
+            .get("args")
+            .is_some_and(|value| matches!(value, Value::List(values) if !values.is_empty()));
         let source = optional_string(row, "source")?.unwrap_or("unknown");
 
         writeln!(writer, "{:>2}. {name}", index + 1)?;
         writeln!(writer, "    Question: {question}")?;
-        writeln!(writer, "    Query: {query}")?;
+        if has_args {
+            writeln!(writer, "    Template: {query}")?;
+        } else {
+            writeln!(writer, "    Query: {query}")?;
+        }
         writeln!(writer, "    How: {doc}")?;
         if !when.trim().is_empty() {
             writeln!(writer, "    When: {when}")?;
         }
         writeln!(writer, "    Args: {args}")?;
+        if has_args {
+            writeln!(
+                writer,
+                "    Save: anneal save {name} {} --args {} --doc {}",
+                shell_single_quote(query),
+                shell_words_from_args(row.fields.get("args")),
+                shell_single_quote(doc),
+            )?;
+        }
         writeln!(writer, "    Source: {source}")?;
     }
     Ok(())
+}
+
+fn shell_words_from_args(value: Option<&Value>) -> String {
+    let Some(Value::List(values)) = value else {
+        return String::new();
+    };
+    values
+        .iter()
+        .filter_map(|value| match value {
+            Value::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
@@ -3340,6 +3375,49 @@ mod tests {
         assert!(rendered.contains("category=status"));
         assert!(rendered.contains(r#"value="open question""#));
         assert!(rendered.contains("count=2"));
+    }
+
+    #[test]
+    fn cookbook_human_render_marks_parameterized_templates_as_save_ready() {
+        let output = CommandOutput::rows(
+            vec![row(&[
+                ("name", Value::String("diagnostics-by-file".to_string())),
+                (
+                    "question",
+                    Value::String("Which diagnostics came from one edited file?".to_string()),
+                ),
+                (
+                    "query",
+                    Value::String("? diagnostic{file: file, code: code, subject: h}.".to_string()),
+                ),
+                (
+                    "doc",
+                    Value::String("Diagnostics for one file.".to_string()),
+                ),
+                (
+                    "when",
+                    Value::String("Use after editing a document.".to_string()),
+                ),
+                (
+                    "args",
+                    Value::List(vec![Value::String("file:String".to_string())]),
+                ),
+                ("source", Value::String("views.dl:8".to_string())),
+            ])],
+            RowView::Cookbook,
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render cookbook");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Template: ? diagnostic{file: file"));
+        assert!(rendered.contains("Args: (file:String)"));
+        assert!(rendered.contains(
+            "Save: anneal save diagnostics-by-file '? diagnostic{file: file, code: code, subject: h}.' --args file:String --doc 'Diagnostics for one file.'"
+        ));
     }
 
     #[test]
