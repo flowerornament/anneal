@@ -67,18 +67,12 @@ START HERE:
   Cold start:
     anneal context \"goal\"     Search, read, and graph context in one response
     anneal status             Compact corpus status
-    anneal prime              Full bundled agent skill briefing
 
   Program the corpus:
     anneal schema             Queryable relations, predicates, and primitives
-    anneal describe NAME      Documentation for one runtime name
-    anneal examples NAME      Runnable examples for a runtime name
-    anneal cookbook           Worked recipes for common corpus questions
-    anneal save               Save a working query as a project verb
-    anneal verbs              Saved query examples from the prelude/project
-    anneal vocab              Corpus-local vocabulary to use in filters
-    anneal sources            Linked adapters and capabilities
-    anneal -e '? query.'      Datalog query over corpus facts
+    anneal describe NAME      Teaching card for one runtime name
+    anneal -e '? query.'      Compose precise questions in Datalog
+    anneal help eval          Language tour and query examples
 
   Retrieval primitives:
     anneal search TEXT        Ranked content retrieval
@@ -86,9 +80,9 @@ START HERE:
     anneal handle HANDLE      Incoming and outgoing edges for one handle
 
   Convergence work:
-    anneal broken             Diagnostic blockers
-    anneal work               Ranked work candidates
-    anneal trend              Movement between snapshots
+    anneal status             Start with the convergence frontier
+    anneal describe diagnostic
+    anneal -e '? diagnostic{severity: \"error\", subject: h}.'
 
 QUERY EXAMPLES:
 
@@ -97,11 +91,9 @@ QUERY EXAMPLES:
   anneal -e '? diagnostic{severity: \"error\", subject: h}.'
 
   Use verbs and describe before guessing:
-    anneal verbs --format=text
+    anneal schema --format=text
+    anneal describe runtime --format=text
     anneal describe search --format=text
-    anneal examples search --format=text
-    anneal cookbook --format=text
-    anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' --args area:String --doc 'Diagnostics in one area.'
     anneal help eval
 
 ROOT DIRECTORY:
@@ -160,41 +152,31 @@ struct Cli {
     json: bool,
 
     /// Compatibility JSON only: pretty-print object output. Runtime verbs emit NDJSON and use --format.
-    #[arg(long, global = true, help_heading = "Compatibility options")]
+    #[arg(long, global = true, hide = true)]
     pretty: bool,
 
     /// Compatibility filter: scope output to an area name (top-level directory or concern group), not a filesystem path
-    #[arg(long, global = true, help_heading = "Compatibility options")]
+    #[arg(long, global = true, hide = true)]
     area: Option<String>,
 
     /// Compatibility filter: files within the default recent window (config temporal recent_days)
-    #[arg(long, global = true, help_heading = "Compatibility options")]
+    #[arg(long, global = true, hide = true)]
     recent: bool,
 
     /// Compatibility filter: files dated within the last N days (e.g. --since=14d)
-    #[arg(
-        long,
-        global = true,
-        conflicts_with = "recent",
-        help_heading = "Compatibility options"
-    )]
+    #[arg(long, global = true, conflicts_with = "recent", hide = true)]
     since: Option<String>,
 
     /// Compatibility rendering: disable color and Unicode glyphs.
-    #[arg(long, global = true, help_heading = "Compatibility options")]
+    #[arg(long, global = true, hide = true)]
     plain: bool,
 
     /// Compatibility rendering: ASCII-only glyphs with color retained.
-    #[arg(
-        long,
-        global = true,
-        conflicts_with = "plain",
-        help_heading = "Compatibility options"
-    )]
+    #[arg(long, global = true, conflicts_with = "plain", hide = true)]
     minimal: bool,
 
     /// Compatibility rendering: force-disable color.
-    #[arg(long, global = true, help_heading = "Compatibility options")]
+    #[arg(long, global = true, hide = true)]
     no_color: bool,
 
     #[command(subcommand)]
@@ -664,6 +646,7 @@ EXAMPLES:
 
     /// Print the agent skill briefing (first moves, command map, agent rules)
     #[command(
+        hide = true,
         display_order = 30,
         long_about = "\
 Print the anneal skill briefing — the same guidance the agent skill loader
@@ -685,6 +668,7 @@ EXAMPLES:
 
     /// Per-area health and work frontier
     #[command(
+        hide = true,
         display_order = 135,
         long_about = "\
 Show per-area health grades and the strongest unsettled-work frontier inside
@@ -842,13 +826,14 @@ and points at work, blockers, and broken facts."
     #[command(
         display_order = 120,
         name = "handle",
-        visible_alias = "H",
+        alias = "H",
         long_about = "Show one handle plus bounded incoming/outgoing references."
     )]
     H,
 
     /// Ranked work candidates
     #[command(
+        hide = true,
         display_order = 130,
         long_about = "Show ranked work candidates from the standard-library work verb."
     )]
@@ -856,6 +841,7 @@ and points at work, blockers, and broken facts."
 
     /// Why one handle is blocked
     #[command(
+        hide = true,
         display_order = 140,
         long_about = "Show why a handle is blocked according to convergence rules."
     )]
@@ -863,6 +849,7 @@ and points at work, blockers, and broken facts."
 
     /// Full diagnostic stream
     #[command(
+        hide = true,
         display_order = 145,
         long_about = "Show the full diagnostic stream from the checks prelude. Use --gate to exit 1 on errors."
     )]
@@ -870,6 +857,7 @@ and points at work, blockers, and broken facts."
 
     /// Diagnostic blockers
     #[command(
+        hide = true,
         display_order = 150,
         long_about = "Show error diagnostics only from the checks prelude."
     )]
@@ -877,6 +865,7 @@ and points at work, blockers, and broken facts."
 
     /// Status changes between snapshots
     #[command(
+        hide = true,
         display_order = 160,
         long_about = "Show status changes when snapshot history exists."
     )]
@@ -884,6 +873,7 @@ and points at work, blockers, and broken facts."
 
     /// Observed status, edge, namespace, and frontmatter vocabulary
     #[command(
+        hide = true,
         display_order = 70,
         long_about = "List observed status values, edge kinds, namespaces, and frontmatter fields."
     )]
@@ -898,6 +888,7 @@ and points at work, blockers, and broken facts."
 
     /// Linked adapters and capabilities
     #[command(
+        hide = true,
         display_order = 80,
         long_about = "List linked sources/adapters and their capabilities."
     )]
@@ -912,6 +903,7 @@ and points at work, blockers, and broken facts."
 
     /// Standard-library and project @verb declarations
     #[command(
+        hide = true,
         display_order = 60,
         long_about = "List standard-library and project @verb declarations."
     )]
@@ -919,6 +911,7 @@ and points at work, blockers, and broken facts."
 
     /// Runnable examples for one runtime name
     #[command(
+        hide = true,
         display_order = 65,
         long_about = "Show runnable examples for a primitive, predicate, stored relation, or verb."
     )]
@@ -926,6 +919,7 @@ and points at work, blockers, and broken facts."
 
     /// Worked recipes for common corpus questions
     #[command(
+        hide = true,
         display_order = 67,
         long_about = "List worked Code Mode recipes with copyable eval queries and join patterns."
     )]
@@ -933,6 +927,7 @@ and points at work, blockers, and broken facts."
 
     /// Save an eval query as a project @verb declaration
     #[command(
+        hide = true,
         display_order = 68,
         long_about = "Promote a working eval query into a project @verb declaration in anneal.dl."
     )]
@@ -1913,22 +1908,33 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         for name in [
-            "status", "context", "search", "read", "handle", "work", "blocked", "broken", "trend",
-            "areas", "vocab", "describe", "sources", "schema", "verbs", "examples", "eval", "init",
-            "cookbook", "save", "prime",
+            "status", "context", "search", "read", "handle", "describe", "schema", "eval", "init",
         ] {
             assert!(
                 help.contains(name),
                 "top-level help should list runtime command {name:?}"
             );
         }
-        assert!(help.contains("Compatibility options"));
-        assert!(help.contains("Runtime verbs emit NDJSON and use --format"));
+        assert!(!help.contains("Compatibility options"));
+        assert!(!help.contains("Runtime verbs emit NDJSON and use --format"));
         for hidden in [
             "health",
             "check",
             "get",
             "find",
+            "work",
+            "blocked",
+            "diagnostics",
+            "broken",
+            "areas",
+            "trend",
+            "vocab",
+            "sources",
+            "verbs",
+            "examples",
+            "cookbook",
+            "save",
+            "prime",
             "garden",
             "impact",
             "map",

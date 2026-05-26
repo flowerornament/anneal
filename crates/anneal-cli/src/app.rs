@@ -489,7 +489,8 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 Usage: anneal [OPTIONS] describe [NAME]
 
 Describe a runtime primitive, predicate, or verb. Defaults to runtime.
-Use `anneal cookbook` when you need complete worked join patterns.
+Use `anneal describe runtime` for the compact map, then `anneal -e` for
+composition.
 
 Arguments:
   [NAME]                         Object to describe
@@ -637,12 +638,8 @@ Grammar tour:
 
 Discover before guessing:
   anneal schema --format=text
+  anneal describe runtime --format=text
   anneal describe search --format=text
-  anneal examples search --format=text
-  anneal verbs --format=text
-  anneal sources --format=text
-  anneal cookbook --format=text
-  anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' --args area:String --doc 'Diagnostics in one area.'
   anneal -e '? source_of(\"work\", file, lines).'
 
 Examples:
@@ -653,7 +650,6 @@ Examples:
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
   anneal -e '? source_of(\"work\", file, lines).'
-  anneal save stale-files '? freshness(h, days), days > 30, active(h).' --doc 'Old active files.'
   anneal -e - < query.dl
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
