@@ -132,9 +132,9 @@ available while leaving the first screen.
 | `predicates` | Internal/collapse | Covered by `schema`. |
 | `source-of` | Hide | Useful provenance detail; show through `describe` instead. |
 
-## Product Decisions Still Needed
+## Product Decisions
 
-### D1. Does `broken` Survive As A Named Ritual?
+### D1. Does `broken` Survive As A Named Ritual? Resolved: No.
 
 Argument to keep: "Did I break it?" is a high-frequency, emotionally important
 agent workflow. `broken` is compact and memorable.
@@ -142,32 +142,78 @@ agent workflow. `broken` is compact and memorable.
 Argument to hide: it is exactly `diagnostic{severity: "error"}`. Keeping it
 teaches agents another noun instead of the language.
 
-Recommendation: keep callable, remove from first-screen help, and make
-`status` plus `describe diagnostic` teach the post-edit recipe.
+Decision: cut `broken` as a command. Preserve the word in `status` output and in
+the diagnostic vocabulary, but make the executable form be:
 
-### D2. What Replaces `diff` / `trend`?
+```bash
+anneal -e '? diagnostic{severity: "error"}.'
+```
+
+Rationale: the post-edit "did I break it?" ritual is real, but it should teach
+the language rather than add another memorized noun. `status` carries the
+arrival signal; `describe diagnostic` and `describe runtime` teach the recipe.
+
+### D2. What Replaces `diff` / `trend`? Resolved: Nothing Yet.
 
 There is a real product concept here: disconnected agents need to know what
 changed since last session. The current split between `trend`, legacy `diff`,
 and snapshot history is not yet one clean ritual.
 
-Recommendation: do not promote either command. Design a future "resume" or
-"since last session" surface only after the minimal surface lands.
+Decision: cut `diff` and `trend` as commands until temporal queries are honest.
+Do not ship a wrapper around incomplete `at(snapshot:last)` / `at(HEAD~N)`
+resolution.
 
-### D3. Where Does `impact` Live?
+Rationale: "what changed since I last worked?" is a valuable future ritual, but
+shipping two partial nouns fragments it. Design a future `resume` /
+`since-last-session` surface only after the underlying temporal relation works.
+
+### D3. Where Does `impact` Live? Resolved: `handle --impact`.
 
 Reverse-dependency inspection is useful. It may belong inside `handle` as a
 downstream/upstream section, or as a documented eval recipe.
 
-Recommendation: try folding into `handle` before adding or preserving a noun.
+Decision: fold into `handle <H> --impact`.
 
-### D4. What Is The Agent Briefing Surface?
+Rationale: impact is a verb-identity argument, not a workflow filter. It asks
+for a deeper view of one handle, so it belongs on the handle-inspection surface.
+The raw composition remains:
+
+```bash
+anneal -e '? downstream("H", h).'
+```
+
+### D4. What Is The Agent Briefing Surface? Resolved: `help agent`.
 
 `prime` carries compact instructions and magic words. The concept should
 survive, but "prime" as a command may not need to.
 
-Recommendation: make `anneal help agent` or `anneal help workflows` the
-canonical briefing, with `prime` hidden as compatibility.
+Decision: make `anneal help agent` the canonical briefing. Keep `prime` as a
+hidden alias for installed skills and old muscle memory.
+
+Rationale: the briefing is documentation, not a corpus action. It should be
+reachable through help, while `prime` stays as a non-discoverable compatibility
+shim for agents that already know it.
+
+### D5. Which Hidden Runtime Commands Survive? Resolved: Only Compatibility Shims.
+
+The hide-first reduction left several commands callable but unlisted:
+`work`, `blocked`, `diagnostics`, `broken`, `areas`, `trend`, and `sources`.
+That was useful while docs caught up, but it is not the target shape.
+
+Decision:
+
+- Keep hidden `check` as the CI gate shim.
+- Keep hidden `prime` as the agent-briefing alias.
+- Cut `work`, `blocked`, `diagnostics`, `broken`, `areas`, `trend`, and
+  `sources` as commands.
+- Preserve their underlying relations, predicates, examples, and teaching
+  recipes under `status`, `handle`, `schema`, `describe`, and `eval`.
+
+Rationale: hidden-but-callable is a migration tool, not a product stance.
+Agent-facing power should live in the language and its introspection surfaces.
+The research-graph ACI principles point at "simple and deep": few actions,
+compact progress per action, and active refusal of locally reasonable feature
+accumulation.
 
 ## Follow-Up Plan
 
@@ -181,7 +227,7 @@ canonical briefing, with `prime` hidden as compatibility.
 4. **Retire compatibility commands.** Remove or hide `query`, `explain`, `get`,
    `find`, `health`, `map`, `obligations`, `garden`, `orient`, and old
    flag dialects unless a product decision explicitly rescues them.
-5. **Resolve D1-D4.** Do not add new commands until these decisions are made.
+5. **Resolve D1-D5.** Do not add new commands until these decisions are made.
 
 ## Invariant
 
