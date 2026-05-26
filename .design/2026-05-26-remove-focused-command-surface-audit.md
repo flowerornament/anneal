@@ -116,7 +116,7 @@ available while leaving the first screen.
 | `cookbook` | Cut whole cluster | Recipes are valuable, but they belong as examples and Common joins on `describe NAME`; the separate command, primitive, and annotation add a second teaching system. |
 | `vocab` | Collapse into `schema` / `describe runtime` | Prevents hallucinated filters; preserve the content under introspection. |
 | `sources` | Hide | Important for adapter debugging and future federation, not first-screen. |
-| `save` | Deprecate/remove | Duplicates agents' Edit/Write tools and creates a second verb-authoring path. Teach direct `anneal.dl` editing instead. |
+| `save` | Retire | Duplicates agents' Edit/Write tools and creates a second verb-authoring path. Teach direct `anneal.dl` editing instead. |
 | `prime` | Hide or convert to help topic | Useful cold-agent briefing, but not a core action. |
 | `find` | Deprecate/remove | Covered by `search` and `eval` over `*handle`. |
 | `get` | Deprecate/remove | Covered by `handle`, `read`, and `search`. |
@@ -176,8 +176,8 @@ canonical briefing, with `prime` hidden as compatibility.
 2. **Collapse teaching surfaces into `describe`.** Move examples, source
    locations, vocabulary pointers, and verb listings into `describe runtime` /
    `describe NAME` where appropriate. Cut the cookbook cluster entirely.
-3. **Deprecate `save`.** Replace cookbook `Save:` lines with copyable
-   `@verb(...)` blocks under `Add to anneal.dl:`. Teach direct editing.
+3. **Retire `save`.** Remove the file-writing path and make old invocations
+   teach direct `@verb(...)` editing in `anneal.dl`.
 4. **Retire compatibility commands.** Remove or hide `query`, `explain`, `get`,
    `find`, `health`, `map`, `obligations`, `garden`, `orient`, and old
    flag dialects unless a product decision explicitly rescues them.

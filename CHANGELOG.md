@@ -21,6 +21,11 @@ All notable changes to `anneal` are documented in this file.
 - Removed the prelude command wrappers for `anneal vocab`, `anneal verbs`, and
   `anneal examples`. The underlying introspection data remains queryable
   through `schema`, `describe`, `examples(...)`, and `verbs(...)`.
+- Removed the `anneal save` write path. Reusable project moves are now ordinary
+  `@verb(...)` declarations edited directly in `anneal.dl`.
+
+Older entries below describe the behavior shipped in that release. For current
+workflow guidance, prefer the Unreleased section above and the README.
 
 ## v0.12.0 - 2026-05-21
 

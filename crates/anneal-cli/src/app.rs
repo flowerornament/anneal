@@ -19,11 +19,10 @@ use anneal_core::{
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
-use serde_json::json;
 
 use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
-    ReadCommand, SaveCommand, SaveOutcome, SearchCommand, SourcesCommand,
+    ReadCommand, SearchCommand, SourcesCommand,
 };
 
 const DEFAULT_CORPUS: &str = "cli";
@@ -101,13 +100,6 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
         let registry = RuntimeRegistry::load(&invocation.root)?;
         let entry = registry.registry.resolve_for_actor(name, &registry.actor)?;
         return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
-    }
-    if let RuntimeCommand::Save(command) = &invocation.command {
-        let session = RuntimeSession::load(&invocation.root)?;
-        let outcome = command.run(&invocation.root, &session.program, &session.registry)?;
-        let stdout = io::stdout();
-        let mode = invocation.output.resolve(stdout.is_terminal());
-        return write_save_outcome(stdout.lock(), mode, &outcome);
     }
     let session = RuntimeSession::load(&invocation.root)?;
     let output = session.run(invocation.command)?;
@@ -252,7 +244,6 @@ enum RuntimeCommand {
     },
     Sources,
     Schema,
-    Save(SaveCommand),
     Eval {
         query: String,
         explain: ExplainOptions,
@@ -283,7 +274,6 @@ enum HelpTopic {
     Describe,
     Sources,
     Schema,
-    Save,
     Eval,
 }
 
@@ -304,7 +294,6 @@ impl HelpTopic {
             "describe" => Self::Describe,
             "sources" => Self::Sources,
             "schema" => Self::Schema,
-            "save" => Self::Save,
             "eval" | "-e" | "--eval" => Self::Eval,
             _ => return None,
         })
@@ -497,37 +486,6 @@ List runtime predicates, primitives, signatures, and provenance.
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
-            Self::Save => {
-                "\
-Usage: anneal [OPTIONS] save <NAME> <QUERY> --doc <TEXT> [--args <ARGS>] [--force]
-
-Promote a working eval query into a project @verb declaration in anneal.dl.
-Saved verbs are callable as `anneal <NAME>` and documented by
-`anneal describe <NAME>` / `anneal help <NAME>`.
-
-Arguments:
-  <NAME>                         Verb name, e.g. broken-area
-  <QUERY>                        Datalog query text
-
-Options:
-      --doc <TEXT>               Verb help text to write into @verb
-      --args <ARGS>              Comma-separated typed args, e.g. area:String,limit:Int=10
-      --force                    Replace an existing project verb or shadow a prelude verb
-
-If a declared arg name appears as a variable in the final query and the query
-does not already bind it with `verb_arg(\"name\", name)`, save injects that
-binding into the saved query. For more complex local-rule shapes, write the
-verb_arg(...) join explicitly.
-
-Recovery: inspect anneal.dl, remove the generated @verb(...) block, or rerun
-anneal save with --force to replace the saved verb.
-
-Examples:
-  anneal save broken-area '? diagnostic{subject: h}, area_of{h: h, area: area}.' \\
-    --args area:String --doc 'Diagnostics in one area.'
-  anneal broken-area language --format=text
-"
-            }
             Self::Eval => {
                 "\
 Usage: anneal [OPTIONS] -e [OPTIONS] <QUERY>
@@ -614,7 +572,7 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 "
             }
         };
-        if matches!(self, Self::Eval | Self::Save) {
+        if matches!(self, Self::Eval) {
             format!("{body}{RUNTIME_HELP_OPTIONS}")
         } else {
             format!("{body}{RUNTIME_PROVENANCE_OPTIONS}{RUNTIME_HELP_OPTIONS}")
@@ -652,7 +610,7 @@ impl RuntimeCommand {
             if let Some(topic) = HelpTopic::parse(topic) {
                 return Ok(Self::Help { topic });
             }
-            if let Some(message) = retired_teaching_command_message(topic) {
+            if let Some(message) = retired_command_message(topic) {
                 bail!("{message}");
             }
             return Ok(Self::Verb {
@@ -737,18 +695,21 @@ impl RuntimeCommand {
                 ensure_no_args(rest, "schema")?;
                 Ok(Self::Schema)
             }
-            "save" => parse_save(rest),
+            "save" => bail!("{}", retired_save_message()),
             "-e" | "--eval" | "eval" => parse_eval(rest),
             other if other.starts_with('-') => bail!("unknown runtime option {other:?}"),
             other @ ("cookbook" | "vocab" | "verbs" | "examples") => {
-                bail!("{}", retired_teaching_command_message(other).expect("retired command message"))
+                bail!(
+                    "{}",
+                    retired_command_message(other).expect("retired command message")
+                )
             }
             other => Ok(parse_dynamic_verb(other, rest)),
         }
     }
 }
 
-fn retired_teaching_command_message(command: &str) -> Option<&'static str> {
+fn retired_command_message(command: &str) -> Option<&'static str> {
     match command {
         "cookbook" => Some(
             "anneal cookbook was folded into `anneal describe NAME`; use `anneal describe diagnostic` for worked joins or `anneal help eval` for query recipes",
@@ -762,8 +723,13 @@ fn retired_teaching_command_message(command: &str) -> Option<&'static str> {
         "examples" => Some(
             "anneal examples was folded into `anneal describe NAME`; use `anneal describe search` or query `examples(name, example)` with `anneal -e`",
         ),
+        "save" => Some(retired_save_message()),
         _ => None,
     }
+}
+
+fn retired_save_message() -> &'static str {
+    "anneal save has been retired; edit anneal.dl directly and add an @verb(...) declaration, then verify with `anneal describe <name>` and a direct invocation"
 }
 
 struct RuntimeSession {
@@ -970,9 +936,6 @@ impl RuntimeSession {
                 Ok(CommandOutput::rows(output.rows, RowView::Eval))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
-            RuntimeCommand::Save(_) => {
-                bail!("save is handled before corpus evaluation")
-            }
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
         }
     }
@@ -1498,33 +1461,6 @@ fn render_dynamic_verb_query(query_source: &str, bindings: &[(String, Literal)])
 
 fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
     writer.write_all(text.as_bytes())?;
-    Ok(())
-}
-
-fn write_save_outcome<W: Write>(
-    mut writer: W,
-    mode: OutputMode,
-    outcome: &SaveOutcome,
-) -> Result<()> {
-    if matches!(mode, OutputMode::Json | OutputMode::JsonExplicit) {
-        let record = json!({
-            "name": outcome.name,
-            "path": outcome.path.as_str(),
-            "replaced": outcome.replaced,
-            "shadowed": outcome.shadowed,
-        });
-        writeln!(writer, "{}", serde_json::to_string(&record)?)?;
-        return Ok(());
-    }
-    writeln!(writer, "Saved verb {}", outcome.name)?;
-    writeln!(writer, "Path: {}", outcome.path)?;
-    if let Some(replaced) = &outcome.replaced {
-        writeln!(writer, "Replaced: {replaced}")?;
-    }
-    if let Some(shadowed) = &outcome.shadowed {
-        writeln!(writer, "Shadows: {shadowed}")?;
-    }
-    writeln!(writer, "Next: anneal {} --help", outcome.name)?;
     Ok(())
 }
 
@@ -2228,72 +2164,6 @@ fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
     )
 }
 
-fn parse_save(args: &[String]) -> Result<RuntimeCommand> {
-    let mut name = None;
-    let mut query = None;
-    let mut doc = None;
-    let mut arg_specs = Vec::new();
-    let mut force = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                return Ok(RuntimeCommand::Help {
-                    topic: HelpTopic::Save,
-                });
-            }
-            "--doc" => {
-                assign_once(
-                    &mut doc,
-                    next_value(&mut iter, "--doc")?,
-                    "save accepts one --doc value",
-                )?;
-            }
-            value if value.starts_with("--doc=") => {
-                assign_once(
-                    &mut doc,
-                    value_after_equals(value),
-                    "save accepts one --doc value",
-                )?;
-            }
-            "--args" => {
-                arg_specs.extend(parse_save_arg_list(next_value(&mut iter, "--args")?));
-            }
-            value if value.starts_with("--args=") => {
-                arg_specs.extend(parse_save_arg_list(value_after_equals(value)));
-            }
-            "--force" => force = true,
-            value if value.starts_with('-') => {
-                reject_runtime_compatibility_flag("save", value)?;
-                bail!("unknown save option {value:?}");
-            }
-            value if name.is_none() => {
-                name = Some(value.to_string());
-            }
-            value if query.is_none() => {
-                query = Some(value.to_string());
-            }
-            value => bail!("save accepts one name and one query; unexpected argument {value:?}"),
-        }
-    }
-    Ok(RuntimeCommand::Save(SaveCommand {
-        name: name.context("save requires a verb name")?,
-        query: query.context("save requires a query string")?,
-        args: arg_specs,
-        doc: doc.context("save requires --doc <TEXT>")?,
-        force,
-    }))
-}
-
-fn parse_save_arg_list(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
 fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut explain = ExplainOptions::disabled();
@@ -2608,11 +2478,6 @@ mod tests {
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
-    }
-
-    fn run_save(root: &camino::Utf8Path, command: &SaveCommand) -> Result<SaveOutcome> {
-        let session = RuntimeSession::load(root)?;
-        command.run(root, &session.program, &session.registry)
     }
 
     #[test]
@@ -3067,6 +2932,7 @@ mod tests {
             ("vocab", "folded into Code Mode queries"),
             ("verbs", "folded into introspection"),
             ("examples", "folded into `anneal describe NAME`"),
+            ("save", "edit anneal.dl directly"),
         ] {
             let err = Invocation::parse(os(&["anneal", command]))
                 .expect_err("retired command should teach replacement");
@@ -3705,163 +3571,6 @@ mod tests {
         assert_eq!(
             rows[0].fields.get("strict"),
             Some(&anneal_core::runtime::Value::Bool(true))
-        );
-    }
-
-    #[test]
-    fn save_promotes_eval_query_to_callable_project_verb() {
-        let dir = tempdir().expect("tempdir");
-        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
-        fs::create_dir(&root).expect("create corpus root");
-        fs::create_dir(root.join("language")).expect("create area");
-        fs::write(root.join("language").join("a.md"), "# A\n").expect("write doc");
-
-        let outcome = run_save(
-            &root,
-            &SaveCommand {
-                name: "by-area".to_string(),
-                query: r"? area_of{h: h, area: area}.".to_string(),
-                args: vec!["area:String".to_string()],
-                doc: "Files in one area.".to_string(),
-                force: false,
-            },
-        )
-        .expect("save succeeds");
-
-        assert_eq!(outcome.name, "by-area");
-        let project = fs::read_to_string(root.join("anneal.dl")).expect("project rules");
-        assert!(project.contains(r#"name: "by-area""#));
-        assert!(project.contains(r#"verb_arg(\"area\", area)"#));
-
-        let session = RuntimeSession::load(&root).expect("session reloads");
-        let output = session
-            .run(RuntimeCommand::Verb {
-                name: "by-area".to_string(),
-                args: vec!["language".to_string()],
-            })
-            .expect("saved verb runs");
-        let CommandOutput::Rows { rows, .. } = output else {
-            panic!("saved verb should emit rows");
-        };
-        assert!(rows.iter().any(|row| {
-            row.fields.get("h")
-                == Some(&anneal_core::runtime::Value::String(
-                    "language/a.md".to_string(),
-                ))
-        }));
-    }
-
-    #[test]
-    fn save_arg_injection_ignores_question_marks_inside_strings() {
-        let dir = tempdir().expect("tempdir");
-        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
-        fs::create_dir(&root).expect("create corpus root");
-        fs::write(root.join("a.md"), "# A\n").expect("write doc");
-
-        run_save(
-            &root,
-            &SaveCommand {
-                name: "not-why".to_string(),
-                query: r#"? *handle{id: h}, h != "why?"."#.to_string(),
-                args: vec!["h:HandleId".to_string()],
-                doc: "Reject a literal handle.".to_string(),
-                force: false,
-            },
-        )
-        .expect("question mark inside literal does not corrupt injected query");
-
-        let project = fs::read_to_string(root.join("anneal.dl")).expect("project rules");
-        assert!(project.contains(r#"verb_arg(\"h\", h)"#));
-        assert!(project.contains(r"why?"));
-    }
-
-    #[test]
-    fn save_requires_force_for_collisions_and_replaces_project_verbs() {
-        let dir = tempdir().expect("tempdir");
-        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
-        fs::create_dir(&root).expect("create corpus root");
-        fs::write(root.join("a.md"), "# A\n").expect("write doc");
-
-        run_save(
-            &root,
-            &SaveCommand {
-                name: "mine".to_string(),
-                query: r#"? *handle{id: h, kind: "file"}."#.to_string(),
-                args: Vec::new(),
-                doc: "First version.".to_string(),
-                force: false,
-            },
-        )
-        .expect("first save succeeds");
-
-        let err = run_save(
-            &root,
-            &SaveCommand {
-                name: "mine".to_string(),
-                query: r"? *handle{id: h}.".to_string(),
-                args: Vec::new(),
-                doc: "Second version.".to_string(),
-                force: false,
-            },
-        )
-        .expect_err("collision without force rejected");
-        assert!(err.to_string().contains("use --force"));
-
-        let outcome = run_save(
-            &root,
-            &SaveCommand {
-                name: "mine".to_string(),
-                query: r"? *handle{id: h}.".to_string(),
-                args: Vec::new(),
-                doc: "Second version.".to_string(),
-                force: true,
-            },
-        )
-        .expect("force replaces project verb");
-
-        assert!(outcome.replaced.is_some());
-        let project = fs::read_to_string(root.join("anneal.dl")).expect("project rules");
-        assert_eq!(project.matches(r#"name: "mine""#).count(), 1);
-        assert!(project.contains("Second version."));
-    }
-
-    #[test]
-    fn save_force_can_shadow_prelude_verbs_with_warning_metadata() {
-        let dir = tempdir().expect("tempdir");
-        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
-        fs::create_dir(&root).expect("create corpus root");
-        fs::write(root.join("a.md"), "# A\n").expect("write doc");
-
-        let err = run_save(
-            &root,
-            &SaveCommand {
-                name: "work".to_string(),
-                query: r"? *handle{id: h}.".to_string(),
-                args: Vec::new(),
-                doc: "Local work definition.".to_string(),
-                force: false,
-            },
-        )
-        .expect_err("prelude collision without force rejected");
-        assert!(err.to_string().contains("use --force"));
-
-        let outcome = run_save(
-            &root,
-            &SaveCommand {
-                name: "work".to_string(),
-                query: r"? *handle{id: h}.".to_string(),
-                args: Vec::new(),
-                doc: "Local work definition.".to_string(),
-                force: true,
-            },
-        )
-        .expect("force shadows prelude");
-
-        assert!(outcome.shadowed.is_some());
-        assert!(
-            fs::read_to_string(root.join("anneal.dl"))
-                .expect("project rules")
-                .contains(r#"name: "work""#)
         );
     }
 

@@ -1240,8 +1240,8 @@ vocabulary is authored by editing `anneal.dl` and writing ordinary
 `@verb(...)` declarations. Agents may copy an example from `describe`
 or `help eval`, edit the project file, then verify with `anneal
 describe <name>` and a direct invocation. The experimental `anneal save`
-write path is not part of the public design direction and is scheduled
-for retirement; it should not be referenced by docs or new surfaces.
+write path is retired; old invocations return a recovery message that
+points back to direct `anneal.dl` editing.
 Rationale: agents already have Edit/Write tools, and a second CLI write
 path adds collision, locking, and generated-syntax complexity without
 increasing the expressive power of the language.
@@ -2450,13 +2450,14 @@ system; it is a projection layer over the runtime vocabulary.
 must present the rule language as the primary compositional surface.
 Default help teaches a short ladder:
 
-1. arrive with `status`, `context`, and `prime`;
-2. program the corpus with `schema`, `describe`, `verbs`, `vocab`,
-   `sources`, and `eval` / `-e`;
+1. arrive with `status` and `context`;
+2. program the corpus with `schema`, `describe`, and `eval` / `-e`;
 3. retrieve evidence with `search`, `read`, and `handle`;
-4. work the convergence frontier with `work`, `areas`, `blocked`,
-   `broken`, and `trend`;
-5. configure with `init`.
+4. configure with `init`.
+
+Additional convergence and adapter support verbs such as `work`,
+`blocked`, `diagnostics`, `broken`, `areas`, `trend`, and `sources`
+remain callable, but default help keeps them below the first screen.
 
 Compatibility-era commands remain callable while the legacy boundary
 exists, but they do not appear as peer nouns in default help. Verbs are

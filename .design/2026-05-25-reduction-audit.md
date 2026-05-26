@@ -140,9 +140,9 @@ grammar. `save` is a second authoring path that:
   read the file before editing
 - requires teaching a third syntax (CLI args mapping to verb args)
 Replacement: cookbook → describe Common joins shows the eval pattern;
-agents Edit `anneal.dl` to add `@verb(name: "X", query: "...", ...)`.
-Make `describe NAME` show a copyable `@verb(...)` block under
-`Save as project verb:` for any prelude verb or eval result.
+agents edit `anneal.dl` to add `@verb(name: "X", query: "...", ...)`.
+Where a template is useful, label it `Add to anneal.dl:` rather than
+framing it as a separate save workflow.
 Lost: one-shot save ergonomics. Honestly accepted.
 Magic-word impact: none — "save" was a generic verb, not part of the
 convergence vocabulary.
@@ -446,8 +446,8 @@ Removes:
 Preserved as:
 - `Common joins:` line in `describe NAME` (already implemented for ~8
   predicates per Slice 3 gate; extend to remaining predicates).
-- A `Save as project verb:` block under each `describe NAME` showing a
-  copyable `@verb(...)` declaration.
+- Optional `Add to anneal.dl:` templates showing copyable `@verb(...)`
+  declarations where a project extension is genuinely useful.
 
 Rationale: the cookbook is a teaching surface for *predicate composition*.
 The teaching card surface (`describe`) is the natural home; making
@@ -524,8 +524,8 @@ Goal: shrink default `--help` and hide drift; nothing yet removed.
 - Hide from help: `prime`, `vocab`, `verbs`, `examples`, `cookbook`,
   `save`, `work`, `areas`, `blocked`, `diagnostics`, `broken`, `trend`,
   `sources`, plus all 12 compat commands.
-- Extend `describe NAME` to show all `examples(NAME, e)` rows and a
-  `Save as project verb:` block with copyable `@verb(...)`.
+- Extend `describe NAME` to show all `examples(NAME, e)` rows and optional
+  `Add to anneal.dl:` templates where durable project vocabulary is useful.
 - Add `Common joins:` to remaining predicates not yet covered.
 - Add `--impact` flag to `handle` (resolves 2026-05-26 D3).
 - Add `--upstream` flag to `handle` (replaces `orient --file=X`).

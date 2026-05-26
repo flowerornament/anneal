@@ -925,14 +925,6 @@ and points at work, blockers, and broken facts."
     )]
     Cookbook,
 
-    /// Save an eval query as a project @verb declaration
-    #[command(
-        hide = true,
-        display_order = 68,
-        long_about = "Promote a working eval query into a project @verb declaration in anneal.dl."
-    )]
-    Save,
-
     /// Datalog query over corpus facts
     #[command(
         display_order = 90,
@@ -1775,7 +1767,6 @@ fn run() -> anyhow::Result<()> {
             | Command::Verbs
             | Command::Examples
             | Command::Cookbook
-            | Command::Save
             | Command::Eval,
         ) => {
             anyhow::bail!(
@@ -1933,7 +1924,6 @@ mod tests {
             "verbs",
             "examples",
             "cookbook",
-            "save",
             "prime",
             "garden",
             "impact",

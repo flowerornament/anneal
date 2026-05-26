@@ -5,7 +5,6 @@
 
 pub mod app;
 mod context;
-mod save;
 
 pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
 use anneal_core::runtime::prelude::{datalog_string_literal, low_confidence_filter};
@@ -15,7 +14,6 @@ pub use context::{
     ContextCommand, ContextGroupError, ContextHit, ContextNeighbor, ContextOutput, ContextSpan,
     DEFAULT_CONTEXT_BUDGET, DEFAULT_CONTEXT_HITS, DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH,
 };
-pub(crate) use save::{SaveCommand, SaveOutcome};
 
 pub const SURFACE_NAME: &str = "anneal-cli";
 
