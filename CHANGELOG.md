@@ -2,7 +2,15 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## v0.13.0 - 2026-05-28
+
+anneal becomes the language it has always claimed to be.
+
+This release completes the v0.13.0 simplification arc: the visible CLI narrows
+to the nine-command Code Mode surface, convergence history becomes automatic,
+recent-change recovery becomes compositional, and retired workflows fail loudly
+with exact replacement queries instead of silently preserving parallel command
+dialects.
 
 ### Added
 
@@ -11,15 +19,22 @@ All notable changes to `anneal` are documented in this file.
   growing history, and legacy aggregate history rows are preserved during the
   transition.
 - Runtime queries can use `git_mtime(file, instant)` and `recent(h, days)` to
-  compose recent-change workflows without adding a global `--since` flag.
+  compose session-recovery workflows without adding a global `--since` flag.
 - `anneal handle <HANDLE> --impact` shows direct and indirect reverse
   dependencies from the same traversal policy as the legacy `impact` command.
+- `anneal help agent` is now the canonical bundled agent briefing surface.
+  The hidden `anneal prime` alias still emits the same briefing for installed
+  skill loaders and existing muscle memory.
+- `describe` examples and Common joins now show projected `Output: <columns>`
+  hints so agents can see row shape before running a query.
+- CR-D102 adds the Surface Evolution Framework as the durable methodology for
+  future command, predicate, annotation, and top-level feature changes.
 
 ### Changed
 
-- Default help now teaches the compact Code Mode surface: `status`, `context`,
-  `search`, `read`, `handle`, `schema`, `describe`, `eval`, `init`, and
-  `help`.
+- Default `anneal --help` now teaches the compact Code Mode surface:
+  `status`, `context`, `schema`, `describe`, `eval`, `search`, `read`,
+  `handle`, and `init`, plus standard `help`.
 - Top-level help no longer advertises the hidden compatibility filter/render
   flags as a "Compatibility options" section.
 - `describe runtime` now carries the compact command map and vocabulary query
@@ -34,15 +49,14 @@ All notable changes to `anneal` are documented in this file.
   the "Work The Convergence Frontier" section instead of listing hidden
   runtime nouns. The retired `H` alias mention and the legacy "hidden
   compatibility commands" guidance are removed.
-- `anneal help agent` is now the canonical bundled agent briefing surface.
-  The hidden `anneal prime` alias still emits the same briefing for installed
-  skill loaders and existing muscle memory.
+- All retired commands return teaching recovery messages naming the eval-form
+  or runtime-verb replacement.
 
 ### Removed
 
-- Removed the cookbook cluster: `@cookbook(...)`, the `cookbook(...)`
-  primitive, the `anneal cookbook` command, and the bundled cookbook recipe
-  declarations.
+- Removed the cookbook cluster: the `@cookbook(...)` annotation, the
+  `cookbook(...)` primitive, the `anneal cookbook` command, CLI cookbook
+  rendering, and the bundled prelude recipes.
 - Removed the prelude command wrappers for `anneal vocab`, `anneal verbs`, and
   `anneal examples`. The underlying introspection data remains queryable
   through `schema`, `describe`, `examples(...)`, and `verbs(...)`.
@@ -57,14 +71,31 @@ All notable changes to `anneal` are documented in this file.
   `--recent`, `--since`, `--plain`, `--minimal`, and `--no-color`) from the
   runtime surface. Use `--format`, `--json`, `recent(h, days)`, and
   `git_mtime(file, instant)` instead.
+- Removed the "Compatibility options" section from top-level help.
 - Retired the hidden runtime command nouns `work`, `blocked`, `diagnostics`,
   `broken`, `areas`, `trend`, and `sources`. Their workflows now live as
   explicit `anneal -e` compositions over `top_work`, `blocked_row`,
   `diagnostic`, `area_health`, `area_frontier`, `snapshot_history_present`,
   and `sources`.
 
+### Migration
+
+- No config migration is required from v0.12.x.
+- Every retired command emits a teaching recovery message naming the eval or
+  runtime-verb replacement. Scripts using retired commands fail loudly with the
+  replacement printed; there is no silent breakage.
+- The nine-command surface is the same set advanced agents already used:
+  legacy nouns drift into the language instead of remaining parallel commands.
+
+### Known Limitations
+
+- Temporal references such as `at("snapshot:last")` and `at("HEAD~N")` remain
+  out of the `help eval` grammar tour until temporal resolution is honest
+  against the automatic snapshot path. `anneal status` writes snapshots now;
+  trend-style queries return when `at()` resolves those references cleanly.
+
 Older entries below describe the behavior shipped in that release. For current
-workflow guidance, prefer the Unreleased section above and the README.
+workflow guidance, prefer the v0.13.0 section above and the README.
 
 ## v0.12.0 - 2026-05-21
 
