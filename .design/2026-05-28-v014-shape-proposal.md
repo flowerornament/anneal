@@ -484,7 +484,7 @@ E2. **Section → ??** Currently `*handle.kind = "section"` carries
    - Option b: become *meta rows on the parent file with key="section"
    - Option c: stay as *handle but with kind="file" + span_id
 
-E3. **Version → ??** Versioned artifacts (formal-model-v17.md):
+E3. **Version → ??** Versioned artifacts (e.g. `formal-model-v17.md`):
    - Option a: become labels (just a labeled file)
    - Option b: become *meta on the file with key="version", value="17"
    - Option c: stay because Supersedes edges need a typed target
