@@ -1,7 +1,7 @@
 ---
 status: current
-updated: 2026-05-26
-author: claude (open for codex review and convergence)
+updated: 2026-05-28
+author: claude + codex (independent review, converged)
 depends-on:
   - 2026-05-13-corpus-runtime.md
   - 2026-05-19-compatibility-surface-retire-audit.md
@@ -298,9 +298,57 @@ at the bottom (mirroring the pattern from
 - Quarterly audit cadence enters the project rhythm
 - Annual magic-word inventory becomes a planned activity
 
-## Codex Review Section
+## Codex review and convergence notes
 
-*Reserved for codex's independent review. Pushback expected on the
-quantitative thresholds, the Feature Justification Template's likelihood
-of honest completion, and the meta-question of whether this framework is
-itself the additive-gravity problem in process form.*
+I converge on CR-D102 with guardrails. My independent pass agrees with
+the central frame: Code Mode is the product surface, and commands must
+earn their keep against composed queries plus `schema` / `describe`.
+The research-graph check points the same way: agent actions should be
+simple and minimally optioned; compact, efficient actions help agents
+make progress; progressive disclosure fails when accumulation is not
+actively prevented; and notational economy comes from compositional
+grammar rather than a large primitive vocabulary. Automatic provenance
+also supports preserving convergence history without asking agents to
+manage a write command.
+
+The quantitative thresholds are acceptable as review triggers, not
+laws. The 2x eval-form ratio, 100 LOC footprint, and >=3 magic-word
+surface count should force a second look; they should not decide edge
+cases mechanically. After two or three audits, recalibrate them against
+actual cold-agent traces.
+
+The Feature Justification Template is useful only if reviewers validate
+evidence, not presence. A filled checkbox is not evidence. Each proposal
+must show the exact eval equivalent, the teaching path through
+`describe`, the fold/delete alternative, and any real usage signal. If a
+reviewer cannot reproduce the eval form or the cold-agent claim, the
+proposal has not passed the framework.
+
+The framework is not additive gravity if it deletes more surface than it
+creates. Treat it as a deletion protocol: PR-time justification catches
+new additions, quarterly audits catch drift that looked harmless one PR
+at a time, and the annual magic-word inventory checks whether the
+philosophy is still being taught. If the process becomes ceremony that
+does not produce cuts, folds, or clearer vocabulary, retire it.
+
+KEEP-c needs a narrow reading. "Composite workflow" means an arrival or
+action unit whose value comes from orchestration, ranking, rendering, or
+bounded context assembly that a single eval cannot make equally usable.
+It does not cover "the query is inconvenient" or "this recipe is common."
+Those cases belong in `describe`, `help eval`, `@verb`, or prelude
+vocabulary.
+
+Cadence should be both continuous and scheduled. A PR template catches
+surface additions at the moment they are cheapest to stop. The quarterly
+remove-focused audit remains necessary because drift is cumulative; an
+annual magic-word inventory is enough for vocabulary health unless a
+release intentionally introduces new philosophical terms.
+
+The current open decisions demonstrate the framework's intended shape:
+automatic status snapshots preserve the convergence story without
+adding `anneal snapshot`; `git_mtime` and `recent` add composable
+runtime vocabulary instead of a global `--since`; compatibility flags
+leave top-level help rather than living as labeled zombies; and
+`describe` teaches output shape instead of spawning another examples
+command. I accept the framework as durable methodology for v0.13 with
+the guardrails above.

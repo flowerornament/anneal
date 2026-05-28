@@ -109,9 +109,6 @@ ROOT DIRECTORY:
     $XDG_CONFIG_HOME/anneal/config.toml
     ~/.config/anneal/config.toml        (fallback)
 
-  --area is not a path selector. It scopes output to an area name, usually
-  the top-level directory under --root or a configured concern group.
-
 CONFIGURATION:
 
   New installs work without configuration. The built-in prelude supplies
@@ -150,6 +147,10 @@ struct Cli {
     /// Output as JSON (all commands). Disables color. Suitable for piping to jq or programmatic consumption.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Output format: text or json.
+    #[arg(long, value_name = "FORMAT", value_parser = ["text", "json"])]
+    format: Option<String>,
 
     /// Compatibility JSON only: pretty-print object output. Runtime verbs emit NDJSON and use --format.
     #[arg(long, global = true, hide = true)]
@@ -1060,7 +1061,10 @@ fn skill_briefing_body(markdown: &str) -> &str {
 }
 
 fn run() -> anyhow::Result<()> {
-    let cli_args = Cli::parse();
+    let mut cli_args = Cli::parse();
+    if cli_args.format.as_deref() == Some("json") {
+        cli_args.json = true;
+    }
 
     // `anneal prime` is pure output — no graph, no config, no disk I/O.
     // Handle it before any expensive loading so onboarding stays instant.
@@ -1908,6 +1912,21 @@ mod tests {
         }
         assert!(!help.contains("Compatibility options"));
         assert!(!help.contains("Runtime verbs emit NDJSON and use --format"));
+        assert!(help.contains("--format <FORMAT>"));
+        for hidden_flag in [
+            "--pretty",
+            "--area",
+            "--recent",
+            "--since",
+            "--plain",
+            "--minimal",
+            "--no-color",
+        ] {
+            assert!(
+                !help.contains(hidden_flag),
+                "top-level help should not list compatibility flag {hidden_flag:?}"
+            );
+        }
         for hidden in [
             "health",
             "check",

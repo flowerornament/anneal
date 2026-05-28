@@ -160,17 +160,100 @@ pub fn append_snapshot_entry(root: &Utf8Path, entry: &SnapshotEntry) -> Result<(
     Ok(())
 }
 
+/// Outcome from a capped snapshot-history write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotAppendOutcome {
+    Appended,
+    SkippedDuplicate,
+}
+
+/// Append one v2 snapshot entry while keeping only the latest `max_entries`.
+///
+/// If the latest valid entry already captures the same corpus/prelude/facts,
+/// the new timestamp is ignored. This lets frequent automatic snapshots avoid
+/// turning unchanged `status` reads into noisy history churn.
+pub fn append_snapshot_entry_capped(
+    root: &Utf8Path,
+    entry: &SnapshotEntry,
+    max_entries: usize,
+) -> Result<SnapshotAppendOutcome, HistoryError> {
+    validate_snapshot_entry(entry).map_err(HistoryError::InvalidEntry)?;
+
+    let mut file = read_snapshot_history_file(root)?;
+    if file
+        .history
+        .entries
+        .last()
+        .is_some_and(|latest| snapshot_state_matches(latest, entry))
+    {
+        return Ok(SnapshotAppendOutcome::SkippedDuplicate);
+    }
+
+    file.history.entries.push(entry.clone());
+    let keep = max_entries.max(1);
+    let start = file.history.entries.len().saturating_sub(keep);
+    write_snapshot_entries(root, &file.preserved_lines, &file.history.entries[start..])?;
+    Ok(SnapshotAppendOutcome::Appended)
+}
+
+fn snapshot_state_matches(left: &SnapshotEntry, right: &SnapshotEntry) -> bool {
+    left.corpus == right.corpus
+        && left.prelude_hash == right.prelude_hash
+        && left.facts == right.facts
+}
+
+fn write_snapshot_entries(
+    root: &Utf8Path,
+    preserved_lines: &[String],
+    entries: &[SnapshotEntry],
+) -> Result<(), HistoryError> {
+    let path = repo_history_path(root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent.as_std_path()).map_err(|source| HistoryError::Io {
+            path: parent.to_string(),
+            source,
+        })?;
+    }
+
+    let mut buf = Vec::new();
+    for line in preserved_lines {
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+    }
+    for entry in entries {
+        validate_snapshot_entry(entry).map_err(HistoryError::InvalidEntry)?;
+        serde_json::to_writer(&mut buf, entry).map_err(HistoryError::Encode)?;
+        buf.push(b'\n');
+    }
+    fs::write(path.as_std_path(), buf).map_err(|source| HistoryError::Io {
+        path: path.to_string(),
+        source,
+    })
+}
+
 /// Read repository-local v2 snapshot history.
 ///
 /// Missing history returns an empty history. Unparseable lines are skipped and
 /// reported as structured warnings so a truncated append cannot poison all
 /// future time-travel queries.
 pub fn read_snapshot_history(root: &Utf8Path) -> Result<SnapshotHistory, HistoryError> {
+    Ok(read_snapshot_history_file(root)?.history)
+}
+
+struct SnapshotHistoryFile {
+    history: SnapshotHistory,
+    preserved_lines: Vec<String>,
+}
+
+fn read_snapshot_history_file(root: &Utf8Path) -> Result<SnapshotHistoryFile, HistoryError> {
     let path = repo_history_path(root);
     let file = match fs::File::open(path.as_std_path()) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SnapshotHistory::default());
+            return Ok(SnapshotHistoryFile {
+                history: SnapshotHistory::default(),
+                preserved_lines: Vec::new(),
+            });
         }
         Err(source) => {
             return Err(HistoryError::Io {
@@ -182,6 +265,7 @@ pub fn read_snapshot_history(root: &Utf8Path) -> Result<SnapshotHistory, History
 
     let reader = BufReader::new(file);
     let mut history = SnapshotHistory::default();
+    let mut preserved_lines = Vec::new();
     for (line_index, line) in reader.lines().enumerate() {
         let line_number = line_index + 1;
         let line = line.map_err(|source| HistoryError::Io {
@@ -199,13 +283,35 @@ pub fn read_snapshot_history(root: &Utf8Path) -> Result<SnapshotHistory, History
                     message,
                 }),
             },
-            Err(err) => history.warnings.push(HistoryWarning {
-                line: line_number,
-                message: err.to_string(),
-            }),
+            Err(err) => {
+                if is_legacy_snapshot_line(&line) {
+                    preserved_lines.push(line);
+                } else {
+                    history.warnings.push(HistoryWarning {
+                        line: line_number,
+                        message: err.to_string(),
+                    });
+                }
+            }
         }
     }
-    Ok(history)
+    Ok(SnapshotHistoryFile {
+        history,
+        preserved_lines,
+    })
+}
+
+fn is_legacy_snapshot_line(line: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("timestamp")
+        && object.contains_key("handles")
+        && object.contains_key("edges")
+        && object.contains_key("states")
 }
 
 fn validate_snapshot_entry(entry: &SnapshotEntry) -> Result<(), String> {
@@ -463,5 +569,104 @@ mod tests {
 
         assert!(history.entries().is_empty());
         assert!(history.warnings().is_empty());
+    }
+
+    #[test]
+    fn capped_append_retains_latest_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        for idx in 1..=3 {
+            append_snapshot_entry_capped(
+                &root,
+                &SnapshotEntry::new(
+                    format!("s{idx}"),
+                    format!("2026-05-1{idx}T10:00:00Z"),
+                    CorpusId::from("test"),
+                    standard_prelude_set(),
+                    vec![SnapshotEntryFact::new("a.md", "status", format!("s{idx}"))],
+                ),
+                2,
+            )
+            .expect("append capped");
+        }
+
+        let history = read_snapshot_history(&root).expect("read history");
+        let snapshots = history
+            .entries()
+            .iter()
+            .map(|entry| entry.snapshot.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(snapshots, ["s2", "s3"]);
+    }
+
+    #[test]
+    fn capped_append_preserves_legacy_snapshot_lines_without_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        let path = repo_history_path(&root);
+        fs::create_dir_all(path.parent().expect("history parent").as_std_path())
+            .expect("create history parent");
+        let legacy = serde_json::json!({
+            "timestamp": "2026-03-29T20:33:58.159171+00:00",
+            "handles": {"total": 67, "active": 67, "frozen": 0},
+            "edges": {"total": 0},
+            "states": {"draft": 1},
+            "obligations": {"outstanding": 0, "discharged": 0, "mooted": 0},
+            "diagnostics": {"errors": 1, "warnings": 0},
+            "namespaces": {}
+        })
+        .to_string();
+        fs::write(path.as_std_path(), format!("{legacy}\n")).expect("write legacy history");
+
+        let entry = SnapshotEntry::new(
+            "s1",
+            "2026-05-13T10:00:00Z",
+            CorpusId::from("test"),
+            standard_prelude_set(),
+            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+        );
+
+        append_snapshot_entry_capped(&root, &entry, 100).expect("append capped");
+
+        let contents = fs::read_to_string(path.as_std_path()).expect("read history file");
+        assert!(contents.starts_with(&legacy));
+
+        let history = read_snapshot_history(&root).expect("read history");
+        assert_eq!(history.entries(), &[entry]);
+        assert!(history.warnings().is_empty());
+    }
+
+    #[test]
+    fn capped_append_skips_duplicate_latest_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        let first = SnapshotEntry::new(
+            "s1",
+            "2026-05-13T10:00:00Z",
+            CorpusId::from("test"),
+            standard_prelude_set(),
+            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+        );
+        let duplicate = SnapshotEntry::new(
+            "s2",
+            "2026-05-13T10:01:00Z",
+            CorpusId::from("test"),
+            standard_prelude_set(),
+            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+        );
+
+        assert_eq!(
+            append_snapshot_entry_capped(&root, &first, 100).expect("append first"),
+            SnapshotAppendOutcome::Appended
+        );
+        assert_eq!(
+            append_snapshot_entry_capped(&root, &duplicate, 100).expect("skip duplicate"),
+            SnapshotAppendOutcome::SkippedDuplicate
+        );
+
+        let history = read_snapshot_history(&root).expect("read history");
+
+        assert_eq!(history.entries(), &[first]);
     }
 }

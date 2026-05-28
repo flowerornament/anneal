@@ -4,14 +4,27 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `anneal status` now records automatic bounded snapshot history for
+  convergence tracking. Repeated unchanged status reads coalesce instead of
+  growing history, and legacy aggregate history rows are preserved during the
+  transition.
+- Runtime queries can use `git_mtime(file, instant)` and `recent(h, days)` to
+  compose recent-change workflows without adding a global `--since` flag.
+
 ### Changed
 
 - Default help now teaches the compact Code Mode surface: `status`, `context`,
   `search`, `read`, `handle`, `schema`, `describe`, `eval`, `init`, and
   `help`.
+- Top-level help no longer advertises the hidden compatibility filter/render
+  flags as a "Compatibility options" section.
 - `describe runtime` now carries the compact command map and vocabulary query
   recipes. `describe NAME` remains the place to learn examples and Common
   joins before writing `anneal -e` queries.
+- `describe` examples and Common joins now show projected output columns so
+  agents can see row shape before running a query.
 - `anneal help eval` no longer teaches `at("snapshot:last")` or `at("HEAD~N")`
   temporal references. The runtime did not honor these (D2 cut `trend`/`diff`
   until temporal resolution is honest), so teaching them misled agents.

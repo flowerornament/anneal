@@ -948,6 +948,18 @@ impl Database {
     }
 
     #[must_use]
+    pub fn with_git_mtimes(mut self, mtimes: impl IntoIterator<Item = (String, String)>) -> Self {
+        Arc::make_mut(&mut self.graph).git_mtimes = mtimes.into_iter().collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_evaluation_day(mut self, day: i64) -> Self {
+        Arc::make_mut(&mut self.graph).evaluation_day = Some(day);
+        self
+    }
+
+    #[must_use]
     pub fn with_content_provider(mut self, provider: impl ContentProvider + 'static) -> Self {
         self.content_provider = Some(Arc::new(provider));
         self
@@ -2133,6 +2145,7 @@ struct GraphIndex {
     pipeline_positions: BTreeMap<String, i64>,
     linear_namespaces: BTreeSet<String>,
     status_snapshots: BTreeMap<String, Vec<SnapshotStatus>>,
+    git_mtimes: BTreeMap<String, String>,
     evaluation_day: Option<i64>,
 }
 
@@ -2141,6 +2154,7 @@ struct HandleState {
     kind: String,
     status: Option<String>,
     namespace: String,
+    file: String,
     date: Option<i64>,
 }
 
@@ -2165,6 +2179,7 @@ impl GraphIndex {
                             namespace: row_string(row, NAMESPACE_FIELD)
                                 .unwrap_or_default()
                                 .to_owned(),
+                            file: row_string(row, FILE_FIELD).unwrap_or_default().to_owned(),
                             date: row_string(row, DATE_FIELD).and_then(iso_days_since_epoch),
                         },
                     );
@@ -2341,6 +2356,8 @@ impl GraphIndex {
             }
             PrimitivePredicate::Freshness => self.freshness_tuples(constraints),
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
+            PrimitivePredicate::GitMtime => self.git_mtime_tuples(constraints),
+            PrimitivePredicate::Recent => self.recent_tuples(constraints),
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
@@ -2673,6 +2690,62 @@ impl GraphIndex {
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
+    }
+
+    fn git_mtime_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let file = string_constraint(constraints, 0);
+        let instant = string_constraint(constraints, 1);
+        match (file, instant) {
+            (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
+            (ArgConstraint::Exact(file), _) => self
+                .git_mtimes
+                .get(file)
+                .map(|mtime| Tuple(vec![string_value(file), string_value(mtime)]))
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            (ArgConstraint::Any, _) => self
+                .git_mtimes
+                .iter()
+                .map(|(file, instant)| Tuple(vec![string_value(file), string_value(instant)]))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn recent_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        let handle = string_constraint(constraints, 0);
+        let days = match i64_constraint(constraints, 1) {
+            ArgConstraint::Exact(days) if days >= 0 => days,
+            ArgConstraint::Any | ArgConstraint::Exact(_) | ArgConstraint::Impossible => {
+                return Vec::new();
+            }
+        };
+        let Some(today) = self.evaluation_day.or_else(current_days_since_epoch) else {
+            return Vec::new();
+        };
+        let cutoff = today.saturating_sub(days);
+        match handle {
+            ArgConstraint::Impossible => Vec::new(),
+            ArgConstraint::Exact(handle) => self
+                .recent_tuple_for(handle, days, cutoff)
+                .into_iter()
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            ArgConstraint::Any => self
+                .handles
+                .keys()
+                .filter_map(|handle| self.recent_tuple_for(handle, days, cutoff))
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn recent_tuple_for(&self, handle: &str, days: i64, cutoff: i64) -> Option<Tuple> {
+        let state = self.handles.get(handle)?;
+        let instant = self.git_mtimes.get(&state.file)?;
+        let mtime_day = snapshot_days_since_epoch(instant)?;
+        (mtime_day >= cutoff).then(|| Tuple(vec![string_value(handle), int_value(days)]))
     }
 
     fn count_tuples(
@@ -4325,6 +4398,8 @@ fn primitive_tuples(
         | PrimitivePredicate::DischargeCount
         | PrimitivePredicate::Freshness
         | PrimitivePredicate::Flux
+        | PrimitivePredicate::GitMtime
+        | PrimitivePredicate::Recent
         | PrimitivePredicate::TokenEstimate => Ok(database.graph.tuples(primitive, constraints)),
     }
 }
@@ -8776,6 +8851,60 @@ release_blocker(code) := issue(code, "error").
         );
 
         assert_query_rows(&outputs[0], vec![row([("delta", n(2))])]);
+    }
+
+    #[test]
+    fn git_mtime_returns_file_instants() {
+        let output = evaluate_query_output(
+            r"? git_mtime(file, instant).",
+            lifecycle_database().with_git_mtimes([(
+                "core/draft.md.md".to_string(),
+                "2026-05-20T12:00:00Z".to_string(),
+            )]),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([
+                ("file", s("core/draft.md.md")),
+                ("instant", s("2026-05-20T12:00:00Z")),
+            ])],
+        );
+    }
+
+    #[test]
+    fn recent_filters_handles_by_git_mtime_window() {
+        let output = evaluate_query_output_with_options(
+            r"? recent(h, 7).",
+            lifecycle_database()
+                .with_git_mtimes([
+                    (
+                        "core/draft.md.md".to_string(),
+                        "2026-05-20T12:00:00Z".to_string(),
+                    ),
+                    (
+                        "core/done.md.md".to_string(),
+                        "2026-04-01T12:00:00Z".to_string(),
+                    ),
+                ])
+                .with_evaluation_day(
+                    snapshot_days_since_epoch("2026-05-27").expect("fixture date parses"),
+                ),
+            EvalOptions::default(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("h", s("draft.md"))])],
+        );
     }
 
     #[test]

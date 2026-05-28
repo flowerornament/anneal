@@ -534,6 +534,8 @@ out_degree(h, n)
 discharge_count(h, n)
 freshness(h, days)
 flux(h, days, delta)             // ground `days`; binds `delta`
+git_mtime(file, instant)         // git commit time for a tracked corpus file
+recent(h, days)                  // ground `days`; handles changed by git history
 token_estimate(h, n)
 
 // Content retrieval — all RELATIONAL
@@ -639,10 +641,16 @@ spans exist. Unknown handles produce no rows for these relations.
 be ground and non-negative; otherwise it produces no rows. It counts
 status transitions for `h` across `*snapshot{id: h, key: "status"}`
 rows within the window plus the current `*handle.status`. With no
-matching history, `delta` is `0`. Rationale: these metrics must be
-total over known handles so agent queries can distinguish "no signal"
-from "relation missing"; snapshot-backed precision can improve
-without changing the relational shape.
+matching history, `delta` is `0`. `git_mtime(file, instant)` exposes
+the latest git commit timestamp for tracked corpus files when the
+runtime host supplies git metadata; non-git roots, untracked files, and
+files with no commits produce no rows. `recent(h, days)` requires a
+ground non-negative `days` argument and returns handles whose backing
+file has a `git_mtime` within that many days of evaluation. Rationale:
+these metrics must be total over known handles where possible and
+silent for unsupported host metadata so agent queries can distinguish
+"no signal" from "relation missing"; snapshot-backed precision can
+improve without changing the relational shape.
 
 The aggregation form
 `TopK{k: N, key: score : (h, score) : body}` (Part IV §17)
@@ -977,6 +985,14 @@ snapshot so replay is monotonic as history grows. The runtime reads
 history through the core history reader and hydrates it into
 `*snapshot` rows before evaluation; the evaluator consumes relations
 and does not open project files directly.
+
+`anneal status` records a bounded automatic snapshot after rendering
+the current status query. The writer keeps the latest implementation
+cap (100 entries by default), skips a new row when the latest parseable
+snapshot already has the same corpus, prelude hash, and facts, and
+preserves legacy aggregate history rows without hydrating them into
+v2 `*snapshot` facts. Agents should not manage a separate snapshot
+command; convergence history accumulates by using the arrival surface.
 
 Snapshot history is the v2.0 fallback for handle-state time travel, not
 an implicit full-corpus replay. When a `Source` cannot re-extract full
@@ -2077,12 +2093,14 @@ runtime globals; runtime verbs must reject them with a recovery hint
 rather than silently ignore them or route through compatibility code.
 
 Hidden compatibility commands may continue to accept their historical
-filter/render flags while they exist, but top-level help must label
-those flags as compatibility options. Runtime row limits are `--rows`
-for dynamically projected verbs and `--limit` only where a fixed verb
-explicitly declares row/sample semantics; domain concepts such as
-`context --hits`, `context --budget`, and `read --budget` must document
-their own unit rather than borrowing generic limit language.
+filter/render flags while they exist, but top-level help must not list
+them as global options or as a compatibility-options section. Recovery
+messages teach the boundary only when a caller actually mixes flag
+dialects. Runtime row limits are `--rows` for dynamically projected
+verbs and `--limit` only where a fixed verb explicitly declares
+row/sample semantics; domain concepts such as `context --hits`,
+`context --budget`, and `read --budget` must document their own unit
+rather than borrowing generic limit language.
 
 Rationale: the language-first surface should be predictable from the
 help text. A flag either belongs to the runtime verb envelope or to the
@@ -2472,6 +2490,20 @@ Rationale: primitives-first did not replace Code Mode; it made Code
 Mode usable by giving agents retrieval and introspection primitives.
 Help must teach that shape directly instead of re-creating a wide
 command taxonomy.
+
+**Definition CR-D102 (Surface evolution framework).** Anneal's
+command surface and top-level features are evaluated through the
+framework in `.design/2026-05-26-surface-evolution-framework.md`.
+Feature proposals that add commands, prelude predicates, annotation
+types, or top-level CLI surface must provide an eval equivalent,
+cold-agent discoverability evidence, cluster footprint, real usage
+signal, and magic-word impact. The default verdict is CUT unless the
+feature qualifies as an engine primitive, a measured cold-agent win,
+or a composite workflow no single eval expresses. Quarterly
+remove-focused audits run the framework against the visible surface;
+annual magic-word inventories check that vocabulary remains deliberate.
+The numeric thresholds in the framework are calibration triggers, not
+timeless laws.
 
 ### §36 I/O contract [CR-D25]
 
@@ -3474,6 +3506,7 @@ config key.
 - CR-D99: Diagnostic verb naming (§33)
 - CR-D100: Cookbook cluster retired (§17)
 - CR-D101: Direct project verb authoring (§17)
+- CR-D102: Surface evolution framework (§35)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

@@ -36,6 +36,7 @@ dependencies = [
  "anneal-md",
  "anyhow",
  "camino",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",

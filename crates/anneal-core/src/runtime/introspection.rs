@@ -120,6 +120,8 @@ impl IntrospectionIndex {
             | PrimitivePredicate::DischargeCount
             | PrimitivePredicate::Freshness
             | PrimitivePredicate::Flux
+            | PrimitivePredicate::GitMtime
+            | PrimitivePredicate::Recent
             | PrimitivePredicate::TokenEstimate
             | PrimitivePredicate::Search
             | PrimitivePredicate::Read
@@ -266,6 +268,7 @@ impl IntrospectionBuilder {
                     "Hidden support commands: work, blocked, diagnostics, broken, areas, trend, sources.".to_string(),
                     "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
                     "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
+                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use recent(h, days).".to_string(),
                 ],
                 examples: vec![
                     "? schema(name, kind, signature, determinism, provenance).",
@@ -273,6 +276,8 @@ impl IntrospectionBuilder {
                     "? examples(\"search\", example).",
                     "? *handle{status: status}, status != null.",
                     "? *edge{kind: kind}.",
+                    "? *handle{id: h, file: file}, git_mtime(file, instant).",
+                    "? recent(h, 7), *handle{id: h, summary: summary}.",
                 ],
                 ..DescribeCard::default()
             }),
@@ -998,7 +1003,10 @@ fn describe_card(card: DescribeCard<'_>) -> String {
         lines.push(format!("Relationship: {relationship}"));
     }
     if !card.common_joins.is_empty() {
-        lines.push(format!("Common joins: {}", card.common_joins.join("; ")));
+        lines.push("Common joins:".to_string());
+        for join in card.common_joins {
+            lines.push(format!("- {}", with_output_shape(join)));
+        }
     }
     lines.extend(card.extra_lines);
     for requirement in card.requires {
@@ -1008,13 +1016,113 @@ fn describe_card(card: DescribeCard<'_>) -> String {
         lines.push(format!("See also: {}.", card.see_also.join(", ")));
     }
     for example in card.examples {
-        lines.push(format!("Example: {example}"));
+        lines.push(format!("Example: {}", with_output_shape(example)));
     }
     if let Some(source) = card.source {
         let label = card.source_label.unwrap_or("Source");
         lines.push(format!("{label}: {source}."));
     }
     lines.join("\n")
+}
+
+fn with_output_shape(text: &str) -> String {
+    let columns = projected_columns(text);
+    if columns.is_empty() {
+        return text.to_string();
+    }
+    format!("{text} -> Output: {}", columns.join(", "))
+}
+
+fn projected_columns(text: &str) -> Vec<String> {
+    let fragment = query_fragment(text);
+    let fragment = strip_string_literals(fragment);
+    let chars = fragment.chars().collect::<Vec<_>>();
+    let mut columns = Vec::<String>::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if !is_ident_start(chars[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < chars.len() && is_ident_continue(chars[index]) {
+            index += 1;
+        }
+        let token = chars[start..index].iter().collect::<String>();
+        let next = next_non_ws(&chars, index);
+        if matches!(next, Some(':' | '(' | '{')) || is_reserved_token(&token) {
+            continue;
+        }
+        if !columns.iter().any(|column| column == &token) {
+            columns.push(token);
+        }
+    }
+    columns
+}
+
+fn query_fragment(text: &str) -> &str {
+    if let Some(start) = text.find('`')
+        && let Some(end) = text[start + 1..].find('`')
+    {
+        return &text[start + 1..start + 1 + end];
+    }
+    text
+}
+
+fn strip_string_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            out.push(' ');
+        } else if ch == '"' {
+            in_string = true;
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn next_non_ws(chars: &[char], index: usize) -> Option<char> {
+    chars
+        .iter()
+        .skip(index)
+        .copied()
+        .find(|ch| !ch.is_whitespace())
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn is_reserved_token(token: &str) -> bool {
+    matches!(
+        token,
+        "not"
+            | "in"
+            | "contains"
+            | "starts_with"
+            | "ends_with"
+            | "matches"
+            | "true"
+            | "false"
+            | "null"
+    )
 }
 
 fn primitive_determinism(primitive: PrimitivePredicate) -> &'static str {
@@ -1072,6 +1180,12 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
         PrimitivePredicate::Flux => {
             "Count status changes for a handle over a recent day window, using snapshot history."
         }
+        PrimitivePredicate::GitMtime => {
+            "Return the latest git commit timestamp observed for a tracked corpus file."
+        }
+        PrimitivePredicate::Recent => {
+            "Return handles whose backing file changed within a bound number of days according to git history."
+        }
         PrimitivePredicate::TokenEstimate => {
             "Return the estimated number of stored content tokens for a handle."
         }
@@ -1117,6 +1231,9 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Flux => {
             &["snapshot history. On a corpus with no snapshots, status-change counts are zero."]
         }
+        PrimitivePredicate::GitMtime | PrimitivePredicate::Recent => &[
+            "git metadata supplied by the runtime host. Untracked files and non-git corpora produce no rows.",
+        ],
         PrimitivePredicate::ReadFull => &[
             "the read_full runtime capability. Prefer read(handle, budget, ...) unless the full file is intentional.",
         ],
@@ -1182,6 +1299,7 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Schema => &["describe", "examples"],
         PrimitivePredicate::Describe => &["schema", "examples"],
         PrimitivePredicate::Examples => &["describe", "schema"],
+        PrimitivePredicate::GitMtime | PrimitivePredicate::Recent => &["*handle", "freshness"],
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact => {
@@ -1284,6 +1402,10 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         "undischarged" => &[
             "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
+        ],
+        "git_mtime" | "recent" => &[
+            "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
+            "`recent(h, 7), search{query: \"text\", handle: h}` for recent search hits",
         ],
         "area_of" | "areas" | "area_health" | "area_frontier" => &[
             "`area_of{h: h, area: \"X\"}, top_work(h, energy)` for area-scoped work",
@@ -1426,6 +1548,8 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Predicates => Some("? predicates(name, doc, file, lines)."),
         PrimitivePredicate::Verbs => Some("? verbs(name, query, doc, output_schema)."),
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
+        PrimitivePredicate::GitMtime => Some("? git_mtime(file, instant)."),
+        PrimitivePredicate::Recent => Some("? recent(h, 7)."),
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled

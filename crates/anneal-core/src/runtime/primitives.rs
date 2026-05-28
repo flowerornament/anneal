@@ -20,6 +20,8 @@ pub(crate) enum PrimitivePredicate {
     DischargeCount,
     Freshness,
     Flux,
+    GitMtime,
+    Recent,
     TokenEstimate,
     Search,
     Read,
@@ -72,6 +74,8 @@ impl PrimitivePredicate {
         Self::DischargeCount,
         Self::Freshness,
         Self::Flux,
+        Self::GitMtime,
+        Self::Recent,
         Self::TokenEstimate,
         Self::Search,
         Self::Read,
@@ -109,6 +113,8 @@ impl PrimitivePredicate {
             "discharge_count" => Some(Self::DischargeCount),
             "freshness" => Some(Self::Freshness),
             "flux" => Some(Self::Flux),
+            "git_mtime" => Some(Self::GitMtime),
+            "recent" => Some(Self::Recent),
             "token_estimate" => Some(Self::TokenEstimate),
             "search" => Some(Self::Search),
             "read" => Some(Self::Read),
@@ -145,6 +151,8 @@ impl PrimitivePredicate {
             Self::DischargeCount => "discharge_count",
             Self::Freshness => "freshness",
             Self::Flux => "flux",
+            Self::GitMtime => "git_mtime",
+            Self::Recent => "recent",
             Self::TokenEstimate => "token_estimate",
             Self::Search => "search",
             Self::Read => "read",
@@ -203,12 +211,16 @@ impl PrimitivePredicate {
                 parameters: &["h", "n"],
                 sealed: true,
             },
-            Self::Freshness => PrimitiveSignature {
+            Self::Freshness | Self::Recent => PrimitiveSignature {
                 parameters: &["h", "days"],
                 sealed: true,
             },
             Self::Flux => PrimitiveSignature {
                 parameters: &["h", "days", "delta"],
+                sealed: true,
+            },
+            Self::GitMtime => PrimitiveSignature {
+                parameters: &["file", "instant"],
                 sealed: true,
             },
             Self::Search => PrimitiveSignature {
@@ -302,6 +314,8 @@ impl PrimitivePredicate {
             | Self::DischargeCount
             | Self::Freshness
             | Self::Flux
+            | Self::GitMtime
+            | Self::Recent
             | Self::TokenEstimate
             | Self::Search
             | Self::Read
@@ -337,6 +351,10 @@ impl PrimitivePredicate {
                 position: 0,
                 argument: "handle",
             }],
+            Self::Recent => &[RequiredPrimitiveInput {
+                position: 1,
+                argument: "days",
+            }],
             Self::Match => &[
                 RequiredPrimitiveInput {
                     position: 0,
@@ -366,6 +384,7 @@ impl PrimitivePredicate {
             | Self::Freshness
             | Self::Flux
             | Self::TokenEstimate
+            | Self::GitMtime
             | Self::Schema
             | Self::Predicates
             | Self::Verbs

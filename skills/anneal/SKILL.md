@@ -161,6 +161,8 @@ Compose with `anneal -e` over prelude vocabulary:
 - `? top_work(h, energy), *handle{id: h, file: file}.`: ranked active work
 - `? area_health(area, grade, files, errors, cross_edges).`: per-area health
 - `? blocked_row(h, energy, source), h = "HANDLE".`: why one handle is stalled
+- `? recent(h, 7), *handle{id: h, summary: summary}.`: handles changed in the last week
+- `? *handle{id: h, file: f}, git_mtime(f, t).`: git-backed file change time
 
 Project `@verb` declarations in `anneal.dl` appear in `schema` and are callable
 by name. Edit `anneal.dl` directly to promote a working query into a reusable
@@ -191,7 +193,7 @@ Common stored relations:
 Common prelude families:
 
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
-- convergence: lifecycle position, entropy, blocked, advancing
+- convergence: lifecycle position, entropy, blocked, advancing, recent changes
 - checks: `diagnostic`
 - ranking: `search`, `top_work`, `top_k` helpers
 - views: callable starter verbs

@@ -38,8 +38,9 @@ pub use facts::{
 };
 pub use hash::fnv1a_64;
 pub use history::{
-    HistoryError, HistoryWarning, SnapshotEntry, SnapshotEntryFact, SnapshotHistory,
-    append_snapshot_entry, read_snapshot_history, repo_history_path,
+    HistoryError, HistoryWarning, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact,
+    SnapshotHistory, append_snapshot_entry, append_snapshot_entry_capped, read_snapshot_history,
+    repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
 pub use policy::{

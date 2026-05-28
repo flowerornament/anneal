@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
+use std::process::Command;
 
 use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
@@ -12,13 +13,14 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFacts, CorpusId, FactStore, Generation,
-    ProjectExtension, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability,
-    VerbEntry, VerbLayer, VerbRegistry, load_project_extension, merge_program_layers,
-    render_verb_arg_facts,
+    ProjectExtension, SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg,
+    VerbArgKind, VerbCapability, VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped,
+    load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
+use chrono::{SecondsFormat, Utc};
 
 use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
@@ -27,6 +29,7 @@ use crate::{
 
 const DEFAULT_CORPUS: &str = "cli";
 const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
+const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 
 pub fn should_handle_args(args: &[OsString]) -> bool {
     let mut iter = args.iter().skip(1);
@@ -728,11 +731,14 @@ fn retired_save_message() -> &'static str {
 }
 
 struct RuntimeSession {
+    root: Utf8PathBuf,
     program: Program,
     store: FactStore,
     registry: VerbRegistry,
     actor: ActorContext,
     sources: Vec<SourceInfo>,
+    prelude_hash: String,
+    git_mtimes: BTreeMap<String, String>,
 }
 
 struct RuntimeRegistry {
@@ -838,6 +844,12 @@ impl RuntimeSession {
                 .replace_configs(&corpus, configs)
                 .context("failed to merge runtime config facts")?;
         }
+        let git_mtimes = git_mtimes_for_files(
+            root,
+            store.handles().iter().map(|handle| handle.file.as_str()),
+        );
+        let history = read_snapshot_history(root).context("failed to read snapshot history")?;
+        store.replace_snapshot_history(&history);
         let registry = match &project {
             Some(project) => VerbRegistry::from_layers(&[
                 (VerbLayer::Prelude, loaded_prelude.program()),
@@ -847,11 +859,14 @@ impl RuntimeSession {
         };
 
         Ok(Self {
+            root: root.to_path_buf(),
             program,
             store,
             registry,
             actor,
             sources,
+            prelude_hash: loaded_prelude.set().hash().to_string(),
+            git_mtimes,
         })
     }
 
@@ -989,7 +1004,44 @@ impl RuntimeSession {
     fn run_status(&self) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor("status", &self.actor)?;
         let output = self.eval(plan.query_source(), ExplainOptions::disabled())?;
+        if let Err(err) = self.record_status_snapshot() {
+            eprintln!("warning: could not write automatic status snapshot: {err}");
+        }
         Ok(CommandOutput::Status(output.rows))
+    }
+
+    fn record_status_snapshot(&self) -> Result<()> {
+        let entry = self.status_snapshot_entry();
+        append_snapshot_entry_capped(&self.root, &entry, DEFAULT_AUTO_SNAPSHOT_LIMIT)
+            .context("failed to append automatic status snapshot")?;
+        Ok(())
+    }
+
+    fn status_snapshot_entry(&self) -> SnapshotEntry {
+        let at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+        let mut facts = self
+            .store
+            .handles()
+            .iter()
+            .filter_map(|handle| {
+                handle.status.as_ref().map(|status| {
+                    SnapshotEntryFact::new(handle.id.as_str(), "status", status.as_str())
+                })
+            })
+            .collect::<Vec<_>>();
+        facts.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.key.cmp(&right.key))
+                .then_with(|| left.value.cmp(&right.value))
+        });
+        SnapshotEntry::with_prelude_hash(
+            format!("status-{at}"),
+            at,
+            CorpusId::from(DEFAULT_CORPUS),
+            self.prelude_hash.clone(),
+            facts,
+        )
     }
 
     fn run_query(
@@ -1018,7 +1070,8 @@ impl RuntimeSession {
             options = options.with_explain_options(explain);
         }
         let database = Database::from_store_for_options(&self.store, &options)
-            .with_sources(self.sources.clone());
+            .with_sources(self.sources.clone())
+            .with_git_mtimes(self.git_mtimes.clone());
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator.run_fixpoint().context("query fixpoint failed")?;
         evaluator
@@ -1032,6 +1085,49 @@ fn runtime_config_facts(
     corpus: &CorpusId,
 ) -> Vec<anneal_core::ConfigFact> {
     project.map_or_else(Vec::new, |project| project.runtime_config_facts(corpus))
+}
+
+fn git_mtimes_for_files<'a>(
+    root: &camino::Utf8Path,
+    files: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    if !is_inside_git_work_tree(root) {
+        return BTreeMap::new();
+    }
+
+    let mut mtimes = BTreeMap::new();
+    for file in files
+        .into_iter()
+        .filter(|file| !file.is_empty())
+        .collect::<BTreeSet<_>>()
+    {
+        let Ok(output) = Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(["log", "-1", "--format=%cI", "--"])
+            .arg(file)
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let instant = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !instant.is_empty() {
+            mtimes.insert(file.to_string(), instant);
+        }
+    }
+    mtimes
+}
+
+fn is_inside_git_work_tree(root: &camino::Utf8Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root.as_std_path())
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 enum CommandOutput {
@@ -2475,6 +2571,16 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
+    fn git(root: &camino::Utf8Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(args)
+            .status()
+            .unwrap_or_else(|err| panic!("git {args:?} failed to run: {err}"));
+        assert!(status.success(), "git {args:?} failed: {status}");
+    }
+
     #[test]
     fn routes_only_runtime_commands() {
         assert!(should_handle_args(&os(&["anneal"])));
@@ -3426,6 +3532,106 @@ mod tests {
     }
 
     #[test]
+    fn status_writes_capped_automatic_snapshot_history() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "---\nstatus: draft\n---\n# A\n").expect("write doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        session.run(RuntimeCommand::Status).expect("status runs");
+        session
+            .run(RuntimeCommand::Status)
+            .expect("unchanged status runs");
+
+        let history = anneal_core::read_snapshot_history(&root).expect("read history");
+
+        assert_eq!(history.entries().len(), 1);
+        assert!(
+            history.entries()[0]
+                .facts
+                .iter()
+                .any(|fact| { fact.id == "a.md" && fact.key == "status" && fact.value == "draft" })
+        );
+    }
+
+    #[test]
+    fn runtime_loads_snapshot_history_for_trend() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "---\nstatus: current\n---\n# A\n").expect("write doc");
+        anneal_core::append_snapshot_entry(
+            &root,
+            &anneal_core::SnapshotEntry::with_prelude_hash(
+                "s1",
+                "2026-05-13T10:00:00Z",
+                CorpusId::from(DEFAULT_CORPUS),
+                "test-prelude",
+                vec![anneal_core::SnapshotEntryFact::new(
+                    "a.md", "status", "draft",
+                )],
+            ),
+        )
+        .expect("append history");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session.run(RuntimeCommand::Trend).expect("trend runs");
+        let CommandOutput::Rows { rows, .. } = output else {
+            panic!("trend should emit rows");
+        };
+
+        assert!(rows.iter().any(|row| {
+            row.fields.get("h") == Some(&anneal_core::runtime::Value::String("a.md".to_string()))
+                && row.fields.get("prior_status")
+                    == Some(&anneal_core::runtime::Value::String("draft".to_string()))
+                && row.fields.get("current_status")
+                    == Some(&anneal_core::runtime::Value::String("current".to_string()))
+        }));
+    }
+
+    #[test]
+    fn eval_git_mtime_uses_git_history() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "---\nstatus: draft\n---\n# A\n").expect("write doc");
+        git(&root, &["init"]);
+        git(&root, &["config", "user.email", "anneal@example.test"]);
+        git(&root, &["config", "user.name", "Anneal Test"]);
+        git(&root, &["add", "a.md"]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(["commit", "-m", "initial"])
+            .env("GIT_AUTHOR_DATE", "2026-05-20T12:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", "2026-05-20T12:00:00+00:00")
+            .status()
+            .expect("git commit runs");
+        assert!(status.success(), "git commit failed: {status}");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: "? *handle{id: h, file: file}, git_mtime(file, instant).".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows { rows, .. } = output else {
+            panic!("eval should emit rows");
+        };
+
+        assert!(rows.iter().any(|row| {
+            row.fields.get("h") == Some(&anneal_core::runtime::Value::String("a.md".to_string()))
+                && row.fields.get("instant")
+                    == Some(&anneal_core::runtime::Value::String(
+                        "2026-05-20T12:00:00Z".to_string(),
+                    ))
+        }));
+    }
+
+    #[test]
     fn describe_cards_teach_common_join_patterns() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
@@ -3446,6 +3652,8 @@ mod tests {
                 required_string(row, "doc").is_ok_and(|doc| {
                     doc.contains("Visible commands: status, context, search, read, handle, schema, describe, eval, init")
                         && doc.contains("Observed vocabulary recipes")
+                        && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
+                        && doc.contains("? recent(h, 7), *handle{id: h, summary: summary}. -> Output: h, summary")
                 })
             }),
             "describe runtime should fold the command map and vocabulary recipes into the teaching card"
@@ -3490,6 +3698,7 @@ mod tests {
                 required_string(row, "doc").is_ok_and(|doc| {
                     doc.contains("diagnostic{subject: h}, area_of")
                         && doc.contains("Example: ? diagnostic{code: \"E001\"")
+                        && doc.contains("Output: h")
                 })
             }),
             "describe diagnostic should carry the folded recipe and example"
