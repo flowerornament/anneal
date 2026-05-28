@@ -7,20 +7,27 @@
 
 @doc(
   name: "work_candidate",
-  doc: "Return handles with an unsettled-work score; these are possible things an agent could improve."
+  doc: "Return every handle with raw unsettled-work energy; use frontier(h, energy) for the capped top projection."
 ).
 work_candidate(h, energy) :=
   potential(h, energy).
 
 @doc(
-  name: "top_work",
-  doc: "Return the highest-scoring work candidates, capped to the default status/work list size."
+  name: "frontier",
+  doc: "Return the highest-energy work candidates, capped to the default status/work list size."
 ).
-top_work(h, energy) :=
+frontier(h, energy) :=
   (h, energy) = TopK{ k: 25, key: energy :
     (h, energy) :
     work_candidate(h, energy)
   }.
+
+@doc(
+  name: "top_work",
+  doc: "Deprecated alias for frontier(h, energy); retained through v0.13 for compatibility."
+).
+top_work(h, energy) :=
+  frontier(h, energy).
 
 @doc(
   name: "ranked_work",

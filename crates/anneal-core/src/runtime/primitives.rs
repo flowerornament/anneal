@@ -21,6 +21,7 @@ pub(crate) enum PrimitivePredicate {
     Freshness,
     Flux,
     GitMtime,
+    ChangedWithin,
     Recent,
     TokenEstimate,
     Search,
@@ -75,6 +76,7 @@ impl PrimitivePredicate {
         Self::Freshness,
         Self::Flux,
         Self::GitMtime,
+        Self::ChangedWithin,
         Self::Recent,
         Self::TokenEstimate,
         Self::Search,
@@ -114,6 +116,7 @@ impl PrimitivePredicate {
             "freshness" => Some(Self::Freshness),
             "flux" => Some(Self::Flux),
             "git_mtime" => Some(Self::GitMtime),
+            "changed_within" => Some(Self::ChangedWithin),
             "recent" => Some(Self::Recent),
             "token_estimate" => Some(Self::TokenEstimate),
             "search" => Some(Self::Search),
@@ -152,6 +155,7 @@ impl PrimitivePredicate {
             Self::Freshness => "freshness",
             Self::Flux => "flux",
             Self::GitMtime => "git_mtime",
+            Self::ChangedWithin => "changed_within",
             Self::Recent => "recent",
             Self::TokenEstimate => "token_estimate",
             Self::Search => "search",
@@ -211,7 +215,7 @@ impl PrimitivePredicate {
                 parameters: &["h", "n"],
                 sealed: true,
             },
-            Self::Freshness | Self::Recent => PrimitiveSignature {
+            Self::Freshness | Self::ChangedWithin | Self::Recent => PrimitiveSignature {
                 parameters: &["h", "days"],
                 sealed: true,
             },
@@ -315,6 +319,7 @@ impl PrimitivePredicate {
             | Self::Freshness
             | Self::Flux
             | Self::GitMtime
+            | Self::ChangedWithin
             | Self::Recent
             | Self::TokenEstimate
             | Self::Search
@@ -351,7 +356,7 @@ impl PrimitivePredicate {
                 position: 0,
                 argument: "handle",
             }],
-            Self::Recent => &[RequiredPrimitiveInput {
+            Self::ChangedWithin | Self::Recent => &[RequiredPrimitiveInput {
                 position: 1,
                 argument: "days",
             }],

@@ -1823,12 +1823,12 @@ fn ensure_no_retired_compatibility_flags(cli: &Cli, command: &str) -> anyhow::Re
     }
     if cli.recent {
         anyhow::bail!(
-            "{command} does not accept retired compatibility filter --recent; use `recent(h, days)` with `anneal -e`"
+            "{command} does not accept retired compatibility filter --recent; use `changed_within(h, days)` with `anneal -e`"
         );
     }
     if cli.since.is_some() {
         anyhow::bail!(
-            "{command} does not accept retired compatibility filter --since; use `git_mtime(file, instant)` or `recent(h, days)` with `anneal -e`"
+            "{command} does not accept retired compatibility filter --since; use `git_mtime(file, instant)` or `changed_within(h, days)` with `anneal -e`"
         );
     }
     if cli.pretty {

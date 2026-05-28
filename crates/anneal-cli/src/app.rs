@@ -445,7 +445,7 @@ Grammar tour:
     `id: h` binds a variable. `kind: \"file\"` filters to a literal.
 
   Derived predicates and primitives use complete call syntax:
-    ? top_work(h, energy).
+    ? frontier(h, energy).
     ? search(query: \"conformance\", handle: h, span_id: span, score: score,
         reason: reason, field: field, low_confidence: low).
 
@@ -469,7 +469,7 @@ Grammar tour:
       n = Count{ h : area_of(h, area) }.
 
     ? (h, energy) = TopK{ k: 10, key: energy :
-        (h, energy) : top_work(h, energy)
+        (h, energy) : work_candidate(h, energy)
       }.
 
   Time blocks query supported historical references:
@@ -487,7 +487,7 @@ Discover before guessing:
   anneal schema --format=text
   anneal describe runtime --format=text
   anneal describe search --format=text
-  anneal -e '? source_of(\"top_work\", file, lines).'
+  anneal -e '? source_of(\"frontier\", file, lines).'
 
 Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
@@ -495,8 +495,9 @@ Examples:
   anneal -e '? search{query: \"conformance\", handle: h, score: score}.' --limit 20
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
-  anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
-  anneal -e '? source_of(\"top_work\", file, lines).'
+  anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
+  anneal -e '? changed_within(h, 7), search{query: \"conformance\", handle: h}.'
+  anneal -e '? source_of(\"frontier\", file, lines).'
   anneal -e - < query.dl
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
@@ -649,7 +650,7 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal obligations has been retired; compose `anneal -e '? undischarged(h), obligation(h).'` or inspect `anneal describe undischarged`",
         ),
         "garden" => Some(
-            "anneal garden has been retired; compose `top_work`, `entropy`, `diagnostic`, and `*handle` with `anneal -e`, starting from `anneal status`",
+            "anneal garden has been retired; compose `frontier`, `entropy`, `diagnostic`, and `*handle` with `anneal -e`, starting from `anneal status`",
         ),
         "orient" => Some(
             "anneal orient has been retired; use `anneal context \"GOAL\"` for cold-start orientation or `anneal handle <HANDLE> --impact` before edits",
@@ -661,10 +662,10 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal explain has been retired; use provenance on eval with `anneal -e '? diagnostic{subject: h}.' --explain`",
         ),
         "work" => Some(
-            "anneal work has been retired; use `anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'` for ranked work, or `anneal status` for the convergence landing",
+            "anneal work has been retired; use `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'` for ranked work, or `anneal status` for the convergence landing",
         ),
         "blocked" => Some(
-            "anneal blocked has been retired; use `anneal -e '? blocked_row(h, energy, source), h = \"HANDLE\".'` or `anneal handle <HANDLE>` for the focused view",
+            "anneal blocked has been retired; use `anneal -e '? blocker(h, energy, source), h = \"HANDLE\".'` or `anneal handle <HANDLE>` for the focused view",
         ),
         "diagnostics" => Some(
             "anneal diagnostics has been retired; use `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'` for the full diagnostic stream or `anneal check` for the error-only CI gate",
@@ -2977,12 +2978,12 @@ mod tests {
             ("health", "anneal status"),
             ("diff", "at(\"snapshot:last\")"),
             ("obligations", "undischarged(h), obligation(h)"),
-            ("garden", "top_work"),
+            ("garden", "frontier"),
             ("orient", "anneal context \"GOAL\""),
             ("query", "use the language directly"),
             ("explain", "--explain"),
-            ("work", "top_work(h, energy)"),
-            ("blocked", "blocked_row(h, energy, source)"),
+            ("work", "frontier(h, energy)"),
+            ("blocked", "blocker(h, energy, source)"),
             (
                 "diagnostics",
                 "diagnostic(code, severity, subject, file, line, evidence)",
@@ -3625,7 +3626,7 @@ mod tests {
                         && !doc.contains("Hidden support commands: work")
                         && doc.contains("Observed vocabulary recipes")
                         && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
-                        && doc.contains("? recent(h, 7), *handle{id: h, summary: summary}. -> Output: h, summary")
+                        && doc.contains("? changed_within(h, 7), *handle{id: h, summary: summary}. -> Output: h, summary")
                 })
             }),
             "describe runtime should fold the command map and vocabulary recipes into the teaching card"
@@ -3637,10 +3638,13 @@ mod tests {
             "handle",
             "upstream",
             "downstream",
-            "top_work",
+            "frontier",
+            "blocker",
+            "broken_reference",
             "blocked",
             "entropy",
             "undischarged",
+            "E001",
         ] {
             let output = session
                 .run(RuntimeCommand::Describe {
@@ -3675,6 +3679,26 @@ mod tests {
                 })
             }),
             "describe diagnostic should carry the folded recipe and example"
+        );
+
+        let diagnostic_code = session
+            .run(RuntimeCommand::Describe {
+                name: "E001".to_string(),
+            })
+            .expect("describe E001 runs");
+        let CommandOutput::Rows { rows, .. } = diagnostic_code else {
+            panic!("describe E001 should emit rows");
+        };
+        assert!(
+            rows.iter().any(|row| {
+                required_string(row, "doc").is_ok_and(|doc| {
+                    doc.contains("Diagnostic code: E001")
+                        && doc.contains("Rule predicate: broken_reference")
+                        && doc.contains("Common joins:")
+                        && doc.contains("Output: src, target, file, line")
+                })
+            }),
+            "describe E001 should route to the diagnostic catalog and rule predicate"
         );
 
         let handle = session

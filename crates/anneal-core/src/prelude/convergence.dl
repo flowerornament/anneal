@@ -207,17 +207,28 @@ blocked(h) :=
   flux(h, 30, 0).
 
 @doc(
+  name: "blocker",
+  doc: "Return blocked handles with total energy and the unsettled signal that explains the block."
+).
+@predicate(
+  name: "blocker",
+  args: ["h", "energy", "source"]
+).
+blocker(h, energy, source) :=
+  blocked(h),
+  potential(h, energy),
+  entropy(h, source).
+
+@doc(
   name: "blocked_row",
-  doc: "Return the energy and unsettled signal for blocked handles, suitable for focused eval replacements of the retired blocked command."
+  doc: "Deprecated alias for blocker(h, energy, source); retained through v0.13 for compatibility."
 ).
 @predicate(
   name: "blocked_row",
   args: ["h", "energy", "source"]
 ).
 blocked_row(h, energy, source) :=
-  blocked(h),
-  potential(h, energy),
-  entropy(h, source).
+  blocker(h, energy, source).
 
 @doc(
   name: "advancing",

@@ -2357,7 +2357,9 @@ impl GraphIndex {
             PrimitivePredicate::Freshness => self.freshness_tuples(constraints),
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
             PrimitivePredicate::GitMtime => self.git_mtime_tuples(constraints),
-            PrimitivePredicate::Recent => self.recent_tuples(constraints),
+            PrimitivePredicate::ChangedWithin | PrimitivePredicate::Recent => {
+                self.recent_tuples(constraints)
+            }
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
@@ -4399,6 +4401,7 @@ fn primitive_tuples(
         | PrimitivePredicate::Freshness
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
+        | PrimitivePredicate::ChangedWithin
         | PrimitivePredicate::Recent
         | PrimitivePredicate::TokenEstimate => Ok(database.graph.tuples(primitive, constraints)),
     }
@@ -8880,6 +8883,37 @@ release_blocker(code) := issue(code, "error").
     fn recent_filters_handles_by_git_mtime_window() {
         let output = evaluate_query_output_with_options(
             r"? recent(h, 7).",
+            lifecycle_database()
+                .with_git_mtimes([
+                    (
+                        "core/draft.md.md".to_string(),
+                        "2026-05-20T12:00:00Z".to_string(),
+                    ),
+                    (
+                        "core/done.md.md".to_string(),
+                        "2026-04-01T12:00:00Z".to_string(),
+                    ),
+                ])
+                .with_evaluation_day(
+                    snapshot_days_since_epoch("2026-05-27").expect("fixture date parses"),
+                ),
+            EvalOptions::default(),
+        );
+
+        assert_query_rows(
+            &output
+                .rows
+                .into_iter()
+                .map(|row| row.fields)
+                .collect::<Vec<_>>(),
+            vec![row([("h", s("draft.md"))])],
+        );
+    }
+
+    #[test]
+    fn changed_within_filters_handles_by_git_mtime_window() {
+        let output = evaluate_query_output_with_options(
+            r"? changed_within(h, 7).",
             lifecycle_database()
                 .with_git_mtimes([
                     (

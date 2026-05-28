@@ -19,6 +19,14 @@ section_ref(target) :=
   *edge{to: target},
   target starts_with "section:".
 
+@doc(
+  name: "broken_reference",
+  doc: "Return references whose target handle does not exist, excluding section-reference placeholders."
+).
+@predicate(
+  name: "broken_reference",
+  args: ["src", "target", "file", "line"]
+).
 broken_reference(src, target, file, line) :=
   *edge{from: src, to: target, file: file, line: line},
   not *handle{id: target},
@@ -38,17 +46,39 @@ section_ref_total(count) :=
 diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)) :=
   section_ref_total(count).
 
-diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
+@doc(
+  name: "implausible_ref",
+  doc: "Return body references that were detected but rejected as implausible links."
+).
+@predicate(
+  name: "implausible_ref",
+  args: ["h", "file", "value"]
+).
+implausible_ref(h, file, value) :=
   *meta{handle: h, key: "md.implausible_ref", value: value},
   *handle{id: h, file: file}.
 
-diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
+diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
+  implausible_ref(h, file, value).
+
+@doc(
+  name: "stale_reference",
+  doc: "Return active handles that depend on terminal handles, a likely stale dependency edge."
+).
+@predicate(
+  name: "stale_reference",
+  args: ["src", "target", "file", "source_status", "target_status"]
+).
+stale_reference(src, target, file, source_status, target_status) :=
   *edge{from: src, to: target, kind: "DependsOn"},
   *handle{id: src, status: source_status, file: file},
   *handle{id: target, status: target_status},
   source_status != null,
   active(src),
   terminal(target).
+
+diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
+  stale_reference(src, target, file, source_status, target_status).
 
 configured_pipeline_status(status, level) :=
   *config{key: "convergence.ordering", value: status, ordinal: level},
@@ -61,7 +91,15 @@ handle_file(h, file) :=
 handle_file(h, file) :=
   *meta{handle: h, key: "md.resolved_file", value: file}.
 
-diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
+@doc(
+  name: "confidence_gap",
+  doc: "Return dependency edges where the source is farther along the configured pipeline than its target."
+).
+@predicate(
+  name: "confidence_gap",
+  args: ["src", "target", "file", "source_status", "source_level", "target_status", "target_level"]
+).
+confidence_gap(src, target, file, source_status, source_level, target_status, target_level) :=
   *edge{from: src, to: target, kind: "DependsOn"},
   *handle{id: src, status: source_status, file: file},
   *handle{id: target, status: target_status},
@@ -69,18 +107,43 @@ diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status,
   configured_pipeline_status(target_status, target_level),
   source_level > target_level.
 
-diagnostic("E002", "error", h, file, null, "undischarged") :=
+diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
+  confidence_gap(src, target, file, source_status, source_level, target_status, target_level).
+
+@doc(
+  name: "undischarged_obligation",
+  doc: "Return live obligation handles that have no Discharges edge."
+).
+@predicate(
+  name: "undischarged_obligation",
+  args: ["h", "file"]
+).
+undischarged_obligation(h, file) :=
   obligation(h),
   not terminal(h),
   discharge_count(h, 0),
   handle_file(h, file).
 
-diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
+diagnostic("E002", "error", h, file, null, "undischarged") :=
+  undischarged_obligation(h, file).
+
+@doc(
+  name: "multiple_discharge",
+  doc: "Return obligation handles with multiple Discharges edges so agents can check whether the redundancy is intentional."
+).
+@predicate(
+  name: "multiple_discharge",
+  args: ["h", "file", "count"]
+).
+multiple_discharge(h, file, count) :=
   obligation(h),
   not terminal(h),
   discharge_count(h, count),
   count >= 2,
   handle_file(h, file).
+
+diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
+  multiple_discharge(h, file, count).
 
 file_parent_dir(h, dir) :=
   *handle{id: h, kind: "file"},
@@ -103,6 +166,14 @@ frontmatter_adoption_high(dir, with_frontmatter, total) :=
   parent_dir_frontmatter_count(dir, with_frontmatter),
   with_frontmatter * 2 > total.
 
+@doc(
+  name: "missing_frontmatter_file",
+  doc: "Return files missing status frontmatter in directories where frontmatter adoption is already high."
+).
+@predicate(
+  name: "missing_frontmatter_file",
+  args: ["h", "dir", "file"]
+).
 missing_frontmatter_file(h, dir, file) :=
   *handle{id: h, kind: "file", status: null, file: file},
   file_parent_dir(h, dir).
@@ -111,6 +182,10 @@ diagnostic("W003", "warning", h, file, null, null) :=
   missing_frontmatter_file(h, dir, file),
   frontmatter_adoption_high(dir, with_frontmatter, total).
 
+@doc(
+  name: "s001_orphaned",
+  doc: "Deprecated diagnostic-rule name for orphaned_handle(h); retained through v0.13 for compatibility."
+).
 s001_orphaned(h) :=
   *handle{id: h, kind: "label"},
   in_degree(h, 0).
@@ -120,8 +195,15 @@ s001_orphaned(h) :=
   in_degree(h, 0),
   *edge{from: h, kind: "Supersedes"}.
 
+@doc(
+  name: "orphaned_handle",
+  doc: "Return label and version handles that have no incoming references and may be cleanup candidates."
+).
+orphaned_handle(h) :=
+  s001_orphaned(h).
+
 diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", h)) :=
-  s001_orphaned(h),
+  orphaned_handle(h),
   handle_file(h, file).
 
 rejected_namespace(namespace) :=
@@ -179,8 +261,19 @@ s003_pipeline_stall(status, count, null, true) :=
   count >= previous_count,
   previous_count >= 3.
 
-diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
+@doc(
+  name: "pipeline_stall",
+  doc: "Return lifecycle statuses whose population appears stalled instead of flowing to the next configured status."
+).
+@predicate(
+  name: "pipeline_stall",
+  args: ["status", "count", "next_status", "based_on_history"]
+).
+pipeline_stall(status, count, next_status, based_on_history) :=
   s003_pipeline_stall(status, count, next_status, based_on_history).
+
+diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
+  pipeline_stall(status, count, next_status, based_on_history).
 
 active_namespace(namespace) :=
   namespace_present(namespace),
@@ -219,12 +312,23 @@ s004_abandoned_namespace(namespace, total, terminal_count, stale_count) :=
   abandoned_stale_count(namespace, stale_count),
   terminal_count + stale_count = total.
 
+@doc(
+  name: "abandoned_namespace",
+  doc: "Return active label namespaces where every member is terminal or stale."
+).
+@predicate(
+  name: "abandoned_namespace",
+  args: ["namespace", "total", "terminal_count", "stale_count"]
+).
+abandoned_namespace(namespace, total, terminal_count, stale_count) :=
+  s004_abandoned_namespace(namespace, total, terminal_count, stale_count).
+
 active_namespace_representative_file(namespace, file) :=
   active_namespace_size(namespace, total),
   file = Min{ f : active_namespace_member(namespace, h), handle_file(h, f) }.
 
 diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
-  s004_abandoned_namespace(namespace, total, terminal_count, stale_count),
+  abandoned_namespace(namespace, total, terminal_count, stale_count),
   active_namespace_representative_file(namespace, file).
 
 file_prefix(file, prefix) :=
@@ -263,5 +367,16 @@ s005_top_pair(left_prefix, right_prefix, count) :=
       s005_pair_count(left_prefix, right_prefix, count)
   }.
 
-diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
+@doc(
+  name: "top_pair",
+  doc: "Return the strongest namespace-prefix pairs that often co-occur and may deserve a configured concern group."
+).
+@predicate(
+  name: "top_pair",
+  args: ["left_prefix", "right_prefix", "count"]
+).
+top_pair(left_prefix, right_prefix, count) :=
   s005_top_pair(left_prefix, right_prefix, count).
+
+diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
+  top_pair(left_prefix, right_prefix, count).

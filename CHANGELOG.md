@@ -18,8 +18,19 @@ dialects.
   convergence tracking. Repeated unchanged status reads coalesce instead of
   growing history, and legacy aggregate history rows are preserved during the
   transition.
-- Runtime queries can use `git_mtime(file, instant)` and `recent(h, days)` to
-  compose session-recovery workflows without adding a global `--since` flag.
+- Runtime queries can use `git_mtime(file, instant)` and
+  `changed_within(h, days)` to compose session-recovery workflows without
+  adding a global `--since` flag.
+- `work_candidate(h, energy)` is now the canonical raw-energy predicate,
+  `frontier(h, energy)` is the global top projection, and
+  `blocker(h, energy, source)` explains stalled handles.
+- Diagnostic codes such as `E001`, `W001`, and `S001` are first-class
+  `describe` targets that route to diagnostic-rule predicates and Common join
+  examples.
+- Diagnostic-rule predicates have deeper `describe` cards, including
+  `broken_reference`, `undischarged_obligation`, `stale_reference`,
+  `confidence_gap`, `missing_frontmatter_file`, `implausible_ref`,
+  `orphaned_handle`, `pipeline_stall`, `abandoned_namespace`, and `top_pair`.
 - `anneal handle <HANDLE> --impact` shows direct and indirect reverse
   dependencies from the same traversal policy as the legacy `impact` command.
 - `anneal help agent` is now the canonical bundled agent briefing surface.
@@ -52,6 +63,13 @@ dialects.
 - All retired commands return teaching recovery messages naming the eval-form
   or runtime-verb replacement.
 
+### Deprecated
+
+- `top_work(h, energy)`, `blocked_row(h, energy, source)`, and
+  `recent(h, days)` remain callable through v0.13 as compatibility aliases,
+  but their describe cards point agents to `frontier`, `blocker`, and
+  `changed_within`.
+
 ### Removed
 
 - Removed the cookbook cluster: the `@cookbook(...)` annotation, the
@@ -69,14 +87,13 @@ dialects.
   `anneal -e` composition.
 - Retired the compatibility filter/render flag dialects (`--pretty`, `--area`,
   `--recent`, `--since`, `--plain`, `--minimal`, and `--no-color`) from the
-  runtime surface. Use `--format`, `--json`, `recent(h, days)`, and
+  runtime surface. Use `--format`, `--json`, `changed_within(h, days)`, and
   `git_mtime(file, instant)` instead.
 - Removed the "Compatibility options" section from top-level help.
 - Retired the hidden runtime command nouns `work`, `blocked`, `diagnostics`,
   `broken`, `areas`, `trend`, and `sources`. Their workflows now live as
-  explicit `anneal -e` compositions over `top_work`, `blocked_row`,
-  `diagnostic`, `area_health`, `area_frontier`, snapshot time blocks, and
-  `sources`.
+  explicit `anneal -e` compositions over `frontier`, `blocker`, `diagnostic`,
+  `area_health`, `area_frontier`, snapshot time blocks, and `sources`.
 
 ### Migration
 

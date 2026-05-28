@@ -125,7 +125,7 @@ it.
 
 ```bash
 anneal -e '? diagnostic{severity: "error"}.'                                          # blockers
-anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'      # ranked work
+anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'      # ranked work
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'                   # area drill-down
 ```
 
@@ -163,10 +163,11 @@ alias for the error-only filtered view.
 Compose with `anneal -e` over prelude vocabulary:
 
 - `? diagnostic{severity: "error"}.`: blockers (error-only filtered view)
-- `? top_work(h, energy), *handle{id: h, file: file}.`: ranked active work
+- `? work_candidate(h, energy), entropy(h, source).`: raw work energy and cause
+- `? frontier(h, energy), *handle{id: h, file: file}.`: ranked active work
 - `? area_health(area, grade, files, errors, cross_edges).`: per-area health
-- `? blocked_row(h, energy, source), h = "HANDLE".`: why one handle is stalled
-- `? recent(h, 7), *handle{id: h, summary: summary}.`: handles changed in the last week
+- `? blocker(h, energy, source), h = "HANDLE".`: why one handle is stalled
+- `? changed_within(h, 7), *handle{id: h, summary: summary}.`: handles changed in the last week
 - `? *handle{id: h, file: f}, git_mtime(f, t).`: git-backed file change time
 
 Project `@verb` declarations in `anneal.dl` appear in `schema` and are callable
@@ -183,11 +184,11 @@ workflows into Code Mode directly:
 - `health`: `anneal status` plus `? diagnostic{severity: severity, subject: h}.`
 - `diff`: `? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.`
 - `obligations`: `? undischarged(h), obligation(h).`
-- `garden`: `anneal status` plus `? top_work(h, energy), entropy(h, source).`
+- `garden`: `anneal status` plus `? frontier(h, energy), entropy(h, source).`
 - `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
 - `impact H`: `anneal handle H --impact`
-- `work`: `anneal status` or `? top_work(h, energy), *handle{id: h, file: file, summary: summary}.`
-- `blocked H`: `anneal handle H` or `? blocked_row(h, energy, source), h = "H".`
+- `work`: `anneal status` or `? frontier(h, energy), *handle{id: h, file: file, summary: summary}.`
+- `blocked H`: `anneal handle H` or `? blocker(h, energy, source), h = "H".`
 - `diagnostics`: `? diagnostic(code, severity, subject, file, line, evidence).`
 - `broken`: `? diagnostic{severity: "error"}.` or `anneal check`
 - `areas`: `? area_health(area, grade, files, errors, cross_edges).`
@@ -220,9 +221,9 @@ Common stored relations:
 Common prelude families:
 
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
-- convergence: lifecycle position, entropy, blocked, advancing, recent changes
+- convergence: lifecycle position, entropy, frontier, blockers, advancing, recent changes
 - checks: `diagnostic`
-- ranking: `search`, `top_work`, `top_k` helpers
+- ranking: `search`, `work_candidate`, `frontier`, `top_k` helpers
 - views: callable starter verbs
 
 ## Agent Rules

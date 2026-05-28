@@ -386,7 +386,7 @@ mod tests {
             }
             "describe" => bind_parameter_fact(program, ParameterBinding::string("name", "runtime")),
             "source-of" => {
-                bind_parameter_fact(program, ParameterBinding::string("name", "top_work"));
+                bind_parameter_fact(program, ParameterBinding::string("name", "frontier"));
             }
             "examples" => bind_parameter_fact(program, ParameterBinding::string("name", "search")),
             _ => {}

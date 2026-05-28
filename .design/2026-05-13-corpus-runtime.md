@@ -535,7 +535,8 @@ discharge_count(h, n)
 freshness(h, days)
 flux(h, days, delta)             // ground `days`; binds `delta`
 git_mtime(file, instant)         // git commit time for a tracked corpus file
-recent(h, days)                  // ground `days`; handles changed by git history
+changed_within(h, days)          // ground `days`; handles changed by git history
+recent(h, days)                  // deprecated alias for changed_within through v0.13
 token_estimate(h, n)
 
 // Content retrieval — all RELATIONAL
@@ -644,9 +645,10 @@ rows within the window plus the current `*handle.status`. With no
 matching history, `delta` is `0`. `git_mtime(file, instant)` exposes
 the latest git commit timestamp for tracked corpus files when the
 runtime host supplies git metadata; non-git roots, untracked files, and
-files with no commits produce no rows. `recent(h, days)` requires a
+files with no commits produce no rows. `changed_within(h, days)` requires a
 ground non-negative `days` argument and returns handles whose backing
-file has a `git_mtime` within that many days of evaluation. Rationale:
+file has a `git_mtime` within that many days of evaluation; `recent(h, days)`
+is a deprecated compatibility alias retained through v0.13. Rationale:
 these metrics must be total over known handles where possible and
 silent for unsupported host metadata so agent queries can distinguish
 "no signal" from "relation missing"; snapshot-backed precision can
@@ -1782,11 +1784,13 @@ the standard library's `potential/2` relation.
 work_candidate(h, energy) :=
   potential(h, energy).
 
-top_work(h, energy) :=
+frontier(h, energy) :=
   (h, energy) = TopK{ k: 25, key: energy :
     (h, energy) :
     work_candidate(h, energy)
   }.
+
+top_work(h, energy) := frontier(h, energy).  // deprecated alias through v0.13
 
 ranked_work(h, energy, rank) :=
   (h, energy, rank) = Rank{ key: energy, rank: rank :
@@ -1797,7 +1801,10 @@ ranked_work(h, energy, rank) :=
 
 These are starter predicates, not a surface mandate. Surfaces may add
 budgeting, capability checks, or output shaping, but the default
-meaning of "work" remains "highest potential first."
+meaning of "work" remains "highest potential first." `work_candidate/2`
+is the raw energy pool; `frontier/2` is the global capped projection
+paired with `area_frontier/4`; `top_work/2` remains as a deprecated
+alias through v0.13.
 
 ### §27.3 Area convergence vocabulary [CR-D96]
 
@@ -2233,7 +2240,7 @@ Plus self-description surfaces from §11. v0.11.x ships CLI verbs for
 available through `anneal -e` and folded into `describe` where
 practical. Ranked work, blocked-handle explanations, diagnostics,
 area health, source listings, and snapshot-history checks are Code
-Mode compositions over `top_work`, `blocked_row`, `diagnostic`,
+Mode compositions over `frontier`, `blocker`, `diagnostic`,
 `area_health`, `area_frontier`, `sources`, and
 `snapshot_history_present`.
 
@@ -2270,7 +2277,7 @@ then by deterministic convergence-signal priority. Machine mode remains
 the same projected `status` row stream, without additional human
 formatting. The human heading for the generic `work` section SHOULD make
 clear that those rows are other work not already listed as blocked; the
-full ranked work vocabulary remains available through `top_work` eval
+full ranked work vocabulary remains available through `frontier` eval
 composition.
 Rationale: the first screen should reveal convergence shape and the
 next useful action, not expose arbitrary tuple order, duplicate ties, or
@@ -2415,8 +2422,8 @@ NDJSON envelope record on stdout containing the underlying query
 and runtime info:
 
 ```
-$ anneal -e '? blocked_row("OQ-37", energy, src).' --meta
-{"_meta": {"query": "? blocked_row(\"OQ-37\", energy, src).", "prelude_hash": "…", …}}
+$ anneal -e '? blocker("OQ-37", energy, src).' --meta
+{"_meta": {"query": "? blocker(\"OQ-37\", energy, src).", "prelude_hash": "…", …}}
 {"src": "undischarged", "detail": "namespace OQ open 82 days"}
 {"src": "stale_dep", "detail": "depends_on .design/synth/discharge.md (superseded)"}
 ```
@@ -2777,7 +2784,7 @@ wrote anneal.dl
 next steps:
   anneal status                see the landscape
   anneal describe convergence  read what convergence means here
-  anneal -e '? top_work(h, energy), *handle{id: h, summary: summary}.'
+  anneal -e '? frontier(h, energy), *handle{id: h, summary: summary}.'
                                 inspect ranked work
 ```
 
@@ -2792,7 +2799,7 @@ same `anneal.dl` file, not a prerequisite for ordinary configuration.
 
 ```
 1. anneal status           see the landscape
-2. anneal -e '? top_work(h, energy), *handle{id: h, summary: summary}.'
+2. anneal -e '? frontier(h, energy), *handle{id: h, summary: summary}.'
                             pick where to work
 3. anneal handle H --impact
                             inspect local context and blast radius
@@ -2991,7 +2998,7 @@ Every v1.x command is reachable in v2.0:
 | `anneal diff` | `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'` |
 | `anneal areas` | `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` and `anneal -e '? area_frontier(area, h, score, why).'` |
 | `anneal orient` | `anneal context GOAL` or `anneal handle H --impact` |
-| `anneal garden` | `anneal -e '? top_work(h, energy), entropy(h, source).'` |
+| `anneal garden` | `anneal -e '? frontier(h, energy), entropy(h, source).'` |
 | `anneal init` | `anneal init` (now lattice-on by default) |
 | `anneal prime` | `anneal help agent` (`prime` remains a hidden alias) |
 
@@ -3081,7 +3088,7 @@ Additional workflow targets:
 | "What's the corpus state?" | 1 call (`anneal`) |
 | "Where is X?" | 2 calls (`search` + `read`) |
 | "What does X depend on?" | 2 calls (`anneal H` or `-e upstream`) |
-| "What changed in 7 days?" | 1 call (`anneal -e '? recent(h, 7).'`) |
+| "What changed in 7 days?" | 1 call (`anneal -e '? changed_within(h, 7).'`) |
 | "Why is this fact here?" | 1 call (`--explain`) |
 | "Extend the vocabulary" | Write 5 lines in `anneal.dl`; verb available next invocation |
 | "Recover what a prior agent did" | 1 call (`anneal -e '? *trail{...}.'`) |

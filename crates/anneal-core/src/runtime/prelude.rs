@@ -1237,12 +1237,14 @@ mod tests {
                 ("area_frontier", r"? area_frontier(area, h, score, why)."),
                 ("potential", r#"? potential("ticket-1", energy)."#),
                 ("blocked", r#"? blocked("ticket-1")."#),
+                ("blocker", r#"? blocker("ticket-1", energy, source)."#),
                 (
                     "blocked_row",
                     r#"? blocked_row("ticket-1", energy, source)."#,
                 ),
                 ("advancing", r#"? advancing("ticket-2")."#),
                 ("ranked_work", r"? ranked_work(h, energy, rank)."),
+                ("frontier", r"? frontier(h, energy)."),
                 ("top_work", r"? top_work(h, energy)."),
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
@@ -1345,6 +1347,10 @@ mod tests {
             "ticket-1 is blocked"
         );
         assert!(has_row(
+            output(&outputs, "blocker"),
+            &[("energy", int(7)), ("source", string("broken_ref"))]
+        ));
+        assert!(has_row(
             output(&outputs, "blocked_row"),
             &[("energy", int(7)), ("source", string("broken_ref"))]
         ));
@@ -1365,6 +1371,10 @@ mod tests {
             "ranked_work rows: {:?}",
             output(&outputs, "ranked_work").rows
         );
+        assert!(has_row(
+            output(&outputs, "frontier"),
+            &[("h", string("REQ-1")), ("energy", int(6))]
+        ));
         assert!(has_row(
             output(&outputs, "top_work"),
             &[("h", string("REQ-1")), ("energy", int(6))]

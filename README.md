@@ -244,7 +244,7 @@ anneal schema
 anneal describe search
 anneal describe runtime
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
-anneal -e '? recent(h, 7), *handle{id: h, summary: summary}.'
+anneal -e '? changed_within(h, 7), *handle{id: h, summary: summary}.'
 anneal -e '? sources(name, recognizes, capabilities, doc).'
 ```
 
@@ -273,19 +273,20 @@ adds direct and indirect reverse dependencies before an edit.
 ### Work The Convergence Frontier
 
 ```bash
-anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
+anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'
 anneal -e '? diagnostic{severity: "error"}.'
-anneal -e '? blocked_row(h, energy, source), h = "HANDLE".'
+anneal -e '? blocker(h, energy, source), h = "HANDLE".'
 anneal -e '? *handle{id: h, file: f}, git_mtime(f, t).'
 ```
 
-`top_work` ranks active candidates by entropy. `area_health` grades per-area
-convergence. `diagnostic{severity: "error"}` filters to blockers. `blocked_row`
-explains why one handle is stalled. `recent` and `git_mtime` let agents ask
-what changed without a separate `--since` surface. The convergence vocabulary
-lives in the prelude — use `describe potential`, `describe entropy`,
-`describe blocked`, `describe recent`, or `describe git_mtime` to learn the
+`work_candidate` exposes raw unsettled-work energy; `frontier` projects the
+highest-energy candidates. `area_health` grades per-area convergence.
+`diagnostic{severity: "error"}` filters to blockers. `blocker` explains why one
+handle is stalled. `changed_within` and `git_mtime` let agents ask what changed
+without a separate `--since` surface. The convergence vocabulary lives in the
+prelude — use `describe potential`, `describe entropy`, `describe blocker`,
+`describe changed_within`, or `describe git_mtime` to learn the
 joins, then compose with `-e`. The `check` command remains as a hidden CI gate
 alias for `diagnostic{severity: "error"}`.
 
@@ -295,10 +296,10 @@ alias for `diagnostic{severity: "error"}`.
 anneal -e '? *handle{id: h, kind: "file"}.'
 anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
-anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
-anneal -e '? source_of("top_work", file, lines).'
+anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
+anneal -e '? source_of("frontier", file, lines).'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
-anneal -e '? recent(h, 7), search{query: "conformance", handle: h}.'
+anneal -e '? changed_within(h, 7), search{query: "conformance", handle: h}.'
 ```
 
 The query language is Datalog-shaped. Stored relations use `*` prefixes, for
@@ -466,11 +467,11 @@ Common replacements:
 - `health`: `anneal status` plus `anneal -e '? diagnostic{severity: severity, subject: h}.'`
 - `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `obligations`: `anneal -e '? undischarged(h), obligation(h).'`
-- `garden`: `anneal status` plus `anneal -e '? top_work(h, energy), entropy(h, source).'`
+- `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
 - `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
 - `impact H`: `anneal handle H --impact`
-- `work`: `anneal status` or `anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'`
-- `blocked H`: `anneal handle H` or `anneal -e '? blocked_row(h, energy, source), h = "H".'`
+- `work`: `anneal status` or `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`
+- `blocked H`: `anneal handle H` or `anneal -e '? blocker(h, energy, source), h = "H".'`
 - `diagnostics`: `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`
 - `broken`: `anneal -e '? diagnostic{severity: "error"}.'` or `anneal check`
 - `areas`: `anneal -e '? area_health(area, grade, files, errors, cross_edges).'`

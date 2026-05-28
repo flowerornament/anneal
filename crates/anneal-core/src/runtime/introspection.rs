@@ -121,6 +121,7 @@ impl IntrospectionIndex {
             | PrimitivePredicate::Freshness
             | PrimitivePredicate::Flux
             | PrimitivePredicate::GitMtime
+            | PrimitivePredicate::ChangedWithin
             | PrimitivePredicate::Recent
             | PrimitivePredicate::TokenEstimate
             | PrimitivePredicate::Search
@@ -168,6 +169,7 @@ impl ProgramIntrospection {
         builder.add_stored_relations(dynamic_stored);
         builder.add_primitives();
         builder.add_program(program.program());
+        builder.add_diagnostic_codes();
         builder.finish()
     }
 
@@ -269,7 +271,7 @@ impl IntrospectionBuilder {
                     "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
                     "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
                     "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
-                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use recent(h, days).".to_string(),
+                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
                 ],
                 examples: vec![
                     "? schema(name, kind, signature, determinism, provenance).",
@@ -278,7 +280,7 @@ impl IntrospectionBuilder {
                     "? *handle{status: status}, status != null.",
                     "? *edge{kind: kind}.",
                     "? *handle{id: h, file: file}, git_mtime(file, instant).",
-                    "? recent(h, 7), *handle{id: h, summary: summary}.",
+                    "? changed_within(h, 7), *handle{id: h, summary: summary}.",
                 ],
                 ..DescribeCard::default()
             }),
@@ -474,6 +476,41 @@ impl IntrospectionBuilder {
                     string_value(example),
                 ]));
             }
+        }
+    }
+
+    fn add_diagnostic_codes(&mut self) {
+        for code in DIAGNOSTIC_CODE_CARDS {
+            self.describe.insert(describe_entry(
+                code.code,
+                DescribeKind::RuntimeTopic,
+                &describe_card(DescribeCard {
+                    summary: code.summary,
+                    kind: Some(DescribeKind::RuntimeTopic),
+                    relationship: Some("Diagnostic catalog entry; query rows through `diagnostic(...)` and inspect the deriving rule predicate for structure."),
+                    common_joins: code.common_joins,
+                    source_label: Some("Diagnostic catalog"),
+                    source: Some("crates/anneal-core/src/prelude/checks.dl"),
+                    see_also: code.see_also,
+                    examples: vec![code.example],
+                    extra_lines: vec![
+                        format!("Diagnostic code: {}.", code.code),
+                        format!("Severity: {}.", code.severity),
+                        format!("Rule predicate: {}.", code.rule),
+                        format!("Evidence: {}.", code.evidence),
+                    ],
+                    ..DescribeCard::default()
+                }),
+            ));
+            self.examples.insert(Tuple(vec![
+                string_value(code.code),
+                string_value(code.example),
+            ]));
+            self.source_of.insert(Tuple(vec![
+                string_value(code.code),
+                string_value("crates/anneal-core/src/prelude/checks.dl"),
+                string_value("unknown"),
+            ]));
         }
     }
 
@@ -989,6 +1026,197 @@ struct DescribeCard<'a> {
     extra_lines: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DiagnosticCodeCard {
+    code: &'static str,
+    severity: &'static str,
+    summary: &'static str,
+    rule: &'static str,
+    evidence: &'static str,
+    common_joins: &'static [&'static str],
+    example: &'static str,
+    see_also: &'static [&'static str],
+}
+
+const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
+    DiagnosticCodeCard {
+        code: "E001",
+        severity: "error",
+        summary: "Broken reference: a corpus edge points at a handle that does not exist.",
+        rule: "broken_reference",
+        evidence: r#"("broken_ref", target)"#,
+        common_joins: &[
+            "`diagnostic{code: \"E001\", subject: src}, broken_reference(src, target, file, line)` to inspect the missing target",
+            "`broken_reference(src, target, file, line), read{handle: src, budget: 1200, text: text}` to read the source context",
+        ],
+        example: r#"? diagnostic{code: "E001", severity: severity, subject: src}."#,
+        see_also: &["diagnostic", "broken_reference", "W004"],
+    },
+    DiagnosticCodeCard {
+        code: "E002",
+        severity: "error",
+        summary: "Undischarged obligation: a live obligation handle has no Discharges edge.",
+        rule: "undischarged_obligation",
+        evidence: r#""undischarged""#,
+        common_joins: &[
+            "`diagnostic{code: \"E002\", subject: h}, undischarged_obligation(h, file)` to inspect open obligations",
+            "`undischarged_obligation(h, file), area_of{h: h, area: area}` to group open obligations by area",
+        ],
+        example: r#"? diagnostic{code: "E002", subject: h, file: file}."#,
+        see_also: &[
+            "diagnostic",
+            "undischarged_obligation",
+            "undischarged",
+            "I002",
+        ],
+    },
+    DiagnosticCodeCard {
+        code: "W001",
+        severity: "warning",
+        summary: "Stale reference: an active handle depends on a terminal handle.",
+        rule: "stale_reference",
+        evidence: r#"("stale_ref", source_status, target_status)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W001\", subject: src}, stale_reference(src, target, file, source_status, target_status)` to inspect the stale edge",
+            "`stale_reference(src, target, file, source_status, target_status), *handle{id: target, summary: summary}` to add target context",
+        ],
+        example: r#"? diagnostic{code: "W001", subject: src, file: file}."#,
+        see_also: &["diagnostic", "stale_reference", "W002"],
+    },
+    DiagnosticCodeCard {
+        code: "W002",
+        severity: "warning",
+        summary: "Confidence gap: a dependency target is behind its source in the configured lifecycle order.",
+        rule: "confidence_gap",
+        evidence: r#"("confidence_gap", source_status, source_level, target_status, target_level)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W002\", subject: src}, confidence_gap(src, target, file, source_status, source_level, target_status, target_level)` to inspect lifecycle levels",
+            "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), area_of{h: src, area: area}` to group gaps by area",
+        ],
+        example: r#"? diagnostic{code: "W002", subject: src, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "confidence_gap",
+            "configured_pipeline_status",
+            "W001",
+        ],
+    },
+    DiagnosticCodeCard {
+        code: "W003",
+        severity: "warning",
+        summary: "Missing frontmatter: a file lacks status frontmatter in a directory where frontmatter is otherwise established.",
+        rule: "missing_frontmatter_file",
+        evidence: "null",
+        common_joins: &[
+            "`diagnostic{code: \"W003\", subject: h}, missing_frontmatter_file(h, dir, file)` to inspect the missing metadata",
+            "`missing_frontmatter_file(h, dir, file), area_of{h: h, area: area}` to group missing metadata by area",
+        ],
+        example: r#"? diagnostic{code: "W003", subject: h, file: file}."#,
+        see_also: &["diagnostic", "missing_frontmatter_file", "W004"],
+    },
+    DiagnosticCodeCard {
+        code: "W004",
+        severity: "warning",
+        summary: "Implausible reference: markdown extraction saw a reference-like token that was rejected as implausible.",
+        rule: "implausible_ref",
+        evidence: r#"("implausible_ref", value)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W004\", subject: h}, implausible_ref(h, file, value)` to inspect rejected tokens",
+            "`implausible_ref(h, file, value), read{handle: h, budget: 1200, text: text}` to read the local context",
+        ],
+        example: r#"? diagnostic{code: "W004", subject: h, evidence: evidence}."#,
+        see_also: &["diagnostic", "implausible_ref", "E001", "W003"],
+    },
+    DiagnosticCodeCard {
+        code: "I001",
+        severity: "info",
+        summary: "Section references present: section-reference placeholders exist and are counted separately from broken handles.",
+        rule: "section_ref_total",
+        evidence: r#"("section_refs", count)"#,
+        common_joins: &[
+            "`diagnostic{code: \"I001\", evidence: evidence}` to see whether section references were counted",
+            "`section_ref_total(count), diagnostic{code: \"I001\"}` to inspect the section-reference total",
+        ],
+        example: r#"? diagnostic{code: "I001", evidence: evidence}."#,
+        see_also: &["diagnostic", "section_ref_total", "E001"],
+    },
+    DiagnosticCodeCard {
+        code: "I002",
+        severity: "info",
+        summary: "Multiple discharges: a live obligation has more than one Discharges edge.",
+        rule: "multiple_discharge",
+        evidence: r#"("multiple_discharges", count)"#,
+        common_joins: &[
+            "`diagnostic{code: \"I002\", subject: h}, multiple_discharge(h, file, count)` to inspect redundant discharges",
+            "`multiple_discharge(h, file, count), discharge_count(h, n)` to compare the reported count",
+        ],
+        example: r#"? diagnostic{code: "I002", subject: h, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "multiple_discharge",
+            "E002",
+            "discharge_count",
+        ],
+    },
+    DiagnosticCodeCard {
+        code: "S001",
+        severity: "suggestion",
+        summary: "Orphaned handle: a label or version handle has no incoming references.",
+        rule: "orphaned_handle",
+        evidence: r#"("orphaned_handle", h)"#,
+        common_joins: &[
+            "`diagnostic{code: \"S001\", subject: h}, orphaned_handle(h)` to inspect orphaned handles",
+            "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
+        ],
+        example: r#"? diagnostic{code: "S001", subject: h, file: file}."#,
+        see_also: &["diagnostic", "orphaned_handle", "orphan", "S004"],
+    },
+    DiagnosticCodeCard {
+        code: "S003",
+        severity: "suggestion",
+        summary: "Pipeline stall: a lifecycle status is accumulating without movement to the next configured status.",
+        rule: "pipeline_stall",
+        evidence: r#"("pipeline_stall", status, count, next_status, based_on_history)"#,
+        common_joins: &[
+            "`diagnostic{code: \"S003\", subject: status}, pipeline_stall(status, count, next_status, based_on_history)` to inspect the stalled status",
+            "`pipeline_stall(status, count, next_status, based_on_history), status_population(status, current)` to compare current population",
+        ],
+        example: r#"? diagnostic{code: "S003", subject: status, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "pipeline_stall",
+            "advancing",
+            "snapshot_history_present",
+        ],
+    },
+    DiagnosticCodeCard {
+        code: "S004",
+        severity: "suggestion",
+        summary: "Abandoned namespace: an active namespace's members are all terminal or stale.",
+        rule: "abandoned_namespace",
+        evidence: r#"("abandoned_namespace", namespace, total, terminal_count, stale_count)"#,
+        common_joins: &[
+            "`diagnostic{code: \"S004\", subject: namespace}, abandoned_namespace(namespace, total, terminal_count, stale_count)` to inspect the namespace",
+            "`abandoned_namespace(namespace, total, terminal_count, stale_count), namespace_label(namespace, h)` to inspect members",
+        ],
+        example: r#"? diagnostic{code: "S004", subject: namespace, evidence: evidence}."#,
+        see_also: &["diagnostic", "abandoned_namespace", "S001", "freshness"],
+    },
+    DiagnosticCodeCard {
+        code: "S005",
+        severity: "suggestion",
+        summary: "Concern-group candidate: two label namespaces frequently co-occur and may deserve a configured concern group.",
+        rule: "top_pair",
+        evidence: r#"("concern_group_candidate", left_prefix, right_prefix, count)"#,
+        common_joins: &[
+            "`diagnostic{code: \"S005\", subject: left_prefix}, top_pair(left_prefix, right_prefix, count)` to inspect candidate concern groups",
+            "`top_pair(left_prefix, right_prefix, count), same_concern_pair(left_prefix, right_prefix)` to test whether a concern already covers it",
+        ],
+        example: r#"? diagnostic{code: "S005", subject: left_prefix, evidence: evidence}."#,
+        see_also: &["diagnostic", "top_pair", "*concern", "same_concern_pair"],
+    },
+];
+
 fn describe_card(card: DescribeCard<'_>) -> String {
     // `describe(name, doc)` is the prose teaching surface. Machine callers should
     // use schema/source_of/examples for the same facts as structured relations.
@@ -1196,8 +1424,11 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
         PrimitivePredicate::GitMtime => {
             "Return the latest git commit timestamp observed for a tracked corpus file."
         }
-        PrimitivePredicate::Recent => {
+        PrimitivePredicate::ChangedWithin => {
             "Return handles whose backing file changed within a bound number of days according to git history."
+        }
+        PrimitivePredicate::Recent => {
+            "Deprecated alias for changed_within(h, days); retained through v0.13 for compatibility."
         }
         PrimitivePredicate::TokenEstimate => {
             "Return the estimated number of stored content tokens for a handle."
@@ -1244,7 +1475,9 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Flux => {
             &["snapshot history. On a corpus with no snapshots, status-change counts are zero."]
         }
-        PrimitivePredicate::GitMtime | PrimitivePredicate::Recent => &[
+        PrimitivePredicate::GitMtime
+        | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::Recent => &[
             "git metadata supplied by the runtime host. Untracked files and non-git corpora produce no rows.",
         ],
         PrimitivePredicate::ReadFull => &[
@@ -1314,7 +1547,9 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Schema => &["describe", "examples"],
         PrimitivePredicate::Describe => &["schema", "examples"],
         PrimitivePredicate::Examples => &["describe", "schema"],
-        PrimitivePredicate::GitMtime | PrimitivePredicate::Recent => &["*handle", "freshness"],
+        PrimitivePredicate::GitMtime
+        | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::Recent => &["*handle", "freshness"],
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact => {
@@ -1331,7 +1566,7 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
 fn predicate_requires(name: &str) -> &'static [&'static str] {
     match name {
         "entropy" | "primary_entropy" | "potential_subject" | "potential" | "work_candidate"
-        | "top_work" | "ranked_work" => &[
+        | "frontier" | "top_work" | "ranked_work" => &[
             "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
         ],
         "entropy_priority" => {
@@ -1346,8 +1581,35 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         | "area_frontier" => &[
             "`area_of` rows from source facts. Area health also uses diagnostics, edges, and work-candidate convergence signals.",
         ],
-        "blocked" | "blocked_row" => {
+        "blocked" | "blocker" | "blocked_row" => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
+        }
+        "broken_reference" => {
+            &["stored edges and handles; section-reference placeholders are excluded."]
+        }
+        "stale_reference" | "confidence_gap" => {
+            &["DependsOn edges plus lifecycle status facts for both source and target handles."]
+        }
+        "undischarged_obligation" | "multiple_discharge" => {
+            &["linear namespace policy in anneal.dl plus Discharges edge counts."]
+        }
+        "implausible_ref" => {
+            &["markdown extraction metadata for references rejected by the plausibility filter."]
+        }
+        "missing_frontmatter_file" => &[
+            "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
+        ],
+        "orphaned_handle" | "s001_orphaned" => {
+            &["label or version handles plus graph in-degree counts."]
+        }
+        "pipeline_stall" | "s003_pipeline_stall" => &[
+            "configured lifecycle ordering and either current status population or snapshot history.",
+        ],
+        "abandoned_namespace" | "s004_abandoned_namespace" => {
+            &["active namespace membership, lifecycle status, and freshness."]
+        }
+        "top_pair" | "s005_top_pair" => {
+            &["namespace co-occurrence in file references plus configured concern groups."]
         }
         "advancing" | "recently_advanced" | "snapshot_history_present" => &[
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
@@ -1367,13 +1629,50 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "diagnostic" => Some(
             "Shared diagnostic stream used by `status`, `check`, and eval diagnostics; individual rules contribute rows by diagnostic code.",
         ),
+        "work_candidate" => Some(
+            "Canonical raw-energy predicate for handles an agent could improve; use `frontier` for the capped top projection.",
+        ),
+        "frontier" => Some(
+            "Canonical global convergence frontier; paired with `area_frontier` for area-scoped work.",
+        ),
         "top_work" => Some(
-            "Use directly in eval for ranked work; `status` uses the same work-candidate vocabulary but removes already-blocked handles from its arrival projection.",
+            "Deprecated alias for `frontier(h, energy)`; retained through v0.13 for compatibility.",
         ),
-        "blocked" => Some("Used by `blocked_row` and the blocked section of `status`."),
+        "blocked" => Some("Used by `blocker` and the blocked section of `status`."),
+        "blocker" => Some(
+            "Canonical focused blocker view: blocked handle, total energy, and the signal explaining it.",
+        ),
         "blocked_row" => Some(
-            "Eval helper for focused blocked-handle questions after the standalone blocked command was retired.",
+            "Deprecated alias for `blocker(h, energy, source)`; retained through v0.13 for compatibility.",
         ),
+        "broken_reference" => {
+            Some("Diagnostic-rule predicate behind E001 broken-reference errors.")
+        }
+        "undischarged_obligation" => {
+            Some("Diagnostic-rule predicate behind E002 undischarged-obligation errors.")
+        }
+        "stale_reference" => {
+            Some("Diagnostic-rule predicate behind W001 stale-reference warnings.")
+        }
+        "confidence_gap" => Some("Diagnostic-rule predicate behind W002 confidence-gap warnings."),
+        "missing_frontmatter_file" => {
+            Some("Diagnostic-rule predicate behind W003 missing-frontmatter warnings.")
+        }
+        "implausible_ref" => {
+            Some("Diagnostic-rule predicate behind W004 implausible-reference warnings.")
+        }
+        "orphaned_handle" => {
+            Some("Diagnostic-rule predicate behind S001 orphaned-handle suggestions.")
+        }
+        "pipeline_stall" => {
+            Some("Diagnostic-rule predicate behind S003 pipeline-stall suggestions.")
+        }
+        "abandoned_namespace" => {
+            Some("Diagnostic-rule predicate behind S004 abandoned-namespace suggestions.")
+        }
+        "top_pair" => {
+            Some("Diagnostic-rule predicate behind S005 concern-group-candidate suggestions.")
+        }
         "area_of" => Some(
             "Source-neutral area lens over `*handle.area`; use it to group queries by corpus area.",
         ),
@@ -1409,14 +1708,58 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`downstream{h: h, desc: desc}, diagnostic{subject: desc}` to find affected diagnostics",
             "`downstream{h: h, desc: desc}, area_of{h: desc, area: area}` to group dependents by area",
         ],
-        "top_work" => &[
-            "`top_work(h, energy), diagnostic{subject: h}` to see what blocks the top work",
-            "`top_work(h, energy), area_of{h: h, area: \"X\"}` for area-scoped work",
+        "work_candidate" => &[
+            "`work_candidate(h, energy), entropy(h, source)` to explain raw energy",
+            "`work_candidate(h, energy), frontier(h, energy)` to keep only the global frontier",
         ],
-        "blocked" | "blocked_row" => &[
+        "frontier" | "top_work" => &[
+            "`frontier(h, energy), diagnostic{subject: h}` to see what blocks the frontier",
+            "`frontier(h, energy), area_of{h: h, area: \"X\"}` for area-scoped frontier work",
+        ],
+        "blocked" | "blocker" | "blocked_row" => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
-            "`blocked_row(h, energy, source), *handle{id: h, file: file}` to add location metadata",
+            "`blocker(h, energy, source), *handle{id: h, file: file}` to add location metadata",
             "`blocked(h), area_of{h: h, area: \"X\"}` for area-scoped blockers",
+        ],
+        "broken_reference" => &[
+            "`broken_reference(src, target, file, line), diagnostic{code: \"E001\", subject: src}` to inspect broken-reference diagnostics",
+            "`broken_reference(src, target, file, line), *handle{id: src, summary: summary}` to add source context",
+        ],
+        "undischarged_obligation" => &[
+            "`undischarged_obligation(h, file), diagnostic{code: \"E002\", subject: h}` to inspect undischarged-obligation errors",
+            "`undischarged_obligation(h, file), area_of{h: h, area: area}` to group open obligations by area",
+        ],
+        "stale_reference" => &[
+            "`stale_reference(src, target, file, source_status, target_status), diagnostic{code: \"W001\", subject: src}` to inspect stale-reference warnings",
+            "`stale_reference(src, target, file, source_status, target_status), *handle{id: target, summary: summary}` to add target context",
+        ],
+        "confidence_gap" => &[
+            "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), diagnostic{code: \"W002\", subject: src}` to inspect confidence-gap warnings",
+            "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), area_of{h: src, area: area}` to group gaps by area",
+        ],
+        "missing_frontmatter_file" => &[
+            "`missing_frontmatter_file(h, dir, file), diagnostic{code: \"W003\", subject: h}` to inspect missing-frontmatter warnings",
+            "`missing_frontmatter_file(h, dir, file), area_of{h: h, area: area}` to group missing metadata by area",
+        ],
+        "implausible_ref" => &[
+            "`implausible_ref(h, file, value), diagnostic{code: \"W004\", subject: h}` to inspect implausible-reference warnings",
+            "`implausible_ref(h, file, value), read{handle: h, budget: 1200, text: text}` to read nearby evidence",
+        ],
+        "orphaned_handle" | "s001_orphaned" => &[
+            "`orphaned_handle(h), diagnostic{code: \"S001\", subject: h}` to inspect orphaned-handle suggestions",
+            "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
+        ],
+        "pipeline_stall" | "s003_pipeline_stall" => &[
+            "`pipeline_stall(status, count, next_status, based_on_history), diagnostic{code: \"S003\", subject: status}` to inspect stalled lifecycle statuses",
+            "`pipeline_stall(status, count, next_status, based_on_history), status_population(status, current)` to compare current status population",
+        ],
+        "abandoned_namespace" | "s004_abandoned_namespace" => &[
+            "`abandoned_namespace(namespace, total, terminal_count, stale_count), diagnostic{code: \"S004\", subject: namespace}` to inspect abandoned namespace suggestions",
+            "`abandoned_namespace(namespace, total, terminal_count, stale_count), namespace_label(namespace, h)` to inspect members",
+        ],
+        "top_pair" | "s005_top_pair" => &[
+            "`top_pair(left_prefix, right_prefix, count), diagnostic{code: \"S005\", subject: left_prefix}` to inspect concern-group candidates",
+            "`top_pair(left_prefix, right_prefix, count), same_concern_pair(left_prefix, right_prefix)` to test whether a configured concern already covers it",
         ],
         "entropy" => &[
             "`entropy(h, source), potential(h, energy)` to see weighted convergence reasons",
@@ -1426,12 +1769,12 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
         ],
-        "git_mtime" | "recent" => &[
+        "git_mtime" | "changed_within" | "recent" => &[
             "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
-            "`recent(h, 7), search{query: \"text\", handle: h}` for recent search hits",
+            "`changed_within(h, 7), search{query: \"text\", handle: h}` for recent search hits",
         ],
         "area_of" | "area_health" | "area_frontier" => &[
-            "`area_of{h: h, area: \"X\"}, top_work(h, energy)` for area-scoped work",
+            "`area_of{h: h, area: \"X\"}, frontier(h, energy)` for area-scoped work",
             "`area_of{h: h, area: \"X\"}, diagnostic{subject: h}` for area-scoped diagnostics",
         ],
         _ => &[],
@@ -1442,15 +1785,17 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
             "status",
+            "E001",
+            "E002",
             "broken_reference",
-            "obligation",
+            "undischarged_obligation",
             "s001_orphaned",
-            "s003_pipeline_stall",
-            "s004_abandoned_namespace",
-            "s005_top_pair",
+            "pipeline_stall",
+            "abandoned_namespace",
+            "top_pair",
         ],
         "entropy" | "primary_entropy" | "potential" | "potential_subject" | "work_candidate"
-        | "top_work" | "ranked_work" => &[
+        | "frontier" | "top_work" | "ranked_work" => &[
             "diagnostic",
             "obligation",
             "freshness",
@@ -1458,7 +1803,29 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "orphan",
             "entropy_priority",
         ],
-        "blocked" | "blocked_row" => &["potential", "entropy", "flux", "status"],
+        "blocked" | "blocker" | "blocked_row" => &["potential", "entropy", "flux", "status"],
+        "broken_reference" => &["E001", "diagnostic", "*edge", "*handle"],
+        "undischarged_obligation" => &["E002", "diagnostic", "obligation", "discharge_count"],
+        "stale_reference" => &["W001", "diagnostic", "active", "terminal"],
+        "confidence_gap" => &[
+            "W002",
+            "diagnostic",
+            "configured_pipeline_status",
+            "pipeline_position_for",
+        ],
+        "missing_frontmatter_file" => &["W003", "diagnostic", "*handle", "*meta"],
+        "implausible_ref" => &["W004", "diagnostic", "*meta"],
+        "orphaned_handle" | "s001_orphaned" => &["S001", "diagnostic", "in_degree"],
+        "pipeline_stall" | "s003_pipeline_stall" => &[
+            "S003",
+            "diagnostic",
+            "status_population",
+            "snapshot_history_present",
+        ],
+        "abandoned_namespace" | "s004_abandoned_namespace" => {
+            &["S004", "diagnostic", "namespace_label", "freshness"]
+        }
+        "top_pair" | "s005_top_pair" => &["S005", "diagnostic", "*concern", "same_concern_pair"],
         "area_of" => &["area", "area_health", "area_frontier", "*handle", "schema"],
         "area"
         | "area_file_count"
@@ -1502,7 +1869,7 @@ fn verb_relationship(name: &str) -> &'static str {
 fn verb_see_also(name: &str) -> &'static [&'static str] {
     match name {
         "status" => &[
-            "top_work",
+            "frontier",
             "blocked",
             "diagnostic",
             "snapshot_history_present",
@@ -1559,6 +1926,7 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Verbs => Some("? verbs(name, query, doc, output_schema)."),
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
         PrimitivePredicate::GitMtime => Some("? git_mtime(file, instant)."),
+        PrimitivePredicate::ChangedWithin => Some("? changed_within(h, 7)."),
         PrimitivePredicate::Recent => Some("? recent(h, 7)."),
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
@@ -1607,10 +1975,30 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
+        "blocker" => Some(r#"? blocker("formal-model/v17.md", energy, source)."#),
         "blocked_row" => Some(r#"? blocked_row("formal-model/v17.md", energy, source)."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
+        "frontier" => Some("? frontier(h, energy)."),
         "top_work" => Some("? top_work(h, energy)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),
+        "broken_reference" => Some("? broken_reference(src, target, file, line)."),
+        "undischarged_obligation" => Some("? undischarged_obligation(h, file)."),
+        "stale_reference" => {
+            Some("? stale_reference(src, target, file, source_status, target_status).")
+        }
+        "confidence_gap" => Some(
+            "? confidence_gap(src, target, file, source_status, source_level, target_status, target_level).",
+        ),
+        "missing_frontmatter_file" => Some("? missing_frontmatter_file(h, dir, file)."),
+        "implausible_ref" => Some("? implausible_ref(h, file, value)."),
+        "orphaned_handle" | "s001_orphaned" => Some("? orphaned_handle(h)."),
+        "pipeline_stall" | "s003_pipeline_stall" => {
+            Some("? pipeline_stall(status, count, next_status, based_on_history).")
+        }
+        "abandoned_namespace" | "s004_abandoned_namespace" => {
+            Some("? abandoned_namespace(namespace, total, terminal_count, stale_count).")
+        }
+        "top_pair" | "s005_top_pair" => Some("? top_pair(left_prefix, right_prefix, count)."),
         "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
         "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
         "area_of" => Some(r#"? area_of{h: "formal-model/v17.md", area: area}."#),
