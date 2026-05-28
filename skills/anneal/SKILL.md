@@ -19,8 +19,9 @@ Runtime commands render readable text at a terminal and JSON/NDJSON when piped.
 In pipe-only agent harnesses, add `--format=text` when you want to read the
 answer directly.
 
-If this skill is not preloaded, run `anneal prime` to print the shipped
-briefing from the installed binary.
+If this skill is not preloaded, run `anneal help agent` to print the shipped
+briefing from the installed binary. The hidden `anneal prime` alias remains for
+installed skill loaders and muscle memory.
 
 ## First Moves
 
@@ -140,7 +141,8 @@ alias for the error-only filtered view.
 - `anneal context GOAL`: grouped cold-agent context from search, read, and
   neighborhood
 - `anneal status`: compact corpus status
-- `anneal prime`: bundled agent briefing from the installed binary
+- `anneal help agent`: bundled agent briefing from the installed binary
+- `anneal prime`: hidden legacy alias for skill loader compatibility
 
 ### Discover The Language
 

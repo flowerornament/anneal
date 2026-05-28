@@ -2455,12 +2455,13 @@ commands while that boundary exists.
 projection of the same runtime self-description that backs
 `schema`, `predicates`, `verbs`, `describe`, `source_of`, `examples`,
 and `sources`. v0.11.0 ships top-level `anneal --help`, static
-`anneal <command> --help`, and the `schema`/`verbs`/`describe`/`sources`
-CLI projections. Topic help, generated language-reference docs,
-predicate/source/example CLI projections, and machine-readable help are
-follow-up surfaces that must use this same source of truth rather than
-hand-maintained parallel docs. `@doc` text may use restrained inline
-Markdown (emphasis, code spans, and links) but not headings or block
+`anneal <command> --help`, `anneal help agent` for the bundled agent
+briefing, and the `schema`/`describe` CLI projections. Generated
+language-reference docs, predicate/source/example projections, and
+machine-readable help are follow-up surfaces that must use this same
+source of truth rather than hand-maintained parallel docs. `@doc` text
+may use restrained inline Markdown (emphasis, code spans, and links) but
+not headings or block
 structure. Error messages name available help topics or introspection
 commands first; configured external URLs may be appended through
 `[help].doc_url_base`. Rationale: help is not a parallel documentation
@@ -2992,7 +2993,7 @@ Every v1.x command is reachable in v2.0:
 | `anneal orient` | `anneal context GOAL` or `anneal handle H --impact` |
 | `anneal garden` | `anneal -e '? top_work(h, energy), entropy(h, source).'` |
 | `anneal init` | `anneal init` (now lattice-on by default) |
-| `anneal prime` | `anneal describe runtime` |
+| `anneal prime` | `anneal help agent` (`prime` remains a hidden alias) |
 
 ### §47 Migration path
 

@@ -67,6 +67,7 @@ START HERE:
   Cold start:
     anneal context \"goal\"     Search, read, and graph context in one response
     anneal status             Compact corpus status
+    anneal help agent         Bundled agent briefing
 
   Program the corpus:
     anneal schema             Queryable relations, predicates, and primitives
@@ -650,8 +651,8 @@ EXAMPLES:
         hide = true,
         display_order = 30,
         long_about = "\
-Print the anneal skill briefing — the same guidance the agent skill loader
-would inject into a session that has the anneal skill installed.
+Print the anneal skill briefing. The canonical surface is `anneal help agent`;
+`anneal prime` remains a hidden alias for skill loaders and muscle memory.
 
 Useful for:
   - Onboarding a fresh agent that doesn't have the skill preloaded
@@ -662,6 +663,7 @@ The content is baked into the binary at build time (include_str!) so the
 printed text always matches the skill shipped with this release.",
         after_help = "\
 EXAMPLES:
+  anneal help agent               # Canonical briefing surface
   anneal prime                    # Print the briefing to stdout
   anneal prime | less             # Paginate"
     )]

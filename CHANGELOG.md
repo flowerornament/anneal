@@ -34,6 +34,9 @@ All notable changes to `anneal` are documented in this file.
   the "Work The Convergence Frontier" section instead of listing hidden
   runtime nouns. The retired `H` alias mention and the legacy "hidden
   compatibility commands" guidance are removed.
+- `anneal help agent` is now the canonical bundled agent briefing surface.
+  The hidden `anneal prime` alias still emits the same briefing for installed
+  skill loaders and existing muscle memory.
 
 ### Removed
 

@@ -221,12 +221,13 @@ loaded automatically and should not be copied into a project.
 ```bash
 anneal context "goal"
 anneal status
-anneal prime
+anneal help agent
 ```
 
 `context` composes ranked search, bounded reads, and graph neighborhood into one
-cold-start response. `status` shows the compact convergence frontier. `prime`
-prints the bundled agent skill briefing from the installed binary.
+cold-start response. `status` shows the compact convergence frontier.
+`help agent` prints the bundled agent skill briefing from the installed binary.
+The hidden `prime` alias remains for installed skill loaders and muscle memory.
 
 Useful `context` flags:
 

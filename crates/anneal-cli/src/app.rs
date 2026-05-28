@@ -14,9 +14,9 @@ use anneal_core::runtime::{
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
     FactStore, Generation, ProjectExtension, SnapshotEntry, SnapshotEntryFact, Source,
-    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbEntry, VerbLayer,
-    VerbRegistry, append_snapshot_entry_capped, load_project_extension, merge_program_layers,
-    read_snapshot_history, render_verb_arg_facts,
+    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry,
+    VerbLayer, VerbRegistry, append_snapshot_entry_capped, load_project_extension,
+    merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -33,6 +33,7 @@ const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
 const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
+const SKILL_MARKDOWN: &str = include_str!("../../../skills/anneal/SKILL.md");
 
 pub fn should_handle_args(args: &[OsString]) -> bool {
     let mut iter = args.iter().skip(1);
@@ -104,7 +105,15 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
     {
         let registry = RuntimeRegistry::load(&invocation.root)?;
-        let entry = registry.registry.resolve_for_actor(name, &registry.actor)?;
+        let entry = match registry.registry.resolve_for_actor(name, &registry.actor) {
+            Ok(entry) => entry,
+            Err(VerbDispatchError::MissingVerb { .. }) => {
+                bail!(
+                    "unknown help topic {name:?}; use `anneal help agent` for the agent briefing, `anneal describe runtime` for the command map, or `anneal schema` for callable verbs"
+                );
+            }
+            Err(error) => return Err(error.into()),
+        };
         return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
     }
     let session = RuntimeSession::load(&invocation.root)?;
@@ -255,6 +264,7 @@ enum RuntimeCommand {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HelpTopic {
+    Agent,
     Status,
     Context,
     Search,
@@ -269,6 +279,7 @@ enum HelpTopic {
 impl HelpTopic {
     fn parse(command: &str) -> Option<Self> {
         Some(match command {
+            "agent" => Self::Agent,
             "status" => Self::Status,
             "context" => Self::Context,
             "search" => Self::Search,
@@ -283,7 +294,12 @@ impl HelpTopic {
     }
 
     fn render(self) -> String {
+        if matches!(self, Self::Agent) {
+            return skill_briefing_body(SKILL_MARKDOWN).to_string();
+        }
+
         let body = match self {
+            Self::Agent => unreachable!("agent help returns before static help rendering"),
             Self::Status => {
                 "\
 Usage: anneal [OPTIONS] status
@@ -511,10 +527,12 @@ impl RuntimeCommand {
             bail!("missing runtime command");
         };
         if command == "help" {
-            let topic = rest.first().context("help requires a runtime command")?;
+            let topic = rest
+                .first()
+                .context("help requires a runtime command or topic; use `anneal help agent` for the agent briefing")?;
             ensure!(
                 rest.len() == 1,
-                "help accepts one runtime command or verb name"
+                "help accepts one runtime command, topic, or verb name; use `anneal help agent` for the agent briefing"
             );
             if let Some(topic) = HelpTopic::parse(topic) {
                 return Ok(Self::Help { topic });
@@ -659,6 +677,17 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+fn skill_briefing_body(markdown: &str) -> &str {
+    let trimmed = markdown.trim_start_matches(['\u{feff}']);
+    let Some(rest) = trimmed.strip_prefix("---\n") else {
+        return trimmed;
+    };
+    let Some(end) = rest.find("\n---\n") else {
+        return trimmed;
+    };
+    rest[end + "\n---\n".len()..].trim_start_matches('\n')
 }
 
 fn retired_save_message() -> &'static str {
@@ -2469,6 +2498,7 @@ mod tests {
             "? *handle{id: h}."
         ])));
         assert!(should_handle_args(&os(&["anneal", "help", "context"])));
+        assert!(should_handle_args(&os(&["anneal", "help", "agent"])));
         assert!(should_handle_args(&os(&[
             "anneal",
             "--root",
@@ -2695,6 +2725,7 @@ mod tests {
     #[test]
     fn parses_runtime_subcommand_help_without_loading_corpus() {
         for (command, topic, expected_output) in [
+            ("agent", HelpTopic::Agent, "# Anneal"),
             ("context", HelpTopic::Context, "Output: human summary"),
             ("search", HelpTopic::Search, "Output: readable rows"),
             ("read", HelpTopic::Read, "Output: readable rows"),
@@ -2708,8 +2739,10 @@ mod tests {
                 .expect("parse command help");
 
             assert_eq!(parsed.command, RuntimeCommand::Help { topic });
-            assert!(topic.render().contains("Usage: anneal"));
             assert!(topic.render().contains(expected_output));
+            if !matches!(topic, HelpTopic::Agent) {
+                assert!(topic.render().contains("Usage: anneal"));
+            }
         }
         assert!(
             HelpTopic::Context
@@ -2734,6 +2767,36 @@ mod tests {
             HelpTopic::Status.render().contains("arrival command")
                 && !HelpTopic::Status.render().contains("0.10 and earlier"),
             "status help should teach the current arrival surface"
+        );
+    }
+
+    #[test]
+    fn help_agent_renders_shipped_skill_briefing() {
+        let rendered = HelpTopic::Agent.render();
+
+        assert_eq!(rendered, skill_briefing_body(SKILL_MARKDOWN));
+        assert!(rendered.contains("# Anneal"));
+        assert!(rendered.contains("## First Moves"));
+        assert!(rendered.contains("## Agent Rules"));
+        assert!(!rendered.starts_with("---"));
+    }
+
+    #[test]
+    fn unknown_help_topic_points_to_agent_briefing() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 tempdir");
+        let err = run_args(vec![
+            OsString::from("anneal"),
+            OsString::from("--root"),
+            OsString::from(root.as_str()),
+            OsString::from("help"),
+            OsString::from("banana"),
+        ])
+        .expect_err("unknown help topic should error");
+
+        assert!(
+            err.to_string().contains("anneal help agent"),
+            "unexpected error: {err:#}"
         );
     }
 
