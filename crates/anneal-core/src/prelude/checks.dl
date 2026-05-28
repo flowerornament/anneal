@@ -176,11 +176,11 @@ frontmatter_adoption_high(dir, with_frontmatter, total) :=
 ).
 missing_frontmatter_file(h, dir, file) :=
   *handle{id: h, kind: "file", status: null, file: file},
-  file_parent_dir(h, dir).
+  file_parent_dir(h, dir),
+  frontmatter_adoption_high(dir, with_frontmatter, total).
 
 diagnostic("W003", "warning", h, file, null, null) :=
-  missing_frontmatter_file(h, dir, file),
-  frontmatter_adoption_high(dir, with_frontmatter, total).
+  missing_frontmatter_file(h, dir, file).
 
 @doc(
   name: "s001_orphaned",
@@ -253,7 +253,7 @@ s003_pipeline_stall(status, count, next_status, false) :=
   next_pipeline_status(status, next_status),
   not forward_dependency_to_next_status(status, next_status).
 
-s003_pipeline_stall(status, count, null, true) :=
+s003_pipeline_stall(status, count, next_status, true) :=
   snapshot_history_exists("yes"),
   status_population(status, count),
   previous_status_population(status, previous_count),

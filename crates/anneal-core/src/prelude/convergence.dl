@@ -122,7 +122,7 @@ area_file_count(area, files) :=
 ).
 @doc(
   name: "area_error_location_count",
-  doc: "Count area diagnostics by code, subject, file, and line before area_error_count sums them."
+  doc: "Count area diagnostics by code, subject, file, and line for debugging repeated local errors."
 ).
 area_error_location_count(area, code, subject, file, line, count) :=
   area(area),
@@ -135,7 +135,10 @@ area_error_location_count(area, code, subject, file, line, count) :=
 
 area_error_count(area, errors) :=
   area(area),
-  errors = Sum{ count : area_error_location_count(area, code, subject, file, line, count) }.
+  errors = Count{ evidence :
+    area_of(subject, area),
+    diagnostic(code, "error", subject, file, line, evidence)
+  }.
 
 @doc(
   name: "area_cross_edges",

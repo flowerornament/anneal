@@ -1326,6 +1326,20 @@ mod tests {
         );
         assert!(
             has_row(
+                output(&outputs, "area_health"),
+                &[
+                    ("area", string("quiet")),
+                    ("grade", string("B")),
+                    ("files", int(1)),
+                    ("errors", int(0)),
+                    ("cross_edges", int(0)),
+                ],
+            ),
+            "area_health should include zero-error areas: {:?}",
+            output(&outputs, "area_health").rows
+        );
+        assert!(
+            has_row(
                 output(&outputs, "area_frontier"),
                 &[
                     ("area", string("host")),
@@ -1430,6 +1444,10 @@ mod tests {
                 (
                     "W003",
                     r#"? diagnostic("W003", severity, "team/missing.md", file, line, evidence)."#,
+                ),
+                (
+                    "missing_frontmatter_file",
+                    r"? missing_frontmatter_file(h, dir, file).",
                 ),
                 (
                     "S001",
@@ -1549,6 +1567,23 @@ mod tests {
                 ("evidence", Value::Null)
             ]
         ));
+        assert!(
+            has_row(
+                output(&outputs, "missing_frontmatter_file"),
+                &[
+                    ("h", string("team/missing.md")),
+                    ("dir", string("team")),
+                    ("file", string("team/missing.md")),
+                ]
+            ),
+            "missing_frontmatter_file rows: {:?}",
+            output(&outputs, "missing_frontmatter_file").rows
+        );
+        assert_eq!(
+            output(&outputs, "missing_frontmatter_file").rows.len(),
+            1,
+            "low-adoption directories should not produce W003 rule rows"
+        );
         assert!(has_row(
             output(&outputs, "S001"),
             &[
@@ -1606,6 +1641,96 @@ mod tests {
                 )
             ]
         ));
+    }
+
+    #[test]
+    fn pipeline_stall_history_branch_preserves_next_status() {
+        let corpus = CorpusId::from("test");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(&scope, "draft-1.md", "file", Some("draft"), "", "area"),
+            handle(&scope, "draft-2.md", "file", Some("draft"), "", "area"),
+            handle(&scope, "draft-3.md", "file", Some("draft"), "", "area"),
+        ];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge pipeline fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.active", "draft", None),
+                    config(&corpus, "convergence.active", "stable", None),
+                    config(&corpus, "convergence.ordering", "draft", Some(0)),
+                    config(&corpus, "convergence.ordering", "stable", Some(1)),
+                ],
+            )
+            .expect("replace pipeline fixture config");
+        store
+            .replace_snapshots(
+                &corpus,
+                vec![
+                    SnapshotFact {
+                        corpus: corpus.clone(),
+                        snapshot: "s1".to_string(),
+                        at: "2026-05-01".to_string(),
+                        id: "draft-1.md".to_string(),
+                        key: "status".to_string(),
+                        value: "draft".to_string(),
+                    },
+                    SnapshotFact {
+                        corpus: corpus.clone(),
+                        snapshot: "s1".to_string(),
+                        at: "2026-05-01".to_string(),
+                        id: "draft-2.md".to_string(),
+                        key: "status".to_string(),
+                        value: "draft".to_string(),
+                    },
+                    SnapshotFact {
+                        corpus: corpus.clone(),
+                        snapshot: "s1".to_string(),
+                        at: "2026-05-01".to_string(),
+                        id: "draft-3.md".to_string(),
+                        key: "status".to_string(),
+                        value: "draft".to_string(),
+                    },
+                ],
+            )
+            .expect("replace pipeline fixture snapshots");
+
+        let outputs = evaluate_standard_prelude_cases(
+            &[(
+                "pipeline_stall",
+                r"? pipeline_stall(status, count, next_status, based_on_history).",
+            )],
+            Database::from_store(&store),
+        );
+
+        assert!(
+            has_row(
+                output(&outputs, "pipeline_stall"),
+                &[
+                    ("status", string("draft")),
+                    ("count", int(3)),
+                    ("next_status", string("stable")),
+                    ("based_on_history", Value::Bool(true)),
+                ],
+            ),
+            "pipeline_stall rows: {:?}",
+            output(&outputs, "pipeline_stall").rows
+        );
     }
 
     #[test]
@@ -1757,6 +1882,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "ticket-2", "issue", Some("review"), "", "host"),
             handle(&scope, "REQ-1", "label", Some("open"), "REQ", "host"),
             handle(&scope, "stub.md", "file", Some("open"), "", "host"),
+            handle(&scope, "quiet.md", "file", Some("closed"), "", "quiet"),
         ];
         batch.content = vec![
             content(
@@ -1862,6 +1988,16 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "team/with-a.md", "file", Some("draft"), "", "team"),
             handle(&scope, "team/with-b.md", "file", Some("draft"), "", "team"),
             handle(&scope, "team/missing.md", "file", None, "", "team"),
+            handle(
+                &scope,
+                "scratch/with.md",
+                "file",
+                Some("metadata"),
+                "",
+                "scratch",
+            ),
+            handle(&scope, "scratch/missing-a.md", "file", None, "", "scratch"),
+            handle(&scope, "scratch/missing-b.md", "file", None, "", "scratch"),
             handle(&scope, "OQ-1", "label", Some("draft"), "OQ", ""),
             handle(&scope, "OQ-2", "label", Some("draft"), "OQ", ""),
             handle(&scope, "impl-1.md", "file", Some("draft"), "", ""),
@@ -1902,6 +2038,9 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             meta(&scope, "team/with-a.md", "md.parent_dir", "team"),
             meta(&scope, "team/with-b.md", "md.parent_dir", "team"),
             meta(&scope, "team/missing.md", "md.parent_dir", "team"),
+            meta(&scope, "scratch/with.md", "md.parent_dir", "scratch"),
+            meta(&scope, "scratch/missing-a.md", "md.parent_dir", "scratch"),
+            meta(&scope, "scratch/missing-b.md", "md.parent_dir", "scratch"),
         ];
 
         let mut store = FactStore::default();
