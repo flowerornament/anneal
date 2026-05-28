@@ -232,7 +232,6 @@ The hidden `prime` alias remains for installed skill loaders and muscle memory.
 Useful `context` flags:
 
 - `--hits N`: number of search winners
-- `--limit N`: alias for `--hits`, for parity with `search`
 - `--budget N`: per-hit read cap; it is not divided by `--hits`
 - `--depth N`: graph distance around winners
 - `--include-low-confidence`: include lower-confidence search hits

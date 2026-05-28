@@ -37,8 +37,8 @@ anneal status --format=text
 Use `context` when the user gives a concrete goal and you need search hits,
 graph neighborhood, and read spans in one call. Its `--budget` derives a
 per-hit read cap that is applied independently to each winning hit. Use
-`--hits` to choose the number of search winners; `--limit` is also accepted as
-an alias. Use `anneal status` when the question is corpus state.
+`--hits` to choose the number of search winners. Use `anneal status` when the
+question is corpus state.
 
 ### Discovering The Language
 
