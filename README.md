@@ -295,7 +295,7 @@ anneal -e '? *handle{id: h, kind: "file"}.'
 anneal -e '? *edge{from: src, to: dst, kind: "DependsOn"}.'
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
-anneal -e '? source_of("work", file, lines).'
+anneal -e '? source_of("top_work", file, lines).'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
 anneal -e '? recent(h, 7), search{query: "conformance", handle: h}.'
 ```
@@ -468,6 +468,13 @@ Common replacements:
 - `garden`: `anneal status` plus `anneal -e '? top_work(h, energy), entropy(h, source).'`
 - `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
 - `impact H`: `anneal handle H --impact`
+- `work`: `anneal status` or `anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'`
+- `blocked H`: `anneal handle H` or `anneal -e '? blocked_row(h, energy, source), h = "H".'`
+- `diagnostics`: `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`
+- `broken`: `anneal -e '? diagnostic{severity: "error"}.'` or `anneal check`
+- `areas`: `anneal -e '? area_health(area, grade, files, errors, cross_edges).'`
+- `trend`: `anneal -e '? snapshot_history_present(count).'`
+- `sources`: `anneal -e '? sources(name, recognizes, capabilities, doc).'`
 - `query`: `anneal -e`
 - `explain`: `anneal -e '...' --explain`
 

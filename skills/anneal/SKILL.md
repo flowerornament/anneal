@@ -184,6 +184,13 @@ workflows into Code Mode directly:
 - `garden`: `anneal status` plus `? top_work(h, energy), entropy(h, source).`
 - `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
 - `impact H`: `anneal handle H --impact`
+- `work`: `anneal status` or `? top_work(h, energy), *handle{id: h, file: file, summary: summary}.`
+- `blocked H`: `anneal handle H` or `? blocked_row(h, energy, source), h = "H".`
+- `diagnostics`: `? diagnostic(code, severity, subject, file, line, evidence).`
+- `broken`: `? diagnostic{severity: "error"}.` or `anneal check`
+- `areas`: `? area_health(area, grade, files, errors, cross_edges).`
+- `trend`: `? snapshot_history_present(count).`
+- `sources`: `? sources(name, recognizes, capabilities, doc).`
 - `query`: `anneal -e`
 - `explain`: `anneal -e '...' --explain`
 

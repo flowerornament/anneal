@@ -630,17 +630,10 @@ mod tests {
         "search",
         CONTEXT_VERB_NAME,
         "read",
-        "work",
-        "areas",
-        "blocked",
-        "diagnostics",
-        "trend",
-        "broken",
         "schema",
         "predicates",
         "describe",
         "source-of",
-        "sources",
     ];
 
     #[test]
@@ -897,21 +890,6 @@ mod tests {
     }
 
     #[test]
-    fn trend_verb_returns_empty_without_snapshot_history() {
-        let verbs = views_verb_declarations();
-        let trend = verbs.get("trend").expect("trend verb is declared");
-        let query = trend.string_arg("query").expect("@verb has query");
-
-        let output = evaluate_verb_query(
-            "trend",
-            query,
-            standard_library_database_without_snapshots(),
-        );
-
-        assert!(output.rows.is_empty());
-    }
-
-    #[test]
     fn status_verb_projects_disjoint_arrival_sections() {
         let verbs = views_verb_declarations();
         let status = verbs.get("status").expect("status verb is declared");
@@ -984,9 +962,6 @@ mod tests {
             "read" => {
                 bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
                 bind_parameter_fact(&mut program, ParameterBinding::int("budget", 4000));
-            }
-            "blocked" => {
-                bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
             }
             "describe" => {
                 bind_parameter_fact(&mut program, ParameterBinding::string("name", "runtime"));
@@ -1262,6 +1237,10 @@ mod tests {
                 ("area_frontier", r"? area_frontier(area, h, score, why)."),
                 ("potential", r#"? potential("ticket-1", energy)."#),
                 ("blocked", r#"? blocked("ticket-1")."#),
+                (
+                    "blocked_row",
+                    r#"? blocked_row("ticket-1", energy, source)."#,
+                ),
                 ("advancing", r#"? advancing("ticket-2")."#),
                 ("ranked_work", r"? ranked_work(h, energy, rank)."),
                 ("top_work", r"? top_work(h, energy)."),
@@ -1365,6 +1344,10 @@ mod tests {
             1,
             "ticket-1 is blocked"
         );
+        assert!(has_row(
+            output(&outputs, "blocked_row"),
+            &[("energy", int(7)), ("source", string("broken_ref"))]
+        ));
         assert_eq!(
             output(&outputs, "advancing").rows.len(),
             1,
@@ -1741,10 +1724,6 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
 
     fn standard_library_database() -> Database {
         standard_library_database_with_snapshots(true)
-    }
-
-    fn standard_library_database_without_snapshots() -> Database {
-        standard_library_database_with_snapshots(false)
     }
 
     fn standard_library_database_with_snapshots(include_snapshots: bool) -> Database {

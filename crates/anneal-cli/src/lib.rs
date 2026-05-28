@@ -169,15 +169,6 @@ impl DescribeCommand {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SourcesCommand;
-
-impl SourcesCommand {
-    pub fn datalog(self) -> &'static str {
-        "? sources(name, recognizes, capabilities, doc)."
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use anneal_core::runtime::prelude::standard_prelude_program;
@@ -236,14 +227,6 @@ mod tests {
 
         assert_eq!(query, r#"? describe("runtime", doc)."#);
         analyze(parse_program("describe", &query).expect("query parses")).expect("query analyzes");
-    }
-
-    #[test]
-    fn sources_template_lists_linked_adapters() {
-        let query = SourcesCommand.datalog();
-
-        assert_eq!(query, "? sources(name, recognizes, capabilities, doc).");
-        analyze(parse_program("sources", query).expect("query parses")).expect("query analyzes");
     }
 
     #[test]

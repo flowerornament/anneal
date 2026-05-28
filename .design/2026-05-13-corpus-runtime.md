@@ -1825,10 +1825,9 @@ area_frontier(area, h, score, why) :=
   }.
 ```
 
-`anneal areas` is a standard-library saved verb over `area_health/5`
-and `area_frontier/4`. It is the per-area drill-down from
+`area_health/5` and `area_frontier/4` are the per-area drill-down from
 `anneal status`, not a compatibility health table with independent
-flags. Agents should use `area_of`, `area_health`, and `area_frontier`
+flags. Agents use `area_of`, `area_health`, and `area_frontier`
 directly from `anneal -e` when they need area filters or custom area
 budgets.
 Rationale: "area" is useful enough to keep, but it belongs in the
@@ -2159,8 +2158,9 @@ error: anneal.dl:4: ambiguous discovery fact 'file_extension'
 This removes the ergonomic tax on single-adapter corpora (the
 common case) while keeping the disambiguation guarantee on
 multi-adapter corpora. The user discovers which mode applies via
-`anneal sources` — listing one adapter means unqualified facts
-work; listing more requires qualification.
+`anneal -e '? sources(name, recognizes, capabilities, doc).'` —
+listing one adapter means unqualified facts work; listing more requires
+qualification.
 
 ### §32.1 Adapter diagnostic evidence [CR-D31]
 
@@ -2224,17 +2224,18 @@ Projects override or extend any.
 | `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
-| `anneal work` | where should I work | `top_work(h, e)` |
-| `anneal blocked H` | what's blocking H | `entropy("H", source), entropy_detail(...)` |
-| `anneal trend` | corpus over time | `at(--at) { ... }` vs `at("now") { ... }` |
-| `anneal diagnostics` | what is unhealthy | full `diagnostic(...)` stream |
-| `anneal broken` | are there errors | `diagnostic(code, "error", ...)` |
 | vocabulary recipes | what words does this corpus use | query `*handle.status`, `*edge.kind`, `*handle.namespace`, `*meta.key` directly |
 
 Plus self-description surfaces from §11. v0.11.x ships CLI verbs for
-`schema`, `describe`, and `sources`; `verbs`, `examples`, `predicates`,
-and `source_of` remain query primitives available through `anneal -e`
-and folded into `describe` where practical.
+`schema` and `describe`; adapter information is available through the
+`sources(name, recognizes, capabilities, doc)` primitive, and `verbs`,
+`examples`, `predicates`, and `source_of` remain query primitives
+available through `anneal -e` and folded into `describe` where
+practical. Ranked work, blocked-handle explanations, diagnostics,
+area health, source listings, and snapshot-history checks are Code
+Mode compositions over `top_work`, `blocked_row`, `diagnostic`,
+`area_health`, `area_frontier`, `sources`, and
+`snapshot_history_present`.
 
 **Definition CR-D86 (Corpus vocabulary through relations).** Corpus-local
 vocabulary remains descriptive, not normative, but it is no longer a
@@ -2245,14 +2246,15 @@ direct relation-pattern queries: `*handle{status: status}`,
 ordinary corpus data; querying it directly reinforces Code Mode and
 avoids another memorized surface.
 
-**Definition CR-D99 (Diagnostic verb naming).** `diagnostics` is the
-canonical runtime verb for the full diagnostic stream. `broken` remains
-the error-only saved view. `check` is a hidden gate alias for
-`diagnostics --gate`: it is callable for CI and pre-commit scripts, but
-does not appear as a peer noun in default help. `diagnostics`, `broken`,
-and `check` do not grow typed filter flags such as `--area`, `--code`,
-`--severity`, or `--file`; filtered diagnostic workflows use relation
-pattern calls such as `diagnostic{file: "x.md"}` and joins such as
+**Definition CR-D99 (Diagnostic command boundary).** `diagnostic` is the
+canonical runtime predicate for the full diagnostic stream. The former
+`diagnostics` and `broken` commands are retired teaching recoveries.
+`check` is the hidden CI gate for error-severity diagnostics: it is
+callable for CI and pre-commit scripts, but does not appear as a peer
+noun in default help. Diagnostic workflows do not grow typed filter
+flags such as `--area`, `--code`, `--severity`, or `--file`; filtered
+diagnostic workflows use relation pattern calls such as
+`diagnostic{file: "x.md"}` and joins such as
 `diagnostic{subject: h, code: code}, area_of{h: h, area: "language"}`.
 Rationale: preserve the gate workflow while keeping diagnostic filtering
 in Code Mode rather than rebuilding flag soup.
@@ -2268,7 +2270,8 @@ then by deterministic convergence-signal priority. Machine mode remains
 the same projected `status` row stream, without additional human
 formatting. The human heading for the generic `work` section SHOULD make
 clear that those rows are other work not already listed as blocked; the
-standalone `work` verb may still expose the full ranked work vocabulary.
+full ranked work vocabulary remains available through `top_work` eval
+composition.
 Rationale: the first screen should reveal convergence shape and the
 next useful action, not expose arbitrary tuple order, duplicate ties, or
 pre-capped totals.
@@ -2412,8 +2415,8 @@ NDJSON envelope record on stdout containing the underlying query
 and runtime info:
 
 ```
-$ anneal blocked OQ-37 --meta
-{"_meta": {"verb": "blocked", "query": "? entropy(\"OQ-37\", src), …", "prelude_hash": "…", …}}
+$ anneal -e '? blocked_row("OQ-37", energy, src).' --meta
+{"_meta": {"query": "? blocked_row(\"OQ-37\", energy, src).", "prelude_hash": "…", …}}
 {"src": "undischarged", "detail": "namespace OQ open 82 days"}
 {"src": "stale_dep", "detail": "depends_on .design/synth/discharge.md (superseded)"}
 ```
@@ -2472,9 +2475,10 @@ Default help teaches a short ladder:
 3. retrieve evidence with `search`, `read`, and `handle`;
 4. configure with `init`.
 
-Additional convergence and adapter support verbs such as `work`,
-`blocked`, `diagnostics`, `broken`, `areas`, `trend`, and `sources`
-remain callable, but default help keeps them below the first screen.
+Additional convergence and adapter questions such as ranked work,
+blocked-handle explanation, diagnostics, area health, trend/history
+checks, and source listings are taught as `anneal -e` compositions
+rather than hidden command nouns.
 
 Compatibility-era commands remain callable while the legacy boundary
 exists, but they do not appear as peer nouns in default help. Verbs are
@@ -2516,8 +2520,8 @@ timeless laws.
   machine output use NDJSON.
 - **stderr: human text.** Verb-banner echo, progress, warnings,
   parse errors. Never NDJSON.
-- **stdin: `-` means stdin.** `anneal blocked -` reads handles, one
-  per line. `anneal -e -` reads a query (heredoc-friendly).
+- **stdin: `-` means stdin.** `anneal -e -` reads a query
+  (heredoc-friendly).
 - **Exit codes:** 0 success (including empty results), 1 query
   error, 2 invocation error, 3 gate failure.
 
@@ -2772,7 +2776,8 @@ wrote anneal.dl
 next steps:
   anneal status                see the landscape
   anneal describe convergence  read what convergence means here
-  anneal work                  pick where to work
+  anneal -e '? top_work(h, energy), *handle{id: h, summary: summary}.'
+                                inspect ranked work
 ```
 
 The agent's first session lands in convergence mode, not graph mode.
@@ -2786,16 +2791,19 @@ same `anneal.dl` file, not a prerequisite for ordinary configuration.
 
 ```
 1. anneal status           see the landscape
-2. anneal work             pick where to work
-3. anneal blocked H        understand why H isn't moving
+2. anneal -e '? top_work(h, energy), *handle{id: h, summary: summary}.'
+                            pick where to work
+3. anneal handle H --impact
+                            inspect local context and blast radius
 4. (do the work)
-5. anneal trend            confirm potential dissipated
+5. anneal status           confirm potential dissipated
 ```
 
 For arrival on an unfamiliar corpus, prepend:
 
 ```
-0a. anneal sources         what adapters are loaded
+0a. anneal -e '? sources(name, recognizes, capabilities, doc).'
+                            what adapters are loaded
 0b. anneal describe convergence  what convergence means here
 0c. anneal -e '? *handle{status: status}.'   what statuses exist
 0d. anneal -e '? *edge{kind: kind}.'         what edge kinds exist
@@ -2974,13 +2982,13 @@ Every v1.x command is reachable in v2.0:
 | `anneal find TEXT` | `anneal -e '? *handle{id: h, kind: kind, status: status}, h contains "TEXT".'` |
 | (new) | `anneal search TEXT` (content retrieval) |
 | (new) | `anneal context GOAL` (search + read in one verb) |
-| `anneal check` | `anneal broken` or `anneal -e '? diagnostic(c, s, ...).'` |
-| `anneal check --errors-only` | `anneal broken --gate` |
+| `anneal check` | `anneal check` for CI, or `anneal -e '? diagnostic{severity: "error"}.'` |
+| `anneal check --errors-only` | `anneal check` |
 | `anneal map --around=H` | `anneal -e '? neighborhood("H", 2, x).'` |
 | `anneal impact H` | `anneal handle H --impact` or `anneal -e '? impact("H", x, depth).'` |
 | `anneal obligations` | `anneal -e '? undischarged(h), obligation(h).'` |
 | `anneal diff` | `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'` |
-| `anneal areas` | `anneal areas` or `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` |
+| `anneal areas` | `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` and `anneal -e '? area_frontier(area, h, score, why).'` |
 | `anneal orient` | `anneal context GOAL` or `anneal handle H --impact` |
 | `anneal garden` | `anneal -e '? top_work(h, energy), entropy(h, source).'` |
 | `anneal init` | `anneal init` (now lattice-on by default) |
@@ -3072,7 +3080,7 @@ Additional workflow targets:
 | "What's the corpus state?" | 1 call (`anneal`) |
 | "Where is X?" | 2 calls (`search` + `read`) |
 | "What does X depend on?" | 2 calls (`anneal H` or `-e upstream`) |
-| "What changed in 7 days?" | 1 call (`anneal trend --at=--7days`) |
+| "What changed in 7 days?" | 1 call (`anneal -e '? recent(h, 7).'`) |
 | "Why is this fact here?" | 1 call (`--explain`) |
 | "Extend the vocabulary" | Write 5 lines in `anneal.dl`; verb available next invocation |
 | "Recover what a prior agent did" | 1 call (`anneal -e '? *trail{...}.'`) |

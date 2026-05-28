@@ -54,6 +54,11 @@ All notable changes to `anneal` are documented in this file.
   `--recent`, `--since`, `--plain`, `--minimal`, and `--no-color`) from the
   runtime surface. Use `--format`, `--json`, `recent(h, days)`, and
   `git_mtime(file, instant)` instead.
+- Retired the hidden runtime command nouns `work`, `blocked`, `diagnostics`,
+  `broken`, `areas`, `trend`, and `sources`. Their workflows now live as
+  explicit `anneal -e` compositions over `top_work`, `blocked_row`,
+  `diagnostic`, `area_health`, `area_frontier`, `snapshot_history_present`,
+  and `sources`.
 
 Older entries below describe the behavior shipped in that release. For current
 workflow guidance, prefer the Unreleased section above and the README.

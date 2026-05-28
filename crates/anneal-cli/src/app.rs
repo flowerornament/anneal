@@ -25,7 +25,7 @@ use chrono::{SecondsFormat, Utc};
 
 use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
-    ReadCommand, SearchCommand, SourcesCommand,
+    ReadCommand, SearchCommand,
 };
 
 const DEFAULT_CORPUS: &str = "cli";
@@ -234,22 +234,10 @@ enum RuntimeCommand {
         handle: String,
         impact: bool,
     },
-    Work,
-    Blocked {
-        handle: String,
-    },
-    Diagnostics {
-        gate: bool,
-        args: Vec<String>,
-    },
     Check,
-    Broken,
-    Areas,
-    Trend,
     Describe {
         name: String,
     },
-    Sources,
     Schema,
     Eval {
         query: String,
@@ -272,14 +260,8 @@ enum HelpTopic {
     Search,
     Read,
     Handle,
-    Work,
-    Blocked,
-    Diagnostics,
-    Broken,
-    Areas,
-    Trend,
+    Check,
     Describe,
-    Sources,
     Schema,
     Eval,
 }
@@ -292,14 +274,8 @@ impl HelpTopic {
             "search" => Self::Search,
             "read" => Self::Read,
             "handle" | "H" => Self::Handle,
-            "work" => Self::Work,
-            "blocked" => Self::Blocked,
-            "diagnostics" | "check" => Self::Diagnostics,
-            "broken" => Self::Broken,
-            "areas" => Self::Areas,
-            "trend" => Self::Trend,
+            "check" => Self::Check,
             "describe" => Self::Describe,
-            "sources" => Self::Sources,
             "schema" => Self::Schema,
             "eval" | "-e" | "--eval" => Self::Eval,
             _ => return None,
@@ -388,80 +364,17 @@ Options:
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
-            Self::Work => {
+            Self::Check => {
                 "\
-Usage: anneal [OPTIONS] work
+Usage: anneal [OPTIONS] check
 
-Show ranked work candidates from the standard-library work verb.
+Hidden CI gate for error-severity diagnostics.
 
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
-"
-            }
-            Self::Blocked => {
-                "\
-Usage: anneal [OPTIONS] blocked <HANDLE>
+For filtered diagnostic questions, use eval:
+  anneal -e '? diagnostic{severity: \"error\", code: code, subject: h}.'
+  anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 
-Show why one handle is blocked according to convergence rules.
-
-Arguments:
-  <HANDLE>                       Handle id to inspect
-
-For a corpus-wide blocked list, use `anneal status` or `anneal work`.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
-"
-            }
-            Self::Diagnostics => {
-                "\
-Usage: anneal [OPTIONS] diagnostics [--gate]
-       anneal [OPTIONS] check
-
-Show the full diagnostic stream from the checks prelude: errors, warnings,
-suggestions, and informational facts.
-
-Options:
-      --gate                    Exit 1 if any error-severity diagnostic exists
-
-Filtering is compositional. Use eval pattern calls instead of one-off flags:
-  anneal -e '? diagnostic{file: \"document.md\", code: code, severity: severity, subject: h}.'
-  anneal -e '? diagnostic{subject: h, code: code}, area_of{h: h, area: \"language\"}.'
-  anneal -e '? diagnostic{severity: \"warning\", code: code, subject: h, evidence: why}.'
-
-`anneal check` is a hidden CI-friendly alias for `anneal diagnostics --gate`.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
-"
-            }
-            Self::Broken => {
-                "\
-Usage: anneal [OPTIONS] broken
-
-Show error diagnostics only. For the full stream use `anneal diagnostics`;
-for filtered questions use `anneal -e '? diagnostic{...}.'`.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
-"
-            }
-            Self::Areas => {
-                "\
-Usage: anneal [OPTIONS] areas
-
-Show per-area health grades and the strongest unsettled-work frontier inside
-each area.
-
-Use this after `anneal status` when the convergence frontier points at a broad
-area and you need a smaller place to start.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
-"
-            }
-            Self::Trend => {
-                "\
-Usage: anneal [OPTIONS] trend
-
-Show status changes when snapshot history exists. No-history corpora emit no rows.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+Output: readable error diagnostics at a terminal or with --format=text; NDJSON rows when piped or with --json. Exits 1 when any row exists.
 "
             }
             Self::Describe => {
@@ -476,15 +389,6 @@ Arguments:
   [NAME]                         Object to describe
 
 Output: readable teaching cards by default, including when piped; use --json or --format=json for NDJSON rows.
-"
-            }
-            Self::Sources => {
-                "\
-Usage: anneal [OPTIONS] sources
-
-List linked sources/adapters and their capabilities.
-
-Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
             Self::Schema => {
@@ -561,7 +465,7 @@ Discover before guessing:
   anneal schema --format=text
   anneal describe runtime --format=text
   anneal describe search --format=text
-  anneal -e '? source_of(\"work\", file, lines).'
+  anneal -e '? source_of(\"top_work\", file, lines).'
 
 Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
@@ -570,14 +474,14 @@ Examples:
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
-  anneal -e '? source_of(\"work\", file, lines).'
+  anneal -e '? source_of(\"top_work\", file, lines).'
   anneal -e - < query.dl
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
         };
-        if matches!(self, Self::Eval) {
+        if matches!(self, Self::Eval | Self::Check) {
             format!("{body}{RUNTIME_HELP_OPTIONS}")
         } else {
             format!("{body}{RUNTIME_PROVENANCE_OPTIONS}{RUNTIME_HELP_OPTIONS}")
@@ -647,32 +551,7 @@ impl RuntimeCommand {
             "search" => parse_search(rest),
             "read" => parse_read(rest),
             "handle" | "H" => parse_handle(rest),
-            "work" => {
-                ensure_no_args(rest, "work")?;
-                Ok(Self::Work)
-            }
-            "blocked" => Ok(Self::Blocked {
-                handle: required_runtime_positional(
-                    rest,
-                    "blocked",
-                    "blocked inspects one handle; pass `anneal blocked <HANDLE>` or use `anneal status` for a corpus-wide blocked list",
-                )?
-                .to_string(),
-            }),
-            "diagnostics" => Ok(parse_diagnostics(rest)),
             "check" => parse_check(rest),
-            "broken" => {
-                ensure_no_args(rest, "broken")?;
-                Ok(Self::Broken)
-            }
-            "areas" => {
-                ensure_no_args(rest, "areas")?;
-                Ok(Self::Areas)
-            }
-            "trend" => {
-                ensure_no_args(rest, "trend")?;
-                Ok(Self::Trend)
-            }
             "describe" => match rest {
                 [] => Ok(Self::Describe {
                     name: "runtime".to_string(),
@@ -686,13 +565,12 @@ impl RuntimeCommand {
                     if let Some(flag) = rest.first().filter(|arg| arg.starts_with('-')) {
                         reject_runtime_compatibility_flag("describe", flag)?;
                     }
-                    bail!("describe accepts at most one name; got {:?}", rest.join(" "))
+                    bail!(
+                        "describe accepts at most one name; got {:?}",
+                        rest.join(" ")
+                    )
                 }
             },
-            "sources" => {
-                ensure_no_args(rest, "sources")?;
-                Ok(Self::Sources)
-            }
             "schema" => {
                 ensure_no_args(rest, "schema")?;
                 Ok(Self::Schema)
@@ -757,6 +635,27 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
         ),
         "explain" => Some(
             "anneal explain has been retired; use provenance on eval with `anneal -e '? diagnostic{subject: h}.' --explain`",
+        ),
+        "work" => Some(
+            "anneal work has been retired; use `anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'` for ranked work, or `anneal status` for the convergence landing",
+        ),
+        "blocked" => Some(
+            "anneal blocked has been retired; use `anneal -e '? blocked_row(h, energy, source), h = \"HANDLE\".'` or `anneal handle <HANDLE>` for the focused view",
+        ),
+        "diagnostics" => Some(
+            "anneal diagnostics has been retired; use `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'` for the full diagnostic stream or `anneal check` for the error-only CI gate",
+        ),
+        "broken" => Some(
+            "anneal broken has been retired; use `anneal -e '? diagnostic{severity: \"error\"}.'` for blockers or `anneal check` for the CI gate",
+        ),
+        "areas" => Some(
+            "anneal areas has been retired; use `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` or `anneal -e '? area_frontier(area, h, score, why).'`",
+        ),
+        "trend" => Some(
+            "anneal trend has been retired until temporal at() is honest; use `anneal -e '? snapshot_history_present(count).'` to verify history exists",
+        ),
+        "sources" => Some(
+            "anneal sources has been retired; use `anneal -e '? sources(name, recognizes, capabilities, doc).'`",
         ),
         _ => None,
     }
@@ -940,17 +839,7 @@ impl RuntimeSession {
                 self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
             }
             RuntimeCommand::Handle { handle, impact } => self.run_handle(handle, impact),
-            RuntimeCommand::Work => self.run_verb("work", RowView::Work),
-            RuntimeCommand::Blocked { handle } => self.run_query(
-                &blocked_query(&handle),
-                ExplainOptions::disabled(),
-                RowView::Blocked,
-            ),
-            RuntimeCommand::Diagnostics { gate, args } => self.run_diagnostics(gate, &args),
             RuntimeCommand::Check => self.run_check_gate(),
-            RuntimeCommand::Broken => self.run_verb("broken", RowView::Broken),
-            RuntimeCommand::Areas => self.run_verb("areas", RowView::Areas),
-            RuntimeCommand::Trend => self.run_verb("trend", RowView::Trend),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(&name).datalog();
                 let output = self.eval(&query, ExplainOptions::disabled())?;
@@ -960,11 +849,6 @@ impl RuntimeSession {
                 );
                 Ok(CommandOutput::rows(output.rows, RowView::Describe))
             }
-            RuntimeCommand::Sources => self.run_query(
-                SourcesCommand.datalog(),
-                ExplainOptions::disabled(),
-                RowView::Sources,
-            ),
             RuntimeCommand::Schema => self.run_verb("schema", RowView::Schema),
             RuntimeCommand::Eval {
                 query,
@@ -1005,21 +889,14 @@ impl RuntimeSession {
             .collect()
     }
 
-    fn run_diagnostics(&self, gate: bool, args: &[String]) -> Result<CommandOutput> {
-        let output =
-            self.run_dynamic_verb_with_view("diagnostics", args, Some(RowView::Diagnostics))?;
-        let gate_failed = gate && self.error_diagnostics_exist()?;
-        Ok(output.with_gate_failed(gate_failed))
-    }
-
     fn run_check_gate(&self) -> Result<CommandOutput> {
-        let output = self.run_verb("broken", RowView::Broken)?;
+        let output = self.run_query(
+            r#"? diagnostic{severity: "error", code: code, subject: subject, file: file, line: line, evidence: evidence}."#,
+            ExplainOptions::disabled(),
+            RowView::Broken,
+        )?;
         let gate_failed = output.has_rows();
         Ok(output.with_gate_failed(gate_failed))
-    }
-
-    fn error_diagnostics_exist(&self) -> Result<bool> {
-        Ok(self.run_verb("broken", RowView::Broken)?.has_rows())
     }
 
     fn run_dynamic_verb(&self, name: &str, args: &[String]) -> Result<CommandOutput> {
@@ -1344,14 +1221,8 @@ enum RowView {
     Search,
     Read,
     Handle { handle: String, impact: bool },
-    Work,
-    Blocked,
-    Diagnostics,
     Broken,
-    Areas,
-    Trend,
     Describe,
-    Sources,
     Schema,
     Eval,
     Verb { name: String },
@@ -1363,14 +1234,8 @@ impl RowView {
             Self::Search => format!("Search ({count})"),
             Self::Read => format!("Read ({count})"),
             Self::Handle { handle, .. } => format!("Handle {handle} ({count} edges)"),
-            Self::Work => format!("Work ({count})"),
-            Self::Blocked => format!("Blocked ({count})"),
-            Self::Diagnostics => format!("Diagnostics ({count})"),
             Self::Broken => format!("Broken ({count})"),
-            Self::Areas => format!("Areas ({count})"),
-            Self::Trend => format!("Trend ({count})"),
             Self::Describe => return None,
-            Self::Sources => format!("Sources ({count})"),
             Self::Schema => format!("Schema ({count})"),
             Self::Eval => format!("Results ({count})"),
             Self::Verb { name } => format!("{name} ({count})"),
@@ -1858,15 +1723,6 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         return write_read_text(writer, rows);
     }
 
-    if *view == RowView::Areas {
-        return write_areas_text(writer, rows);
-    }
-
-    if *view == RowView::Trend && rows.is_empty() {
-        writeln!(writer, "No trend rows -- snapshot history is empty.")?;
-        return Ok(());
-    }
-
     if let Some(heading) = view.heading(rows.len()) {
         writeln!(writer, "{heading}")?;
     }
@@ -1882,91 +1738,6 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
         }
         writeln!(writer)?;
     }
-    Ok(())
-}
-
-fn write_areas_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
-    let mut health = Vec::new();
-    let mut frontier = Vec::new();
-
-    for row in rows {
-        match required_string(row, "section")? {
-            "health" => health.push(row),
-            "frontier" => frontier.push(row),
-            section => bail!("areas row has unknown section {section:?}"),
-        }
-    }
-
-    health.sort_by(|left, right| {
-        let left_grade = optional_string(left, "grade").ok().flatten().unwrap_or("");
-        let right_grade = optional_string(right, "grade").ok().flatten().unwrap_or("");
-        area_grade_rank(left_grade)
-            .cmp(&area_grade_rank(right_grade))
-            .then_with(|| {
-                required_string(left, "area")
-                    .unwrap_or("")
-                    .cmp(required_string(right, "area").unwrap_or(""))
-            })
-    });
-    frontier.sort_by(|left, right| {
-        let left_score = required_number(left, "score")
-            .ok()
-            .copied()
-            .unwrap_or(NumberValue::Int(0));
-        let right_score = required_number(right, "score")
-            .ok()
-            .copied()
-            .unwrap_or(NumberValue::Int(0));
-        required_string(left, "area")
-            .unwrap_or("")
-            .cmp(required_string(right, "area").unwrap_or(""))
-            .then_with(|| right_score.cmp(&left_score))
-            .then_with(|| {
-                required_string(left, "h")
-                    .unwrap_or("")
-                    .cmp(required_string(right, "h").unwrap_or(""))
-            })
-    });
-
-    writeln!(writer, "Areas")?;
-    writeln!(writer, "Health ({})", health.len())?;
-    if health.is_empty() {
-        writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
-    } else {
-        for (index, row) in health.iter().enumerate() {
-            let area = required_string(row, "area")?;
-            let grade = optional_string(row, "grade")?.unwrap_or("-");
-            let files = required_number(row, "files")?;
-            let errors = required_number(row, "errors")?;
-            let cross_edges = required_number(row, "cross_edges")?;
-            writeln!(
-                writer,
-                "{:>2}. {area}  grade={grade}  files={}  errors={}  cross_edges={}",
-                index + 1,
-                display_number(files),
-                display_number(errors),
-                display_number(cross_edges)
-            )?;
-        }
-    }
-
-    if !frontier.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Frontier ({})", frontier.len())?;
-        for (index, row) in frontier.iter().enumerate() {
-            let area = required_string(row, "area")?;
-            let handle = optional_string(row, "h")?.unwrap_or("-");
-            let score = required_number(row, "score")?;
-            let why = optional_string(row, "why")?.unwrap_or("-");
-            writeln!(
-                writer,
-                "{:>2}. {area}  {handle}  score={}  {why}",
-                index + 1,
-                display_number(score)
-            )?;
-        }
-    }
-
     Ok(())
 }
 
@@ -2003,16 +1774,6 @@ fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         write_text_block(&mut writer, text, MAX_TEXT_LINES_PER_SPAN)?;
     }
     Ok(())
-}
-
-fn area_grade_rank(grade: &str) -> u8 {
-    match grade {
-        "D" => 0,
-        "C" => 1,
-        "B" => 2,
-        "A" => 3,
-        _ => 4,
-    }
 }
 
 fn write_text_block<W: Write>(writer: &mut W, text: &str, max_lines: usize) -> Result<()> {
@@ -2418,21 +2179,6 @@ fn parse_handle(args: &[String]) -> Result<RuntimeCommand> {
     })
 }
 
-fn parse_diagnostics(args: &[String]) -> RuntimeCommand {
-    let mut gate = false;
-    let mut verb_args = Vec::new();
-    for arg in args {
-        match arg.as_str() {
-            "--gate" => gate = true,
-            value => verb_args.push(value.to_string()),
-        }
-    }
-    RuntimeCommand::Diagnostics {
-        gate,
-        args: verb_args,
-    }
-}
-
 fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
     if args.is_empty() {
         return Ok(RuntimeCommand::Check);
@@ -2441,7 +2187,7 @@ fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
         reject_runtime_compatibility_flag("check", flag)?;
     }
     bail!(
-        "check is a hidden gate alias for `anneal diagnostics --gate` and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
+        "check is a hidden CI gate for error-severity diagnostics and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
     )
 }
 
@@ -2511,13 +2257,7 @@ fn standard_verb_name_for_explain(command: &str) -> Option<&'static str> {
         "search" => "search",
         "read" => "read",
         "handle" | "H" => "handle",
-        "work" => "work",
-        "blocked" => "blocked",
-        "broken" => "broken",
-        "areas" => "areas",
-        "trend" => "trend",
         "describe" => "describe",
-        "sources" => "sources",
         "schema" => "schema",
         _ => return None,
     })
@@ -2539,27 +2279,6 @@ fn is_explain_option(value: &str) -> bool {
         "--explain" | "--explain-all" | "--explain-depth" | "--explain-first"
     ) || value.starts_with("--explain-depth=")
         || value.starts_with("--explain-first=")
-}
-
-fn required_runtime_positional<'a>(
-    args: &'a [String],
-    command: &str,
-    message: &str,
-) -> Result<&'a str> {
-    match args {
-        [value] if value.starts_with('-') => {
-            reject_runtime_compatibility_flag(command, value)?;
-            Ok(value)
-        }
-        [value] => Ok(value),
-        [] => bail!("{message}"),
-        _ => {
-            if let Some(flag) = args.first().filter(|arg| arg.starts_with('-')) {
-                reject_runtime_compatibility_flag(command, flag)?;
-            }
-            bail!("{message}; got extra arguments")
-        }
-    }
 }
 
 fn reject_runtime_compatibility_flag(command: &str, flag: &str) -> Result<()> {
@@ -2710,23 +2429,6 @@ handle_row({handle}, "in", other, kind, null, file, line, "") :=
     )
 }
 
-fn blocked_query(handle: &str) -> String {
-    let handle = datalog_string_literal(handle);
-    format!(
-        r"
-blocked_focus({handle}).
-
-blocked_row(h, energy, source, kind, status, file) :=
-  blocked_focus(h),
-  potential(h, energy),
-  entropy(h, source),
-  *handle{{id: h, kind: kind, status: status, file: file}}.
-
-? blocked_row(h, energy, source, kind, status, file).
-"
-    )
-}
-
 fn prelude_error(error: PreludeError) -> anyhow::Error {
     anyhow!(error)
 }
@@ -2800,6 +2502,13 @@ mod tests {
             "anneal", "--root", ".design", "health"
         ])));
         for retired in [
+            "work",
+            "blocked",
+            "diagnostics",
+            "broken",
+            "areas",
+            "trend",
+            "sources",
             "impact",
             "find",
             "get",
@@ -2821,14 +2530,6 @@ mod tests {
                 "retired help topic {retired:?} should route to runtime recovery"
             );
         }
-        assert!(should_handle_args(&os(&["anneal", "diagnostics"])));
-        assert!(should_handle_args(&os(&[
-            "anneal",
-            "--format=text",
-            "diagnostics",
-            "--gate"
-        ])));
-        assert!(should_handle_args(&os(&["anneal", "help", "diagnostics"])));
         assert!(should_handle_args(&os(&["anneal", "check"])));
         assert!(should_handle_args(&os(&[
             "anneal", "--area", "compiler", "check"
@@ -2900,35 +2601,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_diagnostics_and_gate_alias() {
-        let parsed = Invocation::parse(os(&["anneal", "diagnostics"])).expect("parse diagnostics");
-        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
-            panic!("expected diagnostics command");
-        };
-        assert!(!gate);
-        assert!(args.is_empty());
-
-        let parsed =
-            Invocation::parse(os(&["anneal", "diagnostics", "--gate"])).expect("parse gate");
-        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
-            panic!("expected diagnostics command");
-        };
-        assert!(gate);
-        assert!(args.is_empty());
-
-        let parsed = Invocation::parse(os(&[
-            "anneal",
-            "diagnostics",
-            "--gate",
-            "--explain-first=1",
-        ]))
-        .expect("parse gate with explain");
-        let RuntimeCommand::Diagnostics { gate, args } = parsed.command else {
-            panic!("expected diagnostics command");
-        };
-        assert!(gate);
-        assert_eq!(args, ["--explain-first=1"]);
-
+    fn parses_check_gate_alias() {
         let parsed = Invocation::parse(os(&["anneal", "check"])).expect("parse check");
         assert_eq!(parsed.command, RuntimeCommand::Check);
 
@@ -2939,23 +2612,16 @@ mod tests {
         let err = Invocation::parse(os(&["anneal", "check", "--active-only"]))
             .expect_err("check no longer accepts compatibility filters");
         assert!(
-            err.to_string().contains("check is a hidden gate alias"),
+            err.to_string().contains("check is a hidden CI gate"),
             "{err}"
         );
 
-        let parsed = Invocation::parse(os(&["anneal", "diagnostics", "--area=language"]))
-            .expect("diagnostics lets dynamic verb parsing report argument errors");
-        let RuntimeCommand::Diagnostics { args, .. } = parsed.command else {
-            panic!("expected diagnostics command");
-        };
-        assert_eq!(args, ["--area=language"]);
-
-        let parsed = Invocation::parse(os(&["anneal", "diagnostics", "anneal-spec.md"]))
-            .expect("diagnostics lets dynamic verb parsing report positional errors");
-        let RuntimeCommand::Diagnostics { args, .. } = parsed.command else {
-            panic!("expected diagnostics command");
-        };
-        assert_eq!(args, ["anneal-spec.md"]);
+        let err = Invocation::parse(os(&["anneal", "diagnostics", "--gate"]))
+            .expect_err("diagnostics is retired");
+        assert!(
+            err.to_string().contains("diagnostics has been retired"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3033,9 +2699,9 @@ mod tests {
             ("search", HelpTopic::Search, "Output: readable rows"),
             ("read", HelpTopic::Read, "Output: readable rows"),
             (
-                "diagnostics",
-                HelpTopic::Diagnostics,
-                "`anneal check` is a hidden CI-friendly alias",
+                "check",
+                HelpTopic::Check,
+                "Hidden CI gate for error-severity diagnostics",
             ),
         ] {
             let parsed = Invocation::parse(os(&["anneal", "--root=.design", command, "--help"]))
@@ -3150,13 +2816,13 @@ mod tests {
 
     #[test]
     fn standard_verb_explain_routes_through_dynamic_projection() {
-        let parsed = Invocation::parse(os(&["anneal", "blocked", "OQ-1", "--explain"]))
+        let parsed = Invocation::parse(os(&["anneal", "handle", "OQ-1", "--explain"]))
             .expect("parse standard explain");
 
         assert_eq!(
             parsed.command,
             RuntimeCommand::Verb {
-                name: "blocked".to_string(),
+                name: "handle".to_string(),
                 args: vec!["OQ-1".to_string(), "--explain".to_string()],
             }
         );
@@ -3209,9 +2875,9 @@ mod tests {
     #[test]
     fn parses_text_output_preference() {
         let parsed =
-            Invocation::parse(os(&["anneal", "--format=text", "work"])).expect("parse work");
+            Invocation::parse(os(&["anneal", "--format=text", "status"])).expect("parse status");
 
-        assert_eq!(parsed.command, RuntimeCommand::Work);
+        assert_eq!(parsed.command, RuntimeCommand::Status);
         assert_eq!(parsed.output, OutputPreference::Human);
 
         let parsed =
@@ -3240,6 +2906,19 @@ mod tests {
             ("orient", "anneal context \"GOAL\""),
             ("query", "use the language directly"),
             ("explain", "--explain"),
+            ("work", "top_work(h, energy)"),
+            ("blocked", "blocked_row(h, energy, source)"),
+            (
+                "diagnostics",
+                "diagnostic(code, severity, subject, file, line, evidence)",
+            ),
+            ("broken", "diagnostic{severity: \"error\"}"),
+            (
+                "areas",
+                "area_health(area, grade, files, errors, cross_edges)",
+            ),
+            ("trend", "snapshot_history_present(count)"),
+            ("sources", "sources(name, recognizes, capabilities, doc)"),
         ] {
             let err = Invocation::parse(os(&["anneal", command]))
                 .expect_err("retired command should teach replacement");
@@ -3249,13 +2928,6 @@ mod tests {
                 .expect_err("retired help topic should teach same replacement");
             assert!(err.to_string().contains(expected), "help {command}: {err}");
         }
-    }
-
-    #[test]
-    fn parses_areas_as_runtime_command() {
-        let parsed = Invocation::parse(os(&["anneal", "areas"])).expect("parse areas");
-
-        assert_eq!(parsed.command, RuntimeCommand::Areas);
     }
 
     #[test]
@@ -3303,15 +2975,6 @@ mod tests {
     }
 
     #[test]
-    fn blocked_without_handle_points_to_list_command() {
-        let error = Invocation::parse(os(&["anneal", "blocked"]))
-            .expect_err("blocked without handle fails");
-
-        assert!(error.to_string().contains("blocked inspects one handle"));
-        assert!(error.to_string().contains("anneal status"));
-    }
-
-    #[test]
     fn empty_row_outputs_report_zero_rows_to_stderr() {
         assert_eq!(
             CommandOutput::rows(Vec::new(), RowView::Eval).empty_rows_diagnostic(OutputMode::Json),
@@ -3319,11 +2982,6 @@ mod tests {
         );
         assert_eq!(
             CommandOutput::rows(Vec::new(), RowView::Eval).empty_rows_diagnostic(OutputMode::Human),
-            None
-        );
-        assert_eq!(
-            CommandOutput::rows(Vec::new(), RowView::Trend)
-                .empty_rows_diagnostic(OutputMode::Human),
             None
         );
         assert_eq!(
@@ -3348,16 +3006,6 @@ mod tests {
         );
         assert_eq!(
             CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
-            None
-        );
-        assert_eq!(
-            CommandOutput::rows(Vec::new(), RowView::Diagnostics)
-                .empty_rows_diagnostic(OutputMode::Json),
-            Some(EMPTY_ROWS_DIAGNOSTIC)
-        );
-        assert_eq!(
-            CommandOutput::rows(Vec::new(), RowView::Diagnostics)
-                .empty_rows_diagnostic(OutputMode::Human),
             None
         );
     }
@@ -3473,49 +3121,6 @@ mod tests {
     }
 
     #[test]
-    fn areas_human_render_groups_health_and_frontier() {
-        let output = CommandOutput::rows(
-            vec![
-                row(&[
-                    ("section", Value::String("frontier".to_string())),
-                    ("area", Value::String("compiler".to_string())),
-                    ("grade", Value::Null),
-                    ("files", Value::Null),
-                    ("errors", Value::Null),
-                    ("cross_edges", Value::Null),
-                    ("h", Value::String("compiler/plan.md".to_string())),
-                    ("score", Value::Number(NumberValue::Int(7))),
-                    ("why", Value::String("broken_ref".to_string())),
-                ]),
-                row(&[
-                    ("section", Value::String("health".to_string())),
-                    ("area", Value::String("compiler".to_string())),
-                    ("grade", Value::String("C".to_string())),
-                    ("files", Value::Number(NumberValue::Int(12))),
-                    ("errors", Value::Number(NumberValue::Int(1))),
-                    ("cross_edges", Value::Number(NumberValue::Int(4))),
-                    ("h", Value::Null),
-                    ("score", Value::Null),
-                    ("why", Value::Null),
-                ]),
-            ],
-            RowView::Areas,
-        );
-        let mut rendered = Vec::new();
-
-        output
-            .write(&mut rendered, OutputMode::Human)
-            .expect("render areas");
-        let rendered = String::from_utf8(rendered).expect("utf8");
-
-        assert!(rendered.starts_with("Areas\nHealth (1)\n"));
-        assert!(rendered.contains("compiler  grade=C  files=12  errors=1  cross_edges=4"));
-        assert!(
-            rendered.contains("Frontier (1)\n 1. compiler  compiler/plan.md  score=7  broken_ref")
-        );
-    }
-
-    #[test]
     fn read_human_render_shows_content_blocks() {
         let output = CommandOutput::rows(
             vec![row(&[
@@ -3614,19 +3219,6 @@ mod tests {
     }
 
     #[test]
-    fn trend_human_empty_render_is_specific() {
-        let output = CommandOutput::rows(Vec::new(), RowView::Trend);
-        let mut rendered = Vec::new();
-
-        output
-            .write(&mut rendered, OutputMode::Human)
-            .expect("render trend");
-        let rendered = String::from_utf8(rendered).expect("utf8");
-
-        assert_eq!(rendered, "No trend rows -- snapshot history is empty.\n");
-    }
-
-    #[test]
     fn status_human_render_rejects_schema_drift() {
         let output = CommandOutput::Status(vec![row(&[
             ("section", Value::String("work".to_string())),
@@ -3700,21 +3292,6 @@ mod tests {
                 .collect(),
             derivation: None,
         }
-    }
-
-    #[test]
-    fn sources_command_reports_linked_markdown_adapter() {
-        let fixture = camino::Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.fixtures/sample-corpus");
-        let session = RuntimeSession::load(&fixture).expect("fixture session loads");
-        let output = session.run(RuntimeCommand::Sources).expect("sources runs");
-        let CommandOutput::Rows { rows, .. } = output else {
-            panic!("sources should emit rows");
-        };
-        assert!(rows.iter().any(|row| {
-            row.fields.get("name")
-                == Some(&anneal_core::runtime::Value::String("markdown".to_string()))
-        }));
     }
 
     #[test]
@@ -3867,7 +3444,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_loads_snapshot_history_for_trend() {
+    fn runtime_loads_snapshot_history_for_eval_at_blocks() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
         fs::create_dir(&root).expect("create corpus root");
@@ -3887,9 +3464,16 @@ mod tests {
         .expect("append history");
 
         let session = RuntimeSession::load(&root).expect("session loads");
-        let output = session.run(RuntimeCommand::Trend).expect("trend runs");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? at("snapshot:last") { *handle{id: h, status: prior_status} }, *handle{id: h, status: current_status}, prior_status != current_status."#
+                    .to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval at block runs");
         let CommandOutput::Rows { rows, .. } = output else {
-            panic!("trend should emit rows");
+            panic!("eval should emit rows");
         };
 
         assert!(rows.iter().any(|row| {

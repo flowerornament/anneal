@@ -1299,7 +1299,9 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
             Some("The `source-of` verb projects this primitive directly.")
         }
         PrimitivePredicate::Examples => Some("`describe NAME` shows these examples inline."),
-        PrimitivePredicate::Sources => Some("The `sources` verb projects this primitive directly."),
+        PrimitivePredicate::Sources => Some(
+            "Query this primitive directly with `anneal -e '? sources(name, recognizes, capabilities, doc).'`.",
+        ),
         _ => None,
     }
 }
@@ -1343,7 +1345,7 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         | "area_frontier" => &[
             "`area_of` rows from source facts. Area health also uses diagnostics, edges, and work-candidate convergence signals.",
         ],
-        "blocked" => {
+        "blocked" | "blocked_row" => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
         }
         "advancing" | "recently_advanced" | "snapshot_history_present" => &[
@@ -1362,20 +1364,23 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
 fn predicate_relationship(name: &str) -> Option<&'static str> {
     match name {
         "diagnostic" => Some(
-            "Shared diagnostic stream used by `broken`, `status`, and `work`; individual rules contribute rows by diagnostic code.",
+            "Shared diagnostic stream used by `status`, `check`, and eval diagnostics; individual rules contribute rows by diagnostic code.",
         ),
         "top_work" => Some(
-            "Used by the `work` verb; `status` uses the same work-candidate vocabulary but removes already-blocked handles from its arrival projection.",
+            "Use directly in eval for ranked work; `status` uses the same work-candidate vocabulary but removes already-blocked handles from its arrival projection.",
         ),
-        "blocked" => Some("Used by the `blocked` verb and the blocked section of `status`."),
+        "blocked" => Some("Used by `blocked_row` and the blocked section of `status`."),
+        "blocked_row" => Some(
+            "Eval helper for focused blocked-handle questions after the standalone blocked command was retired.",
+        ),
         "area_of" => Some(
             "Source-neutral area lens over `*handle.area`; use it to group queries by corpus area.",
         ),
         "area_health" => Some(
-            "Used by the `areas` verb; grades each corpus area by local errors and cross-area connectivity.",
+            "Use directly in eval to grade each corpus area by local errors and cross-area connectivity.",
         ),
         "area_frontier" => Some(
-            "Used by the `areas` verb; picks the strongest unsettled-work handles inside each area.",
+            "Use directly in eval to pick the strongest unsettled-work handles inside each area.",
         ),
         _ => None,
     }
@@ -1383,7 +1388,7 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
 
 fn common_joins(name: &str) -> &'static [&'static str] {
     match name {
-        "diagnostic" | "diagnostics" | "broken" => &[
+        "diagnostic" => &[
             "`diagnostic{subject: h}, area_of{h: h, area: \"X\"}` for area filtering",
             "`diagnostic{subject: h}, *handle{id: h, kind: \"file\"}` for file-handle diagnostics",
         ],
@@ -1403,12 +1408,13 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`downstream{h: h, desc: desc}, diagnostic{subject: desc}` to find affected diagnostics",
             "`downstream{h: h, desc: desc}, area_of{h: desc, area: area}` to group dependents by area",
         ],
-        "top_work" | "work" => &[
+        "top_work" => &[
             "`top_work(h, energy), diagnostic{subject: h}` to see what blocks the top work",
             "`top_work(h, energy), area_of{h: h, area: \"X\"}` for area-scoped work",
         ],
-        "blocked" => &[
+        "blocked" | "blocked_row" => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
+            "`blocked_row(h, energy, source), *handle{id: h, file: file}` to add location metadata",
             "`blocked(h), area_of{h: h, area: \"X\"}` for area-scoped blockers",
         ],
         "entropy" => &[
@@ -1423,7 +1429,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
             "`recent(h, 7), search{query: \"text\", handle: h}` for recent search hits",
         ],
-        "area_of" | "areas" | "area_health" | "area_frontier" => &[
+        "area_of" | "area_health" | "area_frontier" => &[
             "`area_of{h: h, area: \"X\"}, top_work(h, energy)` for area-scoped work",
             "`area_of{h: h, area: \"X\"}, diagnostic{subject: h}` for area-scoped diagnostics",
         ],
@@ -1434,7 +1440,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
 fn predicate_see_also(name: &str) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
-            "broken",
+            "status",
             "broken_reference",
             "obligation",
             "s001_orphaned",
@@ -1451,7 +1457,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "orphan",
             "entropy_priority",
         ],
-        "blocked" => &["potential", "entropy", "flux", "status"],
+        "blocked" | "blocked_row" => &["potential", "entropy", "flux", "status"],
         "area_of" => &["area", "area_health", "area_frontier", "*handle", "schema"],
         "area"
         | "area_file_count"
@@ -1464,7 +1470,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "diagnostic",
             "work_candidate",
             "primary_entropy",
-            "areas",
+            "area_health",
         ],
         "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
         _ => &[],
@@ -1486,31 +1492,23 @@ fn verb_relationship(name: &str) -> &'static str {
         "handle" => {
             "Saved query over `*handle` and `*edge` for one focused handle; `anneal handle H --impact` adds reverse-dependency impact rows."
         }
-        "blocked" => {
-            "Saved query over `potential`, `entropy`, and `*handle` for one focused handle."
-        }
-        "broken" => "Saved query over `diagnostic` filtered to severity `error`.",
-        "work" => "Saved query over `top_work` joined to `*handle` metadata.",
-        "areas" => {
-            "Saved query over `area_health` and `area_frontier`; it is the per-area drill-down from `status`."
-        }
         "describe" => "Saved query over the `describe` primitive.",
         "schema" => "Saved query over the `schema` primitive.",
-        "sources" => "Saved query over the `sources` primitive.",
         _ => "Saved @verb projected from the resolved prelude/project registry.",
     }
 }
 
 fn verb_see_also(name: &str) -> &'static [&'static str] {
     match name {
-        "status" => &["work", "blocked", "broken", "trend"],
+        "status" => &[
+            "top_work",
+            "blocked",
+            "diagnostic",
+            "snapshot_history_present",
+        ],
         "context" => &["search", "read", "handle"],
         "search" => &["context", "read", "schema"],
         "handle" => &["*handle", "*edge", "search"],
-        "blocked" => &["potential", "entropy", "status"],
-        "broken" => &["diagnostic", "status"],
-        "work" => &["top_work", "ranked_work", "status"],
-        "areas" => &["area_health", "area_frontier", "area_of", "status"],
         "describe" => &["schema", "examples", "source-of"],
         "schema" => &["describe", "examples"],
         _ => &[],
@@ -1524,10 +1522,6 @@ fn verb_example(name: &str) -> Option<&'static str> {
         "search" => Some(r#"anneal search "v17 conformance audit" --limit 5"#),
         "read" => Some("anneal read formal-model/v17.md --budget 4000"),
         "handle" => Some("anneal handle formal-model/v17.md --impact"),
-        "blocked" => Some("anneal blocked formal-model/v17.md --explain"),
-        "broken" => Some("anneal broken"),
-        "work" => Some("anneal work"),
-        "areas" => Some("anneal areas"),
         "describe" => Some("anneal describe search"),
         "schema" => Some("anneal schema"),
         _ => None,
@@ -1612,6 +1606,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
+        "blocked_row" => Some(r#"? blocked_row("formal-model/v17.md", energy, source)."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
         "top_work" => Some("? top_work(h, energy)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),

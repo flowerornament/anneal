@@ -207,6 +207,19 @@ blocked(h) :=
   flux(h, 30, 0).
 
 @doc(
+  name: "blocked_row",
+  doc: "Return the energy and unsettled signal for blocked handles, suitable for focused eval replacements of the retired blocked command."
+).
+@predicate(
+  name: "blocked_row",
+  args: ["h", "energy", "source"]
+).
+blocked_row(h, energy, source) :=
+  blocked(h),
+  potential(h, energy),
+  entropy(h, source).
+
+@doc(
   name: "advancing",
   doc: "Return active handles whose status moved forward since the latest snapshot, such as draft to review."
 ).
