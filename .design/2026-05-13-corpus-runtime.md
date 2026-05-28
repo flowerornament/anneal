@@ -2220,7 +2220,7 @@ Projects override or extend any.
 | Verb | Question | Underlying query (sketch) |
 |---|---|---|
 | `anneal status` | where am I | composed of summary, work, advancing, blocked |
-| `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges |
+| `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges; `--impact` adds configured reverse dependencies |
 | `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
 | `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
@@ -2978,7 +2978,7 @@ Every v1.x command is reachable in v2.0:
 | `anneal check` | `anneal broken` or `anneal -e '? diagnostic(c, s, ...).'` |
 | `anneal check --errors-only` | `anneal broken --gate` |
 | `anneal map --around=H` | `anneal -e '? neighborhood("H", 2, x).'` |
-| `anneal impact H` | `anneal -e '? impact("H", x, depth).'` |
+| `anneal impact H` | `anneal handle H --impact` or `anneal -e '? impact("H", x, depth).'` |
 | `anneal obligations` | `anneal -e '? obligation(h), disposition(h).'` |
 | `anneal diff` | `anneal trend` |
 | `anneal areas` | `anneal areas` or `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` |

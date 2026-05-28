@@ -35,7 +35,7 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 @verb(
   name: "handle",
   query: "handle_row(h, \"self\", h, kind, status, file, line, summary) :=\n  verb_arg(\"h\", h),\n  *handle{id: h, kind: kind, status: status, file: file, line: line, summary: summary}.\n\nhandle_row(h, \"out\", other, kind, null, file, line, \"\") :=\n  verb_arg(\"h\", h),\n  *edge{from: h, to: other, kind: kind, file: file, line: line}.\n\nhandle_row(h, \"in\", other, kind, null, file, line, \"\") :=\n  verb_arg(\"h\", h),\n  *edge{to: h, from: other, kind: kind, file: file, line: line}.\n\n? handle_row(h, relation, other, kind, status, file, line, summary).",
-  doc: "Show one handle, its stored metadata, and the handles immediately connected to it. Use this after search/context finds a handle you may act on.",
+  doc: "Show one handle, its stored metadata, and the handles immediately connected to it. Use `anneal handle H --impact` when you also need direct and indirect reverse dependencies before editing.",
   output_schema: "{\"h\":\"HandleId\",\"relation\":\"String\",\"other\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
   args: ["h:HandleId"],
   capabilities: ["read"]

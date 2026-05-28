@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
@@ -12,10 +12,11 @@ use anneal_core::runtime::{
     parse_program, write_ndjson,
 };
 use anneal_core::{
-    ActorContext, CancellationToken, ConfigEntry, ConfigFacts, CorpusId, FactStore, Generation,
-    ProjectExtension, SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg,
-    VerbArgKind, VerbCapability, VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped,
-    load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
+    ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
+    FactStore, Generation, ProjectExtension, SnapshotEntry, SnapshotEntryFact, Source,
+    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbEntry, VerbLayer,
+    VerbRegistry, append_snapshot_entry_capped, load_project_extension, merge_program_layers,
+    read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -30,6 +31,8 @@ use crate::{
 const DEFAULT_CORPUS: &str = "cli";
 const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
 const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
+const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
+const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
 
 pub fn should_handle_args(args: &[OsString]) -> bool {
     let mut iter = args.iter().skip(1);
@@ -229,6 +232,7 @@ enum RuntimeCommand {
     },
     Handle {
         handle: String,
+        impact: bool,
     },
     Work,
     Blocked {
@@ -369,14 +373,17 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
             }
             Self::Handle => {
                 "\
-Usage: anneal [OPTIONS] handle <HANDLE>
+Usage: anneal [OPTIONS] handle [OPTIONS] <HANDLE>
 
 Show one handle plus bounded incoming/outgoing references.
 
-Alias: anneal H <HANDLE>
+Alias: anneal H [OPTIONS] <HANDLE>
 
 Arguments:
   <HANDLE>                       Handle id to inspect
+
+Options:
+      --impact                   Include direct/indirect reverse dependencies
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -639,10 +646,7 @@ impl RuntimeCommand {
             "context" => parse_context(rest),
             "search" => parse_search(rest),
             "read" => parse_read(rest),
-            "handle" | "H" => Ok(Self::Handle {
-                handle: required_runtime_positional(rest, "handle", "handle requires a handle")?
-                    .to_string(),
-            }),
+            "handle" | "H" => parse_handle(rest),
             "work" => {
                 ensure_no_args(rest, "work")?;
                 Ok(Self::Work)
@@ -903,11 +907,7 @@ impl RuntimeSession {
                 let query = ReadCommand::new(handle).with_budget(budget).datalog();
                 self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
             }
-            RuntimeCommand::Handle { handle } => self.run_query(
-                &handle_query(&handle),
-                ExplainOptions::disabled(),
-                RowView::Handle { handle },
-            ),
+            RuntimeCommand::Handle { handle, impact } => self.run_handle(handle, impact),
             RuntimeCommand::Work => self.run_verb("work", RowView::Work),
             RuntimeCommand::Blocked { handle } => self.run_query(
                 &blocked_query(&handle),
@@ -953,6 +953,24 @@ impl RuntimeSession {
     fn run_verb(&self, name: &str, view: RowView) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor(name, &self.actor)?;
         self.run_query(plan.query_source(), ExplainOptions::disabled(), view)
+    }
+
+    fn run_handle(&self, handle: String, impact: bool) -> Result<CommandOutput> {
+        let mut output = self.eval(&handle_query(&handle), ExplainOptions::disabled())?;
+        if impact {
+            output.rows.extend(self.handle_impact_rows(&handle));
+        }
+        Ok(CommandOutput::rows(
+            output.rows,
+            RowView::Handle { handle, impact },
+        ))
+    }
+
+    fn handle_impact_rows(&self, handle: &str) -> Vec<Row> {
+        compute_handle_impact(&self.store, handle)
+            .into_iter()
+            .map(|dependency| impact_dependency_row(handle, dependency))
+            .collect()
     }
 
     fn run_diagnostics(&self, gate: bool, args: &[String]) -> Result<CommandOutput> {
@@ -1130,6 +1148,85 @@ fn is_inside_git_work_tree(root: &camino::Utf8Path) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImpactDependency {
+    handle: String,
+    depth: u32,
+    kind: String,
+    file: String,
+    line: u32,
+}
+
+fn compute_handle_impact(store: &FactStore, handle: &str) -> Vec<ImpactDependency> {
+    let traverse = impact_traverse_set(store.configs());
+    let mut incoming = BTreeMap::<&str, Vec<&EdgeFact>>::new();
+    for edge in store.edges() {
+        if traverse.contains(edge.kind.as_str()) {
+            incoming.entry(edge.to.as_str()).or_default().push(edge);
+        }
+    }
+
+    let mut dependencies = Vec::new();
+    let mut seen = BTreeSet::from([handle.to_string()]);
+    let mut queue = VecDeque::from([(handle.to_string(), 0_u32)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        let Some(edges) = incoming.get(current.as_str()) else {
+            continue;
+        };
+        for edge in edges {
+            if !seen.insert(edge.from.clone()) {
+                continue;
+            }
+            let next_depth = depth.saturating_add(1);
+            dependencies.push(ImpactDependency {
+                handle: edge.from.clone(),
+                depth: next_depth,
+                kind: edge.kind.clone(),
+                file: edge.file.clone(),
+                line: edge.line,
+            });
+            queue.push_back((edge.from.clone(), next_depth));
+        }
+    }
+    dependencies
+}
+
+fn impact_traverse_set(configs: &[ConfigFact]) -> BTreeSet<&str> {
+    let configured = configs
+        .iter()
+        .filter(|fact| fact.key == IMPACT_TRAVERSE_CONFIG_KEY)
+        .map(|fact| fact.value.as_str())
+        .collect::<BTreeSet<_>>();
+    if configured.is_empty() {
+        DEFAULT_IMPACT_TRAVERSE.iter().copied().collect()
+    } else {
+        configured
+    }
+}
+
+fn impact_dependency_row(root: &str, dependency: ImpactDependency) -> Row {
+    Row {
+        fields: BTreeMap::from([
+            ("h".to_string(), Value::String(root.to_string())),
+            ("relation".to_string(), Value::String("impact".to_string())),
+            ("other".to_string(), Value::String(dependency.handle)),
+            ("kind".to_string(), Value::String(dependency.kind)),
+            ("status".to_string(), Value::Null),
+            ("file".to_string(), Value::String(dependency.file)),
+            (
+                "line".to_string(),
+                Value::Number(NumberValue::Int(i64::from(dependency.line))),
+            ),
+            ("summary".to_string(), Value::String(String::new())),
+            (
+                "depth".to_string(),
+                Value::Number(NumberValue::Int(i64::from(dependency.depth))),
+            ),
+        ]),
+        derivation: None,
+    }
+}
+
 enum CommandOutput {
     Rows {
         rows: Vec<Row>,
@@ -1214,7 +1311,7 @@ impl CommandOutput {
 enum RowView {
     Search,
     Read,
-    Handle { handle: String },
+    Handle { handle: String, impact: bool },
     Work,
     Blocked,
     Diagnostics,
@@ -1233,7 +1330,7 @@ impl RowView {
         let heading = match self {
             Self::Search => format!("Search ({count})"),
             Self::Read => format!("Read ({count})"),
-            Self::Handle { handle } => format!("Handle {handle} ({count} edges)"),
+            Self::Handle { handle, .. } => format!("Handle {handle} ({count} edges)"),
             Self::Work => format!("Work ({count})"),
             Self::Blocked => format!("Blocked ({count})"),
             Self::Diagnostics => format!("Diagnostics ({count})"),
@@ -1717,8 +1814,8 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
 }
 
 fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Result<()> {
-    if let RowView::Handle { handle } = view {
-        return write_handle_text(writer, handle, rows);
+    if let RowView::Handle { handle, impact } = view {
+        return write_handle_text(writer, handle, *impact, rows);
     }
 
     if *view == RowView::Describe {
@@ -1936,10 +2033,15 @@ fn write_describe_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
     Ok(())
 }
 
-fn write_handle_text<W: Write>(mut writer: W, handle: &str, rows: &[Row]) -> Result<()> {
+fn write_handle_text<W: Write>(
+    mut writer: W,
+    handle: &str,
+    include_impact: bool,
+    rows: &[Row],
+) -> Result<()> {
     let edge_count = rows
         .iter()
-        .filter(|row| !matches!(required_string(row, "relation"), Ok("self")))
+        .filter(|row| matches!(required_string(row, "relation"), Ok("in" | "out")))
         .count();
 
     writeln!(writer, "Handle {handle} ({edge_count} edges)")?;
@@ -1950,6 +2052,8 @@ fn write_handle_text<W: Write>(mut writer: W, handle: &str, rows: &[Row]) -> Res
 
     let mut incoming = Vec::new();
     let mut outgoing = Vec::new();
+    let mut direct_impact = Vec::new();
+    let mut indirect_impact = Vec::new();
     let mut wrote_self = false;
     for row in rows {
         let relation = required_string(row, "relation")?;
@@ -1973,6 +2077,14 @@ fn write_handle_text<W: Write>(mut writer: W, handle: &str, rows: &[Row]) -> Res
             }
             "in" => incoming.push(row),
             "out" => outgoing.push(row),
+            "impact" => {
+                let depth = required_number(row, "depth")?;
+                if matches!(depth, NumberValue::Int(1)) {
+                    direct_impact.push(row);
+                } else {
+                    indirect_impact.push(row);
+                }
+            }
             _ => {}
         }
     }
@@ -1982,6 +2094,9 @@ fn write_handle_text<W: Write>(mut writer: W, handle: &str, rows: &[Row]) -> Res
     }
     write_handle_edges(&mut writer, "Outgoing", "->", &outgoing)?;
     write_handle_edges(&mut writer, "Incoming", "<-", &incoming)?;
+    if include_impact {
+        write_handle_impact(&mut writer, &direct_impact, &indirect_impact)?;
+    }
     Ok(())
 }
 
@@ -2013,6 +2128,27 @@ fn write_handle_edges<W: Write>(
     let omitted = rows.len().saturating_sub(MAX_HANDLE_EDGES_PER_SECTION);
     if omitted > 0 {
         writeln!(writer, "    ... {omitted} more")?;
+    }
+    Ok(())
+}
+
+fn write_handle_impact<W: Write>(writer: &mut W, direct: &[&Row], indirect: &[&Row]) -> Result<()> {
+    writeln!(writer)?;
+    writeln!(writer, "Impact")?;
+    write_handle_impact_group(writer, "Direct", direct)?;
+    write_handle_impact_group(writer, "Indirect", indirect)?;
+    Ok(())
+}
+
+fn write_handle_impact_group<W: Write>(writer: &mut W, heading: &str, rows: &[&Row]) -> Result<()> {
+    writeln!(writer, "{heading} ({})", rows.len())?;
+    if rows.is_empty() {
+        writeln!(writer, "    (none)")?;
+        return Ok(());
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let other = required_string(row, "other")?;
+        writeln!(writer, "{:>2}. {other}", index + 1)?;
     }
     Ok(())
 }
@@ -2228,6 +2364,25 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
     Ok(RuntimeCommand::Read {
         handle: handle.context("read requires a handle")?,
         budget,
+    })
+}
+
+fn parse_handle(args: &[String]) -> Result<RuntimeCommand> {
+    let mut handle = None;
+    let mut impact = false;
+    for arg in args {
+        match arg.as_str() {
+            "--impact" => impact = true,
+            value if value.starts_with('-') => {
+                reject_runtime_compatibility_flag("handle", value)?;
+                bail!("unknown handle option {value:?}");
+            }
+            value => assign_once(&mut handle, value, "handle accepts one handle")?,
+        }
+    }
+    Ok(RuntimeCommand::Handle {
+        handle: handle.context("handle requires a handle")?,
+        impact,
     })
 }
 
@@ -3053,6 +3208,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_handle_impact_flag() {
+        let parsed =
+            Invocation::parse(os(&["anneal", "handle", "b.md", "--impact"])).expect("parse");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+            }
+        );
+
+        let parsed = Invocation::parse(os(&["anneal", "H", "--impact", "b.md"])).expect("parse");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+            }
+        );
+
+        assert!(HelpTopic::Handle.render().contains("--impact"));
+    }
+
+    #[test]
     fn describe_rejects_extra_names() {
         let error = Invocation::parse(os(&["anneal", "describe", "runtime", "extra"]))
             .expect_err("extra describe args should fail");
@@ -3101,6 +3280,7 @@ mod tests {
                 Vec::new(),
                 RowView::Handle {
                     handle: "missing.md".to_string(),
+                    impact: false,
                 },
             )
             .empty_rows_diagnostic(OutputMode::Human),
@@ -3532,6 +3712,86 @@ mod tests {
     }
 
     #[test]
+    fn handle_impact_projects_configured_reverse_dependencies() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            config frontmatter {
+              field("synthesizes", "Synthesizes", "forward").
+              field("references", "Cites", "forward").
+            }
+
+            config impact {
+              traverse(["DependsOn", "Synthesizes"]).
+            }
+            "#,
+        )
+        .expect("write project rules");
+        fs::write(root.join("b.md"), "# B\n").expect("write b");
+        fs::write(root.join("a.md"), "---\ndepends-on: b.md\n---\n# A\n").expect("write a");
+        fs::write(root.join("c.md"), "---\nsynthesizes: b.md\n---\n# C\n").expect("write c");
+        fs::write(root.join("d.md"), "---\nreferences: b.md\n---\n# D\n").expect("write d");
+        fs::write(root.join("e.md"), "---\ndepends-on: a.md\n---\n# E\n").expect("write e");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+            })
+            .expect("handle runs");
+        let CommandOutput::Rows { rows, view, .. } = output else {
+            panic!("handle should emit rows");
+        };
+        assert_eq!(
+            view,
+            RowView::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+            }
+        );
+
+        let impacted = rows
+            .iter()
+            .filter(|row| required_string(row, "relation").is_ok_and(|value| value == "impact"))
+            .map(|row| {
+                (
+                    required_string(row, "other").expect("other").to_string(),
+                    *required_number(row, "depth").expect("depth"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(impacted.get("a.md"), Some(&NumberValue::Int(1)));
+        assert_eq!(impacted.get("c.md"), Some(&NumberValue::Int(1)));
+        assert_eq!(impacted.get("e.md"), Some(&NumberValue::Int(2)));
+        assert!(!impacted.contains_key("d.md"));
+
+        let mut rendered = Vec::new();
+        CommandOutput::rows(
+            rows,
+            RowView::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+            },
+        )
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render handle");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Impact\nDirect (2)"));
+        assert!(rendered.contains("Indirect (1)"));
+        assert!(rendered.contains("a.md"));
+        assert!(rendered.contains("c.md"));
+        assert!(rendered.contains("e.md"));
+        let impact_text = rendered.split("Impact\n").nth(1).expect("impact section");
+        assert!(!impact_text.contains("d.md"));
+    }
+
+    #[test]
     fn status_writes_capped_automatic_snapshot_history() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
@@ -3662,6 +3922,7 @@ mod tests {
         for name in [
             "diagnostic",
             "search",
+            "handle",
             "upstream",
             "downstream",
             "top_work",
@@ -3702,6 +3963,26 @@ mod tests {
                 })
             }),
             "describe diagnostic should carry the folded recipe and example"
+        );
+
+        let handle = session
+            .run(RuntimeCommand::Describe {
+                name: "handle".to_string(),
+            })
+            .expect("describe handle runs");
+        let CommandOutput::Rows { rows, .. } = handle else {
+            panic!("describe handle should emit rows");
+        };
+        assert!(
+            rows.iter().any(|row| {
+                required_string(row, "doc").is_ok_and(|doc| {
+                    doc.contains("anneal handle H --impact")
+                        && doc.contains("*edge{to: h, from: src}")
+                        && doc.contains("Output: h, src, kind")
+                        && !doc.contains("Output: anneal")
+                })
+            }),
+            "describe handle should teach --impact and reverse dependency shape"
         );
     }
 

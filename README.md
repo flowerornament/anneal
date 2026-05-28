@@ -169,6 +169,7 @@ anneal schema --format=text
 anneal search "v17 conformance audit" --limit 3 --format=text
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000 --format=text
 anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=text
+anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --impact --format=text
 
 # Ask a precise corpus question
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
@@ -261,10 +262,12 @@ become a named project move, edit `anneal.dl` and add an `@verb` declaration.
 anneal search "conformance audit" --limit 5
 anneal read formal-model/v17.md --budget 4000
 anneal handle formal-model/v17.md
+anneal handle formal-model/v17.md --impact
 ```
 
 `search` ranks content and metadata hits. `read` retrieves bounded content
-spans for one handle. `handle` shows incoming and outgoing edges.
+spans for one handle. `handle` shows incoming and outgoing edges; `--impact`
+adds direct and indirect reverse dependencies before an edit.
 
 ### Work The Convergence Frontier
 
@@ -453,7 +456,8 @@ Older command names such as `check`, `get`, `find`, `health`, `garden`,
 `obligations` remain callable during the transition, but they are not the
 primary surface. Prefer the language-first ladder above: `status`/`context` to
 arrive, `schema`/`describe` to discover, `search`/`read`/`handle` to retrieve,
-and `anneal -e` for precise composite questions.
+`handle --impact` for reverse dependencies, and `anneal -e` for precise
+composite questions.
 
 ## Stored Relations
 

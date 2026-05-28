@@ -61,12 +61,14 @@ example `? *handle{status: status}.`, `? *edge{kind: kind}.`, or
 anneal search "<text>" --limit 5 --format=text
 anneal read <handle> --budget 4000 --format=text
 anneal handle <handle> --format=text
+anneal handle <handle> --impact --format=text
 ```
 
 Use `search` for content retrieval. It handles light stemming and common
 planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
 search or when the handle is known. Use `handle` when relationship shape
-matters.
+matters. Add `--impact` before editing when you need direct and indirect
+reverse dependencies.
 Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
 for pipes.
 
@@ -152,6 +154,7 @@ alias for the error-only filtered view.
   field, and low-confidence marker
 - `anneal read HANDLE`: bounded content spans
 - `anneal handle HANDLE`: handle neighborhood
+- `anneal handle HANDLE --impact`: handle neighborhood plus reverse dependencies
 
 ### Work The Convergence Frontier
 

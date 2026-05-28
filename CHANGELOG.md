@@ -12,6 +12,8 @@ All notable changes to `anneal` are documented in this file.
   transition.
 - Runtime queries can use `git_mtime(file, instant)` and `recent(h, days)` to
   compose recent-change workflows without adding a global `--since` flag.
+- `anneal handle <HANDLE> --impact` shows direct and indirect reverse
+  dependencies from the same traversal policy as the legacy `impact` command.
 
 ### Changed
 

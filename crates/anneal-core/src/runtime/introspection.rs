@@ -1034,7 +1034,10 @@ fn with_output_shape(text: &str) -> String {
 }
 
 fn projected_columns(text: &str) -> Vec<String> {
-    let fragment = query_fragment(text);
+    let fragment = query_fragment(text).trim();
+    if !is_output_shape_candidate(fragment) {
+        return Vec::new();
+    }
     let fragment = strip_string_literals(fragment);
     let chars = fragment.chars().collect::<Vec<_>>();
     let mut columns = Vec::<String>::new();
@@ -1059,6 +1062,15 @@ fn projected_columns(text: &str) -> Vec<String> {
         }
     }
     columns
+}
+
+fn is_output_shape_candidate(fragment: &str) -> bool {
+    !fragment.starts_with("anneal ")
+        && (fragment.starts_with('?')
+            || fragment.starts_with('*')
+            || fragment.contains(":=")
+            || fragment.contains('{')
+            || fragment.contains('('))
 }
 
 fn query_fragment(text: &str) -> &str {
@@ -1379,6 +1391,10 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`search{query: \"text\", handle: h, score: score}, *handle{id: h, file: file}` to add file metadata",
             "`search{query: \"text\", handle: h}, read{handle: h, budget: 4000, text: text}` to read winners",
         ],
+        "handle" => &[
+            "`*edge{to: h, from: src}, *handle{id: src, kind: kind}` mirrors `anneal handle H --impact` direct reverse dependencies",
+            "`impact(h, affected, depth), *handle{id: affected, file: file}` for composable downstream traversal",
+        ],
         "upstream" => &[
             "`upstream{h: h, anc: anc}, diagnostic{subject: anc}` to find broken upstream context",
             "`upstream{h: h, anc: anc}, *handle{id: anc, kind: \"file\"}` to keep upstream files only",
@@ -1467,7 +1483,9 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query that composes `search`, `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
         }
         "read" => "Saved query over the `read` primitive.",
-        "handle" => "Saved query over `*handle` and `*edge` for one focused handle.",
+        "handle" => {
+            "Saved query over `*handle` and `*edge` for one focused handle; `anneal handle H --impact` adds reverse-dependency impact rows."
+        }
         "blocked" => {
             "Saved query over `potential`, `entropy`, and `*handle` for one focused handle."
         }
@@ -1508,7 +1526,7 @@ fn verb_example(name: &str) -> Option<&'static str> {
         "context" => Some(r#"anneal context "v17 conformance audit" --hits 3"#),
         "search" => Some(r#"anneal search "v17 conformance audit" --limit 5"#),
         "read" => Some("anneal read formal-model/v17.md --budget 4000"),
-        "handle" => Some("anneal handle formal-model/v17.md"),
+        "handle" => Some("anneal handle formal-model/v17.md --impact"),
         "blocked" => Some("anneal blocked formal-model/v17.md --explain"),
         "broken" => Some("anneal broken"),
         "work" => Some("anneal work"),
