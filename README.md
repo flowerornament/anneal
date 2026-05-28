@@ -239,18 +239,19 @@ Useful `context` flags:
 ```bash
 anneal schema
 anneal describe search
-anneal sources
+anneal describe runtime
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
+anneal -e '? sources(name, recognizes, capabilities, doc).'
 ```
 
 Use `schema` to see queryable relations and signatures. Use `describe` for one
 primitive, predicate, or verb. Use `describe runtime` for the compact map and
 copyable examples. Corpus-local vocabulary is queryable directly through
 relations such as `*handle{status: status}`, `*edge{kind: kind}`,
-`*handle{namespace: ns}`, and `*meta{key: key}`. Use `sources` to see linked
-adapters and capabilities. Use `-e` when you need to compose a question
-directly. When a working query should become a named project move, edit
-`anneal.dl` and add an `@verb` declaration.
+`*handle{namespace: ns}`, and `*meta{key: key}`. Adapter information is
+queryable through `sources(name, recognizes, capabilities, doc)`. Use `-e`
+when you need to compose a question directly. When a working query should
+become a named project move, edit `anneal.dl` and add an `@verb` declaration.
 
 ### Retrieve Evidence
 
@@ -260,23 +261,24 @@ anneal read formal-model/v17.md --budget 4000
 anneal handle formal-model/v17.md
 ```
 
-`search` ranks content and metadata hits. `read` retrieves bounded content spans
-for one handle. `handle` shows incoming and outgoing edges; `anneal H HANDLE`
-is available as a short alias.
+`search` ranks content and metadata hits. `read` retrieves bounded content
+spans for one handle. `handle` shows incoming and outgoing edges.
 
 ### Work The Convergence Frontier
 
 ```bash
-anneal work
-anneal areas
-anneal broken
-anneal blocked HANDLE
-anneal trend
+anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'
+anneal -e '? area_health(area, grade, files, errors, cross_edges).'
+anneal -e '? diagnostic{severity: "error"}.'
+anneal -e '? blocked_row(h, energy, source), h = "HANDLE".'
 ```
 
-`work` ranks active candidates. `areas` shows per-area health and frontier
-drill-down. `broken` shows diagnostic blockers. `blocked` explains one handle.
-`trend` shows movement between snapshots when history exists.
+`top_work` ranks active candidates by entropy. `area_health` grades per-area
+convergence. `diagnostic{severity: "error"}` filters to blockers. `blocked_row`
+explains why one handle is stalled. The convergence vocabulary lives in the
+prelude — use `describe potential`, `describe entropy`, `describe blocked` to
+learn the joins, then compose with `-e`. The `check` command remains as a
+hidden CI gate alias for `diagnostic{severity: "error"}`.
 
 ### Raw Queries
 

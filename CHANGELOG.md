@@ -12,6 +12,13 @@ All notable changes to `anneal` are documented in this file.
 - `describe runtime` now carries the compact command map and vocabulary query
   recipes. `describe NAME` remains the place to learn examples and Common
   joins before writing `anneal -e` queries.
+- `anneal help eval` no longer teaches `at("snapshot:last")` or `at("HEAD~N")`
+  temporal references. The runtime did not honor these (D2 cut `trend`/`diff`
+  until temporal resolution is honest), so teaching them misled agents.
+- README and the bundled `anneal` skill now teach Code Mode composition in
+  the "Work The Convergence Frontier" section instead of listing hidden
+  runtime nouns. The retired `H` alias mention and the legacy "hidden
+  compatibility commands" guidance are removed.
 
 ### Removed
 

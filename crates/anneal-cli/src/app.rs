@@ -542,11 +542,6 @@ Grammar tour:
         (h, energy) : top_work(h, energy)
       }.
 
-  Time blocks query supported historical references:
-    ? at(\"snapshot:last\") { *handle{id: h, status: old} },
-      *handle{id: h, status: now},
-      old != now.
-
   Stratification rule of thumb:
     recursive rules are fine; negation and aggregates must not depend on
     themselves through a cycle. If analysis rejects a query, split the negative

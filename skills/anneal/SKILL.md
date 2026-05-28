@@ -44,14 +44,16 @@ an alias. Use `anneal status` when the question is corpus state.
 ```bash
 anneal schema --format=text
 anneal describe search --format=text
-anneal sources --format=text
+anneal describe runtime --format=text
 ```
 
 Use these before inventing names. `schema` shows queryable relations and
-signatures. `describe` explains one primitive, predicate, or verb, including
-examples and common joins. Query observed vocabulary directly with `-e`, for
+signatures. `describe NAME` explains one primitive, predicate, or verb,
+including examples and common joins. `describe runtime` is the compact command
+map plus vocabulary recipes. Query observed vocabulary directly with `-e`, for
 example `? *handle{status: status}.`, `? *edge{kind: kind}.`, or
-`? *handle{namespace: ns}.`. `sources` shows linked adapters and capabilities.
+`? *handle{namespace: ns}.`. Adapter information is queryable through
+`? sources(name, recognizes, capabilities, doc).`.
 
 ### Finding and Reading
 
@@ -64,7 +66,7 @@ anneal handle <handle> --format=text
 Use `search` for content retrieval. It handles light stemming and common
 planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
 search or when the handle is known. Use `handle` when relationship shape
-matters; `H` is a short alias.
+matters.
 Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
 for pipes.
 
@@ -119,13 +121,15 @@ it.
 ### Working The Convergence Frontier
 
 ```bash
-anneal broken
-anneal work
-anneal trend  # emits rows when snapshot history exists; otherwise zero rows
+anneal -e '? diagnostic{severity: "error"}.'                                          # blockers
+anneal -e '? top_work(h, energy), *handle{id: h, file: file, summary: summary}.'      # ranked work
+anneal -e '? area_health(area, grade, files, errors, cross_edges).'                   # area drill-down
 ```
 
-Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
-`work` for ranked active candidates, and `trend` when snapshot history exists.
+Convergence is composed via the prelude vocabulary. Use `describe potential`,
+`describe entropy`, `describe blocked`, `describe area_health` to learn the
+Common joins, then compose with `-e`. `check` remains as a hidden CI gate
+alias for the error-only filtered view.
 
 ## Command Map
 
@@ -139,8 +143,8 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
 ### Discover The Language
 
 - `anneal schema`: predicates, primitives, stored relations, and signatures
-- `anneal describe NAME`: docs for one runtime name
-- `anneal sources`: linked adapters and capabilities
+- `anneal describe NAME`: docs for one runtime name (includes Common joins)
+- `anneal describe runtime`: compact command map and vocabulary recipes
 
 ### Retrieve Evidence
 
@@ -151,17 +155,17 @@ Prefer runtime verbs for new workflows. Use `broken` for diagnostic blockers,
 
 ### Work The Convergence Frontier
 
-- `anneal work`: ranked work candidates
-- `anneal areas`: per-area health grades and frontier work
-- `anneal blocked HANDLE`: blockers for one handle
-- `anneal broken`: diagnostic gate
-- `anneal trend`: convergence movement rows when snapshot history exists; no-history
-  corpora emit zero rows
+Compose with `anneal -e` over prelude vocabulary:
 
-Project `@verb` declarations in `anneal.dl` appear beside these in
-`schema` and are callable by name. Use `anneal -e` for custom composition when
-you need a parameterized or one-off query. Edit `anneal.dl` directly to promote
-a working query into a reusable project verb.
+- `? diagnostic{severity: "error"}.`: blockers (error-only filtered view)
+- `? top_work(h, energy), *handle{id: h, file: file}.`: ranked active work
+- `? area_health(area, grade, files, errors, cross_edges).`: per-area health
+- `? blocked_row(h, energy, source), h = "HANDLE".`: why one handle is stalled
+
+Project `@verb` declarations in `anneal.dl` appear in `schema` and are callable
+by name. Edit `anneal.dl` directly to promote a working query into a reusable
+project verb. The `check` command remains as a hidden CI gate alias for
+the error-only diagnostic view.
 
 ### Raw Query Surface
 
@@ -196,23 +200,20 @@ Common prelude families:
 
 - Start with `anneal context "<goal>"` for goal-oriented work.
 - Use `search` then `read` when you need tighter control over retrieval.
-- Use `schema`, `describe`, and `sources` before writing a custom query against
-  unfamiliar vocabulary.
+- Use `schema` and `describe NAME` before writing a custom query against
+  unfamiliar vocabulary. `describe NAME` shows Common joins inline.
 - Use `anneal -e` for composite questions. Keep queries narrow and project only
   fields you need. Add `--limit N` while exploring broad predicates.
 - Use `--json` or NDJSON streams for tool consumption. Runtime commands render
   readable text at a terminal; use `--format=text` to force that renderer
   through pipe-only harnesses.
-- Use `--root` for the corpus path. Use `--area` only for an area name inside
-  that corpus, usually a top-level directory or configured concern group.
-- Use hidden compatibility commands such as `health`, `check`, `get`, `find`,
-  `map`, `impact`, `diff`, `garden`, and `obligations` only when exact
-  pre-0.11.0 behavior is required.
-- After editing corpus files, run `anneal broken`. Use `anneal check
-  --scope=active` only when you are deliberately exercising the compatibility
-  surface or CI gate.
-- If a command returns too much, rerun with a lower `--limit`, smaller
-  `--budget`, or a more specific query.
+- Use `--root` for the corpus path. Filter inside the query (`area_of{h: h,
+  area: "X"}`) rather than reaching for flags.
+- After editing corpus files, run `anneal -e '? diagnostic{severity: "error"}.'`
+  to see new blockers. `anneal check` is a hidden CI gate alias for the same
+  filtered diagnostic view and exits 1 if any error-severity diagnostic exists.
+- If a query returns too much, add `--limit N`, smaller `--budget`, or a more
+  specific pattern brace filter.
 
 ## Project Extension
 
