@@ -627,7 +627,6 @@ mod tests {
     const REQUIRED_VIEW_VERBS: &[&str] = &[
         "status",
         "handle",
-        "find",
         "search",
         CONTEXT_VERB_NAME,
         "read",
@@ -972,7 +971,6 @@ mod tests {
             "handle" => {
                 bind_parameter_fact(&mut program, ParameterBinding::string("h", "ticket-1"));
             }
-            "find" => bind_parameter_fact(&mut program, ParameterBinding::string("text", "ticket")),
             "search" => {
                 bind_parameter_fact(&mut program, ParameterBinding::string("query", "ticket"));
                 bind_parameter_fact(&mut program, ParameterBinding::int("limit", 10));

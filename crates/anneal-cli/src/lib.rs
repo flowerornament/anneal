@@ -387,7 +387,6 @@ mod tests {
             "handle" | "blocked" => {
                 bind_parameter_fact(program, ParameterBinding::string("h", "ticket-1"));
             }
-            "find" => bind_parameter_fact(program, ParameterBinding::string("text", "ticket")),
             "search" => {
                 bind_parameter_fact(program, ParameterBinding::string("query", "ticket"));
                 bind_parameter_fact(program, ParameterBinding::int("limit", 10));

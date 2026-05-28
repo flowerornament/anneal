@@ -451,13 +451,25 @@ Snapshot history is the automatic migration path. When XDG history is enabled,
 pre-0.11.0 repo-local `.anneal/history.jsonl` is copied into XDG state on the
 first write so trend and diff history continue.
 
-Older command names such as `check`, `get`, `find`, `health`, `garden`,
-`impact`, `map`, `query`, `explain`, `orient`, `diff`, and
-`obligations` remain callable during the transition, but they are not the
-primary surface. Prefer the language-first ladder above: `status`/`context` to
-arrive, `schema`/`describe` to discover, `search`/`read`/`handle` to retrieve,
-`handle --impact` for reverse dependencies, and `anneal -e` for precise
-composite questions.
+Older compatibility commands now return teaching recovery messages instead of
+running parallel workflows. Use the language-first ladder above:
+`status`/`context` to arrive, `schema`/`describe` to discover,
+`search`/`read`/`handle` to retrieve, `handle --impact` for reverse
+dependencies, and `anneal -e` for precise composite questions.
+
+Common replacements:
+
+- `find TEXT`: `anneal -e '? *handle{id: h, kind: kind, status: status}, h contains "TEXT".'`
+- `get H`: `anneal handle H` or `anneal read H`
+- `map`: `anneal -e '? *edge{from: src, to: dst, kind: kind}.'`
+- `health`: `anneal status` plus `anneal -e '? diagnostic{severity: severity, subject: h}.'`
+- `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
+- `obligations`: `anneal -e '? undischarged(h), obligation(h).'`
+- `garden`: `anneal status` plus `anneal -e '? top_work(h, energy), entropy(h, source).'`
+- `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
+- `impact H`: `anneal handle H --impact`
+- `query`: `anneal -e`
+- `explain`: `anneal -e '...' --explain`
 
 ## Stored Relations
 

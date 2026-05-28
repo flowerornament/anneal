@@ -1123,6 +1123,9 @@ fn run() -> anyhow::Result<()> {
         Some(Command::Init { dry_run, force }) => Some((dry_run, force)),
         _ => None,
     };
+    if init_mode.is_some() {
+        ensure_init_flags(&cli_args)?;
+    }
     if matches!(init_mode, Some((false, false)))
         && (root.join("anneal.dl").exists() || root.join("anneal.toml").exists())
     {
@@ -1800,17 +1803,50 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn ensure_prime_flags(cli: &Cli) -> anyhow::Result<()> {
+    ensure_no_retired_compatibility_flags(cli, "prime")?;
+    Ok(())
+}
+
+fn ensure_init_flags(cli: &Cli) -> anyhow::Result<()> {
+    ensure_no_retired_compatibility_flags(cli, "init")?;
+    Ok(())
+}
+
+fn ensure_no_retired_compatibility_flags(cli: &Cli, command: &str) -> anyhow::Result<()> {
     if cli.area.is_some() {
-        anyhow::bail!("prime does not support --area; it prints the bundled agent briefing");
+        anyhow::bail!(
+            "{command} does not accept retired compatibility filter --area; express filters in Datalog with `anneal -e`"
+        );
     }
     if cli.recent {
-        anyhow::bail!("prime does not support --recent; it prints the bundled agent briefing");
+        anyhow::bail!(
+            "{command} does not accept retired compatibility filter --recent; use `recent(h, days)` with `anneal -e`"
+        );
     }
     if cli.since.is_some() {
-        anyhow::bail!("prime does not support --since; it prints the bundled agent briefing");
+        anyhow::bail!(
+            "{command} does not accept retired compatibility filter --since; use `git_mtime(file, instant)` or `recent(h, days)` with `anneal -e`"
+        );
     }
-    if cli.pretty && !cli.json {
-        anyhow::bail!("prime --pretty requires --json");
+    if cli.pretty {
+        anyhow::bail!(
+            "{command} does not accept retired compatibility rendering flag --pretty; use `--format=json` or `--json`"
+        );
+    }
+    if cli.plain {
+        anyhow::bail!(
+            "{command} does not accept retired compatibility rendering flag --plain; use `--format=text`"
+        );
+    }
+    if cli.minimal {
+        anyhow::bail!(
+            "{command} does not accept retired compatibility rendering flag --minimal; use `--format=text`"
+        );
+    }
+    if cli.no_color {
+        anyhow::bail!(
+            "{command} does not accept retired compatibility rendering flag --no-color; use `--format=text`"
+        );
     }
     Ok(())
 }

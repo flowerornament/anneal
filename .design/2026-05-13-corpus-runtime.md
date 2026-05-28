@@ -2221,7 +2221,6 @@ Projects override or extend any.
 |---|---|---|
 | `anneal status` | where am I | composed of summary, work, advancing, blocked |
 | `anneal H` | what is this handle | `*handle{id: H, ...}` + immediate edges; `--impact` adds configured reverse dependencies |
-| `anneal find TEXT` | identity-search by id substring | `*handle{id, ...}, id contains "TEXT"` |
 | `anneal search TEXT` | content match by query | `TopK{... search("TEXT", h, span_id, score, reason, field, low_confidence), low_confidence = false}` |
 | `anneal context GOAL` | composition for cold-agent localization | see §33.1 |
 | `anneal read H` | give me H's content, bounded | `read(H, budget, span_id, text, start, end, tokens)` |
@@ -2972,18 +2971,18 @@ Every v1.x command is reachable in v2.0:
 |---|---|
 | `anneal status` | `anneal status` |
 | `anneal get H` | `anneal H` |
-| `anneal find TEXT` | `anneal find TEXT` (identity search; unchanged) |
+| `anneal find TEXT` | `anneal -e '? *handle{id: h, kind: kind, status: status}, h contains "TEXT".'` |
 | (new) | `anneal search TEXT` (content retrieval) |
 | (new) | `anneal context GOAL` (search + read in one verb) |
 | `anneal check` | `anneal broken` or `anneal -e '? diagnostic(c, s, ...).'` |
 | `anneal check --errors-only` | `anneal broken --gate` |
 | `anneal map --around=H` | `anneal -e '? neighborhood("H", 2, x).'` |
 | `anneal impact H` | `anneal handle H --impact` or `anneal -e '? impact("H", x, depth).'` |
-| `anneal obligations` | `anneal -e '? obligation(h), disposition(h).'` |
-| `anneal diff` | `anneal trend` |
+| `anneal obligations` | `anneal -e '? undischarged(h), obligation(h).'` |
+| `anneal diff` | `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'` |
 | `anneal areas` | `anneal areas` or `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` |
-| `anneal orient` | `anneal work` |
-| `anneal garden` | `anneal -e '? maintenance_task(t, category, blast).'` |
+| `anneal orient` | `anneal context GOAL` or `anneal handle H --impact` |
+| `anneal garden` | `anneal -e '? top_work(h, energy), entropy(h, source).'` |
 | `anneal init` | `anneal init` (now lattice-on by default) |
 | `anneal prime` | `anneal describe runtime` |
 

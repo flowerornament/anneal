@@ -42,15 +42,6 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 ).
 
 @verb(
-  name: "find",
-  query: "find_row(h, kind, status, namespace, file, line, summary) :=\n  verb_arg(\"text\", text),\n  *handle{id: h, kind: kind, status: status, namespace: namespace, file: file, line: line, summary: summary},\n  h contains text.\n\n? find_row(h, kind, status, namespace, file, line, summary).",
-  doc: "Find handles whose identifier contains text exactly. Use search when you want content ranking instead of identity matching.",
-  output_schema: "{\"h\":\"HandleId\",\"kind\":\"String\",\"status\":\"String|null\",\"namespace\":\"String\",\"file\":\"String\",\"line\":\"Number\",\"summary\":\"String\"}",
-  args: ["text:String"],
-  capabilities: ["read"]
-).
-
-@verb(
   name: "search",
   query: "search_row(h, span_id, score, reason, field, low_confidence) :=\n  verb_arg(\"query\", query),\n  verb_arg(\"limit\", limit),\n  (h, span_id, score, reason, field, low_confidence) = TopK{ k: limit, key: score :\n    (h, span_id, score, reason, field, low_confidence) :\n      search(query, h, span_id, score, reason, field, low_confidence),\n      low_confidence = false\n  }.\n\n? search_row(h, span_id, score, reason, field, low_confidence).",
   doc: "Search identities, metadata, and content text, returning ranked hits with reasons and confidence flags.",

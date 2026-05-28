@@ -265,7 +265,7 @@ impl IntrospectionBuilder {
                 source_label: Some("Topic source"),
                 extra_lines: vec![
                     "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
-                    "Hidden support commands: work, blocked, diagnostics, broken, areas, trend, sources.".to_string(),
+                    "Hidden support commands: check, prime.".to_string(),
                     "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
                     "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
                     "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use recent(h, days).".to_string(),
@@ -1497,9 +1497,6 @@ fn verb_relationship(name: &str) -> &'static str {
         "describe" => "Saved query over the `describe` primitive.",
         "schema" => "Saved query over the `schema` primitive.",
         "sources" => "Saved query over the `sources` primitive.",
-        "find" => {
-            "Saved query over `*handle.id contains text`; use `search` for ranked content retrieval."
-        }
         _ => "Saved @verb projected from the resolved prelude/project registry.",
     }
 }

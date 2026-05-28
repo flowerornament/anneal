@@ -172,6 +172,21 @@ by name. Edit `anneal.dl` directly to promote a working query into a reusable
 project verb. The `check` command remains as a hidden CI gate alias for
 the error-only diagnostic view.
 
+Retired compatibility commands return teaching recovery messages. Translate old
+workflows into Code Mode directly:
+
+- `find TEXT`: `? *handle{id: h, kind: kind, status: status}, h contains "TEXT".`
+- `get H`: `anneal handle H` or `anneal read H`
+- `map`: `? *edge{from: src, to: dst, kind: kind}.`
+- `health`: `anneal status` plus `? diagnostic{severity: severity, subject: h}.`
+- `diff`: `? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.`
+- `obligations`: `? undischarged(h), obligation(h).`
+- `garden`: `anneal status` plus `? top_work(h, energy), entropy(h, source).`
+- `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
+- `impact H`: `anneal handle H --impact`
+- `query`: `anneal -e`
+- `explain`: `anneal -e '...' --explain`
+
 ### Raw Query Surface
 
 ```bash

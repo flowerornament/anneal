@@ -45,6 +45,15 @@ All notable changes to `anneal` are documented in this file.
   through `schema`, `describe`, `examples(...)`, and `verbs(...)`.
 - Removed the `anneal save` write path. Reusable project moves are now ordinary
   `@verb(...)` declarations edited directly in `anneal.dl`.
+- Retired the remaining v0.10 compatibility commands: `impact`, `find`, `get`,
+  `map`, `health`, `diff`, `obligations`, `garden`, `orient`, `query`, and
+  `explain`. Each now fails with a teaching recovery message pointing to
+  `handle --impact`, `status`, `search`/`read`/`handle`, or a specific
+  `anneal -e` composition.
+- Retired the compatibility filter/render flag dialects (`--pretty`, `--area`,
+  `--recent`, `--since`, `--plain`, `--minimal`, and `--no-color`) from the
+  runtime surface. Use `--format`, `--json`, `recent(h, days)`, and
+  `git_mtime(file, instant)` instead.
 
 Older entries below describe the behavior shipped in that release. For current
 workflow guidance, prefer the Unreleased section above and the README.

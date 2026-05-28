@@ -189,11 +189,11 @@ impl Invocation {
                 output = parse_output_format(value)?;
             } else if rest.is_empty() && is_compatibility_filter_flag(&arg) {
                 bail!(
-                    "{arg} is a compatibility filter, not a runtime verb option; use it with compatibility commands such as check/find/map/garden/orient, or express the filter in Datalog with `anneal -e`"
+                    "{arg} is a retired compatibility filter; express the filter in Datalog with `anneal -e`"
                 );
             } else if rest.is_empty() && is_compatibility_render_flag(&arg) {
                 bail!(
-                    "{arg} is a compatibility rendering flag; runtime verbs use `--format=text`, `--format=json`, or `--json`"
+                    "{arg} is a retired compatibility rendering flag; use `--format=text`, `--format=json`, or `--json`"
                 );
             } else {
                 rest.push(arg);
@@ -700,13 +700,12 @@ impl RuntimeCommand {
             "save" => bail!("{}", retired_save_message()),
             "-e" | "--eval" | "eval" => parse_eval(rest),
             other if other.starts_with('-') => bail!("unknown runtime option {other:?}"),
-            other @ ("cookbook" | "vocab" | "verbs" | "examples") => {
-                bail!(
-                    "{}",
-                    retired_command_message(other).expect("retired command message")
-                )
+            other => {
+                if let Some(message) = retired_command_message(other) {
+                    bail!("{message}");
+                }
+                Ok(parse_dynamic_verb(other, rest))
             }
-            other => Ok(parse_dynamic_verb(other, rest)),
         }
     }
 }
@@ -726,6 +725,39 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal examples was folded into `anneal describe NAME`; use `anneal describe search` or query `examples(name, example)` with `anneal -e`",
         ),
         "save" => Some(retired_save_message()),
+        "impact" => Some(
+            "anneal impact has been retired; use `anneal handle <HANDLE> --impact` or compose `anneal -e '? impact(\"HANDLE\", affected, depth).'`",
+        ),
+        "find" => Some(
+            "anneal find has been retired; use `anneal search TEXT` for content retrieval or compose `anneal -e '? *handle{id: h, kind: kind, status: status}, h contains \"TEXT\".'` for identity matching",
+        ),
+        "get" => Some(
+            "anneal get has been retired; use `anneal handle <HANDLE>` for handle metadata and edges, or `anneal read <HANDLE>` for bounded content",
+        ),
+        "map" => Some(
+            "anneal map has been retired; compose graph questions with `anneal -e '? *edge{from: src, to: dst, kind: kind}.'` or use `anneal handle <HANDLE>` for a local neighborhood",
+        ),
+        "health" => Some(
+            "anneal health has been retired; use `anneal status` for the convergence header and compose diagnostics with `anneal -e '? diagnostic{severity: severity, subject: h}.'`",
+        ),
+        "diff" => Some(
+            "anneal diff has been retired; use automatic status snapshots with `anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`",
+        ),
+        "obligations" => Some(
+            "anneal obligations has been retired; compose `anneal -e '? undischarged(h), obligation(h).'` or inspect `anneal describe undischarged`",
+        ),
+        "garden" => Some(
+            "anneal garden has been retired; compose `top_work`, `entropy`, `diagnostic`, and `*handle` with `anneal -e`, starting from `anneal status`",
+        ),
+        "orient" => Some(
+            "anneal orient has been retired; use `anneal context \"GOAL\"` for cold-start orientation or `anneal handle <HANDLE> --impact` before edits",
+        ),
+        "query" => Some(
+            "anneal query has been retired; use the language directly with `anneal -e '? *handle{id: h}.'`",
+        ),
+        "explain" => Some(
+            "anneal explain has been retired; use provenance on eval with `anneal -e '? diagnostic{subject: h}.' --explain`",
+        ),
         _ => None,
     }
 }
@@ -1515,7 +1547,7 @@ impl<'a> DynamicVerbParser<'a> {
             });
         if is_compatibility_render_flag(raw) {
             bail!(
-                "verb '{}' has no argument '{}'; {raw} is a compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
+                "verb '{}' has no argument '{}'; {raw} is a retired compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
                 self.entry.name(),
                 name,
             );
@@ -1587,13 +1619,13 @@ impl<'a> DynamicVerbParser<'a> {
             .ok_or_else(|| {
                 if is_compatibility_filter_flag(raw) {
                     anyhow::anyhow!(
-                        "verb '{}' has no argument '{}'; {raw} is a compatibility filter, not a runtime verb option. Use a declared verb argument, or express the filter in Datalog with `anneal -e`",
+                        "verb '{}' has no argument '{}'; {raw} is a retired compatibility filter, not a runtime verb option. Use a declared verb argument, or express the filter in Datalog with `anneal -e`",
                         self.entry.name(),
                         name,
                     )
                 } else if is_compatibility_render_flag(raw) {
                     anyhow::anyhow!(
-                        "verb '{}' has no argument '{}'; {raw} is a compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
+                        "verb '{}' has no argument '{}'; {raw} is a retired compatibility rendering flag. Runtime verbs use `--format=text`, `--format=json`, or `--json`",
                         self.entry.name(),
                         name,
                     )
@@ -2405,6 +2437,9 @@ fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
     if args.is_empty() {
         return Ok(RuntimeCommand::Check);
     }
+    if let Some(flag) = args.first().filter(|arg| arg.starts_with('-')) {
+        reject_runtime_compatibility_flag("check", flag)?;
+    }
     bail!(
         "check is a hidden gate alias for `anneal diagnostics --gate` and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
     )
@@ -2530,12 +2565,12 @@ fn required_runtime_positional<'a>(
 fn reject_runtime_compatibility_flag(command: &str, flag: &str) -> Result<()> {
     if is_compatibility_filter_flag(flag) {
         bail!(
-            "{command} does not accept compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
+            "{command} does not accept retired compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
         );
     }
     if is_compatibility_render_flag(flag) {
         bail!(
-            "{command} does not accept compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
+            "{command} does not accept retired compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
         );
     }
     Ok(())
@@ -2546,11 +2581,11 @@ fn ensure_no_args(args: &[String], command: &str) -> Result<()> {
         Ok(())
     } else if let Some(flag) = args.first().filter(|arg| is_compatibility_filter_flag(arg)) {
         bail!(
-            "{command} does not accept compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
+            "{command} does not accept retired compatibility filter {flag}; express the filter in Datalog with `anneal -e`"
         )
     } else if let Some(flag) = args.first().filter(|arg| is_compatibility_render_flag(arg)) {
         bail!(
-            "{command} does not accept compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
+            "{command} does not accept retired compatibility rendering flag {flag}; use `--format=text`, `--format=json`, or `--json`"
         )
     } else {
         bail!("{command} accepts no arguments; got {:?}", args.join(" "))
@@ -2629,24 +2664,7 @@ fn is_compatibility_render_flag(arg: &str) -> bool {
 }
 
 fn is_legacy_surface_command(arg: &str) -> bool {
-    matches!(
-        arg,
-        "init"
-            | "prime"
-            | "anneal"
-            | "check"
-            | "get"
-            | "find"
-            | "impact"
-            | "map"
-            | "health"
-            | "diff"
-            | "obligations"
-            | "garden"
-            | "orient"
-            | "query"
-            | "explain"
-    )
+    matches!(arg, "init" | "prime" | "anneal")
 }
 
 fn default_root() -> Utf8PathBuf {
@@ -2778,9 +2796,31 @@ mod tests {
             "anneal", "--area", "compiler", "status"
         ])));
         assert!(should_handle_args(&os(&["anneal", "--pretty", "status"])));
-        assert!(!should_handle_args(&os(&[
+        assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "health"
         ])));
+        for retired in [
+            "impact",
+            "find",
+            "get",
+            "map",
+            "health",
+            "diff",
+            "obligations",
+            "garden",
+            "orient",
+            "query",
+            "explain",
+        ] {
+            assert!(
+                should_handle_args(&os(&["anneal", retired])),
+                "retired command {retired:?} should route to runtime recovery"
+            );
+            assert!(
+                should_handle_args(&os(&["anneal", "help", retired])),
+                "retired help topic {retired:?} should route to runtime recovery"
+            );
+        }
         assert!(should_handle_args(&os(&["anneal", "diagnostics"])));
         assert!(should_handle_args(&os(&[
             "anneal",
@@ -2818,7 +2858,7 @@ mod tests {
             .expect_err("standard runtime verbs should reject compatibility filters");
         assert!(
             err.to_string()
-                .contains("does not accept compatibility filter"),
+                .contains("does not accept retired compatibility filter"),
             "{err}"
         );
 
@@ -3189,6 +3229,17 @@ mod tests {
             ("verbs", "folded into introspection"),
             ("examples", "folded into `anneal describe NAME`"),
             ("save", "edit anneal.dl directly"),
+            ("impact", "handle <HANDLE> --impact"),
+            ("find", "h contains \"TEXT\""),
+            ("get", "anneal handle <HANDLE>"),
+            ("map", "*edge{from: src, to: dst, kind: kind}"),
+            ("health", "anneal status"),
+            ("diff", "at(\"snapshot:last\")"),
+            ("obligations", "undischarged(h), obligation(h)"),
+            ("garden", "top_work"),
+            ("orient", "anneal context \"GOAL\""),
+            ("query", "use the language directly"),
+            ("explain", "--explain"),
         ] {
             let err = Invocation::parse(os(&["anneal", command]))
                 .expect_err("retired command should teach replacement");
@@ -3911,6 +3962,8 @@ mod tests {
             rows.iter().any(|row| {
                 required_string(row, "doc").is_ok_and(|doc| {
                     doc.contains("Visible commands: status, context, search, read, handle, schema, describe, eval, init")
+                        && doc.contains("Hidden support commands: check, prime.")
+                        && !doc.contains("Hidden support commands: work")
                         && doc.contains("Observed vocabulary recipes")
                         && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
                         && doc.contains("? recent(h, 7), *handle{id: h, summary: summary}. -> Output: h, summary")
