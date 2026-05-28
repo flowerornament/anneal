@@ -42,9 +42,9 @@ dialects.
   joins before writing `anneal -e` queries.
 - `describe` examples and Common joins now show projected output columns so
   agents can see row shape before running a query.
-- `anneal help eval` no longer teaches `at("snapshot:last")` or `at("HEAD~N")`
-  temporal references. The runtime did not honor these (D2 cut `trend`/`diff`
-  until temporal resolution is honest), so teaching them misled agents.
+- `anneal help eval` teaches `at("snapshot:last")` composition again since
+  automatic snapshots make it honest. Git-ref temporal references such as
+  `at("HEAD~N")` remain unsupported and are not in the grammar tour.
 - README and the bundled `anneal` skill now teach Code Mode composition in
   the "Work The Convergence Frontier" section instead of listing hidden
   runtime nouns. The retired `H` alias mention and the legacy "hidden
@@ -75,8 +75,8 @@ dialects.
 - Retired the hidden runtime command nouns `work`, `blocked`, `diagnostics`,
   `broken`, `areas`, `trend`, and `sources`. Their workflows now live as
   explicit `anneal -e` compositions over `top_work`, `blocked_row`,
-  `diagnostic`, `area_health`, `area_frontier`, `snapshot_history_present`,
-  and `sources`.
+  `diagnostic`, `area_health`, `area_frontier`, snapshot time blocks, and
+  `sources`.
 
 ### Migration
 
@@ -89,10 +89,11 @@ dialects.
 
 ### Known Limitations
 
-- Temporal references such as `at("snapshot:last")` and `at("HEAD~N")` remain
-  out of the `help eval` grammar tour until temporal resolution is honest
-  against the automatic snapshot path. `anneal status` writes snapshots now;
-  trend-style queries return when `at()` resolves those references cleanly.
+- `at("snapshot:last")` and snapshot-based time blocks work via automatic
+  snapshots, including status-change queries between the latest snapshot and
+  current graph state.
+- `at("HEAD~N")` and other git-ref temporal forms remain unsupported until
+  temporal resolution learns to materialize historical git refs.
 
 Older entries below describe the behavior shipped in that release. For current
 workflow guidance, prefer the v0.13.0 section above and the README.

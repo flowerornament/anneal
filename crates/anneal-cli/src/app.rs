@@ -472,6 +472,12 @@ Grammar tour:
         (h, energy) : top_work(h, energy)
       }.
 
+  Time blocks query supported historical references:
+    ? at(\"snapshot:last\") { *handle{id: h, status: old} },
+      *handle{id: h, status: now},
+      old != now.
+    Only snapshot references are supported today; git refs like at(\"HEAD~5\") remain pending.
+
   Stratification rule of thumb:
     recursive rules are fine; negation and aggregates must not depend on
     themselves through a cycle. If analysis rejects a query, split the negative
@@ -670,7 +676,7 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal areas has been retired; use `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` or `anneal -e '? area_frontier(area, h, score, why).'`",
         ),
         "trend" => Some(
-            "anneal trend has been retired until temporal at() is honest; use `anneal -e '? snapshot_history_present(count).'` to verify history exists",
+            "anneal trend has been retired; use `anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'` for status changes between snapshots",
         ),
         "sources" => Some(
             "anneal sources has been retired; use `anneal -e '? sources(name, recognizes, capabilities, doc).'`",
@@ -2820,6 +2826,12 @@ mod tests {
         );
         assert!(HelpTopic::Eval.render().contains("source_of"));
         assert!(HelpTopic::Eval.render().contains("anneal -e - < query.dl"));
+        assert!(HelpTopic::Eval.render().contains("at(\"snapshot:last\")"));
+        assert!(
+            HelpTopic::Eval
+                .render()
+                .contains("at(\"HEAD~5\") remain pending")
+        );
     }
 
     #[test]
@@ -2980,7 +2992,7 @@ mod tests {
                 "areas",
                 "area_health(area, grade, files, errors, cross_edges)",
             ),
-            ("trend", "snapshot_history_present(count)"),
+            ("trend", "at(\"snapshot:last\")"),
             ("sources", "sources(name, recognizes, capabilities, doc)"),
         ] {
             let err = Invocation::parse(os(&["anneal", command]))

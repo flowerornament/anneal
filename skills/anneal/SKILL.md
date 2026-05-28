@@ -191,7 +191,7 @@ workflows into Code Mode directly:
 - `diagnostics`: `? diagnostic(code, severity, subject, file, line, evidence).`
 - `broken`: `? diagnostic{severity: "error"}.` or `anneal check`
 - `areas`: `? area_health(area, grade, files, errors, cross_edges).`
-- `trend`: `? snapshot_history_present(count).`
+- `trend`: `? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.`
 - `sources`: `? sources(name, recognizes, capabilities, doc).`
 - `query`: `anneal -e`
 - `explain`: `anneal -e '...' --explain`

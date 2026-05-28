@@ -206,9 +206,9 @@ artifacts becoming authoritative.
 
 **Snapshot**  
 A point-in-time capture of graph state, stored in local anneal history. Snapshot
-history powers `trend` and movement predicates such as advancing, holding, and
-drifting. `anneal status` records bounded automatic snapshots, coalescing
-unchanged consecutive status reads.
+history powers `at("snapshot:last")` queries and movement predicates such as
+advancing, holding, and drifting. `anneal status` records bounded automatic
+snapshots, coalescing unchanged consecutive status reads.
 
 **Prelude**  
 The built-in standard library of rules, diagnostics, ranking, and verbs. It is
@@ -450,7 +450,7 @@ inventory.
 
 Snapshot history is the automatic migration path. When XDG history is enabled,
 pre-0.11.0 repo-local `.anneal/history.jsonl` is copied into XDG state on the
-first write so trend and diff history continue.
+first write so snapshot-based history queries continue.
 
 Older compatibility commands now return teaching recovery messages instead of
 running parallel workflows. Use the language-first ladder above:
@@ -474,7 +474,7 @@ Common replacements:
 - `diagnostics`: `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`
 - `broken`: `anneal -e '? diagnostic{severity: "error"}.'` or `anneal check`
 - `areas`: `anneal -e '? area_health(area, grade, files, errors, cross_edges).'`
-- `trend`: `anneal -e '? snapshot_history_present(count).'`
+- `trend`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `sources`: `anneal -e '? sources(name, recognizes, capabilities, doc).'`
 - `query`: `anneal -e`
 - `explain`: `anneal -e '...' --explain`
