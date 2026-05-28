@@ -60,8 +60,8 @@ CORE CONCEPTS:
 
   Snapshot  A point-in-time capture of graph state, appended to local anneal
             history (XDG state by default, repo-local only if configured).
-            Enables convergence tracking (advancing/holding/drifting) via
-            `at(\"snapshot:last\")` and snapshot history queries.
+            Enables convergence tracking with `advancing(h)`, `settled(h)`,
+            `at(\"snapshot:last\")`, and snapshot history queries.
 
 START HERE:
 

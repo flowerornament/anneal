@@ -206,8 +206,8 @@ artifacts becoming authoritative.
 
 **Snapshot**  
 A point-in-time capture of graph state, stored in local anneal history. Snapshot
-history powers `at("snapshot:last")` queries and movement predicates such as
-advancing, holding, and drifting. `anneal status` records bounded automatic
+history powers `at("snapshot:last")` queries, `advancing(h)`, `settled(h)`, and
+the status convergence summary. `anneal status` records bounded automatic
 snapshots, coalescing unchanged consecutive status reads.
 
 **Prelude**  
