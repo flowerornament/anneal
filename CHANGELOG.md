@@ -2,6 +2,21 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.13.1 - 2026-05-28
+
+### Fixed
+
+- README and the bundled agent briefing no longer teach `anneal context
+  --limit`; `context` uses `--hits` for search winners.
+- `area_error_count(area, errors)` now emits zero-error rows, so
+  `area_health(area, grade, files, errors, cross_edges)` returns every
+  observed area instead of only areas with error diagnostics.
+- `missing_frontmatter_file(h, dir, file)` now matches the W003 diagnostic
+  rule by filtering to high-adoption directories, rather than returning every
+  raw file with missing status frontmatter.
+- Snapshot-history `pipeline_stall(...)` rows now preserve `next_status` in
+  S003 evidence instead of emitting `null`.
+
 ## v0.13.0 - 2026-05-28
 
 anneal becomes the language it has always claimed to be.
