@@ -35,6 +35,14 @@ instead of retired command habits.
 - Retrieval now lands on heading spans: `search` and `context` return
   `heading_path` metadata for span hits, and `anneal read <H> --span-id <ID>`
   reads a matched heading span directly.
+- Markdown body code references such as `lib/app.ex:10-20` now become
+  external handles connected by ordinary `Cites` edges. Target path/range data
+  lives in `md.external_class`, `md.code_path`, `md.code_start_line`, and
+  `md.code_end_line` metadata, keeping `*handle.file`/`line` as discovery
+  location fields.
+- `config code_path_root { root(["web", "bin"]). }` adds project-specific code
+  roots to the default `crates`, `lib`, `src`, `app`, `test`, `priv`, and
+  `native` body-reference scanner.
 
 ### Changed
 
@@ -60,6 +68,8 @@ instead of retired command habits.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.
+- `anneal handle` groups outgoing/incoming edges by kind and renders in-repo
+  code references in a dedicated `Code references` section.
 - The `anneal status` Convergence header now renders `open=N` instead of
   `work=N`. The label was the odd grammar in a header that mixes state
   (`broken`/`blocked`/`open`) and motion (`advancing`/`holding`/`drifting`).

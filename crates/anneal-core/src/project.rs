@@ -923,6 +923,10 @@ mod tests {
             config concerns {
               group("release", ["REQ", "REL"]).
             }
+
+            config code_path_root {
+              root(["web", "bin"]).
+            }
             "#,
         );
 
@@ -947,6 +951,8 @@ mod tests {
                 ConfigEntry::scalar("frontmatter.field.depends-on.direction", "forward"),
                 ConfigEntry::scalar("concerns.group.release", "REQ"),
                 ConfigEntry::scalar("concerns.group.release", "REL"),
+                ConfigEntry::scalar("code_path_root.root", "web"),
+                ConfigEntry::scalar("code_path_root.root", "bin"),
             ]
         );
         assert!(extension.program().statements.is_empty());

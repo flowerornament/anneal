@@ -372,7 +372,9 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
                 "\
 Usage: anneal [OPTIONS] handle [OPTIONS] <HANDLE>
 
-Show one handle plus bounded incoming/outgoing references.
+Show one handle plus bounded incoming/outgoing references. Outgoing and
+incoming edges are grouped by kind; in-repo code refs render in a dedicated
+Code references section.
 
 Alias: anneal H [OPTIONS] <HANDLE>
 
@@ -2361,7 +2363,12 @@ fn write_handle_text<W: Write>(
 ) -> Result<()> {
     let edge_count = rows
         .iter()
-        .filter(|row| matches!(required_string(row, "relation"), Ok("in" | "out")))
+        .filter(|row| {
+            matches!(
+                required_string(row, "relation"),
+                Ok("in" | "out" | "code_ref")
+            )
+        })
         .count();
 
     writeln!(writer, "Handle {handle} ({edge_count} edges)")?;
@@ -2372,6 +2379,7 @@ fn write_handle_text<W: Write>(
 
     let mut incoming = Vec::new();
     let mut outgoing = Vec::new();
+    let mut code_refs = Vec::new();
     let mut direct_impact = Vec::new();
     let mut indirect_impact = Vec::new();
     let mut wrote_self = false;
@@ -2397,6 +2405,7 @@ fn write_handle_text<W: Write>(
             }
             "in" => incoming.push(row),
             "out" => outgoing.push(row),
+            "code_ref" => code_refs.push(row),
             "impact" => {
                 let depth = required_number(row, "depth")?;
                 if matches!(depth, NumberValue::Int(1)) {
@@ -2413,6 +2422,7 @@ fn write_handle_text<W: Write>(
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
     }
     write_handle_edges(&mut writer, "Outgoing", "->", &outgoing)?;
+    write_handle_code_refs(&mut writer, &code_refs)?;
     write_handle_edges(&mut writer, "Incoming", "<-", &incoming)?;
     if include_impact {
         write_handle_impact(&mut writer, &direct_impact, &indirect_impact)?;
@@ -2433,19 +2443,54 @@ fn write_handle_edges<W: Write>(
     }
     writeln!(writer)?;
     writeln!(writer, "{heading}")?;
-    for (index, row) in rows.iter().take(MAX_HANDLE_EDGES_PER_SECTION).enumerate() {
-        let other = required_string(row, "other")?;
-        let kind = required_string(row, "kind")?;
+    let mut by_kind = BTreeMap::<&str, Vec<&Row>>::new();
+    for row in rows {
+        by_kind
+            .entry(required_string(row, "kind")?)
+            .or_default()
+            .push(row);
+    }
+    for (kind, group) in by_kind {
+        writeln!(writer, "{kind} ({})", group.len())?;
+        for (index, row) in group.iter().take(MAX_HANDLE_EDGES_PER_SECTION).enumerate() {
+            let other = required_string(row, "other")?;
+            let file = required_string(row, "file")?;
+            let line = required_number(row, "line")?;
+            writeln!(
+                writer,
+                "{:>2}. {arrow} {other}  at={file}:{}",
+                index + 1,
+                display_number(line)
+            )?;
+        }
+        let omitted = group.len().saturating_sub(MAX_HANDLE_EDGES_PER_SECTION);
+        if omitted > 0 {
+            writeln!(writer, "    ... {omitted} more")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_handle_code_refs<W: Write>(writer: &mut W, rows: &[&Row]) -> Result<()> {
+    const MAX_CODE_REFERENCES: usize = 24;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+    writeln!(writer)?;
+    writeln!(writer, "Code references ({})", rows.len())?;
+    for (index, row) in rows.iter().take(MAX_CODE_REFERENCES).enumerate() {
+        let target = required_string(row, "other")?;
         let file = required_string(row, "file")?;
         let line = required_number(row, "line")?;
         writeln!(
             writer,
-            "{:>2}. {kind} {arrow} {other}  at={file}:{}",
+            "{:>2}. {target}  at={file}:{}",
             index + 1,
             display_number(line)
         )?;
     }
-    let omitted = rows.len().saturating_sub(MAX_HANDLE_EDGES_PER_SECTION);
+    let omitted = rows.len().saturating_sub(MAX_CODE_REFERENCES);
     if omitted > 0 {
         writeln!(writer, "    ... {omitted} more")?;
     }
@@ -2981,10 +3026,19 @@ handle_row({handle}, "self", {handle}, kind, status, file, line, summary) :=
   *handle{{id: {handle}, kind: kind, status: status, file: file, line: line, summary: summary}}.
 
 handle_row({handle}, "out", other, kind, null, file, line, "") :=
-  *edge{{from: {handle}, to: other, kind: kind, file: file, line: line}}.
+  *edge{{from: {handle}, to: other, kind: kind, file: file, line: line}},
+  not code_reference(other).
+
+handle_row({handle}, "code_ref", other, "Cites", null, file, line, code_path) :=
+  *edge{{from: {handle}, to: other, kind: "Cites", file: file, line: line}},
+  *meta{{handle: other, key: "md.external_class", value: "code"}},
+  *meta{{handle: other, key: "md.code_path", value: code_path}}.
 
 handle_row({handle}, "in", other, kind, null, file, line, "") :=
   *edge{{to: {handle}, from: other, kind: kind, file: file, line: line}}.
+
+code_reference(h) :=
+  *meta{{handle: h, key: "md.external_class", value: "code"}}.
 
 ? handle_row(h, relation, other, kind, status, file, line, summary).
 "#
@@ -4123,6 +4177,57 @@ mod tests {
                 .collect(),
             derivation: None,
         }
+    }
+
+    #[test]
+    fn handle_human_render_groups_edges_and_code_refs() {
+        let rows = vec![
+            row(&[
+                ("h", Value::String("doc.md".to_string())),
+                ("relation", Value::String("self".to_string())),
+                ("other", Value::String("doc.md".to_string())),
+                ("kind", Value::String("file".to_string())),
+                ("status", Value::String("draft".to_string())),
+                ("file", Value::String("doc.md".to_string())),
+                ("line", Value::Number(NumberValue::Int(1))),
+                ("summary", Value::String(String::new())),
+            ]),
+            row(&[
+                ("h", Value::String("doc.md".to_string())),
+                ("relation", Value::String("out".to_string())),
+                ("other", Value::String("plan.md".to_string())),
+                ("kind", Value::String("DependsOn".to_string())),
+                ("status", Value::Null),
+                ("file", Value::String("doc.md".to_string())),
+                ("line", Value::Number(NumberValue::Int(4))),
+                ("summary", Value::String(String::new())),
+            ]),
+            row(&[
+                ("h", Value::String("doc.md".to_string())),
+                ("relation", Value::String("code_ref".to_string())),
+                (
+                    "other",
+                    Value::String("lib/host-corpus/admission.rs:142-167".to_string()),
+                ),
+                ("kind", Value::String("Cites".to_string())),
+                ("status", Value::Null),
+                ("file", Value::String("doc.md".to_string())),
+                ("line", Value::Number(NumberValue::Int(8))),
+                (
+                    "summary",
+                    Value::String("lib/host-corpus/admission.rs".to_string()),
+                ),
+            ]),
+        ];
+        let mut rendered = Vec::new();
+
+        write_handle_text(&mut rendered, "doc.md", false, &rows).expect("render handle");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Outgoing\nDependsOn (1)"));
+        assert!(rendered.contains(" 1. -> plan.md  at=doc.md:4"));
+        assert!(rendered.contains("Code references (1)"));
+        assert!(rendered.contains(" 1. lib/host-corpus/admission.rs:142-167  at=doc.md:8"));
     }
 
     fn status_output(rows: Vec<Row>) -> CommandOutput {

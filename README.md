@@ -189,7 +189,9 @@ output. Use `--json` or `--format=json` when you want stable machine output.
 
 **Handle**  
 The graph unit of knowledge. A handle may be a file, label, version, or
-external URL. Headings are content spans (`*span`) attached to file handles.
+external reference. Headings are content spans (`*span`) attached to file
+handles. In-repo code references such as `lib/app.ex:10-20` use external
+handles with `md.external_class = "code"` metadata.
 
 **Edge**  
 A typed relationship between handles. Common edges include `Cites`,
@@ -272,8 +274,9 @@ anneal handle formal-model/v17.md --impact
 `search` ranks content and metadata hits and includes `heading_path` for
 heading-span matches. `read` retrieves bounded content spans for one handle;
 use `--span-id` when a search hit already identified the section you need.
-`handle` shows incoming and outgoing edges; `--impact` adds direct and indirect
-reverse dependencies before an edit.
+`handle` shows incoming and outgoing edges grouped by kind and separates
+in-repo code references; `--impact` adds direct and indirect reverse
+dependencies before an edit.
 
 ### Work The Convergence Frontier
 
@@ -368,6 +371,10 @@ config frontmatter {
 
 config impact {
   traverse(["DependsOn", "Supersedes", "Verifies"]).
+}
+
+config code_path_root {
+  root(["web", "bin"]).
 }
 
 config potential_weight {
@@ -499,7 +506,9 @@ Adapters emit stored relations. Rules and queries consume them.
 - `*handle`: handle id, kind, status, namespace, file, line, area, summary,
   identity, revision, generation
 - `*edge`: typed handle relationship
-- `*meta`: frontmatter and extracted metadata
+- `*meta`: frontmatter and extracted metadata, including `md.external_class`,
+  `md.code_path`, `md.code_start_line`, and `md.code_end_line` for code
+  external handles
 - `*content`: bounded text chunks
 - `*span`: addressable content spans
 - `*concern`: concern-group membership

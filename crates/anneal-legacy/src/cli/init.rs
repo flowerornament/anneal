@@ -213,6 +213,7 @@ pub(crate) fn cmd_init(request: InitRequest<'_>) -> anyhow::Result<InitOutput> {
         areas: crate::config::AreasConfig::default(),
         temporal: crate::config::TemporalConfig::default(),
         orient: crate::config::OrientConfig::default(),
+        code_path_root: crate::config::CodePathRootConfig::default(),
     };
 
     let legacy_config_exists = root.join("anneal.toml").exists();
@@ -479,6 +480,16 @@ fn render_unified_config(config: &AnnealConfig) -> String {
             &mut out,
             RuntimeConfigKey::ImpactTraverse,
             &config.impact.traverse,
+        );
+        out.push_str("}\n\n");
+    }
+
+    if !config.code_path_root.root.is_empty() {
+        out.push_str("config code_path_root {\n");
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::CodePathRoot,
+            &config.code_path_root.root,
         );
         out.push_str("}\n\n");
     }

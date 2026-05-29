@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anneal_core::{
     ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation,
@@ -123,6 +123,7 @@ fn extract_markdown_facts_with_config(
         emit_frontmatter_meta(&mut batch, &mut revisions, root, &extraction.file);
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
+    emit_code_ref_meta(&mut batch, &mut revisions, &result);
     emit_content_spans(&mut batch, &mut revisions, root, &result);
     emit_concerns(&mut batch, &mut revisions, config, &result);
 
@@ -359,7 +360,6 @@ fn emit_ordered_edges(
     let mut remaining = graph_edges(&context.result.graph);
     let mut ordered = Vec::new();
 
-    take_parse_time_external_edges(&context.result.graph, &mut remaining, &mut ordered);
     take_label_edges(
         context.config,
         context.result,
@@ -382,6 +382,7 @@ fn emit_ordered_edges(
         &mut remaining,
         &mut ordered,
     );
+    take_parse_time_external_edges(&context.result.graph, &mut remaining, &mut ordered);
     ordered.extend(remaining);
 
     for (ordinal, edge) in ordered.into_iter().enumerate() {
@@ -685,6 +686,48 @@ fn emit_implausible_ref_meta(
         });
     }
     Ok(())
+}
+
+fn emit_code_ref_meta(
+    batch: &mut FactBatch,
+    revisions: &mut RevisionCache<'_>,
+    result: &parse::BuildResult,
+) {
+    let mut seen = HashSet::new();
+    for reference in &result.code_refs {
+        if !seen.insert(reference.target.clone()) {
+            continue;
+        }
+        let identity = identity_for(batch, revisions, &reference.target, &reference.file);
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: reference.target.clone(),
+            key: "md.external_class".to_string(),
+            value: "code".to_string(),
+        });
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: reference.target.clone(),
+            key: "md.code_path".to_string(),
+            value: reference.path.clone(),
+        });
+        if let Some(start_line) = reference.start_line {
+            batch.meta.push(MetaFact {
+                identity: identity.clone(),
+                handle: reference.target.clone(),
+                key: "md.code_start_line".to_string(),
+                value: start_line.to_string(),
+            });
+        }
+        if let Some(end_line) = reference.end_line {
+            batch.meta.push(MetaFact {
+                identity,
+                handle: reference.target.clone(),
+                key: "md.code_end_line".to_string(),
+                value: end_line.to_string(),
+            });
+        }
+    }
 }
 
 fn emit_content_spans(
@@ -1162,7 +1205,11 @@ fn snippets_from_facts(batch: &FactBatch) -> (HashMap<String, String>, HashMap<S
 
 #[cfg(test)]
 mod tests {
-    use super::area_for;
+    use anneal_core::{CorpusId, Generation, SourceName};
+    use camino::Utf8Path;
+    use tempfile::tempdir;
+
+    use super::{area_for, extract_markdown_facts};
 
     #[test]
     fn area_for_groups_root_files_under_root_area() {
@@ -1170,5 +1217,58 @@ mod tests {
         assert_eq!(area_for("compiler/design.md"), "compiler");
         assert_eq!(area_for("compiler/sub/design.md"), "compiler");
         assert_eq!(area_for(""), "");
+    }
+
+    #[test]
+    fn markdown_facts_emit_code_refs_as_external_cites_with_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let corpus = temp.path().join("corpus");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::write(
+            corpus.join("doc.md"),
+            "# Doc\n\nSee `lib/host-corpus/admission.rs:142-167`.\n",
+        )
+        .expect("write doc");
+        let root = Utf8Path::from_path(&corpus).expect("utf8 tempdir");
+
+        let batch = extract_markdown_facts(
+            root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract facts");
+
+        let target = "lib/host-corpus/admission.rs:142-167";
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|handle| handle.id == target && handle.kind == "external"),
+            "expected external code handle in {:?}",
+            batch.handles
+        );
+        assert!(
+            batch.edges.iter().any(|edge| {
+                edge.from == "doc.md" && edge.to == target && edge.kind == "Cites" && edge.line == 3
+            }),
+            "expected code Cites edge with source line in {:?}",
+            batch.edges
+        );
+        for (key, value) in [
+            ("md.external_class", "code"),
+            ("md.code_path", "lib/host-corpus/admission.rs"),
+            ("md.code_start_line", "142"),
+            ("md.code_end_line", "167"),
+        ] {
+            assert!(
+                batch
+                    .meta
+                    .iter()
+                    .any(|meta| meta.handle == target && meta.key == key && meta.value == value),
+                "missing {key}={value} metadata in {:?}",
+                batch.meta
+            );
+        }
     }
 }

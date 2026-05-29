@@ -54,6 +54,7 @@ pub enum RuntimeConfigKey {
     OrientExclude,
     OrientStubBytes,
     OrientCuratedHubWeight,
+    CodePathRoot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,6 +447,12 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         "orient",
         "curated_hub_weight",
         RuntimeConfigValueMode::Scalar,
+    ),
+    runtime_config_declaration(
+        RuntimeConfigKey::CodePathRoot,
+        "code_path_root",
+        "root",
+        RuntimeConfigValueMode::UnorderedSet,
     ),
 ];
 

@@ -189,6 +189,14 @@ impl Default for OrientConfig {
     }
 }
 
+/// Configuration for code-path reference extraction in markdown bodies.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CodePathRootConfig {
+    /// Additional root prefixes recognized as in-repo code references.
+    pub(crate) root: Vec<String>,
+}
+
 /// Top-level repository configuration.
 ///
 /// An absent repo config is a valid coloring (zero-config case, KB-P3).
@@ -251,6 +259,8 @@ pub(crate) struct AnnealConfig {
     pub(crate) temporal: TemporalConfig,
     /// Orient command configuration.
     pub(crate) orient: OrientConfig,
+    /// Project-specific code path roots for markdown body reference extraction.
+    pub(crate) code_path_root: CodePathRootConfig,
 }
 
 /// Where derived history should be stored.
@@ -595,6 +605,10 @@ pub(crate) fn apply_runtime_config_facts(
         .collect();
     config.orient.pin = facts.values("orient.pin").map(str::to_string).collect();
     config.orient.exclude = facts.values("orient.exclude").map(str::to_string).collect();
+    config.code_path_root.root = facts
+        .values("code_path_root.root")
+        .map(str::to_string)
+        .collect();
 
     apply_first_u32(facts, "freshness.warn", &mut config.freshness.warn)?;
     apply_first_u32(facts, "freshness.error", &mut config.freshness.error)?;

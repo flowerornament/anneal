@@ -56,6 +56,17 @@ static SECTION_REF_RE: LazyLock<Regex> =
 static FILE_PATH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-z0-9_/-]+\.md)\b").expect("file path regex must compile"));
 
+/// Capture regex for in-repo code path references.
+static CODE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?P<path>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)(?::(?P<start>\d+)(?:-(?P<end>\d+))?(?::\d+)?)?",
+    )
+    .expect("code path regex must compile")
+});
+
+const DEFAULT_CODE_PATH_ROOTS: &[&str] = &["crates", "lib", "src", "app", "test", "priv", "native"];
+const EXCLUDED_CODE_PATH_ROOTS: &[&str] = &["_build", "target", "node_modules"];
+
 // ---------------------------------------------------------------------------
 // Frontmatter
 // ---------------------------------------------------------------------------
@@ -286,6 +297,8 @@ pub(crate) struct ScanResult {
     pub(crate) section_refs: Vec<(String, u32)>,
     /// File path references with their 1-based line numbers.
     pub(crate) file_refs: Vec<(String, u32)>,
+    /// In-repo code path references discovered in body text.
+    pub(crate) code_refs: Vec<CodePathRef>,
 }
 
 /// A heading-scoped content span.
@@ -296,6 +309,17 @@ pub(crate) struct HeadingSpan {
     pub(crate) path: String,
     pub(crate) start_line: u32,
     pub(crate) end_line: u32,
+}
+
+/// An in-repo code path reference discovered from markdown body text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodePathRef {
+    pub(crate) file: String,
+    pub(crate) target: String,
+    pub(crate) path: String,
+    pub(crate) start_line: Option<u32>,
+    pub(crate) end_line: Option<u32>,
+    pub(crate) source_line: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -417,12 +441,14 @@ pub(crate) fn scan_file_cmark(
     body: &str,
     file_path: &Utf8Path,
     line_index: &LineIndex,
+    code_path_roots: &[String],
 ) -> (ScanResult, Vec<DiscoveredRef>) {
     let mut result = ScanResult {
         label_candidates: Vec::new(),
         heading_spans: Vec::new(),
         section_refs: Vec::new(),
         file_refs: Vec::new(),
+        code_refs: Vec::new(),
     };
     let mut discovered_refs: Vec<DiscoveredRef> = Vec::new();
     let mut heading_drafts = Vec::new();
@@ -456,10 +482,22 @@ pub(crate) fn scan_file_cmark(
                 in_code_block = false;
             }
 
-            // Inline code spans and display/inline math: skip entirely.
-            // These are listed explicitly (not in the wildcard) to document
-            // that they are intentionally unsearched, unlike other text-bearing events.
-            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
+            // Inline code spans are scanned only for code-path references.
+            Event::Code(code) => {
+                if !in_code_block {
+                    scan_code_path_refs(
+                        code.as_ref(),
+                        range.start,
+                        file_path,
+                        file_path_str,
+                        line_index,
+                        code_path_roots,
+                        &mut result,
+                        &mut discovered_refs,
+                    );
+                }
+            }
+            Event::InlineMath(_) | Event::DisplayMath(_) => {}
 
             // -- HTML blocks: accumulate and scan with regex --
             Event::Start(Tag::HtmlBlock) => {
@@ -479,6 +517,7 @@ pub(crate) fn scan_file_cmark(
                         false,
                         &mut result,
                         &mut discovered_refs,
+                        code_path_roots,
                     );
                     html_accumulator.clear();
                 }
@@ -507,6 +546,7 @@ pub(crate) fn scan_file_cmark(
                             true,
                             &mut result,
                             &mut discovered_refs,
+                            code_path_roots,
                         );
                         heading_drafts.push(HeadingDraft {
                             level: active.level,
@@ -567,6 +607,18 @@ pub(crate) fn scan_file_cmark(
                                 dest
                             };
                             if !clean_dest.is_empty() {
+                                if record_code_path_ref(
+                                    clean_dest,
+                                    offset,
+                                    file_path,
+                                    file_path_str,
+                                    line_index,
+                                    code_path_roots,
+                                    &mut result,
+                                    &mut discovered_refs,
+                                ) {
+                                    continue;
+                                }
                                 BodyRefRecorder {
                                     file_path,
                                     file_path_str,
@@ -606,6 +658,7 @@ pub(crate) fn scan_file_cmark(
                         false,
                         &mut result,
                         &mut discovered_refs,
+                        code_path_roots,
                     );
                     text_accumulator.clear();
                 }
@@ -640,6 +693,7 @@ pub(crate) fn scan_file_cmark(
                         false,
                         &mut result,
                         &mut discovered_refs,
+                        code_path_roots,
                     );
                 }
             }
@@ -655,6 +709,7 @@ pub(crate) fn scan_file_cmark(
                         false,
                         &mut result,
                         &mut discovered_refs,
+                        code_path_roots,
                     );
                 }
             }
@@ -683,6 +738,7 @@ pub(crate) fn scan_file_cmark(
             false,
             &mut result,
             &mut discovered_refs,
+            code_path_roots,
         );
     }
 
@@ -862,73 +918,268 @@ fn scan_text_for_refs(
     is_heading: bool,
     result: &mut ScanResult,
     discovered_refs: &mut Vec<DiscoveredRef>,
+    code_path_roots: &[String],
 ) {
     let line = line_index.offset_to_line(block_start_offset);
-    let mut recorder = BodyRefRecorder {
+    {
+        let mut recorder = BodyRefRecorder {
+            file_path,
+            file_path_str,
+            line,
+            is_heading,
+            result,
+            discovered_refs,
+        };
+
+        // Labels — infer edge kind per-line, not per-block
+        for caps in LABEL_RE.captures_iter(text) {
+            let prefix = caps
+                .get(1)
+                .expect("label prefix capture always present")
+                .as_str()
+                .to_string();
+            let number_str = caps
+                .get(2)
+                .expect("label number capture always present")
+                .as_str();
+            if let Ok(number) = number_str.parse::<u32>() {
+                let match_line = containing_line(text, caps.get(0).unwrap().start());
+                let edge_kind = infer_edge_kind_from_line(match_line);
+                recorder.record(
+                    &format!("{prefix}-{number}"),
+                    RefHint::Label { prefix, number },
+                    &edge_kind,
+                );
+            }
+        }
+
+        // Section refs
+        for caps in SECTION_REF_RE.captures_iter(text) {
+            let section_num = caps
+                .get(1)
+                .expect("section ref capture always present")
+                .as_str()
+                .to_string();
+            if !section_num.is_empty() {
+                let match_line = containing_line(text, caps.get(0).unwrap().start());
+                let edge_kind = infer_edge_kind_from_line(match_line);
+                recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
+            }
+        }
+
+        // File paths
+        for m in FILE_PATH_RE.find_iter(text) {
+            let prefix = &text[..m.start()];
+            if prefix.contains("://") {
+                continue;
+            }
+            if m.start() > 0 && text.as_bytes()[m.start() - 1] == b'.' {
+                continue;
+            }
+            let path = m.as_str();
+            if path.starts_with('-') {
+                continue;
+            }
+            if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            let match_line = containing_line(text, m.start());
+            let edge_kind = infer_edge_kind_from_line(match_line);
+            recorder.record(path, RefHint::FilePath, &edge_kind);
+        }
+    }
+
+    scan_code_path_refs(
+        text,
+        block_start_offset,
         file_path,
         file_path_str,
-        line,
-        is_heading,
+        line_index,
+        code_path_roots,
         result,
         discovered_refs,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_code_path_refs(
+    text: &str,
+    block_start_offset: usize,
+    file_path: &Utf8Path,
+    file_path_str: &str,
+    line_index: &LineIndex,
+    code_path_roots: &[String],
+    result: &mut ScanResult,
+    discovered_refs: &mut Vec<DiscoveredRef>,
+) {
+    for captures in CODE_PATH_RE.captures_iter(text) {
+        let Some(path_match) = captures.name("path") else {
+            continue;
+        };
+        if !has_code_path_left_boundary(text, path_match.start()) {
+            continue;
+        }
+        let path = trim_code_path_punctuation(path_match.as_str());
+        if path.is_empty() || !is_recognized_code_path(path, code_path_roots) {
+            continue;
+        }
+        let start_line = captures
+            .name("start")
+            .and_then(|m| m.as_str().parse::<u32>().ok());
+        let end_line = captures
+            .name("end")
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .or(start_line);
+        let source_line = line_index.offset_to_line(block_start_offset + path_match.start());
+        record_normalized_code_path_ref(
+            path,
+            start_line,
+            end_line,
+            source_line,
+            file_path,
+            file_path_str,
+            result,
+            discovered_refs,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_code_path_ref(
+    raw: &str,
+    block_start_offset: usize,
+    file_path: &Utf8Path,
+    file_path_str: &str,
+    line_index: &LineIndex,
+    code_path_roots: &[String],
+    result: &mut ScanResult,
+    discovered_refs: &mut Vec<DiscoveredRef>,
+) -> bool {
+    let Some(captures) = CODE_PATH_RE.captures(raw) else {
+        return false;
     };
-
-    // Labels — infer edge kind per-line, not per-block
-    for caps in LABEL_RE.captures_iter(text) {
-        let prefix = caps
-            .get(1)
-            .expect("label prefix capture always present")
-            .as_str()
-            .to_string();
-        let number_str = caps
-            .get(2)
-            .expect("label number capture always present")
-            .as_str();
-        if let Ok(number) = number_str.parse::<u32>() {
-            let match_line = containing_line(text, caps.get(0).unwrap().start());
-            let edge_kind = infer_edge_kind_from_line(match_line);
-            recorder.record(
-                &format!("{prefix}-{number}"),
-                RefHint::Label { prefix, number },
-                &edge_kind,
-            );
-        }
+    let Some(path_match) = captures.name("path") else {
+        return false;
+    };
+    if path_match.start() != 0 {
+        return false;
     }
-
-    // Section refs
-    for caps in SECTION_REF_RE.captures_iter(text) {
-        let section_num = caps
-            .get(1)
-            .expect("section ref capture always present")
-            .as_str()
-            .to_string();
-        if !section_num.is_empty() {
-            let match_line = containing_line(text, caps.get(0).unwrap().start());
-            let edge_kind = infer_edge_kind_from_line(match_line);
-            recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
-        }
+    let matched = captures
+        .get(0)
+        .map_or("", |m| trim_code_path_punctuation(m.as_str()));
+    if matched.len() != trim_code_path_punctuation(raw).len() {
+        return false;
     }
-
-    // File paths
-    for m in FILE_PATH_RE.find_iter(text) {
-        let prefix = &text[..m.start()];
-        if prefix.contains("://") {
-            continue;
-        }
-        if m.start() > 0 && text.as_bytes()[m.start() - 1] == b'.' {
-            continue;
-        }
-        let path = m.as_str();
-        if path.starts_with('-') {
-            continue;
-        }
-        if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
-            continue;
-        }
-        let match_line = containing_line(text, m.start());
-        let edge_kind = infer_edge_kind_from_line(match_line);
-        recorder.record(path, RefHint::FilePath, &edge_kind);
+    let path = trim_code_path_punctuation(path_match.as_str());
+    if path.is_empty() || !is_recognized_code_path(path, code_path_roots) {
+        return false;
     }
+    let start_line = captures
+        .name("start")
+        .and_then(|m| m.as_str().parse::<u32>().ok());
+    let end_line = captures
+        .name("end")
+        .and_then(|m| m.as_str().parse::<u32>().ok())
+        .or(start_line);
+    let source_line = line_index.offset_to_line(block_start_offset);
+    record_normalized_code_path_ref(
+        path,
+        start_line,
+        end_line,
+        source_line,
+        file_path,
+        file_path_str,
+        result,
+        discovered_refs,
+    );
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_normalized_code_path_ref(
+    path: &str,
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+    source_line: u32,
+    file_path: &Utf8Path,
+    file_path_str: &str,
+    result: &mut ScanResult,
+    discovered_refs: &mut Vec<DiscoveredRef>,
+) {
+    let end_line = match (start_line, end_line) {
+        (Some(start), Some(end)) if end < start => Some(start),
+        (_, end) => end,
+    };
+    let target = code_ref_target(path, start_line, end_line);
+    result.code_refs.push(CodePathRef {
+        file: file_path_str.to_string(),
+        target: target.clone(),
+        path: path.to_string(),
+        start_line,
+        end_line,
+        source_line,
+    });
+    discovered_refs.push(DiscoveredRef {
+        raw: target,
+        hint: RefHint::External,
+        source: RefSource::Body,
+        edge_kind: EdgeKind::Cites,
+        inverse: false,
+        span: Some(SourceSpan {
+            file: file_path.to_string(),
+            line: source_line,
+        }),
+    });
+}
+
+fn code_ref_target(path: &str, start_line: Option<u32>, end_line: Option<u32>) -> String {
+    match (start_line, end_line) {
+        (Some(start), Some(end)) if end != start => format!("{path}:{start}-{end}"),
+        (Some(start), _) => format!("{path}:{start}"),
+        _ => path.to_string(),
+    }
+}
+
+fn trim_code_path_punctuation(path: &str) -> &str {
+    path.trim_end_matches(['.', ',', ';', ':', '!', '?'])
+}
+
+fn has_code_path_left_boundary(text: &str, start: usize) -> bool {
+    if start == 0 {
+        return true;
+    }
+    let Some(previous) = text[..start].chars().next_back() else {
+        return true;
+    };
+    !matches!(
+        previous,
+        '/' | ':' | '.' | '-' | '_' | '#' | '@' | 'A'..='Z' | 'a'..='z' | '0'..='9'
+    )
+}
+
+fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
+    let Some(root) = path.split('/').next() else {
+        return false;
+    };
+    if EXCLUDED_CODE_PATH_ROOTS.contains(&root)
+        || std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        || path.contains("...")
+    {
+        return false;
+    }
+    let Some(last) = path.rsplit('/').next() else {
+        return false;
+    };
+    if !last.contains('.') {
+        return false;
+    }
+    DEFAULT_CODE_PATH_ROOTS.contains(&root)
+        || code_path_roots
+            .iter()
+            .map(|root| root.trim_matches('/'))
+            .any(|configured| configured == root)
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1278,8 @@ pub(crate) struct BuildResult {
     pub(crate) label_snippets: HashMap<String, String>,
     /// Heading spans keyed by relative file path.
     pub(crate) heading_spans: HashMap<String, Vec<HeadingSpan>>,
+    /// In-repo code path references discovered in markdown body text.
+    pub(crate) code_refs: Vec<CodePathRef>,
     /// Files whose YAML frontmatter failed to deserialize (§7.2 silent-failure tracking).
     #[allow(dead_code)] // Consumed by status/check reporting once surfaced
     pub(crate) malformed_frontmatter: Vec<String>,
@@ -1107,6 +1360,7 @@ pub(crate) fn build_graph_scoped(
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
     let mut heading_spans: HashMap<String, Vec<HeadingSpan>> = HashMap::new();
+    let mut code_refs: Vec<CodePathRef> = Vec::new();
     let mut malformed_frontmatter: Vec<String> = Vec::new();
 
     // §7.3: Track non-UTF-8 filenames silently skipped by the walker filter.
@@ -1303,7 +1557,8 @@ pub(crate) fn build_graph_scoped(
 
         // Use pulldown-cmark scanner for production body scanning
         let line_index = LineIndex::from_content(body, frontmatter_line_count);
-        let (mut scan_result, body_refs) = scan_file_cmark(body, &relative, &line_index);
+        let (mut scan_result, body_refs) =
+            scan_file_cmark(body, &relative, &line_index, &config.code_path_root.root);
         if !scan_result.heading_spans.is_empty() {
             heading_spans.insert(
                 relative.to_string(),
@@ -1322,6 +1577,22 @@ pub(crate) fn build_graph_scoped(
             }
         }
         all_label_candidates.extend(scan_result.label_candidates);
+        for code_ref in std::mem::take(&mut scan_result.code_refs) {
+            let target = code_ref.target.clone();
+            if !external_nodes.contains_key(&target) {
+                let node_id =
+                    graph.add_node(Handle::external(target.clone(), Some(relative.clone())));
+                external_nodes.insert(target.clone(), node_id);
+            }
+            pending_edges.push(PendingEdge {
+                source: file_node,
+                target_identity: target,
+                kind: EdgeKind::Cites,
+                inverse: false,
+                line: Some(code_ref.source_line),
+            });
+            code_refs.push(code_ref);
+        }
 
         // Build FileExtraction with DiscoveredRef for frontmatter + body refs
         let mut discovered_refs = Vec::new();
@@ -1392,6 +1663,7 @@ pub(crate) fn build_graph_scoped(
         file_snippets,
         label_snippets,
         heading_spans,
+        code_refs,
         malformed_frontmatter,
         skipped_non_utf8: skipped_non_utf8.get(),
     })
@@ -1880,7 +2152,7 @@ mod tests {
         let mut graph = DiGraph::new();
         graph.add_node(Handle::test_file("test.md", None));
         let line_index = LineIndex::from_content(body, 0);
-        let (result, refs) = scan_file_cmark(body, Utf8Path::new("test.md"), &line_index);
+        let (result, refs) = scan_file_cmark(body, Utf8Path::new("test.md"), &line_index, &[]);
         (result, refs, graph)
     }
 
@@ -1914,6 +2186,74 @@ mod tests {
             .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
             .count();
         assert_eq!(section_count, 0, "should not create section handles");
+    }
+
+    #[test]
+    fn cmark_extracts_code_path_refs_from_text_and_inline_code() {
+        let body = "See `lib/host-corpus/admission.rs:142-167` and crates/anneal-core/src/lib.rs:12.\n";
+        let (result, refs, _graph) = cmark_scan(body);
+
+        let targets: Vec<_> = result
+            .code_refs
+            .iter()
+            .map(|reference| reference.target.as_str())
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                "lib/host-corpus/admission.rs:142-167",
+                "crates/anneal-core/src/lib.rs:12",
+            ]
+        );
+        assert!(
+            refs.iter()
+                .filter(|reference| reference.hint == RefHint::External)
+                .count()
+                >= 2,
+            "code refs should be recorded as external refs: {refs:?}"
+        );
+        assert!(
+            result.file_refs.is_empty(),
+            "code refs should not become markdown file refs"
+        );
+    }
+
+    #[test]
+    fn cmark_extracts_project_configured_code_roots() {
+        let body = "The handler lives at `web/controllers/page_controller.ex:9`.\n";
+        let line_index = LineIndex::from_content(body, 0);
+        let roots = vec!["web".to_string()];
+        let (result, _refs) = scan_file_cmark(body, Utf8Path::new("test.md"), &line_index, &roots);
+
+        assert_eq!(result.code_refs.len(), 1);
+        assert_eq!(
+            result.code_refs[0].target,
+            "web/controllers/page_controller.ex:9"
+        );
+    }
+
+    #[test]
+    fn cmark_skips_code_refs_inside_fenced_code_blocks() {
+        let body = "```\nlib/host-corpus/admission.rs:142-167\n```\n";
+        let (result, _refs, _graph) = cmark_scan(body);
+
+        assert!(result.code_refs.is_empty());
+    }
+
+    #[test]
+    fn cmark_skips_ellipsized_code_path_placeholders() {
+        let body = "Example placeholder: `lib/host-corpus/...file.ex`.\n";
+        let (result, _refs, _graph) = cmark_scan(body);
+
+        assert!(result.code_refs.is_empty());
+    }
+
+    #[test]
+    fn cmark_skips_code_path_substrings_inside_urls() {
+        let body = "External URL: https://example.com/src/main.rs for background.\n";
+        let (result, _refs, _graph) = cmark_scan(body);
+
+        assert!(result.code_refs.is_empty());
     }
 
     #[test]
@@ -2459,7 +2799,7 @@ mod tests {
             #[allow(clippy::cast_possible_truncation)]
             let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
             let line_index = LineIndex::from_content(body, fm_lines);
-            let (result, body_discovered) = scan_file_cmark(body, relative, &line_index);
+            let (result, body_discovered) = scan_file_cmark(body, relative, &line_index, &[]);
 
             let refs =
                 result.label_candidates.len() + result.section_refs.len() + result.file_refs.len();

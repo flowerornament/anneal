@@ -297,6 +297,33 @@ impl IntrospectionBuilder {
             string_value("runtime"),
             string_value("? *handle{namespace: ns}, ns != \"\"."),
         ]));
+        self.describe.insert(describe_entry(
+            "code_path_root",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
+                summary: "Project config section for extra in-repo code-reference roots scanned from markdown bodies.",
+                kind: Some(DescribeKind::RuntimeTopic),
+                signature: Some("config code_path_root { root([...]). }"),
+                extra_lines: vec![
+                    "Defaults already recognize crates/, lib/, src/, app/, test/, priv/, and native/.".to_string(),
+                    "Build-output roots _build/, target/, and node_modules/ are always ignored.".to_string(),
+                    "Recognized refs become external handles with md.external_class=\"code\" and ordinary Cites edges.".to_string(),
+                ],
+                common_joins: &[
+                    "`*config{key: \"code_path_root.root\", value: root}` to inspect configured extra roots",
+                    "`*meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}` to inspect captured code refs",
+                ],
+                examples: vec![
+                    "? *config{key: \"code_path_root.root\", value: root}.",
+                    "? *meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}.",
+                ],
+                ..DescribeCard::default()
+            }),
+        ));
+        self.examples.insert(Tuple(vec![
+            string_value("code_path_root"),
+            string_value(r#"? *config{key: "code_path_root.root", value: root}."#),
+        ]));
     }
 
     fn add_stored_relations(&mut self, dynamic_stored: Vec<StoredRelationSummary>) {

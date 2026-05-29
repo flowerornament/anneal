@@ -159,7 +159,7 @@ alias for the error-only filtered view.
 - `anneal search TEXT`: ranked content hits with handle, span, heading path,
   score, reason, field, and low-confidence marker
 - `anneal read HANDLE`: bounded content spans; add `--span-id ID` for one span
-- `anneal handle HANDLE`: handle neighborhood
+- `anneal handle HANDLE`: handle neighborhood, grouped edges, and code references
 - `anneal handle HANDLE --impact`: handle neighborhood plus reverse dependencies
 
 ### Work The Convergence Frontier
@@ -286,7 +286,8 @@ predicates by name and arity.
 
 ## Mental Model
 
-- `handle`: a file, label, version, or external reference; headings are `*span` rows
+- `handle`: a file, label, version, or external reference; headings are `*span`
+  rows, and in-repo code refs are external handles with `md.external_class = "code"`
 - `source`: an adapter such as markdown, code, host runtime, or issue tracker
 - `relation`: a stored row emitted by a source or a derived row produced by rules
 - `verb`: a named query with documentation, schema, and capabilities

@@ -1310,6 +1310,7 @@ mod tests {
             file_snippets: HashMap::new(),
             label_snippets: HashMap::new(),
             heading_spans: HashMap::new(),
+            code_refs: Vec::new(),
             malformed_frontmatter: Vec::new(),
             skipped_non_utf8: 0,
         }
