@@ -2,7 +2,7 @@
 status: converging
 updated: 2026-05-28
 author: claude (post-host-corpus reviewer cold-agent feedback + v0.14 calibration shipped)
-reviewers: codex (independent review pending), host-corpus reviewer (cross-corpus validation converged 2026-05-28)
+reviewers: codex (independent review converged 2026-05-28), host-corpus reviewer (cross-corpus validation converged 2026-05-28)
 depends-on:
   - 2026-05-13-corpus-runtime.md
   - 2026-05-26-surface-evolution-framework.md
@@ -272,14 +272,15 @@ backtick code-path patterns).
 **D3b. Group by kind.**
 
 Currently outgoing edges are listed flat. Grouping by edge kind
-(Cites / DependsOn / Supersedes / Verifies / Discharges / CodeRef once
-R2 lands) gives the agent a sense of the doc's reference structure at
-a glance. This is the actual renderer-side improvement worth doing.
+(Cites / DependsOn / Supersedes / Verifies / Discharges), plus a
+display-only Code references section once R2 lands, gives the agent a
+sense of the doc's reference structure at a glance. This is the actual
+renderer-side improvement worth doing.
 
 **D3c. Code-reference section.**
 
 After R2 lands (parser recognizes backtick code-path patterns and
-emits external-kind handles with file/line metadata), the handle
+emits external-kind handles with target-path metadata), the handle
 command gets a dedicated "Code references" section showing the
 lib/lang/file:N-M refs the doc points at. Cold-agent friction R3
 closes.
@@ -387,14 +388,18 @@ build-output paths (`_build/`, `target/`, `node_modules/`) are
 excluded by default and not user-configurable (they're never
 references).
 
-**F. Emit code references as external handles.** `*handle{kind:
-"external", id: "lib/host-corpus/admission.rs:142-167", file:
-"lib/host-corpus/admission.rs", line: 142, ...}`. Use external kind
-(per D2c).
+**F. Emit code references as external handles.** Use external kind
+(per D2c): `*handle{kind: "external", id:
+"lib/host-corpus/admission.rs:142-167", ...}`. Do not overload
+`*handle.file` / `*handle.line`: those remain discovery-location
+fields. Target path/range live in metadata rows such as
+`*meta{handle: h, key: "md.external_class", value: "code"}`,
+`md.code_path`, `md.code_start_line`, and `md.code_end_line`.
 
 **G. handle --impact for docs surfaces code-side references.** When
-a doc has CodeRef edges, the handle command renders them as a "Code
-references" section after the typed-edge listing.
+a doc has code-ref Cites edges to external handles, the handle command
+renders them as a "Code references" section after the typed-edge
+listing.
 
 ### THEME R3: Search ranking quality
 
@@ -456,7 +461,7 @@ two distinct sub-classes:
   - Code references within the same repo (lib/lang/file:N-M after
     R2)
 
-Both share the kind for substrate simplicity; the file metadata
+Both share the kind for substrate simplicity; metadata
 distinguishes them at query time. Future anneal-code adapter
 promotes the in-repo code-ref sub-class to first-class code
 handles (per D2c → D2b note).
@@ -519,7 +524,7 @@ Outgoing
   DependsOn (3)
     1. host-corpus-dev-architecture.md  at=contract.md:6
     ...
-  CodeRef (39)
+  Code references (39)
     1. lib/host-corpus/admission.rs:142-167  at=contract.md:88
     2. lib/host-corpus/seat_sync.ex:200-250  at=contract.md:104
     ...
@@ -543,12 +548,12 @@ Change vs v0.14:
 ```
 $ anneal --root /path/to/host-corpus-dev/.design handle lib/host-corpus/admission.rs:142-167 --impact
 Handle lib/host-corpus/admission.rs:142-167
-kind=external  file=lib/host-corpus/admission.rs  line=142
+kind=external  target=lib/host-corpus/admission.rs  line=142
 
-Incoming (3 CodeRef edges from design corpus)
-  1. authority-admission-seat-sync-contract.md  at=contract.md:88  CodeRef
-  2. 2026-05-15-coordinator-architecture.md     at=arch.md:142     CodeRef
-  3. 2026-05-12-substrate-kernel-design.md      at=kernel.md:67    CodeRef
+Incoming (3 Cites edges from design corpus)
+  1. authority-admission-seat-sync-contract.md  at=contract.md:88  Cites
+  2. 2026-05-15-coordinator-architecture.md     at=arch.md:142     Cites
+  3. 2026-05-12-substrate-kernel-design.md      at=kernel.md:67    Cites
 
 Impact
   Direct (3 design docs reference this code section)
@@ -636,15 +641,94 @@ Phase 0 sequencing is the other gating question. Lean sequential:
 Phase 0 implementation first, v0.15 design + implementation after.
 ~1 week from v0.14 tag.
 
-### Codex (pending independent review)
+### Codex convergence (2026-05-28, bundled v0.14.0 review)
 
-Awaiting review. Specific asks:
-- Push back on D2c vs D2b — am I underweighting the value of typed
-  code handles?
-- Span-id stability under file edits — what's the right id format?
-- Search scoring math: status boost + hub boost interaction
-- Substrate growth budget: how many new edge kinds before the
-  framework starts flagging accumulation?
+Reviewed under project owner's scope pivot: calibration, Phase 0 substrate,
+retrieval, and teaching all ship as one v0.14.0 bundle. I converge on
+the model with two corrections: the release narrative should broaden
+from "calibrates the convergence signal" to something like "anneal
+calibrates the signal, simplifies the substrate, and sharpens
+retrieval"; and span ids should not use line numbers as their stable
+identity component.
+
+**Model and release shape.** "anneal makes retrieval as sharp as
+convergence" is the right retrieval-section narrative. It belongs in
+the same bundled release because the cold-agent loop is one loop:
+find work, find evidence, act, verify. Splitting retrieval from the
+substrate would create a release where the language can name better
+retrieval but cannot yet deliver it. The research-graph check supports
+this: retrieval schema is an interface, not just storage, and global
+sensemaking requires graph/aggregation structure in addition to local
+lookup. Section spans, status/hub signals, and code-ref metadata are
+retrieval handles, not decorative facts.
+
+**Phase 0 sequencing.** Keep the linear path: Phase 0 section→span
+fold first, then R1, then R2/R4, then R3 tuning, then R5 docs. R3
+status/hub boosts and R4 grouping can be implemented independently,
+but their acceptance meaning changes after span-granular hits exist.
+Do not let docs teach section-level behavior before R1 works. The one
+R5 item that can land early is schema-discovery-via-errors, because
+the behavior already exists.
+
+**D2c vs D2b.** D2c is the right v0.14.0 call. A `code` handle kind
+earns its keep when an `anneal-code` adapter emits code facts as a
+source, not when markdown merely points at code paths. Until then,
+external-with-metadata is honest substrate staging: no new handle kind,
+no new edge kind, immediate traceability, clean D2b promotion path.
+The important guardrail is not to overload `*handle.file` /
+`*handle.line`; those are discovery-location fields today. Code target
+path/range should live in metadata (`md.external_class = "code"`,
+`md.code_path`, `md.code_start_line`, `md.code_end_line`) and the
+renderer can project that metadata as `target=...`.
+
+**Score-clustering gate.** Make this a v0.14.0 release gate, but not
+an exact numeric-golden gate. The gate should prove a qualitative
+ranking property on real corpora: the authoritative defining section
+lands above older passing mentions, section hits show a materially
+wider spread than the v0.14 document-level cluster, and repeated spans
+from one authoritative file do not crowd out all diversity. If the
+spread does not reproduce, tune defaults before tag or narrow the
+CHANGELOG claim. Shipping "with knobs" is acceptable only after the
+default behavior is already better.
+
+**CR-D102 budget.** The bundle stays inside the framework if it keeps
+its subtraction real. Retiring section handles is a major substrate
+reduction; D2c uses existing `external` handles and Cites edges; R3 is
+ranker math, not a new command; R4 is rendering over existing graph
+shape. No balancing retirement is needed unless implementation adds a
+new edge kind or visible command. New config surfaces (`search_boost`,
+`code_path_root`) need describe cards and examples because they are
+surface area even if they are not commands.
+
+**CHANGELOG shape.** Use sub-narrative sections inside one v0.14.0
+entry: Calibration, Substrate, Retrieval, Teaching, and Compatibility.
+Behavior changes need explicit bullets: freshness_decay default,
+section handles retired in favor of `*span`, search/context now return
+span-granular hits and may return multiple hits per file, and code
+paths in markdown bodies become external Cites targets. A single flat
+Added/Changed/Removed list will bury the migration story.
+
+**Span-id format.** Pushback: `file_path#heading-slug-line-N` is not
+stable under ordinary file edits that insert lines above the heading.
+Keep line numbers in `*span.start_line` / `end_line`, not in the id.
+Prefer a heading-path id such as
+`file_path#h/architecture/lease-protocol`, with an occurrence suffix
+for duplicate sibling headings (`~2`) and a recovery warning for old
+line-based or section-handle ids. Sorting can use `start_line`; identity
+should use document structure.
+
+**Backward compatibility.** Document three silent-break risks as
+intentional behavior changes with recovery: `*handle{kind: "section"}`
+now maps to `*span{...}`, old `file#section` handle lookups recover to
+`read file --span-id ...` / span queries, and saved trail/span ids from
+old snapshots may not resolve. Also document that raw `search(...)`
+cardinality changes: callers that assumed one row per handle must group
+or TopK after the span-granular relation.
+
+Net: converge on the bundled v0.14.0 shape. Required corrections before
+implementation are (1) no new CodeRef edge kind in the selected path,
+(2) metadata, not `*handle.file`, for code target fields, and (3) a
+non-line-based stable span id.
 
 ### Host-corpus reviewer convergence (2026-05-28)
 
@@ -660,7 +744,7 @@ returns ZERO outgoing edges — but the
 contract has 39 `lib/host-corpus/...:N-M` refs ALL in backtick form,
 ZERO as markdown links. Fix is PARSER-SIDE (R2-E extension),
 not renderer-side. R4-K retired from scope; R4-L (group by kind)
-+ R4-M (CodeRef section) remain.
++ R4-M (Code references section) remain.
 
 **Section-level retrieval simulation: confirmed.** The 0.97 / 0.84 /
 0.71 score spread is appropriately wide; the section-granular hits
