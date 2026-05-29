@@ -37,14 +37,17 @@ instead of retired command habits.
   reads a matched heading span directly.
 - Markdown body code references such as `lib/app.ex:10-20` now become
   external handles connected by ordinary `Cites` edges. Target path/range data
-  lives in `md.external_class`, `md.code_path`, `md.code_start_line`, and
-  `md.code_end_line` metadata, keeping `*handle.file`/`line` as discovery
+  lives in `external_class`, `target_path`, `target_start_line`, and
+  `target_end_line` metadata, keeping `*handle.file`/`line` as discovery
   location fields.
 - `config code_path_root { root(["web", "bin"]). }` adds project-specific code
   roots to the default `crates`, `lib`, `src`, `app`, `test`, `priv`, and
   `native` body-reference scanner.
 - `config search_boost { status("authoritative", 0.08). hub(0.01). }`
   tunes search ranking boosts by lifecycle status and hub degree.
+- `describe '*meta'` now teaches the three metadata key categories: standard,
+  source, and frontmatter. `describe external_class` and the `target_*`
+  metadata keys document code-reference target metadata.
 
 ### Changed
 

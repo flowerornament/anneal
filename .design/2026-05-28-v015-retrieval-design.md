@@ -245,9 +245,9 @@ target metadata.** (LOCKED selection.)
                                                         NOT the code target
 
 *meta{handle: <external_id>, key: "external_class", value: "code"}
-*meta{handle: <external_id>, key: "code_path",      value: "lib/host-corpus/admission.rs"}
-*meta{handle: <external_id>, key: "code_start_line", value: "142"}
-*meta{handle: <external_id>, key: "code_end_line",   value: "167"}
+*meta{handle: <external_id>, key: "target_path",      value: "lib/host-corpus/admission.rs"}
+*meta{handle: <external_id>, key: "target_start_line", value: "142"}
+*meta{handle: <external_id>, key: "target_end_line",   value: "167"}
 
 *edge{from: doc, to: <external_id>, kind: "Cites",
       file: doc_path, line: line_where_ref_appears_in_doc}
@@ -278,8 +278,8 @@ promotion.
 `anneal-code` adapter ships (v0.16+), external code-ref handles in
 the design corpus can be promoted to first-class `*handle{kind:
 "code"}` rows in the federated index. The promotion is lossless: the
-metadata fields (`external_class`, `code_path`, `code_start_line`,
-`code_end_line`) become the typed fields on the new `code` kind;
+metadata fields (`external_class`, `target_path`, `target_start_line`,
+`target_end_line`) become the typed fields on the new `code` kind;
 existing edge references update via the federation join.
 Documented now so v0.14.0 doesn't lock D2c as terminal — it's the
 intentional first step toward D2b under multi-corpus federation
@@ -456,8 +456,8 @@ references).
 "lib/host-corpus/admission.rs:142-167", ...}`. Do not overload
 `*handle.file` / `*handle.line`: those remain discovery-location
 fields. Target path/range live in metadata rows such as
-`*meta{handle: h, key: "md.external_class", value: "code"}`,
-`md.code_path`, `md.code_start_line`, and `md.code_end_line`.
+`*meta{handle: h, key: "external_class", value: "code"}`,
+`target_path`, `target_start_line`, and `target_end_line`.
 
 **G. handle --impact for docs surfaces code-side references.** When
 a doc has code-ref Cites edges to external handles, the handle command
@@ -664,8 +664,8 @@ Including Phase 0 prereq: ~6-7 days from v0.14 tag to v0.15.0 ship.
    behavior already exists.
 
 2. **D2c (external + metadata).** External handles, Cites edges,
-   target path/range in metadata (`md.external_class = "code"`,
-   `md.code_path`, `md.code_start_line`, `md.code_end_line`).
+   target path/range in metadata (`external_class = "code"`,
+   `target_path`, `target_start_line`, `target_end_line`).
    `*handle.file` and `*handle.line` stay clean as
    DISCOVERY-LOCATION fields. D2c → D2b promotion path under
    future anneal-code adapter.
@@ -832,8 +832,8 @@ external-with-metadata is honest substrate staging: no new handle kind,
 no new edge kind, immediate traceability, clean D2b promotion path.
 The important guardrail is not to overload `*handle.file` /
 `*handle.line`; those are discovery-location fields today. Code target
-path/range should live in metadata (`md.external_class = "code"`,
-`md.code_path`, `md.code_start_line`, `md.code_end_line`) and the
+path/range should live in metadata (`external_class = "code"`,
+`target_path`, `target_start_line`, `target_end_line`) and the
 renderer can project that metadata as `target=...`.
 
 **Score-clustering gate.** Make this a v0.14.0 release gate, but not

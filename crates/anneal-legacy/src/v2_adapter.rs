@@ -702,20 +702,20 @@ fn emit_code_ref_meta(
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "md.external_class".to_string(),
+            key: "external_class".to_string(),
             value: "code".to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "md.code_path".to_string(),
+            key: "target_path".to_string(),
             value: reference.path.clone(),
         });
         if let Some(start_line) = reference.start_line {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
                 handle: reference.target.clone(),
-                key: "md.code_start_line".to_string(),
+                key: "target_start_line".to_string(),
                 value: start_line.to_string(),
             });
         }
@@ -723,7 +723,7 @@ fn emit_code_ref_meta(
             batch.meta.push(MetaFact {
                 identity,
                 handle: reference.target.clone(),
-                key: "md.code_end_line".to_string(),
+                key: "target_end_line".to_string(),
                 value: end_line.to_string(),
             });
         }
@@ -1256,10 +1256,10 @@ mod tests {
             batch.edges
         );
         for (key, value) in [
-            ("md.external_class", "code"),
-            ("md.code_path", "lib/host-corpus/admission.rs"),
-            ("md.code_start_line", "142"),
-            ("md.code_end_line", "167"),
+            ("external_class", "code"),
+            ("target_path", "lib/host-corpus/admission.rs"),
+            ("target_start_line", "142"),
+            ("target_end_line", "167"),
         ] {
             assert!(
                 batch

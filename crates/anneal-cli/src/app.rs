@@ -3030,16 +3030,16 @@ handle_row({handle}, "out", other, kind, null, file, line, "") :=
   *edge{{from: {handle}, to: other, kind: kind, file: file, line: line}},
   not code_reference(other).
 
-handle_row({handle}, "code_ref", other, "Cites", null, file, line, code_path) :=
+handle_row({handle}, "code_ref", other, "Cites", null, file, line, target_path) :=
   *edge{{from: {handle}, to: other, kind: "Cites", file: file, line: line}},
-  *meta{{handle: other, key: "md.external_class", value: "code"}},
-  *meta{{handle: other, key: "md.code_path", value: code_path}}.
+  *meta{{handle: other, key: "external_class", value: "code"}},
+  *meta{{handle: other, key: "target_path", value: target_path}}.
 
 handle_row({handle}, "in", other, kind, null, file, line, "") :=
   *edge{{to: {handle}, from: other, kind: kind, file: file, line: line}}.
 
 code_reference(h) :=
-  *meta{{handle: h, key: "md.external_class", value: "code"}}.
+  *meta{{handle: h, key: "external_class", value: "code"}}.
 
 ? handle_row(h, relation, other, kind, status, file, line, summary).
 "#
@@ -4672,6 +4672,9 @@ mod tests {
             "entropy",
             "undischarged",
             "E001",
+            "*meta",
+            "external_class",
+            "target_path",
         ] {
             let output = session
                 .run(RuntimeCommand::Describe {
@@ -4746,6 +4749,27 @@ mod tests {
                 })
             }),
             "describe handle should teach --impact and reverse dependency shape"
+        );
+
+        let meta = session
+            .run(RuntimeCommand::Describe {
+                name: "*meta".to_string(),
+            })
+            .expect("describe *meta runs");
+        let CommandOutput::Rows { rows, .. } = meta else {
+            panic!("describe *meta should emit rows");
+        };
+        assert!(
+            rows.iter().any(|row| {
+                required_string(row, "doc").is_ok_and(|doc| {
+                    doc.contains("STANDARD (defined by anneal")
+                        && doc.contains("SOURCE (produced by a specific source adapter")
+                        && doc.contains("FRONTMATTER (passed through from YAML")
+                        && doc.contains("external_class")
+                        && doc.contains("target_path")
+                })
+            }),
+            "describe *meta should teach metadata key categories"
         );
     }
 

@@ -191,7 +191,7 @@ output. Use `--json` or `--format=json` when you want stable machine output.
 The graph unit of knowledge. A handle may be a file, label, version, or
 external reference. Headings are content spans (`*span`) attached to file
 handles. In-repo code references such as `lib/app.ex:10-20` use external
-handles with `md.external_class = "code"` metadata.
+handles with `external_class = "code"` metadata.
 
 **Edge**  
 A typed relationship between handles. Common edges include `Cites`,
@@ -525,8 +525,8 @@ Adapters emit stored relations. Rules and queries consume them.
 - `*handle`: handle id, kind, status, namespace, file, line, area, summary,
   identity, revision, generation
 - `*edge`: typed handle relationship
-- `*meta`: frontmatter and extracted metadata, including `md.external_class`,
-  `md.code_path`, `md.code_start_line`, and `md.code_end_line` for code
+- `*meta`: frontmatter and extracted metadata, including `external_class`,
+  `target_path`, `target_start_line`, and `target_end_line` for code
   external handles
 - `*content`: bounded text chunks
 - `*span`: addressable content spans

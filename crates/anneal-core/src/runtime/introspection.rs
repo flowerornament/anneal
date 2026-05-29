@@ -308,15 +308,15 @@ impl IntrospectionBuilder {
                 extra_lines: vec![
                     "Defaults already recognize crates/, lib/, src/, app/, test/, priv/, and native/.".to_string(),
                     "Build-output roots _build/, target/, and node_modules/ are always ignored.".to_string(),
-                    "Recognized refs become external handles with md.external_class=\"code\" and ordinary Cites edges.".to_string(),
+                    "Recognized refs become external handles with external_class=\"code\" and ordinary Cites edges.".to_string(),
                 ],
                 common_joins: &[
                     "`*config{key: \"code_path_root.root\", value: root}` to inspect configured extra roots",
-                    "`*meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}` to inspect captured code refs",
+                    "`*meta{handle: h, key: \"external_class\", value: \"code\"}, *meta{handle: h, key: \"target_path\", value: path}` to inspect captured code refs",
                 ],
                 examples: vec![
                     "? *config{key: \"code_path_root.root\", value: root}.",
-                    "? *meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}.",
+                    "? *meta{handle: h, key: \"external_class\", value: \"code\"}, *meta{handle: h, key: \"target_path\", value: path}.",
                 ],
                 ..DescribeCard::default()
             }),
@@ -360,21 +360,21 @@ impl IntrospectionBuilder {
             &describe_card(DescribeCard {
                 summary: "External handles mark references outside the markdown corpus boundary, including URLs, other repos, and in-repo code paths.",
                 kind: Some(DescribeKind::RuntimeTopic),
-                signature: Some(r#"*handle{kind: "external"} plus optional md.external_class metadata"#),
+                signature: Some(r#"*handle{kind: "external"} plus optional external_class metadata"#),
                 extra_lines: vec![
                     "Document-like external refs use the same substrate kind as code refs so the graph stays small and composable.".to_string(),
-                    "In-repo code refs carry metadata: md.external_class=\"code\", md.code_path, md.code_start_line, and md.code_end_line.".to_string(),
+                    "In-repo code refs carry standard metadata: external_class=\"code\", target_path, target_start_line, and target_end_line.".to_string(),
                     "Future code adapters can promote code refs into first-class code handles without changing today's Cites edges.".to_string(),
                 ],
                 common_joins: &[
                     "`*handle{id: h, kind: \"external\"}, *edge{to: h, from: src, kind: \"Cites\"}` to find who cites an external target",
-                    "`*meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}` to keep code refs only",
+                    "`*meta{handle: h, key: \"external_class\", value: \"code\"}, *meta{handle: h, key: \"target_path\", value: path}` to keep code refs only",
                 ],
                 examples: vec![
                     "? *handle{id: h, kind: \"external\"}.",
-                    "? *meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}.",
+                    "? *meta{handle: h, key: \"external_class\", value: \"code\"}, *meta{handle: h, key: \"target_path\", value: path}.",
                 ],
-                see_also: &["handle", "code_path_root", "*handle", "*meta"],
+                see_also: &["external_class", "target_path", "handle", "code_path_root", "*handle", "*meta"],
                 ..DescribeCard::default()
             }),
         ));
@@ -382,6 +382,79 @@ impl IntrospectionBuilder {
             string_value("external"),
             string_value(r#"? *handle{id: h, kind: "external"}."#),
         ]));
+        self.describe.insert(describe_entry(
+            "external_class",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
+                summary: r#"Discriminator for *handle{kind: "external"} sub-classes."#,
+                kind: Some(DescribeKind::RuntimeTopic),
+                signature: Some(r#"*meta{handle: h, key: "external_class", value: class}"#),
+                extra_lines: vec![
+                    "Known values (standard, adapter-neutral):".to_string(),
+                    r#"- "code": target_path, target_start_line, and target_end_line describe source-code locations."#.to_string(),
+                    r#"- Future "url": target_url."#.to_string(),
+                    r#"- Future "issue": target_repo and target_number."#.to_string(),
+                    "A new external_class value is an anneal standard-key decision.".to_string(),
+                    "Sources may emit additional source-specific discriminators in their own namespace, such as md.link_type.".to_string(),
+                ],
+                common_joins: &[
+                    r#"`*handle{id: h, kind: "external"}, *meta{handle: h, key: "external_class", value: "code"}` to find all code-target external handles"#,
+                    r#"`*meta{handle: h, key: "external_class", value: "code"}, *meta{handle: h, key: "target_path", value: path}` to add the code location"#,
+                ],
+                examples: vec![
+                    r#"? *handle{id: h, kind: "external"}, *meta{handle: h, key: "external_class", value: "code"}."#,
+                    r#"? *meta{handle: h, key: "external_class", value: "code"}, *meta{handle: h, key: "target_path", value: path}."#,
+                ],
+                see_also: &["*meta", "*handle", "target_path"],
+                ..DescribeCard::default()
+            }),
+        ));
+        self.examples.insert(Tuple(vec![
+            string_value("external_class"),
+            string_value(r#"? *meta{handle: h, key: "external_class", value: "code"}."#),
+        ]));
+        for (name, summary, detail) in [
+            (
+                "target_path",
+                r"Standard metadata key for the path an external handle points at.",
+                r#"For external_class="code", this is the in-repo source path without a line range."#,
+            ),
+            (
+                "target_start_line",
+                r"Standard metadata key for the first target line an external handle points at.",
+                r#"For external_class="code", this is the first line in the code location when a range was present."#,
+            ),
+            (
+                "target_end_line",
+                r"Standard metadata key for the last target line an external handle points at.",
+                r#"For external_class="code", this is the inclusive end line when a range was present."#,
+            ),
+        ] {
+            let signature = format!(r#"*meta{{handle: h, key: "{name}", value: value}}"#);
+            let example = format!(r#"? *meta{{handle: h, key: "{name}", value: value}}."#);
+            let common_join = format!(
+                r#"`*meta{{handle: h, key: "external_class", value: "code"}}, *meta{{handle: h, key: "{name}", value: value}}` to inspect code target metadata"#
+            );
+            self.describe.insert(describe_entry(
+                name,
+                DescribeKind::RuntimeTopic,
+                &describe_card(DescribeCard {
+                    summary,
+                    kind: Some(DescribeKind::RuntimeTopic),
+                    signature: Some(signature.as_str()),
+                    extra_lines: vec![
+                        detail.to_string(),
+                        "The key is standard: anneal defines it and it has the same meaning on any corpus.".to_string(),
+                    ],
+                    common_joins: &[common_join.as_str()],
+                    examples: vec![example.as_str()],
+                    see_also: &["external_class", "*meta", "external"],
+                    ..DescribeCard::default()
+                }),
+            ));
+            self.examples
+                .insert(Tuple(vec![string_value(name), string_value(&example)]));
+        }
     }
 
     fn add_stored_relations(&mut self, dynamic_stored: Vec<StoredRelationSummary>) {
@@ -442,7 +515,9 @@ impl IntrospectionBuilder {
                 common_joins: common_joins(name),
                 source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
+                see_also: stored_relation_see_also(name),
                 examples: vec![example],
+                extra_lines: stored_relation_extra_lines(name),
                 ..DescribeCard::default()
             }),
         ));
@@ -457,7 +532,9 @@ impl IntrospectionBuilder {
                 common_joins: common_joins(name),
                 source_label: Some("Contract"),
                 source: Some(".design/2026-05-13-corpus-runtime.md"),
+                see_also: stored_relation_see_also(name),
                 examples: vec![example],
+                extra_lines: stored_relation_extra_lines(name),
                 ..DescribeCard::default()
             }),
         ));
@@ -1109,6 +1186,26 @@ fn call_signature(name: &str, parameters: &[impl AsRef<str>]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("{name}({params})")
+}
+
+fn stored_relation_extra_lines(name: &str) -> Vec<String> {
+    match name {
+        "meta" => vec![
+            "Open metadata extension on handles. Three kinds of keys:".to_string(),
+            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line.".to_string(),
+            "SOURCE (produced by a specific source adapter, prefix tells you which): md.resolved_file, md.parent_dir.".to_string(),
+            "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
+            r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn stored_relation_see_also(name: &str) -> &'static [&'static str] {
+    match name {
+        "meta" => &["external_class", "target_path", "*handle", "schema"],
+        _ => &[],
+    }
 }
 
 #[derive(Default)]
@@ -1911,6 +2008,11 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: heading_path}` to add heading context",
             "`search{query: \"text\", handle: h, score: score}, *handle{id: h, status: status}` to inspect status-aware ranking",
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read matched spans",
+        ],
+        "meta" => &[
+            "`*meta{handle: h, key: \"external_class\", value: class}` to inspect standard external sub-classes",
+            "`*meta{handle: h, key: \"target_path\", value: path}` to inspect standard external targets",
+            "`*meta{handle: h, key: k}` to discover corpus frontmatter keys",
         ],
         "read" => &[
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read the matched heading span",

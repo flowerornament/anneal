@@ -302,7 +302,7 @@ predicates by name and arity.
 ## Mental Model
 
 - `handle`: a file, label, version, or external reference; headings are `*span`
-  rows, and in-repo code refs are external handles with `md.external_class = "code"`
+  rows, and in-repo code refs are external handles with `external_class = "code"`
 - `source`: an adapter such as markdown, code, host runtime, or issue tracker
 - `relation`: a stored row emitted by a source or a derived row produced by rules
 - `verb`: a named query with documentation, schema, and capabilities
