@@ -124,7 +124,7 @@ it.
 ### Working The Convergence Frontier
 
 ```bash
-anneal -e '? diagnostic{severity: "error"}.'                                          # blockers
+anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.' # blockers
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'      # ranked work
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'                   # area drill-down
 ```
@@ -163,7 +163,7 @@ alias for the error-only filtered view.
 
 Compose with `anneal -e` over prelude vocabulary:
 
-- `? diagnostic{severity: "error"}.`: blockers (error-only filtered view)
+- `? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.`: blockers (error-only filtered view)
 - `? potential(h, energy), entropy(h, source).`: raw work energy and cause
 - `? frontier(h, energy), *handle{id: h, file: file}.`: ranked active work
 - `? area_health(area, grade, files, errors, cross_edges).`: per-area health
@@ -183,7 +183,7 @@ workflows into Code Mode directly:
 - `find TEXT`: `? *handle{id: h, kind: kind, status: status}, h contains "TEXT".`
 - `get H`: `anneal handle H` or `anneal read H`
 - `map`: `? *edge{from: src, to: dst, kind: kind}.`
-- `health`: `anneal status` plus `? diagnostic{severity: severity, subject: h}.`
+- `health`: `anneal status` plus `? diagnostic{code: code, severity: severity, subject: h, file: file, line: line}.`
 - `diff`: `? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.`
 - `obligations`: `? undischarged(h), obligation(h).`
 - `garden`: `anneal status` plus `? frontier(h, energy), entropy(h, source).`
@@ -192,7 +192,7 @@ workflows into Code Mode directly:
 - `work`: `anneal status` or `? frontier(h, energy), *handle{id: h, file: file, summary: summary}.`
 - `blocked H`: `anneal handle H` or `? blocker(h, energy, source), h = "H".`
 - `diagnostics`: `? diagnostic(code, severity, subject, file, line, evidence).`
-- `broken`: `? diagnostic{severity: "error"}.` or `anneal check`
+- `broken`: `? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.` or `anneal check`
 - `areas`: `? area_health(area, grade, files, errors, cross_edges).`
 - `trend`: `? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.`
 - `sources`: `? sources(name, recognizes, capabilities, doc).`
@@ -241,7 +241,7 @@ Common prelude families:
   through pipe-only harnesses.
 - Use `--root` for the corpus path. Filter inside the query (`area_of{h: h,
   area: "X"}`) rather than reaching for flags.
-- After editing corpus files, run `anneal -e '? diagnostic{severity: "error"}.'`
+- After editing corpus files, run `anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'`
   to see new blockers. `anneal check` is a hidden CI gate alias for the same
   filtered diagnostic view and exits 1 if any error-severity diagnostic exists.
 - If a query returns too much, add `--limit N`, smaller `--budget`, or a more

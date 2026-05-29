@@ -5,18 +5,20 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
+use anneal_core::runtime::ast::DerivedAtom;
 use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
-    Database, EvalOptions, Evaluator, Literal, Program, QueryOutput, Row, Value, analyze,
-    parse_program, write_ndjson,
+    AnalyzedProgram, Atom, Body, CallArg, CallStyle, Database, EvalOptions, Evaluator, Expr,
+    Literal, NumberLiteral, Program, QueryOutput, Row, StoredAtom, Value, analyze, parse_program,
+    stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
-    FactStore, Generation, ProjectExtension, SnapshotEntry, SnapshotEntryFact, Source,
-    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry,
-    VerbLayer, VerbRegistry, append_snapshot_entry_capped, load_project_extension,
-    merge_program_layers, read_snapshot_history, render_verb_arg_facts,
+    FactStore, Generation, ProjectExtension, SnapshotAppendOutcome, SnapshotEntry,
+    SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability,
+    VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped,
+    load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -120,7 +122,7 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let output = session.run(invocation.command)?;
     let stdout = io::stdout();
     let mode = invocation.output.resolve(stdout.is_terminal());
-    if let Some(message) = output.empty_rows_diagnostic(mode) {
+    if let Some(message) = output.stderr_diagnostic(mode) {
         writeln!(io::stderr().lock(), "{message}")?;
     }
     let gate_failed = output.gate_failed();
@@ -641,16 +643,16 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal map has been retired; compose graph questions with `anneal -e '? *edge{from: src, to: dst, kind: kind}.'` or use `anneal handle <HANDLE>` for a local neighborhood",
         ),
         "health" => Some(
-            "anneal health has been retired; use `anneal status` for the convergence header and compose diagnostics with `anneal -e '? diagnostic{severity: severity, subject: h}.'`",
+            "anneal health has been retired; use `anneal status` for the convergence header and compose diagnostics with `anneal -e '? diagnostic{code: code, severity: severity, subject: h, file: file, line: line}.'`",
         ),
         "diff" => Some(
             "anneal diff has been retired; use automatic status snapshots with `anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`",
         ),
         "obligations" => Some(
-            "anneal obligations has been retired; compose `anneal -e '? undischarged(h), obligation(h).'` or inspect `anneal describe undischarged`",
+            "anneal obligations has been retired; compose `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'` or inspect `anneal describe undischarged`",
         ),
         "garden" => Some(
-            "anneal garden has been retired; compose `frontier`, `entropy`, `diagnostic`, and `*handle` with `anneal -e`, starting from `anneal status`",
+            "anneal garden has been retired; compose `frontier`, `primary_entropy`, and `*handle` with `anneal -e '? frontier(h, energy), primary_entropy(h, source), *handle{id: h, file: file, summary: summary}.'`, starting from `anneal status`",
         ),
         "orient" => Some(
             "anneal orient has been retired; use `anneal context \"GOAL\"` for cold-start orientation or `anneal handle <HANDLE> --impact` before edits",
@@ -659,19 +661,19 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal query has been retired; use the language directly with `anneal -e '? *handle{id: h}.'`",
         ),
         "explain" => Some(
-            "anneal explain has been retired; use provenance on eval with `anneal -e '? diagnostic{subject: h}.' --explain`",
+            "anneal explain has been retired; use provenance on eval with `anneal -e '? diagnostic{code: code, subject: h, file: file, line: line}.' --explain`",
         ),
         "work" => Some(
             "anneal work has been retired; use `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'` for ranked work, or `anneal status` for the convergence landing",
         ),
         "blocked" => Some(
-            "anneal blocked has been retired; use `anneal -e '? blocker(h, energy, source), h = \"HANDLE\".'` or `anneal handle <HANDLE>` for the focused view",
+            "anneal blocked has been retired; use `anneal -e '? blocker(h, energy, source), *handle{id: h, file: file, status: status}.'` or add `h = \"HANDLE\"` for a focused view",
         ),
         "diagnostics" => Some(
             "anneal diagnostics has been retired; use `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'` for the full diagnostic stream or `anneal check` for the error-only CI gate",
         ),
         "broken" => Some(
-            "anneal broken has been retired; use `anneal -e '? diagnostic{severity: \"error\"}.'` for blockers or `anneal check` for the CI gate",
+            "anneal broken has been retired; use `anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'` for blockers or `anneal check` for the CI gate",
         ),
         "areas" => Some(
             "anneal areas has been retired; use `anneal -e '? area_health(area, grade, files, errors, cross_edges).'` or `anneal -e '? area_frontier(area, h, score, why).'`",
@@ -895,7 +897,12 @@ impl RuntimeSession {
                 if let Some(limit) = limit {
                     output.rows.truncate(limit);
                 }
-                Ok(CommandOutput::rows(output.rows, RowView::Eval))
+                let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
+                Ok(CommandOutput::rows_with_empty_binding_hint(
+                    output.rows,
+                    RowView::Eval,
+                    empty_binding_hint,
+                ))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
@@ -956,28 +963,50 @@ impl RuntimeSession {
         if let Some(rows) = invocation.rows {
             output.rows.truncate(rows);
         }
-        Ok(CommandOutput::rows(
+        let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
+        Ok(CommandOutput::rows_with_empty_binding_hint(
             output.rows,
             view.unwrap_or_else(|| RowView::Verb {
                 name: plan.name().to_string(),
             }),
+            empty_binding_hint,
         ))
     }
 
     fn run_status(&self) -> Result<CommandOutput> {
+        let snapshot_count_before = self.snapshot_history_count();
         let plan = self.registry.run_plan_for_actor("status", &self.actor)?;
         let output = self.eval(plan.query_source(), ExplainOptions::disabled())?;
-        if let Err(err) = self.record_status_snapshot() {
-            eprintln!("warning: could not write automatic status snapshot: {err}");
-        }
-        Ok(CommandOutput::Status(output.rows))
+        let append_outcome = match self.record_status_snapshot() {
+            Ok(outcome) => Some(outcome),
+            Err(err) => {
+                eprintln!("warning: could not write automatic status snapshot: {err}");
+                None
+            }
+        };
+        let flow_baseline_ready = match append_outcome {
+            Some(SnapshotAppendOutcome::Appended) if snapshot_count_before == 0 => false,
+            _ => snapshot_count_before > 0,
+        };
+        Ok(CommandOutput::Status(StatusOutput {
+            rows: output.rows,
+            flow_baseline_ready,
+        }))
     }
 
-    fn record_status_snapshot(&self) -> Result<()> {
+    fn record_status_snapshot(&self) -> Result<SnapshotAppendOutcome> {
         let entry = self.status_snapshot_entry();
         append_snapshot_entry_capped(&self.root, &entry, DEFAULT_AUTO_SNAPSHOT_LIMIT)
-            .context("failed to append automatic status snapshot")?;
-        Ok(())
+            .context("failed to append automatic status snapshot")
+    }
+
+    fn snapshot_history_count(&self) -> usize {
+        self.store
+            .snapshots()
+            .iter()
+            .map(|snapshot| snapshot.snapshot.as_str())
+            .collect::<BTreeSet<_>>()
+            .len()
     }
 
     fn status_snapshot_entry(&self) -> SnapshotEntry {
@@ -1041,6 +1070,228 @@ impl RuntimeSession {
             .eval_query(&query)
             .context("query evaluation failed")
     }
+
+    fn empty_binding_hint_for_query(&self, query_source: &str, rows: &[Row]) -> Option<String> {
+        if rows.is_empty() || rows.iter().any(|row| !row.fields.is_empty()) {
+            return None;
+        }
+        let mut program = self.program.clone();
+        let query_program = parse_program("cli-query", query_source).ok()?;
+        program.statements.extend(query_program.statements);
+        let analyzed = analyze(program).ok()?;
+        let query = analyzed.queries().next()?.query();
+        empty_binding_example(&analyzed, &query.body)
+    }
+}
+
+fn empty_binding_example(analyzed: &AnalyzedProgram, body: &Body) -> Option<String> {
+    for atom in &body.atoms {
+        match atom {
+            Atom::Stored(stored) => {
+                let example = empty_binding_example_for_stored(stored)?;
+                return Some(example);
+            }
+            Atom::Derived(derived) => {
+                if !is_introspection_predicate(derived.predicate.name.as_str()) {
+                    let example = empty_binding_example_for_derived(analyzed, derived)?;
+                    return Some(example);
+                }
+            }
+            Atom::TimeBlock(time_block) => {
+                if let Some(example) = empty_binding_example(analyzed, &time_block.body) {
+                    return Some(example);
+                }
+            }
+            Atom::Aggregation(aggregate) => {
+                if let Some(example) = empty_binding_example(analyzed, &aggregate.body) {
+                    return Some(example);
+                }
+            }
+            Atom::Comparison(_) | Atom::Negation(_) => {}
+        }
+    }
+    None
+}
+
+fn empty_binding_example_for_stored(stored: &StoredAtom) -> Option<String> {
+    let fields = stored_relation_fields(stored.relation.as_str())?;
+    let existing_fields = stored
+        .fields
+        .iter()
+        .map(|field| field.field.as_str())
+        .collect::<BTreeSet<_>>();
+    let field = fields
+        .as_slice()
+        .iter()
+        .copied()
+        .find(|field| !existing_fields.contains(field))?;
+    let mut parts = render_literal_field_patterns(&stored.fields);
+    parts.push(format!("{field}: {}", variable_for_field(field)));
+    Some(format!("? *{}{{{}}}.", stored.relation, parts.join(", ")))
+}
+
+fn empty_binding_example_for_derived(
+    analyzed: &AnalyzedProgram,
+    derived: &DerivedAtom,
+) -> Option<String> {
+    let fields = analyzed.predicate_parameter_names(&derived.predicate)?;
+    if matches!(derived.style, CallStyle::Pattern)
+        || derived
+            .args
+            .iter()
+            .any(|arg| matches!(arg, CallArg::Named { .. } | CallArg::Wildcard { .. }))
+    {
+        return empty_binding_example_for_pattern_derived(derived, &fields);
+    }
+    empty_binding_example_for_positional_derived(derived, &fields)
+}
+
+fn empty_binding_example_for_pattern_derived(
+    derived: &DerivedAtom,
+    fields: &[String],
+) -> Option<String> {
+    let suggested_index = derived
+        .args
+        .iter()
+        .position(|arg| matches!(arg, CallArg::Wildcard { .. }))
+        .unwrap_or(0);
+    let field = fields.get(suggested_index).map(String::as_str)?;
+    let mut parts = derived
+        .args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| {
+            if index == suggested_index {
+                return None;
+            }
+            let field = fields.get(index)?;
+            match arg {
+                CallArg::Named { expr, .. } | CallArg::Positional { expr, .. } => {
+                    render_literal_expr(expr).map(|value| format!("{field}: {value}"))
+                }
+                CallArg::Wildcard { .. } => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    parts.push(format!("{field}: {}", variable_for_field(field)));
+    Some(format!(
+        "? {}{{{}}}.",
+        derived.predicate.name,
+        parts.join(", ")
+    ))
+}
+
+fn empty_binding_example_for_positional_derived(
+    derived: &DerivedAtom,
+    fields: &[String],
+) -> Option<String> {
+    let arity = derived.args.len();
+    if arity == 0 {
+        return None;
+    }
+    let suggested_index = derived
+        .args
+        .iter()
+        .position(|arg| !matches!(arg, CallArg::Wildcard { .. }))
+        .unwrap_or(0);
+    let args = (0..arity)
+        .map(|index| {
+            if index == suggested_index {
+                Some(
+                    fields
+                        .get(index)
+                        .map_or_else(|| "value".to_string(), |field| variable_for_field(field)),
+                )
+            } else {
+                render_call_arg(&derived.args[index])
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(format!(
+        "? {}({}).",
+        derived.predicate.name,
+        args.join(", ")
+    ))
+}
+
+fn render_literal_field_patterns(fields: &[anneal_core::runtime::FieldPattern]) -> Vec<String> {
+    fields
+        .iter()
+        .filter_map(|field| {
+            let expr = field.term.expr()?;
+            render_literal_expr(expr).map(|value| format!("{}: {value}", field.field))
+        })
+        .collect()
+}
+
+fn render_call_arg(arg: &CallArg) -> Option<String> {
+    match arg {
+        CallArg::Positional { expr, .. } | CallArg::Named { expr, .. } => render_literal_expr(expr),
+        CallArg::Wildcard { .. } => Some("_".to_string()),
+    }
+}
+
+fn render_literal_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Literal(literal) => Some(render_literal(literal)),
+        Expr::Var(_) | Expr::FunctionCall { .. } | Expr::Binary { .. } | Expr::Tuple(_) => None,
+    }
+}
+
+fn render_literal(literal: &Literal) -> String {
+    match literal {
+        Literal::String(value) => datalog_string_literal(value),
+        Literal::Number(NumberLiteral::Int(value)) => value.to_string(),
+        Literal::Number(NumberLiteral::Float(value)) => value.to_string(),
+        Literal::Bool(value) => value.to_string(),
+        Literal::Null => "null".to_string(),
+        Literal::List(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(render_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn variable_for_field(field: &str) -> String {
+    match field {
+        "id" | "h" | "handle" | "subject" => "h".to_string(),
+        "from" => "src".to_string(),
+        "to" => "dst".to_string(),
+        "affected" => "affected".to_string(),
+        "depth" => "depth".to_string(),
+        "code" => "code".to_string(),
+        "severity" => "severity".to_string(),
+        "file" => "file".to_string(),
+        "line" => "line".to_string(),
+        "energy" | "score" | "weight" => field.to_string(),
+        "source" => "source".to_string(),
+        "area" => "area".to_string(),
+        "count" => "count".to_string(),
+        "status" => "status".to_string(),
+        "kind" => "kind".to_string(),
+        "evidence" => "evidence".to_string(),
+        other => other
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect(),
+    }
+}
+
+fn is_introspection_predicate(name: &str) -> bool {
+    matches!(
+        name,
+        "schema" | "predicates" | "verbs" | "describe" | "examples" | "sources"
+    )
 }
 
 fn runtime_config_facts(
@@ -1177,10 +1428,16 @@ enum CommandOutput {
         rows: Vec<Row>,
         view: RowView,
         gate_failed: bool,
+        empty_binding_hint: Option<String>,
     },
-    Status(Vec<Row>),
+    Status(StatusOutput),
     Context(ContextOutput),
     Text(String),
+}
+
+struct StatusOutput {
+    rows: Vec<Row>,
+    flow_baseline_ready: bool,
 }
 
 impl CommandOutput {
@@ -1189,15 +1446,35 @@ impl CommandOutput {
             rows,
             view,
             gate_failed: false,
+            empty_binding_hint: None,
+        }
+    }
+
+    fn rows_with_empty_binding_hint(
+        rows: Vec<Row>,
+        view: RowView,
+        empty_binding_hint: Option<String>,
+    ) -> Self {
+        Self::Rows {
+            rows,
+            view,
+            gate_failed: false,
+            empty_binding_hint,
         }
     }
 
     fn with_gate_failed(self, gate_failed: bool) -> Self {
         match self {
-            Self::Rows { rows, view, .. } => Self::Rows {
+            Self::Rows {
+                rows,
+                view,
+                empty_binding_hint,
+                ..
+            } => Self::Rows {
                 rows,
                 view,
                 gate_failed,
+                empty_binding_hint,
             },
             other => other,
         }
@@ -1205,7 +1482,8 @@ impl CommandOutput {
 
     fn has_rows(&self) -> bool {
         match self {
-            Self::Rows { rows, .. } | Self::Status(rows) => !rows.is_empty(),
+            Self::Rows { rows, .. } => !rows.is_empty(),
+            Self::Status(output) => !output.rows.is_empty(),
             Self::Context(_) | Self::Text(_) => false,
         }
     }
@@ -1220,21 +1498,49 @@ impl CommandOutput {
     fn empty_rows_diagnostic(&self, mode: OutputMode) -> Option<&'static str> {
         match (mode, self) {
             (_, Self::Rows { rows, .. })
-            | (OutputMode::Json | OutputMode::JsonExplicit, Self::Status(rows))
-                if !matches!(mode, OutputMode::Human) && rows.is_empty() =>
-            {
+            | (
+                OutputMode::Json | OutputMode::JsonExplicit,
+                Self::Status(StatusOutput { rows, .. }),
+            ) if !matches!(mode, OutputMode::Human) && rows.is_empty() => {
                 Some(EMPTY_ROWS_DIAGNOSTIC)
             }
             (_, Self::Status(_) | Self::Rows { .. } | Self::Context(_) | Self::Text(_)) => None,
         }
     }
 
+    fn stderr_diagnostic(&self, mode: OutputMode) -> Option<String> {
+        if let Some(message) = self.empty_rows_diagnostic(mode) {
+            return Some(message.to_string());
+        }
+        match (mode, self) {
+            (
+                OutputMode::Json | OutputMode::JsonExplicit,
+                Self::Rows {
+                    rows,
+                    empty_binding_hint: Some(example),
+                    ..
+                },
+            ) if zero_binding_rows(rows) => Some(empty_binding_hint_text(rows.len(), example)),
+            _ => None,
+        }
+    }
+
     fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
         match (mode, self) {
-            (OutputMode::Human, Self::Status(rows)) => write_status_text(writer, &rows)?,
+            (OutputMode::Human, Self::Status(output)) => {
+                write_status_text(writer, &output.rows, output.flow_baseline_ready)?;
+            }
             (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
-            (OutputMode::Human, Self::Rows { rows, view, .. }) => {
-                write_rows_text(writer, &rows, &view)?;
+            (
+                OutputMode::Human,
+                Self::Rows {
+                    rows,
+                    view,
+                    empty_binding_hint,
+                    ..
+                },
+            ) => {
+                write_rows_text(writer, &rows, &view, empty_binding_hint.as_deref())?;
             }
             (
                 OutputMode::Json,
@@ -1244,12 +1550,24 @@ impl CommandOutput {
                     ..
                 },
             ) => write_describe_text(writer, &rows)?,
-            (_, Self::Status(rows) | Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
+            (_, Self::Status(output)) => write_ndjson(writer, output.rows)?,
+            (_, Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
             (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
             (_, Self::Text(text)) => write_text(writer, &text)?,
         }
         Ok(())
     }
+}
+
+fn zero_binding_rows(rows: &[Row]) -> bool {
+    !rows.is_empty() && rows.iter().all(|row| row.fields.is_empty())
+}
+
+fn empty_binding_hint_text(row_count: usize, example: &str) -> String {
+    format!(
+        "hint: matched {row_count} rows but no fields are bound for output.\n\
+         Add a variable to extract values, e.g.:\n  {example}"
+    )
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1585,7 +1903,11 @@ fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+fn write_status_text<W: Write>(
+    mut writer: W,
+    rows: &[Row],
+    flow_baseline_ready: bool,
+) -> Result<()> {
     const SECTION_ORDER: [&str; 6] = [
         "broken",
         "blocked",
@@ -1611,16 +1933,31 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         section_rows.sort_by(compare_status_rows);
     }
 
-    writeln!(
-        writer,
-        "Convergence  broken={}  blocked={}  work={}  advancing={}  holding={}  drifting={}",
-        section_len(&sections, "broken"),
-        section_len(&sections, "blocked"),
-        section_len(&sections, "work"),
-        section_len(&sections, "advancing"),
-        section_len(&sections, "holding"),
-        section_len(&sections, "drifting")
-    )?;
+    if flow_baseline_ready {
+        writeln!(
+            writer,
+            "Convergence  broken={}  blocked={}  open={}  advancing={}  holding={}  drifting={}",
+            section_len(&sections, "broken"),
+            section_len(&sections, "blocked"),
+            section_len(&sections, "work"),
+            section_len(&sections, "advancing"),
+            section_len(&sections, "holding"),
+            section_len(&sections, "drifting")
+        )?;
+    } else {
+        writeln!(
+            writer,
+            "Convergence  broken={}  blocked={}  open={}  advancing=-  holding=-  drifting=-",
+            section_len(&sections, "broken"),
+            section_len(&sections, "blocked"),
+            section_len(&sections, "work")
+        )?;
+        writeln!(
+            writer,
+            "Note: flow signals empty until snapshot baseline accumulates."
+        )?;
+        writeln!(writer, "      Run `anneal status` again to populate.")?;
+    }
 
     for section in SECTION_ORDER
         .into_iter()
@@ -1755,7 +2092,12 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
     Ok(())
 }
 
-fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Result<()> {
+fn write_rows_text<W: Write>(
+    mut writer: W,
+    rows: &[Row],
+    view: &RowView,
+    empty_binding_hint: Option<&str>,
+) -> Result<()> {
     if let RowView::Handle { handle, impact } = view {
         return write_handle_text(writer, handle, *impact, rows);
     }
@@ -1782,6 +2124,12 @@ fn write_rows_text<W: Write>(mut writer: W, rows: &[Row], view: &RowView) -> Res
             write!(writer, " {field}={}", display_value(value))?;
         }
         writeln!(writer)?;
+    }
+    if zero_binding_rows(rows)
+        && let Some(example) = empty_binding_hint
+    {
+        writeln!(writer)?;
+        writeln!(writer, "{}", empty_binding_hint_text(rows.len(), example))?;
     }
     Ok(())
 }
@@ -2984,20 +3332,32 @@ mod tests {
             ("find", "h contains \"TEXT\""),
             ("get", "anneal handle <HANDLE>"),
             ("map", "*edge{from: src, to: dst, kind: kind}"),
-            ("health", "anneal status"),
+            (
+                "health",
+                "diagnostic{code: code, severity: severity, subject: h, file: file, line: line}",
+            ),
             ("diff", "at(\"snapshot:last\")"),
-            ("obligations", "undischarged(h), obligation(h)"),
-            ("garden", "frontier"),
+            (
+                "obligations",
+                "undischarged(h), obligation(h), *handle{id: h, file: file, status: status}",
+            ),
+            ("garden", "primary_entropy"),
             ("orient", "anneal context \"GOAL\""),
             ("query", "use the language directly"),
-            ("explain", "--explain"),
+            (
+                "explain",
+                "diagnostic{code: code, subject: h, file: file, line: line}",
+            ),
             ("work", "frontier(h, energy)"),
             ("blocked", "blocker(h, energy, source)"),
             (
                 "diagnostics",
                 "diagnostic(code, severity, subject, file, line, evidence)",
             ),
-            ("broken", "diagnostic{severity: \"error\"}"),
+            (
+                "broken",
+                "diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}",
+            ),
             (
                 "areas",
                 "area_health(area, grade, files, errors, cross_edges)",
@@ -3086,18 +3446,54 @@ mod tests {
             None
         );
         assert_eq!(
-            CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
+            status_output(Vec::new()).empty_rows_diagnostic(OutputMode::Json),
             Some(EMPTY_ROWS_DIAGNOSTIC)
         );
         assert_eq!(
-            CommandOutput::Status(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
+            status_output(Vec::new()).empty_rows_diagnostic(OutputMode::Human),
             None
         );
     }
 
     #[test]
+    fn empty_binding_rows_emit_a_human_hint() {
+        let output = CommandOutput::rows_with_empty_binding_hint(
+            vec![row(&[]), row(&[])],
+            RowView::Eval,
+            Some(r#"? diagnostic{severity: "error", code: code}."#.to_string()),
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render rows");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Results (2)"));
+        assert!(rendered.contains("hint: matched 2 rows but no fields are bound for output."));
+        assert!(rendered.contains(r#"? diagnostic{severity: "error", code: code}."#));
+    }
+
+    #[test]
+    fn empty_binding_rows_emit_a_json_stderr_hint() {
+        let output = CommandOutput::rows_with_empty_binding_hint(
+            vec![row(&[])],
+            RowView::Eval,
+            Some("? settled(h).".to_string()),
+        );
+
+        assert_eq!(
+            output.stderr_diagnostic(OutputMode::Json),
+            Some(
+                "hint: matched 1 rows but no fields are bound for output.\nAdd a variable to extract values, e.g.:\n  ? settled(h)."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn status_human_render_groups_sections() {
-        let output = CommandOutput::Status(vec![
+        let output = status_output(vec![
             row(&[
                 ("section", Value::String("work".to_string())),
                 ("h", Value::String("plan.md".to_string())),
@@ -3120,15 +3516,40 @@ mod tests {
 
         assert!(rendered.starts_with("Status\n"));
         assert!(rendered.contains(
-            "Convergence  broken=1  blocked=0  work=1  advancing=0  holding=0  drifting=0"
+            "Convergence  broken=1  blocked=0  open=1  advancing=0  holding=0  drifting=0"
         ));
         assert!(rendered.contains("Broken\n 1. bad.md"));
         assert!(rendered.contains("Other work\n 1. plan.md"));
     }
 
     #[test]
+    fn status_human_render_marks_flow_pending_without_snapshot_baseline() {
+        let output = status_output_with_baseline(
+            vec![row(&[
+                ("section", Value::String("work".to_string())),
+                ("h", Value::String("plan.md".to_string())),
+                ("score", Value::Number(NumberValue::Int(42))),
+                ("why", Value::String("potential".to_string())),
+            ])],
+            false,
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render status");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains(
+            "Convergence  broken=0  blocked=0  open=1  advancing=-  holding=-  drifting=-"
+        ));
+        assert!(rendered.contains("Note: flow signals empty until snapshot baseline accumulates."));
+        assert!(rendered.contains("Run `anneal status` again to populate."));
+    }
+
+    #[test]
     fn status_human_render_sorts_by_score_and_reason_signal() {
-        let output = CommandOutput::Status(vec![
+        let output = status_output(vec![
             row(&[
                 ("section", Value::String("blocked".to_string())),
                 ("h", Value::String("metadata.md".to_string())),
@@ -3166,7 +3587,7 @@ mod tests {
 
     #[test]
     fn status_json_render_preserves_ndjson() {
-        let output = CommandOutput::Status(vec![row(&[
+        let output = status_output(vec![row(&[
             ("section", Value::String("work".to_string())),
             ("h", Value::String("plan.md".to_string())),
             ("score", Value::Number(NumberValue::Int(42))),
@@ -3205,6 +3626,44 @@ mod tests {
         assert!(rendered.contains("category=status"));
         assert!(rendered.contains(r#"value="open question""#));
         assert!(rendered.contains("count=2"));
+    }
+
+    #[test]
+    fn eval_empty_binding_hint_uses_query_schema() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "---\ndepends-on: missing.md\n---\n# A\n")
+            .expect("write file");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? diagnostic{severity: "error"}."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows {
+            rows,
+            empty_binding_hint,
+            ..
+        } = output
+        else {
+            panic!("eval should emit rows");
+        };
+
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|row| row.fields.is_empty()));
+        assert_eq!(
+            empty_binding_hint,
+            Some(r#"? diagnostic{severity: "error", code: code}."#.to_string())
+        );
+
+        assert_eq!(
+            session.empty_binding_hint_for_query(r#"? examples("diagnostic", "noop")."#, &rows),
+            None
+        );
     }
 
     #[test]
@@ -3307,7 +3766,7 @@ mod tests {
 
     #[test]
     fn status_human_render_rejects_schema_drift() {
-        let output = CommandOutput::Status(vec![row(&[
+        let output = status_output(vec![row(&[
             ("section", Value::String("work".to_string())),
             ("h", Value::String("plan.md".to_string())),
             ("why", Value::String("potential".to_string())),
@@ -3379,6 +3838,17 @@ mod tests {
                 .collect(),
             derivation: None,
         }
+    }
+
+    fn status_output(rows: Vec<Row>) -> CommandOutput {
+        status_output_with_baseline(rows, true)
+    }
+
+    fn status_output_with_baseline(rows: Vec<Row>, flow_baseline_ready: bool) -> CommandOutput {
+        CommandOutput::Status(StatusOutput {
+            rows,
+            flow_baseline_ready,
+        })
     }
 
     #[test]
@@ -3588,10 +4058,20 @@ mod tests {
         fs::write(root.join("a.md"), "---\nstatus: draft\n---\n# A\n").expect("write doc");
 
         let session = RuntimeSession::load(&root).expect("session loads");
-        session.run(RuntimeCommand::Status).expect("status runs");
-        session
+        let first = session.run(RuntimeCommand::Status).expect("status runs");
+        let CommandOutput::Status(first) = first else {
+            panic!("status should emit status output");
+        };
+        assert!(!first.flow_baseline_ready);
+
+        let session = RuntimeSession::load(&root).expect("session reloads");
+        let second = session
             .run(RuntimeCommand::Status)
             .expect("unchanged status runs");
+        let CommandOutput::Status(second) = second else {
+            panic!("status should emit status output");
+        };
+        assert!(second.flow_baseline_ready);
 
         let history = anneal_core::read_snapshot_history(&root).expect("read history");
 

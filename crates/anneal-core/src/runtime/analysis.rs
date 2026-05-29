@@ -102,6 +102,24 @@ impl AnalyzedProgram {
             .iter()
             .filter_map(|(predicate, signature)| signature.kind.is_derived().then_some(predicate))
     }
+
+    pub fn predicate_parameter_names(&self, predicate: &PredicateRef) -> Option<Vec<String>> {
+        let signature = self.signatures.get(predicate)?;
+        match &signature.parameters {
+            ParameterNames::Named(parameters) => Some(
+                parameters
+                    .iter()
+                    .map(|parameter| parameter.as_str().to_string())
+                    .collect(),
+            ),
+            ParameterNames::Unknown => Some(
+                (1..=signature.arity)
+                    .map(|index| format!("arg{index}"))
+                    .collect(),
+            ),
+            ParameterNames::Ambiguous => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -848,6 +866,10 @@ fn validate_stored_fields(stored: &StoredAtom) -> Result<(), StaticError> {
     Ok(())
 }
 
+pub fn stored_relation_fields(name: &str) -> Option<StoredFieldSet> {
+    stored_relation_descriptor(name).map(StoredFieldSet::from_descriptor)
+}
+
 fn stored_relation_descriptor(name: &str) -> Option<StoredRelationDescriptor> {
     STORED_RELATION_DESCRIPTORS
         .iter()
@@ -870,10 +892,10 @@ fn unknown_predicate_error(
             predicate.name, predicate.name
         )
     } else if predicate.module.is_none()
-        && let Some(replacement) = retired_predicate_replacement(predicate.name.as_str())
+        && let Some(recovery) = retired_predicate_recovery(predicate.name.as_str())
     {
         format!(
-            ". Predicate '{}' was retired; use `{replacement}`.",
+            ". Predicate '{}' was retired; use {recovery}.",
             predicate.name
         )
     } else if let Some(signatures) = signatures {
@@ -894,11 +916,17 @@ fn unknown_predicate_error(
     }
 }
 
-fn retired_predicate_replacement(name: &str) -> Option<&'static str> {
+fn retired_predicate_recovery(name: &str) -> Option<&'static str> {
     match name {
-        "top_work" => Some("frontier(h, energy)"),
-        "blocked_row" => Some("blocker(h, energy, source)"),
-        "recent" => Some("changed_within(h, days)"),
+        "top_work" => Some(
+            "`anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`",
+        ),
+        "blocked_row" => Some(
+            "`anneal -e '? blocker(h, energy, source), *handle{id: h, file: file, status: status}.'`",
+        ),
+        "recent" => Some(
+            "`anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\", file: file}.'`",
+        ),
         _ => None,
     }
 }
@@ -1914,7 +1942,9 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("Predicate 'recent' was retired; use `changed_within(h, days)`"),
+                .contains(
+                    "Predicate 'recent' was retired; use `anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\", file: file}.'`"
+                ),
             "{err}"
         );
     }

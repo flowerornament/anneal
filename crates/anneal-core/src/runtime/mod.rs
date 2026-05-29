@@ -15,7 +15,7 @@ pub mod parser;
 pub mod prelude;
 mod primitives;
 
-pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze};
+pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze, stored_relation_fields};
 pub use ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, ComparisonOp,
     DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective, Literal,

@@ -47,6 +47,20 @@ vocabulary instead of retired command habits.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.
+- The `anneal status` Convergence header now renders `open=N` instead of
+  `work=N`. The label was the odd grammar in a header that mixes state
+  (`broken`/`blocked`/`open`) and motion (`advancing`/`holding`/`drifting`).
+- Retirement recovery messages for `top_work`, `blocked_row`, `recent`,
+  `broken`, and the v0.13 hidden runtime nouns now ship working query examples
+  with bound output variables, instead of syntactically valid queries that
+  return empty `{}` rows.
+- Empty-binding query results now emit a hint pointing at how to extract
+  values. Queries that produce rows but no output columns no longer render as a
+  silent wall of `{}` lines.
+- When snapshot history is not yet populated, `anneal status` renders flow
+  signals as `-` and emits a note that the baseline accumulates on the next
+  status run. This replaces the silent `holding=0` that looked like a
+  real-but-empty signal.
 - README, AGENTS.md, CLAUDE.md, the bundled `anneal` skill, top-level help,
   and `help eval` now teach the v0.14 surface and avoid retired-command
   recovery paths as first moves.

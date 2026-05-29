@@ -275,14 +275,14 @@ adds direct and indirect reverse dependencies before an edit.
 ```bash
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'
-anneal -e '? diagnostic{severity: "error"}.'
+anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'
 anneal -e '? *handle{id: h, file: f}, git_mtime(f, t).'
 ```
 
 `potential` exposes raw unsettled-work energy; `frontier` projects the
 highest-energy candidates. `area_health` grades per-area convergence.
-`diagnostic{severity: "error"}` filters to blockers. `blocker` explains why one
+`diagnostic{severity: "error", ...}` filters to blockers. `blocker` explains why one
 handle is stalled. `flow` classifies active movement as advancing, holding, or
 drifting; settled handles are outside flow by design. `changed_within` and
 `git_mtime` let agents ask what changed without a separate `--since` surface.
@@ -290,7 +290,7 @@ The convergence vocabulary lives in the prelude — use `describe convergence`,
 `describe potential`, `describe entropy`, `describe blocker`,
 `describe changed_within`, or `describe git_mtime` to learn the
 joins, then compose with `-e`. The `check` command remains as a hidden CI gate
-alias for `diagnostic{severity: "error"}`.
+alias for `diagnostic{code: code, severity: "error", subject: h, file: file, line: line}`.
 
 ### Raw Queries
 
@@ -471,7 +471,7 @@ Common replacements:
 - `find TEXT`: `anneal -e '? *handle{id: h, kind: kind, status: status}, h contains "TEXT".'`
 - `get H`: `anneal handle H` or `anneal read H`
 - `map`: `anneal -e '? *edge{from: src, to: dst, kind: kind}.'`
-- `health`: `anneal status` plus `anneal -e '? diagnostic{severity: severity, subject: h}.'`
+- `health`: `anneal status` plus `anneal -e '? diagnostic{code: code, severity: severity, subject: h, file: file, line: line}.'`
 - `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `obligations`: `anneal -e '? undischarged(h), obligation(h).'`
 - `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
@@ -480,7 +480,7 @@ Common replacements:
 - `work`: `anneal status` or `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`
 - `blocked H`: `anneal handle H` or `anneal -e '? blocker(h, energy, source), h = "H".'`
 - `diagnostics`: `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`
-- `broken`: `anneal -e '? diagnostic{severity: "error"}.'` or `anneal check`
+- `broken`: `anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'` or `anneal check`
 - `areas`: `anneal -e '? area_health(area, grade, files, errors, cross_edges).'`
 - `trend`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `sources`: `anneal -e '? sources(name, recognizes, capabilities, doc).'`

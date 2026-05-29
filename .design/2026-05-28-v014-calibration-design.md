@@ -321,7 +321,7 @@ Ten items, organized by theme. Each justified against CR-D102.
 ```
 $ anneal --root /path/to/large-corpus/.design status
 Status
-Convergence  broken=1  blocked=3  work=22  advancing=0  holding=~  drifting=0
+Convergence  broken=1  blocked=3  open=22  advancing=0  holding=~  drifting=0
 
 Broken
  1. references/README.md  score=100  E001
