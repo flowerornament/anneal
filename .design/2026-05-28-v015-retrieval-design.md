@@ -1,5 +1,5 @@
 ---
-status: converging
+status: converged
 updated: 2026-05-28
 author: claude (post-host-corpus reviewer cold-agent feedback + v0.14 calibration shipped)
 reviewers: codex (independent review converged 2026-05-28), host-corpus reviewer (cross-corpus validation converged 2026-05-28)
@@ -23,11 +23,19 @@ description: >
 ```
 v0.13.0:  "anneal becomes the language it has always claimed to be."
 v0.13.1:  "anneal predicates match their describe-card promises."
-v0.14.0:  "anneal calibrates the convergence signal."
-v0.15.0:  "anneal makes retrieval as sharp as convergence."
+v0.14.0:  "anneal calibrates the signal, simplifies the substrate,
+           and sharpens retrieval."
+           (bundled release — calibration + Phase 0 substrate +
+            retrieval + teaching all ship together)
 ```
 
-v0.13-14 made the convergence side of the cold-agent contract sharp:
+NOTE (scope pivot, 2026-05-28). This doc was originally written for
+v0.15. project owner's bundled-release call folds calibration work,
+Phase 0 handle-kind consolidation, retrieval, and teaching into one
+v0.14.0 release. "v0.15" remains a useful internal label for the
+retrieval theme of the bundle; it does NOT ship as a separate tag.
+
+v0.13 made the convergence side of the cold-agent contract sharp:
 status / frontier / blocker / flow are all named, calibrated, and
 teachable. The RETRIEVAL side (search / read / context / handle) is
 where host-corpus reviewer's cold-agent test surfaced the unfilled promises:
@@ -195,14 +203,19 @@ correct architectural foundation. Don't add interim complexity.
 **Candidate D2a: Extend anneal-md to recognize code-path patterns.**
 
 Add to the markdown body parser:
-- File-path regex: `(crates|lib|src|app|test)/[^\s)]+`
+- File-path regex: `(crates|lib|src|app|test|priv|native)/[^\s)`]+`
 - Optional line/range annotation: `:N`, `:N-M`, `:N:C`
-- Emit as `*edge{from: doc, to: code_handle, kind: "CodeRef", file: doc_path, line: line_in_doc}`
-- Code handle: new substrate entity OR existing external kind with file:line metadata
+- Also catch backtick-quoted code-path refs (per host-corpus reviewer
+  evidence: lsp26 contract uses backticks heavily)
+- Emit as **`*edge{from: doc, to: code_external_handle, kind: "Cites",
+  file: doc_path, line: line_in_doc}`** — use existing Cites edge
+  kind, NOT a new CodeRef kind
+- Code target lives in an external handle whose target identity goes
+  in metadata (not in `*handle.file`/`line` discovery-location fields)
 
-**Candidate D2b: New CodeRef kind + new code handle kind.**
+**Candidate D2b: New code handle kind + new CodeRef edge kind.**
 
-The cleanest: introduce `*handle{kind: "code"}` for code locations
+The over-typed: introduce `*handle{kind: "code"}` for code locations
 with `(path, start_line, end_line)` and `*edge{kind: "CodeRef"}` for
 references. Markdown parser emits both.
 
@@ -216,27 +229,48 @@ references. Markdown parser emits both.
 **Cons:**
 - Adds substrate complexity (codex's framework says careful)
 - Currently Phase 0 is REDUCING kinds; this would ADD one
+- A code handle kind earns its keep when an `anneal-code` adapter
+  emits code facts as a source, not when markdown merely points at
+  code paths (codex convergence)
 - Could fold into `external` kind with metadata (less typed but
   smaller substrate)
 
-**Candidate D2c: Stay in `external` kind, add metadata.**
+**Candidate D2c: Stay in `external` kind + Cites edges, add
+target metadata.** (LOCKED selection.)
 
-`*handle{kind: "external", file: "lib/host-corpus/admission.rs", date: null, ...}`
+```
+*handle{kind: "external", id: <stable code-ref id>}    ← discovery-location fields
+                                                        (file, line) describe where the
+                                                        external handle was first seen,
+                                                        NOT the code target
 
-Treat code references as external refs with path/line metadata. No
-new kind, no new edge type. Just better external-handle hygiene.
+*meta{handle: <external_id>, key: "external_class", value: "code"}
+*meta{handle: <external_id>, key: "code_path",      value: "lib/host-corpus/admission.rs"}
+*meta{handle: <external_id>, key: "code_start_line", value: "142"}
+*meta{handle: <external_id>, key: "code_end_line",   value: "167"}
+
+*edge{from: doc, to: <external_id>, kind: "Cites",
+      file: doc_path, line: line_where_ref_appears_in_doc}
+```
+
+Treat code references as external refs with target metadata.
+NO new kind, NO new edge type. Renderer projects the metadata
+fields when displaying (e.g., shows `target=lib/host-corpus/admission.rs:142-167`).
 
 **Pros:**
-- No substrate growth
+- No substrate growth (existing external kind, existing Cites edge)
 - Plays nice with multi-corpus federation (external refs ARE
   external from the markdown corpus's perspective)
 - Forward-compatible: when anneal-code adapter ships, it can
   promote external code refs to first-class code handles in the
   multi-corpus index
+- Keeps `*handle.file`/`line` clean as DISCOVERY-LOCATION fields
+  (where the handle was first observed in the corpus), not
+  overloaded with target-location data
 
-**Working selection: D2c for v0.15.**
+**Working selection: D2c for the v0.14.0 bundle.**
 Smallest substrate cost, immediately useful (lib/lang/file:N-M refs
-become queryable as external handles with path metadata), forward
+become queryable as external handles with target metadata), forward
 compatible with future anneal-code adapter that would do the
 promotion.
 
@@ -244,10 +278,13 @@ promotion.
 `anneal-code` adapter ships (v0.16+), external code-ref handles in
 the design corpus can be promoted to first-class `*handle{kind:
 "code"}` rows in the federated index. The promotion is lossless: the
-file/line metadata moves from external.file to code.path with same
-semantics; existing edge references update via the federation join.
-Documented now so v0.15 doesn't lock D2c as terminal — it's the
-intentional first step toward D2b under multi-corpus federation.
+metadata fields (`external_class`, `code_path`, `code_start_line`,
+`code_end_line`) become the typed fields on the new `code` kind;
+existing edge references update via the federation join.
+Documented now so v0.14.0 doesn't lock D2c as terminal — it's the
+intentional first step toward D2b under multi-corpus federation
+(the **substrate-staging pattern**: design the metadata as if it
+were already the schema, because in two releases it will be).
 
 ### D3. handle command — what's rendered
 
@@ -327,7 +364,7 @@ up to budget). Under D1a (span-granular search), Read should:
 Acceptance: `anneal context "lease protocol"` returns hits where
 the Read excerpt IS the relevant section, not the doc intro.
 
-## v0.15.0 scope
+## v0.14.0 bundle scope (retrieval section)
 
 Five themes, each grounded in host-corpus reviewer's friction findings.
 
@@ -339,7 +376,33 @@ keep version, keep external). Per the converged Phase 0 design doc.
 **B. Search emits span-granular hits.** The existing
 `search(query, handle, span_id, ...)` signature already supports
 this; the parser needs to populate span_id with the matched-section
-span. anneal-md emits heading spans (already in Phase 0 acceptance).
+span. anneal-md emits heading spans.
+
+**B2. Span-id format: structural, not line-based.**
+Per codex convergence: `file_path#heading-slug-line-N` is NOT stable
+under file edits that insert lines above the heading. Lock the
+following format:
+
+```
+file_path#h/<heading-slug-path>[~<occurrence>]
+
+Examples:
+  contract.md#h/lease-protocol
+  contract.md#h/authority-admission/lease-protocol
+  spec.md#h/observations~2          (second sibling with same slug)
+```
+
+- `#h/` prefix marks heading spans (distinguishes from future span
+  kinds without ambiguity)
+- Heading-slug path encodes document structure (parent / child /
+  grandchild)
+- Occurrence suffix `~N` disambiguates duplicate sibling headings
+- Line numbers live in `*span.start_line` / `*span.end_line` for
+  sorting and excerpt rendering
+- Identity uses document structure; sorting uses line position
+
+Recovery: old line-based or section-handle ids emit a warning and
+route the agent to the structural form.
 
 **C. Read takes span_id and returns the span's body.** Existing
 `read(handle, budget, span_id, text, start_line, end_line, tokens)`
@@ -492,7 +555,7 @@ Hits
     score=0.71  field=heading+body  heading_path="§4 / Leases"
 
 Read
-contract.md#§2-lease-protocol:142-218  tokens=1840
+span_id=contract.md#h/lease-protocol  lines=142-218  tokens=1840
   ## §2 Lease Protocol
   
   A lease is granted by the Admission service when an authority
@@ -548,7 +611,7 @@ Change vs v0.14:
 ```
 $ anneal --root /path/to/host-corpus-dev/.design handle lib/host-corpus/admission.rs:142-167 --impact
 Handle lib/host-corpus/admission.rs:142-167
-kind=external  target=lib/host-corpus/admission.rs  line=142
+kind=external  external_class=code  target=lib/host-corpus/admission.rs:142-167
 
 Incoming (3 Cites edges from design corpus)
   1. authority-admission-seat-sync-contract.md  at=contract.md:88  Cites
@@ -590,36 +653,128 @@ PARALLEL design conversations:
 
 Including Phase 0 prereq: ~6-7 days from v0.14 tag to v0.15.0 ship.
 
-## Open questions for review
+## Locked decisions (post-codex + host-corpus reviewer convergence)
 
-1. **Phase 0 timing.** Phase 0 currently in design state. Does
-   implementation start before v0.15 design lands fully (parallel),
-   or after (sequential, ~1 week delay)?
+1. **Phase 0 sequencing.** LINEAR: Phase 0 implementation first,
+   then R1, then R2/R4, then R3, then R5. R3 status/hub boosts
+   and R4 grouping can implement independently but their
+   acceptance meaning changes after span-granular hits exist; do
+   not let docs teach section-level behavior before R1 works.
+   R5-Q (schema-discovery-via-errors) can land early because the
+   behavior already exists.
 
-2. **D2c vs D2b for code refs.** External kind with metadata
-   (D2c, smaller substrate) vs new code handle kind (D2b, more
-   typed). I lean D2c for v0.15; D2b becomes natural if/when
-   anneal-code adapter ships.
+2. **D2c (external + metadata).** External handles, Cites edges,
+   target path/range in metadata (`md.external_class = "code"`,
+   `md.code_path`, `md.code_start_line`, `md.code_end_line`).
+   `*handle.file` and `*handle.line` stay clean as
+   DISCOVERY-LOCATION fields. D2c → D2b promotion path under
+   future anneal-code adapter.
 
-3. **D4a status-aware boost configuration.** Should defaults
-   include status tier weights, or should the boost be opt-in via
-   `config search_boost`? Lean: defaults include sensible status
-   weights (authoritative > active > draft) since the host-corpus reviewer
-   case shows this directly addresses cold-agent friction.
+3. **D4a status-aware boost defaults.** Defaults include sensible
+   status tier weights (authoritative > active > draft).
+   Per-corpus override via `config search_boost { ... }`.
 
-4. **Heading path display.** Format: `§2 / Lease Protocol` vs
-   `> §2 > Lease Protocol` vs `Lease Protocol (§2)` vs other. Pick
-   what reads cleanest in mixed-encoding terminals.
+4. **Heading path display: `§2 / Lease Protocol`.** Single delim
+   `/`. Omit `§?` when section number absent.
 
-5. **Body code-path regex scope.** `(crates|lib|src|app|test)/...`
-   is the starting set. Should config let projects extend
-   (e.g., `priv/`, `web/`, `bin/`)? Lean: yes, via
-   `config code_path_root { ... }`.
+5. **Body code-path regex defaults: `(crates|lib|src|app|test|priv|native)/...`** —
+   includes Phoenix/Elixir `priv/` and Rust-NIF `native/`.
+   Project extension via `config code_path_root { ... }`.
+   ALSO catches backtick-quoted code refs (host-corpus reviewer evidence).
+   Build-output paths (`_build/`, `target/`, `node_modules/`)
+   excluded by default and not user-configurable.
 
-6. **Backward compat.** Span-id format change (heading spans get
-   new ids) means trail history and any saved queries with span_id
-   refs break. Same migration story as Phase 0 (warn on retired
-   span-id format, document recovery).
+6. **Backward compat — intentional behavior changes documented
+   with recovery (codex convergence):**
+
+   | Risk | Recovery |
+   |---|---|
+   | `*handle{kind: "section"}` returns zero rows | Maps to `*span{...}`; teach in describe |
+   | Old `file#section` handle lookups fail | Recover via `read file --span-id ...` or `*span{handle: file}` queries |
+   | Saved trail/span ids from old snapshots may not resolve | Warning emitted, agent prompted to re-snapshot |
+   | `search(...)` cardinality changes — multiple hits per file | Callers assuming one row per handle must group or TopK after the span-granular relation |
+
+7. **Score-clustering gate (codex convergence).** Qualitative
+   ranking property, not numeric golden:
+   - Authoritative defining section must land above older passing
+     mentions on real corpora
+   - Section hits must show materially wider spread than v0.14's
+     document-level cluster (0.738-0.940)
+   - Repeated spans from one authoritative file must NOT crowd
+     out all diversity
+   If the spread doesn't reproduce, tune defaults before tag or
+   narrow CHANGELOG claim. Shipping "with knobs" is acceptable
+   only after default behavior is already better.
+
+8. **Span-id format: structural, not line-based (codex correction).**
+   `file_path#h/<heading-slug-path>[~<occurrence>]`. Stable under
+   file edits. Line numbers in `*span.start_line` / `*span.end_line`
+   for sorting and excerpt rendering. Identity uses document
+   structure.
+
+## CHANGELOG planning for the v0.14.0 bundle
+
+Per codex convergence: sub-narrative sections inside one v0.14.0
+entry, not a flat Added/Changed/Removed list.
+
+```
+## v0.14.0 - 2026-05-XX
+
+anneal calibrates the signal, simplifies the substrate, and
+sharpens retrieval.
+
+### Calibration
+- freshness_decay default lowered from 2 to 1 (Behavior Change)
+- config potential_weight { ... } override schema + 
+  effective_potential_weight predicate
+- describe potential_weight teaches override syntax inline
+- describe blocker teaches primary_entropy join
+
+### Substrate
+- Section handles retired; *span first-class for heading addressing
+  (Behavior Change: *handle{kind: "section"} returns zero rows)
+- Span-id format: structural heading-path, not line-based
+- Span-id recovery: warnings on old format with migration hints
+
+### Retrieval
+- search returns span-granular hits with heading_path metadata
+- read returns matched-span body with hint-on-truncation
+- context composes the above into "find the section that defines X"
+- Code paths in markdown bodies become external Cites with target
+  metadata (lib/lang/file:N-M backtick-quoted refs captured)
+- Status-aware ranker boost (authoritative > active > draft)
+- Hub-degree ranker boost
+
+### Teaching
+- Magic-word describe cards deepened (entropy, potential, frontier,
+  blocker, advancing, holding, drifting, flow, settled, terminal,
+  active, obligation, freshness, flux, hub, orphan, area_of, *concern)
+- describe convergence becomes multi-section card (meta + The Act +
+  Vocabulary + Tuning)
+- describe runtime distinguishes snapshot / generation / trail
+- SKILL.md explicit delineation: context for sections, grep for
+  occurrences, eval for graph predicates
+- Schema-discovery-via-errors taught as a first-class pattern
+- AGENTS.md, CLAUDE.md, README.md synchronized to v0.14 surface
+
+### Compatibility
+- Behavior change: freshness_decay default 2 → 1
+- Behavior change: *handle{kind: "section"} retired, recovers via
+  *span{} queries with documented mapping
+- Behavior change: search returns one row per matching span (not
+  per file); callers assuming one row per handle must group or TopK
+- Old line-based span ids emit warning with structural replacement
+- Old top_work / blocked_row / recent aliases retired (deprecation
+  cycle complete from v0.13)
+- work_candidate remains as deprecated alias for potential through
+  v0.14; retire in v0.15
+
+### Removed
+- Section handle kind (substrate fold per Phase 0 Candidate A)
+- top_work, blocked_row, recent (deprecation cycle complete)
+- The `anneal status --json --compact` flag is gone
+- The `anneal map --around=<handle>` command (was already retired)
+```
 
 ## Review section
 
