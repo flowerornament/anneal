@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use walkdir::WalkDir;
 
@@ -280,10 +280,35 @@ pub(crate) struct FrontmatterEdge {
 /// Result of scanning a single file's body content.
 pub(crate) struct ScanResult {
     pub(crate) label_candidates: Vec<LabelCandidate>,
+    /// Heading spans discovered in document order.
+    pub(crate) heading_spans: Vec<HeadingSpan>,
     /// Section references with their 1-based line numbers.
     pub(crate) section_refs: Vec<(String, u32)>,
     /// File path references with their 1-based line numbers.
     pub(crate) file_refs: Vec<(String, u32)>,
+}
+
+/// A heading-scoped content span.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HeadingSpan {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) start_line: u32,
+    pub(crate) end_line: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HeadingDraft {
+    level: u32,
+    title: String,
+    start_line: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveHeading {
+    text: String,
+    start_offset: usize,
+    level: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,16 +415,16 @@ impl BodyRefRecorder<'_> {
 pub(crate) fn scan_file_cmark(
     body: &str,
     file_path: &Utf8Path,
-    file_node: NodeId,
-    graph: &mut DiGraph,
     line_index: &LineIndex,
 ) -> (ScanResult, Vec<DiscoveredRef>) {
     let mut result = ScanResult {
         label_candidates: Vec::new(),
+        heading_spans: Vec::new(),
         section_refs: Vec::new(),
         file_refs: Vec::new(),
     };
     let mut discovered_refs: Vec<DiscoveredRef> = Vec::new();
+    let mut heading_drafts = Vec::new();
 
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
@@ -410,7 +435,7 @@ pub(crate) fn scan_file_cmark(
 
     // State tracking
     let mut in_code_block = false;
-    let mut heading_text: Option<String> = None;
+    let mut active_heading: Option<ActiveHeading> = None;
     let mut text_accumulator = String::new();
     let mut block_start_offset: usize = 0;
     let mut in_html_block = false;
@@ -459,17 +484,22 @@ pub(crate) fn scan_file_cmark(
             }
 
             // -- Headings --
-            Event::Start(Tag::Heading { .. }) => {
-                heading_text = Some(String::new());
+            Event::Start(Tag::Heading { level, .. }) => {
+                active_heading = Some(ActiveHeading {
+                    text: String::new(),
+                    start_offset: range.start,
+                    level: heading_level_number(level),
+                });
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some(heading) = heading_text.take() {
-                    let heading = heading.trim().to_string();
+                if let Some(active) = active_heading.take() {
+                    let heading = active.text.trim().to_string();
                     if !heading.is_empty() {
+                        let start_line = line_index.offset_to_line(active.start_offset);
                         // Scan heading text for label definitions (is_heading = true)
                         scan_text_for_refs(
                             &heading,
-                            block_start_offset,
+                            active.start_offset,
                             file_path,
                             file_path_str,
                             line_index,
@@ -477,11 +507,11 @@ pub(crate) fn scan_file_cmark(
                             &mut result,
                             &mut discovered_refs,
                         );
-                        graph.add_node(Handle::section(
-                            file_node,
-                            heading,
-                            file_path.to_path_buf(),
-                        ));
+                        heading_drafts.push(HeadingDraft {
+                            level: active.level,
+                            title: heading,
+                            start_line,
+                        });
                     }
                 }
                 // Clear text_accumulator so heading labels aren't double-counted
@@ -589,8 +619,8 @@ pub(crate) fn scan_file_cmark(
                     html_accumulator.push_str(text.as_ref());
                     continue;
                 }
-                if let Some(ref mut h) = heading_text {
-                    h.push_str(text.as_ref());
+                if let Some(ref mut heading) = active_heading {
+                    heading.text.push_str(text.as_ref());
                 }
                 text_accumulator.push_str(text.as_ref());
             }
@@ -629,8 +659,8 @@ pub(crate) fn scan_file_cmark(
             }
 
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(ref mut h) = heading_text {
-                    h.push(' ');
+                if let Some(ref mut heading) = active_heading {
+                    heading.text.push(' ');
                 }
                 // Preserve newlines so per-line edge kind inference works correctly.
                 text_accumulator.push('\n');
@@ -655,7 +685,103 @@ pub(crate) fn scan_file_cmark(
         );
     }
 
+    result.heading_spans = finalize_heading_spans(
+        file_path_str,
+        &heading_drafts,
+        body_end_line(body, line_index),
+    );
+
     (result, discovered_refs)
+}
+
+const fn heading_level_number(level: HeadingLevel) -> u32 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn body_end_line(body: &str, line_index: &LineIndex) -> u32 {
+    let start_line = line_index.offset_to_line(0);
+    let body_lines = u32::try_from(body.lines().count()).unwrap_or(u32::MAX);
+    start_line.saturating_add(body_lines.saturating_sub(1))
+}
+
+fn finalize_heading_spans(
+    file_path: &str,
+    headings: &[HeadingDraft],
+    body_end_line: u32,
+) -> Vec<HeadingSpan> {
+    let mut spans = Vec::with_capacity(headings.len());
+    let mut slug_stack = Vec::<(u32, String)>::new();
+    let mut path_counts = HashMap::<String, usize>::new();
+
+    for (index, heading) in headings.iter().enumerate() {
+        while slug_stack
+            .last()
+            .is_some_and(|(level, _)| *level >= heading.level)
+        {
+            slug_stack.pop();
+        }
+        let base_slug = slugify_heading(&heading.title);
+        let path_base = slug_path(slug_stack.iter().map(|(_, slug)| slug.as_str()), &base_slug);
+        let occurrence = path_counts.entry(path_base).or_insert(0);
+        *occurrence += 1;
+        let slug = if *occurrence == 1 {
+            base_slug
+        } else {
+            format!("{base_slug}~{occurrence}")
+        };
+        let full_slug_path = slug_path(slug_stack.iter().map(|(_, slug)| slug.as_str()), &slug);
+        let next_boundary = headings
+            .iter()
+            .skip(index + 1)
+            .find(|next| next.level <= heading.level)
+            .map_or(body_end_line, |next| next.start_line.saturating_sub(1));
+        let end_line = next_boundary.max(heading.start_line);
+        spans.push(HeadingSpan {
+            id: format!("{file_path}#h/{full_slug_path}"),
+            title: heading.title.clone(),
+            start_line: heading.start_line,
+            end_line,
+        });
+        slug_stack.push((heading.level, slug));
+    }
+
+    spans
+}
+
+fn slug_path<'a>(parents: impl Iterator<Item = &'a str>, slug: &'a str) -> String {
+    parents
+        .chain(std::iter::once(slug))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn slugify_heading(heading: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_dash = false;
+    for ch in heading.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !out.is_empty() {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "heading".to_string()
+    } else {
+        out
+    }
 }
 
 /// Classify a body text reference into a `RefHint`.
@@ -879,6 +1005,8 @@ pub(crate) struct BuildResult {
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
     pub(crate) label_snippets: HashMap<String, String>,
+    /// Heading spans keyed by relative file path.
+    pub(crate) heading_spans: HashMap<String, Vec<HeadingSpan>>,
     /// Files whose YAML frontmatter failed to deserialize (§7.2 silent-failure tracking).
     #[allow(dead_code)] // Consumed by status/check reporting once surfaced
     pub(crate) malformed_frontmatter: Vec<String>,
@@ -958,6 +1086,7 @@ pub(crate) fn build_graph_scoped(
     let mut extractions: Vec<FileExtraction> = Vec::new();
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
+    let mut heading_spans: HashMap<String, Vec<HeadingSpan>> = HashMap::new();
     let mut malformed_frontmatter: Vec<String> = Vec::new();
 
     // §7.3: Track non-UTF-8 filenames silently skipped by the walker filter.
@@ -1154,8 +1283,13 @@ pub(crate) fn build_graph_scoped(
 
         // Use pulldown-cmark scanner for production body scanning
         let line_index = LineIndex::from_content(body, frontmatter_line_count);
-        let (scan_result, body_refs) =
-            scan_file_cmark(body, &relative, file_node, &mut graph, &line_index);
+        let (mut scan_result, body_refs) = scan_file_cmark(body, &relative, &line_index);
+        if !scan_result.heading_spans.is_empty() {
+            heading_spans.insert(
+                relative.to_string(),
+                std::mem::take(&mut scan_result.heading_spans),
+            );
+        }
 
         let mut seen_label_ids = HashSet::new();
         for candidate in &scan_result.label_candidates {
@@ -1237,6 +1371,7 @@ pub(crate) fn build_graph_scoped(
         extractions,
         file_snippets,
         label_snippets,
+        heading_spans,
         malformed_frontmatter,
         skipped_non_utf8: skipped_non_utf8.get(),
     })
@@ -1601,6 +1736,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn build_graph_emits_heading_spans_without_section_handles() {
+        let tmp = std::env::temp_dir().join("anneal_test_heading_spans");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        write_md_file(
+            &tmp,
+            "guide.md",
+            "---\nstatus: draft\n---\n# Overview\nIntro.\n\n## Details\nBody.\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(
+            result
+                .graph
+                .nodes()
+                .all(|(_, handle)| !matches!(handle.kind, HandleKind::Section { .. })),
+            "section handles should not be emitted"
+        );
+        let spans = result
+            .heading_spans
+            .get("guide.md")
+            .expect("guide heading spans");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].id, "guide.md#h/overview");
+        assert_eq!(spans[1].id, "guide.md#h/overview/details");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// End-to-end: URLs in frontmatter produce no E001 diagnostic and appear
     /// as `RefHint::External` in the extractions array. Exercises the full
     /// pipeline from build_graph through check_existence.
@@ -1689,15 +1858,9 @@ mod tests {
 
     fn cmark_scan(body: &str) -> (ScanResult, Vec<DiscoveredRef>, DiGraph) {
         let mut graph = DiGraph::new();
-        let node = graph.add_node(Handle::test_file("test.md", None));
+        graph.add_node(Handle::test_file("test.md", None));
         let line_index = LineIndex::from_content(body, 0);
-        let (result, refs) = scan_file_cmark(
-            body,
-            Utf8Path::new("test.md"),
-            node,
-            &mut graph,
-            &line_index,
-        );
+        let (result, refs) = scan_file_cmark(body, Utf8Path::new("test.md"), &line_index);
         (result, refs, graph)
     }
 
@@ -1721,12 +1884,63 @@ mod tests {
             "should NOT extract OQ-99 from code block, got: {labels:?}"
         );
 
-        // Should have created a section for "Heading"
+        // Headings are spans, not section handles.
+        assert_eq!(result.heading_spans.len(), 1);
+        assert_eq!(result.heading_spans[0].id, "test.md#h/heading");
+        assert_eq!(result.heading_spans[0].title, "Heading");
         let section_count = graph
             .nodes()
             .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
             .count();
-        assert_eq!(section_count, 1, "should create one section handle");
+        assert_eq!(section_count, 0, "should not create section handles");
+    }
+
+    #[test]
+    fn cmark_heading_spans_use_structural_ids_and_scopes() {
+        let body = "# Architecture\nIntro\n\n## Lease Protocol\nBody\n\n### Renewal\nNested\n\n## Lease Protocol\nSecond\n";
+        let (result, _refs, graph) = cmark_scan(body);
+
+        let spans = result
+            .heading_spans
+            .iter()
+            .map(|span| {
+                (
+                    span.id.as_str(),
+                    span.title.as_str(),
+                    span.start_line,
+                    span.end_line,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            spans,
+            vec![
+                ("test.md#h/architecture", "Architecture", 1, 11),
+                (
+                    "test.md#h/architecture/lease-protocol",
+                    "Lease Protocol",
+                    4,
+                    9,
+                ),
+                (
+                    "test.md#h/architecture/lease-protocol/renewal",
+                    "Renewal",
+                    7,
+                    9,
+                ),
+                (
+                    "test.md#h/architecture/lease-protocol~2",
+                    "Lease Protocol",
+                    10,
+                    11,
+                ),
+            ]
+        );
+        let section_count = graph
+            .nodes()
+            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
+            .count();
+        assert_eq!(section_count, 0, "should not create section handles");
     }
 
     #[test]
@@ -2214,10 +2428,7 @@ mod tests {
             #[allow(clippy::cast_possible_truncation)]
             let fm_lines = frontmatter_yaml.map_or(0, |yaml| yaml.lines().count() as u32 + 2);
             let line_index = LineIndex::from_content(body, fm_lines);
-            let mut graph = DiGraph::new();
-            let file_node = graph.add_node(Handle::test_file(&relative_str, None));
-            let (result, body_discovered) =
-                scan_file_cmark(body, relative, file_node, &mut graph, &line_index);
+            let (result, body_discovered) = scan_file_cmark(body, relative, &line_index);
 
             let refs =
                 result.label_candidates.len() + result.section_refs.len() + result.file_refs.len();

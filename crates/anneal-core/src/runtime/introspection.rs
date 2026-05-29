@@ -1573,7 +1573,7 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
             "The `read` verb wraps this primitive with typed CLI arguments for handle and budget.",
         ),
         PrimitivePredicate::ChangedWithin => Some(
-            "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file while section handles still exist.",
+            "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file.",
         ),
         PrimitivePredicate::GitMtime => Some(
             "Lower-level file timestamp primitive used by `changed_within`; compose it directly when you need exact commit times.",
@@ -1907,7 +1907,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         ],
         "git_mtime" | "changed_within" => &[
             "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
-            "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep file handles while section handles still exist",
+            "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep the result at file granularity",
             "`changed_within(h, 7), search{query: \"text\", handle: h}` for recent search hits",
         ],
         "potential_weight" | "potential_weight_override" | "effective_potential_weight" => &[

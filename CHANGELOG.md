@@ -4,12 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## v0.14.0 - 2026-05-28
 
-anneal calibrates the convergence signal.
+anneal calibrates the signal and simplifies the substrate.
 
 This release turns the v0.13 language surface into a sharper convergence
 instrument: flow is explicit, potential can be tuned honestly, freshness noise
-is quieter by default, and the describe/help/docs surface teaches the current
-vocabulary instead of retired command habits.
+is quieter by default, heading structure moves into spans instead of graph
+handles, and the describe/help/docs surface teaches the current vocabulary
+instead of retired command habits.
 
 ### Added
 
@@ -28,6 +29,9 @@ vocabulary instead of retired command habits.
   separate history concepts.
 - Unknown-predicate errors now offer arity-aware suggestions for close schema
   matches and route non-typo misses toward `schema` and `describe convergence`.
+- Markdown headings now emit structural `*span` rows with ids shaped like
+  `file.md#h/heading/path` instead of graph handles. Line numbers remain on the
+  span for sorting, excerpts, and retrieval.
 
 ### Changed
 
@@ -41,9 +45,12 @@ vocabulary instead of retired command habits.
   is scheduled for retirement in v0.15.
 - `blocker(h, energy, source)` describe cards now teach the
   `primary_entropy(h, source)` join for one blocker row per handle.
-- `changed_within(h, days)` describe cards now teach the interim
-  `*handle{kind: "file"}` join to avoid section-handle fanout until the
-  handle-kind substrate work lands.
+- `changed_within(h, days)` describe cards now teach the
+  `*handle{kind: "file"}` join when agents want file-granular recent changes.
+- Behavior change: markdown headings no longer appear as
+  `*handle{kind: "section"}` rows. Querying the retired section kind returns
+  zero rows with a recovery warning pointing at `*span`, and section-shaped
+  handle lookups recover toward a span query.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.

@@ -6,12 +6,12 @@ use std::path::Path;
 use std::process::Command;
 
 use anneal_core::runtime::ast::DerivedAtom;
-use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
+use anneal_core::runtime::eval::{ExplainOptions, NumberValue, QueryWarning};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
     AnalyzedProgram, Atom, Body, CallArg, CallStyle, Database, EvalOptions, Evaluator, Expr,
-    Literal, NumberLiteral, Program, QueryOutput, Row, StoredAtom, Value, analyze, parse_program,
-    stored_relation_fields, write_ndjson,
+    Literal, NegatedAtom, NumberLiteral, Program, QueryOutput, Row, StoredAtom, Value, analyze,
+    parse_program, stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
@@ -898,10 +898,11 @@ impl RuntimeSession {
                     output.rows.truncate(limit);
                 }
                 let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
-                Ok(CommandOutput::rows_with_empty_binding_hint(
+                Ok(CommandOutput::rows_with_empty_binding_hint_and_warnings(
                     output.rows,
                     RowView::Eval,
                     empty_binding_hint,
+                    warning_texts(&output.warnings),
                 ))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
@@ -916,6 +917,9 @@ impl RuntimeSession {
 
     fn run_handle(&self, handle: String, impact: bool) -> Result<CommandOutput> {
         let mut output = self.eval(&handle_query(&handle), ExplainOptions::disabled())?;
+        if output.rows.is_empty() && looks_like_retired_section_handle(&handle) {
+            bail!("{}", retired_section_handle_message(&handle));
+        }
         if impact {
             output.rows.extend(self.handle_impact_rows(&handle));
         }
@@ -964,12 +968,13 @@ impl RuntimeSession {
             output.rows.truncate(rows);
         }
         let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
-        Ok(CommandOutput::rows_with_empty_binding_hint(
+        Ok(CommandOutput::rows_with_empty_binding_hint_and_warnings(
             output.rows,
             view.unwrap_or_else(|| RowView::Verb {
                 name: plan.name().to_string(),
             }),
             empty_binding_hint,
+            warning_texts(&output.warnings),
         ))
     }
 
@@ -1043,7 +1048,11 @@ impl RuntimeSession {
         view: RowView,
     ) -> Result<CommandOutput> {
         let output = self.eval(query, explain)?;
-        Ok(CommandOutput::rows(output.rows, view))
+        Ok(CommandOutput::rows_with_warnings(
+            output.rows,
+            view,
+            warning_texts(&output.warnings),
+        ))
     }
 
     fn eval(&self, query_source: &str, explain: ExplainOptions) -> Result<QueryOutput> {
@@ -1066,9 +1075,16 @@ impl RuntimeSession {
             .with_git_mtimes(self.git_mtimes.clone());
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator.run_fixpoint().context("query fixpoint failed")?;
-        evaluator
+        let mut output = evaluator
             .eval_query(&query)
-            .context("query evaluation failed")
+            .context("query evaluation failed")?;
+        output
+            .warnings
+            .retain(|warning| warning_applies_to_query(query_source, warning));
+        if let Some(warning) = retired_section_kind_warning(&query.query().body) {
+            output.warnings.push(warning);
+        }
+        Ok(output)
     }
 
     fn empty_binding_hint_for_query(&self, query_source: &str, rows: &[Row]) -> Option<String> {
@@ -1111,6 +1127,62 @@ fn empty_binding_example(analyzed: &AnalyzedProgram, body: &Body) -> Option<Stri
         }
     }
     None
+}
+
+fn warning_texts(warnings: &[QueryWarning]) -> Vec<String> {
+    warnings
+        .iter()
+        .map(|warning| format!("warning: {}", warning.message))
+        .collect()
+}
+
+fn warning_applies_to_query(query_source: &str, warning: &QueryWarning) -> bool {
+    warning.reference.as_deref().is_none_or(|reference| {
+        query_source.contains(reference)
+            || query_source.contains(&format!("at({})", datalog_string_literal(reference)))
+    })
+}
+
+fn retired_section_kind_warning(body: &Body) -> Option<QueryWarning> {
+    body_filters_retired_section_kind(body).then(|| QueryWarning {
+        code: "retired_section_kind".to_string(),
+        message: "the section handle kind was retired in v0.14; use `*span{id: span_id, handle: file, summary: heading}` for heading spans".to_string(),
+        reference: None,
+        source: None,
+        relation: Some("handle".to_string()),
+    })
+}
+
+fn body_filters_retired_section_kind(body: &Body) -> bool {
+    body.atoms.iter().any(atom_filters_retired_section_kind)
+}
+
+fn atom_filters_retired_section_kind(atom: &Atom) -> bool {
+    match atom {
+        Atom::Stored(stored) => stored_filters_retired_section_kind(stored),
+        Atom::Aggregation(aggregate) => body_filters_retired_section_kind(&aggregate.body),
+        Atom::Negation(negation) => negated_atom_filters_retired_section_kind(&negation.atom),
+        Atom::TimeBlock(time_block) => body_filters_retired_section_kind(&time_block.body),
+        Atom::Derived(_) | Atom::Comparison(_) => false,
+    }
+}
+
+fn negated_atom_filters_retired_section_kind(atom: &NegatedAtom) -> bool {
+    match atom {
+        NegatedAtom::Stored(stored) => stored_filters_retired_section_kind(stored),
+        NegatedAtom::Derived(_) => false,
+    }
+}
+
+fn stored_filters_retired_section_kind(stored: &StoredAtom) -> bool {
+    stored.relation.as_str() == "handle"
+        && stored.fields.iter().any(|field| {
+            field.field.as_str() == "kind"
+                && matches!(
+                    field.term.expr(),
+                    Some(Expr::Literal(Literal::String(value))) if value == "section"
+                )
+        })
 }
 
 fn empty_binding_example_for_stored(stored: &StoredAtom) -> Option<String> {
@@ -1429,6 +1501,7 @@ enum CommandOutput {
         view: RowView,
         gate_failed: bool,
         empty_binding_hint: Option<String>,
+        warnings: Vec<String>,
     },
     Status(StatusOutput),
     Context(ContextOutput),
@@ -1447,19 +1520,41 @@ impl CommandOutput {
             view,
             gate_failed: false,
             empty_binding_hint: None,
+            warnings: Vec::new(),
         }
     }
 
+    fn rows_with_warnings(rows: Vec<Row>, view: RowView, warnings: Vec<String>) -> Self {
+        Self::Rows {
+            rows,
+            view,
+            gate_failed: false,
+            empty_binding_hint: None,
+            warnings,
+        }
+    }
+
+    #[cfg(test)]
     fn rows_with_empty_binding_hint(
         rows: Vec<Row>,
         view: RowView,
         empty_binding_hint: Option<String>,
+    ) -> Self {
+        Self::rows_with_empty_binding_hint_and_warnings(rows, view, empty_binding_hint, Vec::new())
+    }
+
+    fn rows_with_empty_binding_hint_and_warnings(
+        rows: Vec<Row>,
+        view: RowView,
+        empty_binding_hint: Option<String>,
+        warnings: Vec<String>,
     ) -> Self {
         Self::Rows {
             rows,
             view,
             gate_failed: false,
             empty_binding_hint,
+            warnings,
         }
     }
 
@@ -1469,12 +1564,14 @@ impl CommandOutput {
                 rows,
                 view,
                 empty_binding_hint,
+                warnings,
                 ..
             } => Self::Rows {
                 rows,
                 view,
                 gate_failed,
                 empty_binding_hint,
+                warnings,
             },
             other => other,
         }
@@ -1509,8 +1606,12 @@ impl CommandOutput {
     }
 
     fn stderr_diagnostic(&self, mode: OutputMode) -> Option<String> {
+        let mut messages = Vec::new();
+        if let Self::Rows { warnings, .. } = self {
+            messages.extend(warnings.iter().cloned());
+        }
         if let Some(message) = self.empty_rows_diagnostic(mode) {
-            return Some(message.to_string());
+            messages.push(message.to_string());
         }
         match (mode, self) {
             (
@@ -1520,9 +1621,12 @@ impl CommandOutput {
                     empty_binding_hint: Some(example),
                     ..
                 },
-            ) if zero_binding_rows(rows) => Some(empty_binding_hint_text(rows.len(), example)),
-            _ => None,
+            ) if zero_binding_rows(rows) => {
+                messages.push(empty_binding_hint_text(rows.len(), example));
+            }
+            _ => {}
         }
+        (!messages.is_empty()).then(|| messages.join("\n"))
     }
 
     fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
@@ -2822,6 +2926,18 @@ handle_row({handle}, "in", other, kind, null, file, line, "") :=
     )
 }
 
+fn looks_like_retired_section_handle(handle: &str) -> bool {
+    handle.contains('#') && !handle.starts_with("http://") && !handle.starts_with("https://")
+}
+
+fn retired_section_handle_message(handle: &str) -> String {
+    let file = handle.split_once('#').map_or(handle, |(file, _)| file);
+    let file_literal = datalog_string_literal(file);
+    format!(
+        "section handles were retired in v0.14; use `anneal -e '? *span{{handle: {file_literal}, id: span_id, summary: heading}}.'` to find heading spans"
+    )
+}
+
 fn prelude_error(error: PreludeError) -> anyhow::Error {
     anyhow!(error)
 }
@@ -3667,6 +3783,51 @@ mod tests {
     }
 
     #[test]
+    fn eval_warns_when_query_filters_retired_section_kind() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? *handle{id: h, kind: "section"}."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows { rows, warnings, .. } = output else {
+            panic!("eval should emit rows");
+        };
+
+        assert!(rows.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("section handle kind was retired in v0.14"));
+        assert!(warnings[0].contains("*span"));
+    }
+
+    #[test]
+    fn handle_recovers_retired_section_handle_shape() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let Err(error) = session.run(RuntimeCommand::Handle {
+            handle: "a.md#A".to_string(),
+            impact: false,
+        }) else {
+            panic!("retired section handle should recover");
+        };
+        let message = error.to_string();
+
+        assert!(message.contains("section handles were retired in v0.14"));
+        assert!(message.contains(r#"? *span{handle: "a.md""#));
+    }
+
+    #[test]
     fn read_human_render_shows_content_blocks() {
         let output = CommandOutput::rows(
             vec![row(&[
@@ -4113,7 +4274,7 @@ mod tests {
                 limit: None,
             })
             .expect("eval at block runs");
-        let CommandOutput::Rows { rows, .. } = output else {
+        let CommandOutput::Rows { rows, warnings, .. } = output else {
             panic!("eval should emit rows");
         };
 
@@ -4124,6 +4285,31 @@ mod tests {
                 && row.fields.get("current_status")
                     == Some(&anneal_core::runtime::Value::String("current".to_string()))
         }));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("at(\"snapshot:last\") used snapshot fallback")),
+            "expected partial-history warning, got {warnings:?}"
+        );
+
+        let quiet_output = session
+            .run(RuntimeCommand::Eval {
+                query: "? *handle{id: h}.".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: Some(1),
+            })
+            .expect("ordinary eval runs");
+        let CommandOutput::Rows {
+            warnings: quiet_warnings,
+            ..
+        } = quiet_output
+        else {
+            panic!("eval should emit rows");
+        };
+        assert!(
+            quiet_warnings.is_empty(),
+            "ordinary eval should not inherit prelude flow warnings: {quiet_warnings:?}"
+        );
     }
 
     #[test]

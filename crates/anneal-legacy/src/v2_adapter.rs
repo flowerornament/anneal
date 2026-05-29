@@ -699,12 +699,13 @@ fn emit_content_spans(
                 let path_str = path.as_str();
                 let content = std::fs::read_to_string(root.join(path_str)).unwrap_or_default();
                 let (frontmatter, body) = parse::split_frontmatter(&content);
+                let body_lines = body.lines().collect::<Vec<_>>();
                 let start_line = frontmatter.map_or(1, |yaml| {
                     u32::try_from(yaml.lines().count())
                         .unwrap_or(u32::MAX)
                         .saturating_add(3)
                 });
-                let line_count = u32::try_from(body.lines().count()).unwrap_or(u32::MAX);
+                let line_count = u32::try_from(body_lines.len()).unwrap_or(u32::MAX);
                 let span_id = format!("{path_str}#full");
                 let identity = identity_for(batch, revisions, path_str, path_str);
                 batch.content.push(ContentFact {
@@ -727,6 +728,36 @@ fn emit_content_spans(
                         .cloned()
                         .unwrap_or_default(),
                 });
+                for heading in result.heading_spans.get(path_str).into_iter().flatten() {
+                    let text = body_lines_in_range(
+                        &body_lines,
+                        start_line,
+                        heading.start_line,
+                        heading.end_line,
+                    );
+                    let lines = heading
+                        .end_line
+                        .saturating_sub(heading.start_line)
+                        .saturating_add(1);
+                    let tokens = token_count(&text);
+                    let identity = identity_for(batch, revisions, &heading.id, path_str);
+                    batch.spans.push(SpanFact {
+                        identity: identity.clone(),
+                        id: heading.id.clone(),
+                        handle: path_str.to_string(),
+                        start_line: heading.start_line,
+                        end_line: heading.end_line,
+                        summary: heading.title.clone(),
+                    });
+                    batch.content.push(ContentFact {
+                        identity,
+                        handle: path_str.to_string(),
+                        span_id: heading.id.clone(),
+                        lines,
+                        text,
+                        tokens,
+                    });
+                }
             }
             HandleKind::Label { .. } => {
                 let Some(summary) = result.label_snippets.get(&handle.id) else {
@@ -755,6 +786,22 @@ fn emit_content_spans(
             _ => {}
         }
     }
+}
+
+fn body_lines_in_range(
+    body_lines: &[&str],
+    body_start_line: u32,
+    start_line: u32,
+    end_line: u32,
+) -> String {
+    let start = start_line.saturating_sub(body_start_line);
+    let count = end_line.saturating_sub(start_line).saturating_add(1);
+    let start = usize::try_from(start).unwrap_or(usize::MAX);
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let end = start.saturating_add(count).min(body_lines.len());
+    body_lines
+        .get(start..end)
+        .map_or_else(String::new, |lines| lines.join("\n"))
 }
 
 fn emit_concerns(

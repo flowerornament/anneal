@@ -283,7 +283,7 @@ predicates by name and arity.
 
 ## Mental Model
 
-- `handle`: a file, section, label, version, or external reference
+- `handle`: a file, label, version, or external reference; headings are `*span` rows
 - `source`: an adapter such as markdown, code, host runtime, or issue tracker
 - `relation`: a stored row emitted by a source or a derived row produced by rules
 - `verb`: a named query with documentation, schema, and capabilities

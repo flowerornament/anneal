@@ -245,6 +245,24 @@ mod tests {
         }));
         assert!(batch.spans.iter().any(|fact| fact.handle == "a.md"));
         assert!(batch.content.iter().any(|fact| fact.handle == "a.md"));
+        assert!(
+            !batch.handles.iter().any(|fact| fact.kind == "section"),
+            "markdown headings should not emit section handles"
+        );
+        assert!(
+            batch
+                .spans
+                .iter()
+                .any(|fact| fact.id == "a.md#h/a" && fact.summary == "A"),
+            "markdown headings should emit structural spans"
+        );
+        assert!(
+            batch
+                .content
+                .iter()
+                .any(|fact| fact.span_id == "a.md#h/a" && fact.text.contains("Body text")),
+            "heading spans should have readable content"
+        );
     }
 
     #[test]

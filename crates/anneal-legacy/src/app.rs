@@ -35,12 +35,12 @@ Use it to:
 
 CORE CONCEPTS:
 
-  Handle    The unit of knowledge. Five kinds:
+  Handle    The unit of knowledge. Four graph kinds:
               file     — a markdown document (e.g., formal-model/v17.md)
-              section  — a heading within a file (e.g., v17.md#§definitions)
               label    — a cross-reference tag (e.g., OQ-64, FM-17)
               version  — a versioned artifact (e.g., v17 of formal-model)
               external — an external URL referenced from corpus metadata
+            Headings are content spans (`*span`), not graph handles.
 
   Edge      A typed relationship between handles:
               Cites      — references without dependency (most body-text refs)
@@ -295,7 +295,8 @@ Handle identities are strings like:
   OQ-64                    label (namespace OQ, number 64)
   OQ-064                   zero-padded label alias for OQ-64
   formal-model/v17.md      file path (relative to root)
-  v17.md#§definitions      section heading
+  formal-model/v17.md#h/definitions
+                           heading span (query via `*span`)
 
 Use `anneal find` to search if you don't know the exact identity. Use
 `anneal impact` if you need reverse dependencies from this handle.",
@@ -375,7 +376,7 @@ EXAMPLES:
         /// Filter to handles with this frontmatter status value
         #[arg(long)]
         status: Option<String>,
-        /// Filter by handle kind: file, label, section, version, external
+        /// Filter by handle kind: file, label, version, external
         #[arg(long, value_enum)]
         kind: Option<FindKind>,
         /// Maximum number of matches to return (default: 25 unless --full)
@@ -474,8 +475,8 @@ By default, shows all active (non-terminal) handles grouped by kind and
 namespace. Use --around to focus on a specific handle's neighborhood, or
 --concern to show a configured concern group.
 
-Text format groups handles by kind (files, labels by namespace, sections,
-versions, external URLs) with edges listed separately. DOT format produces
+Text format groups handles by kind (files, labels by namespace, versions,
+external URLs) with edges listed separately. DOT format produces
 valid graphviz input — pipe to `dot -Tpng` for visual output.",
         after_help = "\
 EXAMPLES:

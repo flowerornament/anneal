@@ -187,8 +187,8 @@ output. Use `--json` or `--format=json` when you want stable machine output.
 ## Core Concepts
 
 **Handle**  
-The unit of knowledge. A handle may be a file, section, label, version, or
-external URL.
+The graph unit of knowledge. A handle may be a file, label, version, or
+external URL. Headings are content spans (`*span`) attached to file handles.
 
 **Edge**  
 A typed relationship between handles. Common edges include `Cites`,
