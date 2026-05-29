@@ -1,6 +1,6 @@
 [package]
 name = "anneal-legacy"
-version = "0.13.1"
+version = "0.14.0"
 edition = "2024"
 license = "MIT"
 description = "Legacy v1 parser and CLI bridge for anneal migration"
@@ -30,7 +30,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-core = { version = "0.13.1", path = "../anneal-core" }
+anneal-core = { version = "0.14.0", path = "../anneal-core" }
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

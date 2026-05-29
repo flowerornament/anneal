@@ -3,7 +3,7 @@ status: converged
 updated: 2026-05-28
 author: claude (post-v0.13.1 cold-agent simulation + v0.14 proposal synthesis)
 reviewer: codex (independent review converged 2026-05-28)
-supersedes: .design/2026-05-28-v014-shape-proposal.md (folds it forward, does not replace)
+supersedes: 2026-05-28-v014-shape-proposal.md
 description: >
   v0.14 design as the "calibration release." Folds the v0.14 vocabulary
   slice with everything cold-agent simulation surfaced on v0.13.1 plus

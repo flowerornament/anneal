@@ -2,6 +2,61 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.14.0 - 2026-05-28
+
+anneal calibrates the convergence signal.
+
+This release turns the v0.13 language surface into a sharper convergence
+instrument: flow is explicit, potential can be tuned honestly, freshness noise
+is quieter by default, and the describe/help/docs surface teaches the current
+vocabulary instead of retired command habits.
+
+### Added
+
+- Added the convergence flow vocabulary:
+  `holding(h)`, `regressed(h)`, `re_opened(h)`, `drifting(h)`, and
+  `flow(h, direction)`. Flow directions are exactly `advancing`, `holding`,
+  and `drifting`; settled handles remain outside flow by design.
+- Added project-level potential calibration:
+  `config potential_weight { freshness_decay(0). undischarged(8). }`
+  overrides default signal weights, and
+  `effective_potential_weight(source, weight)` shows the weights actually used
+  by `potential`.
+- `describe convergence` is now the multi-section teaching card for the
+  annealing model: the act, vocabulary, flow leaves, and tuning path.
+- `describe runtime` now distinguishes snapshots, generations, and trails as
+  separate history concepts.
+- Unknown-predicate errors now offer arity-aware suggestions for close schema
+  matches and route non-typo misses toward `schema` and `describe convergence`.
+
+### Changed
+
+- Behavior change: the default `freshness_decay` potential weight is now `1`
+  instead of `2`. On large-corpus, this sharpens the energy>=3 work pool from 37
+  handles to 3, keeping old-but-legitimate reference material from drowning
+  stronger correctness and lifecycle signals. Projects that want freshness to
+  pull harder can override it with `config potential_weight`.
+- `potential(h, energy)` is the canonical raw-energy predicate.
+  `work_candidate(h, energy)` remains as a deprecated alias through v0.14 and
+  is scheduled for retirement in v0.15.
+- `blocker(h, energy, source)` describe cards now teach the
+  `primary_entropy(h, source)` join for one blocker row per handle.
+- `changed_within(h, days)` describe cards now teach the interim
+  `*handle{kind: "file"}` join to avoid section-handle fanout until the
+  handle-kind substrate work lands.
+- `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
+  same configured reverse-dependency traversal, so direct handle-impact rows
+  match `impact("H", _, 1)`.
+- README, AGENTS.md, CLAUDE.md, the bundled `anneal` skill, top-level help,
+  and `help eval` now teach the v0.14 surface and avoid retired-command
+  recovery paths as first moves.
+
+### Removed
+
+- Retired the v0.13 deprecated predicate aliases `top_work(h, energy)`,
+  `blocked_row(h, energy, source)`, and `recent(h, days)`. Static analysis now
+  fails loudly with replacements: `frontier`, `blocker`, and `changed_within`.
+
 ## v0.13.1 - 2026-05-28
 
 ### Fixed
