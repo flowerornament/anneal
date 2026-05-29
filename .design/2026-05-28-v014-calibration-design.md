@@ -293,8 +293,8 @@ Ten items, organized by theme. Each justified against CR-D102.
      (retired commands).
    - `AGENTS.md` — same stale guidance; injected into codex context
      (high impact on cold-codex sessions).
-   - `README.md` — currently teaches `anneal broken-area language
-     --format=text`, which errors as unknown verb.
+   - `README.md` — project-verb examples must be copy-runnable against
+     `.design`.
    - `skills/anneal/SKILL.md` — verify against v0.14 surface.
    - Top-level `--help`, `help eval`, `describe runtime` — already
      synced through hmpr.4 + 38a609f but re-verify.
@@ -578,7 +578,7 @@ the substrate work ships as v0.14.1 (no breaking) or v0.15 (breaking).
 8. **work_candidate:** deprecate for v0.14, retire in v0.15. Do not
    collapse immediately; v0.13 taught it in README/SKILL.
 9. **Doc sync scope expanded:** CLAUDE.md, AGENTS.md, README.md
-   (`broken-area` example errors), skills/anneal/SKILL.md, plus
+   (copy-runnable project verb examples), skills/anneal/SKILL.md, plus
    top-level help / help eval / describe runtime re-verification.
 
 ## After this doc lands
@@ -645,8 +645,8 @@ proves a safe, no-migration fold.
 **More stale teaching found** during the review:
 - `AGENTS.md` carries the same stale `--compact / get / find / map /
   impact` guidance as `CLAUDE.md`. Injected into codex context.
-- `README.md` teaches `anneal broken-area language --format=text`,
-  which errors as unknown verb.
+- `README.md` project-verb examples must be copy-runnable against
+  `.design`.
 - Historical `.design/` docs contain many retired-command examples
   — leave alone; they're historical record. Current authoritative
   docs (CLAUDE.md, AGENTS.md, README.md, SKILL.md, top-level help)
