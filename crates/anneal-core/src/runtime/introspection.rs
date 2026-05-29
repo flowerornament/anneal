@@ -269,6 +269,7 @@ impl IntrospectionBuilder {
 	                    "Hidden support commands: check, prime.".to_string(),
 	                    "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
 	                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
+	                    "Schema discovery is interactive: unknown predicate or field errors include nearby names and allowed fields.".to_string(),
 	                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
 	                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
 	                    "History concepts: snapshots capture graph state over time for at(\"snapshot:last\") queries.".to_string(),
@@ -323,6 +324,63 @@ impl IntrospectionBuilder {
         self.examples.insert(Tuple(vec![
             string_value("code_path_root"),
             string_value(r#"? *config{key: "code_path_root.root", value: root}."#),
+        ]));
+        self.describe.insert(describe_entry(
+            "search_boost",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
+                summary: "Project config section for tuning search ranking boosts by lifecycle status and hub degree.",
+                kind: Some(DescribeKind::RuntimeTopic),
+                signature: Some("config search_boost { status(\"status\", boost). hub(boost). }"),
+                extra_lines: vec![
+                    "Defaults boost authoritative/current/stable handles above active/review handles, and active/review handles above draft/raw handles.".to_string(),
+                    "The hub boost is a bounded per-incoming-edge score bump; set hub(0) to disable it for one corpus.".to_string(),
+                    "Boosts are additive score calibration, not filters: low-confidence filtering still happens after ranking.".to_string(),
+                ],
+                common_joins: &[
+                    "`*config{key: \"search_boost.status.authoritative\", value: boost}` to inspect a status override",
+                    "`*config{key: \"search_boost.hub\", value: boost}` to inspect the hub-edge override",
+                    "`search{query: \"text\", handle: h, score: score}, *handle{id: h, status: status}` to see boosted statuses in ranked rows",
+                ],
+                examples: vec![
+                    "? *config{key: \"search_boost.status.authoritative\", value: boost}.",
+                    "? search{query: \"conformance\", handle: h, score: score}, *handle{id: h, status: status}.",
+                ],
+                see_also: &["search", "context", "schema"],
+                ..DescribeCard::default()
+            }),
+        ));
+        self.examples.insert(Tuple(vec![
+            string_value("search_boost"),
+            string_value(r#"? *config{key: "search_boost.status.authoritative", value: boost}."#),
+        ]));
+        self.describe.insert(describe_entry(
+            "external",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
+                summary: "External handles mark references outside the markdown corpus boundary, including URLs, other repos, and in-repo code paths.",
+                kind: Some(DescribeKind::RuntimeTopic),
+                signature: Some(r#"*handle{kind: "external"} plus optional md.external_class metadata"#),
+                extra_lines: vec![
+                    "Document-like external refs use the same substrate kind as code refs so the graph stays small and composable.".to_string(),
+                    "In-repo code refs carry metadata: md.external_class=\"code\", md.code_path, md.code_start_line, and md.code_end_line.".to_string(),
+                    "Future code adapters can promote code refs into first-class code handles without changing today's Cites edges.".to_string(),
+                ],
+                common_joins: &[
+                    "`*handle{id: h, kind: \"external\"}, *edge{to: h, from: src, kind: \"Cites\"}` to find who cites an external target",
+                    "`*meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}` to keep code refs only",
+                ],
+                examples: vec![
+                    "? *handle{id: h, kind: \"external\"}.",
+                    "? *meta{handle: h, key: \"md.external_class\", value: \"code\"}, *meta{handle: h, key: \"md.code_path\", value: path}.",
+                ],
+                see_also: &["handle", "code_path_root", "*handle", "*meta"],
+                ..DescribeCard::default()
+            }),
+        ));
+        self.examples.insert(Tuple(vec![
+            string_value("external"),
+            string_value(r#"? *handle{id: h, kind: "external"}."#),
         ]));
     }
 
@@ -1513,10 +1571,10 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
             "Return the estimated number of stored content tokens for a handle."
         }
         PrimitivePredicate::Search => {
-            "Search handle identities, metadata, headings, and content text, returning ranked span-granular hits with a reason for each score."
+            "Search handle identities, metadata, headings, and content text, returning ranked span-granular hits with heading ids, reasons, and calibrated scores."
         }
         PrimitivePredicate::Read => {
-            "Read content spans for one handle, stopping when the token budget is reached."
+            "Read content spans for one handle, optionally narrowed to the exact span_id returned by search or context."
         }
         PrimitivePredicate::ReadFull => {
             "Read all stored content for one handle. This bypasses the normal budget guard and requires the read_full capability."
@@ -1594,10 +1652,10 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
 fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str> {
     match primitive {
         PrimitivePredicate::Search => Some(
-            "The `search` verb wraps this primitive with TopK ranking, filters out low-confidence hits by default, and joins span hits to heading-path metadata.",
+            "The `search` verb wraps this primitive with TopK ranking, filters out low-confidence hits by default, and joins span hits to heading-path metadata. Scores include lexical strength plus configured status and hub boosts.",
         ),
         PrimitivePredicate::Read => Some(
-            "The `read` verb wraps this primitive with typed CLI arguments for handle, budget, and targeted span reads.",
+            "The `read` verb wraps this primitive with typed CLI arguments for handle, budget, and targeted span reads; use a search hit's span_id to read the matched section body.",
         ),
         PrimitivePredicate::ChangedWithin => Some(
             "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file.",
@@ -1851,7 +1909,16 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         ],
         "search" => &[
             "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: heading_path}` to add heading context",
+            "`search{query: \"text\", handle: h, score: score}, *handle{id: h, status: status}` to inspect status-aware ranking",
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read matched spans",
+        ],
+        "read" => &[
+            "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read the matched heading span",
+            "`*span{handle: h, id: span_id, summary: heading_path}, read(h, 4000, span_id, text, start, end, tokens)` to read by heading hierarchy",
+        ],
+        "context" => &[
+            "`context` composes ranked section search, matched-span reads, and graph neighborhood rows for cold-agent orientation",
+            "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` when you need the same retrieval pieces manually",
         ],
         "handle" => &[
             "`*edge{to: h, from: src}, *handle{id: src, kind: kind}` mirrors `anneal handle H --impact` direct reverse dependencies",
@@ -2038,13 +2105,13 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query over `primary_entropy`, non-blocked `potential` rows, `flow`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
         }
         "search" => {
-            "Saved query over the `search` primitive; applies TopK by score, filters `low_confidence = false`, and adds heading_path for span hits."
+            "Saved query over the `search` primitive; applies TopK by calibrated score, filters `low_confidence = false`, and adds heading_path for span hits."
         }
         "context" => {
-            "Saved query that composes span-granular `search`, matched-span `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
+            "Saved query that composes boosted span-granular `search`, matched-span `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
         }
         "read" => {
-            "Saved query over the `read` primitive; the CLI can target one heading span with `--span-id`."
+            "Saved query over the `read` primitive; the CLI can target one heading span with `--span-id`, usually copied from search/context output."
         }
         "handle" => {
             "Saved query over `*handle` and `*edge` for one focused handle; `anneal handle H --impact` adds reverse-dependency impact rows."

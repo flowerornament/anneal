@@ -495,11 +495,12 @@ Discover before guessing:
   anneal describe runtime --format=text
   anneal describe search --format=text
   anneal -e '? source_of(\"frontier\", file, lines).'
+  Unknown predicate and stored-field errors include nearby names and allowed fields.
 
 Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
-  anneal -e '? search{query: \"conformance\", handle: h, score: score}.' --limit 20
+  anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: heading_path}.' --limit 20
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
@@ -4331,6 +4332,52 @@ mod tests {
             row.fields.get("energy")
                 == Some(&anneal_core::runtime::Value::Number(NumberValue::Int(1)))
         }));
+    }
+
+    #[test]
+    fn search_boost_project_config_changes_rank_order() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            config search_boost {
+              status("draft", 0.09).
+              status("authoritative", 0).
+              hub(0).
+            }
+            "#,
+        )
+        .expect("write project rules");
+        fs::write(
+            root.join("draft.md"),
+            "---\nstatus: draft\n---\n# Draft\n\nlease protocol\n",
+        )
+        .expect("write draft doc");
+        fs::write(
+            root.join("authority.md"),
+            "---\nstatus: authoritative\n---\n# Authority\n\nlease protocol\n",
+        )
+        .expect("write authoritative doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Search {
+                query: "lease protocol".to_string(),
+                limit: 2,
+                include_low_confidence: false,
+            })
+            .expect("search runs");
+        let CommandOutput::Rows { rows, .. } = output else {
+            panic!("search should emit rows");
+        };
+
+        let first = rows.first().expect("first search row");
+        assert_eq!(
+            first.fields.get("h"),
+            Some(&anneal_core::runtime::Value::String("draft.md".to_string()))
+        );
     }
 
     #[test]

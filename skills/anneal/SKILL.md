@@ -68,13 +68,21 @@ anneal handle <handle> --impact --format=text
 
 Use `search` for content retrieval. It handles light stemming and common
 planning abbreviations such as OQ/open question, ADR, and RFC, and span hits
-include `heading_path` so you can see where the match landed. Use `read` after
-search or when the handle is known; pass the search hit's `span_id` to read the
-matched heading span directly. Use `handle` when relationship shape matters.
-Add `--impact` before editing when you need direct and indirect reverse
-dependencies.
+include `heading_path` so you can see where the match landed. Scores combine
+lexical strength with status and hub boosts, so authoritative/highly-cited
+sections win ties against draft mentions. Use `read` after search or when the
+handle is known; pass the search hit's `span_id` to read the matched heading
+span directly. Use `handle` when relationship shape matters. Add `--impact`
+before editing when you need direct and indirect reverse dependencies.
 Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
 for pipes.
+
+Tool choice:
+- `anneal context "X"`: find the section that defines X, with ranked hits,
+  matched-span excerpts, `heading_path`, and graph neighborhood
+- `grep -rn "X"`: find every literal occurrence with line numbers
+- `anneal -e '? ...'`: ask structural graph questions over handles, edges,
+  diagnostics, metadata, and derived predicates
 
 ### Asking a Precise Question
 
@@ -107,13 +115,20 @@ The ladder is:
 - user config: machine-local preferences under XDG config
 
 Label namespaces are inferred from corpus evidence. Do not maintain a manual
-namespace inventory. Project config carries namespace policy only:
+namespace inventory. Project config commonly carries namespace policy:
 
 - `linear([...])`: obligation prefixes whose labels must be discharged exactly
   once
 - `rejected([...])`: false-positive prefixes such as hashes or all-caps words
 - `force([...])`: rare sparse prefixes that should count as labels before they
   have enough examples
+
+Ranking and convergence calibration also live in project config when needed:
+
+- `config potential_weight { freshness_decay(0). }` tunes frontier energy
+- `config search_boost { status("authoritative", 0.08). hub(0.01). }` tunes
+  retrieval ranking without changing what search matches
+- `config code_path_root { root(["web"]). }` adds in-repo code-reference roots
 
 Do not copy the built-in prelude into a project. Use `anneal init --dry-run` to
 inspect the current `anneal.dl` scaffold. `anneal init` refuses to overwrite an

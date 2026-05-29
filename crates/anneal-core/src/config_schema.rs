@@ -55,6 +55,8 @@ pub enum RuntimeConfigKey {
     OrientStubBytes,
     OrientCuratedHubWeight,
     CodePathRoot,
+    SearchBoostStatus,
+    SearchBoostHub,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +173,18 @@ impl RuntimeConfigDeclaration {
                     .map(|value| ConfigEntry::scalar(format!("concerns.group.{name}"), value))
                     .collect())
             }
+            RuntimeConfigKey::SearchBoostStatus => {
+                let [status, boost]: [String; 2] =
+                    expect_exact_tuple(self, values, "status and boost")?;
+                Ok(vec![ConfigEntry::scalar(
+                    format!("{SEARCH_BOOST_STATUS_ENTRY_PREFIX}{status}"),
+                    boost,
+                )])
+            }
+            RuntimeConfigKey::SearchBoostHub => {
+                let [boost]: [String; 1] = expect_exact_tuple(self, values, "exactly one boost")?;
+                Ok(vec![ConfigEntry::scalar(SEARCH_BOOST_HUB_KEY, boost)])
+            }
             _ => match self.mode {
                 RuntimeConfigValueMode::Scalar => {
                     let [value]: [String; 1] =
@@ -215,6 +229,15 @@ pub enum RuntimeConfigEntryError {
     MissingLowering { key: String },
     #[error("obsolete config declaration {0:?}")]
     Obsolete(RuntimeConfigKey),
+}
+
+pub const SEARCH_BOOST_STATUS_ENTRY_PREFIX: &str = "search_boost.status.";
+pub const SEARCH_BOOST_HUB_KEY: &str = "search_boost.hub";
+
+#[must_use]
+pub fn parse_search_boost_value(value: &str) -> Option<f32> {
+    let boost = value.parse::<f32>().ok()?;
+    (boost.is_finite() && (0.0..=1.0).contains(&boost)).then_some(boost)
 }
 
 const fn runtime_config_declaration(
@@ -454,6 +477,21 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         "root",
         RuntimeConfigValueMode::UnorderedSet,
     ),
+    runtime_config_declaration(
+        RuntimeConfigKey::SearchBoostStatus,
+        "search_boost",
+        "status",
+        RuntimeConfigValueMode::Tuple {
+            expected: "status and boost",
+            arity: 2,
+        },
+    ),
+    runtime_config_declaration(
+        RuntimeConfigKey::SearchBoostHub,
+        "search_boost",
+        "hub",
+        RuntimeConfigValueMode::Scalar,
+    ),
 ];
 
 #[must_use]
@@ -555,6 +593,26 @@ mod tests {
                 ConfigEntry::scalar("frontmatter.field.depends-on.edge_kind", "DependsOn"),
                 ConfigEntry::scalar("frontmatter.field.depends-on.direction", "forward"),
             ]
+        );
+
+        let search_status =
+            runtime_config_declaration_for("search_boost", "status").expect("schema");
+        assert_eq!(
+            search_status
+                .entries(vec!["authoritative".to_string(), "0.08".to_string()])
+                .expect("entries"),
+            vec![ConfigEntry::scalar(
+                "search_boost.status.authoritative",
+                "0.08"
+            )]
+        );
+
+        let search_hub = runtime_config_declaration_for("search_boost", "hub").expect("schema");
+        assert_eq!(
+            search_hub
+                .entries(vec!["0.01".to_string()])
+                .expect("entries"),
+            vec![ConfigEntry::scalar("search_boost.hub", "0.01")]
         );
     }
 

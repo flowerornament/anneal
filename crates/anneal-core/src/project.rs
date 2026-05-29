@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config_schema::{
-    RuntimeConfigEntryError, RuntimeConfigLifecycle, runtime_config_declaration_for,
+    RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle, parse_search_boost_value,
+    runtime_config_declaration_for,
 };
 use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
@@ -358,6 +359,8 @@ fn config_block_entries(
             });
         }
         let values = declaration_values(declaration)?;
+        schema.validate_values(&values)?;
+        validate_runtime_config_values(schema.key(), &values, &declaration.location)?;
         entries.extend(schema.entries(values)?);
     }
     Ok(entries)
@@ -391,6 +394,33 @@ fn potential_weight_entries(
         ));
     }
     Ok(entries)
+}
+
+fn validate_runtime_config_values(
+    key: RuntimeConfigKey,
+    values: &[String],
+    location: &SourceLocation,
+) -> Result<(), ProjectLoadError> {
+    let boost = match key {
+        RuntimeConfigKey::SearchBoostStatus => values.get(1),
+        RuntimeConfigKey::SearchBoostHub => values.first(),
+        _ => return Ok(()),
+    };
+    if let Some(boost) = boost
+        && parse_search_boost_value(boost).is_some()
+    {
+        return Ok(());
+    }
+    Err(ProjectLoadError::InvalidSearchBoost {
+        name: match key {
+            RuntimeConfigKey::SearchBoostStatus => "status",
+            RuntimeConfigKey::SearchBoostHub => "hub",
+            _ => unreachable!("non-search boost keys returned above"),
+        }
+        .to_string(),
+        boost: boost.cloned().unwrap_or_default(),
+        location: location.clone(),
+    })
 }
 
 fn declaration_entries(
@@ -619,6 +649,14 @@ pub enum ProjectLoadError {
     InvalidPotentialWeight {
         signal: String,
         weight: String,
+        location: crate::runtime::ast::SourceLocation,
+    },
+    #[error(
+        "{location}: config search_boost {{ {name}(...) }} expects a numeric boost from 0.0 to 1.0; got '{boost}'"
+    )]
+    InvalidSearchBoost {
+        name: String,
+        boost: String,
         location: crate::runtime::ast::SourceLocation,
     },
     #[error("ordered config declaration '{key}' overflowed u32 ordinals")]
@@ -911,6 +949,12 @@ mod tests {
               undischarged(8).
             }
 
+            config search_boost {
+              status("authoritative", 0.08).
+              status("draft", 0).
+              hub(0.01).
+            }
+
             config handles {
               force(["REQ"]).
               linear(["OQ"]).
@@ -945,6 +989,9 @@ mod tests {
                 ConfigEntry::scalar("convergence.terminal", "archived"),
                 ConfigEntry::ordered("potential_weight.override", "freshness_decay", 0),
                 ConfigEntry::ordered("potential_weight.override", "undischarged", 8),
+                ConfigEntry::scalar("search_boost.status.authoritative", "0.08"),
+                ConfigEntry::scalar("search_boost.status.draft", "0"),
+                ConfigEntry::scalar("search_boost.hub", "0.01"),
                 ConfigEntry::scalar("handles.force", "REQ"),
                 ConfigEntry::scalar("handles.linear", "OQ"),
                 ConfigEntry::scalar("frontmatter.field.depends-on.edge_kind", "DependsOn"),
@@ -1089,6 +1136,24 @@ mod tests {
             err,
             ProjectLoadError::InvalidPotentialWeight { .. }
         ));
+    }
+
+    #[test]
+    fn project_search_boost_config_rejects_invalid_boosts() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config search_boost {
+              status("authoritative", "high").
+            }
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("invalid boost rejected");
+
+        assert!(matches!(err, ProjectLoadError::InvalidSearchBoost { .. }));
     }
 
     #[test]

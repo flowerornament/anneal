@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8Path;
 
+use crate::config_schema::{
+    SEARCH_BOOST_HUB_KEY, SEARCH_BOOST_STATUS_ENTRY_PREFIX, parse_search_boost_value,
+};
 use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
@@ -15,9 +18,11 @@ pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 const PARENT_CLUSTER_RAW_SCORE_BOOST: f32 = 0.15;
 const PARENT_CLUSTER_MIN_CHILD_RAW_SCORE: f32 = 0.70;
 const PARENT_CLUSTER_MAX_SCORE: f32 = 0.99;
-const INBOUND_AUTHORITY_SCORE_BOOST: f32 = 0.12;
-const INBOUND_AUTHORITY_MIN_EDGES: u32 = 8;
 const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
+const DEFAULT_HUB_EDGE_SCORE_BOOST: f32 = 0.01;
+const HUB_SCORE_BOOST_MAX: f32 = 0.12;
+const HANDLE_KIND_LABEL: &str = "label";
+const HANDLE_KIND_EXTERNAL: &str = "external";
 
 pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
@@ -253,6 +258,7 @@ fn historical_path_penalty(handle: &str) -> f32 {
 pub(crate) struct SearchIndex {
     documents: BTreeMap<SearchDocumentKey, SearchDocument>,
     incoming_edge_counts: BTreeMap<SearchDocumentKey, u32>,
+    boosts: SearchBoosts,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +294,67 @@ impl SearchDocumentKey {
 #[derive(Clone, Debug, Default)]
 struct SearchDocument {
     parent_file: Option<String>,
+    kind: Option<String>,
+    status: Option<String>,
     fields: Vec<SearchField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SearchBoosts {
+    status: BTreeMap<String, f32>,
+    hub_edge: f32,
+}
+
+impl Default for SearchBoosts {
+    fn default() -> Self {
+        let status = [
+            ("authoritative", 0.08),
+            ("current", 0.08),
+            ("stable", 0.08),
+            ("living", 0.08),
+            ("published", 0.08),
+            ("approved", 0.06),
+            ("active", 0.04),
+            ("review", 0.04),
+            ("research", 0.03),
+            ("plan", 0.03),
+            ("exploratory", 0.02),
+            ("draft", 0.0),
+            ("raw", 0.0),
+        ]
+        .into_iter()
+        .map(|(status, boost)| (status.to_string(), boost))
+        .collect();
+        Self {
+            status,
+            hub_edge: DEFAULT_HUB_EDGE_SCORE_BOOST,
+        }
+    }
+}
+
+impl SearchBoosts {
+    fn status_boost(&self, status: Option<&str>) -> f32 {
+        status
+            .and_then(|status| self.status.get(status).copied())
+            .unwrap_or(0.0)
+    }
+
+    fn hub_boost(&self, incoming_edges: u32) -> f32 {
+        let bounded_edges = u16::try_from(incoming_edges).unwrap_or(u16::MAX);
+        (f32::from(bounded_edges) * self.hub_edge).min(HUB_SCORE_BOOST_MAX)
+    }
+
+    fn insert_config(&mut self, key: &str, value: &str) {
+        if let Some(status) = key.strip_prefix(SEARCH_BOOST_STATUS_ENTRY_PREFIX) {
+            if let Some(boost) = parse_search_boost_value(value) {
+                self.status.insert(status.to_ascii_lowercase(), boost);
+            }
+        } else if key == SEARCH_BOOST_HUB_KEY
+            && let Some(boost) = parse_search_boost_value(value)
+        {
+            self.hub_edge = boost;
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -324,6 +390,8 @@ impl SearchIndex {
     pub(crate) fn insert_handle(&mut self, fields: SearchHandleDocument<'_>) {
         let document = self.document_mut(fields.corpus, fields.source, fields.handle);
         document.parent_file = (fields.file != fields.handle).then(|| fields.file.to_owned());
+        document.kind = fields.kind.map(str::to_owned);
+        document.status = fields.status.map(str::to_ascii_lowercase);
         push_field(
             document,
             None,
@@ -344,6 +412,10 @@ impl SearchIndex {
                 push_field(document, None, field, REASON_FRONTMATTER_VALUE_MATCH, value);
             }
         }
+    }
+
+    pub(crate) fn insert_config(&mut self, key: &str, value: &str) {
+        self.boosts.insert_config(key, value);
     }
 
     pub(crate) fn insert_meta(
@@ -463,7 +535,7 @@ impl SearchIndex {
         if cluster_only {
             hits.retain(|hit| hit.reason() == REASON_PARENT_CLUSTER);
         }
-        self.apply_authority_boosts(&mut hits);
+        self.apply_ranker_boosts(&mut hits);
         hits
     }
 
@@ -566,23 +638,34 @@ impl SearchIndex {
 
     fn calibrate_direct_hit(&self, hit: &SearchHit, ctx: &RankingContext) -> f32 {
         let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
-        let count = self.incoming_edge_counts.get(&key).copied().unwrap_or(0);
         let mut boosted = hit.clone();
         boosted.score_boost =
-            SearchScore::new(boosted.score_boost().get() + authority_score_boost(count));
+            SearchScore::new(boosted.score_boost().get() + self.ranker_boost_for_key(&key));
         DefaultRanker.calibrate(&boosted, ctx)
     }
 
-    fn apply_authority_boosts(&self, hits: &mut [SearchHit]) {
+    fn apply_ranker_boosts(&self, hits: &mut [SearchHit]) {
         for hit in hits {
             if hit.reason() == REASON_PARENT_CLUSTER {
                 continue;
             }
             let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
-            let count = self.incoming_edge_counts.get(&key).copied().unwrap_or(0);
             hit.score_boost =
-                SearchScore::new(hit.score_boost.get() + authority_score_boost(count));
+                SearchScore::new(hit.score_boost.get() + self.ranker_boost_for_key(&key));
         }
+    }
+
+    fn ranker_boost_for_key(&self, key: &SearchDocumentKey) -> f32 {
+        let count = self.incoming_edge_counts.get(key).copied().unwrap_or(0);
+        let status = self.documents.get(key).and_then(boosted_status);
+        self.boosts.status_boost(status) + self.boosts.hub_boost(count)
+    }
+}
+
+fn boosted_status(document: &SearchDocument) -> Option<&str> {
+    match document.kind.as_deref() {
+        Some(HANDLE_KIND_LABEL | HANDLE_KIND_EXTERNAL) => None,
+        _ => document.status.as_deref(),
     }
 }
 
@@ -755,14 +838,6 @@ impl SearchQuery {
             .sum::<f32>();
         (matched_weight > 0.0)
             .then(|| 0.35 + (0.55 * (matched_weight / self.total_weight).min(1.0)))
-    }
-}
-
-fn authority_score_boost(incoming_edges: u32) -> f32 {
-    if incoming_edges >= INBOUND_AUTHORITY_MIN_EDGES {
-        INBOUND_AUTHORITY_SCORE_BOOST
-    } else {
-        0.0
     }
 }
 
@@ -1355,7 +1430,7 @@ mod tests {
             "body",
             "block boundary precedence rule",
         );
-        for idx in 0..INBOUND_AUTHORITY_MIN_EDGES {
+        for idx in 0..12 {
             index.insert_edge(
                 "test",
                 "fixture",
@@ -1375,6 +1450,101 @@ mod tests {
         assert_eq!(
             ranked.first().expect("ranked hit").hit().handle(),
             "formal-model/sample-formal-model-v17.md"
+        );
+    }
+
+    #[test]
+    fn status_boost_ranks_authoritative_match_above_draft_match() {
+        let mut index = SearchIndex::default();
+        insert_handle_with_status(
+            &mut index,
+            "draft.md",
+            "draft.md",
+            "Draft note",
+            Some("draft"),
+        );
+        insert_handle_with_status(
+            &mut index,
+            "authority.md",
+            "authority.md",
+            "Authoritative note",
+            Some("authoritative"),
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "draft.md",
+            "draft.md#h/protocol",
+            "lease protocol",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "authority.md",
+            "authority.md#h/protocol",
+            "lease protocol",
+        );
+
+        let query = SearchQuery::parse("lease protocol").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("lease protocol", 0.5),
+            &DefaultRanker,
+        );
+
+        assert_eq!(
+            ranked.first().expect("ranked hit").hit().handle(),
+            "authority.md"
+        );
+    }
+
+    #[test]
+    fn search_boost_config_overrides_status_and_hub_defaults() {
+        let mut index = SearchIndex::default();
+        index.insert_config("search_boost.status.draft", "0.09");
+        index.insert_config("search_boost.status.authoritative", "0");
+        index.insert_config("search_boost.hub", "0");
+        insert_handle_with_status(
+            &mut index,
+            "draft.md",
+            "draft.md",
+            "Draft note",
+            Some("draft"),
+        );
+        insert_handle_with_status(
+            &mut index,
+            "authority.md",
+            "authority.md",
+            "Authoritative note",
+            Some("authoritative"),
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "draft.md",
+            "draft.md#h/protocol",
+            "lease protocol",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "authority.md",
+            "authority.md#h/protocol",
+            "lease protocol",
+        );
+
+        let query = SearchQuery::parse("lease protocol").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("lease protocol", 0.5),
+            &DefaultRanker,
+        );
+
+        assert_eq!(
+            ranked.first().expect("ranked hit").hit().handle(),
+            "draft.md"
         );
     }
 
@@ -1493,13 +1663,23 @@ mod tests {
     }
 
     fn insert_handle(index: &mut SearchIndex, handle: &str, file: &str, summary: &str) {
+        insert_handle_with_status(index, handle, file, summary, None);
+    }
+
+    fn insert_handle_with_status(
+        index: &mut SearchIndex,
+        handle: &str,
+        file: &str,
+        summary: &str,
+        status: Option<&str>,
+    ) {
         index.insert_handle(SearchHandleDocument {
             corpus: "test",
             source: "fixture",
             handle,
             file,
             summary: Some(summary),
-            status: None,
+            status,
             namespace: None,
             area: None,
             kind: Some("file"),

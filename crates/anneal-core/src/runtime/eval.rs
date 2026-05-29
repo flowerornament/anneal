@@ -2095,6 +2095,14 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
             };
             search.insert_meta(corpus, source, handle, key, value);
         }
+        CONFIG_RELATION => {
+            let (Some(key), Some(value)) =
+                (row_string(row, KEY_FIELD), row_string(row, VALUE_FIELD))
+            else {
+                return;
+            };
+            search.insert_config(key, value);
+        }
         CONTENT_RELATION => {
             let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text)) = (
                 row_string(row, CORPUS_FIELD),
@@ -7462,10 +7470,7 @@ mod tests {
         assert_eq!(rows[0].get("reason"), Some(&s("title-substring")));
         assert_eq!(rows[0].get("field"), Some(&s("title")));
         assert_eq!(rows[0].get("low_confidence"), Some(&Value::Bool(false)));
-        assert!(
-            (value_f64(rows[0].get("score").expect("score")) - f64::from(0.95_f32)).abs()
-                < 0.000_001
-        );
+        assert!((value_f64(rows[0].get("score").expect("score")) - 1.0).abs() < 0.000_001);
 
         assert!(rows.iter().any(|row| {
             row.get("h") == Some(&s("audit/v17.md"))
@@ -7750,7 +7755,7 @@ mod tests {
 
     #[test]
     fn low_confidence_policy_is_executable_before_top_k() {
-        let options = EvalOptions::default().with_low_confidence_threshold(0.9);
+        let options = EvalOptions::default().with_low_confidence_threshold(0.99);
         let raw = evaluate_query_output_with_options(
             r#"? search("C-conformance", h, span_id, score, reason, field, low_confidence)."#,
             search_database(),

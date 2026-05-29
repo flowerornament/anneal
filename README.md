@@ -272,11 +272,19 @@ anneal handle formal-model/v17.md --impact
 ```
 
 `search` ranks content and metadata hits and includes `heading_path` for
-heading-span matches. `read` retrieves bounded content spans for one handle;
-use `--span-id` when a search hit already identified the section you need.
+heading-span matches. Scores combine lexical strength with status and hub
+boosts, so authoritative/highly-cited sections win ties against draft mentions.
+`read` retrieves bounded content spans for one handle; use `--span-id` when a
+search hit already identified the section you need.
 `handle` shows incoming and outgoing edges grouped by kind and separates
 in-repo code references; `--impact` adds direct and indirect reverse
 dependencies before an edit.
+
+Use `anneal context "X"` when the task is "find the section that defines X";
+it returns ranked section hits, matched-span excerpts, `heading_path`, and graph
+neighborhood. Use `grep -rn "X"` when you need every literal occurrence with
+line numbers. Use `anneal -e '? ...'` when the question is structural, such as
+"which handles match this graph predicate?"
 
 ### Work The Convergence Frontier
 
@@ -377,6 +385,12 @@ config code_path_root {
   root(["web", "bin"]).
 }
 
+config search_boost {
+  status("authoritative", 0.08).
+  status("draft", 0).
+  hub(0.01).
+}
+
 config potential_weight {
   freshness_decay(0).
   undischarged(8).
@@ -391,6 +405,11 @@ Label namespaces are inferred automatically. Use `force(["REQ"])` only for a
 sparse namespace that should be recognized before it has enough examples. Use
 `rejected([...])` for false positives and `linear([...])` for obligation
 namespaces whose labels must be discharged exactly once.
+
+`search_boost` adjusts ranking calibration without changing what search can
+match. Use exact status names for lifecycle boosts and `hub(...)` for the
+bounded per-incoming-edge boost; `anneal describe search_boost` shows the
+queryable config rows.
 
 ### Project Rules And Verbs
 

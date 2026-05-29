@@ -43,6 +43,8 @@ instead of retired command habits.
 - `config code_path_root { root(["web", "bin"]). }` adds project-specific code
   roots to the default `crates`, `lib`, `src`, `app`, `test`, `priv`, and
   `native` body-reference scanner.
+- `config search_boost { status("authoritative", 0.08). hub(0.01). }`
+  tunes search ranking boosts by lifecycle status and hub degree.
 
 ### Changed
 
@@ -65,6 +67,10 @@ instead of retired command habits.
 - Behavior change: when heading body spans exist for a file, broad body search
   suppresses the synthetic full-file body span so the ranked result points at
   the matching section rather than the whole document.
+- Behavior change: search ranking now includes status and hub boosts after
+  lexical scoring. Authoritative/current/stable handles rank above active or
+  draft matches by default, and highly cited handles get a bounded
+  incoming-edge boost.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.
@@ -85,8 +91,8 @@ instead of retired command habits.
   status run. This replaces the silent `holding=0` that looked like a
   real-but-empty signal.
 - README, AGENTS.md, CLAUDE.md, the bundled `anneal` skill, top-level help,
-  and `help eval` now teach the v0.14 surface and avoid retired-command
-  recovery paths as first moves.
+  and `help eval` now teach the v0.14 surface, the context/grep/eval retrieval
+  split, and schema discovery through helpful errors.
 
 ### Removed
 

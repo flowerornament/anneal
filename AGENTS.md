@@ -34,6 +34,10 @@ For low-context corpus orientation, prefer:
 - `anneal read <handle> --budget 4000`
 - `anneal handle <handle> --impact`
 
+Use `anneal context "X"` for "find the section that defines X" work,
+`grep -rn "X"` for exhaustive literal occurrences with line numbers, and
+`anneal -e '? ...'` for structural graph predicates.
+
 Avoid broad default dumps like raw `check --json`, empty search queries, or full graph queries unless you are intentionally expanding with `schema`, `describe`, and narrow `anneal -e` predicates.
 
 ## Rust Toolchain
@@ -128,7 +132,7 @@ Pushing `vX.Y.Z` triggers `.github/workflows/release.yml` and publishes binaries
 
 ## Test Corpus
 
-Primary real-world corpus: `/path/to/large-corpus/.design/`. Useful for smoke-checking `status`, `get`, `check --file`, `map`, `impact`, and `obligations`. Integration tests may skip if the external corpus is unavailable.
+Primary real-world corpus: `/path/to/large-corpus/.design/`. Useful for smoke-checking `status`, `context`, `search`, `read`, `handle --impact`, `check`, and focused `anneal -e` predicates. Integration tests may skip if the external corpus is unavailable.
 
 ## Hooks And Completion
 

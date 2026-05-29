@@ -436,16 +436,14 @@ mod tests {
         let strict_options = EvalOptions::default().with_low_confidence_threshold(0.99);
 
         let filtered = evaluate_context(
-            &ContextCommand::new("conformance")
-                .with_hits(1)
-                .with_budget(10),
+            &ContextCommand::new("urgent").with_hits(1).with_budget(10),
             context_database(),
             strict_options.clone(),
         );
         assert!(filtered.hits.is_empty());
 
         let included = evaluate_context(
-            &ContextCommand::new("conformance")
+            &ContextCommand::new("urgent")
                 .with_hits(1)
                 .with_budget(10)
                 .include_low_confidence(true),
