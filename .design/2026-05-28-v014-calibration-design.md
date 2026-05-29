@@ -1,7 +1,8 @@
 ---
-status: proposed
+status: converged
 updated: 2026-05-28
 author: claude (post-v0.13.1 cold-agent simulation + v0.14 proposal synthesis)
+reviewer: codex (independent review converged 2026-05-28)
 supersedes: .design/2026-05-28-v014-shape-proposal.md (folds it forward, does not replace)
 description: >
   v0.14 design as the "calibration release." Folds the v0.14 vocabulary
@@ -102,10 +103,11 @@ flag this on its first annual pass.
 ### F4. No describe target for the agent loop
 
 The canonical agent loop (CR-D29) lives in `anneal help agent`. There
-is no `describe convergence_loop` or `describe agent_loop` for an
-agent that's mid-task and wants to remind itself of the pattern. The
-agent has to reach for `help agent` and read a long briefing to
-recover one pattern.
+is no canonical describe surface that gives an agent mid-task the
+5-step pattern. The agent has to reach for `help agent` and read a
+long briefing to recover one pattern. Solution: expand
+`describe convergence` to multi-section (meta-process + the act +
+vocabulary + tuning) rather than adding a new describe target.
 
 ### F5. handle --impact display labeling is confusing or wrong
 
@@ -172,15 +174,19 @@ Ten items, organized by theme. Each justified against CR-D102.
 
 ### THEME 1: Convergence vocabulary completion
 
-**A. Convergence flow triad.** Ship the four predicates project owner and
-   codex converged on:
+**A. Flow triad.** Ship the five predicates project owner and codex
+   converged on (post-review normalization):
    ```dl
    advancing(h)         already exists
    holding(h)           active + potential + status unchanged @ snapshot:last
    regressed(h)         status moved backwards in pipeline @ snapshot:last
    re_opened(h)         active now, terminal @ snapshot:last
    drifting(h)          regressed OR re_opened
-   convergence_flow(h, direction)  union for one-shape querying
+   flow(h, direction)   direction ∈ {"advancing", "holding", "drifting"}
+                        union over the coarse triad — re_opened and
+                        regressed are LEAF explanations under drifting,
+                        NOT extra flow directions (avoids double-count)
+                        settled handles outside flow by design
    ```
    ~50 lines of prelude rules + 5 describe cards + 1 test.
 
@@ -190,17 +196,31 @@ Ten items, organized by theme. Each justified against CR-D102.
 
 ### THEME 2: Signal calibration
 
-**C. Calibration round on potential_weight + freshness threshold.**
-   Two sub-decisions, each needs evidence:
-   - freshness_decay: lower weight (2 → 1), or filter by status, or
-     both?
-   - Default freshness threshold: 60 days is short for slow-moving
-     reference corpora; long for active development. Should it scale
-     with corpus median age?
-   - This is design + measurement: simulate on `.design` and large-corpus
-     with different weights, pick what produces a usable signal.
-   - Lands as updated default weights in `convergence.dl` + describe
-     teaching for project owners on how to tune in `anneal.dl`.
+**C. Calibration: lower freshness_decay weight 2 → 1.**
+   Weight-only change (status-gating and adaptive threshold deferred
+   pending more corpus evidence). Codex measured on large-corpus:
+   handles with energy ≥ 3 drop **37 → 3** with weight-only. `.design`
+   stays at 5 → 5 (no flood there). Weight-only sharpens the work
+   pool 12× on large-corpus without a second semantic change.
+
+   Lands as:
+   - Updated `potential_weight("freshness_decay", 1)` in `convergence.dl`
+   - Real config override path (see C2 below)
+   - CHANGELOG Behavior Change section explicit about the default
+   - describe potential_weight teaches the override syntax inline
+
+**C2. Real config override path for potential_weight.** Currently
+   `config potential_weight { ... }` is not a supported declaration.
+   Naively adding project-level `potential_weight(...)` rows would
+   double-count in potential's Sum aggregate. v0.14 must either:
+   - Implement a real override (config schema + `effective_potential_weight(source, weight)`
+     predicate that potential's Sum aggregates over), OR
+   - Strip the override teaching from describe potential_weight.
+
+   **Implementing the schema** is the locked path (per project owner).
+   Implementation cost ~0.5 day. Without this, the calibration story
+   is half-shipped (defaults change, tuning unmentioned) and the
+   framework's "teaching messages must not lie" rule fires.
 
 **D. describe blocker teaches primary_entropy.** One paragraph + one
    join example in the existing describe card. Solves F8 without
@@ -232,23 +252,55 @@ Ten items, organized by theme. Each justified against CR-D102.
    ergonomics win.
 
 **G. Add describe target for the convergence loop.** New runtime
-   topic: `describe convergence_loop` (or `describe agent_loop`).
-   Names the 5-step pattern with concrete queries. Eliminates the
-   "needs to re-read help agent mid-task" friction.
+   `describe convergence` becomes a multi-section card: the
+   meta-process (existing line), then The Act (5-step canonical
+   loop with concrete queries), then Vocabulary (entropy → potential
+   → frontier → flow), then Tuning (potential_weight override).
+   No new describe target; the existing convergence topic absorbs
+   the agent-loop teaching.
 
 ### THEME 4: CLI seam polish
 
-**H. handle --impact labeling.** Either rename "Direct (N)" to
-   "Direct (depth=1, N transitive)" or fix the off-by-one. Match
-   what `impact(h, x, depth)` returns. Acceptance: agent reading
-   the output can predict what query reproduces it.
+**H. handle --impact: align two surfaces (real semantic mismatch).**
+   Codex verified on large-corpus: `handle references/README.md --impact`
+   renders "Incoming (1) Cites" but "Impact Direct (0)". The eval
+   primitive `? impact("references/README.md", x, d).` returns the
+   same citing handle at depth=1. Root cause: CLI uses
+   `DEFAULT_IMPACT_TRAVERSE = {DependsOn, Supersedes, Verifies}` +
+   config; eval `impact()` traverses ALL graph edges in core. The
+   two canonical surfaces disagree on what "impact" means.
 
-**I. Unknown-predicate error suggestion.** Edit distance match
-   against schema predicates; suggest up to 3. Solves F7.
+   Fix shape: either make eval `impact()` honor the same configured
+   traverse set, OR make `handle --impact` use the core `impact`
+   primitive. Then label CLI's section appropriately (e.g.,
+   "Impact (configured reverse traversal)" if the set stays
+   configurable). Acceptance: `handle --impact` Direct rows = the
+   `impact("H", _, 1)` row set, not just a label change.
+
+**I. Unknown-predicate error: arity-aware suggestion.** Keep the
+   existing stored-relation-prefix special case as highest priority.
+   Then up to 3 schema candidates by edit distance, preferably
+   arity-aware (`potental/1` → `potential/2` only if arity matches
+   or is close). For semantic misses where edit distance fails
+   (`unsettled(h)`), route the recovery toward `describe convergence`
+   / `schema` rather than fake confidence in a wrong synonym.
 
 ### THEME 5: Project-level documentation sync
 
-**J. Sync CLAUDE.md + skills/anneal/SKILL.md against v0.14 surface.**
+**J. Sync project-level docs against v0.14 surface.** Codex's
+   review expanded the doc-sync scope beyond CLAUDE.md and SKILL.md:
+   - `CLAUDE.md` — `--compact`, `map`, `find`, `get`, `impact`
+     (retired commands).
+   - `AGENTS.md` — same stale guidance; injected into codex context
+     (high impact on cold-codex sessions).
+   - `README.md` — currently teaches `anneal broken-area language
+     --format=text`, which errors as unknown verb.
+   - `skills/anneal/SKILL.md` — verify against v0.14 surface.
+   - Top-level `--help`, `help eval`, `describe runtime` — already
+     synced through hmpr.4 + 38a609f but re-verify.
+   - Historical `.design/` docs: leave alone (they're historical
+     record, not authoritative teaching).
+
    Audit every command/flag mention against the real CLI. Remove
    --compact, map, anything else retired. Replace with current
    teaching. Solves F6.
@@ -269,29 +321,34 @@ Ten items, organized by theme. Each justified against CR-D102.
 ```
 $ anneal --root /path/to/large-corpus/.design status
 Status
-Convergence  broken=1  blocked=8  work=22  advancing=0  holding=14  drifting=0
+Convergence  broken=1  blocked=3  work=22  advancing=0  holding=~  drifting=0
 
 Broken
  1. references/README.md  score=100  E001
 
 Blocked
- 1. references/README.md                              score=6  broken_ref
+ 1. references/README.md                              score=5  broken_ref
  2. language/elaboration-convergence-v2.md            score=3  stale_dep
  3. synthesis/2026-05-18-monoidal-computer-reframing  score=3  stale_dep
- 4. ... 5 more
 
 Other work
- 1. compiler/2026-03-16-monoidal-core-design.md       score=2  potential
- 2. formal-model/proofs/WHAT-IS-PROVEN.md             score=2  potential
- ... 20 more
+ 1. (freshness_decay tier, weight=1 → many handles, dropped from
+    foreground listing into a tier-by-tier summary)
+ ... showing primary-entropy-only for clarity
 
-(holding 14 handles unchanged + carrying potential since last snapshot.)
+(holding handles count populated once snapshot history accumulates.)
 ```
+
+Codex's measured weight-only on large-corpus confirms blocked drops from
+37 → 3 in the energy ≥ 3 tier. Real signals dominate again.
 
 Change vs v0.13.1:
 - Convergence header gains `holding=` and `drifting=` (Theme 1.A).
-- Blocked dropped from 37 → 8 because freshness_decay no longer
-  fires on research/exploratory files (Theme 2.C).
+- Blocked drops sharply (codex measured 37 → 3 handles with
+  energy ≥ 3 on large-corpus) because freshness_decay weight goes from
+  2 → 1, falling into the noise tier alongside missing_meta
+  (Theme 2.C). Real signals (stale_dep, broken_ref, undischarged)
+  dominate again.
 - New trailing note hints at `holding` for the agent's next-deeper
   question.
 
@@ -313,7 +370,7 @@ Sources (weight, when it fires):
   broken_ref      (4) E001 diagnostic — *edge.to has no *handle
   stale_dep       (3) active handle DependsOn a terminal handle
   confidence_gap  (3) handle at pipeline stage > target + 1
-  freshness_decay (1) early-lifecycle file (raw|draft) > N days old
+  freshness_decay (1) active file > N days old
   missing_meta    (1) file lacks status frontmatter
   orphan_label    (1) label with no incoming citations
 
@@ -342,7 +399,7 @@ Change vs v0.13.1:
 ### Asking the meta question
 
 ```
-$ anneal describe convergence_loop
+$ anneal describe convergence
 The canonical agent loop for making a corpus settle.
 
 Kind: runtime topic.
@@ -420,7 +477,7 @@ Default weights:
   broken_ref      4    (next — broken references are correctness bugs)
   stale_dep       3    (real work — pre-terminal pointing at terminal)
   confidence_gap  3    (real work — premature claim)
-  freshness_decay 1    (lowest — early-lifecycle staleness only)
+  freshness_decay 1    (lowest — active-file age signal)
   missing_meta    1    (lowest — frontmatter hygiene)
   orphan_label    1    (lowest — referenceless label)
 
@@ -450,7 +507,7 @@ $ anneal -e '? holding(h), *handle{id: h, summary: summary}.' --limit 3
 $ anneal -e '? drifting(h).'
 (0 rows)
 
-$ anneal -e '? convergence_flow(h, dir).' --limit 5
+$ anneal -e '? flow(h, dir).' --limit 5
 {"dir":"holding", "h":"compiler/2026-03-16-monoidal-core-design.md"}
 {"dir":"holding", "h":"formal-model/proofs/WHAT-IS-PROVEN.md"}
 {"dir":"holding", "h":"implementation/2026-03-23-architecture-plan.md"}
@@ -459,7 +516,7 @@ $ anneal -e '? convergence_flow(h, dir).' --limit 5
 ```
 
 The triad ships honestly. Status header shows the breakdown.
-convergence_flow gives the queryable shape.
+flow gives the queryable shape over the coarse triad.
 
 ## What v0.14.0 will NOT include
 
@@ -492,38 +549,112 @@ DEFERRED to v0.15+ (out of scope here):
 Phase 0 substrate design runs in parallel; outcome decides whether
 the substrate work ships as v0.14.1 (no breaking) or v0.15 (breaking).
 
-## What needs project owner's confirmation before implementation
+## Locked decisions (post-project owner + post-codex convergence)
 
-1. **Calibration call (Theme 2.C):** are we OK lowering freshness_decay
-   weight to 1, OR filtering it to early-lifecycle only, OR both?
-   This is the only place in v0.14 where we're changing existing
-   user-facing default behavior. (A,B,F,G,J are additive; D,E,H,I
-   are polish.)
+1. **Calibration:** weight-only `freshness_decay 2 → 1`. Status-
+   gating and adaptive threshold deferred. Real config override path
+   (`config potential_weight { ... }` schema +
+   `effective_potential_weight` predicate) lands in Theme 2.C2 so
+   tuning teaching is honest.
+2. **flow exhaustiveness:** describe card explicitly states "settled
+   handles are outside flow by design." No `direction = "settled"`
+   row.
+3. **describe target:** existing `describe convergence` expands to
+   multi-section card (meta + The Act + Vocabulary + Tuning). No new
+   describe target.
+4. **Magic-word audit:** ship the 14-card slice in v0.14, single
+   template (~25-40 lines per card, metaphor-first opener, every
+   Example/Common join includes Output columns). Full CR-D102 annual
+   inventory still owed but doesn't block v0.14.
+5. **handle --impact:** align the two surfaces, not just relabel.
+   Acceptance = `handle --impact` Direct rows match
+   `impact(H, _, 1)` rows.
+6. **Unknown-predicate suggestion:** stored-relation-prefix priority,
+   then up to 3 arity-aware schema candidates, semantic miss routes
+   to `describe convergence` / `schema`.
+7. **Phase 0 timing:** parallel design doc, implementation deferred
+   pending substrate evidence. Phase 0 does not block v0.14
+   unless it proves no-break and tiny.
+8. **work_candidate:** deprecate for v0.14, retire in v0.15. Do not
+   collapse immediately; v0.13 taught it in README/SKILL.
+9. **Doc sync scope expanded:** CLAUDE.md, AGENTS.md, README.md
+   (`broken-area` example errors), skills/anneal/SKILL.md, plus
+   top-level help / help eval / describe runtime re-verification.
 
-2. **convergence_flow exhaustiveness language:** per codex, the
-   describe card should explicitly say "settled handles are outside
-   the flow by design." Confirm we like that framing or want a
-   `direction = "settled"` row in convergence_flow.
+## After this doc lands
 
-3. **describe target name:** `describe convergence_loop` vs
-   `describe agent_loop` vs fold the loop teaching into
-   `describe convergence`. Which name?
+Directive to codex via tmux-bridge with this locked scope.
+v0.14.0 ships in ~4 days (now ~4.5 including config override
+implementation). Phase 0 ships as
+`.design/2026-05-28-phase0-handle-kind-consolidation.md` whose
+outcome determines the v0.14.1 vs v0.15 fork.
 
-4. **Magic-word audit scope (Theme 3.F):** the proposed 12 cards is
-   a starting set. Should we audit the full magic-word inventory
-   first (per CR-D102 annual cadence) and deepen all of them at
-   once, or take the 12 most-friction-laden first?
+## Codex convergence (2026-05-28)
 
-5. **CLI seam fix shape (Theme 4.H):** rename labels or fix
-   off-by-one? Confirm which.
+Independent review of the calibration design after project owner's lock-in
+on vocabulary + scope. I converge on v0.14 as the calibration
+release, with three implementation blockers fixed above before
+green-lighting codex:
 
-6. **Phase 0 timing:** does Phase 0 design get a few days NOW
-   parallel to v0.14.0 implementation, OR does v0.14.0 ship first
-   and Phase 0 follows? Codex leaned parallel; I agree but want
-   explicit confirmation.
+**1. Vocabulary normalization.** The committed doc carried stale
+`convergence_flow` and `describe convergence_loop` references after
+project owner locked `flow(h, direction)` and expanded
+`describe convergence`. Patched throughout. Also confirmed: `flow`
+direction values are the coarse triad only —
+`{"advancing", "holding", "drifting"}` — with `regressed(h)` and
+`re_opened(h)` as leaf explanations under `drifting(h)`, NOT extra
+flow directions (avoids double-count when agents query `flow`).
 
-## After project owner confirms
+**2. Calibration measured: weight-only is enough.** I measured
+freshness_decay 2 → 1 on large-corpus directly: handles with energy ≥ 3
+drop 37 → 3. `.design` stays 5 → 5 (no flood there). Weight-only
+already sharpens the work pool 12×. The plan text/simulation said
+37 → 8 with status-gating; that was a different semantic change
+that wasn't project owner-approved. Recommendation honored: weight-only
+ships, status-gating deferred.
 
-If confirmed: directive to codex with locked-in scope. v0.14.0
-ships in ~4 days. Phase 0 ships as a `.design/` doc whose outcome
-determines the v0.14.1 vs v0.15 fork.
+**3. Override teaching honesty.** `config potential_weight { ... }`
+is not a supported config declaration. Naive project-level
+`potential_weight(...)` rows would double-count in potential's Sum
+aggregate. If `describe potential_weight` teaches override syntax
+without implementation, that's a "teaching messages must not lie"
+violation. project owner locked: implement the real override path (config
+schema + `effective_potential_weight` predicate that potential's
+Sum aggregates over). Adds ~0.5 day to v0.14 cost. Tuning becomes
+a first-class story.
+
+**handle --impact** is a real semantic mismatch, not a label bug.
+CLI uses `DEFAULT_IMPACT_TRAVERSE = {DependsOn, Supersedes,
+Verifies}` + config; eval `impact()` traverses all graph edges in
+core. Two canonical surfaces disagree on what "impact" means. Fix
+is align the two, then re-label the CLI section. Acceptance =
+`handle --impact` Direct rows = `impact("H", _, 1)` row set.
+
+**Unknown-predicate suggestion** keeps the existing stored-relation-
+prefix special case as highest priority. Up to 3 arity-aware schema
+candidates by edit distance. Semantic misses (`unsettled(h)` →
+where would you route?) reroute to `describe convergence` / `schema`
+rather than fake confidence in a wrong synonym.
+
+**Phase 0 sequencing.** Parallel design doc is the right shape.
+Substrate identity/migration can easily dominate the release if
+implementation gets bundled prematurely. Keep v0.14 vocabulary/
+calibration independent of substrate work unless Phase 0 explicitly
+proves a safe, no-migration fold.
+
+**More stale teaching found** during the review:
+- `AGENTS.md` carries the same stale `--compact / get / find / map /
+  impact` guidance as `CLAUDE.md`. Injected into codex context.
+- `README.md` teaches `anneal broken-area language --format=text`,
+  which errors as unknown verb.
+- Historical `.design/` docs contain many retired-command examples
+  — leave alone; they're historical record. Current authoritative
+  docs (CLAUDE.md, AGENTS.md, README.md, SKILL.md, top-level help)
+  need to be clean.
+
+Doc sync scope expanded in Theme 5.J accordingly.
+
+**Net:** v0.14 is the calibration release. With the three blockers
+fixed above, the implementation directive is green to land. ~4.5
+days codex cost. Phase 0 design doc lives in parallel at
+`.design/2026-05-28-phase0-handle-kind-consolidation.md`.
