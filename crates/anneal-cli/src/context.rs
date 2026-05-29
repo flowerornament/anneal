@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -99,6 +99,7 @@ impl ContextOutput {
                         score: number_field(row, "score")?,
                         reason: string_field(row, "reason")?,
                         field: string_field(row, "field")?,
+                        heading_path: optional_string_field(row, "heading_path")?,
                     };
                     hits.push(hit);
                 }
@@ -136,19 +137,21 @@ impl ContextOutput {
                 .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.span_id.cmp(&right.span_id))
         });
-        let mut hit_handles = BTreeSet::new();
-        hits.retain(|hit| hit_handles.insert(hit.handle.clone()));
+        let mut hit_keys = BTreeSet::new();
+        hits.retain(|hit| hit_keys.insert((hit.handle.clone(), hit.span_id.clone())));
+        prefer_matched_span_hits(&mut hits, &mut spans);
+        let handle_ranks = handle_rank_map(&hits);
 
         spans.sort_by(|left, right| {
-            handle_order(&left.handle, &hits)
-                .cmp(&handle_order(&right.handle, &hits))
+            handle_rank(&handle_ranks, &left.handle)
+                .cmp(&handle_rank(&handle_ranks, &right.handle))
                 .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.start_line.cmp(&right.start_line))
                 .then_with(|| left.span_id.cmp(&right.span_id))
         });
         neighborhood.sort_by(|left, right| {
-            handle_order(&left.handle, &hits)
-                .cmp(&handle_order(&right.handle, &hits))
+            handle_rank(&handle_ranks, &left.handle)
+                .cmp(&handle_rank(&handle_ranks, &right.handle))
                 .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.neighbor.cmp(&right.neighbor))
         });
@@ -162,10 +165,41 @@ impl ContextOutput {
     }
 }
 
-fn handle_order(handle: &str, hits: &[ContextHit]) -> usize {
+fn prefer_matched_span_hits(hits: &mut Vec<ContextHit>, spans: &mut Vec<ContextSpan>) {
+    let retained_span_ids = hits.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut span_ids_by_handle, hit| {
+            if let Some(span_id) = &hit.span_id {
+                span_ids_by_handle
+                    .entry(hit.handle.clone())
+                    .or_default()
+                    .insert(span_id.clone());
+            }
+            span_ids_by_handle
+        },
+    );
+
+    if retained_span_ids.is_empty() {
+        return;
+    }
+
+    hits.retain(|hit| hit.span_id.is_some() || !retained_span_ids.contains_key(&hit.handle));
+    spans.retain(|span| {
+        retained_span_ids
+            .get(&span.handle)
+            .is_none_or(|span_ids| span_ids.contains(span.span_id.as_str()))
+    });
+}
+
+fn handle_rank_map(hits: &[ContextHit]) -> BTreeMap<&str, usize> {
     hits.iter()
-        .position(|hit| hit.handle == handle)
-        .unwrap_or(usize::MAX)
+        .enumerate()
+        .map(|(index, hit)| (hit.handle.as_str(), index))
+        .collect()
+}
+
+fn handle_rank(ranks: &BTreeMap<&str, usize>, handle: &str) -> usize {
+    ranks.get(handle).copied().unwrap_or(usize::MAX)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +229,7 @@ pub struct ContextHit {
     pub score: f64,
     pub reason: String,
     pub field: String,
+    pub heading_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -336,6 +371,7 @@ mod tests {
         assert_eq!(schema["goal"], "String");
         assert_eq!(schema["hits"][0]["handle"], "HandleId");
         assert_eq!(schema["hits"][0]["span_id"], "String|null");
+        assert_eq!(schema["hits"][0]["heading_path"], "String|null");
         assert_eq!(schema["spans"][0]["handle"], "HandleId");
         assert_eq!(schema["neighborhood"][0]["handle"], "HandleId");
         assert!(schema["hits"][0].get("h").is_none());
@@ -363,7 +399,7 @@ mod tests {
         assert!(!search_rows.is_empty(), "fixture should be searchable");
 
         let output = evaluate_context(
-            &ContextCommand::new("conformance")
+            &ContextCommand::new("urgent blocker")
                 .with_hits(1)
                 .with_budget(10)
                 .include_low_confidence(true),
@@ -371,9 +407,10 @@ mod tests {
             EvalOptions::default().with_low_confidence_threshold(0.0),
         );
 
-        assert_eq!(output.goal, "conformance");
+        assert_eq!(output.goal, "urgent blocker");
         assert_eq!(output.hits.len(), 1);
         assert_eq!(output.hits[0].handle, "audit/v17.md");
+        assert_eq!(output.hits[0].heading_path.as_deref(), Some("Intro"));
         assert_eq!(
             output.spans,
             vec![ContextSpan {
@@ -431,7 +468,7 @@ mod tests {
         let output = ContextOutput::from_rows("v17 conformance audit", &rows).expect("rows group");
 
         assert_eq!(output.goal, "v17 conformance audit");
-        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits.len(), 2);
         assert_eq!(output.spans.len(), 1);
         assert_eq!(
             output.neighborhood,
@@ -466,9 +503,13 @@ mod tests {
             output
                 .hits
                 .iter()
-                .map(|hit| hit.handle.as_str())
+                .map(|hit| (hit.handle.as_str(), hit.span_id.as_deref()))
                 .collect::<Vec<_>>(),
-            vec!["first.md", "second.md"]
+            vec![
+                ("first.md", Some("body")),
+                ("first.md", Some("details")),
+                ("second.md", Some("body")),
+            ]
         );
         assert_eq!(
             output
@@ -485,6 +526,41 @@ mod tests {
                 .map(|neighbor| neighbor.handle.as_str())
                 .collect::<Vec<_>>(),
             vec!["first.md", "second.md"]
+        );
+    }
+
+    #[test]
+    fn context_output_prefers_matched_span_reads_over_same_handle_file_hits() {
+        let mut file_hit = context_hit_row("guide.md", "guide.md#h/target", 0.8);
+        file_hit
+            .fields
+            .insert("hit_span_id".to_string(), Value::Null);
+        file_hit.fields.insert("field".to_string(), s("identifier"));
+        file_hit
+            .fields
+            .insert("reason".to_string(), s("identifier-substring"));
+        file_hit
+            .fields
+            .insert("heading_path".to_string(), Value::Null);
+
+        let rows = vec![
+            file_hit,
+            context_hit_row("guide.md", "guide.md#h/target", 0.7),
+            context_span_row("guide.md", "guide.md#full"),
+            context_span_row("guide.md", "guide.md#h/target"),
+        ];
+
+        let output = ContextOutput::from_rows("target", &rows).expect("rows group");
+
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].span_id.as_deref(), Some("guide.md#h/target"));
+        assert_eq!(
+            output
+                .spans
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["guide.md#h/target"]
         );
     }
 
@@ -696,6 +772,7 @@ mod tests {
                 ("score".to_string(), f(score)),
                 ("reason".to_string(), s("body-substring")),
                 ("field".to_string(), s("body")),
+                ("heading_path".to_string(), s("Intro")),
             ]),
             derivation: None,
         }
@@ -764,7 +841,7 @@ mod tests {
             handle: handle.to_string(),
             start_line,
             end_line,
-            summary: String::new(),
+            summary: "Intro".to_string(),
         }
     }
 

@@ -2107,6 +2107,18 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
             };
             search.insert_content(corpus, source, handle, span_id, text);
         }
+        SPAN_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(summary)) = (
+                row_string(row, CORPUS_FIELD),
+                row_string(row, SOURCE_FIELD),
+                row_string(row, HANDLE_FIELD),
+                row_string(row, ID_FIELD),
+                row_string(row, SUMMARY_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_span_summary(corpus, source, handle, span_id, summary);
+        }
         _ => {}
     }
 }

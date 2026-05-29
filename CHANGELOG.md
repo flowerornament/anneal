@@ -4,7 +4,7 @@ All notable changes to `anneal` are documented in this file.
 
 ## v0.14.0 - 2026-05-28
 
-anneal calibrates the signal and simplifies the substrate.
+anneal calibrates the signal, simplifies the substrate, and sharpens retrieval.
 
 This release turns the v0.13 language surface into a sharper convergence
 instrument: flow is explicit, potential can be tuned honestly, freshness noise
@@ -32,6 +32,9 @@ instead of retired command habits.
 - Markdown headings now emit structural `*span` rows with ids shaped like
   `file.md#h/heading/path` instead of graph handles. Line numbers remain on the
   span for sorting, excerpts, and retrieval.
+- Retrieval now lands on heading spans: `search` and `context` return
+  `heading_path` metadata for span hits, and `anneal read <H> --span-id <ID>`
+  reads a matched heading span directly.
 
 ### Changed
 
@@ -51,6 +54,9 @@ instead of retired command habits.
   `*handle{kind: "section"}` rows. Querying the retired section kind returns
   zero rows with a recovery warning pointing at `*span`, and section-shaped
   handle lookups recover toward a span query.
+- Behavior change: when heading body spans exist for a file, broad body search
+  suppresses the synthetic full-file body span so the ranked result points at
+  the matching section rather than the whole document.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.

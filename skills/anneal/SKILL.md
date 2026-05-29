@@ -61,15 +61,18 @@ example `? *handle{status: status}.`, `? *edge{kind: kind}.`, or
 ```bash
 anneal search "<text>" --limit 5 --format=text
 anneal read <handle> --budget 4000 --format=text
+anneal read <handle> --span-id <span-id> --format=text
 anneal handle <handle> --format=text
 anneal handle <handle> --impact --format=text
 ```
 
 Use `search` for content retrieval. It handles light stemming and common
-planning abbreviations such as OQ/open question, ADR, and RFC. Use `read` after
-search or when the handle is known. Use `handle` when relationship shape
-matters. Add `--impact` before editing when you need direct and indirect
-reverse dependencies.
+planning abbreviations such as OQ/open question, ADR, and RFC, and span hits
+include `heading_path` so you can see where the match landed. Use `read` after
+search or when the handle is known; pass the search hit's `span_id` to read the
+matched heading span directly. Use `handle` when relationship shape matters.
+Add `--impact` before editing when you need direct and indirect reverse
+dependencies.
 Empty NDJSON row streams emit `(0 rows)` on stderr while leaving stdout empty
 for pipes.
 
@@ -139,8 +142,8 @@ alias for the error-only filtered view.
 
 ### Arrive
 
-- `anneal context GOAL`: grouped cold-agent context from search, read, and
-  neighborhood
+- `anneal context GOAL`: grouped cold-agent context from span search, matched
+  reads, and neighborhood
 - `anneal status`: compact corpus status
 - `anneal help agent`: bundled agent briefing from the installed binary
 - `anneal prime`: hidden legacy alias for skill loader compatibility
@@ -153,9 +156,9 @@ alias for the error-only filtered view.
 
 ### Retrieve Evidence
 
-- `anneal search TEXT`: ranked content hits with handle, span, score, reason,
-  field, and low-confidence marker
-- `anneal read HANDLE`: bounded content spans
+- `anneal search TEXT`: ranked content hits with handle, span, heading path,
+  score, reason, field, and low-confidence marker
+- `anneal read HANDLE`: bounded content spans; add `--span-id ID` for one span
 - `anneal handle HANDLE`: handle neighborhood
 - `anneal handle HANDLE --impact`: handle neighborhood plus reverse dependencies
 

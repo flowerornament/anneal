@@ -21,11 +21,13 @@ const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
 
 pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
+pub const FIELD_HEADING: &str = "heading";
 pub const FIELD_BODY: &str = "body";
 pub const FIELD_FRONTMATTER_GLOB: &str = "frontmatter:*";
 
 pub const REASON_IDENTIFIER_SUBSTRING: &str = "identifier-substring";
 pub const REASON_TITLE_SUBSTRING: &str = "title-substring";
+pub const REASON_HEADING_SUBSTRING: &str = "heading-substring";
 pub const REASON_FRONTMATTER_KEY_MATCH: &str = "frontmatter-key-match";
 pub const REASON_FRONTMATTER_VALUE_MATCH: &str = "frontmatter-value-match";
 pub const REASON_BODY_SUBSTRING: &str = "body-substring";
@@ -37,6 +39,7 @@ pub fn default_lexical_search_info() -> SearchInfo {
         reason_vocabulary: vec![
             REASON_IDENTIFIER_SUBSTRING,
             REASON_TITLE_SUBSTRING,
+            REASON_HEADING_SUBSTRING,
             REASON_FRONTMATTER_KEY_MATCH,
             REASON_FRONTMATTER_VALUE_MATCH,
             REASON_BODY_SUBSTRING,
@@ -45,6 +48,7 @@ pub fn default_lexical_search_info() -> SearchInfo {
         fields: vec![
             FIELD_IDENTIFIER,
             FIELD_TITLE,
+            FIELD_HEADING,
             FIELD_BODY,
             FIELD_FRONTMATTER_GLOB,
         ],
@@ -214,10 +218,11 @@ fn hit_tie_priority(hit: &SearchHit) -> u8 {
         (REASON_IDENTIFIER_SUBSTRING, FIELD_IDENTIFIER) | (REASON_TITLE_SUBSTRING, FIELD_TITLE) => {
             0
         }
-        (REASON_PARENT_CLUSTER, FIELD_IDENTIFIER) => 1,
-        (REASON_FRONTMATTER_KEY_MATCH | REASON_FRONTMATTER_VALUE_MATCH, _) => 2,
-        (REASON_BODY_SUBSTRING, FIELD_BODY) => 3,
-        _ => 4,
+        (REASON_HEADING_SUBSTRING, FIELD_HEADING) => 1,
+        (REASON_PARENT_CLUSTER, FIELD_IDENTIFIER) => 2,
+        (REASON_FRONTMATTER_KEY_MATCH | REASON_FRONTMATTER_VALUE_MATCH, _) => 3,
+        (REASON_BODY_SUBSTRING, FIELD_BODY) => 4,
+        _ => 5,
     }
 }
 
@@ -229,6 +234,7 @@ fn field_weight(field: &str) -> f32 {
     match field {
         FIELD_IDENTIFIER => 1.0,
         FIELD_TITLE => 0.95,
+        FIELD_HEADING => 0.90,
         FIELD_BODY => 0.82,
         _ if field.starts_with("frontmatter:") => 0.88,
         _ => 0.75,
@@ -381,6 +387,27 @@ impl SearchIndex {
             FIELD_BODY,
             REASON_BODY_SUBSTRING,
             text,
+        );
+    }
+
+    pub(crate) fn insert_span_summary(
+        &mut self,
+        corpus: &str,
+        source: &str,
+        handle: &str,
+        span_id: &str,
+        summary: &str,
+    ) {
+        if !is_heading_span_id(span_id) {
+            return;
+        }
+        let document = self.document_mut(corpus, source, handle);
+        push_field(
+            document,
+            Some(span_id.to_owned()),
+            FIELD_HEADING,
+            REASON_HEADING_SUBSTRING,
+            summary,
         );
     }
 
@@ -613,8 +640,26 @@ impl SearchDocument {
         reason_filter: Option<&'a str>,
         field_filter: Option<&'a str>,
     ) -> impl Iterator<Item = SearchHit> + 'a {
+        let should_hide_full_body_span = matches!(span_filter, SearchSpanScope::Any)
+            && reason_filter.is_none_or(|reason| reason == REASON_BODY_SUBSTRING)
+            && field_filter.is_none_or(|field_name| field_name == FIELD_BODY)
+            && self.fields.iter().any(|field| {
+                field.field == FIELD_BODY
+                    && field
+                        .span_id
+                        .as_deref()
+                        .is_some_and(|span_id| !is_full_span_id(key.handle.as_str(), span_id))
+            });
         self.fields
             .iter()
+            .filter(move |field| {
+                !should_hide_full_body_span
+                    || field.field != FIELD_BODY
+                    || !field
+                        .span_id
+                        .as_deref()
+                        .is_some_and(|span_id| is_full_span_id(key.handle.as_str(), span_id))
+            })
             .filter(move |field| span_filter.accepts(field.span_id.as_deref()))
             .filter(move |field| reason_filter.is_none_or(|reason| field.reason == reason))
             .filter(move |field| field_filter.is_none_or(|field_name| field.field == field_name))
@@ -632,6 +677,16 @@ impl SearchDocument {
                 })
             })
     }
+}
+
+fn is_full_span_id(handle: &str, span_id: &str) -> bool {
+    span_id
+        .strip_prefix(handle)
+        .is_some_and(|suffix| suffix == "#full")
+}
+
+fn is_heading_span_id(span_id: &str) -> bool {
+    span_id.contains("#h/")
 }
 
 fn push_field(
@@ -1321,6 +1376,85 @@ mod tests {
             ranked.first().expect("ranked hit").hit().handle(),
             "formal-model/sample-formal-model-v17.md"
         );
+    }
+
+    #[test]
+    fn heading_summaries_search_as_span_hits() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/protocol.md",
+            "docs/protocol.md",
+            "Protocol",
+        );
+        index.insert_span_summary(
+            "test",
+            "fixture",
+            "docs/protocol.md",
+            "docs/protocol.md#h/lease-protocol",
+            "Lease Protocol",
+        );
+
+        let query = SearchQuery::parse("lease protocol").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let heading_hit = hits
+            .iter()
+            .find(|hit| hit.field() == FIELD_HEADING)
+            .expect("heading hit is indexed");
+
+        assert_eq!(heading_hit.handle(), "docs/protocol.md");
+        assert_eq!(
+            heading_hit.span_id(),
+            Some("docs/protocol.md#h/lease-protocol")
+        );
+        assert_eq!(heading_hit.reason(), REASON_HEADING_SUBSTRING);
+    }
+
+    #[test]
+    fn full_body_span_is_hidden_when_heading_body_spans_exist() {
+        let mut index = SearchIndex::default();
+        insert_handle(
+            &mut index,
+            "docs/protocol.md",
+            "docs/protocol.md",
+            "Protocol",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "docs/protocol.md",
+            "docs/protocol.md#full",
+            "needle term in whole document",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "docs/protocol.md",
+            "docs/protocol.md#h/target",
+            "needle term in target heading",
+        );
+
+        let query = SearchQuery::parse("needle term").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, Some(FIELD_BODY));
+
+        assert!(hits.iter().any(|hit| {
+            hit.span_id() == Some("docs/protocol.md#h/target") && hit.field() == FIELD_BODY
+        }));
+        assert!(
+            !hits
+                .iter()
+                .any(|hit| hit.span_id() == Some("docs/protocol.md#full"))
+        );
+
+        let exact_full_hits = index.search_hits(
+            &query,
+            Some("docs/protocol.md"),
+            SearchSpanScope::Exact("docs/protocol.md#full"),
+            None,
+            Some(FIELD_BODY),
+        );
+        assert_eq!(exact_full_hits.len(), 1);
+        assert_eq!(exact_full_hits[0].span_id(), Some("docs/protocol.md#full"));
     }
 
     #[test]

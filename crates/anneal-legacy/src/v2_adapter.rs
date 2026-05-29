@@ -747,7 +747,7 @@ fn emit_content_spans(
                         handle: path_str.to_string(),
                         start_line: heading.start_line,
                         end_line: heading.end_line,
-                        summary: heading.title.clone(),
+                        summary: heading.path.clone(),
                     });
                     batch.content.push(ContentFact {
                         identity,

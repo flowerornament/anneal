@@ -168,6 +168,7 @@ anneal schema --format=text
 # Read enough to act
 anneal search "v17 conformance audit" --limit 3 --format=text
 anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000 --format=text
+anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --span-id 'reviews/2026-04-28-formal-model-v17-conformance-audit.md#h/summary' --format=text
 anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=text
 anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --impact --format=text
 
@@ -225,8 +226,9 @@ anneal status
 anneal help agent
 ```
 
-`context` composes ranked search, bounded reads, and graph neighborhood into one
-cold-start response. `status` shows the compact convergence frontier.
+`context` composes ranked heading-span search, bounded reads, and graph
+neighborhood into one cold-start response. `status` shows the compact
+convergence frontier.
 `help agent` prints the bundled agent skill briefing from the installed binary.
 The hidden `prime` alias remains for installed skill loaders and muscle memory.
 
@@ -262,13 +264,16 @@ become a named project move, edit `anneal.dl` and add an `@verb` declaration.
 ```bash
 anneal search "conformance audit" --limit 5
 anneal read formal-model/v17.md --budget 4000
+anneal read formal-model/v17.md --span-id 'formal-model/v17.md#h/protocol'
 anneal handle formal-model/v17.md
 anneal handle formal-model/v17.md --impact
 ```
 
-`search` ranks content and metadata hits. `read` retrieves bounded content
-spans for one handle. `handle` shows incoming and outgoing edges; `--impact`
-adds direct and indirect reverse dependencies before an edit.
+`search` ranks content and metadata hits and includes `heading_path` for
+heading-span matches. `read` retrieves bounded content spans for one handle;
+use `--span-id` when a search hit already identified the section you need.
+`handle` shows incoming and outgoing edges; `--impact` adds direct and indirect
+reverse dependencies before an edit.
 
 ### Work The Convergence Frontier
 

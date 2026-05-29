@@ -1486,7 +1486,7 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
             "Return the estimated number of stored content tokens for a handle."
         }
         PrimitivePredicate::Search => {
-            "Search handle identities, metadata, and content text, returning ranked hits with a reason for each score."
+            "Search handle identities, metadata, headings, and content text, returning ranked span-granular hits with a reason for each score."
         }
         PrimitivePredicate::Read => {
             "Read content spans for one handle, stopping when the token budget is reached."
@@ -1567,10 +1567,10 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
 fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str> {
     match primitive {
         PrimitivePredicate::Search => Some(
-            "The `search` verb wraps this primitive with TopK ranking and filters out low-confidence hits by default.",
+            "The `search` verb wraps this primitive with TopK ranking, filters out low-confidence hits by default, and joins span hits to heading-path metadata.",
         ),
         PrimitivePredicate::Read => Some(
-            "The `read` verb wraps this primitive with typed CLI arguments for handle and budget.",
+            "The `read` verb wraps this primitive with typed CLI arguments for handle, budget, and targeted span reads.",
         ),
         PrimitivePredicate::ChangedWithin => Some(
             "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file.",
@@ -1823,8 +1823,8 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`diagnostic{subject: h}, *handle{id: h, kind: \"file\"}` for file-handle diagnostics",
         ],
         "search" => &[
-            "`search{query: \"text\", handle: h, score: score}, *handle{id: h, file: file}` to add file metadata",
-            "`search{query: \"text\", handle: h}, read{handle: h, budget: 4000, text: text}` to read winners",
+            "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: heading_path}` to add heading context",
+            "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read matched spans",
         ],
         "handle" => &[
             "`*edge{to: h, from: src}, *handle{id: src, kind: kind}` mirrors `anneal handle H --impact` direct reverse dependencies",
@@ -2011,12 +2011,14 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query over `primary_entropy`, non-blocked `potential` rows, `flow`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
         }
         "search" => {
-            "Saved query over the `search` primitive; applies TopK by score and filters `low_confidence = false`."
+            "Saved query over the `search` primitive; applies TopK by score, filters `low_confidence = false`, and adds heading_path for span hits."
         }
         "context" => {
-            "Saved query that composes `search`, `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
+            "Saved query that composes span-granular `search`, matched-span `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
         }
-        "read" => "Saved query over the `read` primitive.",
+        "read" => {
+            "Saved query over the `read` primitive; the CLI can target one heading span with `--span-id`."
+        }
         "handle" => {
             "Saved query over `*handle` and `*edge` for one focused handle; `anneal handle H --impact` adds reverse-dependency impact rows."
         }

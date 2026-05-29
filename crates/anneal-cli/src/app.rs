@@ -240,6 +240,7 @@ enum RuntimeCommand {
     Read {
         handle: String,
         budget: i64,
+        span_id: Option<String>,
     },
     Handle {
         handle: String,
@@ -318,8 +319,8 @@ Output: human summary at a terminal or with --format=text; NDJSON rows when pipe
                 "\
 Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
 
-Cold-agent orientation in one response. Composes search, bounded read
-spans, and graph neighborhood.
+Cold-agent orientation in one response. Composes heading-span search, bounded
+matched-span reads, and graph neighborhood.
 
 Arguments:
   <GOAL>                         Natural-language goal/query
@@ -338,7 +339,8 @@ Output: human summary at a terminal or with --format=text; one JSON object when 
                 "\
 Usage: anneal [OPTIONS] search [OPTIONS] <TEXT>
 
-Ranked content search over handles and spans.
+Ranked content search over handles and heading spans. Span hits include
+heading-path metadata.
 
 Arguments:
   <TEXT>                         Search query
@@ -361,6 +363,7 @@ Arguments:
 
 Options:
       --budget <N>               Token budget (default: 4000)
+      --span-id <ID>             Read one content span
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -872,8 +875,15 @@ impl RuntimeSession {
                     .datalog();
                 self.run_query(&query, ExplainOptions::disabled(), RowView::Search)
             }
-            RuntimeCommand::Read { handle, budget } => {
-                let query = ReadCommand::new(handle).with_budget(budget).datalog();
+            RuntimeCommand::Read {
+                handle,
+                budget,
+                span_id,
+            } => {
+                let query = ReadCommand::new(handle)
+                    .with_budget(budget)
+                    .with_span_id(span_id)
+                    .datalog();
                 self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
             }
             RuntimeCommand::Handle { handle, impact } => self.run_handle(handle, impact),
@@ -2140,15 +2150,23 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             .span_id
             .as_deref()
             .map_or(String::new(), |span| format!(" span={span}"));
+        let heading = hit
+            .heading_path
+            .as_deref()
+            .filter(|heading| !heading.is_empty())
+            .map_or(String::new(), |heading| {
+                format!(" heading={}", display_string_value(heading))
+            });
         writeln!(
             writer,
-            "{:>2}. {}  score={:.3}  field={}  reason={}{}",
+            "{:>2}. {}  score={:.3}  field={}  reason={}{}{}",
             index + 1,
             hit.handle,
             hit.score,
             hit.field,
             hit.reason,
-            span
+            span,
+            heading
         )?;
     }
 
@@ -2256,6 +2274,7 @@ fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         let start_line = required_number(row, "start_line")?;
         let end_line = required_number(row, "end_line")?;
         let tokens = required_number(row, "tokens")?;
+        let total_tokens = optional_number(row, "total_tokens")?;
         let text = required_string(row, "text")?;
 
         writeln!(
@@ -2269,6 +2288,17 @@ fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
         )?;
 
         write_text_block(&mut writer, text, MAX_TEXT_LINES_PER_SPAN)?;
+        if let Some(total_tokens) = total_tokens
+            && number_gt(total_tokens, tokens)
+        {
+            writeln!(
+                writer,
+                "    read: showing first {} tokens of span ({} total); use --budget {} to read the full span",
+                display_number(tokens),
+                display_number(total_tokens),
+                display_number(total_tokens)
+            )?;
+        }
     }
     Ok(())
 }
@@ -2497,6 +2527,29 @@ fn required_number<'a>(row: &'a Row, field: &str) -> Result<&'a NumberValue> {
     }
 }
 
+fn optional_number<'a>(row: &'a Row, field: &str) -> Result<Option<&'a NumberValue>> {
+    match row.fields.get(field) {
+        Some(Value::Number(value)) => Ok(Some(value)),
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => bail!("row field {field:?} must be a number"),
+    }
+}
+
+fn number_gt(left: &NumberValue, right: &NumberValue) -> bool {
+    match (left, right) {
+        (NumberValue::Int(left), NumberValue::Int(right)) => left > right,
+        (NumberValue::Float(left), NumberValue::Float(right)) => left > right,
+        (NumberValue::Int(left), NumberValue::Float(right)) => left
+            .to_string()
+            .parse::<f64>()
+            .is_ok_and(|left| left > *right),
+        (NumberValue::Float(left), NumberValue::Int(right)) => right
+            .to_string()
+            .parse::<f64>()
+            .map_or(true, |right| *left > right),
+    }
+}
+
 fn display_number(value: &NumberValue) -> String {
     match value {
         NumberValue::Int(value) => value.to_string(),
@@ -2637,12 +2690,23 @@ fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
 fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
     let mut handle = None;
     let mut budget = DEFAULT_READ_BUDGET;
+    let mut span_id = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--budget" => budget = parse_i64(next_value(&mut iter, "--budget")?, "--budget")?,
             value if value.starts_with("--budget=") => {
                 budget = parse_i64(value_after_equals(value), "--budget")?;
+            }
+            "--span-id" => {
+                let value = next_value(&mut iter, "--span-id")?;
+                ensure!(!value.trim().is_empty(), "--span-id must not be empty");
+                span_id = Some(value.to_string());
+            }
+            value if value.starts_with("--span-id=") => {
+                let value = value_after_equals(value);
+                ensure!(!value.trim().is_empty(), "--span-id must not be empty");
+                span_id = Some(value.to_string());
             }
             value if value.starts_with('-') => {
                 reject_runtime_compatibility_flag("read", value)?;
@@ -2654,6 +2718,7 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
     Ok(RuntimeCommand::Read {
         handle: handle.context("read requires a handle")?,
         budget,
+        span_id,
     })
 }
 
@@ -3108,6 +3173,36 @@ mod tests {
                 include_low_confidence: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_read_span_id_option() {
+        let parsed = Invocation::parse(os(&[
+            "anneal",
+            "read",
+            "docs/a.md",
+            "--budget=1200",
+            "--span-id",
+            "docs/a.md#h/target",
+        ]))
+        .expect("parse read");
+
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Read {
+                handle: "docs/a.md".to_string(),
+                budget: 1200,
+                span_id: Some("docs/a.md#h/target".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_read_span_id() {
+        let err = Invocation::parse(os(&["anneal", "read", "docs/a.md", "--span-id="]))
+            .expect_err("empty span id should fail");
+
+        assert!(err.to_string().contains("--span-id must not be empty"));
     }
 
     #[test]
@@ -3855,6 +3950,33 @@ mod tests {
     }
 
     #[test]
+    fn read_human_render_hints_when_span_is_truncated() {
+        let output = CommandOutput::rows(
+            vec![row(&[
+                ("span_id", Value::String("plan.md#h/long".to_string())),
+                ("start_line", Value::Number(NumberValue::Int(10))),
+                ("end_line", Value::Number(NumberValue::Int(40))),
+                ("tokens", Value::Number(NumberValue::Int(12))),
+                ("total_tokens", Value::Number(NumberValue::Int(80))),
+                (
+                    "text",
+                    Value::String("Release blocker details.".to_string()),
+                ),
+            ])],
+            RowView::Read,
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render read");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("showing first 12 tokens of span (80 total)"));
+        assert!(rendered.contains("use --budget 80"));
+    }
+
+    #[test]
     fn describe_human_render_shows_all_doc_cards() {
         let output = CommandOutput::rows(
             vec![
@@ -3951,6 +4073,7 @@ mod tests {
                 score: 0.9,
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
+                heading_path: Some("Release".to_string()),
             }],
             spans: vec![crate::ContextSpan {
                 handle: "plan.md".to_string(),
@@ -3974,6 +4097,7 @@ mod tests {
 
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
+        assert!(rendered.contains("heading=Release"));
         assert!(rendered.contains("Read\nplan.md:10-12"));
         assert!(rendered.contains("Neighborhood\nplan.md: dep.md"));
     }

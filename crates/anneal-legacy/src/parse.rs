@@ -293,6 +293,7 @@ pub(crate) struct ScanResult {
 pub(crate) struct HeadingSpan {
     pub(crate) id: String,
     pub(crate) title: String,
+    pub(crate) path: String,
     pub(crate) start_line: u32,
     pub(crate) end_line: u32,
 }
@@ -718,6 +719,7 @@ fn finalize_heading_spans(
 ) -> Vec<HeadingSpan> {
     let mut spans = Vec::with_capacity(headings.len());
     let mut slug_stack = Vec::<(u32, String)>::new();
+    let mut title_stack = Vec::<(u32, String)>::new();
     let mut path_counts = HashMap::<String, usize>::new();
 
     for (index, heading) in headings.iter().enumerate() {
@@ -726,6 +728,12 @@ fn finalize_heading_spans(
             .is_some_and(|(level, _)| *level >= heading.level)
         {
             slug_stack.pop();
+        }
+        while title_stack
+            .last()
+            .is_some_and(|(level, _)| *level >= heading.level)
+        {
+            title_stack.pop();
         }
         let base_slug = slugify_heading(&heading.title);
         let path_base = slug_path(slug_stack.iter().map(|(_, slug)| slug.as_str()), &base_slug);
@@ -746,10 +754,15 @@ fn finalize_heading_spans(
         spans.push(HeadingSpan {
             id: format!("{file_path}#h/{full_slug_path}"),
             title: heading.title.clone(),
+            path: heading_title_path(
+                title_stack.iter().map(|(_, title)| title.as_str()),
+                &heading.title,
+            ),
             start_line: heading.start_line,
             end_line,
         });
         slug_stack.push((heading.level, slug));
+        title_stack.push((heading.level, heading.title.clone()));
     }
 
     spans
@@ -760,6 +773,13 @@ fn slug_path<'a>(parents: impl Iterator<Item = &'a str>, slug: &'a str) -> Strin
         .chain(std::iter::once(slug))
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn heading_title_path<'a>(parents: impl Iterator<Item = &'a str>, title: &'a str) -> String {
+    parents
+        .chain(std::iter::once(title))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn slugify_heading(heading: &str) -> String {
@@ -1888,6 +1908,7 @@ mod tests {
         assert_eq!(result.heading_spans.len(), 1);
         assert_eq!(result.heading_spans[0].id, "test.md#h/heading");
         assert_eq!(result.heading_spans[0].title, "Heading");
+        assert_eq!(result.heading_spans[0].path, "Heading");
         let section_count = graph
             .nodes()
             .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
@@ -1907,6 +1928,7 @@ mod tests {
                 (
                     span.id.as_str(),
                     span.title.as_str(),
+                    span.path.as_str(),
                     span.start_line,
                     span.end_line,
                 )
@@ -1915,22 +1937,31 @@ mod tests {
         assert_eq!(
             spans,
             vec![
-                ("test.md#h/architecture", "Architecture", 1, 11),
+                (
+                    "test.md#h/architecture",
+                    "Architecture",
+                    "Architecture",
+                    1,
+                    11,
+                ),
                 (
                     "test.md#h/architecture/lease-protocol",
                     "Lease Protocol",
+                    "Architecture / Lease Protocol",
                     4,
                     9,
                 ),
                 (
                     "test.md#h/architecture/lease-protocol/renewal",
                     "Renewal",
+                    "Architecture / Lease Protocol / Renewal",
                     7,
                     9,
                 ),
                 (
                     "test.md#h/architecture/lease-protocol~2",
                     "Lease Protocol",
+                    "Architecture / Lease Protocol",
                     10,
                     11,
                 ),

@@ -113,9 +113,16 @@ impl SearchCommand {
         let confidence_filter = low_confidence_filter(self.include_low_confidence);
         format!(
             "\
-? (h, span_id, score, reason, field, low_confidence) = TopK{{ k: {limit}, key: score :
-    (h, span_id, score, reason, field, low_confidence) :
-        search({query}, h, span_id, score, reason, field, low_confidence){confidence_filter}
+search_heading_path(h, span_id, heading_path) :=
+    *span{{handle: h, id: span_id, summary: heading_path}}.
+
+search_heading_path(h, null, null) :=
+    *handle{{id: h}}.
+
+? (h, span_id, score, reason, field, low_confidence, heading_path) = TopK{{ k: {limit}, key: score :
+    (h, span_id, score, reason, field, low_confidence, heading_path) :
+        search({query}, h, span_id, score, reason, field, low_confidence){confidence_filter},
+        search_heading_path(h, span_id, heading_path)
 }}.",
             limit = self.limit,
         )
@@ -126,6 +133,7 @@ impl SearchCommand {
 pub struct ReadCommand {
     handle: String,
     budget: i64,
+    span_id: Option<String>,
 }
 
 impl ReadCommand {
@@ -133,6 +141,7 @@ impl ReadCommand {
         Self {
             handle: handle.into(),
             budget: DEFAULT_READ_BUDGET,
+            span_id: None,
         }
     }
 
@@ -141,11 +150,35 @@ impl ReadCommand {
         self
     }
 
+    pub fn with_span_id(mut self, span_id: Option<String>) -> Self {
+        self.span_id = span_id.filter(|span_id| !span_id.trim().is_empty());
+        self
+    }
+
     pub fn datalog(&self) -> String {
+        let handle = datalog_string_literal(&self.handle);
+        if let Some(span_id) = &self.span_id {
+            let span_id = datalog_string_literal(span_id);
+            return format!(
+                "\
+read_row(span_id, text, start_line, end_line, tokens, total_tokens) :=
+    *content{{handle: {handle}, span_id: span_id, tokens: total_tokens}},
+    span_id = {span_id},
+    read({handle}, {budget}, span_id, text, start_line, end_line, tokens).
+
+? read_row(span_id, text, start_line, end_line, tokens, total_tokens).",
+                budget = self.budget,
+            );
+        }
+
         format!(
-            "? read({}, {}, span_id, text, start_line, end_line, tokens).",
-            datalog_string_literal(&self.handle),
-            self.budget,
+            "\
+read_row(span_id, text, start_line, end_line, tokens, total_tokens) :=
+    read({handle}, {budget}, span_id, text, start_line, end_line, tokens),
+    *content{{handle: {handle}, span_id: span_id, tokens: total_tokens}}.
+
+? read_row(span_id, text, start_line, end_line, tokens, total_tokens).",
+            budget = self.budget,
         )
     }
 }
@@ -198,6 +231,7 @@ mod tests {
 
         assert!(query.contains("TopK{ k: 3"));
         assert!(query.contains("low_confidence = false"));
+        assert!(query.contains("heading_path"));
         analyze(parse_program("search", &query).expect("query parses")).expect("query analyzes");
     }
 
@@ -218,6 +252,17 @@ mod tests {
             .datalog();
 
         assert!(query.contains(r#""notes/\"quoted\".md""#));
+        assert!(query.contains("total_tokens"));
+        analyze(parse_program("read", &query).expect("query parses")).expect("query analyzes");
+    }
+
+    #[test]
+    fn read_template_can_target_one_span() {
+        let query = ReadCommand::new("notes.md")
+            .with_span_id(Some("notes.md#h/target".to_string()))
+            .datalog();
+
+        assert!(query.contains(r#""notes.md#h/target""#));
         analyze(parse_program("read", &query).expect("query parses")).expect("query analyzes");
     }
 
