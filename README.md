@@ -448,9 +448,9 @@ Reusable project moves are plain `@verb` declarations in `anneal.dl`:
 
 ```datalog
 @verb(
-  name: "broken-area",
-  query: "broken_area(h, code, file) :=\n  verb_arg(\"area\", area),\n  diagnostic{subject: h, code: code, severity: \"error\", file: file},\n  area_of{h: h, area: area}.\n\n? broken_area(h, code, file).",
-  doc: "Error diagnostics in one area.",
+  name: "area-diagnostics",
+  query: "area_diagnostic(h, code, file) :=\n  verb_arg(\"area\", area),\n  diagnostic{subject: h, code: code, file: file},\n  area_of{h: h, area: area}.\n\n? area_diagnostic(h, code, file).",
+  doc: "Diagnostics in one area.",
   output_schema: "{\"h\":\"HandleId\",\"code\":\"String\",\"file\":\"String|null\"}",
   args: ["area:String"],
   capabilities: ["read"]
@@ -460,7 +460,7 @@ Reusable project moves are plain `@verb` declarations in `anneal.dl`:
 After that declaration is present in `anneal.dl`, call it like any other verb:
 
 ```bash
-anneal broken-area language --format=text
+anneal --root .design area-diagnostics '(root)' --format=text
 ```
 
 If a project verb is wrong, edit or remove the `@verb(...)` block in
