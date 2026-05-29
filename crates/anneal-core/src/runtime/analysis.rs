@@ -860,6 +860,7 @@ fn unknown_predicate_error(
     predicate: PredicateRef,
     arity: usize,
     location: SourceLocation,
+    signatures: Option<&SignatureMap>,
 ) -> StaticError {
     let suggestion = if predicate.module.is_none()
         && stored_relation_descriptor(predicate.name.as_str()).is_some()
@@ -868,6 +869,20 @@ fn unknown_predicate_error(
             ". Did you mean '*{}{{...}}'? '{}' is a stored relation; stored relations use a '*' prefix and named fields.",
             predicate.name, predicate.name
         )
+    } else if predicate.module.is_none()
+        && let Some(replacement) = retired_predicate_replacement(predicate.name.as_str())
+    {
+        format!(
+            ". Predicate '{}' was retired; use `{replacement}`.",
+            predicate.name
+        )
+    } else if let Some(signatures) = signatures {
+        let candidates = close_predicate_candidates(predicate.name.as_str(), arity, signatures);
+        if candidates.is_empty() {
+            ". Try `anneal schema` to list predicates, or `anneal describe convergence` for convergence vocabulary.".to_string()
+        } else {
+            format!(". Did you mean {}?", candidates.join(", "))
+        }
     } else {
         String::new()
     };
@@ -877,6 +892,67 @@ fn unknown_predicate_error(
         location,
         suggestion: suggestion.into_boxed_str(),
     }
+}
+
+fn retired_predicate_replacement(name: &str) -> Option<&'static str> {
+    match name {
+        "top_work" => Some("frontier(h, energy)"),
+        "blocked_row" => Some("blocker(h, energy, source)"),
+        "recent" => Some("changed_within(h, days)"),
+        _ => None,
+    }
+}
+
+fn close_predicate_candidates(name: &str, arity: usize, signatures: &SignatureMap) -> Vec<String> {
+    let mut scored = signatures
+        .iter()
+        .filter(|(predicate, _)| predicate.module.is_none())
+        .filter(|(_, signature)| signature.arity == arity)
+        .filter_map(|(predicate, signature)| {
+            let distance = levenshtein(name, predicate.name.as_str());
+            (distance <= 3).then(|| (distance, predicate.name.as_str(), signature))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, candidate, signature)| format!("`{}`", render_signature(candidate, signature)))
+        .collect()
+}
+
+fn render_signature(name: &str, signature: &PredicateSignature) -> String {
+    match &signature.parameters {
+        ParameterNames::Named(parameters) => {
+            let params = parameters
+                .iter()
+                .map(Ident::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{name}({params})")
+        }
+        ParameterNames::Unknown | ParameterNames::Ambiguous => {
+            format!("{name}/{}", signature.arity)
+        }
+    }
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (i, left_ch) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, right_ch) in right.iter().enumerate() {
+            let substitution = previous[j] + usize::from(left_ch != right_ch);
+            let insertion = current[j] + 1;
+            let deletion = previous[j + 1] + 1;
+            current[j + 1] = substitution.min(insertion).min(deletion);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 fn normalize_aggregate_named_calls(
@@ -944,6 +1020,7 @@ fn normalize_derived_named_args(
             derived.predicate.clone(),
             derived.args.len(),
             derived.location.clone(),
+            Some(signatures),
         )
     })?;
     let normalized = normalize_call_args(
@@ -1257,6 +1334,7 @@ fn check_derived_call(
             predicate.clone(),
             arity,
             location.clone(),
+            Some(signatures),
         )),
     }
 }
@@ -1812,6 +1890,32 @@ mod tests {
         assert!(
             err.to_string()
                 .contains(&location("inline", input, "missing(h)").to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_predicate_suggests_close_schema_candidate() {
+        let input = r#"
+        potential("x", 1).
+        ? potentiel(h, energy).
+        "#;
+        let err = analyze_err("inline", input);
+
+        assert!(
+            err.to_string().contains("Did you mean `potential/2`?"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unknown_predicate_teaches_retired_alias_replacement() {
+        let input = r"? recent(h, 7).";
+        let err = analyze_err("inline", input);
+
+        assert!(
+            err.to_string()
+                .contains("Predicate 'recent' was retired; use `changed_within(h, days)`"),
+            "{err}"
         );
     }
 

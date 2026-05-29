@@ -60,7 +60,8 @@ CORE CONCEPTS:
 
   Snapshot  A point-in-time capture of graph state, appended to local anneal
             history (XDG state by default, repo-local only if configured).
-            Enables convergence tracking with `advancing(h)`, `settled(h)`,
+            Enables convergence tracking with `flow(h, direction)`,
+            `advancing(h)`, `holding(h)`, `drifting(h)`,
             `at(\"snapshot:last\")`, and snapshot history queries.
 
 START HERE:
@@ -80,6 +81,8 @@ START HERE:
     anneal search TEXT        Ranked content retrieval
     anneal read HANDLE        Budgeted content spans for one handle
     anneal handle HANDLE      Incoming and outgoing edges for one handle
+    anneal handle HANDLE --impact
+                              Configured reverse-dependency impact
 
   Convergence work:
     anneal status             Start with the convergence frontier

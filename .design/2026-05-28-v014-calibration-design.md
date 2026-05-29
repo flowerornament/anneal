@@ -481,13 +481,13 @@ Default weights:
   missing_meta    1    (lowest — frontmatter hygiene)
   orphan_label    1    (lowest — referenceless label)
 
-Tuning: override in project anneal.dl with `config potential_weight`.
-  Example:
-    config potential_weight {
-      undischarged 8        # weight obligations higher in this corpus
-      freshness_decay 0     # disable freshness signal entirely
-    }
-  Higher weights = stronger pull on the work pool.
+	Tuning: override in project anneal.dl with `config potential_weight`.
+	  Example:
+	    config potential_weight {
+	      undischarged(8).      # weight obligations higher in this corpus
+	      freshness_decay(0).   # disable freshness signal entirely
+	    }
+	  Higher weights = stronger pull on the work pool.
 
 See also: entropy, potential, primary_entropy, entropy_priority.
 ```

@@ -9,9 +9,35 @@ potential_weight("undischarged", 5).
 potential_weight("broken_ref", 4).
 potential_weight("stale_dep", 3).
 potential_weight("confidence_gap", 3).
-potential_weight("freshness_decay", 2).
+potential_weight("freshness_decay", 1).
 potential_weight("missing_meta", 1).
 potential_weight("orphan_label", 1).
+
+@doc(
+  name: "potential_weight_override",
+  doc: "Return project-configured overrides for unsettled-work signal weights from config potential_weight."
+).
+potential_weight_override(source, weight) :=
+  *config{key: "potential_weight.override", value: source, ordinal: weight},
+  weight != null.
+
+overridden_potential_weight_source(source) :=
+  potential_weight_override(source, weight).
+
+@doc(
+  name: "effective_potential_weight",
+  doc: "Return the score weight actually used for potential, preferring project overrides over defaults."
+).
+@predicate(
+  name: "effective_potential_weight",
+  args: ["source", "weight"]
+).
+effective_potential_weight(source, weight) :=
+  potential_weight_override(source, weight).
+
+effective_potential_weight(source, weight) :=
+  potential_weight(source, weight),
+  not overridden_potential_weight_source(source).
 
 entropy_priority("broken_ref", 0).
 entropy_priority("undischarged", 1).
@@ -23,7 +49,7 @@ entropy_priority("orphan_label", 6).
 
 @doc(
   name: "potential_weight",
-  doc: "Return the default score weight for each kind of unsettled-work signal, such as an undischarged obligation or a broken reference."
+  doc: "Return the default score weight for each kind of unsettled-work signal; effective_potential_weight applies project overrides before potential is computed."
 ).
 
 @doc(
@@ -87,7 +113,7 @@ potential_subject(h) := entropy(h, source).
 ).
 potential(h, energy) :=
   potential_subject(h),
-  energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
+  energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
 
 @doc(
   name: "primary_entropy",
@@ -98,7 +124,7 @@ primary_entropy(h, source) :=
   (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
     (source, weight, priority) :
       entropy(h, source),
-      potential_weight(source, weight),
+      effective_potential_weight(source, weight),
       entropy_priority(source, priority)
   }.
 
@@ -194,7 +220,7 @@ area_frontier(area, h, score, why) :=
   (h, score, why) = TopK{ k: 3, key: score * 100 - priority :
     (h, score, why) :
       area_of(h, area),
-      work_candidate(h, score),
+      potential(h, score),
       primary_entropy(h, why),
       entropy_priority(why, priority)
   }.
@@ -223,17 +249,6 @@ blocker(h, energy, source) :=
   entropy(h, source).
 
 @doc(
-  name: "blocked_row",
-  doc: "Deprecated alias for blocker(h, energy, source); retained through v0.13 for compatibility."
-).
-@predicate(
-  name: "blocked_row",
-  args: ["h", "energy", "source"]
-).
-blocked_row(h, energy, source) :=
-  blocker(h, energy, source).
-
-@doc(
   name: "advancing",
   doc: "Return active handles whose status moved forward since the latest snapshot, such as draft to review."
 ).
@@ -243,7 +258,7 @@ advancing(h) :=
 
 @doc(
   name: "snapshot_history_present",
-  doc: "Return the number of saved snapshots when the corpus has history available for trend and advancement queries."
+  doc: "Return the number of saved snapshots when the corpus has history available for flow and advancement queries."
 ).
 snapshot_history_present(count) :=
   count = Count{ snapshot : *snapshot{snapshot: snapshot} },
@@ -260,3 +275,73 @@ recently_advanced(h) :=
   pipeline_position_for(prior, p_prior),
   pipeline_position_for(current, p_current),
   p_current > p_prior.
+
+@doc(
+  name: "holding",
+  doc: "Return active handles that still carry potential and have not changed status since the latest snapshot."
+).
+@predicate(
+  name: "holding",
+  args: ["h"]
+).
+holding(h) :=
+  active(h),
+  potential(h, energy),
+  snapshot_history_present(count),
+  at("snapshot:last") { *handle{id: h, status: prior} },
+  *handle{id: h, status: current},
+  prior = current.
+
+@doc(
+  name: "regressed",
+  doc: "Return active handles whose current status moved backward in the configured pipeline since the latest snapshot."
+).
+@predicate(
+  name: "regressed",
+  args: ["h"]
+).
+regressed(h) :=
+  active(h),
+  snapshot_history_present(count),
+  at("snapshot:last") { *handle{id: h, status: prior} },
+  *handle{id: h, status: current},
+  pipeline_position_for(prior, p_prior),
+  pipeline_position_for(current, p_current),
+  p_current < p_prior.
+
+@doc(
+  name: "re_opened",
+  doc: "Return handles that were terminal at the latest snapshot but are active now."
+).
+@predicate(
+  name: "re_opened",
+  args: ["h"]
+).
+re_opened(h) :=
+  active(h),
+  snapshot_history_present(count),
+  at("snapshot:last") { *handle{id: h, status: prior} },
+  *config{key: "convergence.terminal", value: prior}.
+
+@doc(
+  name: "drifting",
+  doc: "Return active handles moving away from settledness: either regressed in the pipeline or re-opened from terminal."
+).
+@predicate(
+  name: "drifting",
+  args: ["h"]
+).
+drifting(h) := regressed(h).
+drifting(h) := re_opened(h).
+
+@doc(
+  name: "flow",
+  doc: "Return the coarse convergence-flow direction for handles that are advancing, holding, or drifting; settled handles are outside flow by design."
+).
+@predicate(
+  name: "flow",
+  args: ["h", "direction"]
+).
+flow(h, "advancing") := advancing(h).
+flow(h, "holding") := holding(h).
+flow(h, "drifting") := drifting(h).

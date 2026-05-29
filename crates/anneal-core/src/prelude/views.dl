@@ -25,8 +25,8 @@ profile_issue_corpus("# Issue corpus lifecycle\npipeline_position_for(\"open\", 
 
 @verb(
   name: "status",
-  query: "status_item(\"work\", h, energy, \"potential\") :=\n  work_candidate(h, energy),\n  not blocked(h).\n\nstatus_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  primary_entropy(h, source).\n\nstatus_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nstatus_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? status_item(section, h, score, why).",
-  doc: "Show the first screen an agent should read: important work candidates, stalled handles, recently advancing handles, and broken diagnostics.",
+  query: "status_item(\"work\", h, energy, \"potential\") :=\n  potential(h, energy),\n  not blocked(h).\n\nstatus_item(\"blocked\", h, energy, source) :=\n  blocked(h),\n  potential(h, energy),\n  primary_entropy(h, source).\n\nstatus_item(\"advancing\", h, 0, \"recently_advanced\") :=\n  advancing(h).\n\nstatus_item(\"holding\", h, energy, \"holding\") :=\n  holding(h),\n  potential(h, energy).\n\nstatus_item(\"drifting\", h, 0, \"regressed\") :=\n  regressed(h).\n\nstatus_item(\"drifting\", h, 0, \"re_opened\") :=\n  re_opened(h).\n\nstatus_item(\"broken\", h, 100, code) :=\n  diagnostic(code, \"error\", h, file, line, evidence).\n\n? status_item(section, h, score, why).",
+  doc: "Show the first screen an agent should read: important work candidates, stalled handles, convergence flow, and broken diagnostics.",
   output_schema: "{\"section\":\"String\",\"h\":\"HandleId\",\"score\":\"Number\",\"why\":\"String\"}",
   args: [],
   capabilities: ["read"]

@@ -22,7 +22,6 @@ pub(crate) enum PrimitivePredicate {
     Flux,
     GitMtime,
     ChangedWithin,
-    Recent,
     TokenEstimate,
     Search,
     Read,
@@ -77,7 +76,6 @@ impl PrimitivePredicate {
         Self::Flux,
         Self::GitMtime,
         Self::ChangedWithin,
-        Self::Recent,
         Self::TokenEstimate,
         Self::Search,
         Self::Read,
@@ -117,7 +115,6 @@ impl PrimitivePredicate {
             "flux" => Some(Self::Flux),
             "git_mtime" => Some(Self::GitMtime),
             "changed_within" => Some(Self::ChangedWithin),
-            "recent" => Some(Self::Recent),
             "token_estimate" => Some(Self::TokenEstimate),
             "search" => Some(Self::Search),
             "read" => Some(Self::Read),
@@ -156,7 +153,6 @@ impl PrimitivePredicate {
             Self::Flux => "flux",
             Self::GitMtime => "git_mtime",
             Self::ChangedWithin => "changed_within",
-            Self::Recent => "recent",
             Self::TokenEstimate => "token_estimate",
             Self::Search => "search",
             Self::Read => "read",
@@ -215,7 +211,7 @@ impl PrimitivePredicate {
                 parameters: &["h", "n"],
                 sealed: true,
             },
-            Self::Freshness | Self::ChangedWithin | Self::Recent => PrimitiveSignature {
+            Self::Freshness | Self::ChangedWithin => PrimitiveSignature {
                 parameters: &["h", "days"],
                 sealed: true,
             },
@@ -320,7 +316,6 @@ impl PrimitivePredicate {
             | Self::Flux
             | Self::GitMtime
             | Self::ChangedWithin
-            | Self::Recent
             | Self::TokenEstimate
             | Self::Search
             | Self::Read
@@ -356,7 +351,7 @@ impl PrimitivePredicate {
                 position: 0,
                 argument: "handle",
             }],
-            Self::ChangedWithin | Self::Recent => &[RequiredPrimitiveInput {
+            Self::ChangedWithin => &[RequiredPrimitiveInput {
                 position: 1,
                 argument: "days",
             }],

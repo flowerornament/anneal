@@ -206,9 +206,10 @@ artifacts becoming authoritative.
 
 **Snapshot**  
 A point-in-time capture of graph state, stored in local anneal history. Snapshot
-history powers `at("snapshot:last")` queries, `advancing(h)`, `settled(h)`, and
-the status convergence summary. `anneal status` records bounded automatic
-snapshots, coalescing unchanged consecutive status reads.
+history powers `at("snapshot:last")` queries, `flow(h, direction)`,
+`advancing(h)`, `holding(h)`, `drifting(h)`, and the status convergence summary.
+`anneal status` records bounded automatic snapshots, coalescing unchanged
+consecutive status reads.
 
 **Prelude**  
 The built-in standard library of rules, diagnostics, ranking, and verbs. It is
@@ -243,7 +244,7 @@ anneal schema
 anneal describe search
 anneal describe runtime
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
-anneal -e '? changed_within(h, 7), *handle{id: h, summary: summary}.'
+anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file", summary: summary}.'
 anneal -e '? sources(name, recognizes, capabilities, doc).'
 ```
 
@@ -279,12 +280,14 @@ anneal -e '? blocker(h, energy, source), h = "HANDLE".'
 anneal -e '? *handle{id: h, file: f}, git_mtime(f, t).'
 ```
 
-`work_candidate` exposes raw unsettled-work energy; `frontier` projects the
+`potential` exposes raw unsettled-work energy; `frontier` projects the
 highest-energy candidates. `area_health` grades per-area convergence.
 `diagnostic{severity: "error"}` filters to blockers. `blocker` explains why one
-handle is stalled. `changed_within` and `git_mtime` let agents ask what changed
-without a separate `--since` surface. The convergence vocabulary lives in the
-prelude — use `describe potential`, `describe entropy`, `describe blocker`,
+handle is stalled. `flow` classifies active movement as advancing, holding, or
+drifting; settled handles are outside flow by design. `changed_within` and
+`git_mtime` let agents ask what changed without a separate `--since` surface.
+The convergence vocabulary lives in the prelude — use `describe convergence`,
+`describe potential`, `describe entropy`, `describe blocker`,
 `describe changed_within`, or `describe git_mtime` to learn the
 joins, then compose with `-e`. The `check` command remains as a hidden CI gate
 alias for `diagnostic{severity: "error"}`.
@@ -298,7 +301,7 @@ anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? source_of("frontier", file, lines).'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
-anneal -e '? changed_within(h, 7), search{query: "conformance", handle: h}.'
+anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file"}, search{query: "conformance", handle: h}.'
 ```
 
 The query language is Datalog-shaped. Stored relations use `*` prefixes, for
@@ -362,6 +365,11 @@ config impact {
   traverse(["DependsOn", "Supersedes", "Verifies"]).
 }
 
+config potential_weight {
+  freshness_decay(0).
+  undischarged(8).
+}
+
 config state {
   history_mode("xdg").  # xdg | repo | off
 }
@@ -418,7 +426,7 @@ Reusable project moves are plain `@verb` declarations in `anneal.dl`:
 ).
 ```
 
-Then call it like any other verb:
+After that declaration is present in `anneal.dl`, call it like any other verb:
 
 ```bash
 anneal broken-area language --format=text

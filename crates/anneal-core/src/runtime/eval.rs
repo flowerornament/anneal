@@ -123,6 +123,8 @@ const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
 const DEFAULT_EXPLAIN_DEPTH: usize = 5;
 const DEFAULT_EXPLAIN_ROW_LIMIT: usize = 3;
 const MAX_AGGREGATE_DERIVATION_CHILDREN: usize = 32;
+const CONFIG_IMPACT_TRAVERSE: &str = "impact.traverse";
+const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExplainDepth(usize);
@@ -2134,6 +2136,9 @@ struct GraphIndex {
     handles: BTreeMap<String, HandleState>,
     outgoing: BTreeMap<String, BTreeSet<String>>,
     incoming: BTreeMap<String, BTreeSet<String>>,
+    outgoing_edges: BTreeMap<String, BTreeSet<(String, String)>>,
+    incoming_edges: BTreeMap<String, BTreeSet<(String, String)>>,
+    impact_traverse: BTreeSet<String>,
     out_edge_count: BTreeMap<String, usize>,
     in_edge_count: BTreeMap<String, usize>,
     cite_count: BTreeMap<String, usize>,
@@ -2203,6 +2208,16 @@ impl GraphIndex {
                     .entry(to.clone())
                     .or_default()
                     .insert(from.clone());
+                if let Some(kind) = row_string(row, KIND_FIELD) {
+                    self.outgoing_edges
+                        .entry(from.clone())
+                        .or_default()
+                        .insert((kind.to_owned(), to.clone()));
+                    self.incoming_edges
+                        .entry(to.clone())
+                        .or_default()
+                        .insert((kind.to_owned(), from.clone()));
+                }
                 *self.out_edge_count.entry(from).or_default() += 1;
                 *self.in_edge_count.entry(to.clone()).or_default() += 1;
                 if row_string(row, KIND_FIELD) == Some(CITES_EDGE_KIND) {
@@ -2318,6 +2333,9 @@ impl GraphIndex {
             CONFIG_LINEAR_NAMESPACE => {
                 self.linear_namespaces.insert(value.to_owned());
             }
+            CONFIG_IMPACT_TRAVERSE => {
+                self.impact_traverse.insert(value.to_owned());
+            }
             _ => {}
         }
     }
@@ -2357,9 +2375,7 @@ impl GraphIndex {
             PrimitivePredicate::Freshness => self.freshness_tuples(constraints),
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
             PrimitivePredicate::GitMtime => self.git_mtime_tuples(constraints),
-            PrimitivePredicate::ChangedWithin | PrimitivePredicate::Recent => {
-                self.recent_tuples(constraints)
-            }
+            PrimitivePredicate::ChangedWithin => self.recent_tuples(constraints),
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
@@ -2424,7 +2440,7 @@ impl GraphIndex {
         match (root, impacted) {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(start), _) => self
-                .reachable_from(start, Direction::Incoming, max_depth)
+                .impact_reachable_from(start, Direction::Incoming, max_depth)
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
@@ -2436,7 +2452,7 @@ impl GraphIndex {
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
             (ArgConstraint::Any, ArgConstraint::Exact(end)) => self
-                .reachable_from(end, Direction::Outgoing, max_depth)
+                .impact_reachable_from(end, Direction::Outgoing, max_depth)
                 .into_iter()
                 .map(|step| {
                     Tuple(vec![
@@ -2451,7 +2467,7 @@ impl GraphIndex {
                 .nodes
                 .iter()
                 .flat_map(|start| {
-                    self.reachable_from(start, Direction::Incoming, max_depth)
+                    self.impact_reachable_from(start, Direction::Incoming, max_depth)
                         .into_iter()
                         .map(|step| {
                             Tuple(vec![
@@ -2885,6 +2901,15 @@ impl GraphIndex {
         self.walk_from(start, direction, false, max_depth)
     }
 
+    fn impact_reachable_from(
+        &self,
+        start: &str,
+        direction: Direction,
+        max_depth: Option<i64>,
+    ) -> Vec<GraphStep> {
+        self.walk_impact_from(start, direction, max_depth)
+    }
+
     fn neighborhood_from(&self, start: &str, max_depth: Option<i64>) -> Vec<GraphStep> {
         if !self.nodes.contains(start) {
             return Vec::new();
@@ -2927,6 +2952,34 @@ impl GraphIndex {
         out
     }
 
+    fn walk_impact_from(
+        &self,
+        start: &str,
+        direction: Direction,
+        max_depth: Option<i64>,
+    ) -> Vec<GraphStep> {
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::from([start.to_owned()]);
+        let mut queue = VecDeque::from([(start.to_owned(), 0_i64)]);
+        while let Some((node, depth)) = queue.pop_front() {
+            if max_depth.is_some_and(|max_depth| depth >= max_depth) {
+                continue;
+            }
+            self.visit_impact_neighbors(&node, direction, |next| {
+                if !seen.insert(next.clone()) {
+                    return;
+                }
+                let next_depth = depth + 1;
+                out.push(GraphStep {
+                    node: next.clone(),
+                    depth: next_depth,
+                });
+                queue.push_back((next.clone(), next_depth));
+            });
+        }
+        out
+    }
+
     fn visit_neighbors(&self, node: &str, direction: Direction, mut visit: impl FnMut(&String)) {
         match direction {
             Direction::Outgoing => {
@@ -2955,6 +3008,49 @@ impl GraphIndex {
                     }
                 }
             }
+        }
+    }
+
+    fn visit_impact_neighbors(
+        &self,
+        node: &str,
+        direction: Direction,
+        mut visit: impl FnMut(&String),
+    ) {
+        match direction {
+            Direction::Outgoing => {
+                self.visit_impact_edges(self.outgoing_edges.get(node), &mut visit);
+            }
+            Direction::Incoming => {
+                self.visit_impact_edges(self.incoming_edges.get(node), &mut visit);
+            }
+            Direction::Undirected => {
+                self.visit_impact_edges(self.incoming_edges.get(node), &mut visit);
+                self.visit_impact_edges(self.outgoing_edges.get(node), &mut visit);
+            }
+        }
+    }
+
+    fn visit_impact_edges(
+        &self,
+        edges: Option<&BTreeSet<(String, String)>>,
+        visit: &mut impl FnMut(&String),
+    ) {
+        let Some(edges) = edges else {
+            return;
+        };
+        for (kind, next) in edges {
+            if self.impact_traverses(kind) {
+                visit(next);
+            }
+        }
+    }
+
+    fn impact_traverses(&self, kind: &str) -> bool {
+        if self.impact_traverse.is_empty() {
+            DEFAULT_IMPACT_TRAVERSE.contains(&kind)
+        } else {
+            self.impact_traverse.contains(kind)
         }
     }
 }
@@ -4402,7 +4498,6 @@ fn primitive_tuples(
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
         | PrimitivePredicate::ChangedWithin
-        | PrimitivePredicate::Recent
         | PrimitivePredicate::TokenEstimate => Ok(database.graph.tuples(primitive, constraints)),
     }
 }
@@ -6710,7 +6805,6 @@ mod tests {
                 row([("depth", n(1)), ("x", s("compiler/jit-spec.md"))]),
                 row([("depth", n(1)), ("x", s("formal-model/v17.md"))]),
                 row([("depth", n(2)), ("x", s("compiler/exec.md"))]),
-                row([("depth", n(2)), ("x", s("research-log/2026-04-jit.md"))]),
             ],
         );
         assert_query_rows(
@@ -8876,37 +8970,6 @@ release_blocker(code) := issue(code, "error").
                 ("file", s("core/draft.md.md")),
                 ("instant", s("2026-05-20T12:00:00Z")),
             ])],
-        );
-    }
-
-    #[test]
-    fn recent_filters_handles_by_git_mtime_window() {
-        let output = evaluate_query_output_with_options(
-            r"? recent(h, 7).",
-            lifecycle_database()
-                .with_git_mtimes([
-                    (
-                        "core/draft.md.md".to_string(),
-                        "2026-05-20T12:00:00Z".to_string(),
-                    ),
-                    (
-                        "core/done.md.md".to_string(),
-                        "2026-04-01T12:00:00Z".to_string(),
-                    ),
-                ])
-                .with_evaluation_day(
-                    snapshot_days_since_epoch("2026-05-27").expect("fixture date parses"),
-                ),
-            EvalOptions::default(),
-        );
-
-        assert_query_rows(
-            &output
-                .rows
-                .into_iter()
-                .map(|row| row.fields)
-                .collect::<Vec<_>>(),
-            vec![row([("h", s("draft.md"))])],
         );
     }
 

@@ -129,9 +129,10 @@ anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'                   # area drill-down
 ```
 
-Convergence is composed via the prelude vocabulary. Use `describe potential`,
-`describe entropy`, `describe blocked`, `describe area_health` to learn the
-Common joins, then compose with `-e`. `check` remains as a hidden CI gate
+Convergence is composed via the prelude vocabulary. Use `describe convergence`,
+`describe potential`, `describe entropy`, `describe blocker`, `describe flow`,
+and `describe area_health` to learn the Common joins, then compose with `-e`.
+`check` remains as a hidden CI gate
 alias for the error-only filtered view.
 
 ## Command Map
@@ -163,11 +164,12 @@ alias for the error-only filtered view.
 Compose with `anneal -e` over prelude vocabulary:
 
 - `? diagnostic{severity: "error"}.`: blockers (error-only filtered view)
-- `? work_candidate(h, energy), entropy(h, source).`: raw work energy and cause
+- `? potential(h, energy), entropy(h, source).`: raw work energy and cause
 - `? frontier(h, energy), *handle{id: h, file: file}.`: ranked active work
 - `? area_health(area, grade, files, errors, cross_edges).`: per-area health
 - `? blocker(h, energy, source), h = "HANDLE".`: why one handle is stalled
-- `? changed_within(h, 7), *handle{id: h, summary: summary}.`: handles changed in the last week
+- `? flow(h, direction), *handle{id: h, status: status}.`: convergence flow
+- `? changed_within(h, 7), *handle{id: h, kind: "file", summary: summary}.`: files changed in the last week
 - `? *handle{id: h, file: f}, git_mtime(f, t).`: git-backed file change time
 
 Project `@verb` declarations in `anneal.dl` appear in `schema` and are callable
@@ -221,9 +223,9 @@ Common stored relations:
 Common prelude families:
 
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
-- convergence: lifecycle position, entropy, frontier, blockers, advancing, recent changes
+- convergence: lifecycle position, entropy, potential, frontier, blockers, flow, recent changes
 - checks: `diagnostic`
-- ranking: `search`, `work_candidate`, `frontier`, `top_k` helpers
+- ranking: `search`, `potential`, `frontier`, `top_k` helpers
 - views: callable starter verbs
 
 ## Agent Rules

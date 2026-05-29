@@ -21,6 +21,8 @@ use crate::verbs::{
 };
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
+const POTENTIAL_WEIGHT_SECTION: &str = "potential_weight";
+const POTENTIAL_WEIGHT_OVERRIDE_KEY: &str = "potential_weight.override";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectExtension {
@@ -335,6 +337,10 @@ fn config_entries(schema: &ConfigKey, head: &Head) -> Result<Vec<ConfigEntry>, P
 fn config_block_entries(
     block: &crate::runtime::ast::ConfigBlock,
 ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    if block.section.as_str() == POTENTIAL_WEIGHT_SECTION {
+        return potential_weight_entries(block);
+    }
+
     let mut entries = Vec::new();
     for declaration in &block.declarations {
         let section = block.section.as_str();
@@ -353,6 +359,36 @@ fn config_block_entries(
         }
         let values = declaration_values(declaration)?;
         entries.extend(schema.entries(values)?);
+    }
+    Ok(entries)
+}
+
+fn potential_weight_entries(
+    block: &crate::runtime::ast::ConfigBlock,
+) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
+    let mut entries = Vec::new();
+    for declaration in &block.declarations {
+        let values = declaration_values(declaration)?;
+        let [weight]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
+            ProjectLoadError::InvalidConfigArity {
+                key: format!("{POTENTIAL_WEIGHT_SECTION}.{}", declaration.name),
+                expected: "exactly one non-negative integer weight",
+                actual: values.len(),
+            }
+        })?;
+        let ordinal =
+            weight
+                .parse::<u32>()
+                .map_err(|_| ProjectLoadError::InvalidPotentialWeight {
+                    signal: declaration.name.to_string(),
+                    weight,
+                    location: declaration.location.clone(),
+                })?;
+        entries.push(ConfigEntry::ordered(
+            POTENTIAL_WEIGHT_OVERRIDE_KEY,
+            declaration.name.to_string(),
+            ordinal,
+        ));
     }
     Ok(entries)
 }
@@ -576,6 +612,14 @@ pub enum ProjectLoadError {
         key: String,
         expected: &'static str,
         actual: usize,
+    },
+    #[error(
+        "{location}: config potential_weight {{ {signal}(...) }} expects a non-negative integer weight; got '{weight}'"
+    )]
+    InvalidPotentialWeight {
+        signal: String,
+        weight: String,
+        location: crate::runtime::ast::SourceLocation,
     },
     #[error("ordered config declaration '{key}' overflowed u32 ordinals")]
     OrderedConfigIndexOverflow { key: String },
@@ -862,6 +906,11 @@ mod tests {
               terminal("archived").
             }
 
+            config potential_weight {
+              freshness_decay(0).
+              undischarged(8).
+            }
+
             config handles {
               force(["REQ"]).
               linear(["OQ"]).
@@ -890,6 +939,8 @@ mod tests {
                 ConfigEntry::scalar("convergence.active", "draft"),
                 ConfigEntry::scalar("convergence.active", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
+                ConfigEntry::ordered("potential_weight.override", "freshness_decay", 0),
+                ConfigEntry::ordered("potential_weight.override", "undischarged", 8),
                 ConfigEntry::scalar("handles.force", "REQ"),
                 ConfigEntry::scalar("handles.linear", "OQ"),
                 ConfigEntry::scalar("frontmatter.field.depends-on.edge_kind", "DependsOn"),
@@ -1010,6 +1061,27 @@ mod tests {
         assert!(matches!(
             err,
             ProjectLoadError::UnknownConfigDeclaration { .. }
+        ));
+    }
+
+    #[test]
+    fn project_potential_weight_config_rejects_non_integer_weights() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config potential_weight {
+              freshness_decay("low").
+            }
+            "#,
+        );
+
+        let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("invalid weight rejected");
+
+        assert!(matches!(
+            err,
+            ProjectLoadError::InvalidPotentialWeight { .. }
         ));
     }
 

@@ -2,39 +2,32 @@
 
 @doc(
   name: "ranking",
-  doc: "Ranking helpers turn unsettled-work scores into ordered result sets for commands like work and status."
+  doc: "Ranking helpers turn unsettled-work scores into ordered result sets for commands like status and area_frontier."
 ).
 
 @doc(
   name: "work_candidate",
-  doc: "Return every handle with raw unsettled-work energy; use frontier(h, energy) for the capped top projection."
+  doc: "Deprecated alias for potential(h, energy); retained through v0.14 while agents migrate to potential."
 ).
 work_candidate(h, energy) :=
   potential(h, energy).
 
 @doc(
   name: "frontier",
-  doc: "Return the highest-energy work candidates, capped to the default status/work list size."
+  doc: "Return the highest-potential work handles, capped to the default status list size."
 ).
 frontier(h, energy) :=
   (h, energy) = TopK{ k: 25, key: energy :
     (h, energy) :
-    work_candidate(h, energy)
+    potential(h, energy)
   }.
 
 @doc(
-  name: "top_work",
-  doc: "Deprecated alias for frontier(h, energy); retained through v0.13 for compatibility."
-).
-top_work(h, energy) :=
-  frontier(h, energy).
-
-@doc(
   name: "ranked_work",
-  doc: "Return every work candidate with a dense rank, so equal scores share a rank and the next score gets the next rank."
+  doc: "Return every potential-bearing handle with a dense rank, so equal scores share a rank and the next score gets the next rank."
 ).
 ranked_work(h, energy, rank) :=
   (h, energy, rank) = Rank{ key: energy, rank: rank :
     (h, energy, rank) :
-    work_candidate(h, energy)
+    potential(h, energy)
   }.

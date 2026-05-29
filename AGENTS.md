@@ -6,7 +6,7 @@ Convergence assistant for knowledge corpora.
 
 ## Design Corpus
 
-- `.design/` is anneal's own design corpus. Inspect and maintain it with `anneal` under `.design/anneal.toml`: `anneal status`, `anneal check --active-only`, `anneal impact <file>`.
+- `.design/` is anneal's own design corpus. Inspect and maintain it with `anneal`: `anneal status`, `anneal check`, `anneal handle <file> --impact`.
 - `.design/2026-05-13-corpus-runtime.md` is the authoritative v2.0 master spec (Programmable Corpus Runtime).
 - `.design/anneal-spec.md` is the v1.x spec — superseded but retained as historical record of the shipped shape.
 - `.design/2026-05-13-engine-spike-results.md` and `.design/2026-05-13-ascent-unsafe-audit.md` are the engine-viability artifacts that gate v2.0 architecture decisions. Do not casually claim "SP-R1 cleared" — Ascent unsafe is accepted as bounded dependency risk, not eliminated.
@@ -28,13 +28,13 @@ For orientation in the v2.0 master spec (`2026-05-13-corpus-runtime.md`):
 CR-* labels are referenced from bd issues and commit messages — search the spec for the exact label to find the governing definition.
 
 For low-context corpus orientation, prefer:
-- `anneal status --json --compact`
-- `anneal check --active-only`
-- `anneal get <handle> --context`
-- `anneal find <text> --limit 25`
-- `anneal map --around=<handle>`
+- `anneal context "<goal>"`
+- `anneal status`
+- `anneal search "<text>" --limit 25`
+- `anneal read <handle> --budget 4000`
+- `anneal handle <handle> --impact`
 
-Avoid broad default dumps like raw `check --json`, empty-query `find --json`, or full-graph renders unless you are intentionally expanding with flags like `--diagnostics`, `--refs`, `--nodes`, or `--full`.
+Avoid broad default dumps like raw `check --json`, empty search queries, or full graph queries unless you are intentionally expanding with `schema`, `describe`, and narrow `anneal -e` predicates.
 
 ## Rust Toolchain
 

@@ -1139,8 +1139,10 @@ mod tests {
         assert!(matches!(
             outputs[0].rows[0].fields.get("doc"),
             Some(Value::String(doc))
-                if doc.contains("action map")
-                    && doc.contains("agent should read")
+                if doc.contains("anneal's physics")
+                    && doc.contains("The Act:")
+                    && doc.contains("Vocabulary:")
+                    && doc.contains("Tuning syntax:")
                     && doc.contains("Topic source:")
         ));
         assert_eq!(
@@ -1236,16 +1238,17 @@ mod tests {
                 ),
                 ("area_frontier", r"? area_frontier(area, h, score, why)."),
                 ("potential", r#"? potential("ticket-1", energy)."#),
+                (
+                    "effective_potential_weight",
+                    r#"? effective_potential_weight("freshness_decay", weight)."#,
+                ),
                 ("blocked", r#"? blocked("ticket-1")."#),
                 ("blocker", r#"? blocker("ticket-1", energy, source)."#),
-                (
-                    "blocked_row",
-                    r#"? blocked_row("ticket-1", energy, source)."#,
-                ),
                 ("advancing", r#"? advancing("ticket-2")."#),
+                ("holding", r#"? holding("ticket-1")."#),
+                ("flow", r"? flow(h, direction)."),
                 ("ranked_work", r"? ranked_work(h, energy, rank)."),
                 ("frontier", r"? frontier(h, energy)."),
-                ("top_work", r"? top_work(h, energy)."),
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
                 ("examples", r#"? examples("incoming_edge", example)."#),
@@ -1355,6 +1358,10 @@ mod tests {
             output(&outputs, "potential"),
             &[("energy", int(7))]
         ));
+        assert!(has_row(
+            output(&outputs, "effective_potential_weight"),
+            &[("weight", int(1))]
+        ));
         assert_eq!(
             output(&outputs, "blocked").rows.len(),
             1,
@@ -1364,15 +1371,27 @@ mod tests {
             output(&outputs, "blocker"),
             &[("energy", int(7)), ("source", string("broken_ref"))]
         ));
-        assert!(has_row(
-            output(&outputs, "blocked_row"),
-            &[("energy", int(7)), ("source", string("broken_ref"))]
-        ));
         assert_eq!(
             output(&outputs, "advancing").rows.len(),
             1,
             "ticket-2 advanced"
         );
+        assert_eq!(
+            output(&outputs, "holding").rows.len(),
+            1,
+            "ticket-1 holds potential without status movement"
+        );
+        assert!(has_row(
+            output(&outputs, "flow"),
+            &[
+                ("h", string("ticket-2")),
+                ("direction", string("advancing"))
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "flow"),
+            &[("h", string("ticket-1")), ("direction", string("holding"))]
+        ));
         assert!(
             has_row(
                 output(&outputs, "ranked_work"),
@@ -1387,10 +1406,6 @@ mod tests {
         );
         assert!(has_row(
             output(&outputs, "frontier"),
-            &[("h", string("REQ-1")), ("energy", int(6))]
-        ));
-        assert!(has_row(
-            output(&outputs, "top_work"),
             &[("h", string("REQ-1")), ("energy", int(6))]
         ));
         assert!(matches!(
@@ -1929,14 +1944,24 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             store
                 .replace_snapshots(
                     &corpus,
-                    vec![SnapshotFact {
-                        corpus: corpus.clone(),
-                        snapshot: "s1".to_string(),
-                        at: "2026-05-01".to_string(),
-                        id: "ticket-2".to_string(),
-                        key: "status".to_string(),
-                        value: "open".to_string(),
-                    }],
+                    vec![
+                        SnapshotFact {
+                            corpus: corpus.clone(),
+                            snapshot: "s1".to_string(),
+                            at: "2026-05-01".to_string(),
+                            id: "ticket-2".to_string(),
+                            key: "status".to_string(),
+                            value: "open".to_string(),
+                        },
+                        SnapshotFact {
+                            corpus: corpus.clone(),
+                            snapshot: "s1".to_string(),
+                            at: "2026-05-01".to_string(),
+                            id: "ticket-1".to_string(),
+                            key: "status".to_string(),
+                            value: "open".to_string(),
+                        },
+                    ],
                 )
                 .expect("replace stdlib fixture snapshots");
         }

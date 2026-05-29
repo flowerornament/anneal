@@ -462,15 +462,15 @@ Grammar tour:
   Negation uses `not` after variables are positively bound:
     missing_discharge(h) := obligation(h), not discharged(h).
 
-  Aggregates bind tuples from grouped rows:
-    area(area) := area_of(h, area).
-    area_count(area, n) :=
-      area(area),
-      n = Count{ h : area_of(h, area) }.
+	  Aggregates bind tuples from grouped rows:
+	    area(area) := area_of(h, area).
+	    area_count(area, n) :=
+	      area(area),
+	      n = Count{ h : area_of(h, area) }.
 
-    ? (h, energy) = TopK{ k: 10, key: energy :
-        (h, energy) : work_candidate(h, energy)
-      }.
+	    ? (h, energy) = TopK{ k: 10, key: energy :
+	        (h, energy) : potential(h, energy)
+	      }.
 
   Time blocks query supported historical references:
     ? at(\"snapshot:last\") { *handle{id: h, status: old} },
@@ -496,7 +496,7 @@ Examples:
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
-  anneal -e '? changed_within(h, 7), search{query: \"conformance\", handle: h}.'
+	  anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\"}, search{query: \"conformance\", handle: h}.'
   anneal -e '? source_of(\"frontier\", file, lines).'
   anneal -e - < query.dl
 
@@ -1586,7 +1586,14 @@ fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
 }
 
 fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
-    const SECTION_ORDER: [&str; 4] = ["broken", "blocked", "work", "advancing"];
+    const SECTION_ORDER: [&str; 6] = [
+        "broken",
+        "blocked",
+        "work",
+        "advancing",
+        "holding",
+        "drifting",
+    ];
     const MAX_ROWS_PER_SECTION: usize = 12;
 
     writeln!(writer, "Status")?;
@@ -1606,11 +1613,13 @@ fn write_status_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
 
     writeln!(
         writer,
-        "Convergence  broken={}  blocked={}  work={}  advancing={}",
+        "Convergence  broken={}  blocked={}  work={}  advancing={}  holding={}  drifting={}",
         section_len(&sections, "broken"),
         section_len(&sections, "blocked"),
         section_len(&sections, "work"),
-        section_len(&sections, "advancing")
+        section_len(&sections, "advancing"),
+        section_len(&sections, "holding"),
+        section_len(&sections, "drifting")
     )?;
 
     for section in SECTION_ORDER
@@ -1963,7 +1972,7 @@ fn write_handle_edges<W: Write>(
 
 fn write_handle_impact<W: Write>(writer: &mut W, direct: &[&Row], indirect: &[&Row]) -> Result<()> {
     writeln!(writer)?;
-    writeln!(writer, "Impact")?;
+    writeln!(writer, "Impact (configured reverse traversal)")?;
     write_handle_impact_group(writer, "Direct", direct)?;
     write_handle_impact_group(writer, "Indirect", indirect)?;
     Ok(())
@@ -3110,7 +3119,9 @@ mod tests {
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.starts_with("Status\n"));
-        assert!(rendered.contains("Convergence  broken=1  blocked=0  work=1  advancing=0"));
+        assert!(rendered.contains(
+            "Convergence  broken=1  blocked=0  work=1  advancing=0  holding=0  drifting=0"
+        ));
         assert!(rendered.contains("Broken\n 1. bad.md"));
         assert!(rendered.contains("Other work\n 1. plan.md"));
     }
@@ -3416,6 +3427,53 @@ mod tests {
     }
 
     #[test]
+    fn potential_weight_project_config_changes_effective_energy() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            config frontmatter {
+              field("depends-on", "DependsOn", "forward").
+            }
+
+            config potential_weight {
+              broken_ref(1).
+            }
+            "#,
+        )
+        .expect("write project rules");
+        fs::write(
+            root.join("a.md"),
+            "---\nstatus: draft\ndepends-on: missing.md\n---\n# A\n",
+        )
+        .expect("write doc");
+
+        let session = RuntimeSession::load(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? effective_potential_weight("broken_ref", weight), potential("a.md", energy)."#
+                    .to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows { rows, .. } = output else {
+            panic!("eval should emit rows");
+        };
+
+        assert!(rows.iter().any(|row| {
+            row.fields.get("weight")
+                == Some(&anneal_core::runtime::Value::Number(NumberValue::Int(1)))
+        }));
+        assert!(rows.iter().any(|row| {
+            row.fields.get("energy")
+                == Some(&anneal_core::runtime::Value::Number(NumberValue::Int(1)))
+        }));
+    }
+
+    #[test]
     fn handle_impact_projects_configured_reverse_dependencies() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
@@ -3474,6 +3532,30 @@ mod tests {
         assert_eq!(impacted.get("e.md"), Some(&NumberValue::Int(2)));
         assert!(!impacted.contains_key("d.md"));
 
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? impact("b.md", affected, depth), depth = 1."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("impact eval runs");
+        let CommandOutput::Rows {
+            rows: eval_rows, ..
+        } = output
+        else {
+            panic!("impact eval should emit rows");
+        };
+        let direct_eval = eval_rows
+            .iter()
+            .filter_map(|row| required_string(row, "affected").ok().map(ToOwned::to_owned))
+            .collect::<BTreeSet<_>>();
+        let direct_handle = impacted
+            .iter()
+            .filter_map(|(handle, depth)| (depth == &NumberValue::Int(1)).then_some(handle.clone()))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(direct_handle, direct_eval);
+
         let mut rendered = Vec::new();
         CommandOutput::rows(
             rows,
@@ -3486,12 +3568,15 @@ mod tests {
         .expect("render handle");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
-        assert!(rendered.contains("Impact\nDirect (2)"));
+        assert!(rendered.contains("Impact (configured reverse traversal)\nDirect (2)"));
         assert!(rendered.contains("Indirect (1)"));
         assert!(rendered.contains("a.md"));
         assert!(rendered.contains("c.md"));
         assert!(rendered.contains("e.md"));
-        let impact_text = rendered.split("Impact\n").nth(1).expect("impact section");
+        let impact_text = rendered
+            .split("Impact (configured reverse traversal)\n")
+            .nth(1)
+            .expect("impact section");
         assert!(!impact_text.contains("d.md"));
     }
 
@@ -3626,7 +3711,7 @@ mod tests {
                         && !doc.contains("Hidden support commands: work")
                         && doc.contains("Observed vocabulary recipes")
                         && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
-                        && doc.contains("? changed_within(h, 7), *handle{id: h, summary: summary}. -> Output: h, summary")
+	                        && doc.contains("? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}. -> Output: h, summary")
                 })
             }),
             "describe runtime should fold the command map and vocabulary recipes into the teaching card"

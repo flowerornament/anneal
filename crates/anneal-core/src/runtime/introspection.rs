@@ -122,7 +122,6 @@ impl IntrospectionIndex {
             | PrimitivePredicate::Flux
             | PrimitivePredicate::GitMtime
             | PrimitivePredicate::ChangedWithin
-            | PrimitivePredicate::Recent
             | PrimitivePredicate::TokenEstimate
             | PrimitivePredicate::Search
             | PrimitivePredicate::Read
@@ -265,25 +264,30 @@ impl IntrospectionBuilder {
                 summary: "Query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model.",
                 kind: Some(DescribeKind::RuntimeTopic),
                 source_label: Some("Topic source"),
-                extra_lines: vec![
-                    "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
-                    "Hidden support commands: check, prime.".to_string(),
-                    "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
-                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
-                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
-                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
-                ],
-                examples: vec![
-                    "? schema(name, kind, signature, determinism, provenance).",
-                    "? describe(\"search\", doc).",
-                    "? examples(\"search\", example).",
-                    "? *handle{status: status}, status != null.",
-                    "? *edge{kind: kind}.",
-                    "? *handle{id: h, file: file}, git_mtime(file, instant).",
-                    "? changed_within(h, 7), *handle{id: h, summary: summary}.",
-                ],
-                ..DescribeCard::default()
-            }),
+	                extra_lines: vec![
+	                    "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
+	                    "Hidden support commands: check, prime.".to_string(),
+	                    "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
+	                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
+	                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
+	                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
+	                    "History concepts: snapshots capture graph state over time for at(\"snapshot:last\") queries.".to_string(),
+	                    "History concepts: generations mark source refresh epochs for atomic fact replacement.".to_string(),
+	                    "History concepts: trails record per-query provenance and surfaced/consumed references.".to_string(),
+	                ],
+	                examples: vec![
+	                    "? schema(name, kind, signature, determinism, provenance).",
+	                    "? describe(\"search\", doc).",
+	                    "? describe(\"convergence\", doc).",
+	                    "? examples(\"search\", example).",
+	                    "? *handle{status: status}, status != null.",
+	                    "? *edge{kind: kind}.",
+	                    "? *handle{id: h, file: file}, git_mtime(file, instant).",
+	                    "? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}.",
+	                    "? flow(h, direction), *handle{id: h, summary: summary}.",
+	                ],
+	                ..DescribeCard::default()
+	            }),
         ));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
@@ -532,17 +536,19 @@ impl IntrospectionBuilder {
             if predicate_names.contains(name) {
                 continue;
             }
-            self.describe.insert(describe_entry(
-                name,
-                DescribeKind::RuntimeTopic,
-                &describe_card(DescribeCard {
+            let doc = if name == "convergence" {
+                convergence_topic_card(info)
+            } else {
+                describe_card(DescribeCard {
                     summary: &info.doc,
                     kind: Some(DescribeKind::RuntimeTopic),
                     source_label: Some("Topic source"),
                     source: info.primary_source().as_deref(),
                     ..DescribeCard::default()
-                }),
-            ));
+                })
+            };
+            self.describe
+                .insert(describe_entry(name, DescribeKind::RuntimeTopic, &doc));
             for (file, line_text) in info.source_lines.iter_line_text() {
                 self.source_of.insert(Tuple(vec![
                     string_value(name),
@@ -611,7 +617,7 @@ impl IntrospectionBuilder {
                     requires: predicate_requires(&name),
                     see_also: predicate_see_also(&name),
                     examples: predicate_example(&name).into_iter().collect(),
-                    ..DescribeCard::default()
+                    extra_lines: predicate_extra_lines(&name),
                 }),
             ));
         }
@@ -721,8 +727,17 @@ fn display_parameter_name(predicate_name: &str, idx: usize, parameter: &Paramete
 fn documented_parameter_names(predicate_name: &str) -> Option<&'static [&'static str]> {
     match predicate_name {
         "diagnostic" => Some(&["code", "severity", "subject", "file", "line", "evidence"]),
-        "entropy" => Some(&["h", "source"]),
-        "potential_weight" => Some(&["source", "weight"]),
+        "entropy" | "primary_entropy" => Some(&["h", "source"]),
+        "potential_weight" | "potential_weight_override" | "effective_potential_weight" => {
+            Some(&["source", "weight"])
+        }
+        "potential_subject" | "advancing" | "holding" | "regressed" | "re_opened" | "drifting" => {
+            Some(&["h"])
+        }
+        "potential" | "frontier" | "work_candidate" => Some(&["h", "energy"]),
+        "blocker" => Some(&["h", "energy", "source"]),
+        "ranked_work" => Some(&["h", "energy", "rank"]),
+        "flow" => Some(&["h", "direction"]),
         "area" => Some(&["area"]),
         "area_file_count" => Some(&["area", "files"]),
         "area_error_location_count" => Some(&["area", "code", "subject", "file", "line", "count"]),
@@ -1036,6 +1051,46 @@ struct DiagnosticCodeCard {
     common_joins: &'static [&'static str],
     example: &'static str,
     see_also: &'static [&'static str],
+}
+
+fn convergence_topic_card(info: &DocInfo) -> String {
+    let source = info.primary_source();
+    describe_card(DescribeCard {
+        summary: "Convergence is anneal's physics: corpus facts create energy, energy creates a frontier, agents do work, and snapshots show whether the landscape is flattening.",
+        kind: Some(DescribeKind::RuntimeTopic),
+        relationship: Some("This topic names the act as well as the vocabulary. Use `status` for a landing view, then compose `potential`, `frontier`, `blocker`, diagnostics, and `flow` in eval."),
+        common_joins: &[
+            "`potential(h, energy), primary_entropy(h, source)` to see why a handle has energy",
+            "`frontier(h, energy), *handle{id: h, file: file, summary: summary}` for the global work frontier",
+            "`blocker(h, energy, source), primary_entropy(h, source)` for one blocker reason per handle",
+            "`flow(h, direction), *handle{id: h, status: status}` to inspect convergence flow",
+        ],
+        extra_lines: vec![
+            "The Act: agents dissipate potential by editing corpus facts, then rerun status/check to verify energy moved.".to_string(),
+            "Vocabulary: entropy is an unsettled signal; potential is weighted energy; frontier is the highest-energy projection; blocker is stalled energy; flow is advancing, holding, or drifting.".to_string(),
+            "Flow: settled handles are outside flow by design; regressed(h) and re_opened(h) explain drifting(h) leaves.".to_string(),
+            "Tuning: `effective_potential_weight` shows the weights actually used after project overrides.".to_string(),
+            "Tuning syntax: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
+        ],
+        requires: &["snapshot history for flow predicates that compare at(\"snapshot:last\") with the current graph."],
+        see_also: &[
+            "status",
+            "potential",
+            "frontier",
+            "blocker",
+            "flow",
+            "potential_weight",
+            "effective_potential_weight",
+        ],
+        examples: vec![
+            "? frontier(h, energy), primary_entropy(h, source).",
+            "? flow(h, direction), *handle{id: h, summary: summary}.",
+            "? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.",
+        ],
+        source_label: Some("Topic source"),
+        source: source.as_deref(),
+        ..DescribeCard::default()
+    })
 }
 
 const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
@@ -1427,9 +1482,6 @@ fn primitive_doc(primitive: PrimitivePredicate) -> &'static str {
         PrimitivePredicate::ChangedWithin => {
             "Return handles whose backing file changed within a bound number of days according to git history."
         }
-        PrimitivePredicate::Recent => {
-            "Deprecated alias for changed_within(h, days); retained through v0.13 for compatibility."
-        }
         PrimitivePredicate::TokenEstimate => {
             "Return the estimated number of stored content tokens for a handle."
         }
@@ -1475,9 +1527,7 @@ fn primitive_requires(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Flux => {
             &["snapshot history. On a corpus with no snapshots, status-change counts are zero."]
         }
-        PrimitivePredicate::GitMtime
-        | PrimitivePredicate::ChangedWithin
-        | PrimitivePredicate::Recent => &[
+        PrimitivePredicate::GitMtime | PrimitivePredicate::ChangedWithin => &[
             "git metadata supplied by the runtime host. Untracked files and non-git corpora produce no rows.",
         ],
         PrimitivePredicate::ReadFull => &[
@@ -1522,6 +1572,12 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
         PrimitivePredicate::Read => Some(
             "The `read` verb wraps this primitive with typed CLI arguments for handle and budget.",
         ),
+        PrimitivePredicate::ChangedWithin => Some(
+            "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file while section handles still exist.",
+        ),
+        PrimitivePredicate::GitMtime => Some(
+            "Lower-level file timestamp primitive used by `changed_within`; compose it directly when you need exact commit times.",
+        ),
         PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
         PrimitivePredicate::Verbs => {
             Some("Use `schema` for the verb catalog and `describe NAME` for a verb teaching card.")
@@ -1547,9 +1603,9 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
         PrimitivePredicate::Schema => &["describe", "examples"],
         PrimitivePredicate::Describe => &["schema", "examples"],
         PrimitivePredicate::Examples => &["describe", "schema"],
-        PrimitivePredicate::GitMtime
-        | PrimitivePredicate::ChangedWithin
-        | PrimitivePredicate::Recent => &["*handle", "freshness"],
+        PrimitivePredicate::GitMtime | PrimitivePredicate::ChangedWithin => {
+            &["*handle", "freshness"]
+        }
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
         | PrimitivePredicate::Impact => {
@@ -1566,12 +1622,15 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
 fn predicate_requires(name: &str) -> &'static [&'static str] {
     match name {
         "entropy" | "primary_entropy" | "potential_subject" | "potential" | "work_candidate"
-        | "frontier" | "top_work" | "ranked_work" => &[
+        | "frontier" | "ranked_work" => &[
             "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
         ],
-        "entropy_priority" => {
-            &["`potential_weight` rows for the same source; lower priority values win ties."]
-        }
+        "potential_weight_override" | "effective_potential_weight" => &[
+            "default `potential_weight` rows; `config potential_weight { signal(weight). }` rows override matching sources.",
+        ],
+        "entropy_priority" => &[
+            "`effective_potential_weight` rows for the same source; lower priority values win ties.",
+        ],
         "area"
         | "area_file_count"
         | "area_error_location_count"
@@ -1579,9 +1638,9 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         | "area_cross_edges"
         | "area_health"
         | "area_frontier" => &[
-            "`area_of` rows from source facts. Area health also uses diagnostics, edges, and work-candidate convergence signals.",
+            "`area_of` rows from source facts. Area health also uses diagnostics, edges, and potential convergence signals.",
         ],
-        "blocked" | "blocker" | "blocked_row" => {
+        "blocked" | "blocker" => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
         }
         "broken_reference" => {
@@ -1611,7 +1670,14 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "top_pair" | "s005_top_pair" => {
             &["namespace co-occurrence in file references plus configured concern groups."]
         }
-        "advancing" | "recently_advanced" | "snapshot_history_present" => &[
+        "advancing"
+        | "recently_advanced"
+        | "holding"
+        | "regressed"
+        | "re_opened"
+        | "drifting"
+        | "flow"
+        | "snapshot_history_present" => &[
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
         ],
         "configured_pipeline_status"
@@ -1630,20 +1696,41 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
             "Shared diagnostic stream used by `status`, `check`, and eval diagnostics; individual rules contribute rows by diagnostic code.",
         ),
         "work_candidate" => Some(
+            "Deprecated alias for `potential(h, energy)`; retained through v0.14 while agents migrate to the canonical name.",
+        ),
+        "potential" => Some(
             "Canonical raw-energy predicate for handles an agent could improve; use `frontier` for the capped top projection.",
+        ),
+        "potential_weight" => Some(
+            "Default calibration table. Project `config potential_weight` entries override these through `effective_potential_weight`.",
+        ),
+        "potential_weight_override" => {
+            Some("Runtime projection of project-specific weight overrides from anneal.dl.")
+        }
+        "effective_potential_weight" => Some(
+            "The weight table consumed by `potential`; this is the place to verify tuning after overrides.",
         ),
         "frontier" => Some(
             "Canonical global convergence frontier; paired with `area_frontier` for area-scoped work.",
         ),
-        "top_work" => Some(
-            "Deprecated alias for `frontier(h, energy)`; retained through v0.13 for compatibility.",
-        ),
         "blocked" => Some("Used by `blocker` and the blocked section of `status`."),
         "blocker" => Some(
-            "Canonical focused blocker view: blocked handle, total energy, and the signal explaining it.",
+            "Canonical focused blocker view: blocked handle, total energy, and each signal explaining it. Join `primary_entropy` when you want one row per handle.",
         ),
-        "blocked_row" => Some(
-            "Deprecated alias for `blocker(h, energy, source)`; retained through v0.13 for compatibility.",
+        "holding" => Some(
+            "A flow leaf for active handles with remaining potential whose status did not change since the latest snapshot.",
+        ),
+        "regressed" => Some(
+            "A drifting leaf for active handles that moved backward in the configured lifecycle since the latest snapshot.",
+        ),
+        "re_opened" => Some(
+            "A drifting leaf for handles that were terminal at the latest snapshot and active now.",
+        ),
+        "drifting" => Some(
+            "A flow leaf that unifies `regressed(h)` and `re_opened(h)` as movement away from settledness.",
+        ),
+        "flow" => Some(
+            "Coarse convergence direction: advancing, holding, or drifting. Settled handles are intentionally outside flow.",
         ),
         "broken_reference" => {
             Some("Diagnostic-rule predicate behind E001 broken-reference errors.")
@@ -1686,6 +1773,49 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
     }
 }
 
+fn predicate_extra_lines(name: &str) -> Vec<String> {
+    match name {
+        "potential_weight" => vec![
+            "Default weights in v0.14: undischarged=5, broken_ref=4, stale_dep=3, confidence_gap=3, freshness_decay=1, missing_meta=1, orphan_label=1.".to_string(),
+            "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
+            "Verify active tuning with `effective_potential_weight(source, weight)`; potential uses effective weights, not raw defaults.".to_string(),
+        ],
+        "effective_potential_weight" => vec![
+            "This is the calibration relation consumed by `potential`; project overrides replace matching default sources instead of adding duplicate weights.".to_string(),
+            "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
+        ],
+	        "work_candidate" => vec![
+	            "Deprecated alias: use `potential(h, energy)`. This alias is retained through v0.14 and scheduled for retirement in v0.15.".to_string(),
+	        ],
+	        "flow" => vec![
+	            "Directions are exactly \"advancing\", \"holding\", and \"drifting\". Leaf predicates explain why a handle entered a direction.".to_string(),
+	            "`regressed(h)` and `re_opened(h)` are drifting leaves, not extra flow directions.".to_string(),
+	            "Settled handles are excluded so flow stays about active movement, not completed state.".to_string(),
+	        ],
+	        "holding" => vec![
+	            "Holding means stuck with work remaining: the handle is active, has potential, and has the same status at snapshot:last and now.".to_string(),
+	            "This intentionally excludes settled or inactive handles that simply did not change.".to_string(),
+	        ],
+	        "drifting" => vec![
+	            "Drifting means moving away from settledness. Inspect `regressed(h)` and `re_opened(h)` to see which leaf fired.".to_string(),
+	            "Use `flow(h, \"drifting\")` when you only need the coarse direction.".to_string(),
+	        ],
+	        "regressed" => vec![
+	            "Regression compares configured pipeline positions at snapshot:last and now.".to_string(),
+	            "If a status has no configured position, it cannot produce a regression row.".to_string(),
+	        ],
+	        "re_opened" => vec![
+	            "Re-opened handles were terminal at snapshot:last and active now.".to_string(),
+	            "This is tracked separately from generic regression because terminal-to-active movement often means a settled claim was reopened.".to_string(),
+	        ],
+	        "blocker" => vec![
+	            "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
+	            "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
+	        ],
+	        _ => Vec::new(),
+	    }
+}
+
 fn common_joins(name: &str) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
@@ -1708,16 +1838,22 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`downstream{h: h, desc: desc}, diagnostic{subject: desc}` to find affected diagnostics",
             "`downstream{h: h, desc: desc}, area_of{h: desc, area: area}` to group dependents by area",
         ],
-        "work_candidate" => &[
-            "`work_candidate(h, energy), entropy(h, source)` to explain raw energy",
-            "`work_candidate(h, energy), frontier(h, energy)` to keep only the global frontier",
+        "potential" => &[
+            "`potential(h, energy), entropy(h, source)` to explain raw energy",
+            "`potential(h, energy), primary_entropy(h, source)` to keep one strongest reason per handle",
+            "`potential(h, energy), frontier(h, energy)` to keep only the global frontier",
         ],
-        "frontier" | "top_work" => &[
+        "work_candidate" => &[
+            "`work_candidate(h, energy), potential(h, energy)` to migrate the deprecated alias",
+            "`potential(h, energy), primary_entropy(h, source)` to explain raw energy with the canonical name",
+        ],
+        "frontier" => &[
             "`frontier(h, energy), diagnostic{subject: h}` to see what blocks the frontier",
             "`frontier(h, energy), area_of{h: h, area: \"X\"}` for area-scoped frontier work",
         ],
-        "blocked" | "blocker" | "blocked_row" => &[
+        "blocked" | "blocker" => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
+            "`blocker(h, energy, source), primary_entropy(h, source)` to keep one strongest blocker row per handle",
             "`blocker(h, energy, source), *handle{id: h, file: file}` to add location metadata",
             "`blocked(h), area_of{h: h, area: \"X\"}` for area-scoped blockers",
         ],
@@ -1769,9 +1905,19 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
         ],
-        "git_mtime" | "changed_within" | "recent" => &[
+        "git_mtime" | "changed_within" => &[
             "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
+            "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep file handles while section handles still exist",
             "`changed_within(h, 7), search{query: \"text\", handle: h}` for recent search hits",
+        ],
+        "potential_weight" | "potential_weight_override" | "effective_potential_weight" => &[
+            "`effective_potential_weight(source, weight), entropy(h, source)` to see which handles use each weight",
+            "`potential_weight(source, default_weight), effective_potential_weight(source, active_weight)` to compare defaults with overrides",
+        ],
+        "advancing" | "holding" | "regressed" | "re_opened" | "drifting" | "flow" => &[
+            "`flow(h, direction), *handle{id: h, status: status}` to add current lifecycle state",
+            "`drifting(h), re_opened(h)` to separate reopened handles from ordinary regressions",
+            "`holding(h), potential(h, energy)` to prioritize stuck handles with work remaining",
         ],
         "area_of" | "area_health" | "area_frontier" => &[
             "`area_of{h: h, area: \"X\"}, frontier(h, energy)` for area-scoped work",
@@ -1794,8 +1940,16 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "abandoned_namespace",
             "top_pair",
         ],
-        "entropy" | "primary_entropy" | "potential" | "potential_subject" | "work_candidate"
-        | "frontier" | "top_work" | "ranked_work" => &[
+        "entropy"
+        | "primary_entropy"
+        | "potential"
+        | "potential_subject"
+        | "potential_weight"
+        | "potential_weight_override"
+        | "effective_potential_weight"
+        | "work_candidate"
+        | "frontier"
+        | "ranked_work" => &[
             "diagnostic",
             "obligation",
             "freshness",
@@ -1803,7 +1957,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "orphan",
             "entropy_priority",
         ],
-        "blocked" | "blocker" | "blocked_row" => &["potential", "entropy", "flux", "status"],
+        "blocked" | "blocker" => &["potential", "primary_entropy", "entropy", "flux", "status"],
         "broken_reference" => &["E001", "diagnostic", "*edge", "*handle"],
         "undischarged_obligation" => &["E002", "diagnostic", "obligation", "discharge_count"],
         "stale_reference" => &["W001", "diagnostic", "active", "terminal"],
@@ -1836,9 +1990,15 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         | "area_frontier" => &[
             "area_of",
             "diagnostic",
-            "work_candidate",
+            "potential",
             "primary_entropy",
             "area_health",
+        ],
+        "advancing" | "holding" | "regressed" | "re_opened" | "drifting" | "flow" => &[
+            "convergence",
+            "snapshot_history_present",
+            "potential",
+            "settled",
         ],
         "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
         _ => &[],
@@ -1848,7 +2008,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
 fn verb_relationship(name: &str) -> &'static str {
     match name {
         "status" => {
-            "Saved query over `primary_entropy`, non-blocked `work_candidate` rows, `advancing`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
+            "Saved query over `primary_entropy`, non-blocked `potential` rows, `flow`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
         }
         "search" => {
             "Saved query over the `search` primitive; applies TopK by score and filters `low_confidence = false`."
@@ -1871,6 +2031,7 @@ fn verb_see_also(name: &str) -> &'static [&'static str] {
         "status" => &[
             "frontier",
             "blocked",
+            "flow",
             "diagnostic",
             "snapshot_history_present",
         ],
@@ -1927,7 +2088,6 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
         PrimitivePredicate::GitMtime => Some("? git_mtime(file, instant)."),
         PrimitivePredicate::ChangedWithin => Some("? changed_within(h, 7)."),
-        PrimitivePredicate::Recent => Some("? recent(h, 7)."),
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
@@ -1963,6 +2123,13 @@ fn predicate_example(name: &str) -> Option<&'static str> {
     match name {
         "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
         "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
+        "potential_weight" => Some(r#"? potential_weight("freshness_decay", weight)."#),
+        "potential_weight_override" => {
+            Some(r#"? potential_weight_override("freshness_decay", weight)."#)
+        }
+        "effective_potential_weight" => {
+            Some(r#"? effective_potential_weight("freshness_decay", weight)."#)
+        }
         "primary_entropy" => Some(r#"? primary_entropy("formal-model/v17.md", source)."#),
         "area" => Some("? area(area)."),
         "area_file_count" => Some("? area_file_count(area, files)."),
@@ -1974,12 +2141,16 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "area_health" => Some("? area_health{area: area, grade: grade}."),
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
+        "work_candidate" => Some(r#"? work_candidate("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
         "blocker" => Some(r#"? blocker("formal-model/v17.md", energy, source)."#),
-        "blocked_row" => Some(r#"? blocked_row("formal-model/v17.md", energy, source)."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
+        "holding" => Some(r#"? holding("formal-model/v17.md")."#),
+        "regressed" => Some(r#"? regressed("formal-model/v17.md")."#),
+        "re_opened" => Some(r#"? re_opened("formal-model/v17.md")."#),
+        "drifting" => Some(r#"? drifting("formal-model/v17.md")."#),
+        "flow" => Some("? flow(h, direction)."),
         "frontier" => Some("? frontier(h, energy)."),
-        "top_work" => Some("? top_work(h, energy)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),
         "broken_reference" => Some("? broken_reference(src, target, file, line)."),
         "undischarged_obligation" => Some("? undischarged_obligation(h, file)."),
