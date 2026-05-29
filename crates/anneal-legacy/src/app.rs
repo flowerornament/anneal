@@ -798,14 +798,14 @@ EXAMPLES:
         file: Option<String>,
     },
 
-    /// Compact corpus status -- work, blockers, broken
+    /// Compact corpus status -- frontier, blockers, broken
     #[command(
         display_order = 10,
         long_about = "\
 Print compact corpus status from the programmable runtime.
 
 Use this as the arrival command: it summarizes the active convergence frontier
-and points at work, blockers, and broken facts."
+and points at open frontier items, blockers, and broken facts."
     )]
     Status,
 

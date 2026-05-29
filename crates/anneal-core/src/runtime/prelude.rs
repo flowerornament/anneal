@@ -1144,7 +1144,7 @@ mod tests {
                     && doc.contains("The Act:")
                     && doc.contains("Vocabulary:")
                     && doc.contains("Tuning syntax:")
-                    && doc.contains("Topic source:")
+                    && !doc.contains("Topic source:")
         ));
         assert_eq!(
             outputs[1].rows[0].fields.get("file"),

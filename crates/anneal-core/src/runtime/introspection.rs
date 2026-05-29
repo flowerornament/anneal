@@ -48,8 +48,6 @@ impl IntrospectionIndex {
                     &describe_card(DescribeCard {
                         summary: source.doc,
                         kind: Some(DescribeKind::SourceAdapter),
-                        source_label: Some("Adapter"),
-                        source: Some(source.name),
                         extra_lines: vec![
                             format!("Recognizes: {recognizes}."),
                             format!("Capabilities: [{capabilities}]."),
@@ -263,32 +261,32 @@ impl IntrospectionBuilder {
             &describe_card(DescribeCard {
                 summary: "Query stored corpus facts, compose graph/lifecycle/content/search primitives, load Datalog rules, and discover the available model.",
                 kind: Some(DescribeKind::RuntimeTopic),
-                source_label: Some("Topic source"),
-	                extra_lines: vec![
-	                    "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
-	                    "Hidden support commands: check, prime.".to_string(),
-	                    "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
-	                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
-	                    "Schema discovery is interactive: unknown predicate or field errors include nearby names and allowed fields.".to_string(),
-	                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
-	                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
-	                    "History concepts: snapshots capture graph state over time for at(\"snapshot:last\") queries.".to_string(),
-	                    "History concepts: generations mark source refresh epochs for atomic fact replacement.".to_string(),
-	                    "History concepts: trails record per-query provenance and surfaced/consumed references.".to_string(),
-	                ],
-	                examples: vec![
-	                    "? schema(name, kind, signature, determinism, provenance).",
-	                    "? describe(\"search\", doc).",
-	                    "? describe(\"convergence\", doc).",
-	                    "? examples(\"search\", example).",
-	                    "? *handle{status: status}, status != null.",
-	                    "? *edge{kind: kind}.",
-	                    "? *handle{id: h, file: file}, git_mtime(file, instant).",
-	                    "? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}.",
-	                    "? flow(h, direction), *handle{id: h, summary: summary}.",
-	                ],
-	                ..DescribeCard::default()
-	            }),
+                extra_lines: vec![
+                    "Visible commands: status, context, search, read, handle, schema, describe, eval, init.".to_string(),
+                    "Hidden support commands: check, prime.".to_string(),
+                    "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
+                    "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
+                    "Schema discovery is interactive: unknown predicate or field errors include nearby names and allowed fields.".to_string(),
+                    "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
+                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
+                    "History concepts:".to_string(),
+                    "  - snapshots capture graph state over time for at(\"snapshot:last\") queries.".to_string(),
+                    "  - generations mark source refresh epochs for atomic fact replacement.".to_string(),
+                    "  - trails record per-query provenance and surfaced/consumed references.".to_string(),
+                ],
+                examples: vec![
+                    "? schema(name, kind, signature, determinism, provenance).",
+                    "? describe(\"search\", doc).",
+                    "? describe(\"convergence\", doc).",
+                    "? examples(\"search\", example).",
+                    "? *handle{status: status}, status != null.",
+                    "? *edge{kind: kind}.",
+                    "? *handle{id: h, file: file}, git_mtime(file, instant).",
+                    "? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}.",
+                    "? flow(h, direction), *handle{id: h, summary: summary}.",
+                ],
+                ..DescribeCard::default()
+            }),
         ));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
@@ -513,8 +511,6 @@ impl IntrospectionBuilder {
                 kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
                 common_joins: common_joins(name),
-                source_label: Some("Contract"),
-                source: Some(".design/2026-05-13-corpus-runtime.md"),
                 see_also: stored_relation_see_also(name),
                 examples: vec![example],
                 extra_lines: stored_relation_extra_lines(name),
@@ -530,8 +526,6 @@ impl IntrospectionBuilder {
                 kind: Some(DescribeKind::StoredRelation),
                 signature: Some(&signature),
                 common_joins: common_joins(name),
-                source_label: Some("Contract"),
-                source: Some(".design/2026-05-13-corpus-runtime.md"),
                 see_also: stored_relation_see_also(name),
                 examples: vec![example],
                 extra_lines: stored_relation_extra_lines(name),
@@ -576,8 +570,6 @@ impl IntrospectionBuilder {
                     signature: Some(&call_signature(name, signature.parameters)),
                     relationship: primitive_relationship(*primitive),
                     common_joins: common_joins(name),
-                    source_label: Some("Implementation"),
-                    source: Some("crates/anneal-core/src/runtime/primitives.rs"),
                     requires: primitive_requires(*primitive),
                     see_also: primitive_see_also(*primitive),
                     examples: primitive_example(*primitive).into_iter().collect(),
@@ -619,12 +611,6 @@ impl IntrospectionBuilder {
                     signature: Some(&format!("anneal {}", entry.name())),
                     relationship: Some(verb_relationship(entry.name().as_str())),
                     common_joins: common_joins(entry.name().as_str()),
-                    source_label: Some("Verb source"),
-                    source: Some(&format!(
-                        "{}:{}",
-                        entry.source().location().source_name,
-                        source_line_text(entry.source().location())
-                    )),
                     see_also: verb_see_also(entry.name().as_str()),
                     examples: verb_example(entry.name().as_str()).into_iter().collect(),
                     extra_lines: vec![format!("Output schema: {}", entry.output_schema())],
@@ -655,8 +641,6 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::RuntimeTopic),
                     relationship: Some("Diagnostic catalog entry; query rows through `diagnostic(...)` and inspect the deriving rule predicate for structure."),
                     common_joins: code.common_joins,
-                    source_label: Some("Diagnostic catalog"),
-                    source: Some("crates/anneal-core/src/prelude/checks.dl"),
                     see_also: code.see_also,
                     examples: vec![code.example],
                     extra_lines: vec![
@@ -699,13 +683,11 @@ impl IntrospectionBuilder {
                 continue;
             }
             let doc = if name == "convergence" {
-                convergence_topic_card(info)
+                convergence_topic_card()
             } else {
                 describe_card(DescribeCard {
                     summary: &info.doc,
                     kind: Some(DescribeKind::RuntimeTopic),
-                    source_label: Some("Topic source"),
-                    source: info.primary_source().as_deref(),
                     ..DescribeCard::default()
                 })
             };
@@ -764,7 +746,6 @@ impl IntrospectionBuilder {
                     .insert(Tuple(vec![string_value(&name), string_value(example)]));
             }
             let signature = info.signature();
-            let source = info.source_lines.compact_rule_source();
             self.describe.insert(describe_entry(
                 &name,
                 DescribeKind::DerivedPredicate,
@@ -774,8 +755,6 @@ impl IntrospectionBuilder {
                     signature: Some(&signature),
                     relationship: predicate_relationship(&name),
                     common_joins: common_joins(&name),
-                    source_label: Some("Rule source"),
-                    source: source.as_deref(),
                     requires: predicate_requires(&name),
                     see_also: predicate_see_also(&name),
                     examples: predicate_example(&name).into_iter().collect(),
@@ -971,29 +950,6 @@ impl SourceLines {
         self.0
             .iter()
             .map(|(file, lines)| (file.as_str(), line_list(lines)))
-    }
-
-    fn first_line_text(&self) -> Option<String> {
-        self.0
-            .iter()
-            .next()
-            .map(|(file, lines)| format!("{file}:{}", line_list(lines)))
-    }
-
-    fn compact_rule_source(&self) -> Option<String> {
-        self.0.iter().next().map(|(file, lines)| {
-            if lines.len() > 4 {
-                format!("{file} ({} rules)", lines.len())
-            } else {
-                format!("{file}:{}", line_list(lines))
-            }
-        })
-    }
-}
-
-impl DocInfo {
-    fn primary_source(&self) -> Option<String> {
-        self.source_lines.first_line_text()
     }
 }
 
@@ -1215,8 +1171,6 @@ struct DescribeCard<'a> {
     signature: Option<&'a str>,
     relationship: Option<&'a str>,
     common_joins: &'a [&'a str],
-    source_label: Option<&'a str>,
-    source: Option<&'a str>,
     requires: &'a [&'a str],
     see_also: &'a [&'a str],
     examples: Vec<&'a str>,
@@ -1235,8 +1189,7 @@ struct DiagnosticCodeCard {
     see_also: &'static [&'static str],
 }
 
-fn convergence_topic_card(info: &DocInfo) -> String {
-    let source = info.primary_source();
+fn convergence_topic_card() -> String {
     describe_card(DescribeCard {
         summary: "Convergence is anneal's physics: corpus facts create energy, energy creates a frontier, agents do work, and snapshots show whether the landscape is flattening.",
         kind: Some(DescribeKind::RuntimeTopic),
@@ -1269,8 +1222,6 @@ fn convergence_topic_card(info: &DocInfo) -> String {
             "? flow(h, direction), *handle{id: h, summary: summary}.",
             "? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.",
         ],
-        source_label: Some("Topic source"),
-        source: source.as_deref(),
         ..DescribeCard::default()
     })
 }
@@ -1483,10 +1434,6 @@ fn describe_card(card: DescribeCard<'_>) -> String {
     }
     for example in card.examples {
         lines.push(format!("Example: {}", with_output_shape(example)));
-    }
-    if let Some(source) = card.source {
-        let label = card.source_label.unwrap_or("Source");
-        lines.push(format!("{label}: {source}."));
     }
     lines.join("\n")
 }
@@ -1966,36 +1913,36 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "This is the calibration relation consumed by `potential`; project overrides replace matching default sources instead of adding duplicate weights.".to_string(),
             "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
         ],
-	        "work_candidate" => vec![
-	            "Deprecated alias: use `potential(h, energy)`. This alias is retained through v0.14 and scheduled for retirement in v0.15.".to_string(),
-	        ],
-	        "flow" => vec![
-	            "Directions are exactly \"advancing\", \"holding\", and \"drifting\". Leaf predicates explain why a handle entered a direction.".to_string(),
-	            "`regressed(h)` and `re_opened(h)` are drifting leaves, not extra flow directions.".to_string(),
-	            "Settled handles are excluded so flow stays about active movement, not completed state.".to_string(),
-	        ],
-	        "holding" => vec![
-	            "Holding means stuck with work remaining: the handle is active, has potential, and has the same status at snapshot:last and now.".to_string(),
-	            "This intentionally excludes settled or inactive handles that simply did not change.".to_string(),
-	        ],
-	        "drifting" => vec![
-	            "Drifting means moving away from settledness. Inspect `regressed(h)` and `re_opened(h)` to see which leaf fired.".to_string(),
-	            "Use `flow(h, \"drifting\")` when you only need the coarse direction.".to_string(),
-	        ],
-	        "regressed" => vec![
-	            "Regression compares configured pipeline positions at snapshot:last and now.".to_string(),
-	            "If a status has no configured position, it cannot produce a regression row.".to_string(),
-	        ],
-	        "re_opened" => vec![
-	            "Re-opened handles were terminal at snapshot:last and active now.".to_string(),
-	            "This is tracked separately from generic regression because terminal-to-active movement often means a settled claim was reopened.".to_string(),
-	        ],
-	        "blocker" => vec![
-	            "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
-	            "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
-	        ],
-	        _ => Vec::new(),
-	    }
+        "work_candidate" => vec![
+            "Deprecated alias: use `potential(h, energy)`. This alias is retained through v0.14 and scheduled for retirement in v0.15.".to_string(),
+        ],
+        "flow" => vec![
+            "Directions are exactly \"advancing\", \"holding\", and \"drifting\". Leaf predicates explain why a handle entered a direction.".to_string(),
+            "`regressed(h)` and `re_opened(h)` are drifting leaves, not extra flow directions.".to_string(),
+            "Settled handles are excluded so flow stays about active movement, not completed state.".to_string(),
+        ],
+        "holding" => vec![
+            "Holding means stuck with work remaining: the handle is active, has potential, and has the same status at snapshot:last and now.".to_string(),
+            "This intentionally excludes settled or inactive handles that simply did not change.".to_string(),
+        ],
+        "drifting" => vec![
+            "Drifting means moving away from settledness. Inspect `regressed(h)` and `re_opened(h)` to see which leaf fired.".to_string(),
+            "Use `flow(h, \"drifting\")` when you only need the coarse direction.".to_string(),
+        ],
+        "regressed" => vec![
+            "Regression compares configured pipeline positions at snapshot:last and now.".to_string(),
+            "If a status has no configured position, it cannot produce a regression row.".to_string(),
+        ],
+        "re_opened" => vec![
+            "Re-opened handles were terminal at snapshot:last and active now.".to_string(),
+            "This is tracked separately from generic regression because terminal-to-active movement often means a settled claim was reopened.".to_string(),
+        ],
+        "blocker" => vec![
+            "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
+            "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 fn common_joins(name: &str) -> &'static [&'static str] {

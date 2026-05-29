@@ -88,7 +88,7 @@ Two fixes:
 ### F3. Describe-card depth is uneven on magic-word predicates
 
 ```
-RICH cards (Common joins + Example + See also + Rule source):
+RICH cards (Common joins + Example + See also; source paths via `source_of(...)`):
   frontier, blocker, broken_reference, pipeline_stall, etc.
 
 THIN cards (Signature + Requires + See also + Example only):
@@ -331,7 +331,7 @@ Blocked
  2. language/elaboration-convergence-v2.md            score=3  stale_dep
  3. synthesis/2026-05-18-monoidal-computer-reframing  score=3  stale_dep
 
-Other work
+Open
  1. (freshness_decay tier, weight=1 → many handles, dropped from
     foreground listing into a tier-by-tier summary)
  ... showing primary-entropy-only for clarity
@@ -388,7 +388,6 @@ See also: potential, primary_entropy, work_candidate, diagnostic,
 Tuning: see `describe potential_weight` and project anneal.dl to
   retune for your corpus.
 
-Rule source: crates/anneal-core/src/prelude/convergence.dl:43.
 ```
 
 Change vs v0.13.1:
@@ -440,21 +439,9 @@ $ anneal describe runtime
 ... (existing content) ...
 
 History concepts:
-  Snapshot    Graph state at a point in time.
-              Written by anneal status (autosnap).
-              Queryable via at("snapshot:last") { ... }.
-              Use to answer: "what did the corpus look like before?"
-
-  Generation  Source-data epoch.
-              Stored in *generation{corpus, source, current}.
-              Incremented when adapter re-extracts.
-              Use to answer: "has the source data changed since
-              I last looked?"
-
-  Trail       Per-query provenance.
-              Stored in *trail{session_id, step, redacted_expr, ...}.
-              Written when --explain or session capture is on.
-              Use to answer: "why did this query return this row?"
+  - snapshots capture graph state over time for at("snapshot:last") queries.
+  - generations mark source refresh epochs for atomic fact replacement.
+  - trails record per-query provenance and surfaced/consumed references.
 ```
 
 Change vs v0.13.1:
@@ -481,13 +468,13 @@ Default weights:
   missing_meta    1    (lowest — frontmatter hygiene)
   orphan_label    1    (lowest — referenceless label)
 
-	Tuning: override in project anneal.dl with `config potential_weight`.
-	  Example:
-	    config potential_weight {
-	      undischarged(8).      # weight obligations higher in this corpus
-	      freshness_decay(0).   # disable freshness signal entirely
-	    }
-	  Higher weights = stronger pull on the work pool.
+  Tuning: override in project anneal.dl with `config potential_weight`.
+    Example:
+      config potential_weight {
+        undischarged(8).      # weight obligations higher in this corpus
+        freshness_decay(0).   # disable freshness signal entirely
+      }
+    Higher weights = stronger pull on the work pool.
 
 See also: entropy, potential, primary_entropy, entropy_priority.
 ```

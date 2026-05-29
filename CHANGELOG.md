@@ -2,7 +2,7 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## v0.14.0 - 2026-05-28
+## v0.14.0 - 2026-05-29
 
 anneal calibrates the signal, simplifies the substrate, and sharpens retrieval.
 
@@ -96,6 +96,9 @@ instead of retired command habits.
 - README, AGENTS.md, CLAUDE.md, the bundled `anneal` skill, top-level help,
   and `help eval` now teach the v0.14 surface, the context/grep/eval retrieval
   split, and schema discovery through helpful errors.
+- `describe` text output now keeps contributor source paths out of the default
+  teaching cards. The same data remains queryable with `source_of(name, file,
+  lines)`.
 
 ### Removed
 

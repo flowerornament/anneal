@@ -310,7 +310,7 @@ Usage: anneal [OPTIONS] status
 Print compact corpus status from the programmable runtime.
 
 Use this as the arrival command: it summarizes the active convergence frontier
-and points at work, blockers, and broken facts.
+and points at open frontier items, blockers, and broken facts.
 
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -375,8 +375,6 @@ Usage: anneal [OPTIONS] handle [OPTIONS] <HANDLE>
 Show one handle plus bounded incoming/outgoing references. Outgoing and
 incoming edges are grouped by kind; in-repo code refs render in a dedicated
 Code references section.
-
-Alias: anneal H [OPTIONS] <HANDLE>
 
 Arguments:
   <HANDLE>                       Handle id to inspect
@@ -469,15 +467,15 @@ Grammar tour:
   Negation uses `not` after variables are positively bound:
     missing_discharge(h) := obligation(h), not discharged(h).
 
-	  Aggregates bind tuples from grouped rows:
-	    area(area) := area_of(h, area).
-	    area_count(area, n) :=
-	      area(area),
-	      n = Count{ h : area_of(h, area) }.
+  Aggregates bind tuples from grouped rows:
+    area(area) := area_of(h, area).
+    area_count(area, n) :=
+      area(area),
+      n = Count{ h : area_of(h, area) }.
 
-	    ? (h, energy) = TopK{ k: 10, key: energy :
-	        (h, energy) : potential(h, energy)
-	      }.
+    ? (h, energy) = TopK{ k: 10, key: energy :
+        (h, energy) : potential(h, energy)
+      }.
 
   Time blocks query supported historical references:
     ? at(\"snapshot:last\") { *handle{id: h, status: old} },
@@ -504,7 +502,7 @@ Examples:
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
-	  anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\"}, search{query: \"conformance\", handle: h}.'
+  anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\"}, search{query: \"conformance\", handle: h}.'
   anneal -e '? source_of(\"frontier\", file, lines).'
   anneal -e - < query.dl
 
@@ -2521,7 +2519,7 @@ fn write_handle_impact_group<W: Write>(writer: &mut W, heading: &str, rows: &[&R
 
 fn section_title(section: &str) -> String {
     if section == "work" {
-        return "Other work".to_string();
+        return "Open".to_string();
     }
 
     let mut chars = section.chars();
@@ -3440,22 +3438,16 @@ mod tests {
                 topic: HelpTopic::Eval
             }
         );
-        assert!(HelpTopic::Eval.render().contains("--explain-depth"));
-        assert!(HelpTopic::Eval.render().contains("--explain-first"));
-        assert!(HelpTopic::Eval.render().contains("--explain-all"));
-        assert!(
-            HelpTopic::Eval
-                .render()
-                .contains("Discover before guessing")
-        );
-        assert!(HelpTopic::Eval.render().contains("source_of"));
-        assert!(HelpTopic::Eval.render().contains("anneal -e - < query.dl"));
-        assert!(HelpTopic::Eval.render().contains("at(\"snapshot:last\")"));
-        assert!(
-            HelpTopic::Eval
-                .render()
-                .contains("at(\"HEAD~5\") remain pending")
-        );
+        let rendered = HelpTopic::Eval.render();
+        assert!(rendered.contains("--explain-depth"));
+        assert!(rendered.contains("--explain-first"));
+        assert!(rendered.contains("--explain-all"));
+        assert!(rendered.contains("Discover before guessing"));
+        assert!(rendered.contains("source_of"));
+        assert!(rendered.contains("anneal -e - < query.dl"));
+        assert!(rendered.contains("at(\"snapshot:last\")"));
+        assert!(rendered.contains("at(\"HEAD~5\") remain pending"));
+        assert!(!rendered.contains('\t'));
     }
 
     #[test]
@@ -3785,7 +3777,7 @@ mod tests {
             "Convergence  broken=1  blocked=0  open=1  advancing=0  holding=0  drifting=0"
         ));
         assert!(rendered.contains("Broken\n 1. bad.md"));
-        assert!(rendered.contains("Other work\n 1. plan.md"));
+        assert!(rendered.contains("Open\n 1. plan.md"));
     }
 
     #[test]
@@ -4653,7 +4645,7 @@ mod tests {
                         && !doc.contains("Hidden support commands: work")
                         && doc.contains("Observed vocabulary recipes")
                         && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
-	                        && doc.contains("? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}. -> Output: h, summary")
+                        && doc.contains("? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}. -> Output: h, summary")
                 })
             }),
             "describe runtime should fold the command map and vocabulary recipes into the teaching card"
