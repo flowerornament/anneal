@@ -2132,6 +2132,10 @@ fn write_status_text<W: Write>(
     writeln!(writer, "Status")?;
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        writeln!(
+            writer,
+            "Note: no corpus facts found; root may be empty or unresolved."
+        )?;
         return Ok(());
     }
 
