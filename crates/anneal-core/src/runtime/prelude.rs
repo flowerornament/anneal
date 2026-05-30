@@ -1462,16 +1462,20 @@ mod tests {
                     r#"? diagnostic("W003", severity, "team/missing.md", file, line, evidence)."#,
                 ),
                 (
+                    "W005-used",
+                    r#"? diagnostic("W005", severity, "paused", file, line, evidence)."#,
+                ),
+                (
+                    "W005-ordering",
+                    r#"? diagnostic("W005", severity, "blocked", file, line, evidence)."#,
+                ),
+                (
                     "missing_frontmatter_file",
                     r"? missing_frontmatter_file(h, dir, file).",
                 ),
                 (
                     "S001",
                     r#"? diagnostic("S001", severity, "ORPH-1", file, line, evidence)."#,
-                ),
-                (
-                    "S003",
-                    r#"? diagnostic("S003", severity, "draft", file, line, evidence)."#,
                 ),
                 (
                     "S004",
@@ -1601,28 +1605,60 @@ mod tests {
             "low-adoption directories should not produce W003 rule rows"
         );
         assert!(has_row(
+            output(&outputs, "W005-used"),
+            &[
+                ("severity", string("warning")),
+                ("file", Value::Null),
+                (
+                    "evidence",
+                    list(vec![
+                        string("lifecycle_config_gap"),
+                        string("paused"),
+                        int(1),
+                        string("used_status_unpartitioned")
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W005-ordering"),
+            &[
+                ("severity", string("warning")),
+                ("file", Value::Null),
+                (
+                    "evidence",
+                    list(vec![
+                        string("lifecycle_config_gap"),
+                        string("blocked"),
+                        int(0),
+                        string("ordering_not_terminal")
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W005-ordering"),
+            &[
+                ("severity", string("warning")),
+                ("file", Value::Null),
+                (
+                    "evidence",
+                    list(vec![
+                        string("lifecycle_config_gap"),
+                        string("blocked"),
+                        int(0),
+                        string("ordering_status_unpartitioned")
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
             output(&outputs, "S001"),
             &[
                 ("severity", string("suggestion")),
                 (
                     "evidence",
                     list(vec![string("orphaned_handle"), string("ORPH-1")])
-                )
-            ]
-        ));
-        assert!(has_row(
-            output(&outputs, "S003"),
-            &[
-                ("severity", string("suggestion")),
-                (
-                    "evidence",
-                    list(vec![
-                        string("pipeline_stall"),
-                        string("draft"),
-                        int(20),
-                        string("stable"),
-                        Value::Bool(false)
-                    ])
                 )
             ]
         ));
@@ -1745,6 +1781,23 @@ mod tests {
                 ],
             ),
             "pipeline_stall rows: {:?}",
+            output(&outputs, "pipeline_stall").rows
+        );
+    }
+
+    #[test]
+    fn pipeline_stall_waits_for_snapshot_baseline() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[(
+                "pipeline_stall",
+                r"? pipeline_stall(status, count, next_status, based_on_history).",
+            )],
+            standard_library_database_with_snapshots(false),
+        );
+
+        assert!(
+            output(&outputs, "pipeline_stall").rows.is_empty(),
+            "pipeline_stall should wait for automatic snapshot history: {:?}",
             output(&outputs, "pipeline_stall").rows
         );
     }
@@ -2011,6 +2064,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "terminal.md", "file", Some("archived"), "", ""),
             handle(&scope, "stable-src.md", "file", Some("stable"), "", ""),
             handle(&scope, "draft-target.md", "file", Some("draft"), "", ""),
+            handle(&scope, "paused", "file", Some("paused"), "", ""),
             handle(&scope, "team/with-a.md", "file", Some("draft"), "", "team"),
             handle(&scope, "team/with-b.md", "file", Some("draft"), "", "team"),
             handle(&scope, "team/missing.md", "file", None, "", "team"),
@@ -2081,6 +2135,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                     config(&corpus, "convergence.ordering", "draft", Some(0)),
                     config(&corpus, "convergence.ordering", "stable", Some(1)),
                     config(&corpus, "convergence.ordering", "archived", Some(2)),
+                    // Exercise W005: ordered but neither active nor terminal, and the non-terminal tail.
+                    config(&corpus, "convergence.ordering", "blocked", Some(3)),
                     config(&corpus, "handles.linear", "OQ", None),
                     config(&corpus, "handles.force", "OLD", None),
                     config(&corpus, "handles.force", "AA", None),

@@ -4664,6 +4664,8 @@ mod tests {
             "entropy",
             "undischarged",
             "E001",
+            "W005",
+            "lifecycle_config_gap",
             "*meta",
             "external_class",
             "target_path",

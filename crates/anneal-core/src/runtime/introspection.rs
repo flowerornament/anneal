@@ -633,6 +633,13 @@ impl IntrospectionBuilder {
 
     fn add_diagnostic_codes(&mut self) {
         for code in DIAGNOSTIC_CODE_CARDS {
+            let mut extra_lines = vec![
+                format!("Diagnostic code: {}.", code.code),
+                format!("Severity: {}.", code.severity),
+                format!("Rule predicate: {}.", code.rule),
+                format!("Evidence: {}.", code.evidence),
+            ];
+            extra_lines.extend(diagnostic_code_extra_lines(code.code));
             self.describe.insert(describe_entry(
                 code.code,
                 DescribeKind::RuntimeTopic,
@@ -643,12 +650,7 @@ impl IntrospectionBuilder {
                     common_joins: code.common_joins,
                     see_also: code.see_also,
                     examples: vec![code.example],
-                    extra_lines: vec![
-                        format!("Diagnostic code: {}.", code.code),
-                        format!("Severity: {}.", code.severity),
-                        format!("Rule predicate: {}.", code.rule),
-                        format!("Evidence: {}.", code.evidence),
-                    ],
+                    extra_lines,
                     ..DescribeCard::default()
                 }),
             ));
@@ -1316,6 +1318,24 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
         see_also: &["diagnostic", "implausible_ref", "E001", "W003"],
     },
     DiagnosticCodeCard {
+        code: "W005",
+        severity: "warning",
+        summary: "Lifecycle config gap: a status appears in handles or ordering without a matching active/terminal partition, or the ordering cannot terminate.",
+        rule: "lifecycle_config_gap",
+        evidence: r#"("lifecycle_config_gap", status, count, variant)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W005\", subject: status}, lifecycle_config_gap(status, count, variant)` to inspect lifecycle config drift",
+            "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
+        ],
+        example: r#"? diagnostic{code: "W005", subject: status, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "lifecycle_config_gap",
+            "configured_pipeline_status",
+            "pipeline_stall",
+        ],
+    },
+    DiagnosticCodeCard {
         code: "I001",
         severity: "info",
         summary: "Section references present: section-reference placeholders exist and are counted separately from broken handles.",
@@ -1362,12 +1382,12 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "S003",
         severity: "suggestion",
-        summary: "Pipeline stall: a lifecycle status is accumulating without movement to the next configured status.",
+        summary: "Pipeline stall: snapshot history shows a lifecycle status accumulating without movement to the next configured status.",
         rule: "pipeline_stall",
         evidence: r#"("pipeline_stall", status, count, next_status, based_on_history)"#,
         common_joins: &[
             "`diagnostic{code: \"S003\", subject: status}, pipeline_stall(status, count, next_status, based_on_history)` to inspect the stalled status",
-            "`pipeline_stall(status, count, next_status, based_on_history), status_population(status, current)` to compare current population",
+            "`snapshot_history_present(count), pipeline_stall(status, stalled, next_status, true)` to confirm automatic status snapshots have accrued",
         ],
         example: r#"? diagnostic{code: "S003", subject: status, evidence: evidence}."#,
         see_also: &[
@@ -1375,6 +1395,7 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
             "pipeline_stall",
             "advancing",
             "snapshot_history_present",
+            "W005",
         ],
     },
     DiagnosticCodeCard {
@@ -1784,6 +1805,9 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "implausible_ref" => {
             &["markdown extraction metadata for references rejected by the plausibility filter."]
         }
+        "lifecycle_config_gap" => {
+            &["handle statuses plus `config convergence` active, terminal, and ordering entries."]
+        }
         "missing_frontmatter_file" => &[
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
         ],
@@ -1791,7 +1815,7 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
             &["label or version handles plus graph in-degree counts."]
         }
         "pipeline_stall" | "s003_pipeline_stall" => &[
-            "configured lifecycle ordering and either current status population or snapshot history.",
+            "configured lifecycle ordering, current status population, and automatic snapshot history.",
         ],
         "abandoned_namespace" | "s004_abandoned_namespace" => {
             &["active namespace membership, lifecycle status, and freshness."]
@@ -1877,12 +1901,15 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "implausible_ref" => {
             Some("Diagnostic-rule predicate behind W004 implausible-reference warnings.")
         }
+        "lifecycle_config_gap" => {
+            Some("Diagnostic-rule predicate behind W005 lifecycle-config-gap warnings.")
+        }
         "orphaned_handle" => {
             Some("Diagnostic-rule predicate behind S001 orphaned-handle suggestions.")
         }
-        "pipeline_stall" => {
-            Some("Diagnostic-rule predicate behind S003 pipeline-stall suggestions.")
-        }
+        "pipeline_stall" => Some(
+            "Diagnostic-rule predicate behind S003 pipeline-stall suggestions. It only emits after automatic snapshot history exists.",
+        ),
         "abandoned_namespace" => {
             Some("Diagnostic-rule predicate behind S004 abandoned-namespace suggestions.")
         }
@@ -1941,8 +1968,24 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
             "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
         ],
+        "lifecycle_config_gap" => lifecycle_config_gap_variant_lines(),
         _ => Vec::new(),
     }
+}
+
+fn diagnostic_code_extra_lines(code: &str) -> Vec<String> {
+    match code {
+        "W005" => lifecycle_config_gap_variant_lines(),
+        _ => Vec::new(),
+    }
+}
+
+fn lifecycle_config_gap_variant_lines() -> Vec<String> {
+    vec![
+        "Variants: used_status_unpartitioned = a handle uses a status outside active/terminal.".to_string(),
+        "Variants: ordering_status_unpartitioned = convergence.ordering names a status outside active/terminal.".to_string(),
+        "Variants: ordering_not_terminal = the final ordered status is not terminal, so the lattice cannot settle.".to_string(),
+    ]
 }
 
 fn common_joins(name: &str) -> &'static [&'static str] {
@@ -2024,13 +2067,17 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`implausible_ref(h, file, value), diagnostic{code: \"W004\", subject: h}` to inspect implausible-reference warnings",
             "`implausible_ref(h, file, value), read{handle: h, budget: 1200, text: text}` to read nearby evidence",
         ],
+        "lifecycle_config_gap" => &[
+            "`lifecycle_config_gap(status, count, variant), diagnostic{code: \"W005\", subject: status}` to inspect lifecycle config warnings",
+            "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
+        ],
         "orphaned_handle" | "s001_orphaned" => &[
             "`orphaned_handle(h), diagnostic{code: \"S001\", subject: h}` to inspect orphaned-handle suggestions",
             "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
         ],
         "pipeline_stall" | "s003_pipeline_stall" => &[
             "`pipeline_stall(status, count, next_status, based_on_history), diagnostic{code: \"S003\", subject: status}` to inspect stalled lifecycle statuses",
-            "`pipeline_stall(status, count, next_status, based_on_history), status_population(status, current)` to compare current status population",
+            "`snapshot_history_present(count), pipeline_stall(status, stalled, next_status, true)` to confirm automatic status snapshots have accrued",
         ],
         "abandoned_namespace" | "s004_abandoned_namespace" => &[
             "`abandoned_namespace(namespace, total, terminal_count, stale_count), diagnostic{code: \"S004\", subject: namespace}` to inspect abandoned namespace suggestions",
@@ -2112,12 +2159,19 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         ],
         "missing_frontmatter_file" => &["W003", "diagnostic", "*handle", "*meta"],
         "implausible_ref" => &["W004", "diagnostic", "*meta"],
+        "lifecycle_config_gap" => &[
+            "W005",
+            "diagnostic",
+            "configured_pipeline_status",
+            "pipeline_stall",
+        ],
         "orphaned_handle" | "s001_orphaned" => &["S001", "diagnostic", "in_degree"],
         "pipeline_stall" | "s003_pipeline_stall" => &[
             "S003",
             "diagnostic",
             "status_population",
             "snapshot_history_present",
+            "W005",
         ],
         "abandoned_namespace" | "s004_abandoned_namespace" => {
             &["S004", "diagnostic", "namespace_label", "freshness"]
@@ -2307,6 +2361,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         ),
         "missing_frontmatter_file" => Some("? missing_frontmatter_file(h, dir, file)."),
         "implausible_ref" => Some("? implausible_ref(h, file, value)."),
+        "lifecycle_config_gap" => Some("? lifecycle_config_gap(status, count, variant)."),
         "orphaned_handle" | "s001_orphaned" => Some("? orphaned_handle(h)."),
         "pipeline_stall" | "s003_pipeline_stall" => {
             Some("? pipeline_stall(status, count, next_status, based_on_history).")

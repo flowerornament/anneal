@@ -84,6 +84,62 @@ configured_pipeline_status(status, level) :=
   *config{key: "convergence.ordering", value: status, ordinal: level},
   level != null.
 
+configured_active_status(status) :=
+  *config{key: "convergence.active", value: status}.
+
+configured_terminal_status(status) :=
+  *config{key: "convergence.terminal", value: status}.
+
+configured_lifecycle_status(status) := configured_active_status(status).
+configured_lifecycle_status(status) := configured_terminal_status(status).
+
+used_lifecycle_status(status) :=
+  *handle{status: status},
+  status != null.
+
+lifecycle_status_candidate(status) :=
+  used_lifecycle_status(status).
+
+lifecycle_status_candidate(status) :=
+  configured_pipeline_status(status, level).
+
+status_handle_count(status, count) :=
+  lifecycle_status_candidate(status),
+  count = Count{ h : *handle{id: h, status: status} }.
+
+max_pipeline_level(level) :=
+  level = Max{ l : configured_pipeline_status(status, l) }.
+
+max_pipeline_status(status) :=
+  max_pipeline_level(level),
+  configured_pipeline_status(status, level).
+
+@doc(
+  name: "lifecycle_config_gap",
+  doc: "Return lifecycle statuses that corpus data or ordering config use without a matching active/terminal partition, plus orderings that cannot terminate."
+).
+@predicate(
+  name: "lifecycle_config_gap",
+  args: ["status", "count", "variant"]
+).
+lifecycle_config_gap(status, count, "used_status_unpartitioned") :=
+  used_lifecycle_status(status),
+  status_handle_count(status, count),
+  not configured_lifecycle_status(status).
+
+lifecycle_config_gap(status, count, "ordering_status_unpartitioned") :=
+  configured_pipeline_status(status, level),
+  status_handle_count(status, count),
+  not configured_lifecycle_status(status).
+
+lifecycle_config_gap(status, count, "ordering_not_terminal") :=
+  max_pipeline_status(status),
+  status_handle_count(status, count),
+  not configured_terminal_status(status).
+
+diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
+  lifecycle_config_gap(status, count, variant).
+
 handle_file(h, file) :=
   *handle{id: h, file: file},
   file != "".
@@ -227,7 +283,7 @@ next_pipeline_status(status, next_status) :=
 
 status_population(status, count) :=
   configured_pipeline_status(status, level),
-  count = Count{ h : *handle{id: h, status: status} }.
+  status_handle_count(status, count).
 
 forward_dependency_to_next_status(status, next_status) :=
   *handle{id: h, status: status},
@@ -237,21 +293,10 @@ forward_dependency_to_next_status(status, next_status) :=
 snapshot_history_exists("yes") :=
   snapshot_history_present(count).
 
-no_snapshot_history("yes") :=
-  *handle{id: h},
-  not snapshot_history_exists("yes").
-
 previous_status_population(status, count) :=
   snapshot_history_exists("yes"),
   configured_pipeline_status(status, level),
   count = Count{ h : at("snapshot:last") { *handle{id: h, status: status} } }.
-
-s003_pipeline_stall(status, count, next_status, false) :=
-  no_snapshot_history("yes"),
-  status_population(status, count),
-  count >= 3,
-  next_pipeline_status(status, next_status),
-  not forward_dependency_to_next_status(status, next_status).
 
 s003_pipeline_stall(status, count, next_status, true) :=
   snapshot_history_exists("yes"),
@@ -263,7 +308,7 @@ s003_pipeline_stall(status, count, next_status, true) :=
 
 @doc(
   name: "pipeline_stall",
-  doc: "Return lifecycle statuses whose population appears stalled instead of flowing to the next configured status."
+  doc: "Return lifecycle statuses whose population is not decreasing across automatic status snapshots."
 ).
 @predicate(
   name: "pipeline_stall",
