@@ -396,6 +396,42 @@ fn context_default_is_compact_and_read_spans_expands_bodies() {
 }
 
 #[test]
+fn context_read_spans_escapes_control_characters_in_json() {
+    let dir = tempdir();
+    write_config(
+        dir.path(),
+        &lifecycle_config(&["draft"], &["done"], &["draft", "done"]),
+    );
+    write_markdown(
+        dir.path(),
+        "control.md",
+        "draft",
+        "# Control\n\nNeedle before \u{0007} after.\n",
+    );
+
+    let output = run(&[
+        "--root",
+        dir.path().to_str().expect("utf8 tempdir"),
+        "context",
+        "needle",
+        "--hits=1",
+        "--read-spans",
+        "--format=json",
+    ]);
+
+    let stdout = text(&output.stdout);
+    let rows = json_rows(&output);
+    assert!(stdout.contains(r"\u0007"), "{stdout}");
+    assert!(rows.iter().any(|row| {
+        row["section"] == "span"
+            && row
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains('\u{0007}'))
+    }));
+}
+
+#[test]
 fn status_sections_are_mutually_exclusive() {
     let output = run(&["--root", ".design", "status", "--format=json"]);
     let rows = json_rows(&output);
