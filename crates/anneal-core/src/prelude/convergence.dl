@@ -80,10 +80,7 @@ entropy(h, "stale_dep") :=
   terminal(t).
 
 entropy(h, "confidence_gap") :=
-  *edge{from: h, to: t, kind: "DependsOn"},
-  pipeline_position(h, n_h),
-  pipeline_position(t, n_t),
-  n_h > n_t + 1.
+  confidence_gap(h, target, file, source_status, source_level, target_status, target_level).
 
 entropy(h, "freshness_decay") :=
   *handle{id: h, kind: "file"},

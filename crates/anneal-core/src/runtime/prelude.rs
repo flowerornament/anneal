@@ -901,29 +901,71 @@ mod tests {
         assert!(has_row(
             &output,
             &[
-                ("section", string("blocked")),
+                ("section", string("broken")),
                 ("h", string("ticket-1")),
-                ("score", int(7)),
-                ("why", string("broken_ref")),
+                ("score", int(100)),
+                ("why", string("E001")),
             ],
         ));
-        assert!(
-            !has_row(
-                &output,
-                &[("section", string("work")), ("h", string("ticket-1"))]
-            ),
-            "blocked handles should not repeat in the generic work section: {:?}",
-            output.rows
+        for section in ["work", "blocked", "holding"] {
+            assert!(
+                !has_row(
+                    &output,
+                    &[("section", string(section)), ("h", string("ticket-1"))]
+                ),
+                "higher-priority broken handles should not repeat in {section}: {:?}",
+                output.rows
+            );
+        }
+    }
+
+    #[test]
+    fn status_verb_prioritizes_each_handle_into_one_section() {
+        let verbs = views_verb_declarations();
+        let status = verbs.get("status").expect("status verb is declared");
+        let query = status.string_arg("query").expect("@verb has query");
+        let source = format!(
+            r#"
+            diagnostic("E001", "error", "broken", null, null, null).
+            blocked("broken").
+            potential("broken", 4).
+            primary_entropy("broken", "broken_ref").
+
+            blocked("blocked").
+            holding("blocked").
+            potential("blocked", 3).
+            primary_entropy("blocked", "confidence_gap").
+
+            holding("holding").
+            potential("holding", 2).
+
+            regressed("drift").
+            re_opened("drift").
+            drifting("drift").
+            advancing("__none__").
+
+            potential("open", 1).
+
+            {query}
+            "#
         );
+        let output = evaluate_raw_query("status-priority", &source, Database::default());
+
+        assert_status_sections(&output, "broken", &["broken"]);
+        assert_status_sections(&output, "blocked", &["blocked"]);
+        assert_status_sections(&output, "holding", &["holding"]);
+        assert_status_sections(&output, "drift", &["drifting"]);
+        assert_status_sections(&output, "open", &["work"]);
         assert!(
-            output
-                .rows
-                .iter()
-                .filter(|row| row.fields.get("h") == Some(&string("ticket-1"))
-                    && row.fields.get("section") == Some(&string("blocked")))
-                .count()
-                == 1,
-            "blocked handles should collapse to their primary entropy source: {:?}",
+            has_row(
+                &output,
+                &[
+                    ("section", string("drifting")),
+                    ("h", string("drift")),
+                    ("why", string("re_opened"))
+                ]
+            ),
+            "re_opened is the specific drifting reason when both leaves fire: {:?}",
             output.rows
         );
     }
@@ -1027,6 +1069,15 @@ mod tests {
         let query_program = lower_verb_query(name, query);
         let mut program = standard_prelude_program().expect("standard prelude parses");
         program.statements.extend(query_program.statements);
+        evaluate_program_query(name, program, database)
+    }
+
+    fn evaluate_raw_query(name: &str, source: &str, database: Database) -> QueryOutput {
+        let program = parse_program(name, source).expect("query parses");
+        evaluate_program_query(name, program, database)
+    }
+
+    fn evaluate_program_query(name: &str, program: Program, database: Database) -> QueryOutput {
         let analyzed = analyze(program).unwrap_or_else(|err| panic!("{name} analyzes: {err}"));
         let query = analyzed
             .queries()
@@ -1040,6 +1091,19 @@ mod tests {
         evaluator
             .eval_query(&query)
             .unwrap_or_else(|err| panic!("{name} evaluates: {err}"))
+    }
+
+    fn assert_status_sections(output: &QueryOutput, handle: &str, expected: &[&str]) {
+        let sections = output
+            .rows
+            .iter()
+            .filter(|row| row.fields.get("h") == Some(&string(handle)))
+            .map(|row| match row.fields.get("section") {
+                Some(Value::String(section)) => section.as_str(),
+                other => panic!("status row should have string section, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sections, expected, "status rows: {:?}", output.rows);
     }
 
     fn assert_output_matches_schema(verb: &crate::runtime::ast::VerbDecl, output: &QueryOutput) {
@@ -1447,7 +1511,7 @@ mod tests {
                 ),
                 (
                     "W002",
-                    r#"? diagnostic("W002", severity, "stable-src.md", file, line, evidence)."#,
+                    r#"? diagnostic("W002", severity, "review-src.md", file, line, evidence)."#,
                 ),
                 (
                     "E002",
@@ -1547,13 +1611,13 @@ mod tests {
             output(&outputs, "W002"),
             &[
                 ("severity", string("warning")),
-                ("file", string("stable-src.md")),
+                ("file", string("review-src.md")),
                 (
                     "evidence",
                     list(vec![
                         string("confidence_gap"),
-                        string("stable"),
-                        int(1),
+                        string("review"),
+                        int(2),
                         string("draft"),
                         int(0)
                     ])
@@ -1630,7 +1694,7 @@ mod tests {
                     list(vec![
                         string("lifecycle_config_gap"),
                         string("blocked"),
-                        int(0),
+                        int(1),
                         string("ordering_not_terminal")
                     ])
                 )
@@ -1646,7 +1710,7 @@ mod tests {
                     list(vec![
                         string("lifecycle_config_gap"),
                         string("blocked"),
-                        int(0),
+                        int(1),
                         string("ordering_status_unpartitioned")
                     ])
                 )
@@ -2063,7 +2127,9 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "stale-src.md", "file", Some("draft"), "", ""),
             handle(&scope, "terminal.md", "file", Some("archived"), "", ""),
             handle(&scope, "stable-src.md", "file", Some("stable"), "", ""),
+            handle(&scope, "review-src.md", "file", Some("review"), "", ""),
             handle(&scope, "draft-target.md", "file", Some("draft"), "", ""),
+            handle(&scope, "blocked-src.md", "file", Some("blocked"), "", ""),
             handle(&scope, "paused", "file", Some("paused"), "", ""),
             handle(&scope, "team/with-a.md", "file", Some("draft"), "", "team"),
             handle(&scope, "team/with-b.md", "file", Some("draft"), "", "team"),
@@ -2099,6 +2165,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             edge(&scope, "section.md", "section:intro", "Cites", 9),
             edge(&scope, "stale-src.md", "terminal.md", "DependsOn", 1),
             edge(&scope, "stable-src.md", "draft-target.md", "DependsOn", 2),
+            edge(&scope, "review-src.md", "draft-target.md", "DependsOn", 2),
             edge(&scope, "impl-1.md", "OQ-2", "Discharges", 1),
             edge(&scope, "impl-2.md", "OQ-2", "Discharges", 1),
             edge(&scope, "co1.md", "AA-1", "Cites", 1),
@@ -2131,12 +2198,14 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 vec![
                     config(&corpus, "convergence.active", "draft", None),
                     config(&corpus, "convergence.active", "stable", None),
+                    config(&corpus, "convergence.active", "review", None),
                     config(&corpus, "convergence.terminal", "archived", None),
                     config(&corpus, "convergence.ordering", "draft", Some(0)),
                     config(&corpus, "convergence.ordering", "stable", Some(1)),
-                    config(&corpus, "convergence.ordering", "archived", Some(2)),
+                    config(&corpus, "convergence.ordering", "review", Some(2)),
+                    config(&corpus, "convergence.ordering", "archived", Some(3)),
                     // Exercise W005: ordered but neither active nor terminal, and the non-terminal tail.
-                    config(&corpus, "convergence.ordering", "blocked", Some(3)),
+                    config(&corpus, "convergence.ordering", "blocked", Some(4)),
                     config(&corpus, "handles.linear", "OQ", None),
                     config(&corpus, "handles.force", "OLD", None),
                     config(&corpus, "handles.force", "AA", None),

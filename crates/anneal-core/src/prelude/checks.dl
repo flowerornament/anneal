@@ -149,7 +149,7 @@ handle_file(h, file) :=
 
 @doc(
   name: "confidence_gap",
-  doc: "Return dependency edges where the source is farther along the configured pipeline than its target."
+  doc: "Return dependency edges where the source handle is more than one pipeline step ahead of its target."
 ).
 @predicate(
   name: "confidence_gap",
@@ -159,9 +159,9 @@ confidence_gap(src, target, file, source_status, source_level, target_status, ta
   *edge{from: src, to: target, kind: "DependsOn"},
   *handle{id: src, status: source_status, file: file},
   *handle{id: target, status: target_status},
-  configured_pipeline_status(source_status, source_level),
-  configured_pipeline_status(target_status, target_level),
-  source_level > target_level.
+  pipeline_position(src, source_level),
+  pipeline_position(target, target_level),
+  source_level > target_level + 1.
 
 diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
   confidence_gap(src, target, file, source_status, source_level, target_status, target_level).
