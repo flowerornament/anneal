@@ -95,6 +95,24 @@ test is fixture-pinned in §44 — count alone is gameable; the spec
 names specific corpora, queries, expected handles, and rank
 tolerances.
 
+**Rule CR-R12 (Degenerate-input honesty).** anneal must never return a
+confident, well-formed answer indistinguishable from a correct one when
+its inputs are *degenerate* — when the question cannot be meaningfully
+answered from the corpus as configured: an empty or unresolved corpus
+root; a status outside both the active and terminal partitions; a
+convergence query with no snapshot history; a lattice whose ordering
+never reaches a terminal status; a retrieval result saturated at a
+uniform top score. In every such case anneal must emit a distinguishing
+signal — a diagnostic, a stderr note, or an explicit empty-with-reason —
+separating "genuinely empty/settled" from "could not compute a
+meaningful answer." Silence that reads as success is prohibited: a cold
+agent that cannot tell the two apart will trust a wrong picture. This is
+the flip side of CR-D2 — the cold-agent test requires that a real answer
+be reachable; CR-R12 requires that the *absence* of one be unmistakable.
+*Corollary:* any new predicate or verb that can yield an empty or
+uniform/maximal result must declare how it signals the degenerate case
+before it ships.
+
 ---
 
 ## Part II: Architecture [CR-A]

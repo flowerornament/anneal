@@ -1,10 +1,10 @@
 ---
-status: draft
+status: superseded
+superseded-by: 2026-05-26-surface-evolution-framework.md
 updated: 2026-05-25
 author: claude (sub-agent reduction audit)
 depends-on:
   - 2026-05-19-compatibility-surface-retire-audit.md
-  - 2026-05-21-code-mode-ergonomics.md
 ---
 
 # Reduction Audit — v0.12.0

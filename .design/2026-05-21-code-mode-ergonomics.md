@@ -1,5 +1,6 @@
 ---
 status: superseded
+superseded-by: 2026-05-26-surface-evolution-framework.md
 updated: 2026-05-26
 author: claude + codex (independent review, converged)
 depends-on:
@@ -9,9 +10,10 @@ depends-on:
   - 2026-05-20-datalog-learning-path.md
   - 2026-05-21-multi-arg-ergonomics.md
 description: >
-  Historical v0.12 arc spec. Superseded by the remove-focused command
-  surface audits on 2026-05-25/26, which kept relation-pattern calls and
-  describe Common joins but retired the cookbook/save teaching surfaces.
+  Historical v0.12 arc spec. Superseded by the surface evolution
+  framework (via the 2026-05-25/26 remove-focused audits), which kept
+  relation-pattern calls and describe Common joins but retired the
+  cookbook/save teaching surfaces.
   After the v0.10-era compatibility-surface audit closed
   via v0.11.2, two real-world observations from agent usage surfaced a
   deeper question: does the runtime invite composition, or does it just

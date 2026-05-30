@@ -1,12 +1,11 @@
 ---
-status: current
+status: superseded
+superseded-by: 2026-05-26-surface-evolution-framework.md
 updated: 2026-05-26
 author: codex + sub-agent audits
 depends-on:
-  - 2026-05-03-language-redesign.md
   - 2026-05-13-corpus-runtime.md
   - 2026-05-19-compatibility-surface-retire-audit.md
-  - 2026-05-21-code-mode-ergonomics.md
 description: >
   Remove-focused audit of anneal's command surface after the Code Mode
   ergonomics arc. The question is not "what can be polished?" but "what

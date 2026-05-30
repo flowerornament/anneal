@@ -5,6 +5,7 @@ author: claude + codex (independent review, converged)
 depends-on:
   - 2026-05-13-corpus-runtime.md
   - 2026-05-19-compatibility-surface-retire-audit.md
+supersedes:
   - 2026-05-21-code-mode-ergonomics.md
   - 2026-05-25-reduction-audit.md
   - 2026-05-26-remove-focused-command-surface-audit.md
