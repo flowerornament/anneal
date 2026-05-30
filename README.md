@@ -121,6 +121,13 @@ anneal = {
 };
 ```
 
+For flake inputs that should follow the latest published release instead of
+`master`, pin the moving `release` branch:
+
+```nix
+anneal.url = "github:flowerornament/anneal?ref=refs/heads/release";
+```
+
 ### Nix + Home Manager
 
 Use the exported Home Manager module for a declarative setup. It installs the

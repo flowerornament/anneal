@@ -308,6 +308,10 @@ def tag(version: str) -> None:
 
     run(["git", "tag", "-a", tag_name, "-m", tag_name])
     run(["git", "push", "origin", tag_name])
+    # Keep the moving release branch pointed at the latest published tag for
+    # downstream release-tracking flake inputs.
+    run(["git", "branch", "-f", "release", tag_name])
+    run(["git", "push", "--force-with-lease", "origin", "release"])
 
 
 def main() -> None:
