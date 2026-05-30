@@ -1226,7 +1226,7 @@ mod tests {
         std::fs::create_dir_all(&corpus).expect("create corpus");
         std::fs::write(
             corpus.join("doc.md"),
-            "# Doc\n\nSee `lib/host-corpus/admission.rs:142-167`.\n",
+            "# Doc\n\nSee `lib/example/admission.rs:142-167`.\n",
         )
         .expect("write doc");
         let root = Utf8Path::from_path(&corpus).expect("utf8 tempdir");
@@ -1239,7 +1239,7 @@ mod tests {
         )
         .expect("extract facts");
 
-        let target = "lib/host-corpus/admission.rs:142-167";
+        let target = "lib/example/admission.rs:142-167";
         assert!(
             batch
                 .handles
@@ -1257,7 +1257,7 @@ mod tests {
         );
         for (key, value) in [
             ("external_class", "code"),
-            ("target_path", "lib/host-corpus/admission.rs"),
+            ("target_path", "lib/example/admission.rs"),
             ("target_start_line", "142"),
             ("target_end_line", "167"),
         ] {

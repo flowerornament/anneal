@@ -78,7 +78,7 @@ struct EdgeJson {
 
 /// Deduplicating interner: each unique input string is leaked exactly
 /// once and returned as `&'static str`. Without dedup, a corpus where
-/// every edge references the same handle id (Cites is 99% of large-corpus's
+/// every edge references the same handle id (Cites dominates many real
 /// edges) would leak that id once per edge; with dedup, once per corpus.
 #[derive(Default)]
 struct Interner {

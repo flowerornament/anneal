@@ -2179,7 +2179,7 @@ mod tests {
 
     #[test]
     fn cmark_extracts_code_path_refs_from_text_and_inline_code() {
-        let body = "See `lib/host-corpus/admission.rs:142-167` and crates/anneal-core/src/lib.rs:12.\n";
+        let body = "See `lib/example/admission.rs:142-167` and crates/anneal-core/src/lib.rs:12.\n";
         let (result, refs, _graph) = cmark_scan(body);
 
         let targets: Vec<_> = result
@@ -2190,7 +2190,7 @@ mod tests {
         assert_eq!(
             targets,
             vec![
-                "lib/host-corpus/admission.rs:142-167",
+                "lib/example/admission.rs:142-167",
                 "crates/anneal-core/src/lib.rs:12",
             ]
         );
@@ -2223,7 +2223,7 @@ mod tests {
 
     #[test]
     fn cmark_skips_code_refs_inside_fenced_code_blocks() {
-        let body = "```\nlib/host-corpus/admission.rs:142-167\n```\n";
+        let body = "```\nlib/example/admission.rs:142-167\n```\n";
         let (result, _refs, _graph) = cmark_scan(body);
 
         assert!(result.code_refs.is_empty());
@@ -2231,7 +2231,7 @@ mod tests {
 
     #[test]
     fn cmark_skips_ellipsized_code_path_placeholders() {
-        let body = "Example placeholder: `lib/host-corpus/...file.ex`.\n";
+        let body = "Example placeholder: `lib/example/...file.ex`.\n";
         let (result, _refs, _graph) = cmark_scan(body);
 
         assert!(result.code_refs.is_empty());
@@ -2460,7 +2460,7 @@ mod tests {
 
     #[test]
     fn cmark_version_dot_rejection() {
-        let body = "See formal-model/large-corpus-algebra-v1.2.md for details\n";
+        let body = "See formal-model/sample-algebra-v1.2.md for details\n";
         let (result, _, _) = cmark_scan(body);
         assert!(
             !result.file_refs.iter().any(|(r, _)| r == "2.md"),
@@ -2752,7 +2752,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Corpus smoke tests — validate cmark scanner on real corpora
+    // Corpus smoke test — validate cmark scanner on a local real-world corpus
     // -----------------------------------------------------------------------
 
     /// Walk a corpus, run scan_file_cmark on each .md file, verify SourceSpan coverage.
@@ -2815,17 +2815,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires external corpus at /path/to/large-corpus/.design/"]
-    fn corpus_smoke_large-corpus() {
-        let home = std::env::var("HOME").expect("HOME must be set");
-        corpus_smoke_test(&format!("{home}/code/large-corpus/.design/"), "Large Corpus");
-    }
-
-    #[test]
-    #[ignore = "requires external corpus at /path/to/host-corpus/.design/"]
-    fn corpus_smoke_host-corpus() {
-        let home = std::env::var("HOME").expect("HOME must be set");
-        corpus_smoke_test(&format!("{home}/code/host-corpus/.design/"), "Host Corpus");
+    #[ignore = "requires ANNEAL_SMOKE_CORPUS_ROOT"]
+    fn corpus_smoke_external() {
+        let root = std::env::var("ANNEAL_SMOKE_CORPUS_ROOT")
+            .expect("ANNEAL_SMOKE_CORPUS_ROOT must point at a markdown corpus");
+        corpus_smoke_test(&root, "external");
     }
 
     // -------------------------------------------------------------------

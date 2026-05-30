@@ -1,4 +1,4 @@
-//! Benchmark the Phase 0 dynamic-IR skeleton against the frozen large-corpus
+//! Benchmark the Phase 0 dynamic-IR skeleton against the frozen sample
 //! fixture. The gate is warm prelude evaluation under 50ms.
 //!
 //! Usage:

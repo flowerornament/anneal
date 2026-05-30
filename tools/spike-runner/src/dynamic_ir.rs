@@ -6,7 +6,7 @@
 //! This is intentionally a skeleton. It parses a small Datalog-shaped subset
 //! into stable IR structs, then evaluates the benchmark prelude rules with
 //! hand-written rule plans. The point of Phase 0 is timing the dynamic rule
-//! layer at large-corpus scale, not pretending this is the production evaluator.
+//! layer at sample-corpus scale, not pretending this is the production evaluator.
 
 use crate::fixture::{Edge, Handle};
 use crate::loader::Corpus;

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DEFAULT_CORPUS: &str = "large-corpus";
+const DEFAULT_CORPUS: &str = "sample";
 const DEFAULT_LEFT_BIN: &str = "anneal";
 const DEFAULT_RIGHT_BIN: &str = "anneal";
 const DEFAULT_SAMPLE_SIZE: usize = 50;
@@ -345,7 +345,7 @@ fn value_or_next(
 
 fn print_help() {
     println!(
-        "Usage: parity-runner [--corpus large-corpus|PATH] [--left-bin anneal] \\
+        "Usage: parity-runner [--corpus sample|PATH] [--left-bin anneal] \\
          [--right-bin anneal] [--right-mode cli|anneal-md] \\
          [--sample-size 50] [--report PATH]"
     );
@@ -364,7 +364,7 @@ fn repo_root() -> Result<PathBuf> {
 }
 
 fn resolve_corpus(repo: &Path, corpus: &str) -> Result<PathBuf> {
-    let path = if corpus == "large-corpus" {
+    let path = if corpus == "sample" {
         repo.join(".fixtures/sample-corpus")
     } else {
         PathBuf::from(corpus)
@@ -1409,6 +1409,6 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_path_separators() {
-        assert_eq!(sanitize("../large-corpus fixture"), "---large-corpus-fixture");
+        assert_eq!(sanitize("../sample fixture"), "---sample-fixture");
     }
 }

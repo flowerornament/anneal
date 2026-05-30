@@ -1,4 +1,4 @@
-//! Hand-built large-corpus-shaped fixture for engine-spike testing.
+//! Hand-built sample fixture for engine-spike testing.
 //!
 //! Models the trickiest cases from real corpora in a 14-handle subset:
 //! a supersession chain, open and discharged obligations in a linear

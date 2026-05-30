@@ -2150,7 +2150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_large-corpus_corpus() {
+    fn test_sample_corpus() {
         let root =
             Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.fixtures/sample-corpus");
         let config = config::load_config(root.as_std_path()).expect("config load");

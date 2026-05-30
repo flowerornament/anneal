@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn context_large-corpus_v17_fixture_gate() {
+    fn context_sample_v17_fixture_gate() {
         const AUDIT_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
 
         let mut tool_calls = 0;
@@ -691,7 +691,7 @@ mod tests {
                 &ContextCommand::new("v17 conformance audit")
                     .with_hits(3)
                     .with_budget(4_000),
-                frozen_large-corpus_database(),
+                frozen_sample_database(),
                 EvalOptions::default(),
             )
         };
@@ -969,7 +969,7 @@ mod tests {
         Database::from_store(&store)
     }
 
-    fn frozen_large-corpus_database() -> Database {
+    fn frozen_sample_database() -> Database {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../.fixtures/sample-corpus");
         let root = Utf8PathBuf::from_path_buf(root).expect("fixture path is utf8");
@@ -983,12 +983,12 @@ mod tests {
             capabilities: BTreeSet::new(),
         };
         let source = anneal_md::MarkdownSource::default();
-        let request = SourceRefreshRequest::new("large-corpus", &roots, &config)
+        let request = SourceRefreshRequest::new("sample", &roots, &config)
             .with_actor(actor)
             .with_cancellation(CancellationToken::new());
         let driver = OneShotSourceDriver::new(source);
         let mut store = FactStore::default();
-        refresh_source(&driver, &request, &mut store).expect("refresh frozen large-corpus");
+        refresh_source(&driver, &request, &mut store).expect("refresh frozen sample corpus");
         Database::from_store(&store).with_sources([driver.describe()])
     }
 

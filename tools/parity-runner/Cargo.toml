@@ -17,11 +17,11 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [dependencies]
-anneal-legacy = { version = "0.11.0", path = "../../crates/anneal-legacy" }
-anneal-core = { version = "0.11.0", path = "../../crates/anneal-core" }
-anneal-md = { version = "0.11.0", path = "../../crates/anneal-md" }
+anneal-legacy = { version = "0.14.0", path = "../../crates/anneal-legacy" }
+anneal-core = { version = "0.14.0", path = "../../crates/anneal-core" }
+anneal-md = { version = "0.14.0", path = "../../crates/anneal-md" }
 anyhow = "1.0.102"
 camino = "1.2.2"
 serde_json = "1.0.149"
-anneal-cli = { version = "0.11.0", path = "../../crates/anneal-cli" }
+anneal-cli = { version = "0.14.0", path = "../../crates/anneal-cli" }
 serde = { version = "1.0.228", features = ["derive"] }

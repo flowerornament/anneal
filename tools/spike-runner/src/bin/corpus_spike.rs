@@ -86,8 +86,8 @@ fn corpus_root() -> PathBuf {
 fn fill_program(prog: &mut AscentProgram, corpus: &Corpus) {
     push_handles(prog, &corpus.handles);
     push_edges(prog, &corpus.edges);
-    // OQ is a near-universal anneal/large-corpus/host-corpus linear namespace; declaring
-    // it surfaces undischarged-obligation diagnostics from any of the three.
+    // OQ is a common linear namespace in markdown knowledge corpora; declaring
+    // it surfaces undischarged-obligation diagnostics in the sample corpus.
     push_linear_namespaces(prog, &[Namespace("OQ")]);
     push_pipeline_ordering(prog);
 }

@@ -118,7 +118,7 @@ impl EdgeKind {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
-    // ---- Active statuses (common across anneal/large-corpus/host-corpus corpora) ----
+    // ---- Active statuses common across markdown knowledge corpora ----
     Raw,
     Draft,
     Research,

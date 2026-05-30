@@ -1501,7 +1501,7 @@ mod tests {
 
     #[test]
     fn frontier_pipeline_ordering_excludes_off_pipeline_status() {
-        // Simulates large-corpus: `stable` and `reference` are declared active
+        // Simulates a corpus where `stable` and `reference` are declared active
         // (not terminal) but are NOT in the pipeline ordering. Under the
         // pipeline-driven Frontier rule, only statuses inside the ordering
         // count as "under active authorship."
@@ -1512,7 +1512,7 @@ mod tests {
             date(2026, 4, 20),
         ));
         // `stable` is active in the lattice but outside the pipeline; in a
-        // corpus like large-corpus this should not surface as Frontier.
+        // corpus this should not surface as Frontier.
         graph.add_node(file_with_date(
             "runtime/off-pipeline.md",
             Some("stable"),

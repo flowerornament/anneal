@@ -4365,7 +4365,7 @@ mod tests {
                 ("relation", Value::String("code_ref".to_string())),
                 (
                     "other",
-                    Value::String("lib/host-corpus/admission.rs:142-167".to_string()),
+                    Value::String("lib/example/admission.rs:142-167".to_string()),
                 ),
                 ("kind", Value::String("Cites".to_string())),
                 ("status", Value::Null),
@@ -4373,7 +4373,7 @@ mod tests {
                 ("line", Value::Number(NumberValue::Int(8))),
                 (
                     "summary",
-                    Value::String("lib/host-corpus/admission.rs".to_string()),
+                    Value::String("lib/example/admission.rs".to_string()),
                 ),
             ]),
         ];
@@ -4385,7 +4385,7 @@ mod tests {
         assert!(rendered.contains("Outgoing\nDependsOn (1)"));
         assert!(rendered.contains(" 1. -> plan.md  at=doc.md:4"));
         assert!(rendered.contains("Code references (1)"));
-        assert!(rendered.contains(" 1. lib/host-corpus/admission.rs:142-167  at=doc.md:8"));
+        assert!(rendered.contains(" 1. lib/example/admission.rs:142-167  at=doc.md:8"));
     }
 
     fn status_output(rows: Vec<Row>) -> CommandOutput {
