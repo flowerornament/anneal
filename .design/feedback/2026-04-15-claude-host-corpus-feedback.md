@@ -27,7 +27,7 @@ anneal map --rooted-at=impl-plan.md --upstream --depth=3
 
 anneal get impl-plan.md --refs # flat list
 anneal get arch-synthesis.md --refs # flat list
-anneal get host-corpus-arch.md --refs # flat list
+anneal get host-architecture.md --refs # flat list
 
 # ... manually trace and diagram
 
