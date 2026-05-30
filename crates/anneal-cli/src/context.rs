@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
+use anneal_core::ranking::{FIELD_BODY, FIELD_HEADING, FIELD_IDENTIFIER, FIELD_TITLE};
 use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::prelude::{ContextQueryArgs, render_context_query};
 use anneal_core::runtime::{Row, Value};
@@ -10,6 +11,10 @@ use serde::Serialize;
 pub const DEFAULT_CONTEXT_BUDGET: i64 = 4_000;
 pub const DEFAULT_CONTEXT_HITS: usize = 3;
 pub const DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH: i64 = 1;
+const CONTEXT_CANDIDATE_MULTIPLIER: usize = 8;
+const MIN_CONTEXT_CANDIDATES: usize = 20;
+const MAX_CONTEXT_CANDIDATES: usize = 200;
+const FIELD_FRONTMATTER_PREFIX: &str = "frontmatter:";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextCommand {
@@ -54,7 +59,7 @@ impl ContextCommand {
     pub fn datalog(&self) -> String {
         render_context_query(&ContextQueryArgs {
             goal: &self.goal,
-            hits: self.hits,
+            hits: self.candidate_hits(),
             per_hit_read_budget: self.per_hit_read_budget(),
             neighborhood_depth: self.neighborhood_depth,
             include_low_confidence: self.include_low_confidence,
@@ -62,7 +67,7 @@ impl ContextCommand {
     }
 
     pub fn group_rows(&self, rows: &[Row]) -> Result<ContextOutput, ContextGroupError> {
-        ContextOutput::from_rows(self.goal.clone(), rows)
+        ContextOutput::from_rows_with_limit(self.goal.clone(), rows, self.hits)
     }
 
     fn per_hit_read_budget(&self) -> i64 {
@@ -71,6 +76,19 @@ impl ContextCommand {
             return 0;
         }
         span_budget.max(1)
+    }
+
+    fn candidate_hits(&self) -> usize {
+        let candidates = self
+            .hits
+            .saturating_mul(CONTEXT_CANDIDATE_MULTIPLIER)
+            .max(self.hits);
+        let candidates = if candidates < MIN_CONTEXT_CANDIDATES {
+            MIN_CONTEXT_CANDIDATES
+        } else {
+            candidates
+        };
+        candidates.min(MAX_CONTEXT_CANDIDATES).max(self.hits)
     }
 }
 
@@ -84,6 +102,14 @@ pub struct ContextOutput {
 
 impl ContextOutput {
     pub fn from_rows(goal: impl Into<String>, rows: &[Row]) -> Result<Self, ContextGroupError> {
+        Self::from_rows_with_limit(goal, rows, usize::MAX)
+    }
+
+    fn from_rows_with_limit(
+        goal: impl Into<String>,
+        rows: &[Row],
+        hit_limit: usize,
+    ) -> Result<Self, ContextGroupError> {
         let mut hits = Vec::new();
         let mut spans = Vec::new();
         let mut span_keys = BTreeSet::new();
@@ -93,13 +119,16 @@ impl ContextOutput {
         for row in rows {
             match ContextSection::parse(&string_field(row, "section")?)? {
                 ContextSection::Hit => {
-                    let hit = ContextHit {
-                        handle: string_field(row, "h")?,
-                        span_id: optional_string_field(row, "hit_span_id")?,
-                        score: number_field(row, "score")?,
-                        reason: string_field(row, "reason")?,
-                        field: string_field(row, "field")?,
-                        heading_path: optional_string_field(row, "heading_path")?,
+                    let hit = RankedContextHit {
+                        sort_score: context_hit_sort_score(row)?,
+                        hit: ContextHit {
+                            handle: string_field(row, "h")?,
+                            span_id: optional_string_field(row, "hit_span_id")?,
+                            score: number_field(row, "score")?,
+                            reason: string_field(row, "reason")?,
+                            field: string_field(row, "field")?,
+                            heading_path: optional_string_field(row, "heading_path")?,
+                        },
                     };
                     hits.push(hit);
                 }
@@ -132,14 +161,17 @@ impl ContextOutput {
 
         hits.sort_by(|left, right| {
             right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.handle.cmp(&right.handle))
-                .then_with(|| left.span_id.cmp(&right.span_id))
+                .sort_score
+                .total_cmp(&left.sort_score)
+                .then_with(|| right.hit.score.total_cmp(&left.hit.score))
+                .then_with(|| left.hit.handle.cmp(&right.hit.handle))
+                .then_with(|| left.hit.span_id.cmp(&right.hit.span_id))
         });
         let mut hit_keys = BTreeSet::new();
-        hits.retain(|hit| hit_keys.insert((hit.handle.clone(), hit.span_id.clone())));
+        hits.retain(|hit| hit_keys.insert((hit.hit.handle.clone(), hit.hit.span_id.clone())));
         prefer_matched_span_hits(&mut hits, &mut spans);
+        hits.truncate(hit_limit);
+        filter_context_to_hits(&hits, &mut spans, &mut neighborhood);
         let handle_ranks = handle_rank_map(&hits);
 
         spans.sort_by(|left, right| {
@@ -158,43 +190,71 @@ impl ContextOutput {
 
         Ok(Self {
             goal: goal.into(),
-            hits,
+            hits: hits.into_iter().map(|ranked| ranked.hit).collect(),
             spans,
             neighborhood,
         })
     }
 }
 
-fn prefer_matched_span_hits(hits: &mut Vec<ContextHit>, spans: &mut Vec<ContextSpan>) {
-    let retained_span_ids = hits.iter().fold(
-        BTreeMap::<String, BTreeSet<String>>::new(),
-        |mut span_ids_by_handle, hit| {
-            if let Some(span_id) = &hit.span_id {
-                span_ids_by_handle
-                    .entry(hit.handle.clone())
-                    .or_default()
-                    .insert(span_id.clone());
-            }
-            span_ids_by_handle
-        },
-    );
+fn prefer_matched_span_hits(hits: &mut Vec<RankedContextHit>, spans: &mut Vec<ContextSpan>) {
+    let retained_span_ids = hit_span_ids_by_handle(hits);
 
     if retained_span_ids.is_empty() {
         return;
     }
 
-    hits.retain(|hit| hit.span_id.is_some() || !retained_span_ids.contains_key(&hit.handle));
+    hits.retain(|hit| {
+        hit.hit.span_id.is_some()
+            || hit.hit.reason == anneal_core::REASON_PARENT_CLUSTER
+            || !retained_span_ids.contains_key(hit.hit.handle.as_str())
+    });
     spans.retain(|span| {
         retained_span_ids
-            .get(&span.handle)
+            .get(span.handle.as_str())
             .is_none_or(|span_ids| span_ids.contains(span.span_id.as_str()))
     });
 }
 
-fn handle_rank_map(hits: &[ContextHit]) -> BTreeMap<&str, usize> {
+fn filter_context_to_hits(
+    hits: &[RankedContextHit],
+    spans: &mut Vec<ContextSpan>,
+    neighborhood: &mut Vec<ContextNeighbor>,
+) {
+    let retained_handles = hits
+        .iter()
+        .map(|hit| hit.hit.handle.as_str())
+        .collect::<BTreeSet<_>>();
+    let retained_span_ids = hit_span_ids_by_handle(hits);
+
+    spans.retain(|span| {
+        if !retained_handles.contains(span.handle.as_str()) {
+            return false;
+        }
+        retained_span_ids
+            .get(span.handle.as_str())
+            .is_none_or(|span_ids| span_ids.contains(span.span_id.as_str()))
+    });
+    neighborhood.retain(|neighbor| retained_handles.contains(neighbor.handle.as_str()));
+}
+
+fn hit_span_ids_by_handle(hits: &[RankedContextHit]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut span_ids_by_handle = BTreeMap::<String, BTreeSet<String>>::new();
+    for hit in hits {
+        if let Some(span_id) = &hit.hit.span_id {
+            span_ids_by_handle
+                .entry(hit.hit.handle.clone())
+                .or_default()
+                .insert(span_id.clone());
+        }
+    }
+    span_ids_by_handle
+}
+
+fn handle_rank_map(hits: &[RankedContextHit]) -> BTreeMap<&str, usize> {
     hits.iter()
         .enumerate()
-        .map(|(index, hit)| (hit.handle.as_str(), index))
+        .map(|(index, hit)| (hit.hit.handle.as_str(), index))
         .collect()
 }
 
@@ -220,6 +280,12 @@ impl ContextSection {
             }),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RankedContextHit {
+    hit: ContextHit,
+    sort_score: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -326,6 +392,30 @@ fn number_field(row: &Row, field: &'static str) -> Result<f64, ContextGroupError
             expected: "number",
         }),
         None => Err(ContextGroupError::MissingField { field }),
+    }
+}
+
+fn context_hit_sort_score(row: &Row) -> Result<f64, ContextGroupError> {
+    let score = number_field(row, "score")?;
+    let field = string_field(row, "field")?;
+    let reason = string_field(row, "reason")?;
+    Ok(score + context_reason_bonus(reason.as_str()) + context_rank_bonus(field.as_str()))
+}
+
+fn context_reason_bonus(reason: &str) -> f64 {
+    match reason {
+        anneal_core::REASON_PARENT_CLUSTER => 0.250,
+        _ => 0.0,
+    }
+}
+
+fn context_rank_bonus(field: &str) -> f64 {
+    match field {
+        FIELD_HEADING => 0.040,
+        FIELD_BODY => 0.015,
+        FIELD_TITLE | FIELD_IDENTIFIER => 0.005,
+        field if field.starts_with(FIELD_FRONTMATTER_PREFIX) => 0.002,
+        _ => 0.0,
     }
 }
 
@@ -642,9 +732,37 @@ mod tests {
         );
 
         assert_eq!(output.hits.len(), 1);
-        assert_eq!(output.hits[0].handle, "docs/canonical.md");
+        assert_eq!(
+            output.hits[0].handle, "docs/canonical.md",
+            "hits: {:?}",
+            output.hits
+        );
         assert_eq!(output.hits[0].reason, anneal_core::REASON_PARENT_CLUSTER);
         assert_eq!(output.spans[0].handle, "docs/canonical.md");
+    }
+
+    #[test]
+    fn context_prefers_heading_span_over_short_label_title_match() {
+        let output = evaluate_context(
+            &ContextCommand::new("load shedding")
+                .with_hits(1)
+                .with_budget(40),
+            heading_vs_label_database(),
+            EvalOptions::default(),
+        );
+
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].handle, "docs/canonical.md");
+        assert_eq!(
+            output.hits[0].span_id.as_deref(),
+            Some("docs/canonical.md#h/error-model-and-load-shedding")
+        );
+        assert_eq!(output.hits[0].field, "heading");
+        assert!(
+            output.hits[0].score > 0.95,
+            "heading score should stay near the saturated title hits: {:?}",
+            output.hits
+        );
     }
 
     fn evaluate_context(
@@ -735,6 +853,42 @@ mod tests {
         ];
         let mut store = FactStore::default();
         store.merge(batch).expect("merge clustered label fixture");
+        Database::from_store(&store)
+    }
+
+    fn heading_vs_label_database() -> Database {
+        let mut batch = FactBatch::new(
+            "test".into(),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        let span_id = "docs/canonical.md#h/error-model-and-load-shedding";
+        batch.handles = vec![
+            handle("docs/canonical.md", "Canonical source"),
+            handle_in_file("C-12", "docs/canonical.md", "Load shedding"),
+        ];
+        batch.content = vec![
+            content(
+                "docs/canonical.md",
+                span_id,
+                "Load shedding policy and error model details.",
+                8,
+            ),
+            content("C-12", "body", "Load shedding", 2),
+        ];
+        batch.spans = vec![
+            span_with_summary(
+                "docs/canonical.md",
+                span_id,
+                31,
+                38,
+                "Error Model and Load Shedding",
+            ),
+            span("C-12", "body", 40, 40),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge heading vs label fixture");
         Database::from_store(&store)
     }
 
@@ -833,13 +987,23 @@ mod tests {
     }
 
     fn span(handle: &str, span_id: &str, start_line: u32, end_line: u32) -> SpanFact {
+        span_with_summary(handle, span_id, start_line, end_line, "Intro")
+    }
+
+    fn span_with_summary(
+        handle: &str,
+        span_id: &str,
+        start_line: u32,
+        end_line: u32,
+        summary: &str,
+    ) -> SpanFact {
         SpanFact {
             identity: identity(&format!("{handle}#{span_id}")),
             id: span_id.to_string(),
             handle: handle.to_string(),
             start_line,
             end_line,
-            summary: "Intro".to_string(),
+            summary: summary.to_string(),
         }
     }
 
