@@ -74,6 +74,12 @@ instead of retired command habits.
   lexical scoring. Authoritative/current/stable handles rank above active or
   draft matches by default, and highly cited handles get a bounded
   incoming-edge boost.
+- Behavior change: `anneal context --format=json` now emits NDJSON event rows
+  (`goal`, `hit`, `span`, `neighbor`) instead of one top-level JSON object, so
+  machine consumers can parse it like `search`, `status`, and `eval`.
+- Behavior change: `anneal context` no longer inlines matched span bodies by
+  default. It returns ranked hits, span metadata, and neighborhood first; pass
+  `--read-spans` when inline matched bodies are worth the extra output.
 - `anneal handle <H> --impact` and `impact("H", affected, depth)` now use the
   same configured reverse-dependency traversal, so direct handle-impact rows
   match `impact("H", _, 1)`.

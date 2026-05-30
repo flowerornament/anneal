@@ -29,10 +29,12 @@ anneal schema --format=text
 anneal describe runtime --format=text
 ```
 
-Use `context` for goal-oriented orientation: ranked span hits, matched excerpts,
-and graph neighborhood in one call. Use `status` for corpus state. Use `schema`
-and `describe NAME` before inventing predicate or field names; `describe`
-includes signatures, examples, common joins, and output columns.
+Use `context` for goal-oriented orientation: ranked span hits, compact span
+metadata, and graph neighborhood in one call. Add `--read-spans` only when
+inline matched bodies are worth the extra output. Use `status` for corpus
+state. Use `schema` and `describe NAME` before inventing predicate or field
+names; `describe` includes signatures, examples, common joins, and output
+columns.
 
 ## Retrieval
 
@@ -52,7 +54,7 @@ stdout empty for pipes.
 
 Tool choice:
 
-- `anneal context "X"`: find the section that defines X, with evidence
+- `anneal context "X"`: find the section that defines X, with compact evidence
 - `grep -rn "X"`: find every literal occurrence with line numbers
 - `anneal -e '? ...'`: ask structural graph questions
 

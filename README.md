@@ -235,8 +235,9 @@ anneal status
 anneal help agent
 ```
 
-`context` composes ranked heading-span search, bounded reads, and graph
-neighborhood into one cold-start response. `status` shows the compact
+`context` composes ranked heading-span search, compact span metadata, and graph
+neighborhood into one cold-start response. Add `--read-spans` when you want
+matched span bodies inline. `status` shows the compact
 convergence frontier.
 `help agent` prints the bundled agent skill briefing from the installed binary.
 The hidden `prime` alias remains for installed skill loaders and muscle memory.
@@ -244,9 +245,10 @@ The hidden `prime` alias remains for installed skill loaders and muscle memory.
 Useful `context` flags:
 
 - `--hits N`: number of search winners
-- `--budget N`: per-hit read cap; it is not divided by `--hits`
+- `--budget N`: per-hit span selection cap; also caps bodies with `--read-spans`
 - `--depth N`: graph distance around winners
 - `--include-low-confidence`: include lower-confidence search hits
+- `--read-spans`: include matched span bodies inline
 
 ### Program The Corpus
 
@@ -288,8 +290,9 @@ in-repo code references; `--impact` adds direct and indirect reverse
 dependencies before an edit.
 
 Use `anneal context "X"` when the task is "find the section that defines X";
-it returns ranked section hits, matched-span excerpts, `heading_path`, and graph
-neighborhood. Use `grep -rn "X"` when you need every literal occurrence with
+it returns ranked section hits, span metadata, `heading_path`, and graph
+neighborhood. Add `--read-spans` only when inline matched bodies are worth the
+extra output. Use `grep -rn "X"` when you need every literal occurrence with
 line numbers. Use `anneal -e '? ...'` when the question is structural, such as
 "which handles match this graph predicate?"
 

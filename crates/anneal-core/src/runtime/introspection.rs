@@ -2050,7 +2050,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`*span{handle: h, id: span_id, summary: heading_path}, read(h, 4000, span_id, text, start, end, tokens)` to read by heading hierarchy",
         ],
         "context" => &[
-            "`context` composes ranked section search, matched-span reads, and graph neighborhood rows for cold-agent orientation",
+            "`context` composes ranked section search, compact span metadata, and graph neighborhood rows for cold-agent orientation",
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` when you need the same retrieval pieces manually",
         ],
         "handle" => &[
@@ -2253,7 +2253,7 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query over the `search` primitive; applies TopK by calibrated score, filters `low_confidence = false`, and adds heading_path for span hits."
         }
         "context" => {
-            "Saved query that composes boosted span-granular `search`, matched-span `read`, `neighborhood`, TopK, and TakeUntil into one orientation bundle."
+            "Saved query that composes boosted span-granular `search`, span metadata, `neighborhood`, TopK, and TakeUntil into one orientation bundle. The CLI `--read-spans` flag expands matched span bodies."
         }
         "read" => {
             "Saved query over the `read` primitive; the CLI can target one heading span with `--span-id`, usually copied from search/context output."

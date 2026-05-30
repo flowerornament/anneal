@@ -24,6 +24,7 @@ use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{SecondsFormat, Utc};
+use serde::Serialize;
 
 use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
@@ -294,6 +295,7 @@ enum RuntimeCommand {
         hits: usize,
         depth: i64,
         include_low_confidence: bool,
+        read_spans: bool,
     },
     Search {
         query: String,
@@ -383,19 +385,21 @@ Output: human summary at a terminal or with --format=text; NDJSON rows when pipe
 Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
 
 Cold-agent orientation in one response. Composes heading-span search, bounded
-matched-span reads, and graph neighborhood.
+span metadata, and graph neighborhood. Use --read-spans to include matched
+span bodies.
 
 Arguments:
   <GOAL>                         Natural-language goal/query
 
 Options:
-      --budget <N>               Derives one per-hit read cap; not divided by hits
+      --budget <N>               Per-hit span selection cap; used for bodies with --read-spans
       --hits <N>                 Number of search winners (default: 3)
       --depth <N>                Alias for --neighborhood-depth
       --neighborhood-depth <N>   Graph distance around winners (default: 1)
       --include-low-confidence   Include low-confidence search hits
+      --read-spans               Include matched span bodies in the output
 
-Output: human summary at a terminal or with --format=text; one JSON object when piped or with --json.
+Output: human summary at a terminal or with --format=text; NDJSON event rows when piped or with --json.
 "
             }
             Self::Search => {
@@ -933,12 +937,14 @@ impl RuntimeSession {
                 hits,
                 depth,
                 include_low_confidence,
+                read_spans,
             } => {
                 let command = ContextCommand::new(goal)
                     .with_budget(budget)
                     .with_hits(hits)
                     .with_neighborhood_depth(depth)
-                    .include_low_confidence(include_low_confidence);
+                    .include_low_confidence(include_low_confidence)
+                    .read_spans(read_spans);
                 let output = self.eval(command.datalog().as_str(), ExplainOptions::disabled())?;
                 Ok(CommandOutput::Context(command.group_rows(&output.rows)?))
             }
@@ -1757,7 +1763,7 @@ impl CommandOutput {
             ) => write_describe_text(writer, &rows)?,
             (_, Self::Status(output)) => write_ndjson(writer, output.rows)?,
             (_, Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
-            (_, Self::Context(output)) => write_ndjson(writer, std::iter::once(output))?,
+            (_, Self::Context(output)) => write_context_ndjson(writer, &output)?,
             (_, Self::Text(text)) => write_text(writer, &text)?,
         }
         Ok(())
@@ -2263,14 +2269,17 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
 
     if !output.spans.is_empty() {
         writeln!(writer)?;
-        writeln!(writer, "Read")?;
+        let has_bodies = output.spans.iter().any(|span| span.text.is_some());
+        writeln!(writer, "{}", if has_bodies { "Read" } else { "Spans" })?;
         for span in &output.spans {
             writeln!(
                 writer,
-                "{}:{}-{}  tokens={}",
-                span.handle, span.start_line, span.end_line, span.tokens
+                "{} span={} lines={}-{} tokens={}",
+                span.handle, span.span_id, span.start_line, span.end_line, span.tokens
             )?;
-            write_text_block(&mut writer, &span.text, MAX_TEXT_LINES_PER_SPAN)?;
+            if let Some(text) = &span.text {
+                write_text_block(&mut writer, text, MAX_TEXT_LINES_PER_SPAN)?;
+            }
         }
     }
 
@@ -2302,6 +2311,67 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
         }
     }
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(tag = "section")]
+enum ContextEvent<'a> {
+    #[serde(rename = "goal")]
+    Goal { goal: &'a str },
+    #[serde(rename = "hit")]
+    Hit {
+        handle: &'a str,
+        span_id: Option<&'a str>,
+        score: f64,
+        reason: &'a str,
+        field: &'a str,
+        heading_path: Option<&'a str>,
+    },
+    #[serde(rename = "span")]
+    Span {
+        handle: &'a str,
+        span_id: &'a str,
+        start_line: i64,
+        end_line: i64,
+        tokens: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<&'a str>,
+    },
+    #[serde(rename = "neighbor")]
+    Neighbor { handle: &'a str, neighbor: &'a str },
+}
+
+fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<()> {
+    let events = std::iter::once(ContextEvent::Goal {
+        goal: output.goal.as_str(),
+    })
+    .chain(output.hits.iter().map(|hit| ContextEvent::Hit {
+        handle: hit.handle.as_str(),
+        span_id: hit.span_id.as_deref(),
+        score: hit.score,
+        reason: hit.reason.as_str(),
+        field: hit.field.as_str(),
+        heading_path: hit.heading_path.as_deref(),
+    }))
+    .chain(output.spans.iter().map(|span| ContextEvent::Span {
+        handle: span.handle.as_str(),
+        span_id: span.span_id.as_str(),
+        start_line: span.start_line,
+        end_line: span.end_line,
+        tokens: span.tokens,
+        text: span.text.as_deref(),
+    }))
+    .chain(
+        output
+            .neighborhood
+            .iter()
+            .map(|neighbor| ContextEvent::Neighbor {
+                handle: neighbor.handle.as_str(),
+                neighbor: neighbor.neighbor.as_str(),
+            }),
+    );
+    write_ndjson(writer, events)?;
     Ok(())
 }
 
@@ -2746,6 +2816,7 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
     let mut hits = crate::DEFAULT_CONTEXT_HITS;
     let mut depth = crate::DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH;
     let mut include_low_confidence = false;
+    let mut read_spans = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -2755,6 +2826,7 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
                 depth = parse_i64(next_value(&mut iter, arg)?, arg)?;
             }
             "--include-low-confidence" => include_low_confidence = true,
+            "--read-spans" => read_spans = true,
             "--limit" => {
                 bail!(
                     "context uses --hits for search winners; use `anneal context <GOAL> --hits N`"
@@ -2790,6 +2862,7 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
         hits,
         depth,
         include_low_confidence,
+        read_spans,
     })
 }
 
@@ -3372,6 +3445,7 @@ mod tests {
             "1200",
             "--hits=2",
             "--depth=3",
+            "--read-spans",
         ]))
         .expect("parse");
         assert_eq!(
@@ -3386,6 +3460,7 @@ mod tests {
                 hits: 2,
                 depth: 3,
                 include_low_confidence: false,
+                read_spans: true,
             }
         );
     }
@@ -4293,7 +4368,7 @@ mod tests {
                 start_line: 10,
                 end_line: 12,
                 tokens: 12,
-                text: "Release blocker details.\nNext line.".to_string(),
+                text: Some("Release blocker details.\nNext line.".to_string()),
             }],
             neighborhood: vec![crate::ContextNeighbor {
                 handle: "plan.md".to_string(),
@@ -4310,8 +4385,56 @@ mod tests {
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
         assert!(rendered.contains("heading=Release"));
-        assert!(rendered.contains("Read\nplan.md:10-12"));
+        assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
         assert!(rendered.contains("Neighborhood\nplan.md: dep.md"));
+    }
+
+    #[test]
+    fn context_json_render_streams_event_rows() {
+        let output = CommandOutput::Context(ContextOutput {
+            goal: "find release blockers".to_string(),
+            hits: vec![crate::ContextHit {
+                handle: "plan.md".to_string(),
+                span_id: Some("body".to_string()),
+                score: 0.9,
+                reason: "body:release".to_string(),
+                field: "body".to_string(),
+                heading_path: Some("Release".to_string()),
+            }],
+            spans: vec![crate::ContextSpan {
+                handle: "plan.md".to_string(),
+                span_id: "body".to_string(),
+                start_line: 10,
+                end_line: 12,
+                tokens: 12,
+                text: None,
+            }],
+            neighborhood: vec![crate::ContextNeighbor {
+                handle: "plan.md".to_string(),
+                neighbor: "dep.md".to_string(),
+            }],
+        });
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::JsonExplicit)
+            .expect("render context");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+        let rows = rendered
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json row"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0]["section"], "goal");
+        assert_eq!(rows[0]["goal"], "find release blockers");
+        assert_eq!(rows[1]["section"], "hit");
+        assert_eq!(rows[1]["handle"], "plan.md");
+        assert_eq!(rows[2]["section"], "span");
+        assert_eq!(rows[2]["span_id"], "body");
+        assert!(rows[2].get("text").is_none());
+        assert_eq!(rows[3]["section"], "neighbor");
+        assert_eq!(rows[3]["neighbor"], "dep.md");
     }
 
     #[test]

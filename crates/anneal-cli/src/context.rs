@@ -23,6 +23,7 @@ pub struct ContextCommand {
     neighborhood_depth: i64,
     hits: usize,
     include_low_confidence: bool,
+    read_spans: bool,
 }
 
 impl ContextCommand {
@@ -33,6 +34,7 @@ impl ContextCommand {
             neighborhood_depth: DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH,
             hits: DEFAULT_CONTEXT_HITS,
             include_low_confidence: false,
+            read_spans: false,
         }
     }
 
@@ -56,6 +58,11 @@ impl ContextCommand {
         self
     }
 
+    pub fn read_spans(mut self, read: bool) -> Self {
+        self.read_spans = read;
+        self
+    }
+
     pub fn datalog(&self) -> String {
         render_context_query(&ContextQueryArgs {
             goal: &self.goal,
@@ -67,7 +74,7 @@ impl ContextCommand {
     }
 
     pub fn group_rows(&self, rows: &[Row]) -> Result<ContextOutput, ContextGroupError> {
-        ContextOutput::from_rows_with_limit(self.goal.clone(), rows, self.hits)
+        ContextOutput::from_rows_with_limit(self.goal.clone(), rows, self.hits, self.read_spans)
     }
 
     fn per_hit_read_budget(&self) -> i64 {
@@ -102,13 +109,14 @@ pub struct ContextOutput {
 
 impl ContextOutput {
     pub fn from_rows(goal: impl Into<String>, rows: &[Row]) -> Result<Self, ContextGroupError> {
-        Self::from_rows_with_limit(goal, rows, usize::MAX)
+        Self::from_rows_with_limit(goal, rows, usize::MAX, true)
     }
 
     fn from_rows_with_limit(
         goal: impl Into<String>,
         rows: &[Row],
         hit_limit: usize,
+        read_spans: bool,
     ) -> Result<Self, ContextGroupError> {
         let mut hits = Vec::new();
         let mut spans = Vec::new();
@@ -139,7 +147,7 @@ impl ContextOutput {
                         start_line: int_field(row, "start_line")?,
                         end_line: int_field(row, "end_line")?,
                         tokens: int_field(row, "tokens")?,
-                        text: string_field(row, "text")?,
+                        text: read_spans.then(|| string_field(row, "text")).transpose()?,
                     };
                     if span_keys.insert((span.handle.clone(), span.span_id.clone())) {
                         spans.push(span);
@@ -305,7 +313,8 @@ pub struct ContextSpan {
     pub start_line: i64,
     pub end_line: i64,
     pub tokens: i64,
-    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -463,6 +472,10 @@ mod tests {
         assert_eq!(schema["hits"][0]["span_id"], "String|null");
         assert_eq!(schema["hits"][0]["heading_path"], "String|null");
         assert_eq!(schema["spans"][0]["handle"], "HandleId");
+        assert_eq!(
+            schema["spans"][0]["text"],
+            "String|null; present with --read-spans"
+        );
         assert_eq!(schema["neighborhood"][0]["handle"], "HandleId");
         assert!(schema["hits"][0].get("h").is_none());
         assert!(schema["hits"][0].get("hit_span_id").is_none());
@@ -509,7 +522,7 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 tokens: 4,
-                text: "v17 conformance audit urgent blocker".to_string(),
+                text: None,
             }]
         );
         assert_eq!(
@@ -518,6 +531,34 @@ mod tests {
                 handle: "audit/v17.md".to_string(),
                 neighbor: "audit/v17.md".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn context_read_spans_controls_body_expansion() {
+        let compact = evaluate_context(
+            &ContextCommand::new("urgent blocker")
+                .with_hits(1)
+                .with_budget(10)
+                .include_low_confidence(true),
+            context_database(),
+            EvalOptions::default().with_low_confidence_threshold(0.0),
+        );
+        assert_eq!(compact.spans.len(), 1);
+        assert_eq!(compact.spans[0].text, None);
+
+        let expanded = evaluate_context(
+            &ContextCommand::new("urgent blocker")
+                .with_hits(1)
+                .with_budget(10)
+                .include_low_confidence(true)
+                .read_spans(true),
+            context_database(),
+            EvalOptions::default().with_low_confidence_threshold(0.0),
+        );
+        assert_eq!(
+            expanded.spans[0].text.as_deref(),
+            Some("v17 conformance audit urgent blocker")
         );
     }
 
@@ -713,9 +754,13 @@ mod tests {
             output.hits
         );
         assert!(
-            output.spans.iter().any(|span| span.handle == AUDIT_HANDLE
-                && (span.text.contains("## Method") || span.text.contains("## Summary"))),
-            "context should read the audit Method or Summary span: {:?}",
+            output.spans.iter().any(|span| span.handle == AUDIT_HANDLE),
+            "context should include audit span metadata without forcing body reads: {:?}",
+            output.spans
+        );
+        assert!(
+            output.spans.iter().all(|span| span.text.is_none()),
+            "default context should not inline span bodies: {:?}",
             output.spans
         );
     }
