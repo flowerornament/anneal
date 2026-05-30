@@ -2,6 +2,59 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.14.1 - 2026-05-30
+
+anneal signals degenerate input instead of answering confidently over it.
+
+This release hardens the cold-agent contract: when a question cannot be
+answered meaningfully from the corpus as configured, anneal now says so rather
+than returning a confident-looking empty or wrong result. The master spec
+records this as Rule CR-R12 (degenerate-input honesty), and a cold-start test
+harness guards each case.
+
+### Fixed
+
+- `anneal` now resolves the corpus root by walking up from the working
+  directory to the nearest `.design`, `docs`, or `anneal.dl`, so running from a
+  subdirectory finds the corpus instead of returning an empty result. When no
+  marked root is found it reports `no marked corpus root found above <dir>;
+  scanning current directory` rather than silently scanning the current
+  directory.
+- Search ranking weights specificity: rarer query terms count for more, so a
+  section whose heading matches the query outranks short label handles and
+  incidental body mentions that previously tied at the top score.
+- `anneal status` lists each handle in exactly one section. A handle that is
+  both blocked and holding now appears only under blocked.
+- `anneal status` reasons are backed by the diagnostic stream: a handle blocked
+  for `confidence_gap` now has a matching `W002` diagnostic, instead of a
+  reason no query could corroborate.
+- A status used by handles but absent from both the active and terminal
+  partitions now raises a `W005` lifecycle-config-gap warning instead of being
+  silently dropped from the convergence frontier. A `convergence.ordering` that
+  does not end in a terminal status warns for the same reason.
+- `S003` pipeline-stall no longer claims `based_on_history` when there is no
+  snapshot baseline to compare against.
+
+### Changed
+
+- `anneal context --format=json` streams NDJSON event rows (`goal`, `hit`,
+  `span`, `neighbor`), matching `search`, `status`, and `eval`, so one parser
+  handles every command.
+- `anneal context` returns ranked hits, span metadata, and neighborhood by
+  default; pass `--read-spans` to inline matched span bodies.
+- Markdown headings now carry stable structural span ids
+  (`file.md#h/heading-slug-path`).
+
+### Added
+
+- A `cold_start_honesty` integration-test harness covers the degenerate-input
+  cases above, so CR-R12 regressions fail in CI.
+
+### Internal
+
+- Test fixtures use a synthetic sample corpus instead of an external private
+  corpus.
+
 ## v0.14.0 - 2026-05-29
 
 anneal calibrates the signal, simplifies the substrate, and sharpens retrieval.

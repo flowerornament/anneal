@@ -7,7 +7,7 @@ scorecard.png
 
 # anneal local derived state
 .design/.anneal/
-.claude/settings.local.json
+.claude/
 
 # Beads / Dolt files (added by bd init)
 .dolt/
