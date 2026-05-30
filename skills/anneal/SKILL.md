@@ -116,10 +116,29 @@ config search_boost { status("authoritative", 0.08). hub(0.01). }
 config code_path_root { root(["web"]). }
 ```
 
-Promote reusable corpus moves into `@verb`s in `anneal.dl`; inspect the exact
-shape with `anneal describe @verb` and existing project verbs. Do not copy the
-built-in prelude into a project. Use `anneal init --dry-run` to inspect the
-current scaffold before writing config.
+When a query becomes a reusable corpus move, promote it into a project verb:
+
+```dl
+@verb(
+  name: "area-diagnostics",
+  query: "area_diagnostic(h, code, file) :=
+    verb_arg(\"area\", area),
+    diagnostic{subject: h, code: code, file: file},
+    area_of{h: h, area: area}.
+
+    ? area_diagnostic(h, code, file).",
+  doc: "Diagnostics in one area.",
+  output_schema: "{\"h\":\"HandleId\",\"code\":\"String\",\"file\":\"String|null\"}",
+  args: ["area:String"],
+  capabilities: ["read"]
+).
+```
+
+Project verbs appear in `schema` and are callable by name, for example
+`anneal area-diagnostics language --format=text`. Use `anneal describe <verb>`
+for a loaded verb's teaching card. Do not copy the built-in prelude into a
+project. Use `anneal init --dry-run` to inspect the current scaffold before
+writing config.
 
 ## Agent Rules
 
