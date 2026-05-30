@@ -288,6 +288,29 @@ impl IntrospectionBuilder {
                 ..DescribeCard::default()
             }),
         ));
+        self.describe.insert(describe_entry(
+            "check",
+            DescribeKind::RuntimeTopic,
+            &describe_card(DescribeCard {
+                summary: "Hidden CI-gate alias for the error-only diagnostic view.",
+                kind: Some(DescribeKind::RuntimeTopic),
+                relationship: Some("Use eval for agent workflows; `anneal check` remains callable for CI and pre-commit gates, exits 1 when any error row exists, and is intentionally hidden from the default command surface."),
+                common_joins: &[
+                    "`diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}` mirrors the rows checked by the hidden CI gate",
+                    "`diagnostic(code, severity, subject, file, line, evidence)` for the full diagnostic stream",
+                ],
+                extra_lines: vec![
+                    "Canonical eval: anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'".to_string(),
+                    "Exit code: `anneal check` returns 1 when error-severity diagnostics exist, 0 otherwise.".to_string(),
+                    "Deprecation: hidden alias retained for CI muscle memory; prefer eval composition in agent-facing workflows.".to_string(),
+                ],
+                see_also: &["diagnostic", "status", "help eval"],
+                examples: vec![
+                    "? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.",
+                ],
+                ..DescribeCard::default()
+            }),
+        ));
         self.examples.insert(Tuple(vec![
             string_value("runtime"),
             string_value(r#"? describe("runtime", doc)."#),
@@ -573,7 +596,7 @@ impl IntrospectionBuilder {
                     requires: primitive_requires(*primitive),
                     see_also: primitive_see_also(*primitive),
                     examples: primitive_example(*primitive).into_iter().collect(),
-                    ..DescribeCard::default()
+                    extra_lines: predicate_extra_lines(name),
                 }),
             ));
             self.source_of.insert(Tuple(vec![
@@ -1155,6 +1178,11 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
             "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
             r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
         ],
+        "snapshot" => vec![
+            "Automatic status snapshots power `at(\"snapshot:last\")` queries; agents do not manage a snapshot command.".to_string(),
+            "Retired diff equivalent: `anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`.".to_string(),
+            "Use raw *snapshot rows only when you need key/value history rather than an at-block composition.".to_string(),
+        ],
         _ => Vec::new(),
     }
 }
@@ -1162,6 +1190,7 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
 fn stored_relation_see_also(name: &str) -> &'static [&'static str] {
     match name {
         "meta" => &["external_class", "target_path", "*handle", "schema"],
+        "snapshot" => &["*handle", "diagnostic", "runtime"],
         _ => &[],
     }
 }
@@ -1943,6 +1972,10 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
         "work_candidate" => vec![
             "Deprecated alias: use `potential(h, energy)`. This alias is retained through v0.14 and scheduled for retirement in v0.15.".to_string(),
         ],
+        "diagnostic" => vec![
+            "Hidden CI gate: `anneal check` is retained for pre-commit/release gates and exits 1 when error rows exist.".to_string(),
+            "Canonical error query: `anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'`.".to_string(),
+        ],
         "flow" => vec![
             "Directions are exactly \"advancing\", \"holding\", and \"drifting\". Leaf predicates explain why a handle entered a direction.".to_string(),
             "`regressed(h)` and `re_opened(h)` are drifting leaves, not extra flow directions.".to_string(),
@@ -1968,6 +2001,9 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
             "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
         ],
+        "obligation" | "undischarged" => vec![
+            "Retired obligations equivalent: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`.".to_string(),
+        ],
         "lifecycle_config_gap" => lifecycle_config_gap_variant_lines(),
         _ => Vec::new(),
     }
@@ -1991,8 +2027,13 @@ fn lifecycle_config_gap_variant_lines() -> Vec<String> {
 fn common_joins(name: &str) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
+            "`diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}` mirrors `anneal check` rows",
             "`diagnostic{subject: h}, area_of{h: h, area: \"X\"}` for area filtering",
             "`diagnostic{subject: h}, *handle{id: h, kind: \"file\"}` for file-handle diagnostics",
+        ],
+        "snapshot" => &[
+            "`at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now` mirrors retired diff",
+            "`*snapshot{snapshot: snapshot, id: h, key: \"status\", value: status}` to inspect raw status history rows",
         ],
         "search" => &[
             "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: heading_path}` to add heading context",
@@ -2091,7 +2132,8 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`entropy(h, source), potential(h, energy)` to see weighted convergence reasons",
             "`entropy(h, source), diagnostic{subject: h}` to connect signals to diagnostics",
         ],
-        "undischarged" => &[
+        "obligation" | "undischarged" => &[
+            "`undischarged(h), obligation(h), *handle{id: h, file: file, status: status}` mirrors retired obligations",
             "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
         ],
@@ -2380,6 +2422,9 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "stub" => Some("? stub(h)."),
         "diagnostic" => {
             Some(r#"? diagnostic{code: "E001", severity: severity, subject: subject}."#)
+        }
+        "obligation" | "undischarged" => {
+            Some("? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.")
         }
         _ => None,
     }

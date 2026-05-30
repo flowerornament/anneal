@@ -392,10 +392,12 @@ Usage: anneal [OPTIONS] check
 Hidden CI gate for error-severity diagnostics.
 
 For filtered diagnostic questions, use eval:
-  anneal -e '? diagnostic{severity: \"error\", code: code, subject: h}.'
+  anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'
   anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 
-Output: readable error diagnostics at a terminal or with --format=text; NDJSON rows when piped or with --json. Exits 1 when any row exists.
+Deprecation: hidden alias retained for CI muscle memory; prefer eval composition in agent-facing workflows.
+
+Output: readable error diagnostics at a terminal or with --format=text; NDJSON rows when piped or with --json. Exits 1 when any error row exists.
 "
             }
             Self::Describe => {
@@ -487,6 +489,18 @@ Grammar tour:
     recursive rules are fine; negation and aggregates must not depend on
     themselves through a cycle. If analysis rejects a query, split the negative
     or aggregate part into a later rule.
+
+Migration recipes:
+  Hidden CI gate:
+    anneal check
+    anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'
+    `anneal check` exits 1 when any error row exists; use eval for filtered agent workflows.
+
+  Retired obligations:
+    anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'
+
+  Retired diff:
+    anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'
 
 Discover before guessing:
   anneal schema --format=text
@@ -3447,6 +3461,9 @@ mod tests {
         assert!(rendered.contains("anneal -e - < query.dl"));
         assert!(rendered.contains("at(\"snapshot:last\")"));
         assert!(rendered.contains("at(\"HEAD~5\") remain pending"));
+        assert!(rendered.contains("Migration recipes"));
+        assert!(rendered.contains("severity: \"error\""));
+        assert!(rendered.contains("undischarged(h), obligation(h)"));
         assert!(!rendered.contains('\t'));
     }
 
@@ -4663,6 +4680,9 @@ mod tests {
             "blocked",
             "entropy",
             "undischarged",
+            "obligation",
+            "snapshot",
+            "check",
             "E001",
             "W005",
             "lifecycle_config_gap",

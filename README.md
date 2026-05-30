@@ -511,7 +511,7 @@ Common replacements:
 - `map`: `anneal -e '? *edge{from: src, to: dst, kind: kind}.'`
 - `health`: `anneal status` plus `anneal -e '? diagnostic{code: code, severity: severity, subject: h, file: file, line: line}.'`
 - `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
-- `obligations`: `anneal -e '? undischarged(h), obligation(h).'`
+- `obligations`: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`
 - `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
 - `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
 - `impact H`: `anneal handle H --impact`

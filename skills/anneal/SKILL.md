@@ -87,6 +87,7 @@ Common predicate families:
 anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'
+anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'
 anneal -e '? flow(h, direction), *handle{id: h, status: status}.'
 anneal -e '? area_health(area, grade, files, errors, cross_edges).'
 anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file", summary: summary}.'
