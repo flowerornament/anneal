@@ -1,0 +1,30 @@
+{
+  "corpus_root": ".fixtures/sample-corpus",
+  "facts": {
+    "handles": 20,
+    "edges": 18
+  },
+  "rules": 14,
+  "iterations": 4,
+  "timings_ms": {
+    "load": 5.0,
+    "parse": 0.03,
+    "first_eval": 0.9,
+    "warm_min": 0.8,
+    "warm_avg": 0.9,
+    "warm_last": 0.9
+  },
+  "relation_counts": {
+    "active": 12,
+    "blocked": 2,
+    "obligation": 3,
+    "open_oq": 3,
+    "settled": 2,
+    "terminal": 2,
+    "upstream": 4
+  },
+  "gate": {
+    "target_warm_avg_ms": 50.0,
+    "passed": true
+  }
+}

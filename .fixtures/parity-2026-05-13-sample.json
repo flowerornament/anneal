@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "command": "anneal --root <corpus> health --json",
+      "detail": "synthetic fixture parity target",
+      "id": "PD-1",
+      "label": "health",
+      "left_stderr": "",
+      "passed": true,
+      "right_stderr": ""
+    },
+    {
+      "command": "anneal --root <corpus> check --scope=active --json",
+      "detail": "synthetic fixture parity target",
+      "id": "PD-2",
+      "label": "check",
+      "left_stderr": "",
+      "passed": true,
+      "right_stderr": ""
+    },
+    {
+      "command": "anneal --root <corpus> get <handle> --refs --json",
+      "detail": "synthetic fixture sample handles",
+      "id": "PD-3",
+      "label": "get x10",
+      "left_stderr": "",
+      "passed": true,
+      "right_stderr": "[]"
+    },
+    {
+      "command": "anneal search \"v17 conformance audit\" --limit=3",
+      "detail": "top-3 includes reviews/2026-04-28-formal-model-v17-conformance-audit.md",
+      "id": "PD-4",
+      "label": "search",
+      "left_stderr": "",
+      "passed": true,
+      "right_stderr": ""
+    },
+    {
+      "command": "anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget=4000",
+      "detail": "first span includes Method or Summary",
+      "id": "PD-5",
+      "label": "read",
+      "left_stderr": "",
+      "passed": true,
+      "right_stderr": ""
+    }
+  ],
+  "corpus": "sample",
+  "corpus_root": ".fixtures/sample-corpus",
+  "left_bin": "anneal",
+  "right_bin": "anneal",
+  "right_mode": "anneal-md",
+  "sample_handles": [
+    "README.md",
+    "formal-model/v14.md",
+    "formal-model/v15.md",
+    "formal-model/v16.md",
+    "formal-model/v17.md",
+    "implementation/2026-04-28-v17-import-plan.md",
+    "operations/field-rollout-plan.md",
+    "reviews/2026-04-28-formal-model-v17-conformance-audit.md",
+    "reviews/2026-05-02-field-readiness-review.md",
+    "research-log/2026-04-20-offline-reconciliation.md"
+  ],
+  "sample_size": 10
+}

@@ -1,0 +1,33 @@
+source md {
+  file_extension(".md").
+  scan_root(".").
+}
+
+config convergence {
+  ordering(["draft", "research", "plan", "current", "verified", "archived"]).
+  active(["draft", "research", "plan", "current", "review"]).
+  terminal(["verified", "archived", "superseded", "retired", "completed"]).
+}
+
+config frontmatter {
+  field("depends-on", "DependsOn", "forward").
+  field("supersedes", "Supersedes", "inverse").
+  field("superseded-by", "Supersedes", "forward").
+  field("resolves", "Discharges", "forward").
+  field("verifies", "Verifies", "forward").
+  field("implements", "Implements", "forward").
+  field("references", "Cites", "forward").
+}
+
+config freshness {
+  warn(30).
+  error(90).
+}
+
+config check {
+  default_filter("active-only").
+}
+
+config impact {
+  traverse(["DependsOn", "Supersedes", "Verifies", "Implements", "Cites"]).
+}
