@@ -1,9 +1,12 @@
 # anneal — command runner
 
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
 default:
     @just --list
 
 # All checks: fmt + clippy + test (with timing)
+[group('check')]
 check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -35,39 +38,50 @@ check:
     printf "  %-12s %d.%02ds\n" "total:" "$((total / 1000))" "$(( (total % 1000) / 10 ))" >&2
     rm -f /tmp/anneal-check-times.$$
 
-# Format (modify in place)
+# Format source files (modify in place)
+[group('check')]
 fmt:
     cargo fmt
 
-# Format check (no modification)
+# Verify formatting without modifying
+[group('check')]
 fmt-check:
     cargo fmt --check
 
 # Clippy with workspace lints
+[group('check')]
 lint:
     cargo clippy --all-targets
 
 # Run tests
+[group('check')]
 test:
     cargo test
 
 # Smoke-test the exported Home Manager module
+[group('check')]
 test-home-manager-module:
     bash scripts/test-home-manager-module.sh
 
 # Release build
+[group('build')]
 build:
     cargo build --release
 
 # Update release versions in Cargo.toml, Cargo.lock, flake.nix, and scaffold CHANGELOG.md
+[group('release')]
+[arg('version', pattern='[0-9]+\.[0-9]+\.[0-9]+', help='Semver release, e.g. 0.14.1')]
 release-bump version:
-    python3 scripts/release.py bump {{version}}
+    python3 scripts/release.py bump {{quote(version)}}
 
 # Release readiness checks: versions, changelog, targets, quality gate, release binary
+[group('release')]
 release-verify:
     python3 scripts/release.py verify
 
-# Create and push an annotated release tag, force-update the `release` branch
-# for downstream flake consumers, and trigger the GitHub release workflow.
+# Tag and publish a release: pushes the annotated tag, force-updates the `release` branch, triggers the GitHub release workflow
+[group('release')]
+[arg('version', pattern='[0-9]+\.[0-9]+\.[0-9]+', help='Semver release, e.g. 0.14.1')]
+[confirm("This will tag, force-update origin/release, and trigger the public GitHub release workflow. Continue?")]
 release-tag version:
-    python3 scripts/release.py tag {{version}}
+    python3 scripts/release.py tag {{quote(version)}}
