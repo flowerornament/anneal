@@ -1,6 +1,6 @@
 ---
 name: anneal
-description: "Orient in knowledge corpora with anneal. Use for repos with .design, docs, or anneal.dl; retrieving context, checking convergence, tracing handles, blockers, broken refs, changes, impact, or Datalog facts."
+description: "Orient in knowledge corpora with anneal. Use for markdown corpora, docs directories, or repos with anneal.dl; retrieving context, checking convergence, tracing handles, blockers, broken refs, changes, impact, or Datalog facts."
 ---
 
 # Anneal

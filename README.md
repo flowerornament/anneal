@@ -467,7 +467,7 @@ Reusable project moves are plain `@verb` declarations in `anneal.dl`:
 After that declaration is present in `anneal.dl`, call it like any other verb:
 
 ```bash
-anneal --root .design area-diagnostics '(root)' --format=text
+anneal --root docs area-diagnostics '(root)' --format=text
 ```
 
 If a project verb is wrong, edit or remove the `@verb(...)` block in
@@ -499,7 +499,7 @@ pre-0.11.0 repo-local `.anneal/history.jsonl` is copied into XDG state on the
 first write so snapshot-based history queries continue.
 
 Older compatibility commands now return teaching recovery messages instead of
-running parallel workflows. Use the language-first ladder above:
+running the retired commands. Use the language-first ladder above:
 `status`/`context` to arrive, `schema`/`describe` to discover,
 `search`/`read`/`handle` to retrieve, `handle --impact` for reverse
 dependencies, and `anneal -e` for precise composite questions.

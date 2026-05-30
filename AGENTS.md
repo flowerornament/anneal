@@ -4,13 +4,13 @@ Convergence assistant for knowledge corpora.
 
 `anneal` reads a directory of markdown files, computes a typed knowledge graph, checks it for local consistency, and tracks convergence over time. It is built for disconnected intelligences — agents across sessions with no shared memory — to orient in a shared body of knowledge and push it toward settledness.
 
-## Design Corpus
+## Project Context
 
-- `.design/` is anneal's own design corpus. Inspect and maintain it with `anneal`: `anneal status`, `anneal check`, `anneal handle <file> --impact`.
-- `.design/2026-05-13-corpus-runtime.md` is the authoritative v2.0 master spec (Programmable Corpus Runtime).
-- `.design/anneal-spec.md` is the v1.x spec — superseded but retained as historical record of the shipped shape.
-- `.design/2026-05-13-engine-spike-results.md` and `.design/2026-05-13-ascent-unsafe-audit.md` are the engine-viability artifacts that gate v2.0 architecture decisions. Do not casually claim "SP-R1 cleared" — Ascent unsafe is accepted as bounded dependency risk, not eliminated.
-- `.design/.anneal/` is optional repo-local anneal state when explicitly configured.
+- anneal's own specs are tracked as markdown in this repository. Inspect and maintain them with `anneal`: `anneal status`, `anneal check`, `anneal handle <file> --impact`.
+- The v2.0 master spec is the authoritative Programmable Corpus Runtime reference.
+- The v1.x spec is superseded but retained as historical record of the shipped shape.
+- The engine-viability artifacts gate v2.0 architecture decisions. Do not casually claim "SP-R1 cleared" — Ascent unsafe is accepted as bounded dependency risk, not eliminated.
+- Repo-local anneal state is optional and should only be used when explicitly configured.
 - `.planning/ROADMAP.md` and `.planning/STATE.md` own the roadmap spine and current state. Treat `bd` as the source of truth for in-progress work; `.planning/STATE.md` is updated at phase boundaries.
 - `install.sh` ships with releases — treat installer correctness as release-critical.
 - `.beads/config.yaml` is tracked repo config only; keep machine-specific federation settings local to your shell environment.
@@ -110,7 +110,6 @@ Before bumping, verify all shipped features are reflected in docs. CLI help stri
 
 - `README.md` — command sections, output examples, config blocks, architecture listing
 - `skills/anneal/SKILL.md` — first moves, command map, agent rules
-- `.design/anneal-spec.md` — §12 command count and entries, §14 architecture diagram, §15 crate structure
 - `CHANGELOG.md` — entry for the target version (scaffolded by `release-bump`)
 
 Write docs as if they were always correct — no "added" or "updated" language.
@@ -123,7 +122,7 @@ git push origin master
 just release-tag 0.2.1
 ```
 
-`just release-verify` checks version alignment across `Cargo.toml`, `Cargo.lock`, and `flake.nix`; CHANGELOG entry presence without `TODO`/`TBD` placeholders; release target alignment across `release.yml`, `install.sh`, and `README.md`; public-repo safety for `.beads/config.yaml`; then runs `just check`, `just build`, `anneal --version`, and `anneal --root .design check`.
+`just release-verify` checks version alignment across `Cargo.toml`, `Cargo.lock`, and `flake.nix`; CHANGELOG entry presence without `TODO`/`TBD` placeholders; release target alignment across `release.yml`, `install.sh`, and `README.md`; public-repo safety for `.beads/config.yaml`; then runs `just check`, `just build`, `anneal --version`, and the corpus consistency check.
 
 `just release-tag` pushes the annotated tag and force-updates the
 `release` branch (`--force-with-lease`) so downstream flake consumers
@@ -137,7 +136,7 @@ Pushing `vX.Y.Z` triggers `.github/workflows/release.yml` and publishes binaries
 
 ## Test Corpus
 
-Primary real-world corpus: `/path/to/large-corpus/.design/`. Useful for smoke-checking `status`, `context`, `search`, `read`, `handle --impact`, `check`, and focused `anneal -e` predicates. Integration tests may skip if the external corpus is unavailable.
+Primary smoke corpus: a real-world external markdown corpus, when available locally. Useful for smoke-checking `status`, `context`, `search`, `read`, `handle --impact`, `check`, and focused `anneal -e` predicates. Integration tests may skip if the external corpus is unavailable.
 
 ## Hooks And Completion
 

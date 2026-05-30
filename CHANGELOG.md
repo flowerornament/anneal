@@ -52,10 +52,10 @@ instead of retired command habits.
 ### Changed
 
 - Behavior change: the default `freshness_decay` potential weight is now `1`
-  instead of `2`. On large-corpus, this sharpens the energy>=3 work pool from 37
-  handles to 3, keeping old-but-legitimate reference material from drowning
-  stronger correctness and lifecycle signals. Projects that want freshness to
-  pull harder can override it with `config potential_weight`.
+  instead of `2`. In the calibration corpus, this sharpens the energy>=3 work
+  pool from 37 handles to 3, keeping old-but-legitimate reference material from
+  drowning stronger correctness and lifecycle signals. Projects that want
+  freshness to pull harder can override it with `config potential_weight`.
 - `potential(h, energy)` is the canonical raw-energy predicate.
   `work_candidate(h, energy)` remains as a deprecated alias through v0.14 and
   is scheduled for retirement in v0.15.
@@ -469,10 +469,10 @@ fix next.
 
 - `anneal orient` redesigned around two tiers: **Frontier** (where
   work is now) and **Foundation** (stable hubs the frontier still
-  cites). Cross-corpus testing on large-corpus and host-corpus exposed that the
-  previous algorithm — single score from edge centrality × recency ×
-  status — surfaced old stable hubs correctly but missed the current
-  frontier and the curated entry points maintainers wrote on purpose.
+  cites). Cross-corpus testing exposed that the previous algorithm —
+  single score from edge centrality × recency × status — surfaced old
+  stable hubs correctly but missed the current frontier and the curated
+  entry points maintainers wrote on purpose.
 
   **Foundation** scores each incoming citation by the *citer's*
   recency, so a March hub cited by twenty April docs ranks highly
@@ -585,9 +585,9 @@ simpler before the cut:
   explicitly; `Printer` is constructed in exactly one place.
 - orient's `is_curated_hub` was called three times per file during
   scoring + tier assignment. Result now memoized on `FileEntry` —
-  noticeable on corpora the size of large-corpus. Path widths similarly
-  cached on `OrientEntry` so `measure_text_width` isn't called twice
-  per entry during render.
+  noticeable on larger corpora. Path widths similarly cached on
+  `OrientEntry` so `measure_text_width` isn't called twice per entry
+  during render.
 - orient's `status_bonus` hardcoded a token list that ignored the
   corpus lattice. Now reads `lattice.active` — a corpus that
   declares `wip` as active gets the right bonus for its own work.
