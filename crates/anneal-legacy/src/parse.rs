@@ -1186,23 +1186,12 @@ fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
 // Root inference
 // ---------------------------------------------------------------------------
 
-/// Infer the root directory to scan (KB-D20).
+/// Infer the root directory to scan.
 ///
-/// 1. If `.design/` exists -> `.design`
-/// 2. Else if `docs/` exists -> `docs`
-/// 3. Else -> `.` (current directory)
+/// Walks upward from the current directory, matching the runtime default-root
+/// behavior used by all command surfaces.
 pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
-    let design = cwd.join(".design");
-    if design.is_dir() {
-        return design;
-    }
-
-    let docs = cwd.join("docs");
-    if docs.is_dir() {
-        return docs;
-    }
-
-    cwd.to_path_buf()
+    anneal_core::infer_corpus_root(cwd)
 }
 
 // ---------------------------------------------------------------------------

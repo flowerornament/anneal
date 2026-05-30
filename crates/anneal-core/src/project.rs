@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use camino::{Utf8Path, Utf8PathBuf};
+
 use crate::config_schema::{
     RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle, parse_search_boost_value,
     runtime_config_declaration_for,
@@ -24,6 +26,21 @@ use crate::verbs::{
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
 const POTENTIAL_WEIGHT_SECTION: &str = "potential_weight";
 const POTENTIAL_WEIGHT_OVERRIDE_KEY: &str = "potential_weight.override";
+
+pub fn infer_corpus_root(start: &Utf8Path) -> Utf8PathBuf {
+    for ancestor in start.ancestors() {
+        for child in [".design", "docs"] {
+            let candidate = ancestor.join(child);
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+        if ancestor.join(PROJECT_RULE_FILE).is_file() {
+            return ancestor.to_path_buf();
+        }
+    }
+    start.to_path_buf()
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectExtension {
@@ -895,6 +912,26 @@ mod tests {
 
     fn write_project(root: &Path, source: &str) {
         fs::write(root.join(PROJECT_RULE_FILE), source).expect("write anneal.dl");
+    }
+
+    #[test]
+    fn corpus_root_inference_walks_ancestors() {
+        let temp = tempdir().expect("tempdir");
+        let temp = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 tempdir");
+        let workspace = temp.join("workspace");
+        let design = workspace.join(".design");
+        let nested = workspace.join("crates/anneal-core/src");
+        fs::create_dir_all(&design).expect("create design");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(design.join(PROJECT_RULE_FILE), "").expect("write project file");
+
+        assert_eq!(infer_corpus_root(&workspace), design);
+        assert_eq!(infer_corpus_root(&nested), design);
+        assert_eq!(infer_corpus_root(&workspace.join(".design")), design);
+
+        let bare = temp.join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        assert_eq!(infer_corpus_root(&bare), bare);
     }
 
     #[test]

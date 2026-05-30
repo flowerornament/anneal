@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::Path;
 use std::process::Command;
 
 use anneal_core::runtime::ast::DerivedAtom;
@@ -18,11 +17,12 @@ use anneal_core::{
     FactStore, Generation, ProjectExtension, SnapshotAppendOutcome, SnapshotEntry,
     SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability,
     VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped,
-    load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
+    infer_corpus_root, load_project_extension, merge_program_layers, read_snapshot_history,
+    render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{SecondsFormat, Utc};
 
 use crate::{
@@ -82,6 +82,7 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
     if let RuntimeCommand::Help { topic } = invocation.command {
         return write_text(io::stdout().lock(), &topic.render());
     }
+    invocation.resolve_root()?;
     let stdin_explain = match &invocation.command {
         RuntimeCommand::Eval {
             query,
@@ -106,7 +107,7 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             .iter()
             .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
     {
-        let registry = RuntimeRegistry::load(&invocation.root)?;
+        let registry = RuntimeRegistry::load(invocation.root.path())?;
         let entry = match registry.registry.resolve_for_actor(name, &registry.actor) {
             Ok(entry) => entry,
             Err(VerbDispatchError::MissingVerb { .. }) => {
@@ -118,12 +119,20 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
         };
         return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
     }
-    let session = RuntimeSession::load(&invocation.root)?;
+    let session = RuntimeSession::load(invocation.root.path())?;
     let output = session.run(invocation.command)?;
     let stdout = io::stdout();
     let mode = invocation.output.resolve(stdout.is_terminal());
+    let has_displayable_content = output.has_displayable_content();
+    let mut stderr_messages = Vec::new();
     if let Some(message) = output.stderr_diagnostic(mode) {
-        writeln!(io::stderr().lock(), "{message}")?;
+        stderr_messages.push(message);
+    }
+    if let Some(message) = invocation.root.diagnostic(mode, has_displayable_content) {
+        stderr_messages.push(message);
+    }
+    if !stderr_messages.is_empty() {
+        writeln!(io::stderr().lock(), "{}", stderr_messages.join("\n"))?;
     }
     let gate_failed = output.gate_failed();
     output.write(stdout.lock(), mode)?;
@@ -135,9 +144,50 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Invocation {
-    root: Utf8PathBuf,
+    root: RootSelection,
     output: OutputPreference,
     command: RuntimeCommand,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RootSelection {
+    Explicit(Utf8PathBuf),
+    Discovered(Utf8PathBuf),
+    Undiscovered,
+}
+
+impl RootSelection {
+    fn from_parse(root: Option<Utf8PathBuf>) -> Self {
+        root.map_or(Self::Undiscovered, Self::Explicit)
+    }
+
+    fn resolve(&mut self) -> Result<()> {
+        *self = match self {
+            Self::Explicit(root) => Self::Explicit(absolute_root(root)?),
+            Self::Discovered(root) => Self::Discovered(absolute_root(root)?),
+            Self::Undiscovered => Self::Discovered(default_root()?),
+        };
+        Ok(())
+    }
+
+    fn path(&self) -> &Utf8Path {
+        match self {
+            Self::Explicit(root) | Self::Discovered(root) => root,
+            Self::Undiscovered => {
+                unreachable!("runtime root must be resolved before loading the corpus")
+            }
+        }
+    }
+
+    fn diagnostic(&self, mode: OutputMode, output_has_content: bool) -> Option<String> {
+        let Self::Discovered(root) = self else {
+            return None;
+        };
+        if matches!(mode, OutputMode::Json | OutputMode::JsonExplicit) || !output_has_content {
+            return Some(format!("resolved root: {root}"));
+        }
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -211,7 +261,7 @@ impl Invocation {
             }
         }
         Ok(Self {
-            root: root.unwrap_or_else(default_root),
+            root: RootSelection::from_parse(root),
             output,
             command: if rest.is_empty() {
                 RuntimeCommand::Status
@@ -219,6 +269,10 @@ impl Invocation {
                 RuntimeCommand::parse(&rest)?
             },
         })
+    }
+
+    fn resolve_root(&mut self) -> Result<()> {
+        self.root.resolve()
     }
 }
 
@@ -543,7 +597,7 @@ Provenance options:
 
 const RUNTIME_HELP_OPTIONS: &str = "\
 Global options:
-      --root <PATH>              Corpus root (default: .design, docs, or .)
+      --root <PATH>              Corpus root (default: nearest .design, docs, or anneal.dl upward)
       --json                     Force JSON/NDJSON output
       --format <text|json>       Force readable text or JSON/NDJSON output
 ";
@@ -1610,6 +1664,19 @@ impl CommandOutput {
         }
     }
 
+    fn has_displayable_content(&self) -> bool {
+        match self {
+            Self::Rows { rows, .. } => !rows.is_empty(),
+            Self::Status(output) => !output.rows.is_empty(),
+            Self::Context(output) => {
+                !output.hits.is_empty()
+                    || !output.spans.is_empty()
+                    || !output.neighborhood.is_empty()
+            }
+            Self::Text(_) => false,
+        }
+    }
+
     const fn gate_failed(&self) -> bool {
         match self {
             Self::Rows { gate_failed, .. } => *gate_failed,
@@ -1797,7 +1864,7 @@ Query:
   {query}
 
 Global options:
-      --root <PATH>              Corpus root (default: .design, docs, or .)
+      --root <PATH>              Corpus root (default: nearest .design, docs, or anneal.dl upward)
       --json                     Force JSON/NDJSON output
       --format <text|json>       Force readable text or JSON/NDJSON output
 ",
@@ -3006,11 +3073,26 @@ fn is_legacy_surface_command(arg: &str) -> bool {
     matches!(arg, "init" | "prime" | "anneal")
 }
 
-fn default_root() -> Utf8PathBuf {
-    [".design", "docs"]
-        .into_iter()
-        .find(|candidate| Path::new(candidate).is_dir())
-        .map_or_else(|| Utf8PathBuf::from("."), Utf8PathBuf::from)
+fn default_root() -> Result<Utf8PathBuf> {
+    let cwd = current_dir_utf8()?;
+    Ok(infer_corpus_root(&cwd))
+}
+
+fn absolute_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
+    if root.is_absolute() {
+        return Ok(root.to_path_buf());
+    }
+    Ok(current_dir_utf8()?.join(root))
+}
+
+fn current_dir_utf8() -> Result<Utf8PathBuf> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    Utf8PathBuf::from_path_buf(cwd).map_err(|path| {
+        anyhow!(
+            "current directory path is not valid UTF-8: {}",
+            path.display()
+        )
+    })
 }
 
 fn default_markdown_config() -> Vec<ConfigEntry> {
@@ -3217,6 +3299,52 @@ mod tests {
     }
 
     #[test]
+    fn default_root_walks_ancestors_to_find_corpus_root() {
+        let temp = tempdir().expect("tempdir");
+        let temp = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 tempdir");
+        let workspace = temp.join("workspace");
+        let design = workspace.join(".design");
+        let nested = workspace.join("crates/anneal-cli/src");
+        fs::create_dir_all(&design).expect("create design");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(
+            design.join("anneal.dl"),
+            "source md { scan_root(\".\"). }\n",
+        )
+        .expect("write anneal.dl");
+
+        assert_eq!(infer_corpus_root(&workspace), design);
+        assert_eq!(infer_corpus_root(&nested), design);
+        assert_eq!(infer_corpus_root(&workspace.join(".design")), design);
+
+        let bare = temp.join("bare");
+        fs::create_dir_all(&bare).expect("create bare");
+        assert_eq!(infer_corpus_root(&bare), bare);
+    }
+
+    #[test]
+    fn discovered_root_is_reported_for_json_or_empty_outputs() {
+        let root = Utf8PathBuf::from("/tmp/corpus/.design");
+
+        assert_eq!(
+            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Json, true),
+            Some("resolved root: /tmp/corpus/.design".to_string())
+        );
+        assert_eq!(
+            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Human, false),
+            Some("resolved root: /tmp/corpus/.design".to_string())
+        );
+        assert_eq!(
+            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Human, true),
+            None
+        );
+        assert_eq!(
+            RootSelection::Explicit(root).diagnostic(OutputMode::Json, true),
+            None
+        );
+    }
+
+    #[test]
     fn parses_context_options() {
         let parsed = Invocation::parse(os(&[
             "anneal",
@@ -3229,7 +3357,10 @@ mod tests {
             "--depth=3",
         ]))
         .expect("parse");
-        assert_eq!(parsed.root, Utf8PathBuf::from(".design"));
+        assert_eq!(
+            parsed.root,
+            RootSelection::Explicit(Utf8PathBuf::from(".design"))
+        );
         assert_eq!(
             parsed.command,
             RuntimeCommand::Context {

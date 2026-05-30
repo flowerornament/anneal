@@ -230,7 +230,7 @@ impl ImpactConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AnnealConfig {
-    /// Root directory to scan (defaults to inferred: `.design/` > `docs/` > `.`).
+    /// Root directory to scan (defaults to nearest `.design/`, `docs/`, or `anneal.dl` upward).
     pub(crate) root: String,
     /// Additional directories to exclude beyond defaults.
     pub(crate) exclude: Vec<String>,

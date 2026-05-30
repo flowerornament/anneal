@@ -105,9 +105,10 @@ ROOT DIRECTORY:
 
   anneal auto-detects the corpus root from the working directory:
     1. --root <path>   if given explicitly
-    2. .design/        if it exists
-    3. docs/           if it exists
-    4. .               current directory (fallback)
+    2. .design/        nearest ancestor with a .design/ child
+    3. docs/           nearest ancestor with a docs/ child
+    4. anneal.dl       nearest ancestor with a project runtime file
+    5. .               current directory (fallback)
 
   anneal.dl (if present) is read from the root.
   Machine-local anneal config (if present) is read from:
@@ -145,7 +146,7 @@ OUTPUT:
   0 otherwise."
 )]
 struct Cli {
-    /// Root directory to scan (defaults to .design/ > docs/ > current directory)
+    /// Root directory to scan (defaults to nearest .design, docs, or anneal.dl upward)
     #[arg(long)]
     root: Option<String>,
 
