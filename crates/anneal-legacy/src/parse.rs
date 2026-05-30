@@ -1191,7 +1191,7 @@ fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
 /// Walks upward from the current directory, matching the runtime default-root
 /// behavior used by all command surfaces.
 pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
-    anneal_core::infer_corpus_root(cwd)
+    anneal_core::infer_corpus_root(cwd).into_path()
 }
 
 // ---------------------------------------------------------------------------

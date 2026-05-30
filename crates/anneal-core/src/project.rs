@@ -27,19 +27,41 @@ pub const PROJECT_RULE_FILE: &str = "anneal.dl";
 const POTENTIAL_WEIGHT_SECTION: &str = "potential_weight";
 const POTENTIAL_WEIGHT_OVERRIDE_KEY: &str = "potential_weight.override";
 
-pub fn infer_corpus_root(start: &Utf8Path) -> Utf8PathBuf {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InferredCorpusRoot {
+    Marked(Utf8PathBuf),
+    Unmarked(Utf8PathBuf),
+}
+
+impl InferredCorpusRoot {
+    #[must_use]
+    pub fn path(&self) -> &Utf8Path {
+        match self {
+            Self::Marked(root) | Self::Unmarked(root) => root,
+        }
+    }
+
+    #[must_use]
+    pub fn into_path(self) -> Utf8PathBuf {
+        match self {
+            Self::Marked(root) | Self::Unmarked(root) => root,
+        }
+    }
+}
+
+pub fn infer_corpus_root(start: &Utf8Path) -> InferredCorpusRoot {
     for ancestor in start.ancestors() {
         for child in [".design", "docs"] {
             let candidate = ancestor.join(child);
             if candidate.is_dir() {
-                return candidate;
+                return InferredCorpusRoot::Marked(candidate);
             }
         }
         if ancestor.join(PROJECT_RULE_FILE).is_file() {
-            return ancestor.to_path_buf();
+            return InferredCorpusRoot::Marked(ancestor.to_path_buf());
         }
     }
-    start.to_path_buf()
+    InferredCorpusRoot::Unmarked(start.to_path_buf())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -925,13 +947,22 @@ mod tests {
         fs::create_dir_all(&nested).expect("create nested");
         fs::write(design.join(PROJECT_RULE_FILE), "").expect("write project file");
 
-        assert_eq!(infer_corpus_root(&workspace), design);
-        assert_eq!(infer_corpus_root(&nested), design);
-        assert_eq!(infer_corpus_root(&workspace.join(".design")), design);
+        assert_eq!(
+            infer_corpus_root(&workspace),
+            InferredCorpusRoot::Marked(design.clone())
+        );
+        assert_eq!(
+            infer_corpus_root(&nested),
+            InferredCorpusRoot::Marked(design.clone())
+        );
+        assert_eq!(
+            infer_corpus_root(&workspace.join(".design")),
+            InferredCorpusRoot::Marked(design)
+        );
 
         let bare = temp.join("bare");
         fs::create_dir_all(&bare).expect("create bare");
-        assert_eq!(infer_corpus_root(&bare), bare);
+        assert_eq!(infer_corpus_root(&bare), InferredCorpusRoot::Unmarked(bare));
     }
 
     #[test]

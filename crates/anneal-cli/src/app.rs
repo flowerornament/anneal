@@ -14,11 +14,11 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
-    FactStore, Generation, ProjectExtension, SnapshotAppendOutcome, SnapshotEntry,
-    SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability,
-    VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped,
-    infer_corpus_root, load_project_extension, merge_program_layers, read_snapshot_history,
-    render_verb_arg_facts,
+    FactStore, Generation, InferredCorpusRoot, ProjectExtension, SnapshotAppendOutcome,
+    SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind,
+    VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry,
+    append_snapshot_entry_capped, infer_corpus_root, load_project_extension, merge_program_layers,
+    read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -152,7 +152,7 @@ struct Invocation {
 #[derive(Debug, PartialEq, Eq)]
 enum RootSelection {
     Explicit(Utf8PathBuf),
-    Discovered(Utf8PathBuf),
+    Inferred(InferredCorpusRoot),
     Undiscovered,
 }
 
@@ -164,15 +164,16 @@ impl RootSelection {
     fn resolve(&mut self) -> Result<()> {
         *self = match self {
             Self::Explicit(root) => Self::Explicit(absolute_root(root)?),
-            Self::Discovered(root) => Self::Discovered(absolute_root(root)?),
-            Self::Undiscovered => Self::Discovered(default_root()?),
+            Self::Inferred(root) => Self::Inferred(absolute_inferred_root(root)?),
+            Self::Undiscovered => Self::Inferred(default_root()?),
         };
         Ok(())
     }
 
     fn path(&self) -> &Utf8Path {
         match self {
-            Self::Explicit(root) | Self::Discovered(root) => root,
+            Self::Explicit(root) => root,
+            Self::Inferred(root) => root.path(),
             Self::Undiscovered => {
                 unreachable!("runtime root must be resolved before loading the corpus")
             }
@@ -180,13 +181,21 @@ impl RootSelection {
     }
 
     fn diagnostic(&self, mode: OutputMode, output_has_content: bool) -> Option<String> {
-        let Self::Discovered(root) = self else {
-            return None;
-        };
-        if matches!(mode, OutputMode::Json | OutputMode::JsonExplicit) || !output_has_content {
-            return Some(format!("resolved root: {root}"));
+        match self {
+            Self::Explicit(_) | Self::Undiscovered => None,
+            Self::Inferred(InferredCorpusRoot::Marked(root)) => {
+                if matches!(mode, OutputMode::Json | OutputMode::JsonExplicit)
+                    || !output_has_content
+                {
+                    Some(format!("resolved root: {root}"))
+                } else {
+                    None
+                }
+            }
+            Self::Inferred(InferredCorpusRoot::Unmarked(root)) => Some(format!(
+                "no marked corpus root found above {root}; scanning current directory"
+            )),
         }
-        None
     }
 }
 
@@ -3073,7 +3082,7 @@ fn is_legacy_surface_command(arg: &str) -> bool {
     matches!(arg, "init" | "prime" | "anneal")
 }
 
-fn default_root() -> Result<Utf8PathBuf> {
+fn default_root() -> Result<InferredCorpusRoot> {
     let cwd = current_dir_utf8()?;
     Ok(infer_corpus_root(&cwd))
 }
@@ -3083,6 +3092,13 @@ fn absolute_root(root: &Utf8Path) -> Result<Utf8PathBuf> {
         return Ok(root.to_path_buf());
     }
     Ok(current_dir_utf8()?.join(root))
+}
+
+fn absolute_inferred_root(root: &InferredCorpusRoot) -> Result<InferredCorpusRoot> {
+    Ok(match root {
+        InferredCorpusRoot::Marked(root) => InferredCorpusRoot::Marked(absolute_root(root)?),
+        InferredCorpusRoot::Unmarked(root) => InferredCorpusRoot::Unmarked(absolute_root(root)?),
+    })
 }
 
 fn current_dir_utf8() -> Result<Utf8PathBuf> {
@@ -3299,48 +3315,49 @@ mod tests {
     }
 
     #[test]
-    fn default_root_walks_ancestors_to_find_corpus_root() {
-        let temp = tempdir().expect("tempdir");
-        let temp = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 tempdir");
-        let workspace = temp.join("workspace");
-        let design = workspace.join(".design");
-        let nested = workspace.join("crates/anneal-cli/src");
-        fs::create_dir_all(&design).expect("create design");
-        fs::create_dir_all(&nested).expect("create nested");
-        fs::write(
-            design.join("anneal.dl"),
-            "source md { scan_root(\".\"). }\n",
-        )
-        .expect("write anneal.dl");
-
-        assert_eq!(infer_corpus_root(&workspace), design);
-        assert_eq!(infer_corpus_root(&nested), design);
-        assert_eq!(infer_corpus_root(&workspace.join(".design")), design);
-
-        let bare = temp.join("bare");
-        fs::create_dir_all(&bare).expect("create bare");
-        assert_eq!(infer_corpus_root(&bare), bare);
-    }
-
-    #[test]
-    fn discovered_root_is_reported_for_json_or_empty_outputs() {
+    fn marked_root_is_reported_for_json_or_empty_outputs() {
         let root = Utf8PathBuf::from("/tmp/corpus/.design");
 
         assert_eq!(
-            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Json, true),
+            RootSelection::Inferred(InferredCorpusRoot::Marked(root.clone()))
+                .diagnostic(OutputMode::Json, true),
             Some("resolved root: /tmp/corpus/.design".to_string())
         );
         assert_eq!(
-            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Human, false),
+            RootSelection::Inferred(InferredCorpusRoot::Marked(root.clone()))
+                .diagnostic(OutputMode::Human, false),
             Some("resolved root: /tmp/corpus/.design".to_string())
         );
         assert_eq!(
-            RootSelection::Discovered(root.clone()).diagnostic(OutputMode::Human, true),
+            RootSelection::Inferred(InferredCorpusRoot::Marked(root.clone()))
+                .diagnostic(OutputMode::Human, true),
             None
         );
         assert_eq!(
             RootSelection::Explicit(root).diagnostic(OutputMode::Json, true),
             None
+        );
+    }
+
+    #[test]
+    fn unmarked_root_reports_fallback_scan() {
+        let root = Utf8PathBuf::from("/tmp/stray");
+
+        assert_eq!(
+            RootSelection::Inferred(InferredCorpusRoot::Unmarked(root.clone()))
+                .diagnostic(OutputMode::Human, true),
+            Some(
+                "no marked corpus root found above /tmp/stray; scanning current directory"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            RootSelection::Inferred(InferredCorpusRoot::Unmarked(root))
+                .diagnostic(OutputMode::Json, true),
+            Some(
+                "no marked corpus root found above /tmp/stray; scanning current directory"
+                    .to_string()
+            )
         );
     }
 
