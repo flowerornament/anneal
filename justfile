@@ -67,6 +67,7 @@ release-bump version:
 release-verify:
     python3 scripts/release.py verify
 
-# Create and push an annotated release tag (triggers GitHub release workflow)
+# Create and push an annotated release tag, force-update the `release` branch
+# for downstream flake consumers, and trigger the GitHub release workflow.
 release-tag version:
     python3 scripts/release.py tag {{version}}

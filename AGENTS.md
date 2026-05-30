@@ -125,6 +125,11 @@ just release-tag 0.2.1
 
 `just release-verify` checks version alignment across `Cargo.toml`, `Cargo.lock`, and `flake.nix`; CHANGELOG entry presence without `TODO`/`TBD` placeholders; release target alignment across `release.yml`, `install.sh`, and `README.md`; public-repo safety for `.beads/config.yaml`; then runs `just check`, `just build`, `anneal --version`, and `anneal --root .design check`.
 
+`just release-tag` pushes the annotated tag and force-updates the
+`release` branch (`--force-with-lease`) so downstream flake consumers
+can track `?ref=refs/heads/release` and resolve to the latest released
+commit via `nix flake update`.
+
 Pushing `vX.Y.Z` triggers `.github/workflows/release.yml` and publishes binaries for:
 - `aarch64-apple-darwin`
 - `x86_64-unknown-linux-gnu`
