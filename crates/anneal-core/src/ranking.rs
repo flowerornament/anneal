@@ -21,6 +21,7 @@ const PARENT_CLUSTER_MAX_SCORE: f32 = 0.99;
 const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
 const DEFAULT_HUB_EDGE_SCORE_BOOST: f32 = 0.01;
 const HUB_SCORE_BOOST_MAX: f32 = 0.12;
+const TERM_SPECIFICITY_MAX_FACTOR: f32 = 2.5;
 const HANDLE_KIND_LABEL: &str = "label";
 const HANDLE_KIND_EXTERNAL: &str = "external";
 
@@ -500,6 +501,7 @@ impl SearchIndex {
         }
         let base_reason_filter = if cluster_only { None } else { reason_filter };
         let base_field_filter = if cluster_only { None } else { field_filter };
+        let term_specificity = self.term_specificity(query);
         let mut hits = self
             .documents
             .iter()
@@ -517,6 +519,7 @@ impl SearchIndex {
                     span_filter,
                     base_reason_filter,
                     base_field_filter,
+                    &term_specificity,
                 )
             })
             .collect::<Vec<_>>();
@@ -527,6 +530,7 @@ impl SearchIndex {
                 span_filter,
                 reason_filter,
                 field_filter,
+                &term_specificity,
             );
         }
         if let Some(handle) = handle {
@@ -559,6 +563,7 @@ impl SearchIndex {
         span_filter: SearchSpanScope<'_>,
         reason_filter: Option<&str>,
         field_filter: Option<&str>,
+        term_specificity: &TermSpecificity,
     ) {
         if !span_filter.accepts(None)
             || reason_filter.is_some_and(|reason| reason != REASON_PARENT_CLUSTER)
@@ -595,7 +600,8 @@ impl SearchIndex {
                 })
                 .filter_map(|(parent_key, cluster)| {
                     let cluster_score = cluster.cluster_score(query);
-                    let direct_signal = self.direct_parent_signal(&parent_key, query);
+                    let direct_signal =
+                        self.direct_parent_signal(&parent_key, query, term_specificity);
                     (cluster.best_raw_score > direct_signal.structural_raw_score
                         && cluster_score > direct_signal.calibrated_score)
                         .then(|| {
@@ -617,13 +623,21 @@ impl SearchIndex {
         &self,
         parent_key: &SearchDocumentKey,
         query: &SearchQuery,
+        term_specificity: &TermSpecificity,
     ) -> ParentDirectSignal {
         let Some(parent) = self.documents.get(parent_key) else {
             return ParentDirectSignal::default();
         };
         let ctx = RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD);
         parent
-            .search_hits(parent_key, query, SearchSpanScope::Any, None, None)
+            .search_hits(
+                parent_key,
+                query,
+                SearchSpanScope::Any,
+                None,
+                None,
+                term_specificity,
+            )
             .fold(ParentDirectSignal::default(), |mut signal, hit| {
                 if matches!(hit.field(), FIELD_IDENTIFIER | FIELD_TITLE) {
                     signal.structural_raw_score =
@@ -659,6 +673,29 @@ impl SearchIndex {
         let count = self.incoming_edge_counts.get(key).copied().unwrap_or(0);
         let status = self.documents.get(key).and_then(boosted_status);
         self.boosts.status_boost(status) + self.boosts.hub_boost(count)
+    }
+
+    fn term_specificity(&self, query: &SearchQuery) -> TermSpecificity {
+        let field_count = self
+            .documents
+            .values()
+            .map(|document| document.fields.len())
+            .sum::<usize>();
+        if field_count == 0 {
+            return TermSpecificity::uniform(query);
+        }
+
+        let mut field_frequency = BTreeMap::<&str, usize>::new();
+        for term in &query.terms {
+            let count = self
+                .documents
+                .values()
+                .flat_map(|document| &document.fields)
+                .filter(|field| term_matches(field.normalized_text.as_str(), term))
+                .count();
+            field_frequency.insert(term.value.as_str(), count);
+        }
+        TermSpecificity::from_frequency(query, field_count, &field_frequency)
     }
 }
 
@@ -722,6 +759,7 @@ impl SearchDocument {
         span_filter: SearchSpanScope<'a>,
         reason_filter: Option<&'a str>,
         field_filter: Option<&'a str>,
+        term_specificity: &'a TermSpecificity,
     ) -> impl Iterator<Item = SearchHit> + 'a {
         let should_hide_full_body_span = matches!(span_filter, SearchSpanScope::Any)
             && reason_filter.is_none_or(|reason| reason == REASON_BODY_SUBSTRING)
@@ -747,17 +785,19 @@ impl SearchDocument {
             .filter(move |field| reason_filter.is_none_or(|reason| field.reason == reason))
             .filter(move |field| field_filter.is_none_or(|field_name| field.field == field_name))
             .filter_map(move |field| {
-                query.score_normalized(&field.normalized_text).map(|score| {
-                    SearchHit::new(
-                        key.corpus.as_str(),
-                        key.source.as_str(),
-                        key.handle.as_str(),
-                        field.span_id.clone(),
-                        score,
-                        field.reason.clone(),
-                        field.field.clone(),
-                    )
-                })
+                query
+                    .score_normalized_with_specificity(&field.normalized_text, term_specificity)
+                    .map(|score| {
+                        SearchHit::new(
+                            key.corpus.as_str(),
+                            key.source.as_str(),
+                            key.handle.as_str(),
+                            field.span_id.clone(),
+                            score,
+                            field.reason.clone(),
+                            field.field.clone(),
+                        )
+                    })
             })
     }
 }
@@ -793,13 +833,67 @@ pub(crate) struct SearchQuery {
     original: String,
     normalized: String,
     terms: Vec<QueryTerm>,
-    total_weight: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct QueryTerm {
     value: String,
     weight: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TermSpecificity {
+    weights: BTreeMap<String, f32>,
+    total_weight: f32,
+}
+
+impl TermSpecificity {
+    fn uniform(query: &SearchQuery) -> Self {
+        let weights = query
+            .terms
+            .iter()
+            .map(|term| (term.value.clone(), term.weight))
+            .collect::<BTreeMap<_, _>>();
+        let total_weight = weights.values().sum::<f32>().max(1.0);
+        Self {
+            weights,
+            total_weight,
+        }
+    }
+
+    fn from_frequency(
+        query: &SearchQuery,
+        field_count: usize,
+        document_frequency: &BTreeMap<&str, usize>,
+    ) -> Self {
+        let field_count = f32::from(u16::try_from(field_count).unwrap_or(u16::MAX)).max(1.0);
+        let weights = query
+            .terms
+            .iter()
+            .map(|term| {
+                let frequency = document_frequency
+                    .get(term.value.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let frequency = f32::from(u16::try_from(frequency).unwrap_or(u16::MAX));
+                let rarity = ((field_count - frequency).max(0.0) / field_count).clamp(0.0, 1.0);
+                let factor = 1.0 + (rarity * (TERM_SPECIFICITY_MAX_FACTOR - 1.0));
+                (term.value.clone(), term.weight * factor)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let total_weight = weights.values().sum::<f32>().max(1.0);
+        Self {
+            weights,
+            total_weight,
+        }
+    }
+
+    fn weight_for(&self, term: &QueryTerm) -> f32 {
+        self.weights
+            .get(term.value.as_str())
+            .copied()
+            .unwrap_or(term.weight)
+    }
 }
 
 impl SearchQuery {
@@ -809,13 +903,11 @@ impl SearchQuery {
         if normalized.is_empty() {
             return None;
         }
-        let total_weight = f32::from(u16::try_from(original_terms.len()).unwrap_or(u16::MAX));
         let terms = expanded_query_terms(&original_terms);
         Some(Self {
             original: query.to_owned(),
             normalized,
             terms,
-            total_weight,
         })
     }
 
@@ -823,7 +915,17 @@ impl SearchQuery {
         &self.original
     }
 
+    #[cfg(test)]
     fn score_normalized(&self, normalized_text: &str) -> Option<f32> {
+        let specificity = TermSpecificity::uniform(self);
+        self.score_normalized_with_specificity(normalized_text, &specificity)
+    }
+
+    fn score_normalized_with_specificity(
+        &self,
+        normalized_text: &str,
+        specificity: &TermSpecificity,
+    ) -> Option<f32> {
         if normalized_text.is_empty() {
             return None;
         }
@@ -833,12 +935,16 @@ impl SearchQuery {
         let matched_weight = self
             .terms
             .iter()
-            .filter(|term| normalized_text.contains(term.value.as_str()))
-            .map(|term| term.weight)
+            .filter(|term| term_matches(normalized_text, term))
+            .map(|term| specificity.weight_for(term))
             .sum::<f32>();
         (matched_weight > 0.0)
-            .then(|| 0.35 + (0.55 * (matched_weight / self.total_weight).min(1.0)))
+            .then(|| 0.35 + (0.55 * (matched_weight / specificity.total_weight).min(1.0)))
     }
+}
+
+fn term_matches(normalized_text: &str, term: &QueryTerm) -> bool {
+    normalized_text.contains(term.value.as_str())
 }
 
 fn normalize_search_text(value: &str) -> String {
@@ -935,6 +1041,12 @@ fn expanded_query_terms(original_terms: &[String]) -> Vec<QueryTerm> {
         for (expanded, weight) in abbreviation_expansions(term) {
             insert_term_weight(&mut weights, expanded, *weight);
         }
+    }
+    for window in original_terms.windows(2) {
+        insert_term_weight(&mut weights, &window.join(" "), 2.0);
+    }
+    for window in original_terms.windows(3) {
+        insert_term_weight(&mut weights, &window.join(" "), 3.0);
     }
     for window in original_terms.windows(2) {
         if window[0] == "open" && window[1] == "question" {

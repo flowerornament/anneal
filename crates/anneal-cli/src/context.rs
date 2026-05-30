@@ -765,6 +765,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn context_weights_rare_specific_terms_in_verbose_goals() {
+        let output = evaluate_context(
+            &ContextCommand::new("graceful overrun load shedding audio degradation")
+                .with_hits(1)
+                .with_budget(40),
+            verbose_goal_specificity_database(),
+            EvalOptions::default(),
+        );
+
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].handle, "docs/canonical.md");
+        assert_eq!(
+            output.hits[0].span_id.as_deref(),
+            Some("docs/canonical.md#h/error-model-and-load-shedding")
+        );
+        assert!(
+            output.hits[0].score > 0.5,
+            "specific canonical heading should remain above low-confidence cutoff: {:?}",
+            output.hits
+        );
+    }
+
     fn evaluate_context(
         command: &ContextCommand,
         database: Database,
@@ -889,6 +912,60 @@ mod tests {
         ];
         let mut store = FactStore::default();
         store.merge(batch).expect("merge heading vs label fixture");
+        Database::from_store(&store)
+    }
+
+    fn verbose_goal_specificity_database() -> Database {
+        let mut batch = FactBatch::new(
+            "test".into(),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        let span_id = "docs/canonical.md#h/error-model-and-load-shedding";
+        batch.handles = vec![
+            handle("docs/canonical.md", "Canonical source"),
+            handle("docs/protocol.md", "Protocol"),
+            handle("docs/strategy.md", "Strategy"),
+            handle_in_file("C-12", "docs/canonical.md", "Load shedding"),
+        ];
+        batch.content = vec![
+            content(
+                "docs/canonical.md",
+                span_id,
+                "Graceful overrun load shedding keeps audio stable.",
+                8,
+            ),
+            content(
+                "docs/protocol.md",
+                "body",
+                "Graceful overrun audio degradation protocol details.",
+                8,
+            ),
+            content(
+                "docs/strategy.md",
+                "body",
+                "Graceful overrun audio degradation strategy details.",
+                8,
+            ),
+            content("C-12", "body", "Load shedding", 2),
+        ];
+        batch.spans = vec![
+            span_with_summary(
+                "docs/canonical.md",
+                span_id,
+                31,
+                38,
+                "Error Model and Load Shedding",
+            ),
+            span("docs/protocol.md", "body", 1, 4),
+            span("docs/strategy.md", "body", 5, 8),
+            span("C-12", "body", 40, 40),
+        ];
+        let mut store = FactStore::default();
+        store
+            .merge(batch)
+            .expect("merge verbose specificity fixture");
         Database::from_store(&store)
     }
 
