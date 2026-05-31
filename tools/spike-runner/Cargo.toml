@@ -21,6 +21,7 @@ missing_errors_doc = "allow"
 similar_names = "allow"
 
 [dependencies]
+anneal-core = { path = "../../crates/anneal-core" }
 ascent = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,6 +37,10 @@ path = "src/bin/ascent_spike.rs"
 [[bin]]
 name = "corpus_spike"
 path = "src/bin/corpus_spike.rs"
+
+[[bin]]
+name = "code_spike"
+path = "src/bin/code_spike.rs"
 
 [[bin]]
 name = "dynamic_ir_bench"
