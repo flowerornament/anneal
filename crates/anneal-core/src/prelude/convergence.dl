@@ -8,6 +8,7 @@
 potential_weight("undischarged", 5).
 potential_weight("broken_ref", 4).
 potential_weight("stale_dep", 3).
+potential_weight("spec_code_drift", 3).
 potential_weight("confidence_gap", 3).
 potential_weight("freshness_decay", 1).
 potential_weight("missing_meta", 1).
@@ -42,10 +43,11 @@ effective_potential_weight(source, weight) :=
 entropy_priority("broken_ref", 0).
 entropy_priority("undischarged", 1).
 entropy_priority("stale_dep", 2).
-entropy_priority("confidence_gap", 3).
-entropy_priority("freshness_decay", 4).
-entropy_priority("missing_meta", 5).
-entropy_priority("orphan_label", 6).
+entropy_priority("spec_code_drift", 3).
+entropy_priority("confidence_gap", 4).
+entropy_priority("freshness_decay", 5).
+entropy_priority("missing_meta", 6).
+entropy_priority("orphan_label", 7).
 
 @doc(
   name: "potential_weight",
@@ -78,6 +80,9 @@ entropy(h, "stale_dep") :=
   *edge{from: h, to: t, kind: "DependsOn"},
   active(h),
   terminal(t).
+
+entropy(h, "spec_code_drift") :=
+  spec_code_drift(h, target_path, file, line, source_status).
 
 entropy(h, "confidence_gap") :=
   confidence_gap(h, target, file, source_status, source_level, target_status, target_level).

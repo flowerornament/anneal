@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anneal_core::{
     ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation,
     HandleFact, MetaFact, NativeId, OriginUri, Revision, SourceName, SpanFact, fnv1a_64,
+    probe_code_target,
 };
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -123,7 +124,7 @@ fn extract_markdown_facts_with_config(
         emit_frontmatter_meta(&mut batch, &mut revisions, root, &extraction.file);
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
-    emit_code_ref_meta(&mut batch, &mut revisions, &result);
+    emit_code_ref_meta(&mut batch, &mut revisions, root, &result);
     emit_content_spans(&mut batch, &mut revisions, root, &result);
     emit_concerns(&mut batch, &mut revisions, config, &result);
 
@@ -691,6 +692,7 @@ fn emit_implausible_ref_meta(
 fn emit_code_ref_meta(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
+    root: &Utf8Path,
     result: &parse::BuildResult,
 ) {
     let mut seen = HashSet::new();
@@ -711,6 +713,29 @@ fn emit_code_ref_meta(
             key: "target_path".to_string(),
             value: reference.path.clone(),
         });
+        let probe = probe_code_target(root, &reference.path);
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: reference.target.clone(),
+            key: "target_exists".to_string(),
+            value: probe.exists.as_str().to_string(),
+        });
+        if let Some(base) = probe.probe_base {
+            batch.meta.push(MetaFact {
+                identity: identity.clone(),
+                handle: reference.target.clone(),
+                key: "target_probe_base".to_string(),
+                value: base.to_string(),
+            });
+        }
+        if let Some(path) = probe.resolved_path {
+            batch.meta.push(MetaFact {
+                identity: identity.clone(),
+                handle: reference.target.clone(),
+                key: "target_resolved_path".to_string(),
+                value: path.to_string(),
+            });
+        }
         if let Some(start_line) = reference.start_line {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
@@ -1223,7 +1248,12 @@ mod tests {
     fn markdown_facts_emit_code_refs_as_external_cites_with_metadata() {
         let temp = tempdir().expect("tempdir");
         let corpus = temp.path().join("corpus");
-        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(corpus.join("lib/example")).expect("create corpus");
+        std::fs::write(
+            corpus.join("lib/example/admission.rs"),
+            "pub fn admit() {}\n",
+        )
+        .expect("write code");
         std::fs::write(
             corpus.join("doc.md"),
             "# Doc\n\nSee `lib/example/admission.rs:142-167`.\n",
@@ -1258,6 +1288,7 @@ mod tests {
         for (key, value) in [
             ("external_class", "code"),
             ("target_path", "lib/example/admission.rs"),
+            ("target_exists", "true"),
             ("target_start_line", "142"),
             ("target_end_line", "167"),
         ] {
@@ -1270,5 +1301,14 @@ mod tests {
                 batch.meta
             );
         }
+        assert!(batch.meta.iter().any(|meta| {
+            meta.handle == target && meta.key == "target_probe_base" && meta.value == root.as_str()
+        }));
+        let resolved_path = root.join("lib/example/admission.rs");
+        assert!(batch.meta.iter().any(|meta| {
+            meta.handle == target
+                && meta.key == "target_resolved_path"
+                && meta.value == resolved_path.as_str()
+        }));
     }
 }

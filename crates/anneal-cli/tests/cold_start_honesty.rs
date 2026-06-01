@@ -455,3 +455,74 @@ fn status_sections_are_mutually_exclusive() {
         .collect::<Vec<_>>();
     assert!(duplicates.is_empty(), "{duplicates:#?}");
 }
+
+#[test]
+fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
+    let dir = tempdir();
+    let repo = dir.path().join("repo");
+    let design = repo.join(".design");
+    std::fs::create_dir_all(repo.join(".git")).expect("create marker");
+    std::fs::create_dir_all(repo.join("lib")).expect("create lib");
+    std::fs::create_dir_all(&design).expect("create design root");
+    write_file(&repo, "lib/live.rs", "pub fn live() {}\n");
+    write_config(
+        &design,
+        &lifecycle_config(&["draft"], &["superseded"], &["draft", "superseded"]),
+    );
+    write_markdown(
+        &design,
+        "live-missing.md",
+        "draft",
+        "# Live Missing\n\nStill points at `lib/missing.rs`.\n",
+    );
+    write_markdown(
+        &design,
+        "live-existing.md",
+        "draft",
+        "# Live Existing\n\nStill points at `lib/live.rs`.\n",
+    );
+    write_markdown(
+        &design,
+        "superseded-missing.md",
+        "superseded",
+        "# Historical Missing\n\nHistorical note points at `lib/missing.rs`.\n",
+    );
+
+    let diagnostics = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "-e",
+        r#"? diagnostic(code, severity, subject, file, line, evidence), code = "W006"."#,
+        "--format=json",
+    ]);
+    let rows = json_rows(&diagnostics);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["subject"], "live-missing.md");
+    assert_eq!(rows[0]["severity"], "warning");
+    assert!(
+        rows[0]["evidence"].to_string().contains("spec_code_drift"),
+        "{rows:#?}"
+    );
+
+    let meta = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "-e",
+        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}."#,
+        "--format=json",
+    ]);
+    let meta_rows = json_rows(&meta);
+    let repo = repo.to_string_lossy().into_owned();
+    assert!(
+        meta_rows.iter().any(|row| {
+            row["h"] == "lib/live.rs" && row["exists"] == "true" && row["base"] == repo
+        }),
+        "{meta_rows:#?}"
+    );
+    assert!(
+        meta_rows.iter().any(|row| {
+            row["h"] == "lib/missing.rs" && row["exists"] == "false" && row["base"] == repo
+        }),
+        "{meta_rows:#?}"
+    );
+}

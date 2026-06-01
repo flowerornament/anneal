@@ -18,6 +18,7 @@ pub mod retrieval;
 pub mod runtime;
 pub mod source;
 pub mod store;
+pub mod target_probe;
 mod time;
 pub mod trail;
 pub mod verbs;
@@ -66,6 +67,7 @@ pub use source::{
     SourceContext, SourceError, SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};
+pub use target_probe::{CodeTargetProbe, TargetExistence, probe_code_target};
 pub use trail::{
     DEFAULT_TRAIL_QUERY_LIMIT, DefaultTrailRecorder, DefaultTrailRedactor, DefaultTrailSummarizer,
     JsonlTrailStore, TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError,

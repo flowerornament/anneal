@@ -80,6 +80,27 @@ stale_reference(src, target, file, source_status, target_status) :=
 diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
   stale_reference(src, target, file, source_status, target_status).
 
+@doc(
+  name: "spec_code_drift",
+  doc: "Return live spec files that cite code paths the extractor could confidently resolve as missing on disk."
+).
+@predicate(
+  name: "spec_code_drift",
+  args: ["src", "target_path", "file", "line", "source_status"]
+).
+spec_code_drift(src, target_path, file, line, source_status) :=
+  *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
+  *handle{id: src, kind: "file", status: source_status},
+  source_status != null,
+  active(src),
+  *handle{id: ref, kind: "external"},
+  *meta{handle: ref, key: "external_class", value: "code"},
+  *meta{handle: ref, key: "target_exists", value: "false"},
+  *meta{handle: ref, key: "target_path", value: target_path}.
+
+diagnostic("W006", "warning", src, file, line, ("spec_code_drift", target_path, source_status)) :=
+  spec_code_drift(src, target_path, file, line, source_status).
+
 configured_pipeline_status(status, level) :=
   *config{key: "convergence.ordering", value: status, ordinal: level},
   level != null.

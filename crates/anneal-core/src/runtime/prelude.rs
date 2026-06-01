@@ -1534,6 +1534,10 @@ mod tests {
                     r#"? diagnostic("W005", severity, "blocked", file, line, evidence)."#,
                 ),
                 (
+                    "W006",
+                    r#"? diagnostic("W006", severity, "code-spec.md", file, line, evidence)."#,
+                ),
+                (
                     "missing_frontmatter_file",
                     r"? missing_frontmatter_file(h, dir, file).",
                 ),
@@ -1712,6 +1716,22 @@ mod tests {
                         string("blocked"),
                         int(1),
                         string("ordering_status_unpartitioned")
+                    ])
+                )
+            ]
+        ));
+        assert!(has_row(
+            output(&outputs, "W006"),
+            &[
+                ("severity", string("warning")),
+                ("file", string("code-spec.md")),
+                ("line", int(7)),
+                (
+                    "evidence",
+                    list(vec![
+                        string("spec_code_drift"),
+                        string("src/old.rs"),
+                        string("draft")
                     ])
                 )
             ]
@@ -2159,6 +2179,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "co1.md", "file", Some("draft"), "", ""),
             handle(&scope, "co2.md", "file", Some("draft"), "", ""),
             handle(&scope, "co3.md", "file", Some("draft"), "", ""),
+            handle(&scope, "code-spec.md", "file", Some("draft"), "", ""),
+            handle(&scope, "src/old.rs", "external", None, "", ""),
         ];
         batch.edges = vec![
             edge(&scope, "broken.md", "missing.md", "Cites", 3),
@@ -2174,6 +2196,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             edge(&scope, "co2.md", "BB-1", "Cites", 2),
             edge(&scope, "co3.md", "AA-1", "Cites", 1),
             edge(&scope, "co3.md", "BB-1", "Cites", 2),
+            edge(&scope, "code-spec.md", "src/old.rs", "Cites", 7),
         ];
         batch.meta = vec![
             meta(
@@ -2188,6 +2211,9 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             meta(&scope, "scratch/with.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-a.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-b.md", "md.parent_dir", "scratch"),
+            meta(&scope, "src/old.rs", "external_class", "code"),
+            meta(&scope, "src/old.rs", "target_path", "src/old.rs"),
+            meta(&scope, "src/old.rs", "target_exists", "false"),
         ];
 
         let mut store = FactStore::default();

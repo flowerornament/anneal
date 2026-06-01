@@ -412,7 +412,7 @@ impl IntrospectionBuilder {
                 signature: Some(r#"*meta{handle: h, key: "external_class", value: class}"#),
                 extra_lines: vec![
                     "Known values (standard, adapter-neutral):".to_string(),
-                    r#"- "code": target_path, target_start_line, and target_end_line describe source-code locations."#.to_string(),
+                    r#"- "code": target_path, target_start_line, target_end_line, and target_exists describe source-code locations."#.to_string(),
                     r#"- Future "url": target_url."#.to_string(),
                     r#"- Future "issue": target_repo and target_number."#.to_string(),
                     "A new external_class value is an anneal standard-key decision.".to_string(),
@@ -449,6 +449,21 @@ impl IntrospectionBuilder {
                 "target_end_line",
                 r"Standard metadata key for the last target line an external handle points at.",
                 r#"For external_class="code", this is the inclusive end line when a range was present."#,
+            ),
+            (
+                "target_exists",
+                r"Standard metadata key for whether an external handle's target exists on disk.",
+                r#"For external_class="code", this is true, false, or unknown from the extraction-time path probe."#,
+            ),
+            (
+                "target_probe_base",
+                r"Standard metadata key for the base directory used to probe target existence.",
+                r#"For external_class="code", this records the repository, workspace, or corpus root used to resolve target_path."#,
+            ),
+            (
+                "target_resolved_path",
+                r"Standard metadata key for the resolved on-disk target when one was found.",
+                r#"For external_class="code", this records the path that made target_exists true."#,
             ),
         ] {
             let signature = format!(r#"*meta{{handle: h, key: "{name}", value: value}}"#);
@@ -1173,7 +1188,7 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
     match name {
         "meta" => vec![
             "Open metadata extension on handles. Three kinds of keys:".to_string(),
-            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line.".to_string(),
+            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_probe_base, target_resolved_path.".to_string(),
             "SOURCE (produced by a specific source adapter, prefix tells you which): md.resolved_file, md.parent_dir.".to_string(),
             "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
             r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
@@ -1362,6 +1377,25 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
             "lifecycle_config_gap",
             "configured_pipeline_status",
             "pipeline_stall",
+        ],
+    },
+    DiagnosticCodeCard {
+        code: "W006",
+        severity: "warning",
+        summary: "Spec-code drift: a live spec cites a code path the extractor could confidently resolve as missing on disk.",
+        rule: "spec_code_drift",
+        evidence: r#"("spec_code_drift", target_path, source_status)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W006\", subject: src}, spec_code_drift(src, target_path, file, line, source_status)` to inspect the missing code target",
+            "`spec_code_drift(src, target_path, file, line, source_status), read{handle: src, budget: 1200, text: text}` to read the live spec context",
+            "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_probe_base\", value: base}` to audit path resolution",
+        ],
+        example: r#"? diagnostic{code: "W006", subject: src, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "spec_code_drift",
+            "target_exists",
+            "external_class",
         ],
     },
     DiagnosticCodeCard {
@@ -1923,6 +1957,9 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "stale_reference" => {
             Some("Diagnostic-rule predicate behind W001 stale-reference warnings.")
         }
+        "spec_code_drift" => {
+            Some("Diagnostic-rule predicate behind W006 spec-code-drift warnings.")
+        }
         "confidence_gap" => Some("Diagnostic-rule predicate behind W002 confidence-gap warnings."),
         "missing_frontmatter_file" => {
             Some("Diagnostic-rule predicate behind W003 missing-frontmatter warnings.")
@@ -1961,7 +1998,7 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
 fn predicate_extra_lines(name: &str) -> Vec<String> {
     match name {
         "potential_weight" => vec![
-            "Default weights in v0.14: undischarged=5, broken_ref=4, stale_dep=3, confidence_gap=3, freshness_decay=1, missing_meta=1, orphan_label=1.".to_string(),
+            "Default weights in v0.15: undischarged=5, broken_ref=4, stale_dep=3, spec_code_drift=3, confidence_gap=3, freshness_decay=1, missing_meta=1, orphan_label=1.".to_string(),
             "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
             "Verify active tuning with `effective_potential_weight(source, weight)`; potential uses effective weights, not raw defaults.".to_string(),
         ],
@@ -2096,6 +2133,11 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`stale_reference(src, target, file, source_status, target_status), diagnostic{code: \"W001\", subject: src}` to inspect stale-reference warnings",
             "`stale_reference(src, target, file, source_status, target_status), *handle{id: target, summary: summary}` to add target context",
         ],
+        "spec_code_drift" => &[
+            "`spec_code_drift(src, target_path, file, line, source_status), diagnostic{code: \"W006\", subject: src}` to inspect spec-code drift warnings",
+            "`spec_code_drift(src, target_path, file, line, source_status), read{handle: src, budget: 1200, text: text}` to read the live spec context",
+            "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_probe_base\", value: base}` to audit path resolution",
+        ],
         "confidence_gap" => &[
             "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), diagnostic{code: \"W002\", subject: src}` to inspect confidence-gap warnings",
             "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), area_of{h: src, area: area}` to group gaps by area",
@@ -2193,6 +2235,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         "broken_reference" => &["E001", "diagnostic", "*edge", "*handle"],
         "undischarged_obligation" => &["E002", "diagnostic", "obligation", "discharge_count"],
         "stale_reference" => &["W001", "diagnostic", "active", "terminal"],
+        "spec_code_drift" => &["W006", "diagnostic", "external_class", "target_path"],
         "confidence_gap" => &[
             "W002",
             "diagnostic",
@@ -2397,6 +2440,9 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "undischarged_obligation" => Some("? undischarged_obligation(h, file)."),
         "stale_reference" => {
             Some("? stale_reference(src, target, file, source_status, target_status).")
+        }
+        "spec_code_drift" => {
+            Some("? spec_code_drift(src, target_path, file, line, source_status).")
         }
         "confidence_gap" => Some(
             "? confidence_gap(src, target, file, source_status, source_level, target_status, target_level).",
