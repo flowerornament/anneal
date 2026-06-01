@@ -23,7 +23,7 @@ use anneal_core::{
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::{
@@ -1475,27 +1475,48 @@ fn git_mtimes_for_files<'a>(
         return BTreeMap::new();
     }
 
-    let mut mtimes = BTreeMap::new();
-    for file in files
+    let files = files
         .into_iter()
         .filter(|file| !file.is_empty())
-        .collect::<BTreeSet<_>>()
+        .collect::<BTreeSet<_>>();
+    if files.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(root.as_std_path())
+        .args(["log", "--relative", "--format=%cI", "--name-only", "--"])
+        .args(files.iter().copied())
+        .output()
+    else {
+        return BTreeMap::new();
+    };
+    if !output.status.success() {
+        return BTreeMap::new();
+    }
+
+    let mut mtimes = BTreeMap::new();
+    let mut current_instant = None::<String>;
+    for line in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
     {
-        let Ok(output) = Command::new("git")
-            .arg("-C")
-            .arg(root.as_std_path())
-            .args(["log", "-1", "--format=%cI", "--"])
-            .arg(file)
-            .output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
+        if line.is_empty() {
             continue;
         }
-        let instant = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !instant.is_empty() {
-            mtimes.insert(file.to_string(), instant);
+        if DateTime::parse_from_rfc3339(line).is_ok() {
+            current_instant = Some(line.to_string());
+            continue;
+        }
+        if files.contains(line)
+            && !mtimes.contains_key(line)
+            && let Some(instant) = &current_instant
+        {
+            mtimes.insert(line.to_string(), instant.clone());
+            if mtimes.len() == files.len() {
+                break;
+            }
         }
     }
     mtimes
