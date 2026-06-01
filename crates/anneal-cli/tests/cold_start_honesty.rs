@@ -467,7 +467,11 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     write_file(&repo, "lib/live.rs", "pub fn live() {}\n");
     write_config(
         &design,
-        &lifecycle_config(&["draft"], &["superseded"], &["draft", "superseded"]),
+        &lifecycle_config(
+            &["draft", "plan"],
+            &["superseded"],
+            &["draft", "plan", "superseded"],
+        ),
     );
     write_markdown(
         &design,
@@ -486,6 +490,12 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         "superseded-missing.md",
         "superseded",
         "# Historical Missing\n\nHistorical note points at `lib/missing.rs`.\n",
+    );
+    write_markdown(
+        &design,
+        "plan-missing.md",
+        "plan",
+        "# Forward Plan\n\nForward plan points at future code `lib/missing.rs`.\n",
     );
 
     let diagnostics = run(&[

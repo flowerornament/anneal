@@ -1010,6 +1010,7 @@ mod tests {
               ordering(["raw", "draft", "current"]).
               active(["draft", "current"]).
               terminal("archived").
+              code_authoritative(["draft"]).
             }
 
             config potential_weight {
@@ -1055,6 +1056,7 @@ mod tests {
                 ConfigEntry::scalar("convergence.active", "draft"),
                 ConfigEntry::scalar("convergence.active", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
+                ConfigEntry::scalar("convergence.code_authoritative", "draft"),
                 ConfigEntry::ordered("potential_weight.override", "freshness_decay", 0),
                 ConfigEntry::ordered("potential_weight.override", "undischarged", 8),
                 ConfigEntry::scalar("search_boost.status.authoritative", "0.08"),

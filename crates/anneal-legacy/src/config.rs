@@ -305,6 +305,8 @@ pub(crate) struct ConvergenceConfig {
     pub(crate) active: Vec<String>,
     /// Status values considered terminal (settled, no further work expected).
     pub(crate) terminal: Vec<String>,
+    /// Status values that claim facts about this corpus's current code.
+    pub(crate) code_authoritative: Vec<String>,
     /// Optional ordering for pipeline flow analysis.
     pub(crate) ordering: Vec<String>,
     /// Optional human-readable descriptions per status (status -> description).
@@ -590,6 +592,10 @@ pub(crate) fn apply_runtime_config_facts(
         .collect();
     config.convergence.terminal = facts
         .values("convergence.terminal")
+        .map(str::to_string)
+        .collect();
+    config.convergence.code_authoritative = facts
+        .values("convergence.code_authoritative")
         .map(str::to_string)
         .collect();
     config.handles.force = facts.values("handles.force").map(str::to_string).collect();
@@ -902,6 +908,7 @@ default_filter = "all"
               ordering(["raw", "draft", "current"]).
               active(["draft", "current"]).
               terminal(["archived"]).
+              code_authoritative(["draft"]).
               description("draft", "needs work").
             }
 
@@ -930,6 +937,7 @@ default_filter = "all"
         assert_eq!(config.convergence.ordering, ["raw", "draft", "current"]);
         assert_eq!(config.convergence.active, ["draft", "current"]);
         assert_eq!(config.convergence.terminal, ["archived"]);
+        assert_eq!(config.convergence.code_authoritative, ["draft"]);
         assert_eq!(
             config
                 .convergence

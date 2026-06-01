@@ -91,8 +91,7 @@ diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, targ
 spec_code_drift(src, target_path, file, line, source_status) :=
   *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
   *handle{id: src, kind: "file", status: source_status},
-  source_status != null,
-  active(src),
+  code_authoritative(source_status),
   *handle{id: ref, kind: "external"},
   *meta{handle: ref, key: "external_class", value: "code"},
   *meta{handle: ref, key: "target_exists", value: "false"},
@@ -110,6 +109,35 @@ configured_active_status(status) :=
 
 configured_terminal_status(status) :=
   *config{key: "convergence.terminal", value: status}.
+
+configured_code_authoritative_status(status) :=
+  *config{key: "convergence.code_authoritative", value: status}.
+
+configured_code_authoritative_present("yes") :=
+  configured_code_authoritative_status(status).
+
+aspirational_code_status("plan").
+aspirational_code_status("research").
+aspirational_code_status("reference").
+aspirational_code_status("exploratory").
+
+@doc(
+  name: "code_authoritative",
+  doc: "Return lifecycle statuses that claim facts about this corpus's current code and should participate in spec-code drift checks."
+).
+@predicate(
+  name: "code_authoritative",
+  args: ["status"]
+).
+code_authoritative(status) :=
+  configured_code_authoritative_status(status).
+
+code_authoritative(status) :=
+  *handle{id: h, status: status},
+  status != null,
+  active(h),
+  not aspirational_code_status(status),
+  not configured_code_authoritative_present("yes").
 
 configured_lifecycle_status(status) := configured_active_status(status).
 configured_lifecycle_status(status) := configured_terminal_status(status).

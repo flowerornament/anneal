@@ -2,6 +2,18 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Added `W006` / `spec_code_drift` for code-authoritative specs that cite
+  confidently missing in-repo code paths.
+- Added `config convergence { code_authoritative([...]). }` and
+  `code_authoritative(status)` so each corpus declares which lifecycle statuses
+  make claims about current code. When unconfigured, W006 falls back to active
+  statuses minus the aspirational study tier (`plan`, `research`, `reference`,
+  `exploratory`).
+
 ## v0.14.1 - 2026-05-30
 
 anneal signals degenerate input instead of answering confidently over it.

@@ -109,17 +109,56 @@ live-spec-cites-code lane:
 spec_code_drift(src, target_path, file, line, source_status) :=
   *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
   *handle{id: src, kind: "file", status: source_status},
-  source_status != null,                              -- status-bearing file source only
-  active(src),                                        -- live spec; superseded/terminal excluded
+  code_authoritative(source_status),                  -- corpus-declared "claims current code"
   *handle{id: ref, kind: "external"},
   *meta{handle: ref, key: "external_class", value: "code"},
   *meta{handle: ref, key: "target_exists", value: "false"},
   *meta{handle: ref, key: "target_path", value: target_path}.
 
-diagnostic("W00X", "warning", src, file, line,
+diagnostic("W006", "warning", src, file, line,
            ("spec_code_drift", target_path, source_status)) :=
   spec_code_drift(src, target_path, file, line, source_status).
 ```
+
+### Why `code_authoritative`, not `active` (live-corpus evidence, 2026-06-01)
+
+The first implementation gated on `active(src)`. Run against the real murail
+corpus it fired **47 rows**, and the breakdown exposed that `active` is too
+coarse a proxy for "this spec claims something about current code":
+
+- ~8 `stable` rows — **undeniable rot** (a stable review citing the moved
+  `parse/parser.rs`, `render.rs`). The target signal.
+- ~13 `active`/`draft` rows — mostly real.
+- **9 `plan` rows — aspirational**: a `status: plan` spec citing
+  `murail-gpu/src/gates/...` that does not exist *because it is a forward plan*.
+  This is spec-ahead-of-code, the opposite of rot. A "you drifted" warning here
+  is actively wrong.
+- **15 `research` rows — external-codebase studies**: e.g. a doc studying the
+  external `synfx-dsp-jit` crate cites *its* `src/jit.rs`. The spec correctly
+  describes someone else's repo; the code was never meant to live here.
+
+Both noise classes are statuses that do **not** assert anything about *this
+corpus's own current code*. So the gate is a corpus-declared status set, not a
+hardcoded `active`:
+
+```
+config convergence {
+  code_authoritative([stable, current, authoritative, active, draft]).
+}
+```
+
+`code_authoritative(s)` defaults to the corpus's `active` set **minus** an
+aspirational/study tier when unconfigured — but the corpus owns the list. murail
+would exclude `research`, `plan`, `exploratory`, `reference`; that single config
+choice drops both noise classes (the external studies are all `research`; the
+unbuilt plans are all `plan`) and the 47 collapses to the ~13–21 real
+candidates. anneal stays corpus-agnostic: *which of my statuses make a claim
+about my code* is a corpus fact, not an anneal guess.
+
+This also dovetails with `W005 lifecycle_config_gap`: a corpus that never
+declares `code_authoritative` falls back to the active-minus-aspirational
+default, and a status that appears in neither the active partition nor the
+authoritative set is exactly the kind of config gap W005 already surfaces.
 
 The rule is tightened beyond a bare `active(src)` gate (per design review): it
 requires a **status-bearing `file` source**, a **`Cites`** edge, and an

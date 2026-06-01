@@ -372,6 +372,7 @@ config convergence {
   ordering(["raw", "draft", "review", "approved", "published"]).
   active(["draft", "review", "approved"]).
   terminal(["published", "archived", "superseded"]).
+  code_authoritative(["draft", "review", "approved"]).
   description("draft", "Under construction; may change substantially").
   description("approved", "Settled primary artifact; changes require review").
   description("archived", "Superseded or retired; no further changes expected").
@@ -560,6 +561,8 @@ The diagnostic catalog tracks local consistency and convergence health.
 | W002 | Warning | Higher lifecycle state depends on lower state |
 | W003 | Warning | Missing frontmatter |
 | W004 | Warning | Malformed or suspicious frontmatter value |
+| W005 | Warning | Lifecycle config gap |
+| W006 | Warning | Code-authoritative spec cites missing code |
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on one obligation |
 | S001 | Suggestion | Orphaned handle |

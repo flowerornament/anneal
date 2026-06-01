@@ -1538,6 +1538,10 @@ mod tests {
                     r#"? diagnostic("W006", severity, "code-spec.md", file, line, evidence)."#,
                 ),
                 (
+                    "W006-plan",
+                    r#"? diagnostic("W006", severity, "plan-code-spec.md", file, line, evidence)."#,
+                ),
+                (
                     "missing_frontmatter_file",
                     r"? missing_frontmatter_file(h, dir, file).",
                 ),
@@ -1736,6 +1740,11 @@ mod tests {
                 )
             ]
         ));
+        assert_eq!(
+            output(&outputs, "W006-plan").rows.len(),
+            0,
+            "default code_authoritative should suppress aspirational plan specs"
+        );
         assert!(has_row(
             output(&outputs, "S001"),
             &[
@@ -2180,6 +2189,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "co2.md", "file", Some("draft"), "", ""),
             handle(&scope, "co3.md", "file", Some("draft"), "", ""),
             handle(&scope, "code-spec.md", "file", Some("draft"), "", ""),
+            handle(&scope, "plan-code-spec.md", "file", Some("plan"), "", ""),
             handle(&scope, "src/old.rs", "external", None, "", ""),
         ];
         batch.edges = vec![
@@ -2197,6 +2207,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             edge(&scope, "co3.md", "AA-1", "Cites", 1),
             edge(&scope, "co3.md", "BB-1", "Cites", 2),
             edge(&scope, "code-spec.md", "src/old.rs", "Cites", 7),
+            edge(&scope, "plan-code-spec.md", "src/old.rs", "Cites", 7),
         ];
         batch.meta = vec![
             meta(
@@ -2225,6 +2236,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                     config(&corpus, "convergence.active", "draft", None),
                     config(&corpus, "convergence.active", "stable", None),
                     config(&corpus, "convergence.active", "review", None),
+                    config(&corpus, "convergence.active", "plan", None),
                     config(&corpus, "convergence.terminal", "archived", None),
                     config(&corpus, "convergence.ordering", "draft", Some(0)),
                     config(&corpus, "convergence.ordering", "stable", Some(1)),
