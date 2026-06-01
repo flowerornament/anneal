@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use anneal_core::{
-    CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode,
-    FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision, SourceName,
-    SpanFact,
+    CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch,
+    FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision,
+    SourceName, SpanFact,
 };
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -703,33 +703,33 @@ fn emit_code_ref_meta(
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "external_class".to_string(),
-            value: "code".to_string(),
+            key: CodeTargetMeta::EXTERNAL_CLASS.to_string(),
+            value: CodeTargetMeta::CLASS_CODE.to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "target_path".to_string(),
+            key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
         });
         let probe = probe_cache.probe(root, &reference.path);
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "target_exists".to_string(),
+            key: CodeTargetMeta::TARGET_EXISTS.to_string(),
             value: probe.exists.as_str().to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "target_history_status".to_string(),
+            key: CodeTargetMeta::TARGET_HISTORY_STATUS.to_string(),
             value: probe.history_status.as_str().to_string(),
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
                 handle: reference.target.clone(),
-                key: "target_probe_base".to_string(),
+                key: CodeTargetMeta::TARGET_PROBE_BASE.to_string(),
                 value: base.to_string(),
             });
         }
@@ -737,7 +737,7 @@ fn emit_code_ref_meta(
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
                 handle: reference.target.clone(),
-                key: "target_resolved_path".to_string(),
+                key: CodeTargetMeta::TARGET_RESOLVED_PATH.to_string(),
                 value: path.to_string(),
             });
         }
@@ -745,7 +745,7 @@ fn emit_code_ref_meta(
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
                 handle: reference.target.clone(),
-                key: "target_start_line".to_string(),
+                key: CodeTargetMeta::TARGET_START_LINE.to_string(),
                 value: start_line.to_string(),
             });
         }
@@ -753,7 +753,7 @@ fn emit_code_ref_meta(
             batch.meta.push(MetaFact {
                 identity,
                 handle: reference.target.clone(),
-                key: "target_end_line".to_string(),
+                key: CodeTargetMeta::TARGET_END_LINE.to_string(),
                 value: end_line.to_string(),
             });
         }
@@ -1212,7 +1212,7 @@ fn snippets_from_facts(batch: &FactBatch) -> (HashMap<String, String>, HashMap<S
 
 #[cfg(test)]
 mod tests {
-    use anneal_core::{CorpusId, Generation, SourceName};
+    use anneal_core::{CodeTargetMeta, CorpusId, Generation, SourceName};
     use camino::Utf8Path;
     use tempfile::tempdir;
 
@@ -1268,12 +1268,12 @@ mod tests {
             batch.edges
         );
         for (key, value) in [
-            ("external_class", "code"),
-            ("target_path", "lib/example/admission.rs"),
-            ("target_exists", "true"),
-            ("target_history_status", "unavailable"),
-            ("target_start_line", "142"),
-            ("target_end_line", "167"),
+            (CodeTargetMeta::EXTERNAL_CLASS, CodeTargetMeta::CLASS_CODE),
+            (CodeTargetMeta::TARGET_PATH, "lib/example/admission.rs"),
+            (CodeTargetMeta::TARGET_EXISTS, "true"),
+            (CodeTargetMeta::TARGET_HISTORY_STATUS, "unavailable"),
+            (CodeTargetMeta::TARGET_START_LINE, "142"),
+            (CodeTargetMeta::TARGET_END_LINE, "167"),
         ] {
             assert!(
                 batch
@@ -1285,12 +1285,14 @@ mod tests {
             );
         }
         assert!(batch.meta.iter().any(|meta| {
-            meta.handle == target && meta.key == "target_probe_base" && meta.value == root.as_str()
+            meta.handle == target
+                && meta.key == CodeTargetMeta::TARGET_PROBE_BASE
+                && meta.value == root.as_str()
         }));
         let resolved_path = root.join("lib/example/admission.rs");
         assert!(batch.meta.iter().any(|meta| {
             meta.handle == target
-                && meta.key == "target_resolved_path"
+                && meta.key == CodeTargetMeta::TARGET_RESOLVED_PATH
                 && meta.value == resolved_path.as_str()
         }));
     }

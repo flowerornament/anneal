@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
-use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
+
+use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetExistence {
@@ -103,7 +105,9 @@ fn probe_code_target_with_cache(
     target_path: &str,
     cache: &mut CodeTargetProbeCache,
 ) -> CodeTargetProbe {
-    let Some(normalized) = normalize_relative_target(target_path) else {
+    let Some(normalized) =
+        normalize_relative_path(target_path, RelativePathPolicy::STRICT_NON_EMPTY)
+    else {
         return CodeTargetProbe::unknown();
     };
 
@@ -165,24 +169,6 @@ fn missing_target_probe(
             resolved_path: None,
         },
     }
-}
-
-fn normalize_relative_target(target_path: &str) -> Option<Utf8PathBuf> {
-    let path = Utf8Path::new(target_path);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut normalized = Utf8PathBuf::new();
-    for component in path.components() {
-        match component {
-            Utf8Component::Normal(part) => normalized.push(part),
-            Utf8Component::CurDir => {}
-            Utf8Component::ParentDir | Utf8Component::RootDir | Utf8Component::Prefix(_) => {
-                return None;
-            }
-        }
-    }
-    (!normalized.as_str().is_empty()).then_some(normalized)
 }
 
 fn existing_target(base: &Utf8Path, target: &Utf8Path) -> Option<Utf8PathBuf> {

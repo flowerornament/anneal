@@ -13,10 +13,10 @@ use anneal_core::runtime::{
     parse_program, stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
-    ActorContext, CancellationToken, ConfigEntry, ConfigFact, ConfigFacts, CorpusId, EdgeFact,
-    FactStore, Generation, InferredCorpusRoot, ProjectExtension, SnapshotAppendOutcome,
-    SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbArg, VerbArgKind,
-    VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry,
+    ActorContext, CancellationToken, CodeTargetMeta, ConfigEntry, ConfigFact, ConfigFacts,
+    CorpusId, EdgeFact, FactStore, Generation, InferredCorpusRoot, ProjectExtension,
+    SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo,
+    VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry,
     append_snapshot_entry_capped, infer_corpus_root, load_project_extension, merge_program_layers,
     read_snapshot_history, render_verb_arg_facts,
 };
@@ -3227,6 +3227,9 @@ fn merge_discovery(discovery: &mut Vec<ConfigEntry>, extension: &ConfigFacts) {
 
 fn handle_query(handle: &str) -> String {
     let handle = datalog_string_literal(handle);
+    let external_class = CodeTargetMeta::EXTERNAL_CLASS;
+    let class_code = CodeTargetMeta::CLASS_CODE;
+    let target_path = CodeTargetMeta::TARGET_PATH;
     format!(
         r#"
 handle_focus({handle}).
@@ -3240,14 +3243,14 @@ handle_row({handle}, "out", other, kind, null, file, line, "") :=
 
 handle_row({handle}, "code_ref", other, "Cites", null, file, line, target_path) :=
   *edge{{from: {handle}, to: other, kind: "Cites", file: file, line: line}},
-  *meta{{handle: other, key: "external_class", value: "code"}},
-  *meta{{handle: other, key: "target_path", value: target_path}}.
+  *meta{{handle: other, key: "{external_class}", value: "{class_code}"}},
+  *meta{{handle: other, key: "{target_path}", value: target_path}}.
 
 handle_row({handle}, "in", other, kind, null, file, line, "") :=
   *edge{{to: {handle}, from: other, kind: kind, file: file, line: line}}.
 
 code_reference(h) :=
-  *meta{{handle: h, key: "external_class", value: "code"}}.
+  *meta{{handle: h, key: "{external_class}", value: "{class_code}"}}.
 
 ? handle_row(h, relation, other, kind, status, file, line, summary).
 "#

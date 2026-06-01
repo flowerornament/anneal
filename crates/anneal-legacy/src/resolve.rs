@@ -339,43 +339,7 @@ pub(crate) fn resolve_file_path(
     // Join relative to root, then relative to parent
     let absolute = root.join(parent).join(reference);
 
-    // Normalize the path (resolve .. components)
-    let normalized = normalize_path(&absolute);
-
-    // Make relative to root
-    normalized
-        .strip_prefix(root)
-        .ok()
-        .map(Utf8Path::to_path_buf)
-}
-
-/// Normalize a UTF-8 path by resolving `.` and `..` components without
-/// requiring the path to exist on disk.
-fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
-    let mut components = Vec::new();
-    for component in path.components() {
-        match component.as_str() {
-            "." => {}
-            ".." => {
-                components.pop();
-            }
-            c => components.push(c),
-        }
-    }
-    if components.is_empty() {
-        Utf8PathBuf::from(".")
-    } else {
-        let mut result = Utf8PathBuf::new();
-        for (i, c) in components.iter().enumerate() {
-            if i == 0 && c.is_empty() {
-                // Preserve leading slash for absolute paths
-                result.push("/");
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
+    anneal_core::normalize_path_inside_root(root, &absolute)
 }
 
 // ---------------------------------------------------------------------------

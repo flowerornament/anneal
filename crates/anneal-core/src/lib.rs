@@ -11,6 +11,8 @@ pub mod facts;
 pub mod hash;
 pub mod history;
 pub mod ids;
+pub mod metadata;
+pub mod path_policy;
 pub mod policy;
 pub mod project;
 pub mod ranking;
@@ -44,6 +46,8 @@ pub use history::{
     repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+pub use metadata::CodeTargetMeta;
+pub use path_policy::{RelativePathPolicy, normalize_path_inside_root, normalize_relative_path};
 pub use policy::{
     Action, ActionKind, AllowAllPolicy, AuthorizationError, Policy, PolicyDecision,
     authorize_action, authorize_capability_action, authorize_trail_private,

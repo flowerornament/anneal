@@ -1,10 +1,11 @@
 //! Markdown adapter for anneal v2.
 
 use anneal_core::{
-    ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern, Source, SourceCapabilities,
-    SourceContext, SourceError, SourceInfo, SourceName, default_lexical_search_info,
+    ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern, RelativePathPolicy, Source,
+    SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName,
+    default_lexical_search_info, normalize_relative_path,
 };
-use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 
 const SOURCE_NAME: &str = "markdown";
 
@@ -157,20 +158,11 @@ fn reject_unsupported(facts: &ConfigFacts, key: &str) -> Result<(), SourceError>
 }
 
 fn valid_relative_path(value: &str) -> Result<Utf8PathBuf, SourceError> {
-    let path = Utf8Path::new(value);
-    if path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Utf8Component::ParentDir | Utf8Component::Prefix(_)
-            )
-        })
-    {
-        return Err(SourceError::Other(format!(
+    normalize_relative_path(value, RelativePathPolicy::ALLOW_EMPTY).ok_or_else(|| {
+        SourceError::Other(format!(
             "md.scan_root must be a relative path inside the corpus root; got {value:?}"
-        )));
-    }
-    Ok(path.to_path_buf())
+        ))
+    })
 }
 
 #[cfg(test)]
