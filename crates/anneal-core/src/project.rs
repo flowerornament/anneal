@@ -4,8 +4,8 @@ use std::path::Path;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::config_schema::{
-    RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle, parse_search_boost_value,
-    runtime_config_declaration_for,
+    RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle,
+    parse_potential_weight_value, parse_search_boost_value, runtime_config_declaration_for,
 };
 use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
@@ -24,8 +24,6 @@ use crate::verbs::{
 };
 
 pub const PROJECT_RULE_FILE: &str = "anneal.dl";
-const POTENTIAL_WEIGHT_SECTION: &str = "potential_weight";
-const POTENTIAL_WEIGHT_OVERRIDE_KEY: &str = "potential_weight.override";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InferredCorpusRoot {
@@ -377,10 +375,6 @@ fn config_entries(schema: &ConfigKey, head: &Head) -> Result<Vec<ConfigEntry>, P
 fn config_block_entries(
     block: &crate::runtime::ast::ConfigBlock,
 ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
-    if block.section.as_str() == POTENTIAL_WEIGHT_SECTION {
-        return potential_weight_entries(block);
-    }
-
     let mut entries = Vec::new();
     for declaration in &block.declarations {
         let section = block.section.as_str();
@@ -399,47 +393,30 @@ fn config_block_entries(
         }
         let values = declaration_values(declaration)?;
         schema.validate_values(&values)?;
-        validate_runtime_config_values(schema.key(), &values, &declaration.location)?;
-        entries.extend(schema.entries(values)?);
-    }
-    Ok(entries)
-}
-
-fn potential_weight_entries(
-    block: &crate::runtime::ast::ConfigBlock,
-) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
-    let mut entries = Vec::new();
-    for declaration in &block.declarations {
-        let values = declaration_values(declaration)?;
-        let [weight]: [String; 1] = values.try_into().map_err(|values: Vec<String>| {
-            ProjectLoadError::InvalidConfigArity {
-                key: format!("{POTENTIAL_WEIGHT_SECTION}.{}", declaration.name),
-                expected: "exactly one non-negative integer weight",
-                actual: values.len(),
-            }
-        })?;
-        let ordinal =
-            weight
-                .parse::<u32>()
-                .map_err(|_| ProjectLoadError::InvalidPotentialWeight {
-                    signal: declaration.name.to_string(),
-                    weight,
-                    location: declaration.location.clone(),
-                })?;
-        entries.push(ConfigEntry::ordered(
-            POTENTIAL_WEIGHT_OVERRIDE_KEY,
-            declaration.name.to_string(),
-            ordinal,
-        ));
+        validate_runtime_config_values(schema.key(), name, &values, &declaration.location)?;
+        entries.extend(schema.entries_for_name(name, values)?);
     }
     Ok(entries)
 }
 
 fn validate_runtime_config_values(
     key: RuntimeConfigKey,
+    name: &str,
     values: &[String],
     location: &SourceLocation,
 ) -> Result<(), ProjectLoadError> {
+    if key == RuntimeConfigKey::PotentialWeightOverride {
+        let weight = values.first().cloned().unwrap_or_default();
+        if parse_potential_weight_value(&weight).is_some() {
+            return Ok(());
+        }
+        return Err(ProjectLoadError::InvalidPotentialWeight {
+            signal: name.to_string(),
+            weight,
+            location: location.clone(),
+        });
+    }
+
     let boost = match key {
         RuntimeConfigKey::SearchBoostStatus => values.get(1),
         RuntimeConfigKey::SearchBoostHub => values.first(),
