@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use anneal_core::{
     CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch,
@@ -347,11 +347,78 @@ fn native_id_for_edge(
     )
 }
 
+#[derive(Clone)]
 struct OrderedEdge {
     source: NodeId,
     target: NodeId,
     kind: EdgeKind,
     line: u32,
+}
+
+struct OrderedEdges {
+    edges: Vec<OrderedEdge>,
+    consumed: Vec<bool>,
+    by_key: HashMap<(NodeId, NodeId, String), VecDeque<usize>>,
+}
+
+impl OrderedEdges {
+    fn new(edges: Vec<OrderedEdge>) -> Self {
+        let consumed = vec![false; edges.len()];
+        let mut by_key = HashMap::<(NodeId, NodeId, String), VecDeque<usize>>::new();
+        for (index, edge) in edges.iter().enumerate() {
+            by_key
+                .entry((edge.source, edge.target, edge.kind.as_str().to_string()))
+                .or_default()
+                .push_back(index);
+        }
+        Self {
+            edges,
+            consumed,
+            by_key,
+        }
+    }
+
+    fn take_edge(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        kind: &EdgeKind,
+        line: u32,
+    ) -> Option<OrderedEdge> {
+        let key = (source, target, kind.as_str().to_string());
+        let indexes = self.by_key.get_mut(&key)?;
+        let index = loop {
+            let candidate = indexes.pop_front()?;
+            if !self.consumed[candidate] {
+                break candidate;
+            }
+        };
+        self.consumed[index] = true;
+        let mut edge = self.edges[index].clone();
+        edge.line = line;
+        Some(edge)
+    }
+
+    fn take_parse_time_external_edges(&mut self, graph: &DiGraph, ordered: &mut Vec<OrderedEdge>) {
+        for (index, edge) in self.edges.iter().enumerate() {
+            if self.consumed[index] {
+                continue;
+            }
+            let target = graph.node(edge.target);
+            if matches!(target.kind, HandleKind::External { .. }) {
+                self.consumed[index] = true;
+                ordered.push(edge.clone());
+            }
+        }
+    }
+
+    fn append_remaining(self, ordered: &mut Vec<OrderedEdge>) {
+        for (edge, consumed) in self.edges.into_iter().zip(self.consumed) {
+            if !consumed {
+                ordered.push(edge);
+            }
+        }
+    }
 }
 
 struct EdgeOrderContext<'a> {
@@ -368,7 +435,7 @@ fn emit_ordered_edges(
     revisions: &mut RevisionCache<'_>,
     context: &EdgeOrderContext<'_>,
 ) {
-    let mut remaining = graph_edges(&context.result.graph);
+    let mut remaining = OrderedEdges::new(graph_edges(&context.result.graph));
     let mut ordered = Vec::new();
 
     take_label_edges(
@@ -394,7 +461,7 @@ fn emit_ordered_edges(
         &mut ordered,
     );
     take_parse_time_external_edges(&context.result.graph, &mut remaining, &mut ordered);
-    ordered.extend(remaining);
+    remaining.append_remaining(&mut ordered);
 
     for (ordinal, edge) in ordered.into_iter().enumerate() {
         let source_handle = context.result.graph.node(edge.source);
@@ -447,25 +514,17 @@ fn graph_edges(graph: &DiGraph) -> Vec<OrderedEdge> {
 
 fn take_parse_time_external_edges(
     graph: &DiGraph,
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
-    let mut index = 0;
-    while index < remaining.len() {
-        let target = graph.node(remaining[index].target);
-        if matches!(target.kind, HandleKind::External { .. }) {
-            ordered.push(remaining.remove(index));
-        } else {
-            index += 1;
-        }
-    }
+    remaining.take_parse_time_external_edges(graph, ordered);
 }
 
 fn take_label_edges(
     config: &config::AnnealConfig,
     result: &parse::BuildResult,
     node_index: &HashMap<String, NodeId>,
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
     let namespaces = crate::resolve::infer_namespaces(&result.label_candidates, config);
@@ -497,7 +556,7 @@ fn take_label_edges(
 
 fn take_version_edges(
     graph: &DiGraph,
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
     for (source, handle) in graph.nodes() {
@@ -516,7 +575,7 @@ fn take_pending_edges(
     root: &Utf8Path,
     result: &parse::BuildResult,
     pre_cascade_index: &HashMap<String, NodeId>,
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
     for edge in &result.pending_edges {
@@ -543,7 +602,7 @@ fn take_cascade_edges(
     result: &parse::BuildResult,
     node_index: &HashMap<String, NodeId>,
     cascade_results: &[crate::resolve::CascadeResult],
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
     for cascade in cascade_results {
@@ -574,21 +633,16 @@ fn take_cascade_edges(
 }
 
 fn take_edge(
-    remaining: &mut Vec<OrderedEdge>,
+    remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
     source: NodeId,
     target: NodeId,
     kind: &EdgeKind,
     line: u32,
 ) -> bool {
-    let Some(index) = remaining
-        .iter()
-        .position(|edge| edge.source == source && edge.target == target && edge.kind == *kind)
-    else {
+    let Some(edge) = remaining.take_edge(source, target, kind, line) else {
         return false;
     };
-    let mut edge = remaining.remove(index);
-    edge.line = line;
     ordered.push(edge);
     true
 }
