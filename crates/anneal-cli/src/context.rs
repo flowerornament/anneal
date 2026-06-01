@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use anneal_core::ranking::{FIELD_BODY, FIELD_HEADING, FIELD_IDENTIFIER, FIELD_TITLE};
+use anneal_core::ranking::context_sort_score;
 use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::prelude::{ContextQueryArgs, render_context_query};
 use anneal_core::runtime::{Row, Value};
@@ -14,7 +14,6 @@ pub const DEFAULT_CONTEXT_NEIGHBORHOOD_DEPTH: i64 = 1;
 const CONTEXT_CANDIDATE_MULTIPLIER: usize = 8;
 const MIN_CONTEXT_CANDIDATES: usize = 20;
 const MAX_CONTEXT_CANDIDATES: usize = 200;
-const FIELD_FRONTMATTER_PREFIX: &str = "frontmatter:";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextCommand {
@@ -408,24 +407,7 @@ fn context_hit_sort_score(row: &Row) -> Result<f64, ContextGroupError> {
     let score = number_field(row, "score")?;
     let field = string_field(row, "field")?;
     let reason = string_field(row, "reason")?;
-    Ok(score + context_reason_bonus(reason.as_str()) + context_rank_bonus(field.as_str()))
-}
-
-fn context_reason_bonus(reason: &str) -> f64 {
-    match reason {
-        anneal_core::REASON_PARENT_CLUSTER => 0.250,
-        _ => 0.0,
-    }
-}
-
-fn context_rank_bonus(field: &str) -> f64 {
-    match field {
-        FIELD_HEADING => 0.040,
-        FIELD_BODY => 0.015,
-        FIELD_TITLE | FIELD_IDENTIFIER => 0.005,
-        field if field.starts_with(FIELD_FRONTMATTER_PREFIX) => 0.002,
-        _ => 0.0,
-    }
+    Ok(context_sort_score(score, reason.as_str(), field.as_str()))
 }
 
 #[cfg(test)]
