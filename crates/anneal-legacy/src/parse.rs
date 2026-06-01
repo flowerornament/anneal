@@ -250,6 +250,40 @@ fn yaml_value_to_string_vec(v: &serde_yaml_ng::Value) -> Vec<String> {
     }
 }
 
+fn yaml_scalar_values(value: &serde_yaml_ng::Value) -> Vec<String> {
+    match value {
+        serde_yaml_ng::Value::String(value) => vec![strip_trailing_parenthetical(value)],
+        serde_yaml_ng::Value::Number(value) => vec![value.to_string()],
+        serde_yaml_ng::Value::Bool(value) => vec![value.to_string()],
+        serde_yaml_ng::Value::Sequence(values) => {
+            values.iter().flat_map(yaml_scalar_values).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn frontmatter_scalars(yaml: Option<&str>) -> Vec<(String, String)> {
+    let Some(yaml) = yaml else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
+        return Vec::new();
+    };
+    let Some(mapping) = value.as_mapping() else {
+        return Vec::new();
+    };
+    let mut scalars = Vec::new();
+    for (key, value) in mapping {
+        let Some(key) = key.as_str() else {
+            continue;
+        };
+        for scalar in yaml_scalar_values(value) {
+            scalars.push((key.to_string(), scalar));
+        }
+    }
+    scalars
+}
+
 // ---------------------------------------------------------------------------
 // Scan result types
 // ---------------------------------------------------------------------------
@@ -1261,6 +1295,8 @@ pub(crate) struct BuildResult {
     pub(crate) external_refs: Vec<ExternalRef>,
     /// Per-file typed extraction output (populated alongside existing PendingEdge flow).
     pub(crate) extractions: Vec<FileExtraction>,
+    /// Per-file markdown payload read during graph construction.
+    pub(crate) file_payloads: HashMap<String, ParsedMarkdownFile>,
     /// Precomputed snippets for file handles, keyed by relative file path.
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
@@ -1275,6 +1311,15 @@ pub(crate) struct BuildResult {
     /// Count of directory entries skipped because their filename was not valid UTF-8 (§7.3).
     #[allow(dead_code)] // Consumed by status/check reporting once surfaced
     pub(crate) skipped_non_utf8: usize,
+}
+
+/// Parsed markdown file content retained for fact emission.
+#[derive(Clone, Debug)]
+pub(crate) struct ParsedMarkdownFile {
+    pub(crate) body: String,
+    pub(crate) body_start_line: u32,
+    pub(crate) frontmatter_scalars: Vec<(String, String)>,
+    pub(crate) revision: String,
 }
 
 /// Split `exclude` entries into plain directory names and glob patterns.
@@ -1346,6 +1391,7 @@ pub(crate) fn build_graph_scoped(
     let mut external_refs: Vec<ExternalRef> = Vec::new();
     let mut external_nodes: HashMap<String, NodeId> = HashMap::new();
     let mut extractions: Vec<FileExtraction> = Vec::new();
+    let mut file_payloads: HashMap<String, ParsedMarkdownFile> = HashMap::new();
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
     let mut heading_spans: HashMap<String, Vec<HeadingSpan>> = HashMap::new();
@@ -1432,6 +1478,13 @@ pub(crate) fn build_graph_scoped(
             // +1 for the opening --- line only (closing --- handled by LineIndex)
             yaml.lines().count() as u32 + 1
         });
+        let body_start_line = if frontmatter_line_count == 0 {
+            1
+        } else {
+            frontmatter_line_count.saturating_add(2)
+        };
+        let frontmatter_scalars = frontmatter_scalars(frontmatter_yaml);
+        let revision = format!("{:016x}", anneal_core::fnv1a_64(content.as_bytes()));
 
         // D-05: table-driven frontmatter parsing with extensible field mapping
         // D-07: all_keys returned here to avoid double-parsing YAML
@@ -1608,6 +1661,15 @@ pub(crate) fn build_graph_scoped(
             refs: discovered_refs,
             all_keys: all_keys.clone(),
         });
+        file_payloads.insert(
+            relative.to_string(),
+            ParsedMarkdownFile {
+                body: body.to_string(),
+                body_start_line,
+                frontmatter_scalars,
+                revision,
+            },
+        );
 
         for (file_ref, line) in &scan_result.file_refs {
             pending_edges.push(PendingEdge {
@@ -1649,6 +1711,7 @@ pub(crate) fn build_graph_scoped(
         implausible_refs,
         external_refs,
         extractions,
+        file_payloads,
         file_snippets,
         label_snippets,
         heading_spans,

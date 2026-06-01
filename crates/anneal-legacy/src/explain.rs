@@ -1307,6 +1307,7 @@ mod tests {
             implausible_refs: Vec::new(),
             external_refs: Vec::new(),
             extractions: Vec::new(),
+            file_payloads: HashMap::new(),
             file_snippets: HashMap::new(),
             label_snippets: HashMap::new(),
             heading_spans: HashMap::new(),

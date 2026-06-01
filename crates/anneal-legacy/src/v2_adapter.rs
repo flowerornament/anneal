@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anneal_core::{
     CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode,
     FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision, SourceName,
-    SpanFact, fnv1a_64,
+    SpanFact,
 };
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -101,7 +101,7 @@ fn extract_markdown_facts_with_config(
     let node_index = crate::resolve::build_node_index(&result.graph);
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
-    let mut revisions = RevisionCache::new(root);
+    let mut revisions = RevisionCache::new(root, &result);
 
     for (node_id, handle) in result.graph.nodes() {
         let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
@@ -121,11 +121,11 @@ fn extract_markdown_facts_with_config(
 
     for extraction in &result.extractions {
         emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
-        emit_frontmatter_meta(&mut batch, &mut revisions, root, &extraction.file);
+        emit_frontmatter_meta(&mut batch, &mut revisions, &result, &extraction.file);
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
     emit_code_ref_meta(&mut batch, &mut revisions, root, &result);
-    emit_content_spans(&mut batch, &mut revisions, root, &result);
+    emit_content_spans(&mut batch, &mut revisions, &result);
     emit_concerns(&mut batch, &mut revisions, config, &result);
 
     Ok(batch)
@@ -215,24 +215,34 @@ pub fn get_refs_json_from_facts(root: &Utf8Path, batch: &FactBatch, handle: &str
 
 struct RevisionCache<'a> {
     root: &'a Utf8Path,
+    parsed_revisions: HashMap<String, Revision>,
     revisions: HashMap<String, Revision>,
 }
 
 impl<'a> RevisionCache<'a> {
-    fn new(root: &'a Utf8Path) -> Self {
+    fn new(root: &'a Utf8Path, result: &parse::BuildResult) -> Self {
+        let parsed_revisions = result
+            .file_payloads
+            .iter()
+            .map(|(file, payload)| (file.clone(), Revision::from(payload.revision.clone())))
+            .collect();
         Self {
             root,
+            parsed_revisions,
             revisions: HashMap::new(),
         }
     }
 
     fn revision_for(&mut self, file: &str) -> Revision {
+        if let Some(revision) = self.parsed_revisions.get(file) {
+            return revision.clone();
+        }
         self.revisions
             .entry(file.to_string())
             .or_insert_with(|| {
                 let path = self.root.join(file);
                 let bytes = std::fs::read(path).unwrap_or_default();
-                Revision::from(format!("{:016x}", fnv1a_64(&bytes)))
+                Revision::from(format!("{:016x}", anneal_core::fnv1a_64(&bytes)))
             })
             .clone()
     }
@@ -637,32 +647,20 @@ fn emit_file_parent_meta(batch: &mut FactBatch, revisions: &mut RevisionCache<'_
 fn emit_frontmatter_meta(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
-    root: &Utf8Path,
+    result: &parse::BuildResult,
     file: &str,
 ) {
-    let content = std::fs::read_to_string(root.join(file)).unwrap_or_default();
-    let (Some(frontmatter), _) = parse::split_frontmatter(&content) else {
-        return;
-    };
-    let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(frontmatter) else {
-        return;
-    };
-    let Some(mapping) = value.as_mapping() else {
+    let Some(payload) = result.file_payloads.get(file) else {
         return;
     };
     let identity = identity_for(batch, revisions, file, file);
-    for (key, value) in mapping {
-        let Some(key) = key.as_str() else {
-            continue;
-        };
-        for scalar in scalar_values(value) {
-            batch.meta.push(MetaFact {
-                identity: identity.clone(),
-                handle: file.to_string(),
-                key: key.to_string(),
-                value: scalar,
-            });
-        }
+    for (key, value) in &payload.frontmatter_scalars {
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: file.to_string(),
+            key: key.clone(),
+            value: value.clone(),
+        });
     }
 }
 
@@ -765,21 +763,18 @@ fn emit_code_ref_meta(
 fn emit_content_spans(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
-    root: &Utf8Path,
     result: &parse::BuildResult,
 ) {
     for (node_id, handle) in result.graph.nodes() {
         match &handle.kind {
             HandleKind::File(path) => {
                 let path_str = path.as_str();
-                let content = std::fs::read_to_string(root.join(path_str)).unwrap_or_default();
-                let (frontmatter, body) = parse::split_frontmatter(&content);
+                let Some(payload) = result.file_payloads.get(path_str) else {
+                    continue;
+                };
+                let body = payload.body.as_str();
                 let body_lines = body.lines().collect::<Vec<_>>();
-                let start_line = frontmatter.map_or(1, |yaml| {
-                    u32::try_from(yaml.lines().count())
-                        .unwrap_or(u32::MAX)
-                        .saturating_add(3)
-                });
+                let start_line = payload.body_start_line;
                 let line_count = u32::try_from(body_lines.len()).unwrap_or(u32::MAX);
                 let span_id = format!("{path_str}#full");
                 let identity = identity_for(batch, revisions, path_str, path_str);
@@ -952,26 +947,6 @@ fn area_for(file: &str) -> String {
 
 fn token_count(text: &str) -> u32 {
     u32::try_from(text.split_whitespace().count()).unwrap_or(u32::MAX)
-}
-
-fn scalar_values(value: &serde_yaml_ng::Value) -> Vec<String> {
-    match value {
-        serde_yaml_ng::Value::String(value) => vec![strip_trailing_parenthetical(value)],
-        serde_yaml_ng::Value::Number(value) => vec![value.to_string()],
-        serde_yaml_ng::Value::Bool(value) => vec![value.to_string()],
-        serde_yaml_ng::Value::Sequence(values) => values.iter().flat_map(scalar_values).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn strip_trailing_parenthetical(value: &str) -> String {
-    let trimmed = value.trim();
-    if let Some(idx) = trimmed.rfind(" (")
-        && trimmed.ends_with(')')
-    {
-        return trimmed[..idx].to_string();
-    }
-    trimmed.to_string()
 }
 
 struct LoadedFacts {
