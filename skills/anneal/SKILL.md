@@ -160,7 +160,8 @@ writing config.
 ## Mental Model
 
 - `handle`: file, label, version, or external reference; headings are `*span`
-  rows, and in-repo code refs are external handles with `external_class="code"`
+  rows, and in-repo code refs are external handles with `external_class="code"`,
+  `target_exists`, and `target_history_status`
 - `asserts_code`: lifecycle statuses whose specs claim facts about this
   corpus's current code; W006 uses it to avoid warning on plans or research notes
 - `source`: adapter such as markdown, code, host runtime, or issue tracker

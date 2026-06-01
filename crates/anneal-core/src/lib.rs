@@ -67,7 +67,9 @@ pub use source::{
     SourceContext, SourceError, SourceInfo, TimeRef,
 };
 pub use store::{FactStore, GenerationFact, StoreError};
-pub use target_probe::{CodeTargetProbe, CodeTargetProbeCache, TargetExistence, probe_code_target};
+pub use target_probe::{
+    CodeTargetProbe, CodeTargetProbeCache, TargetExistence, TargetHistoryStatus, probe_code_target,
+};
 pub use trail::{
     DEFAULT_TRAIL_QUERY_LIMIT, DefaultTrailRecorder, DefaultTrailRedactor, DefaultTrailSummarizer,
     JsonlTrailStore, TrailContext, TrailEntryInProgress, TrailEntryRedacted, TrailError,

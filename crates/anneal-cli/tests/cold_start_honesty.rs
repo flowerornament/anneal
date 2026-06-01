@@ -531,7 +531,7 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         "--root",
         design.to_str().expect("utf8 design root"),
         "-e",
-        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}, *meta{handle: h, key: "target_in_history", value: in_history}."#,
+        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}, *meta{handle: h, key: "target_history_status", value: history}."#,
         "--format=json",
     ]);
     let meta_rows = json_rows(&meta);
@@ -540,7 +540,7 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         meta_rows.iter().any(|row| {
             row["h"] == "lib/live.rs"
                 && row["exists"] == "true"
-                && row["in_history"] == "false"
+                && row["history"] == "present"
                 && row["base"] == repo
         }),
         "{meta_rows:#?}"
@@ -549,7 +549,7 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         meta_rows.iter().any(|row| {
             row["h"] == "lib/missing.rs"
                 && row["exists"] == "false"
-                && row["in_history"] == "true"
+                && row["history"] == "present"
                 && row["base"] == repo
         }),
         "{meta_rows:#?}"
@@ -558,7 +558,7 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         meta_rows.iter().any(|row| {
             row["h"] == "lib/never.rs"
                 && row["exists"] == "unknown"
-                && row["in_history"] == "false"
+                && row["history"] == "absent"
                 && row["base"] == repo
         }),
         "{meta_rows:#?}"

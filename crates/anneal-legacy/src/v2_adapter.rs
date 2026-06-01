@@ -722,8 +722,8 @@ fn emit_code_ref_meta(
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
-            key: "target_in_history".to_string(),
-            value: probe.in_history.to_string(),
+            key: "target_history_status".to_string(),
+            value: probe.history_status.as_str().to_string(),
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
@@ -1271,7 +1271,7 @@ mod tests {
             ("external_class", "code"),
             ("target_path", "lib/example/admission.rs"),
             ("target_exists", "true"),
-            ("target_in_history", "false"),
+            ("target_history_status", "unavailable"),
             ("target_start_line", "142"),
             ("target_end_line", "167"),
         ] {

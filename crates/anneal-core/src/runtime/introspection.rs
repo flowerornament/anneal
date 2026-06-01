@@ -416,7 +416,7 @@ impl IntrospectionBuilder {
                 signature: Some(r#"*meta{handle: h, key: "external_class", value: class}"#),
                 extra_lines: vec![
                     "Known values (standard, adapter-neutral):".to_string(),
-                    r#"- "code": target_path, target_start_line, target_end_line, target_exists, and target_in_history describe source-code locations."#.to_string(),
+                    r#"- "code": target_path, target_start_line, target_end_line, target_exists, and target_history_status describe source-code locations."#.to_string(),
                     r#"- Future "url": target_url."#.to_string(),
                     r#"- Future "issue": target_repo and target_number."#.to_string(),
                     "A new external_class value is an anneal standard-key decision.".to_string(),
@@ -460,9 +460,9 @@ impl IntrospectionBuilder {
                 r#"For external_class="code", this is true when present on disk, false when absent but present in HEAD history, and unknown when history cannot prove drift."#,
             ),
             (
-                "target_in_history",
-                r"Standard metadata key for whether an absent code target appeared in HEAD history.",
-                r#"For external_class="code", true means target_exists=false is evidence-backed drift; false with target_exists=unknown means anneal could not prove the path ever belonged to this repo."#,
+                "target_history_status",
+                r"Standard metadata key for whether a code target appears in HEAD history.",
+                r#"For external_class="code", values are present, absent, or unavailable. target_exists=false is evidence-backed drift only when history status is present."#,
             ),
             (
                 "target_probe_base",
@@ -1197,7 +1197,7 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
     match name {
         "meta" => vec![
             "Open metadata extension on handles. Three kinds of keys:".to_string(),
-            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_in_history, target_probe_base, target_resolved_path.".to_string(),
+            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_history_status, target_probe_base, target_resolved_path.".to_string(),
             "SOURCE (produced by a specific source adapter, prefix tells you which): md.resolved_file, md.parent_dir.".to_string(),
             "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
             r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
@@ -1398,7 +1398,7 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
             "`diagnostic{code: \"W006\", subject: src}, spec_code_drift(src, target_path, file, line, source_status)` to inspect the missing code target",
             "`spec_code_drift(src, target_path, file, line, source_status), read{handle: src, budget: 1200, text: text}` to read the live spec context",
             "`spec_code_drift(src, target_path, file, line, source_status), asserts_code(source_status)` to inspect the lifecycle gate",
-            "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_probe_base\", value: base}` to audit path resolution",
+            "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_history_status\", value: \"present\"}` to audit history evidence",
         ],
         example: r#"? diagnostic{code: "W006", subject: src, evidence: evidence}."#,
         see_also: &[
@@ -1406,6 +1406,7 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
             "spec_code_drift",
             "asserts_code",
             "target_exists",
+            "target_history_status",
             "external_class",
         ],
     },

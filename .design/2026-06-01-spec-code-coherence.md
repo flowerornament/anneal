@@ -138,9 +138,10 @@ unmerged or unrelated branch must not fabricate history for the mainline corpus.
 
 This folds the illustrative-prose, external-study, and forward-plan classes into
 the same honest `unknown` bucket as unresolvable paths — all of them are "we
-cannot confidently call this drift." Record `target_in_history` (bool) alongside
-the existing probe metadata so the classification is auditable. A history hit is
-evidence of drift; a history miss is evidence of nothing. The
+cannot confidently call this drift." Record `target_history_status`
+(`present`, `absent`, `unavailable`) alongside the existing probe metadata so
+the classification is auditable. A history hit is evidence of drift; a history
+miss or unavailable history is evidence of nothing. The
 `asserts_code` status gate still applies on top; history-existence and
 status are independent filters and both must pass.
 

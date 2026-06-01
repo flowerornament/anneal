@@ -21,10 +21,28 @@ impl TargetExistence {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetHistoryStatus {
+    Present,
+    Absent,
+    Unavailable,
+}
+
+impl TargetHistoryStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeTargetProbe {
     pub exists: TargetExistence,
-    pub in_history: bool,
+    pub history_status: TargetHistoryStatus,
     pub probe_base: Option<Utf8PathBuf>,
     pub resolved_path: Option<Utf8PathBuf>,
 }
@@ -33,7 +51,7 @@ impl CodeTargetProbe {
     fn unknown() -> Self {
         Self {
             exists: TargetExistence::Unknown,
-            in_history: false,
+            history_status: TargetHistoryStatus::Unavailable,
             probe_base: None,
             resolved_path: None,
         }
@@ -55,7 +73,7 @@ impl CodeTargetProbeCache {
         probe_code_target_with_cache(corpus_root, target_path, self)
     }
 
-    fn target_in_history(&mut self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
+    fn history_contains_target(&mut self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
         let history = self
             .history_by_base
             .entry(base.to_path_buf())
@@ -63,6 +81,14 @@ impl CodeTargetProbeCache {
         history
             .as_ref()
             .map(|paths| paths.contains(target.as_str()))
+    }
+
+    fn target_history_status(&mut self, base: &Utf8Path, target: &Utf8Path) -> TargetHistoryStatus {
+        match self.history_contains_target(base, target) {
+            Some(true) => TargetHistoryStatus::Present,
+            Some(false) => TargetHistoryStatus::Absent,
+            None => TargetHistoryStatus::Unavailable,
+        }
     }
 }
 
@@ -85,7 +111,7 @@ fn probe_code_target_with_cache(
         if let Some(found) = existing_target(&project_root, &normalized) {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                in_history: false,
+                history_status: cache.target_history_status(&project_root, &normalized),
                 probe_base: Some(project_root),
                 resolved_path: Some(found),
             };
@@ -95,7 +121,7 @@ fn probe_code_target_with_cache(
         {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                in_history: false,
+                history_status: cache.target_history_status(corpus_root, &normalized),
                 probe_base: Some(corpus_root.to_path_buf()),
                 resolved_path: Some(found),
             };
@@ -106,7 +132,7 @@ fn probe_code_target_with_cache(
     if let Some(found) = existing_target(corpus_root, &normalized) {
         return CodeTargetProbe {
             exists: TargetExistence::True,
-            in_history: false,
+            history_status: cache.target_history_status(corpus_root, &normalized),
             probe_base: Some(corpus_root.to_path_buf()),
             resolved_path: Some(found),
         };
@@ -119,16 +145,22 @@ fn missing_target_probe(
     base: Utf8PathBuf,
     normalized: &Utf8Path,
 ) -> CodeTargetProbe {
-    match cache.target_in_history(&base, normalized) {
+    match cache.history_contains_target(&base, normalized) {
         Some(true) => CodeTargetProbe {
             exists: TargetExistence::False,
-            in_history: true,
+            history_status: TargetHistoryStatus::Present,
             probe_base: Some(base),
             resolved_path: None,
         },
-        Some(false) | None => CodeTargetProbe {
+        Some(false) => CodeTargetProbe {
             exists: TargetExistence::Unknown,
-            in_history: false,
+            history_status: TargetHistoryStatus::Absent,
+            probe_base: Some(base),
+            resolved_path: None,
+        },
+        None => CodeTargetProbe {
+            exists: TargetExistence::Unknown,
+            history_status: TargetHistoryStatus::Unavailable,
             probe_base: Some(base),
             resolved_path: None,
         },
@@ -250,7 +282,7 @@ mod tests {
         let probe = probe_code_target(&corpus, "lib/missing.rs");
 
         assert_eq!(probe.exists, TargetExistence::Unknown);
-        assert!(!probe.in_history);
+        assert_eq!(probe.history_status, TargetHistoryStatus::Unavailable);
         assert_eq!(probe.probe_base.as_deref(), Some(repo.as_path()));
         assert_eq!(probe.resolved_path, None);
     }
@@ -276,10 +308,10 @@ mod tests {
         let illustrative = cache.probe(&corpus, "lib/never.rs");
 
         assert_eq!(drift.exists, TargetExistence::False);
-        assert!(drift.in_history);
+        assert_eq!(drift.history_status, TargetHistoryStatus::Present);
         assert_eq!(drift.probe_base.as_deref(), Some(repo.as_path()));
         assert_eq!(illustrative.exists, TargetExistence::Unknown);
-        assert!(!illustrative.in_history);
+        assert_eq!(illustrative.history_status, TargetHistoryStatus::Absent);
         assert_eq!(illustrative.probe_base.as_deref(), Some(repo.as_path()));
     }
 

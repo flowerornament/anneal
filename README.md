@@ -537,8 +537,8 @@ Adapters emit stored relations. Rules and queries consume them.
   identity, revision, generation
 - `*edge`: typed handle relationship
 - `*meta`: frontmatter and extracted metadata, including `external_class`,
-  `target_path`, `target_start_line`, and `target_end_line` for code
-  external handles
+  `target_path`, `target_start_line`, `target_end_line`, `target_exists`, and
+  `target_history_status` for code external handles
 - `*content`: bounded text chunks
 - `*span`: addressable content spans
 - `*concern`: concern-group membership
