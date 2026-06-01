@@ -347,8 +347,8 @@ impl IntrospectionBuilder {
             string_value(r#"? *config{key: "code_path_root.root", value: root}."#),
         ]));
         self.examples.insert(Tuple(vec![
-            string_value("code_authoritative"),
-            string_value("? code_authoritative(status)."),
+            string_value("asserts_code"),
+            string_value("? asserts_code(status)."),
         ]));
         self.describe.insert(describe_entry(
             "search_boost",
@@ -416,7 +416,7 @@ impl IntrospectionBuilder {
                 signature: Some(r#"*meta{handle: h, key: "external_class", value: class}"#),
                 extra_lines: vec![
                     "Known values (standard, adapter-neutral):".to_string(),
-                    r#"- "code": target_path, target_start_line, target_end_line, and target_exists describe source-code locations."#.to_string(),
+                    r#"- "code": target_path, target_start_line, target_end_line, target_exists, and target_in_history describe source-code locations."#.to_string(),
                     r#"- Future "url": target_url."#.to_string(),
                     r#"- Future "issue": target_repo and target_number."#.to_string(),
                     "A new external_class value is an anneal standard-key decision.".to_string(),
@@ -456,8 +456,13 @@ impl IntrospectionBuilder {
             ),
             (
                 "target_exists",
-                r"Standard metadata key for whether an external handle's target exists on disk.",
-                r#"For external_class="code", this is true, false, or unknown from the extraction-time path probe."#,
+                r"Standard metadata key for whether an external handle's target exists or confidently drifted.",
+                r#"For external_class="code", this is true when present on disk, false when absent but present in HEAD history, and unknown when history cannot prove drift."#,
+            ),
+            (
+                "target_in_history",
+                r"Standard metadata key for whether an absent code target appeared in HEAD history.",
+                r#"For external_class="code", true means target_exists=false is evidence-backed drift; false with target_exists=unknown means anneal could not prove the path ever belonged to this repo."#,
             ),
             (
                 "target_probe_base",
@@ -1192,7 +1197,7 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
     match name {
         "meta" => vec![
             "Open metadata extension on handles. Three kinds of keys:".to_string(),
-            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_probe_base, target_resolved_path.".to_string(),
+            "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_in_history, target_probe_base, target_resolved_path.".to_string(),
             "SOURCE (produced by a specific source adapter, prefix tells you which): md.resolved_file, md.parent_dir.".to_string(),
             "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
             r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
@@ -1386,20 +1391,20 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "W006",
         severity: "warning",
-        summary: "Spec-code drift: a code-authoritative spec cites a code path the extractor could confidently resolve as missing on disk.",
+        summary: "Spec-code drift: a spec that asserts current code cites a path that existed in HEAD history but is now missing on disk.",
         rule: "spec_code_drift",
         evidence: r#"("spec_code_drift", target_path, source_status)"#,
         common_joins: &[
             "`diagnostic{code: \"W006\", subject: src}, spec_code_drift(src, target_path, file, line, source_status)` to inspect the missing code target",
             "`spec_code_drift(src, target_path, file, line, source_status), read{handle: src, budget: 1200, text: text}` to read the live spec context",
-            "`spec_code_drift(src, target_path, file, line, source_status), code_authoritative(source_status)` to inspect the lifecycle gate",
+            "`spec_code_drift(src, target_path, file, line, source_status), asserts_code(source_status)` to inspect the lifecycle gate",
             "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_probe_base\", value: base}` to audit path resolution",
         ],
         example: r#"? diagnostic{code: "W006", subject: src, evidence: evidence}."#,
         see_also: &[
             "diagnostic",
             "spec_code_drift",
-            "code_authoritative",
+            "asserts_code",
             "target_exists",
             "external_class",
         ],
@@ -1964,7 +1969,7 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
             Some("Diagnostic-rule predicate behind W001 stale-reference warnings.")
         }
         "spec_code_drift" => Some(
-            "Diagnostic-rule predicate behind W006 spec-code-drift warnings. It uses code_authoritative(status), not bare active(h), to avoid warning on forward plans or external-code studies.",
+            "Diagnostic-rule predicate behind W006 spec-code-drift warnings. It uses asserts_code(status), not bare active(h), and target history, not bare absence, to avoid warning on examples, forward plans, or external-code studies.",
         ),
         "confidence_gap" => Some("Diagnostic-rule predicate behind W002 confidence-gap warnings."),
         "missing_frontmatter_file" => {
@@ -2044,8 +2049,8 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "A blocked handle can emit multiple rows when several entropy sources explain it.".to_string(),
             "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
         ],
-        "code_authoritative" => vec![
-            "Config syntax: config convergence { code_authoritative([stable, current, authoritative, active, draft]). }".to_string(),
+        "asserts_code" => vec![
+            "Config syntax: config convergence { asserts_code([stable, current, authoritative, active, draft]). }".to_string(),
             "Default when unconfigured: active status-bearing handles minus the aspirational study tier: plan, research, reference, exploratory.".to_string(),
             "W006 spec_code_drift uses this gate instead of bare active(h), so forward plans and external-code studies do not look like rot.".to_string(),
         ],
@@ -2146,14 +2151,14 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         ],
         "spec_code_drift" => &[
             "`spec_code_drift(src, target_path, file, line, source_status), diagnostic{code: \"W006\", subject: src}` to inspect spec-code drift warnings",
-            "`spec_code_drift(src, target_path, file, line, source_status), code_authoritative(source_status)` to inspect the lifecycle gate",
+            "`spec_code_drift(src, target_path, file, line, source_status), asserts_code(source_status)` to inspect the lifecycle gate",
             "`spec_code_drift(src, target_path, file, line, source_status), read{handle: src, budget: 1200, text: text}` to read the live spec context",
             "`spec_code_drift(src, target_path, file, line, source_status), *edge{from: src, to: ref, kind: \"Cites\"}, *meta{handle: ref, key: \"target_probe_base\", value: base}` to audit path resolution",
         ],
-        "code_authoritative" => &[
-            "`code_authoritative(status)` to inspect the effective status set",
-            "`*config{key: \"convergence.code_authoritative\", value: status}` to inspect explicit project config",
-            "`spec_code_drift(src, target_path, file, line, status), code_authoritative(status)` to audit W006 gating",
+        "asserts_code" => &[
+            "`asserts_code(status)` to inspect the effective status set",
+            "`*config{key: \"convergence.asserts_code\", value: status}` to inspect explicit project config",
+            "`spec_code_drift(src, target_path, file, line, status), asserts_code(status)` to audit W006 gating",
         ],
         "confidence_gap" => &[
             "`confidence_gap(src, target, file, source_status, source_level, target_status, target_level), diagnostic{code: \"W002\", subject: src}` to inspect confidence-gap warnings",
@@ -2255,11 +2260,11 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         "spec_code_drift" => &[
             "W006",
             "diagnostic",
-            "code_authoritative",
+            "asserts_code",
             "external_class",
             "target_path",
         ],
-        "code_authoritative" => &["W006", "spec_code_drift", "convergence", "*config"],
+        "asserts_code" => &["W006", "spec_code_drift", "convergence", "*config"],
         "confidence_gap" => &[
             "W002",
             "diagnostic",
@@ -2468,7 +2473,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "spec_code_drift" => {
             Some("? spec_code_drift(src, target_path, file, line, source_status).")
         }
-        "code_authoritative" => Some("? code_authoritative(status)."),
+        "asserts_code" => Some("? asserts_code(status)."),
         "confidence_gap" => Some(
             "? confidence_gap(src, target, file, source_status, source_level, target_status, target_level).",
         ),

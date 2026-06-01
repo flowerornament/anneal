@@ -164,7 +164,7 @@ pub(crate) fn cmd_init(request: InitRequest<'_>) -> anyhow::Result<InitOutput> {
     let convergence = ConvergenceConfig {
         active,
         terminal,
-        code_authoritative: Vec::new(),
+        asserts_code: Vec::new(),
         ordering,
         descriptions: HashMap::new(),
     };
@@ -338,7 +338,7 @@ fn render_unified_config(config: &AnnealConfig) -> String {
     if !config.convergence.ordering.is_empty()
         || !config.convergence.active.is_empty()
         || !config.convergence.terminal.is_empty()
-        || !config.convergence.code_authoritative.is_empty()
+        || !config.convergence.asserts_code.is_empty()
         || !config.convergence.descriptions.is_empty()
     {
         out.push_str("config convergence {\n");
@@ -363,11 +363,11 @@ fn render_unified_config(config: &AnnealConfig) -> String {
                 &config.convergence.terminal,
             );
         }
-        if !config.convergence.code_authoritative.is_empty() {
+        if !config.convergence.asserts_code.is_empty() {
             list_config_call(
                 &mut out,
-                RuntimeConfigKey::ConvergenceCodeAuthoritative,
-                &config.convergence.code_authoritative,
+                RuntimeConfigKey::ConvergenceAssertsCode,
+                &config.convergence.asserts_code,
             );
         }
         for (status, description) in sorted_map(&config.convergence.descriptions) {

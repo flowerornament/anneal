@@ -6,11 +6,13 @@ All notable changes to `anneal` are documented in this file.
 
 ### Added
 
-- Added `W006` / `spec_code_drift` for code-authoritative specs that cite
-  confidently missing in-repo code paths.
-- Added `config convergence { code_authoritative([...]). }` and
-  `code_authoritative(status)` so each corpus declares which lifecycle statuses
-  make claims about current code. When unconfigured, W006 falls back to active
+- Added `W006` / `spec_code_drift` for specs that assert current code and cite
+  paths that existed in HEAD history but are now missing on disk.
+- Added `target_in_history` metadata for code external handles so W006's drift
+  decision is auditable.
+- Added `config convergence { asserts_code([...]). }` and
+  `asserts_code(status)` so each corpus declares which lifecycle statuses make
+  claims about current code. When unconfigured, W006 falls back to active
   statuses minus the aspirational study tier (`plan`, `research`, `reference`,
   `exploratory`).
 

@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use anneal_core::{
-    ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation,
-    HandleFact, MetaFact, NativeId, OriginUri, Revision, SourceName, SpanFact, fnv1a_64,
-    probe_code_target,
+    CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch, FactBatchMode,
+    FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision, SourceName,
+    SpanFact, fnv1a_64,
 };
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -696,6 +696,7 @@ fn emit_code_ref_meta(
     result: &parse::BuildResult,
 ) {
     let mut seen = HashSet::new();
+    let mut probe_cache = CodeTargetProbeCache::new();
     for reference in &result.code_refs {
         if !seen.insert(reference.target.clone()) {
             continue;
@@ -713,12 +714,18 @@ fn emit_code_ref_meta(
             key: "target_path".to_string(),
             value: reference.path.clone(),
         });
-        let probe = probe_code_target(root, &reference.path);
+        let probe = probe_cache.probe(root, &reference.path);
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
             key: "target_exists".to_string(),
             value: probe.exists.as_str().to_string(),
+        });
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: reference.target.clone(),
+            key: "target_in_history".to_string(),
+            value: probe.in_history.to_string(),
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
@@ -1289,6 +1296,7 @@ mod tests {
             ("external_class", "code"),
             ("target_path", "lib/example/admission.rs"),
             ("target_exists", "true"),
+            ("target_in_history", "false"),
             ("target_start_line", "142"),
             ("target_end_line", "167"),
         ] {

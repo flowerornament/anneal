@@ -372,7 +372,7 @@ config convergence {
   ordering(["raw", "draft", "review", "approved", "published"]).
   active(["draft", "review", "approved"]).
   terminal(["published", "archived", "superseded"]).
-  code_authoritative(["draft", "review", "approved"]).
+  asserts_code(["draft", "review", "approved"]).
   description("draft", "Under construction; may change substantially").
   description("approved", "Settled primary artifact; changes require review").
   description("archived", "Superseded or retired; no further changes expected").

@@ -461,10 +461,17 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     let dir = tempdir();
     let repo = dir.path().join("repo");
     let design = repo.join(".design");
-    std::fs::create_dir_all(repo.join(".git")).expect("create marker");
+    std::fs::create_dir_all(&repo).expect("create repo");
+    run_git(&repo, &["init"]);
+    run_git(&repo, &["config", "user.name", "Anneal Test"]);
+    run_git(&repo, &["config", "user.email", "anneal@example.test"]);
     std::fs::create_dir_all(repo.join("lib")).expect("create lib");
     std::fs::create_dir_all(&design).expect("create design root");
     write_file(&repo, "lib/live.rs", "pub fn live() {}\n");
+    write_file(&repo, "lib/missing.rs", "pub fn old() {}\n");
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "seed code history"]);
+    std::fs::remove_file(repo.join("lib/missing.rs")).expect("remove historical code");
     write_config(
         &design,
         &lifecycle_config(
@@ -497,6 +504,12 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         "plan",
         "# Forward Plan\n\nForward plan points at future code `lib/missing.rs`.\n",
     );
+    write_markdown(
+        &design,
+        "illustrative.md",
+        "draft",
+        "# Example\n\nIllustrative prose quotes never-tracked code `lib/never.rs`.\n",
+    );
 
     let diagnostics = run(&[
         "--root",
@@ -518,21 +531,51 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         "--root",
         design.to_str().expect("utf8 design root"),
         "-e",
-        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}."#,
+        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}, *meta{handle: h, key: "target_in_history", value: in_history}."#,
         "--format=json",
     ]);
     let meta_rows = json_rows(&meta);
     let repo = repo.to_string_lossy().into_owned();
     assert!(
         meta_rows.iter().any(|row| {
-            row["h"] == "lib/live.rs" && row["exists"] == "true" && row["base"] == repo
+            row["h"] == "lib/live.rs"
+                && row["exists"] == "true"
+                && row["in_history"] == "false"
+                && row["base"] == repo
         }),
         "{meta_rows:#?}"
     );
     assert!(
         meta_rows.iter().any(|row| {
-            row["h"] == "lib/missing.rs" && row["exists"] == "false" && row["base"] == repo
+            row["h"] == "lib/missing.rs"
+                && row["exists"] == "false"
+                && row["in_history"] == "true"
+                && row["base"] == repo
         }),
         "{meta_rows:#?}"
+    );
+    assert!(
+        meta_rows.iter().any(|row| {
+            row["h"] == "lib/never.rs"
+                && row["exists"] == "unknown"
+                && row["in_history"] == "false"
+                && row["base"] == repo
+        }),
+        "{meta_rows:#?}"
+    );
+}
+
+fn run_git(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        text(&output.stdout),
+        text(&output.stderr)
     );
 }

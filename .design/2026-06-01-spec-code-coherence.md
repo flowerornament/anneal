@@ -100,6 +100,54 @@ base is found, the probe also records `target_probe_base` (and
 `target_resolved_path` when known) so a cold agent can audit *why* a path was
 judged missing.
 
+### Drift is "existed then vanished," not "absent now" (precision fix, 2026-06-01)
+
+Running the first `false`-on-disk version against anneal's **own** corpus
+surfaced a residual false-positive class the murail run did not: **illustrative
+example prose.** Design docs that *teach* the code-ref feature quote sample
+paths — e.g. the v015 retrieval doc uses `lib/host-corpus/admission.rs:142-167`
+as a worked example, and this doc cites `src/jit.rs` while explaining the synfx
+external study. These are byte-identical to real references (both are backticked
+inline-code paths), so they cannot be told apart lexically.
+
+The discriminator is **git history**, and it is the semantically correct
+definition rather than a heuristic:
+
+- A real spec→code dependency points at a path that **existed in this
+  repository's history**. When code leads specs, that path is later moved,
+  renamed, or deleted — so it is *gone from disk but present in `git log`*. That
+  is drift.
+- An illustrative, external-codebase, or forward-plan path was **never tracked
+  here** — zero commits touch it. It is not drift; it never was a dependency.
+
+Measured: the 5 anneal-corpus false positives have **0** commits each; murail's
+true-drift paths (`parse/parser.rs`, `render.rs`) have **6** and **10**. Clean
+separation.
+
+So `target_exists` becomes a three-way classification driven by *both* disk and
+history, computed in the same extraction-time probe. The probe resolves the base
+once, then uses a cached HEAD-history path set for that base (`git -C <base> log
+--name-only --format=`). It intentionally does **not** use `--all`: an
+unmerged or unrelated branch must not fabricate history for the mainline corpus.
+
+- present on disk → `true` (no drift).
+- absent on disk **and** has git history under the base → **`false`** (drift —
+  the diagnostic fires).
+- absent on disk **and** no git history → **`unknown`** (never tracked here:
+  illustrative / external / forward-plan; **no diagnostic**).
+
+This folds the illustrative-prose, external-study, and forward-plan classes into
+the same honest `unknown` bucket as unresolvable paths — all of them are "we
+cannot confidently call this drift." Record `target_in_history` (bool) alongside
+the existing probe metadata so the classification is auditable. A history hit is
+evidence of drift; a history miss is evidence of nothing. The
+`asserts_code` status gate still applies on top; history-existence and
+status are independent filters and both must pass.
+
+Edge note: a path that existed, was deleted, and whose history was later purged
+(e.g. our own murail-corpus rewrite) would read as `unknown` — acceptable, and
+correctly conservative: we'd rather miss a drift row than fabricate one.
+
 ## The diagnostic
 
 A new prelude rule, sibling to `broken_reference` (E001), gated to the
@@ -109,7 +157,7 @@ live-spec-cites-code lane:
 spec_code_drift(src, target_path, file, line, source_status) :=
   *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
   *handle{id: src, kind: "file", status: source_status},
-  code_authoritative(source_status),                  -- corpus-declared "claims current code"
+  asserts_code(source_status),                  -- corpus-declared "claims current code"
   *handle{id: ref, kind: "external"},
   *meta{handle: ref, key: "external_class", value: "code"},
   *meta{handle: ref, key: "target_exists", value: "false"},
@@ -120,7 +168,7 @@ diagnostic("W006", "warning", src, file, line,
   spec_code_drift(src, target_path, file, line, source_status).
 ```
 
-### Why `code_authoritative`, not `active` (live-corpus evidence, 2026-06-01)
+### Why `asserts_code`, not `active` (live-corpus evidence, 2026-06-01)
 
 The first implementation gated on `active(src)`. Run against the real murail
 corpus it fired **47 rows**, and the breakdown exposed that `active` is too
@@ -143,11 +191,11 @@ hardcoded `active`:
 
 ```
 config convergence {
-  code_authoritative([stable, current, authoritative, active, draft]).
+  asserts_code([stable, current, authoritative, active, draft]).
 }
 ```
 
-`code_authoritative(s)` defaults to the corpus's `active` set **minus** an
+`asserts_code(s)` defaults to the corpus's `active` set **minus** an
 aspirational/study tier when unconfigured — but the corpus owns the list. murail
 would exclude `research`, `plan`, `exploratory`, `reference`; that single config
 choice drops both noise classes (the external studies are all `research`; the
@@ -156,7 +204,7 @@ candidates. anneal stays corpus-agnostic: *which of my statuses make a claim
 about my code* is a corpus fact, not an anneal guess.
 
 This also dovetails with `W005 lifecycle_config_gap`: a corpus that never
-declares `code_authoritative` falls back to the active-minus-aspirational
+declares `asserts_code` falls back to the active-minus-aspirational
 default, and a status that appears in neither the active partition nor the
 authoritative set is exactly the kind of config gap W005 already surfaces.
 

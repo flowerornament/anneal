@@ -1,3 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::process::Command;
+
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +24,7 @@ impl TargetExistence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeTargetProbe {
     pub exists: TargetExistence,
+    pub in_history: bool,
     pub probe_base: Option<Utf8PathBuf>,
     pub resolved_path: Option<Utf8PathBuf>,
 }
@@ -29,14 +33,50 @@ impl CodeTargetProbe {
     fn unknown() -> Self {
         Self {
             exists: TargetExistence::Unknown,
+            in_history: false,
             probe_base: None,
             resolved_path: None,
         }
     }
 }
 
+#[derive(Default)]
+pub struct CodeTargetProbeCache {
+    history_by_base: BTreeMap<Utf8PathBuf, Option<BTreeSet<String>>>,
+}
+
+impl CodeTargetProbeCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn probe(&mut self, corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
+        probe_code_target_with_cache(corpus_root, target_path, self)
+    }
+
+    fn target_in_history(&mut self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
+        let history = self
+            .history_by_base
+            .entry(base.to_path_buf())
+            .or_insert_with(|| read_head_history_paths(base));
+        history
+            .as_ref()
+            .map(|paths| paths.contains(target.as_str()))
+    }
+}
+
 #[must_use]
 pub fn probe_code_target(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
+    let mut cache = CodeTargetProbeCache::new();
+    probe_code_target_with_cache(corpus_root, target_path, &mut cache)
+}
+
+fn probe_code_target_with_cache(
+    corpus_root: &Utf8Path,
+    target_path: &str,
+    cache: &mut CodeTargetProbeCache,
+) -> CodeTargetProbe {
     let Some(normalized) = normalize_relative_target(target_path) else {
         return CodeTargetProbe::unknown();
     };
@@ -45,6 +85,7 @@ pub fn probe_code_target(corpus_root: &Utf8Path, target_path: &str) -> CodeTarge
         if let Some(found) = existing_target(&project_root, &normalized) {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
+                in_history: false,
                 probe_base: Some(project_root),
                 resolved_path: Some(found),
             };
@@ -54,28 +95,43 @@ pub fn probe_code_target(corpus_root: &Utf8Path, target_path: &str) -> CodeTarge
         {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
+                in_history: false,
                 probe_base: Some(corpus_root.to_path_buf()),
                 resolved_path: Some(found),
             };
         }
-        return CodeTargetProbe {
-            exists: TargetExistence::False,
-            probe_base: Some(project_root),
-            resolved_path: None,
-        };
+        return missing_target_probe(cache, project_root, &normalized);
     }
 
     if let Some(found) = existing_target(corpus_root, &normalized) {
         return CodeTargetProbe {
             exists: TargetExistence::True,
+            in_history: false,
             probe_base: Some(corpus_root.to_path_buf()),
             resolved_path: Some(found),
         };
     }
-    CodeTargetProbe {
-        exists: TargetExistence::False,
-        probe_base: Some(corpus_root.to_path_buf()),
-        resolved_path: None,
+    missing_target_probe(cache, corpus_root.to_path_buf(), &normalized)
+}
+
+fn missing_target_probe(
+    cache: &mut CodeTargetProbeCache,
+    base: Utf8PathBuf,
+    normalized: &Utf8Path,
+) -> CodeTargetProbe {
+    match cache.target_in_history(&base, normalized) {
+        Some(true) => CodeTargetProbe {
+            exists: TargetExistence::False,
+            in_history: true,
+            probe_base: Some(base),
+            resolved_path: None,
+        },
+        Some(false) | None => CodeTargetProbe {
+            exists: TargetExistence::Unknown,
+            in_history: false,
+            probe_base: Some(base),
+            resolved_path: None,
+        },
     }
 }
 
@@ -100,6 +156,27 @@ fn normalize_relative_target(target_path: &str) -> Option<Utf8PathBuf> {
 fn existing_target(base: &Utf8Path, target: &Utf8Path) -> Option<Utf8PathBuf> {
     let candidate = base.join(target);
     candidate.exists().then_some(candidate)
+}
+
+fn read_head_history_paths(base: &Utf8Path) -> Option<BTreeSet<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(base.as_std_path())
+        .args(["log", "--name-only", "--format="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 fn enclosing_project_root(corpus_root: &Utf8Path) -> Option<Utf8PathBuf> {
@@ -146,7 +223,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let repo = utf8(dir.path().join("repo"));
         let corpus = repo.join(".design");
-        fs::create_dir_all(repo.join(".git")).expect("create marker");
+        fs::create_dir_all(&repo).expect("create repo");
+        run_git(&repo, &["init"]);
         fs::create_dir_all(repo.join("lib")).expect("create lib");
         fs::create_dir_all(&corpus).expect("create corpus");
         fs::write(repo.join("lib/live.rs"), "").expect("write code");
@@ -171,9 +249,38 @@ mod tests {
 
         let probe = probe_code_target(&corpus, "lib/missing.rs");
 
-        assert_eq!(probe.exists, TargetExistence::False);
+        assert_eq!(probe.exists, TargetExistence::Unknown);
+        assert!(!probe.in_history);
         assert_eq!(probe.probe_base.as_deref(), Some(repo.as_path()));
         assert_eq!(probe.resolved_path, None);
+    }
+
+    #[test]
+    fn probe_reports_drift_only_when_missing_target_has_head_history() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(&repo).expect("create repo");
+        run_git(&repo, &["init"]);
+        fs::create_dir_all(repo.join("lib")).expect("create lib");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join("lib/old.rs"), "pub fn old() {}\n").expect("write old");
+        run_git(&repo, &["config", "user.name", "Anneal Test"]);
+        run_git(&repo, &["config", "user.email", "anneal@example.test"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add old"]);
+        fs::remove_file(repo.join("lib/old.rs")).expect("remove old");
+
+        let mut cache = CodeTargetProbeCache::new();
+        let drift = cache.probe(&corpus, "lib/old.rs");
+        let illustrative = cache.probe(&corpus, "lib/never.rs");
+
+        assert_eq!(drift.exists, TargetExistence::False);
+        assert!(drift.in_history);
+        assert_eq!(drift.probe_base.as_deref(), Some(repo.as_path()));
+        assert_eq!(illustrative.exists, TargetExistence::Unknown);
+        assert!(!illustrative.in_history);
+        assert_eq!(illustrative.probe_base.as_deref(), Some(repo.as_path()));
     }
 
     #[test]
@@ -189,6 +296,21 @@ mod tests {
         assert_eq!(
             probe_code_target(&root, "/tmp/outside.rs").exists,
             TargetExistence::Unknown
+        );
+    }
+
+    fn run_git(root: &Utf8Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

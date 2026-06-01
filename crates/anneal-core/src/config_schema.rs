@@ -28,7 +28,7 @@ pub enum RuntimeConfigKey {
     ConvergenceOrdering,
     ConvergenceActive,
     ConvergenceTerminal,
-    ConvergenceCodeAuthoritative,
+    ConvergenceAssertsCode,
     ConvergenceDescription,
     HandlesForce,
     HandlesRejected,
@@ -304,9 +304,9 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         RuntimeConfigValueMode::UnorderedSet,
     ),
     runtime_config_declaration(
-        RuntimeConfigKey::ConvergenceCodeAuthoritative,
+        RuntimeConfigKey::ConvergenceAssertsCode,
         "convergence",
-        "code_authoritative",
+        "asserts_code",
         RuntimeConfigValueMode::UnorderedSet,
     ),
     runtime_config_declaration(

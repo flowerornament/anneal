@@ -1743,7 +1743,7 @@ mod tests {
         assert_eq!(
             output(&outputs, "W006-plan").rows.len(),
             0,
-            "default code_authoritative should suppress aspirational plan specs"
+            "default asserts_code should suppress aspirational plan specs"
         );
         assert!(has_row(
             output(&outputs, "S001"),
