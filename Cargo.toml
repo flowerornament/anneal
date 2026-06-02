@@ -57,6 +57,7 @@ struct_excessive_bools = "allow"
 [dependencies]
 anneal-cli = { version = "0.15.2", path = "crates/anneal-cli" }
 anneal-legacy = { version = "0.15.2", path = "crates/anneal-legacy" }
+dhat = { version = "0.3.3", optional = true }
 
 [profile.release]
 lto = true
@@ -66,3 +67,6 @@ strip = true
 inherits = "release"
 debug = "line-tables-only"
 strip = false
+
+[features]
+dhat-heap = ["dep:dhat"]
