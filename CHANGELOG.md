@@ -2,6 +2,42 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.15.2 - 2026-06-02
+
+Ranked queries read in rank order, and stored output is deterministic.
+
+Queries declare their own result order with `order by`, so ranked predicates
+like `recent_frontier` and `ranked_anchor` arrive as reading lists — rank 1
+first — instead of in binding order. Ordering is a projection-boundary language
+primitive: any `?` query can use it, it composes with `--limit` for a true
+top-N, and a query without `order by` is byte-identical to before. Raw
+stored-relation output is now stable run-to-run, closing a determinism gap that
+made repeated reads of the same query reorder their tail.
+
+### Added
+
+- `order by <expr> [asc|desc] [, <expr> [asc|desc]]*` on the top-level `?`
+  query: a stable sort of the result at the projection boundary. Keys are
+  eval-supported expressions over the result's bound variables, default
+  direction is ascending, and ties preserve prior order. `order by … --limit N`
+  selects a genuine top-N rather than truncating an arbitrary order. An order
+  key over an unbound variable fails static analysis before any rows are
+  emitted.
+
+### Changed
+
+- `anneal status` pointers, the README and skill cold-start ladders, and
+  `describe runtime` orientation queries end with `order by rank asc`, so the
+  copy-runnable reading lists arrive top-down and teach the ordering primitive
+  by example.
+
+### Fixed
+
+- Stored-relation query output is deterministic. Source-owned relations are
+  canonicalized after merge and runtime config and snapshot relations on
+  replacement, each by a semantic key with full identity tie-breakers, so
+  queries like `? *handle{id: h}.` return byte-identical results across runs.
+
 ## v0.15.1 - 2026-06-02
 
 anneal status is a goal-less orientation dashboard.

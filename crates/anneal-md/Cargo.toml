@@ -1,6 +1,6 @@
 [package]
 name = "anneal-md"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2024"
 license = "MIT"
 description = "Markdown source adapter for anneal"
@@ -26,7 +26,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-legacy = { version = "0.15.1", path = "../anneal-legacy" }
+anneal-legacy = { version = "0.15.2", path = "../anneal-legacy" }
 anneal-core = { path = "../anneal-core" }
 camino = "1.2.2"
 

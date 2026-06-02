@@ -1,6 +1,6 @@
 [package]
 name = "anneal"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2024"
 default-run = "anneal"
 license = "MIT"
@@ -55,8 +55,8 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-cli = { version = "0.15.1", path = "crates/anneal-cli" }
-anneal-legacy = { version = "0.15.1", path = "crates/anneal-legacy" }
+anneal-cli = { version = "0.15.2", path = "crates/anneal-cli" }
+anneal-legacy = { version = "0.15.2", path = "crates/anneal-legacy" }
 
 [profile.release]
 lto = true
