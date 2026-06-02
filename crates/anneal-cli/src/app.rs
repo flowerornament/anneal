@@ -1174,7 +1174,9 @@ impl RuntimeSession {
             .with_sources(self.sources.clone())
             .with_git_mtimes(self.git_mtimes.clone());
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
-        evaluator.run_fixpoint().context("query fixpoint failed")?;
+        evaluator
+            .run_fixpoint_for_query(&query)
+            .context("query fixpoint failed")?;
         let mut output = evaluator
             .eval_query(&query)
             .context("query evaluation failed")?;

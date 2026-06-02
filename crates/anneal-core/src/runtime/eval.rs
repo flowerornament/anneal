@@ -3516,12 +3516,32 @@ impl Evaluator {
     pub fn run_fixpoint(&mut self) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
+        self.run_fixpoint_matching(|_| true)
+    }
+
+    pub fn run_fixpoint_for_query(&mut self, query: &AnalyzedQuery) -> Result<(), EvalError> {
+        self.options.authorize_eval()?;
+        self.seed_facts()?;
+        let needed = global_predicate_dependencies_for_query(&self.program, query);
+        self.run_fixpoint_matching(|predicate| needed.contains(predicate))
+    }
+
+    fn run_fixpoint_matching(
+        &mut self,
+        predicate_needed: impl Fn(&PredicateRef) -> bool,
+    ) -> Result<(), EvalError> {
         let strata = self.program.strata().to_vec();
         for stratum in strata {
+            if !stratum.predicates.iter().any(&predicate_needed) {
+                continue;
+            }
             let rules = self
                 .program
                 .rules()
-                .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
+                .filter(|rule| {
+                    stratum.predicates.contains(&rule.head.predicate)
+                        && predicate_needed(&rule.head.predicate)
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             run_rule_group(
@@ -3629,6 +3649,77 @@ impl Evaluator {
         self.facts_seeded = true;
         Ok(())
     }
+}
+
+fn global_predicate_dependencies_for_query(
+    program: &AnalyzedProgram,
+    query: &AnalyzedQuery,
+) -> BTreeSet<PredicateRef> {
+    let mut needed = BTreeSet::new();
+    collect_body_global_predicates(&query.query().body, query, &mut needed);
+    for rule in &query.query().local_rules {
+        collect_body_global_predicates(&rule.body, query, &mut needed);
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for rule in program.rules() {
+            if !needed.contains(&rule.head.predicate) {
+                continue;
+            }
+            let before = needed.len();
+            collect_body_global_predicates(&rule.body, query, &mut needed);
+            changed |= needed.len() != before;
+        }
+    }
+    needed
+}
+
+fn collect_body_global_predicates(
+    body: &Body,
+    query: &AnalyzedQuery,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    for atom in &body.atoms {
+        collect_atom_global_predicates(atom, query, out);
+    }
+}
+
+fn collect_atom_global_predicates(
+    atom: &Atom,
+    query: &AnalyzedQuery,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    match atom {
+        Atom::Derived(derived) => collect_global_predicate(&derived.predicate, query, out),
+        Atom::Aggregation(aggregate) => {
+            collect_body_global_predicates(&aggregate.body, query, out);
+        }
+        Atom::Negation(negation) => {
+            if let NegatedAtom::Derived(derived) = &negation.atom {
+                collect_global_predicate(&derived.predicate, query, out);
+            }
+        }
+        Atom::TimeBlock(time_block) => {
+            collect_body_global_predicates(&time_block.body, query, out);
+        }
+        Atom::Stored(_) | Atom::Comparison(_) => {}
+    }
+}
+
+fn collect_global_predicate(
+    predicate: &PredicateRef,
+    query: &AnalyzedQuery,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    if PrimitivePredicate::from_predicate(predicate).is_some() {
+        return;
+    }
+    if query.local_predicates().any(|local| local == predicate) {
+        return;
+    }
+    out.insert(predicate.clone());
 }
 
 fn run_rule_group(
@@ -9817,6 +9908,78 @@ release_blocker(code) := issue(code, "error").
             vec![row([("h", s("a")), ("offset", n(10)), ("score", n(5))])],
         );
         assert_query_rows(&outputs[2], vec![row([("n", n(1)), ("offset", n(1))])]);
+    }
+
+    #[test]
+    fn query_scoped_fixpoint_skips_unneeded_global_rules() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            seed("ok").
+            needed(h) := seed(h).
+            unused(h) := seed(h).
+            ? needed(h).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator
+            .run_fixpoint_for_query(&query)
+            .expect("scoped fixpoint evaluates");
+        let output = evaluator.eval_query(&query).expect("query evaluates");
+
+        assert_query_rows(
+            &[output.rows[0].fields.clone()],
+            vec![row([("h", s("ok"))])],
+        );
+        let unused = PredicateRef::parse("unused").expect("predicate parses");
+        assert!(
+            evaluator
+                .database()
+                .derived
+                .get(&unused)
+                .is_none_or(|relation| relation.tuples().is_empty()),
+            "unused rule should not run for query-scoped fixpoint"
+        );
+    }
+
+    #[test]
+    fn query_scoped_fixpoint_includes_global_deps_for_local_rules() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            seed("ok").
+            base(h) := seed(h).
+            unused(h) := seed(h).
+            ?
+              where local(h) := base(h).
+              local(h).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator
+            .run_fixpoint_for_query(&query)
+            .expect("scoped fixpoint evaluates");
+        let output = evaluator.eval_query(&query).expect("query evaluates");
+
+        assert_query_rows(
+            &[output.rows[0].fields.clone()],
+            vec![row([("h", s("ok"))])],
+        );
+        let unused = PredicateRef::parse("unused").expect("predicate parses");
+        assert!(
+            evaluator
+                .database()
+                .derived
+                .get(&unused)
+                .is_none_or(|relation| relation.tuples().is_empty()),
+            "unneeded global rule should not run through a local query"
+        );
     }
 
     #[test]
