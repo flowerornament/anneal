@@ -24,8 +24,8 @@ Pick the smallest surface that can answer the next question.
 
 ```bash
 anneal status --format=text
-anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
-anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
+anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
 anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal schema --format=text
 anneal describe runtime --format=text
@@ -34,7 +34,9 @@ anneal describe runtime --format=text
 Use `status` as the arrival surface: aggregate corpus vital signs plus
 copy-runnable orientation and work queries. For goal-less reading, run
 `recent_frontier` for recent live files and `ranked_anchor` for durable spine
-files.
+files. Both end with `order by rank asc` so the list reads top-down — rank 1
+first. `order by <expr> [asc|desc]` sorts any query's result at the projection
+boundary, and `order by … --limit N` is a true top-N.
 Use `context` only once you can name a goal: ranked span hits, compact span
 metadata, and graph neighborhood in one call. Add `--read-spans` only when
 inline matched bodies are worth the extra output. Use `schema` and
@@ -92,8 +94,8 @@ Common predicate families:
 ## Convergence
 
 ```bash
-anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file, status: status}.' --limit 12
-anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file, status: status}.' --limit 12
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file, status: status} order by rank asc.' --limit 12
+anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file, status: status} order by rank asc.' --limit 12
 anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'

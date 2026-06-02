@@ -573,8 +573,8 @@ Migration recipes:
 
 Goal-less orientation:
   Start with `anneal status`; it prints these copy-runnable queries:
-    anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12
-    anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12
+    anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12
+    anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12
   Use `anneal context \"GOAL\"` after you can name the goal.
 
 Discover before guessing:
@@ -589,8 +589,8 @@ Examples:
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
   anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: heading_path}.' --limit 20
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
-  anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12
-  anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12
+  anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12
+  anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
   anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\"}, search{query: \"conformance\", handle: h}.'
@@ -2317,11 +2317,11 @@ fn write_status_text<W: Write>(
     writeln!(writer, "Read first")?;
     writeln!(
         writer,
-        "  anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{{id: h, file: file}}.' --limit 12"
+        "  anneal -e '? recent_frontier(h, rank, recency), *handle{{id: h, file: file}} order by rank asc.' --limit 12"
     )?;
     writeln!(
         writer,
-        "  anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{{id: h, file: file}}.' --limit 12"
+        "  anneal -e '? ranked_anchor(h, rank, score, why), *handle{{id: h, file: file}} order by rank asc.' --limit 12"
     )?;
     writeln!(writer, "Work")?;
     writeln!(
@@ -4147,7 +4147,13 @@ mod tests {
         assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
         assert!(rendered.contains("Read first"));
         assert!(rendered.contains("recent_frontier(h, rank, recency)"));
+        assert!(rendered.contains(
+            "? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc."
+        ));
         assert!(rendered.contains("ranked_anchor(h, rank, score, why)"));
+        assert!(rendered.contains(
+            "? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc."
+        ));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("diagnostic{code: code, severity: severity"));
         assert!(!rendered.contains("bad.md"));

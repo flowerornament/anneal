@@ -288,8 +288,8 @@ impl IntrospectionBuilder {
                     "? *edge{kind: kind}.",
                     "? *handle{id: h, file: file}, git_mtime(file, instant).",
                     "? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}.",
-                    "? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.",
-                    "? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.",
+                    "? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.",
+                    "? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.",
                     "? flow(h, direction), *handle{id: h, summary: summary}.",
                 ],
                 ..DescribeCard::default()
@@ -2085,7 +2085,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "The `why` column names the strongest signal: authoritative_status, curated_name, inbound_degree, or recent.".to_string(),
         ],
         "ranked_anchor" => vec![
-            "Filter `rank <= N` for score tiers; add eval `--limit N` when you need a hard display budget.".to_string(),
+            "Add `order by rank asc --limit N` when you need a budgeted top-N anchor list.".to_string(),
         ],
         "asserts_code" => vec![
             "Config syntax: config convergence { asserts_code([stable, current, authoritative, active, draft]). }".to_string(),
@@ -2170,7 +2170,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`frontier(h, energy), area_of{h: h, area: \"X\"}` for area-scoped frontier work",
         ],
         "recent_frontier" => &[
-            "`recent_frontier(h, rank, recency), *handle{id: h, file: file, status: status}` for a goal-less reading frontier",
+            "`recent_frontier(h, rank, recency), *handle{id: h, file: file, status: status} order by rank asc` for a goal-less reading frontier",
             "`recent_frontier(h, rank, recency), area_of{h: h, area: \"X\"}` to scope orientation to one area",
             "`recent_frontier(h, rank, recency), read(h, 1200, null, text, start, end, tokens)` to sample each file body",
         ],
@@ -2180,7 +2180,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`anchor(h, score, why), area_of{h: h, area: area}` to group anchors by corpus area",
         ],
         "ranked_anchor" => &[
-            "`ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}` with eval `--limit 12` for a budgeted anchor list",
+            "`ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc` with eval `--limit 12` for a budgeted anchor list",
             "`ranked_anchor(h, rank, score, why), h = \"HANDLE\"` to inspect one anchor's rank",
         ],
         "blocked" | "blocker" => &[

@@ -175,8 +175,8 @@ built-in verbs are too broad.
 ```bash
 # Arrive cold
 anneal status --format=text
-anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
-anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
+anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
 anneal context "find the most urgent thing blocking v17 conformance" --format=text
 
 # Discover the language before guessing
@@ -242,8 +242,8 @@ loaded automatically and should not be copied into a project.
 
 ```bash
 anneal status
-anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12
-anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12
+anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12
 anneal context "goal"
 anneal help agent
 ```
@@ -251,7 +251,10 @@ anneal help agent
 `status` renders aggregate corpus vital signs and prints copy-runnable
 orientation/work queries. `recent_frontier` returns recently changed file
 handles for goal-less reading; `ranked_anchor` returns the durable spine from
-the broader `anchor` relation. `context`
+the broader `anchor` relation. Both close with `order by rank asc` so the list
+arrives in reading order — rank 1 first — because `order by <expr> [asc|desc]`
+sorts a query's result at the projection boundary, and `order by … --limit N`
+is a true top-N. `context`
 composes ranked heading-span search, compact span metadata, and graph
 neighborhood once you have a goal. Add `--read-spans` when you want matched
 span bodies inline.
