@@ -23,18 +23,22 @@ from the installed binary. `anneal prime` remains a hidden compatibility alias.
 Pick the smallest surface that can answer the next question.
 
 ```bash
-anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal status --format=text
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12 --format=text
+anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal schema --format=text
 anneal describe runtime --format=text
 ```
 
-Use `context` for goal-oriented orientation: ranked span hits, compact span
+Use `status` as the arrival surface: aggregate corpus vital signs plus
+copy-runnable orientation and work queries. For goal-less reading, run
+`recent_frontier` for recent live files and `anchor` for durable spine files.
+Use `context` only once you can name a goal: ranked span hits, compact span
 metadata, and graph neighborhood in one call. Add `--read-spans` only when
-inline matched bodies are worth the extra output. Use `status` for corpus
-state. Use `schema` and `describe NAME` before inventing predicate or field
-names; `describe` includes signatures, examples, common joins, and output
-columns.
+inline matched bodies are worth the extra output. Use `schema` and
+`describe NAME` before inventing predicate or field names; `describe` includes
+signatures, examples, common joins, and output columns.
 
 ## Retrieval
 
@@ -79,6 +83,7 @@ Common predicate families:
 
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
 - retrieval: `search`, `read`, `top_k` helpers
+- orientation: `recent_frontier`, `anchor`
 - convergence: `entropy`, `potential`, `frontier`, `blocker`, `flow`
 - change history: `changed_within`, `git_mtime`, `at("snapshot:last")`
 - checks: `diagnostic`
@@ -86,6 +91,8 @@ Common predicate families:
 ## Convergence
 
 ```bash
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file, status: status}.'
+anneal -e '? anchor(h, score, why), *handle{id: h, file: file, status: status}.'
 anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'
@@ -145,7 +152,9 @@ writing config.
 
 ## Agent Rules
 
-- Start with `anneal context "<goal>"` for goal-oriented work.
+- Start with `anneal status`; run its `recent_frontier` and `anchor` queries
+  when you do not yet have a goal.
+- Use `anneal context "<goal>"` once you can name the goal.
 - Use `search` then `read` when you need tighter retrieval control.
 - Use `schema` and `describe NAME` before querying unfamiliar vocabulary.
 - Use `anneal -e` for composite questions; project only fields you need.

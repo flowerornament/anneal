@@ -49,12 +49,13 @@ standard convergence facts and verbs from those relations, and project
 changing the binary.
 
 The command names are intentionally mnemonic, but they are not the whole tool.
-`context` gathers the first orientation bundle. `schema` maps the language,
-and `describe` teaches one relation, primitive, predicate, or verb at a time.
-`search`, `read`, and `handle` retrieve evidence. `status` keeps the
-convergence frontier visible. When those saved forms are too broad,
-`anneal -e` is the normal way to ask the corpus a precise question. When a
-precise question becomes reusable, edit `anneal.dl` and add an `@verb`
+`status` is the arrival dashboard: aggregate corpus vital signs plus
+copy-runnable queries for goal-less orientation and work. `context` gathers a
+retrieval bundle once you can name a goal. `schema` maps the language, and
+`describe` teaches one relation, primitive, predicate, or verb at a time.
+`search`, `read`, and `handle` retrieve evidence. When saved forms are too
+broad, `anneal -e` is the normal way to ask the corpus a precise question. When
+a precise question becomes reusable, edit `anneal.dl` and add an `@verb`
 declaration in the same language.
 
 ## Install
@@ -173,8 +174,10 @@ built-in verbs are too broad.
 
 ```bash
 # Arrive cold
-anneal context "find the most urgent thing blocking v17 conformance" --format=text
 anneal status --format=text
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12 --format=text
+anneal context "find the most urgent thing blocking v17 conformance" --format=text
 
 # Discover the language before guessing
 anneal describe convergence --format=text
@@ -238,15 +241,19 @@ loaded automatically and should not be copied into a project.
 ### Arrive
 
 ```bash
-anneal context "goal"
 anneal status
+anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12
+anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12
+anneal context "goal"
 anneal help agent
 ```
 
-`context` composes ranked heading-span search, compact span metadata, and graph
-neighborhood into one cold-start response. Add `--read-spans` when you want
-matched span bodies inline. `status` shows the compact
-convergence frontier.
+`status` renders aggregate corpus vital signs and prints copy-runnable
+orientation/work queries. `recent_frontier` returns recently changed file
+handles for goal-less reading; `anchor` returns the durable spine. `context`
+composes ranked heading-span search, compact span metadata, and graph
+neighborhood once you have a goal. Add `--read-spans` when you want matched
+span bodies inline.
 `help agent` prints the bundled agent skill briefing from the installed binary.
 The hidden `prime` alias remains for installed skill loaders and muscle memory.
 
@@ -512,7 +519,8 @@ first write so snapshot-based history queries continue.
 
 Older compatibility commands now return teaching recovery messages instead of
 running the retired commands. Use the language-first ladder above:
-`status`/`context` to arrive, `schema`/`describe` to discover,
+`status` plus its `recent_frontier`/`anchor` queries to arrive,
+`context GOAL` when the goal is known, `schema`/`describe` to discover,
 `search`/`read`/`handle` to retrieve, `handle --impact` for reverse
 dependencies, and `anneal -e` for precise composite questions.
 
@@ -525,7 +533,7 @@ Common replacements:
 - `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `obligations`: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`
 - `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
-- `orient`: `anneal context "GOAL"` or `anneal handle H --impact`
+- `orient`: `anneal status`, then the printed `recent_frontier`/`anchor` queries; use `anneal context "GOAL"` once you have a goal
 - `impact H`: `anneal handle H --impact`
 - `work`: `anneal status` or `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`
 - `blocked H`: `anneal handle H` or `anneal -e '? blocker(h, energy, source), h = "H".'`

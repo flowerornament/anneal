@@ -374,8 +374,10 @@ Usage: anneal [OPTIONS] status
 
 Print compact corpus status from the programmable runtime.
 
-Use this as the arrival command: it summarizes the active convergence frontier
-and points at open frontier items, blockers, and broken facts.
+Use this as the arrival command: it renders aggregate corpus vital signs and
+copy-runnable orientation/work queries. For goal-less reading, run the
+`recent_frontier` and `anchor` queries it prints; use `context GOAL` once you
+have a specific goal.
 
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -569,6 +571,12 @@ Migration recipes:
   Retired diff:
     anneal -e '? at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'
 
+Goal-less orientation:
+  Start with `anneal status`; it prints these copy-runnable queries:
+    anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12
+    anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12
+  Use `anneal context \"GOAL\"` after you can name the goal.
+
 Discover before guessing:
   anneal schema --format=text
   anneal describe runtime --format=text
@@ -581,6 +589,8 @@ Examples:
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
   anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: heading_path}.' --limit 20
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
+  anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12
+  anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
   anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
   anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\"}, search{query: \"conformance\", handle: h}.'
@@ -740,7 +750,7 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal garden has been retired; compose `frontier`, `primary_entropy`, and `*handle` with `anneal -e '? frontier(h, energy), primary_entropy(h, source), *handle{id: h, file: file, summary: summary}.'`, starting from `anneal status`",
         ),
         "orient" => Some(
-            "anneal orient has been retired; use `anneal context \"GOAL\"` for cold-start orientation or `anneal handle <HANDLE> --impact` before edits",
+            "anneal orient has been retired; start with `anneal status`, then run its `recent_frontier` and `anchor` queries for goal-less orientation or `anneal context \"GOAL\"` once you have a goal",
         ),
         "query" => Some(
             "anneal query has been retired; use the language directly with `anneal -e '? *handle{id: h}.'`",
@@ -3953,7 +3963,7 @@ mod tests {
                 "undischarged(h), obligation(h), *handle{id: h, file: file, status: status}",
             ),
             ("garden", "primary_entropy"),
-            ("orient", "anneal context \"GOAL\""),
+            ("orient", "recent_frontier"),
             ("query", "use the language directly"),
             (
                 "explain",
