@@ -298,13 +298,63 @@ scoring instincts; reimplement as v2 prelude predicates — do not port the comm
    `status` (how is it doing) → `recent_frontier`/`anchor` queries (what do I
    read) → `context GOAL` (answer my question). No new verb to document.
 
+## Tightenings before build (codex review, 2026-06-02 — converged)
+
+Codex reversed its restore-`orient` recommendation under this reframe ("no new
+verb is correct"). Nine tighten-before-build points, all folded:
+
+1. **Discoverability is the whole risk — pointers must always be visible and
+   copy-runnable.** If orientation is query-only, `status` must teach it *every
+   run*, not only on low-coverage corpora. Always render a compact "Read first"
+   line carrying both queries (count-aware but never absent). The ladder must be
+   physically on screen: `status → recent_frontier/anchor → context GOAL`.
+2. **Aggregate-only, but not sterile.** The pointer lines are part of the
+   contract, not decoration: status names the counts AND gives the exact
+   copy-runnable queries (read-first: `recent_frontier`+`anchor`; work:
+   `diagnostic`/`blocker`). A dashboard with no expansion path is a dead end.
+3. **`recent_frontier`/`anchor` live in a new `orientation.dl`**, not
+   `convergence.dl` — they *use* convergence/status signals but their job is
+   arrival. Keeps `convergence.dl` from becoming a grab bag; lets `describe
+   runtime` group them as "Orientation predicates."
+4. **`recent_frontier` MUST be recency-dominant, status as boost/filter — never
+   gated on `active()`.** Verified on murail: the 10 most-recently-moved docs are
+   a mix of `draft`/`active`/`superseded`/statusless. Gating on `active()` would
+   reproduce the 25%-coverage bug under a new name. BUT (refinement from the same
+   data) exclude terminal/`superseded`: a doc is often touched *at the moment it
+   is superseded*, and a freshly-superseded doc is not the frontier. So:
+   recency-dominant, statusless-inclusive, terminal-excluded, active a boost.
+   (Also seen: `formal-model/v18-updates.md` is recent+draft while v17 is the
+   `authoritative` anchor — the spine itself moves; v18 = frontier, v17 = anchor.
+   The design handles this naturally.)
+5. **Ranking inspectable, not clever.** Expose the components via `describe` +
+   `--explain`: a row's `why` distinguishes `recent` / `configured_anchor` /
+   `authoritative_status` / `curated_name` / `inbound_degree`. Agents must see
+   *why* a doc ranked.
+6. **Status aggregate counts must preserve old meaning (correctness gate).**
+   Before removing per-handle rows: broken/blocked/holding/open counts must match
+   the old section counts; flow baseline behavior stays honest; W006/diagnostic
+   counts must not double-count duplicate diagnostic rows; and the **coverage
+   denominator must be defined** — lifecycle coverage is over *file handles*
+   (not labels/externals), reported distinctly from total handle count. Nail
+   these in tests.
+7. **`status_item` stays a queryable predicate for existing `-e` users** — only
+   the `status` *verb* stops rendering it. Demotion, not deletion (don't break
+   agents who query `status_item` directly).
+8. **Pointer queries carry a bound** (`--limit 12` or a `rank <= 12` guard) so a
+   cold agent copying the query doesn't dump a 1576-handle corpus. `--limit` is
+   the clearer form.
+9. **Anchor config is a boost/seed, not a replacement.** Signal-derived first.
+   Design `config orientation { anchor([...]). }` now (a corpus owner knows its
+   living spine — formal-model — better than the graph), but implement only if
+   signal-derived ranking fails the formal-model-v17 acceptance test.
+   Configured anchors become *guaranteed candidates* with `why=configured_anchor`,
+   then still scored/explained — never an opaque hardcoded CLI list.
+
 ## Open (smaller) questions
 
-- `status` pointer lines: always shown, or only when the relevant count is
-  non-zero / coverage is low?
-- Anchor curation: pure signal-derived, or also a configurable living-spine list
-  (`config orient { anchors([...]). }`) for corpora like murail with a known
-  authoritative spine (formal-model)? Leaning: signal-derived first, config as
-  an override escape hatch.
-- Do `recent_frontier`/`anchor` belong in `convergence.dl` or a new
-  `orientation.dl` prelude module? (Lean: new module — distinct concern.)
+- `anchor` naming: keep it (short, nice) and rely on `describe runtime` grouping
+  it under Orientation, or go explicit `orientation_anchor` (uglier)? Lean: keep
+  `anchor`, fix meaning via the describe card.
+- Exact recency decay + inbound-weight constants — port the legacy 0.9.1/0.9.2
+  shape, tune against the murail acceptance test (recent specs surface; v17 holds
+  as anchor; freshly-superseded docs do not appear as frontier).
