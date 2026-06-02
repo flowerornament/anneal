@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -67,6 +68,7 @@ impl FactStore {
             validated.scope.source,
             batch.generation,
         );
+        self.canonicalize_source_relations();
         Ok(())
     }
 
@@ -132,6 +134,7 @@ impl FactStore {
         }
         self.snapshots.retain(|fact| &fact.corpus != corpus);
         self.snapshots.extend(snapshots);
+        sort_snapshots(&mut self.snapshots);
         Ok(())
     }
 
@@ -149,6 +152,7 @@ impl FactStore {
         self.snapshots
             .retain(|fact| !corpora.contains(&fact.corpus));
         self.snapshots.extend(snapshots);
+        sort_snapshots(&mut self.snapshots);
     }
 
     /// Replace runtime config facts for one corpus.
@@ -165,7 +169,25 @@ impl FactStore {
         }
         self.configs.retain(|fact| &fact.corpus != corpus);
         self.configs.extend(configs);
+        sort_configs(&mut self.configs);
         Ok(())
+    }
+
+    /// Keep stored relation vectors in deterministic, relation-local order.
+    ///
+    /// Source extraction may discover files or graph nodes through orderings that
+    /// are not guaranteed across processes. The runtime preserves these vectors
+    /// when materializing stored relations, so canonicalizing once at the store
+    /// boundary makes raw stored queries, search indexing, and derived rule input
+    /// deterministic by construction.
+    fn canonicalize_source_relations(&mut self) {
+        self.handles.sort_by(compare_handle_facts);
+        self.edges.sort_by(compare_edge_facts);
+        self.content.sort_by(compare_content_facts);
+        self.spans.sort_by(compare_span_facts);
+        self.meta.sort_by(compare_meta_facts);
+        self.concerns.sort_by(compare_concern_facts);
+        self.generations.sort_by(compare_generation_facts);
     }
 
     fn set_generation(&mut self, corpus: CorpusId, source: SourceName, current: Generation) {
@@ -347,10 +369,111 @@ fn all_identities(batch: &FactBatch) -> impl Iterator<Item = &FactIdentity> {
         .chain(batch.concerns.iter().map(|fact| &fact.identity))
 }
 
+fn compare_identity(left: &FactIdentity, right: &FactIdentity) -> Ordering {
+    left.corpus
+        .cmp(&right.corpus)
+        .then_with(|| left.source.cmp(&right.source))
+        .then_with(|| left.native_id.cmp(&right.native_id))
+        .then_with(|| left.origin_uri.cmp(&right.origin_uri))
+        .then_with(|| left.revision.cmp(&right.revision))
+        .then_with(|| left.generation.cmp(&right.generation))
+}
+
+fn compare_handle_facts(left: &HandleFact, right: &HandleFact) -> Ordering {
+    left.id
+        .cmp(&right.id)
+        .then_with(|| left.kind.cmp(&right.kind))
+        .then_with(|| left.namespace.cmp(&right.namespace))
+        .then_with(|| left.file.cmp(&right.file))
+        .then_with(|| left.line.cmp(&right.line))
+        .then_with(|| left.status.cmp(&right.status))
+        .then_with(|| left.date.cmp(&right.date))
+        .then_with(|| left.area.cmp(&right.area))
+        .then_with(|| left.summary.cmp(&right.summary))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn compare_edge_facts(left: &EdgeFact, right: &EdgeFact) -> Ordering {
+    left.from
+        .cmp(&right.from)
+        .then_with(|| left.to.cmp(&right.to))
+        .then_with(|| left.kind.cmp(&right.kind))
+        .then_with(|| left.file.cmp(&right.file))
+        .then_with(|| left.line.cmp(&right.line))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn compare_content_facts(left: &ContentFact, right: &ContentFact) -> Ordering {
+    left.handle
+        .cmp(&right.handle)
+        .then_with(|| left.span_id.cmp(&right.span_id))
+        .then_with(|| left.lines.cmp(&right.lines))
+        .then_with(|| left.tokens.cmp(&right.tokens))
+        .then_with(|| left.text.cmp(&right.text))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn compare_span_facts(left: &SpanFact, right: &SpanFact) -> Ordering {
+    left.id
+        .cmp(&right.id)
+        .then_with(|| left.handle.cmp(&right.handle))
+        .then_with(|| left.start_line.cmp(&right.start_line))
+        .then_with(|| left.end_line.cmp(&right.end_line))
+        .then_with(|| left.summary.cmp(&right.summary))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn compare_meta_facts(left: &MetaFact, right: &MetaFact) -> Ordering {
+    left.handle
+        .cmp(&right.handle)
+        .then_with(|| left.key.cmp(&right.key))
+        .then_with(|| left.value.cmp(&right.value))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn compare_concern_facts(left: &ConcernFact, right: &ConcernFact) -> Ordering {
+    left.name
+        .cmp(&right.name)
+        .then_with(|| left.member.cmp(&right.member))
+        .then_with(|| compare_identity(&left.identity, &right.identity))
+}
+
+fn sort_configs(configs: &mut [ConfigFact]) {
+    configs.sort_by(|left, right| {
+        left.corpus
+            .cmp(&right.corpus)
+            .then_with(|| left.key.cmp(&right.key))
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+            .then_with(|| left.value.cmp(&right.value))
+    });
+}
+
+fn sort_snapshots(snapshots: &mut [SnapshotFact]) {
+    snapshots.sort_by(|left, right| {
+        left.corpus
+            .cmp(&right.corpus)
+            .then_with(|| left.snapshot.cmp(&right.snapshot))
+            .then_with(|| left.at.cmp(&right.at))
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.key.cmp(&right.key))
+            .then_with(|| left.value.cmp(&right.value))
+    });
+}
+
+fn compare_generation_facts(left: &GenerationFact, right: &GenerationFact) -> Ordering {
+    left.corpus
+        .cmp(&right.corpus)
+        .then_with(|| left.source.cmp(&right.source))
+        .then_with(|| left.current.cmp(&right.current))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{ConfigFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact};
+    use crate::facts::{
+        ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
+        HandleFact, MetaFact, SpanFact,
+    };
     use crate::history::{SnapshotEntry, SnapshotEntryFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::prelude::standard_prelude_set;
@@ -383,31 +506,101 @@ mod tests {
     }
 
     fn meta(native_id: &str, generation: Generation, key: &str) -> MetaFact {
+        meta_with_value(native_id, generation, key, "value")
+    }
+
+    fn meta_with_value(
+        native_id: &str,
+        generation: Generation,
+        key: &str,
+        value: &str,
+    ) -> MetaFact {
         MetaFact {
             identity: identity(native_id, generation),
             handle: native_id.to_string(),
             key: key.to_string(),
-            value: "value".to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, generation: Generation) -> EdgeFact {
+        EdgeFact {
+            identity: identity(from, generation),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: "DependsOn".to_string(),
+            file: from.to_string(),
+            line: 1,
+        }
+    }
+
+    fn content(native_id: &str, span_id: &str, generation: Generation) -> ContentFact {
+        ContentFact {
+            identity: identity(native_id, generation),
+            handle: native_id.to_string(),
+            span_id: span_id.to_string(),
+            lines: 1,
+            text: format!("content for {native_id}"),
+            tokens: 3,
+        }
+    }
+
+    fn span(native_id: &str, span_id: &str, generation: Generation) -> SpanFact {
+        SpanFact {
+            identity: identity(native_id, generation),
+            id: span_id.to_string(),
+            handle: native_id.to_string(),
+            start_line: 1,
+            end_line: 2,
+            summary: format!("span for {native_id}"),
+        }
+    }
+
+    fn concern(name: &str, member: &str, generation: Generation) -> ConcernFact {
+        ConcernFact {
+            identity: identity(member, generation),
+            name: name.to_string(),
+            member: member.to_string(),
         }
     }
 
     fn config(corpus: &str, key: &str, value: &str) -> ConfigFact {
+        config_with_ordinal(corpus, key, value, None)
+    }
+
+    fn config_with_ordinal(
+        corpus: &str,
+        key: &str,
+        value: &str,
+        ordinal: Option<u32>,
+    ) -> ConfigFact {
         ConfigFact {
             corpus: CorpusId::from(corpus),
             key: key.to_string(),
             value: value.to_string(),
-            ordinal: None,
+            ordinal,
         }
     }
 
     fn snapshot(corpus: &str, snapshot: &str, id: &str) -> SnapshotFact {
+        snapshot_with_key(corpus, snapshot, "2026-05-13", id, "status", "draft")
+    }
+
+    fn snapshot_with_key(
+        corpus: &str,
+        snapshot: &str,
+        at: &str,
+        id: &str,
+        key: &str,
+        value: &str,
+    ) -> SnapshotFact {
         SnapshotFact {
             corpus: CorpusId::from(corpus),
             snapshot: snapshot.to_string(),
-            at: "2026-05-13".to_string(),
+            at: at.to_string(),
             id: id.to_string(),
-            key: "status".to_string(),
-            value: "draft".to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
         }
     }
 
@@ -439,6 +632,165 @@ mod tests {
         assert_eq!(store.handles().len(), 1);
         assert_eq!(store.handles()[0].id, "b.md");
         assert_eq!(store.generations()[0].current, Generation::new(2));
+    }
+
+    #[test]
+    fn merge_canonicalizes_relation_vectors() {
+        let mut store = FactStore::default();
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        batch
+            .handles
+            .push(handle("b.md", Generation::new(1), "draft"));
+        batch
+            .handles
+            .push(handle("a.md", Generation::new(1), "draft"));
+        batch.edges.push(edge("b.md", "a.md", Generation::new(1)));
+        batch.edges.push(edge("a.md", "b.md", Generation::new(1)));
+        batch
+            .content
+            .push(content("b.md", "b.md#body", Generation::new(1)));
+        batch
+            .content
+            .push(content("a.md", "a.md#body", Generation::new(1)));
+        batch
+            .spans
+            .push(span("b.md", "b.md#body", Generation::new(1)));
+        batch
+            .spans
+            .push(span("a.md", "a.md#body", Generation::new(1)));
+        batch.meta.push(meta("b.md", Generation::new(1), "purpose"));
+        batch.meta.push(meta("a.md", Generation::new(1), "purpose"));
+        batch
+            .meta
+            .push(meta_with_value("a.md", Generation::new(1), "zeta", "2"));
+        batch
+            .meta
+            .push(meta_with_value("a.md", Generation::new(1), "alpha", "1"));
+        batch
+            .concerns
+            .push(concern("runtime", "b.md", Generation::new(1)));
+        batch
+            .concerns
+            .push(concern("runtime", "a.md", Generation::new(1)));
+
+        store.merge(batch).expect("merge");
+
+        assert_eq!(
+            store
+                .handles()
+                .iter()
+                .map(|fact| fact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a.md", "b.md"]
+        );
+        assert_eq!(
+            store
+                .edges()
+                .iter()
+                .map(|fact| fact.from.as_str())
+                .collect::<Vec<_>>(),
+            ["a.md", "b.md"]
+        );
+        assert_eq!(
+            store
+                .content()
+                .iter()
+                .map(|fact| fact.handle.as_str())
+                .collect::<Vec<_>>(),
+            ["a.md", "b.md"]
+        );
+        assert_eq!(
+            store
+                .spans()
+                .iter()
+                .map(|fact| fact.handle.as_str())
+                .collect::<Vec<_>>(),
+            ["a.md", "b.md"]
+        );
+        assert_eq!(
+            store
+                .meta()
+                .iter()
+                .map(|fact| (fact.handle.as_str(), fact.key.as_str(), fact.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("a.md", "alpha", "1"),
+                ("a.md", "purpose", "value"),
+                ("a.md", "zeta", "2"),
+                ("b.md", "purpose", "value"),
+            ]
+        );
+        assert_eq!(
+            store
+                .concerns()
+                .iter()
+                .map(|fact| fact.member.as_str())
+                .collect::<Vec<_>>(),
+            ["a.md", "b.md"]
+        );
+    }
+
+    #[test]
+    fn runtime_owned_relations_are_canonicalized_on_replace() {
+        let mut store = FactStore::default();
+
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![
+                    config_with_ordinal("test", "convergence.ordering", "stable", Some(2)),
+                    config_with_ordinal("test", "convergence.ordering", "draft", Some(1)),
+                    config("test", "convergence.active", "draft"),
+                ],
+            )
+            .expect("replace configs");
+        assert_eq!(
+            store
+                .configs()
+                .iter()
+                .map(|fact| (fact.key.as_str(), fact.ordinal, fact.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("convergence.active", None, "draft"),
+                ("convergence.ordering", Some(1), "draft"),
+                ("convergence.ordering", Some(2), "stable"),
+            ]
+        );
+
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_with_key("test", "s2", "2026-05-14", "b.md", "status", "stable"),
+                    snapshot_with_key("test", "s1", "2026-05-13", "b.md", "status", "draft"),
+                    snapshot_with_key("test", "s1", "2026-05-13", "a.md", "status", "draft"),
+                ],
+            )
+            .expect("replace snapshots");
+        assert_eq!(
+            store
+                .snapshots()
+                .iter()
+                .map(|fact| {
+                    (
+                        fact.snapshot.as_str(),
+                        fact.at.as_str(),
+                        fact.id.as_str(),
+                        fact.key.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [
+                ("s1", "2026-05-13", "a.md", "status"),
+                ("s1", "2026-05-13", "b.md", "status"),
+                ("s2", "2026-05-14", "b.md", "status"),
+            ]
+        );
     }
 
     #[test]
