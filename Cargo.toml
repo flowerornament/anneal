@@ -71,3 +71,4 @@ strip = false
 [features]
 dhat-heap = ["dep:dhat"]
 scope-overlay = ["anneal-cli/scope-overlay"]
+legacy-time-clone = ["anneal-cli/legacy-time-clone"]

@@ -1288,9 +1288,9 @@ impl Database {
             });
         };
 
-        #[cfg(feature = "scope-overlay")]
+        #[cfg(not(feature = "legacy-time-clone"))]
         let scoped = self.time_scope_overlay(&selection);
-        #[cfg(not(feature = "scope-overlay"))]
+        #[cfg(feature = "legacy-time-clone")]
         let scoped = self.clone_for_time_scope_selection(&selection);
 
         Ok((
@@ -1299,7 +1299,7 @@ impl Database {
         ))
     }
 
-    #[cfg(any(not(feature = "scope-overlay"), test))]
+    #[cfg(any(feature = "legacy-time-clone", test))]
     fn clone_for_time_scope_selection(&self, selection: &SnapshotSelection) -> Self {
         let mut scoped = self.clone_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
@@ -1308,7 +1308,7 @@ impl Database {
         scoped
     }
 
-    #[cfg(feature = "scope-overlay")]
+    #[cfg(not(feature = "legacy-time-clone"))]
     fn time_scope_overlay(&self, selection: &SnapshotSelection) -> Self {
         let mut scoped = self.clone_shell_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
@@ -1331,12 +1331,12 @@ impl Database {
         }
     }
 
-    #[cfg(any(not(feature = "scope-overlay"), test))]
+    #[cfg(any(feature = "legacy-time-clone", test))]
     fn clone_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(self.stored.clone())
     }
 
-    #[cfg(feature = "scope-overlay")]
+    #[cfg(not(feature = "legacy-time-clone"))]
     fn clone_shell_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(BTreeMap::new())
     }
@@ -1356,7 +1356,7 @@ impl Database {
         }
     }
 
-    #[cfg(any(not(feature = "scope-overlay"), test))]
+    #[cfg(any(feature = "legacy-time-clone", test))]
     fn apply_handle_snapshot(&mut self, snapshot_rows: &[NamedRow]) {
         let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
             return;
@@ -1366,11 +1366,9 @@ impl Database {
         }
     }
 
-    #[cfg(feature = "scope-overlay")]
+    #[cfg(not(feature = "legacy-time-clone"))]
     fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
-        let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
-            return None;
-        };
+        let handles = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION))?;
         Some(patched_handle_rows(handles, snapshot_rows).unwrap_or_else(|| handles.rows.clone()))
     }
 
@@ -9051,7 +9049,7 @@ release_blocker(code) := issue(code, "error").
         );
     }
 
-    #[cfg(feature = "scope-overlay")]
+    #[cfg(not(feature = "legacy-time-clone"))]
     #[test]
     fn time_scope_overlay_matches_clone_scope_for_snapshot_rows_and_graph_primitives() {
         let database = time_travel_metric_database();
