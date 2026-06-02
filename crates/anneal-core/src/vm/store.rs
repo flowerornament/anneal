@@ -261,6 +261,14 @@ impl TupleDb {
             .collect()
     }
 
+    pub(crate) fn relation_names(&self) -> BTreeSet<String> {
+        self.relations
+            .keys()
+            .filter_map(|relation| self.schemas.relation(*relation))
+            .filter_map(|schema| self.interner.resolve(schema.name()).map(str::to_owned))
+            .collect()
+    }
+
     fn project_tuple(&self, schema: &RelationSchema, tuple: &Tuple) -> BTreeMap<String, Value> {
         schema
             .fields()

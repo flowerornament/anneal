@@ -5919,6 +5919,8 @@ mod tests {
         summarize_trail_session,
     };
     use crate::visibility::FactVisibility;
+    #[cfg(feature = "physical-substrate")]
+    use crate::{facts::STORED_RELATION_DESCRIPTORS, vm::store::TupleDb};
 
     fn identity(native_id: &str) -> FactIdentity {
         identity_for_source("fixture", native_id)
@@ -6307,6 +6309,97 @@ mod tests {
             )
             .expect("visibility snapshot fixture");
         store
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    #[test]
+    fn tuple_db_lowering_matches_named_database_rows() {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle_with_summary(
+                "b.md",
+                "file",
+                "draft",
+                "",
+                "core",
+                "second handle sorts after a.md",
+            ),
+            handle_with_summary(
+                "a.md",
+                "file",
+                "stable",
+                "",
+                "core",
+                "first handle after canonicalization",
+            ),
+        ];
+        batch.edges = vec![edge("a.md", "b.md", "DependsOn")];
+        batch.meta = vec![meta("a.md", "external_class", "code")];
+        batch.content = vec![content_with_text("a.md", "body", "body text", 2)];
+        batch.spans = vec![span("a.md", "body", 3, 4)];
+        batch.concerns = vec![ConcernFact {
+            identity: identity("concern:C-core:a.md"),
+            name: "C-core".to_string(),
+            member: "a.md".to_string(),
+        }];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merge");
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![
+                    ordered_config("convergence.ordering", "draft", 0),
+                    config("convergence.active", "draft"),
+                ],
+            )
+            .expect("config rows");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![snapshot_fact("s1", "2026-06-02", "a.md", "status", "draft")],
+            )
+            .expect("snapshot rows");
+
+        let named = Database::from_store(&store);
+        let tuple = TupleDb::from_store_with_visibility(&store, |_| true);
+
+        let named_relations = named
+            .stored
+            .keys()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(tuple.relation_names(), named_relations);
+
+        for descriptor in STORED_RELATION_DESCRIPTORS {
+            let relation = Ident::new_unchecked(descriptor.name);
+            let expected = named
+                .stored
+                .get(&relation)
+                .expect("named relation exists")
+                .rows
+                .iter()
+                .map(named_row_to_string_map)
+                .collect::<Vec<_>>();
+            let actual = tuple.projected_rows(descriptor.name);
+            assert_eq!(
+                actual, expected,
+                "tuple lowering must preserve values and canonical row order for {}",
+                descriptor.name
+            );
+        }
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn named_row_to_string_map(row: &NamedRow) -> BTreeMap<String, Value> {
+        row.iter()
+            .map(|(field, value)| (field.to_string(), value.clone()))
+            .collect()
     }
 
     fn restricted_actor() -> ActorContext {
