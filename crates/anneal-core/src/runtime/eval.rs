@@ -5,7 +5,7 @@ use std::fmt;
 use std::io;
 use std::num::NonZeroUsize;
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
 use serde::Serialize;
@@ -779,7 +779,7 @@ pub struct Database {
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
-    search: Arc<SearchIndex>,
+    search: Arc<OnceLock<SearchIndex>>,
     hidden_handles: Arc<BTreeSet<String>>,
     hidden_content_spans: Arc<BTreeMap<String, BTreeSet<String>>>,
     content_provider: Option<Arc<dyn ContentProvider>>,
@@ -794,7 +794,7 @@ impl Default for Database {
             derived: BTreeMap::new(),
             graph: Arc::new(GraphIndex::default()),
             content: Arc::new(ContentIndex::default()),
-            search: Arc::new(SearchIndex::default()),
+            search: Arc::new(OnceLock::new()),
             hidden_handles: Arc::new(BTreeSet::new()),
             hidden_content_spans: Arc::new(BTreeMap::new()),
             content_provider: None,
@@ -824,7 +824,10 @@ impl fmt::Debug for Database {
                     .collect::<BTreeMap<_, _>>(),
             )
             .field("content_spans", &self.content.len())
-            .field("search_documents", &self.search.len())
+            .field(
+                "search_documents",
+                &self.search.get().map_or(0, SearchIndex::len),
+            )
             .field("hidden_handles", &self.hidden_handles.len())
             .field(
                 "hidden_content_spans",
@@ -1011,9 +1014,10 @@ impl Database {
     }
 
     fn search_provider(&self) -> &dyn SearchProvider {
-        self.search_provider
-            .as_deref()
-            .unwrap_or_else(|| self.search.as_ref())
+        match self.search_provider.as_deref() {
+            Some(provider) => provider,
+            None => self.search.get_or_init(|| build_search_index(&self.stored)),
+        }
     }
 
     fn insert_trail_entry(&mut self, entry: &TrailEntryRedacted) {
@@ -1257,7 +1261,9 @@ impl Database {
         for row in rows {
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
             Arc::make_mut(&mut self.content).insert_row(&relation, &row);
-            insert_search_row(Arc::make_mut(&mut self.search), &relation, &row);
+            if let Some(search) = Arc::make_mut(&mut self.search).get_mut() {
+                insert_search_row(search, &relation, &row);
+            }
             stored.push(row);
         }
     }
@@ -2047,6 +2053,16 @@ fn optional_string_constraint(constraints: &[(usize, Value)], position: usize) -
         ArgConstraint::Any | ArgConstraint::Impossible => None,
         ArgConstraint::Exact(value) => Some(value),
     }
+}
+
+fn build_search_index(stored: &BTreeMap<Ident, StoredRelation>) -> SearchIndex {
+    let mut search = SearchIndex::default();
+    for (relation, rows) in stored {
+        for row in &rows.rows {
+            insert_search_row(&mut search, relation, row);
+        }
+    }
+    search
 }
 
 fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow) {
