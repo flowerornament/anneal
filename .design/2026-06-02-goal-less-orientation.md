@@ -2,13 +2,22 @@
 status: draft
 ---
 
-# Goal-less orientation: the cold-start gap `status` left behind
+# Status is aggregate; orientation is a query: fixing the cold-start surface
 
-A cold agent arriving at a corpus with **no specific goal** has no good
-entrypoint. `status` shows convergence *problems*; `context` *requires* a goal.
-The "what is this place, what's authoritative, where do I start reading"
-question — orientation — has no home. This is a CR-D2 (cold-agent test)
-regression, found by dogfooding `anneal status` on the murail corpus (2026-06-02).
+Two coupled defects, one elegant fix, **no new command**:
+
+1. `status` became `garden` — a per-handle list of problems to fix — instead of
+   a *status*: an aggregate readout of how the corpus is doing.
+2. Goal-less orientation ("what is this, what do I read first") has no home:
+   `context` requires a goal; the old `orient` verb was retired in v0.13 and
+   nothing absorbed it. A CR-D2 (cold-agent test) regression.
+
+Both trace to one root — **`status` is wired to a per-handle predicate when its
+job is aggregate** — and resolve together: make `status` the aggregate
+dashboard, and make orientation a pair of *taught prelude predicates + queries*
+rather than a command. This keeps anneal's thesis intact (a minimal verb surface
+over a rich queryable language; agents learn and compose the Datalog) and adds
+zero CLI surface. Found dogfooding `anneal status` on murail (2026-06-02).
 
 ## Evidence
 
@@ -48,18 +57,51 @@ Not "what's wrong" (that's `status`) and not "answer my question" (that's
 
 - **What is this?** Scale (files, handles), shape (status histogram, areas),
   the corpus's own vocabulary.
-- **What's load-bearing?** The authoritative / foundation documents — high
-  incoming-citation hubs, `authoritative`/`stable`/`reference` status, curated
-  entry points (README/OVERVIEW/INDEX/DESIGN-GOALS by convention). "Read these
-  first."
-- **Where is it moving?** The active frontier — but as one section among
-  orientation, not the whole report.
+- **Where is the frontier?** Recency-first: the most recently moved specs.
+  See "Specs are a moving frontier" below — this is the *dominant* signal.
+- **What are the durable anchors?** The *small* set of living-authoritative
+  documents the frontier still cites (formal-model v17 in murail), and curated
+  entry points (README/OVERVIEW/INDEX/DESIGN-GOALS by convention). NOT "every
+  high-citation hub."
 
-The old `orient` command had exactly this instinct (Frontier = where work is now,
-Foundation = stable hubs the frontier still cites, with curated-hub bonuses). Its
+### Specs are a moving frontier (the load-bearing design input)
+
+Morgan, 2026-06-02: in practice these corpora work from the **most recent**
+specs. Keeping old docs up to date is computationally infeasible, so old docs
+**rot rather than getting maintained** — staleness is the norm, not a defect to
+surface. The exception is a small set of *living-authoritative* anchors that are
+deliberately kept current (murail's formal-model, currently v17).
+
+This inverts the naive "foundation = most-cited hubs" model. An old, heavily
+cited document is usually **archaeology, not foundation** — citation mass
+accumulates with age, so ranking by it surfaces exactly the stale docs an agent
+should *not* start from. The orientation ranking must therefore be:
+
+- **Recency-dominant for the frontier tier.** Newest-moved specs first; this is
+  where real work and current intent live. (`changed_within` / git-mtime, which
+  the runtime already has.)
+- **Authority as a small curated/living tier, not a citation-mass tier.**
+  Surface the deliberately-maintained anchors (status `authoritative`/`living`,
+  or a `purpose:`-style curated marker, or a configured short list like
+  formal-model) — a handful, not a ranked dump of old hubs.
+- **Log-scale and recency-weight any citation signal** so inbound mass cannot
+  drown recency. This is precisely the bug the legacy `orient` already fixed
+  (see 0.9.1/0.9.2 CHANGELOG: exponential recency decay + `ln(count+1)` inbound,
+  added *because* old label-anchors were beating recent active specs). Do not
+  re-introduce it.
+
+The balancing act: recency-first surfaces the working frontier but would bury
+the stable v17-style anchors that *are* worth reading first; the curated/living
+tier exists to hold those up explicitly. Two tiers, with recency driving the
+frontier and explicit authority (not citation age) driving the anchors.
+
+The old `orient` command had exactly this instinct (Frontier = where work is now
+by recency; Foundation = the living anchors the frontier still cites, with
+recency-weighted inbound and curated-hub bonuses — *not* raw citation mass). Its
 logic survives in `crates/anneal-legacy/src/cli/orient.rs` as reference — not to
-resurrect wholesale, but the two-tier "frontier + foundation" framing is the
-right one and predates the regression.
+resurrect wholesale, but the two-tier "frontier + foundation" framing, and
+specifically its recency-weighting fix, is the right one and predates the
+regression.
 
 ## The statusless-majority problem (design must handle this)
 
@@ -71,9 +113,9 @@ filenames, recency) that exist regardless of status. The runtime already exposes
 and `changed_within` — orientation is largely a matter of composing these, not
 new primitives.
 
-## Surface options (the decision)
+## Surface options (considered)
 
-Three shapes; not mutually exclusive, but pick the primary:
+Three shapes were weighed (decision in the next section):
 
 1. **Restore a goal-less `orient` verb.** A dedicated arrival surface: corpus
    shape + foundation hubs + frontier, no goal required. Pro: clean separation
@@ -91,25 +133,178 @@ Three shapes; not mutually exclusive, but pick the primary:
    behaviors (orient vs retrieve-for-goal); the no-goal output is a different
    shape than the goal-driven one.
 
-Lean (per first analysis, open to codex/Morgan): **option 2 as the primary** —
-`status` should deliver on the arrival promise its own help text makes
-("use this as the arrival command"), led by orientation, with the convergence
-frontier as a section within it. It keeps the surface narrow (no new verb) and
-fixes the exact "status is all-diagnostic" complaint at its source. A goal-less
-`context` (option 3) is a reasonable secondary alias. Restoring `orient`
-(option 1) is the cleanest conceptually but adds surface; only if 2 proves too
-crowded.
+## Decision: no new command — `status` becomes aggregate, orientation becomes a taught query
 
-## Open questions for review
+Converged claude + codex + Morgan, 2026-06-02. Codex argued to restore an
+`orient` verb; Morgan overrode, and the override is right *on anneal's own
+thesis*: the product is **a minimal verb surface over a rich queryable
+language** — the whole point is agents learning the Datalog and being creative
+with it. A bespoke `orient` command is the un-anneal move; it re-grows the noun
+catalog the v0.13 reduction deliberately cut. The elegant fix makes orientation
+a **language capability**, not a command.
 
-- Primary surface: status-header vs goal-less-context vs restored-orient?
-- Foundation ranking: reuse legacy `orient`'s recency-weighted incoming-degree +
-  curated-hub bonus, or a simpler `hub`-degree + authoritative-status pass?
-- Does orientation need budget/pagination (murail is 1576 handles)? Almost
-  certainly — a bounded "top N foundation, top N frontier," like `context --hits`.
-- Statusless handles: surface them via graph signals, or flag the corpus as
-  "low status adoption, orientation is graph-only here" (an honest CR-R12-style
-  signal about the corpus's own shape)?
-- Interaction with the perf-architecture arc: this is prelude/verb-layer work
-  (composing existing predicates), mostly independent of the runtime rewrite —
-  can proceed in parallel.
+The real defect, stated precisely: **`status` was miscategorized.** It is wired
+to `status_item(section, h, score, why)` — a **per-handle** predicate — so it can
+only render as *a list of handles to fix*. That is `garden`, not status. A true
+status is **aggregate**: vital signs about the whole corpus. The fix is a
+data-shape fix, and it splits cleanly along a single principle:
+
+> **`status` is the only aggregate verb. Everything else is the language.**
+
+Resulting surface — **no new command**:
+
+- **`anneal status`** — becomes a true **state readout / dashboard**: all
+  aggregates (scale, lifecycle coverage, pipeline histogram, health counts,
+  movement), zero per-handle dumps. It answers "how is this corpus doing?" and
+  ends with **pointers that teach the queries** for the deeper views (orientation
+  reading-list, problem work-list). It stops being `garden` because it stops
+  emitting per-handle rows at all.
+- **Orientation = taught prelude predicates + a worked query**, surfaced through
+  the *existing* language surface (`describe`, `help`, the status pointer):
+  ```
+  anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: f}.'
+  anneal -e '? anchor(h, score, why), *handle{id: h, file: f}.'
+  ```
+  New prelude predicates (`recent_frontier`, `anchor`) carry the ranking; the
+  "reading list" is a query an agent runs and can then *modify* — filter by area,
+  widen the window, join to `read`. That's strictly more powerful than a fixed
+  `orient` command, and it teaches the language instead of hiding it.
+- **`context GOAL`** — goalful retrieval, unchanged. No-goal `context` recovers
+  with a hint pointing at the orientation query, not a silent mode-flip.
+
+Why this satisfies both of Morgan's nudges at once: "status should be *status*"
+(it becomes pure aggregate vital-signs) and "do both a bit / avoid a new
+command" (status carries orientation *pointers* + a coverage line, but the
+orientation workflow itself lives in the language, not a verb). The
+"status-does-both" worry dissolves: status does aggregates + points; the
+ranked-handle work is `-e` queries the agent owns.
+
+## Ranking model (recency-frontier + durable anchors)
+
+Two top-level tiers, NOT one "foundation = most-cited" ranking:
+
+1. **Recent frontier / live specs.** Recency-weighted, status-aware,
+   graph-aware. In a moving-frontier corpus, recency is *truth-proximity*, not a
+   tie-breaker — this is the first thing a cold agent should see.
+2. **Anchors.** Durable load-bearing docs that stay true despite age:
+   `stable`/`reference`/`authoritative`/`living` status, curated hub names,
+   high incoming degree, explicit `purpose:` cues. A handful, deliberately held
+   up — not a ranked dump of old hubs.
+
+Recency applies **strongly** to the frontier tier and **weakly** to anchors —
+else a fresh-but-peripheral doc beats formal-model-v17 (over-recency), or pure
+hub-degree over-ranks stale archaeology (the legacy 0.9.1/0.9.2 bug:
+exponential recency decay + `ln(count+1)` inbound were added precisely because
+old label-anchors beat recent active specs — do not regress it). Mine the legacy
+`orient` scoring instincts; do not resurrect it wholesale.
+
+## Statusless-majority handling
+
+Orientation is **graph-first, status-optional**. murail's 1203/1576 `status:null`
+means lifecycle status is not the corpus's primary navigation substrate; rank on
+recency + graph signals (`hub`, `incoming_edge`, `neighborhood`, `changed_within`
+— all already in the runtime), using status only as a boost/filter where the
+corpus provides it. Do NOT globally punish `status:null` (many statusless docs
+are central references). Emit a CR-R12-style honesty line:
+`status coverage: 24% — orientation is graph+recency-led`.
+
+The ranked-handle output is a *query the agent runs*, so budgeting is the
+agent's `--limit` / a `TopK` in the query, not a fixed command's pagination — one
+more reason orientation belongs in the language, not a verb.
+
+## The new `status` (aggregate dashboard)
+
+All lines are aggregates (`Count{}` / histogram predicates); **no per-handle
+rows**. Target shape:
+
+```
+Status — <corpus>
+  Scale        1576 handles · 24% lifecycle coverage (1203 statusless)
+  Pipeline     raw 0 → draft 1 → research 2 → exploratory 3 → plan 4 → current 5 → active 6
+  Convergence  146 holding · 0 advancing · 0 drifting   (no snapshot history — re-run to accrue)
+  Health       2 broken · 6 blocked · 11 spec-code-drift
+  Read first   12 recent frontier · 5 anchors
+               ? recent_frontier(h, rank, recency), *handle{id: h, file: f}.
+  Work         8 problems
+               ? diagnostic{severity: "error", subject: h}.
+```
+
+The bottom two lines are the "do both a bit": status *names the counts* and
+*hands the agent the query* to expand each — orientation and work-list become
+one-line teachable queries, not inline dumps. `status coverage: 24%` is the
+CR-R12 honesty line (this corpus is graph+recency-led, not status-led).
+
+## How this maps to the Datalog (the heart of the plan)
+
+The surface confusion is a predicate-category confusion. The prelude already has
+both kinds; the verbs were mismatched:
+
+| category | predicates (exist today) | belongs to |
+|---|---|---|
+| **aggregate** | `configured_pipeline_status`, `area_file_count`, `frontmatter_adoption_high`, `Count{}` rollups | **`status`** |
+| **per-handle** | `status_item`, `frontier`, `blocker`, `diagnostic` | the language (`-e`) |
+
+Work, in three Datalog pieces:
+
+1. **Aggregate rollups for `status`.** Add prelude predicates the dashboard
+   reads: a corpus-scale/coverage rollup, a convergence-count rollup
+   (`Count{ h : holding(h) }` etc.), reuse `configured_pipeline_status` for the
+   histogram. `status` becomes a thin projection over these — *not* `status_item`.
+2. **The missing orientation predicates** (the real new language surface):
+   - `recent_frontier(h, rank, recency)` — recency-dominant, status-aware,
+     graph-aware; the "what's live" tier. Recency strong here.
+   - `anchor(h, score, why)` — durable load-bearing docs; recency-weak,
+     authority/curation/graph-degree driven; the "read-first-despite-age" tier.
+   Both per-handle and `-e`-queryable, so agents compose/modify them (filter by
+   area, widen window, join `read`). This is the strictly-more-powerful-than-a-
+   command win, and the actual new Datalog work.
+3. **`status_item` demotion.** It stops backing `status`. It can remain a
+   queryable predicate (or be folded into `frontier`/`blocker`) — but the
+   `status` *verb* no longer renders it.
+
+Provenance/inspectability: because ranking lives in `recent_frontier`/`anchor`
+predicates (not CLI Rust), an agent can `describe recent_frontier` to learn the
+scoring and `--explain` a row to see why it ranked. Ranking that teaches itself.
+
+Connection to the perf-architecture arc (epic anneal-g0l4): the aggregate
+`Count{}` rollups `status` will lean on are exactly what the planned evaluator +
+tuple indexes make cheap; today they re-run the fixpoint. The two efforts are
+independent (this is prelude/verb-layer, that is runtime-core) but aligned —
+status-as-aggregate gets faster for free when the arc lands.
+
+## Ranking the two tiers (details)
+
+`recent_frontier`: recency-dominant (exponential decay, `changed_within`/
+git-mtime), status as a boost where present, light graph signal. `anchor`:
+authority/curation-driven (`stable`/`reference`/`authoritative`/`living` status,
+curated hub filenames, `ln(count+1)` recency-weighted incoming degree), recency
+**weak** so formal-model-v17 stays up despite age. Do not regress the legacy
+0.9.1/0.9.2 fix (recency decay + log-scaled inbound, added because old
+label-anchors beat recent specs). Mine `anneal-legacy/src/cli/orient.rs` for the
+scoring instincts; reimplement as v2 prelude predicates — do not port the command.
+
+## Phased plan
+
+1. **`status` → aggregate.** Define the rollup predicates; rewire the `status`
+   verb to project them; add the coverage honesty line + the two pointer lines.
+   This alone fixes "status is garden." Differential check: aggregate counts
+   match what the old per-handle lists summed to.
+2. **Orientation predicates.** Add `recent_frontier` + `anchor` to the prelude
+   with `describe` cards teaching the scoring; the status pointers reference
+   them. Validate on murail (recent specs surface; formal-model-v17 stays an
+   anchor despite age) and on a statusless-heavy slice (graph+recency still
+   orients).
+3. **Teaching.** `help`/SKILL/README: the cold-start ladder becomes
+   `status` (how is it doing) → `recent_frontier`/`anchor` queries (what do I
+   read) → `context GOAL` (answer my question). No new verb to document.
+
+## Open (smaller) questions
+
+- `status` pointer lines: always shown, or only when the relevant count is
+  non-zero / coverage is low?
+- Anchor curation: pure signal-derived, or also a configurable living-spine list
+  (`config orient { anchors([...]). }`) for corpora like murail with a known
+  authoritative spine (formal-model)? Leaning: signal-derived first, config as
+  an override escape hatch.
+- Do `recent_frontier`/`anchor` belong in `convergence.dl` or a new
+  `orientation.dl` prelude module? (Lean: new module — distinct concern.)
