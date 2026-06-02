@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn status_verb_projects_disjoint_arrival_sections() {
+    fn status_verb_projects_aggregate_metrics() {
         let verbs = views_verb_declarations();
         let status = verbs.get("status").expect("status verb is declared");
         let query = status.string_arg("query").expect("@verb has query");
@@ -900,32 +900,27 @@ mod tests {
 
         assert!(has_row(
             &output,
+            &[("category", string("scale")), ("name", string("handles")),],
+        ));
+        assert!(has_row(
+            &output,
             &[
-                ("section", string("broken")),
-                ("h", string("ticket-1")),
-                ("score", int(100)),
-                ("why", string("E001")),
+                ("category", string("convergence")),
+                ("name", string("broken")),
             ],
         ));
-        for section in ["work", "blocked", "holding"] {
-            assert!(
-                !has_row(
-                    &output,
-                    &[("section", string(section)), ("h", string("ticket-1"))]
-                ),
-                "higher-priority broken handles should not repeat in {section}: {:?}",
-                output.rows
-            );
-        }
+        assert!(has_row(
+            &output,
+            &[
+                ("category", string("convergence")),
+                ("name", string("blocked")),
+            ],
+        ));
     }
 
     #[test]
-    fn status_verb_prioritizes_each_handle_into_one_section() {
-        let verbs = views_verb_declarations();
-        let status = verbs.get("status").expect("status verb is declared");
-        let query = status.string_arg("query").expect("@verb has query");
-        let source = format!(
-            r#"
+    fn status_item_prioritizes_each_handle_into_one_section() {
+        let source = r#"
             diagnostic("E001", "error", "broken", null, null, null).
             blocked("broken").
             potential("broken", 4).
@@ -946,10 +941,13 @@ mod tests {
 
             potential("open", 1).
 
-            {query}
-            "#
-        );
-        let output = evaluate_raw_query("status-priority", &source, Database::default());
+            ? status_item(section, h, score, why).
+            "#;
+        let mut program = standard_prelude_program().expect("standard prelude parses");
+        let facts = parse_program("status-item-priority", source).expect("query parses");
+        program.statements.extend(facts.statements);
+        let output =
+            evaluate_program_query("status-item-priority", program, standard_library_database());
 
         assert_status_sections(&output, "broken", &["broken"]);
         assert_status_sections(&output, "blocked", &["blocked"]);
@@ -1069,11 +1067,6 @@ mod tests {
         let query_program = lower_verb_query(name, query);
         let mut program = standard_prelude_program().expect("standard prelude parses");
         program.statements.extend(query_program.statements);
-        evaluate_program_query(name, program, database)
-    }
-
-    fn evaluate_raw_query(name: &str, source: &str, database: Database) -> QueryOutput {
-        let program = parse_program(name, source).expect("query parses");
         evaluate_program_query(name, program, database)
     }
 

@@ -150,7 +150,7 @@ fn empty_corpus_status_explains_zero_rows() {
 
     assert_success(&output);
     let stdout = text(&output.stdout);
-    assert!(stdout.contains("(0 rows)"), "{stdout}");
+    assert!(stdout.contains("Scale        0 handles"), "{stdout}");
     assert!(
         stdout.contains("no corpus facts found; root may be empty or unresolved"),
         "{stdout}"

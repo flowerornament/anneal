@@ -347,3 +347,56 @@ drifting(h) := re_opened(h).
 flow(h, "advancing") := advancing(h).
 flow(h, "holding") := holding(h).
 flow(h, "drifting") := drifting(h).
+
+@doc(
+  name: "status_item",
+  doc: "Return the legacy per-handle status frontier rows. The status verb now renders aggregate vital signs; use status_item directly when you want the old handle list."
+).
+@predicate(
+  name: "status_item",
+  args: ["section", "h", "score", "why"]
+).
+status_broken(h) :=
+  diagnostic(code, "error", h, file, line, evidence).
+
+status_flow(h) := advancing(h).
+status_flow(h) := holding(h).
+status_flow(h) := drifting(h).
+
+status_drifting_reason(h, "re_opened") :=
+  re_opened(h).
+
+status_drifting_reason(h, "regressed") :=
+  regressed(h),
+  not re_opened(h).
+
+status_item("work", h, energy, "potential") :=
+  potential(h, energy),
+  not status_broken(h),
+  not blocked(h),
+  not status_flow(h).
+
+status_item("blocked", h, energy, source) :=
+  blocked(h),
+  potential(h, energy),
+  primary_entropy(h, source),
+  not status_broken(h).
+
+status_item("advancing", h, 0, "recently_advanced") :=
+  advancing(h),
+  not status_broken(h),
+  not blocked(h).
+
+status_item("holding", h, energy, "holding") :=
+  holding(h),
+  potential(h, energy),
+  not status_broken(h),
+  not blocked(h).
+
+status_item("drifting", h, 0, why) :=
+  status_drifting_reason(h, why),
+  not status_broken(h),
+  not blocked(h).
+
+status_item("broken", h, 100, code) :=
+  diagnostic(code, "error", h, file, line, evidence).

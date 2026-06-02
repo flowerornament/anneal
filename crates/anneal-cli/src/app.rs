@@ -2190,16 +2190,6 @@ fn write_status_text<W: Write>(
     rows: &[Row],
     flow_baseline_ready: bool,
 ) -> Result<()> {
-    const SECTION_ORDER: [&str; 6] = [
-        "broken",
-        "blocked",
-        "work",
-        "advancing",
-        "holding",
-        "drifting",
-    ];
-    const MAX_ROWS_PER_SECTION: usize = 12;
-
     writeln!(writer, "Status")?;
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
@@ -2210,33 +2200,65 @@ fn write_status_text<W: Write>(
         return Ok(());
     }
 
-    let mut sections: BTreeMap<&str, Vec<StatusRow<'_>>> = BTreeMap::new();
+    let mut metrics = BTreeMap::<(&str, &str), StatusMetric<'_>>::new();
+    let mut pipeline = Vec::new();
     for row in rows {
-        let row = StatusRow::from_row(row)?;
-        sections.entry(row.section).or_default().push(row);
+        let metric = StatusMetric::from_row(row)?;
+        if metric.category == "pipeline" {
+            pipeline.push(metric);
+        }
+        metrics.insert((metric.category, metric.name), metric);
     }
-    for section_rows in sections.values_mut() {
-        section_rows.sort_by(compare_status_rows);
+
+    let total_handles = metric_count(&metrics, "scale", "handles");
+    let file_handles = metric_count(&metrics, "scale", "file_handles");
+    let files_with_status = metric_count(&metrics, "scale", "file_handles_with_status");
+    let statusless_files = metric_count(&metrics, "scale", "statusless_file_handles");
+    let coverage = percentage(files_with_status, file_handles);
+
+    writeln!(
+        writer,
+        "Scale        {total_handles} handles · {file_handles} files · {coverage}% lifecycle coverage ({statusless_files} statusless files)"
+    )?;
+    if total_handles == 0 {
+        writeln!(
+            writer,
+            "Note: no corpus facts found; root may be empty or unresolved."
+        )?;
+    }
+    writeln!(
+        writer,
+        "Coverage     {coverage}% of file handles carry lifecycle status; orientation is graph+recency-led"
+    )?;
+
+    if !pipeline.is_empty() {
+        pipeline.sort_by(|left, right| left.name.cmp(right.name));
+        let parts = pipeline
+            .iter()
+            .map(|metric| format!("{} {}", metric.name, display_number(metric.count)))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        writeln!(writer, "Pipeline     {parts}")?;
     }
 
     if flow_baseline_ready {
         writeln!(
             writer,
             "Convergence  broken={}  blocked={}  open={}  advancing={}  holding={}  drifting={}",
-            section_len(&sections, "broken"),
-            section_len(&sections, "blocked"),
-            section_len(&sections, "work"),
-            section_len(&sections, "advancing"),
-            section_len(&sections, "holding"),
-            section_len(&sections, "drifting")
+            metric_count(&metrics, "convergence", "broken"),
+            metric_count(&metrics, "convergence", "blocked"),
+            metric_count(&metrics, "convergence", "open"),
+            metric_count(&metrics, "convergence", "advancing"),
+            metric_count(&metrics, "convergence", "holding"),
+            metric_count(&metrics, "convergence", "drifting")
         )?;
     } else {
         writeln!(
             writer,
             "Convergence  broken={}  blocked={}  open={}  advancing=-  holding=-  drifting=-",
-            section_len(&sections, "broken"),
-            section_len(&sections, "blocked"),
-            section_len(&sections, "work")
+            metric_count(&metrics, "convergence", "broken"),
+            metric_count(&metrics, "convergence", "blocked"),
+            metric_count(&metrics, "convergence", "open")
         )?;
         writeln!(
             writer,
@@ -2245,61 +2267,58 @@ fn write_status_text<W: Write>(
         writeln!(writer, "      Run `anneal status` again to populate.")?;
     }
 
-    for section in SECTION_ORDER
-        .into_iter()
-        .chain(sections.keys().copied().filter(|section| {
-            !SECTION_ORDER
-                .iter()
-                .any(|ordered| ordered.eq_ignore_ascii_case(section))
-        }))
-    {
-        let Some(section_rows) = sections.get(section) else {
-            continue;
-        };
-        writeln!(writer)?;
-        writeln!(writer, "{}", section_title(section))?;
-        for (index, row) in section_rows.iter().take(MAX_ROWS_PER_SECTION).enumerate() {
-            writeln!(
-                writer,
-                "{:>2}. {}  score={}  {}",
-                index + 1,
-                row.handle,
-                display_number(row.score),
-                row.why
-            )?;
-        }
-        let omitted = section_rows.len().saturating_sub(MAX_ROWS_PER_SECTION);
-        if omitted > 0 {
-            writeln!(writer, "    ... {omitted} more")?;
-        }
-    }
+    writeln!(
+        writer,
+        "Health       errors={}  blockers={}  spec_code_drift={}",
+        metric_count(&metrics, "health", "errors"),
+        metric_count(&metrics, "health", "blockers"),
+        metric_count(&metrics, "health", "spec_code_drift")
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "Read first")?;
+    writeln!(
+        writer,
+        "  anneal -e '? recent_frontier(h, rank, recency), *handle{{id: h, file: file}}.' --limit 12"
+    )?;
+    writeln!(
+        writer,
+        "  anneal -e '? anchor(h, score, why), *handle{{id: h, file: file}}.' --limit 12"
+    )?;
+    writeln!(writer, "Work")?;
+    writeln!(
+        writer,
+        "  anneal -e '? diagnostic{{code: code, severity: severity, subject: h, file: file, line: line}}.' --limit 12"
+    )?;
+    writeln!(
+        writer,
+        "  anneal -e '? blocker(h, energy, source), *handle{{id: h, file: file, status: status}}.' --limit 12"
+    )?;
     Ok(())
 }
 
-fn section_len(sections: &BTreeMap<&str, Vec<StatusRow<'_>>>, section: &str) -> usize {
-    sections.get(section).map_or(0, Vec::len)
+fn metric_count(
+    metrics: &BTreeMap<(&str, &str), StatusMetric<'_>>,
+    category: &str,
+    name: &str,
+) -> i64 {
+    metrics
+        .get(&(category, name))
+        .and_then(|metric| number_to_i64(metric.count))
+        .unwrap_or(0)
 }
 
-fn compare_status_rows(left: &StatusRow<'_>, right: &StatusRow<'_>) -> std::cmp::Ordering {
-    right
-        .score
-        .cmp(left.score)
-        .then_with(|| status_reason_rank(left.why).cmp(&status_reason_rank(right.why)))
-        .then_with(|| left.handle.cmp(right.handle))
+fn percentage(numerator: i64, denominator: i64) -> i64 {
+    if denominator <= 0 {
+        0
+    } else {
+        numerator.saturating_mul(100) / denominator
+    }
 }
 
-fn status_reason_rank(reason: &str) -> u8 {
-    match reason {
-        "E001" | "broken_ref" => 0,
-        "undischarged" => 1,
-        "stale_dep" => 2,
-        "confidence_gap" => 3,
-        "freshness_decay" => 4,
-        "missing_meta" => 5,
-        "orphan_label" => 6,
-        "potential" => 7,
-        "recently_advanced" => 8,
-        _ => 9,
+fn number_to_i64(number: &NumberValue) -> Option<i64> {
+    match number {
+        NumberValue::Int(value) => Some(*value),
+        NumberValue::Float(_) => None,
     }
 }
 
@@ -2752,32 +2771,19 @@ fn write_handle_impact_group<W: Write>(writer: &mut W, heading: &str, rows: &[&R
     Ok(())
 }
 
-fn section_title(section: &str) -> String {
-    if section == "work" {
-        return "Open".to_string();
-    }
-
-    let mut chars = section.chars();
-    let Some(first) = chars.next() else {
-        return "Other".to_string();
-    };
-    first.to_uppercase().chain(chars).collect()
+#[derive(Clone, Copy)]
+struct StatusMetric<'a> {
+    category: &'a str,
+    name: &'a str,
+    count: &'a NumberValue,
 }
 
-struct StatusRow<'a> {
-    section: &'a str,
-    handle: &'a str,
-    score: &'a NumberValue,
-    why: &'a str,
-}
-
-impl<'a> StatusRow<'a> {
+impl<'a> StatusMetric<'a> {
     fn from_row(row: &'a Row) -> Result<Self> {
         Ok(Self {
-            section: required_string(row, "section")?,
-            handle: required_string(row, "h")?,
-            score: required_number(row, "score")?,
-            why: required_string(row, "why")?,
+            category: required_string(row, "category")?,
+            name: required_string(row, "name")?,
+            count: required_number(row, "count")?,
         })
     }
 }
@@ -4068,20 +4074,21 @@ mod tests {
     }
 
     #[test]
-    fn status_human_render_groups_sections() {
+    fn status_human_render_shows_aggregate_dashboard_and_pointers() {
         let output = status_output(vec![
-            row(&[
-                ("section", Value::String("work".to_string())),
-                ("h", Value::String("plan.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(42))),
-                ("why", Value::String("potential".to_string())),
-            ]),
-            row(&[
-                ("section", Value::String("broken".to_string())),
-                ("h", Value::String("bad.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(100))),
-                ("why", Value::String("E001".to_string())),
-            ]),
+            status_metric("scale", "handles", 10),
+            status_metric("scale", "file_handles", 8),
+            status_metric("scale", "file_handles_with_status", 2),
+            status_metric("scale", "statusless_file_handles", 6),
+            status_metric("convergence", "broken", 1),
+            status_metric("convergence", "blocked", 2),
+            status_metric("convergence", "open", 3),
+            status_metric("convergence", "advancing", 4),
+            status_metric("convergence", "holding", 5),
+            status_metric("convergence", "drifting", 6),
+            status_metric("health", "errors", 1),
+            status_metric("health", "blockers", 2),
+            status_metric("health", "spec_code_drift", 1),
         ]);
         let mut rendered = Vec::new();
 
@@ -4091,22 +4098,34 @@ mod tests {
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.starts_with("Status\n"));
+        assert!(rendered.contains("Scale        10 handles · 8 files · 25% lifecycle coverage"));
+        assert!(
+            rendered.contains("Coverage     25% of file handles carry lifecycle status; orientation is graph+recency-led")
+        );
         assert!(rendered.contains(
-            "Convergence  broken=1  blocked=0  open=1  advancing=0  holding=0  drifting=0"
+            "Convergence  broken=1  blocked=2  open=3  advancing=4  holding=5  drifting=6"
         ));
-        assert!(rendered.contains("Broken\n 1. bad.md"));
-        assert!(rendered.contains("Open\n 1. plan.md"));
+        assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
+        assert!(rendered.contains("Read first"));
+        assert!(rendered.contains("recent_frontier(h, rank, recency)"));
+        assert!(rendered.contains("anchor(h, score, why)"));
+        assert!(rendered.contains("Work"));
+        assert!(rendered.contains("diagnostic{code: code, severity: severity"));
+        assert!(!rendered.contains("bad.md"));
     }
 
     #[test]
     fn status_human_render_marks_flow_pending_without_snapshot_baseline() {
         let output = status_output_with_baseline(
-            vec![row(&[
-                ("section", Value::String("work".to_string())),
-                ("h", Value::String("plan.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(42))),
-                ("why", Value::String("potential".to_string())),
-            ])],
+            vec![
+                status_metric("scale", "handles", 1),
+                status_metric("scale", "file_handles", 1),
+                status_metric("scale", "file_handles_with_status", 1),
+                status_metric("scale", "statusless_file_handles", 0),
+                status_metric("convergence", "broken", 0),
+                status_metric("convergence", "blocked", 0),
+                status_metric("convergence", "open", 1),
+            ],
             false,
         );
         let mut rendered = Vec::new();
@@ -4124,26 +4143,14 @@ mod tests {
     }
 
     #[test]
-    fn status_human_render_sorts_by_score_and_reason_signal() {
+    fn status_human_render_orders_pipeline_rows_by_status_name() {
         let output = status_output(vec![
-            row(&[
-                ("section", Value::String("blocked".to_string())),
-                ("h", Value::String("metadata.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(3))),
-                ("why", Value::String("missing_meta".to_string())),
-            ]),
-            row(&[
-                ("section", Value::String("blocked".to_string())),
-                ("h", Value::String("dependency.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(3))),
-                ("why", Value::String("stale_dep".to_string())),
-            ]),
-            row(&[
-                ("section", Value::String("blocked".to_string())),
-                ("h", Value::String("broken.md".to_string())),
-                ("score", Value::Number(NumberValue::Int(4))),
-                ("why", Value::String("broken_ref".to_string())),
-            ]),
+            status_metric("scale", "handles", 1),
+            status_metric("scale", "file_handles", 1),
+            status_metric("scale", "file_handles_with_status", 1),
+            status_metric("scale", "statusless_file_handles", 0),
+            status_metric("pipeline", "stable", 2),
+            status_metric("pipeline", "draft", 3),
         ]);
         let mut rendered = Vec::new();
 
@@ -4152,23 +4159,15 @@ mod tests {
             .expect("render status");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
-        let broken = rendered.find("broken.md").expect("broken row");
-        let dependency = rendered.find("dependency.md").expect("dependency row");
-        let metadata = rendered.find("metadata.md").expect("metadata row");
         assert!(
-            broken < dependency && dependency < metadata,
-            "rendered status should order high scores first, then stronger reasons:\n{rendered}"
+            rendered.contains("Pipeline     draft 3 · stable 2"),
+            "pipeline should render deterministically:\n{rendered}"
         );
     }
 
     #[test]
     fn status_json_render_preserves_ndjson() {
-        let output = status_output(vec![row(&[
-            ("section", Value::String("work".to_string())),
-            ("h", Value::String("plan.md".to_string())),
-            ("score", Value::Number(NumberValue::Int(42))),
-            ("why", Value::String("potential".to_string())),
-        ])]);
+        let output = status_output(vec![status_metric("convergence", "open", 42)]);
         let mut rendered = Vec::new();
 
         output
@@ -4177,7 +4176,7 @@ mod tests {
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.starts_with(
-            "{\"h\":\"plan.md\",\"score\":42,\"section\":\"work\",\"why\":\"potential\"}\n"
+            "{\"category\":\"convergence\",\"count\":42,\"detail\":null,\"name\":\"open\"}\n"
         ));
     }
 
@@ -4598,6 +4597,15 @@ mod tests {
             rows,
             flow_baseline_ready,
         })
+    }
+
+    fn status_metric(category: &str, name: &str, count: i64) -> Row {
+        row(&[
+            ("category", Value::String(category.to_string())),
+            ("name", Value::String(name.to_string())),
+            ("count", Value::Number(NumberValue::Int(count))),
+            ("detail", Value::Null),
+        ])
     }
 
     #[test]
