@@ -2,19 +2,51 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## v0.15.0 - 2026-06-01
+
+anneal surfaces spec→code drift, and gets markedly faster.
+
+This release adds spec→code coherence — a live, code-authoritative spec that
+cites a code path which existed in history but is now gone is flagged as drift —
+and lands a round of runtime performance work that cuts cold-start cost on large
+corpora by roughly 3.6×.
 
 ### Added
 
-- Added `W006` / `spec_code_drift` for specs that assert current code and cite
-  paths that existed in HEAD history but are now missing on disk.
-- Added `target_history_status` metadata (`present`, `absent`, `unavailable`)
-  for code external handles so W006's drift decision is auditable.
-- Added `config convergence { asserts_code([...]). }` and
-  `asserts_code(status)` so each corpus declares which lifecycle statuses make
-  claims about current code. When unconfigured, W006 falls back to active
-  statuses minus the aspirational study tier (`plan`, `research`, `reference`,
-  `exploratory`).
+- `W006` / `spec_code_drift`: a live spec that asserts current code and cites a
+  path which existed in HEAD history but is now missing on disk is flagged. The
+  signal is git-history-gated (a path that was never tracked here — an
+  illustration, an external-codebase study, a forward plan — is not drift) and
+  status-gated by `asserts_code`, so it surfaces real intent/implementation
+  divergence rather than noise.
+- `target_history_status` metadata (`present`, `absent`, `unavailable`) on code
+  external handles, so W006's drift decision is auditable.
+- `config convergence { asserts_code([...]). }` and the `asserts_code(status)`
+  predicate, so each corpus declares which lifecycle statuses make claims about
+  current code. Unconfigured, it defaults to active statuses minus the
+  aspirational tier (`plan`, `research`, `reference`, `exploratory`).
+- A `cold_start_honesty` integration-test harness covering the CR-R12
+  degenerate-input cases and the W006 git-history behavior.
+
+### Changed
+
+- Cold start is substantially faster on large corpora (~9.4s → ~2.6s on a
+  15MB reference corpus): git mtime discovery is batched into one pass instead
+  of one subprocess per file, the search index builds on demand, code-target
+  history probing is demand-driven, and the global fixpoint is scoped to the
+  query's dependencies. Results are unchanged — verified by differential
+  comparison against the prior evaluator.
+- Markdown extraction reuses one parsed payload per file instead of re-reading
+  for facts, frontmatter, spans, and revision hashing.
+- Context ranking policy now lives in `anneal-core::ranking` rather than being
+  split between the CLI and core, so `search` and `context` ranking cannot
+  drift apart.
+
+### Internal
+
+- Centralized code-target metadata keys and relative-path policy behind shared
+  core helpers; folded `potential_weight` into the config schema; replaced
+  quadratic ordered-edge emission with bucketed indexing.
 
 ## v0.14.1 - 2026-05-30
 

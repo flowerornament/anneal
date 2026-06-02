@@ -2,6 +2,14 @@
 
 Convergence assistant for knowledge corpora.
 
+> [!NOTE]
+> **Experimental, pre-1.0, and moving fast.** anneal is in active development:
+> the CLI surface, the `anneal.dl` rule layer, diagnostics, and the on-disk
+> formats all still change between releases, sometimes without a deprecation
+> path. It is built and dogfooded in the open — useful today, but not yet
+> stable. Pin a version if you depend on it, expect rough edges, and read the
+> [CHANGELOG](CHANGELOG.md) before upgrading.
+
 `anneal` reads a directory of markdown, turns it into typed facts, evaluates a
 Datalog-shaped rule layer against those facts, and exposes a small
 agent-friendly surface for orientation, retrieval, convergence work, and
