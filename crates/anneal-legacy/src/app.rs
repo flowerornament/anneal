@@ -67,8 +67,8 @@ CORE CONCEPTS:
 START HERE:
 
   Cold start:
+    anneal status             Aggregate corpus dashboard
     anneal context \"goal\"     Search, read, and graph context in one response
-    anneal status             Compact corpus status
     anneal help agent         Bundled agent briefing
 
   Program the corpus:
@@ -85,7 +85,7 @@ START HERE:
                               Configured reverse-dependency impact
 
   Convergence work:
-    anneal status             Start with the convergence frontier
+    anneal status             Start with vital signs and work pointers
     anneal describe diagnostic
     anneal -e '? diagnostic{severity: \"error\", subject: h}.'
 
@@ -799,14 +799,14 @@ EXAMPLES:
         file: Option<String>,
     },
 
-    /// Compact corpus status -- frontier, blockers, broken
+    /// Compact corpus status -- dashboard, orientation, work
     #[command(
         display_order = 10,
         long_about = "\
 Print compact corpus status from the programmable runtime.
 
 Use this as the arrival command: it summarizes the active convergence frontier
-and points at open frontier items, blockers, and broken facts."
+and points at orientation and work queries."
     )]
     Status,
 
