@@ -35,8 +35,8 @@ use crate::retrieval::{
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
-    FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, PredicateRef, Rule,
-    SourceLocation, StoredAtom, Term,
+    FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, OrderDirection, OrderKey,
+    PredicateRef, Rule, SourceLocation, StoredAtom, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
@@ -3560,7 +3560,7 @@ impl Evaluator {
         let mut warnings = self.warnings.clone();
         if query_ast.local_rules.is_empty() {
             if self.options.explain().is_enabled() {
-                let bindings = eval_body_traced(
+                let mut bindings = eval_body_traced(
                     &query_ast.body,
                     vec![TracedBinding::empty()],
                     &self.database,
@@ -3569,18 +3569,20 @@ impl Evaluator {
                     &self.options,
                 )?;
                 ensure_no_reserved_explain_fields(&bindings)?;
+                sort_traced_bindings_for_query(&query_ast.ordering, &mut bindings)?;
                 return Ok(QueryOutput {
                     rows: traced_bindings_to_rows(bindings, self.options.explain()),
                     warnings,
                 });
             }
-            let bindings = eval_body(
+            let mut bindings = eval_body(
                 &query_ast.body,
                 vec![Binding::new()],
                 &self.database,
                 &mut warnings,
                 &self.options,
             )?;
+            sort_bindings_for_query(&query_ast.ordering, &mut bindings)?;
             return Ok(QueryOutput {
                 rows: bindings.into_iter().map(binding_to_row).collect(),
                 warnings,
@@ -3600,7 +3602,7 @@ impl Evaluator {
             run_rule_group(&mut database, &rules, &mut warnings, &self.options)?;
         }
         let rows = if self.options.explain().is_enabled() {
-            let bindings = eval_body_traced(
+            let mut bindings = eval_body_traced(
                 &query_ast.body,
                 vec![TracedBinding::empty()],
                 &database,
@@ -3609,18 +3611,18 @@ impl Evaluator {
                 &self.options,
             )?;
             ensure_no_reserved_explain_fields(&bindings)?;
+            sort_traced_bindings_for_query(&query_ast.ordering, &mut bindings)?;
             traced_bindings_to_rows(bindings, self.options.explain())
         } else {
-            eval_body(
+            let mut bindings = eval_body(
                 &query_ast.body,
                 vec![Binding::new()],
                 &database,
                 &mut warnings,
                 &self.options,
-            )?
-            .into_iter()
-            .map(binding_to_row)
-            .collect()
+            )?;
+            sort_bindings_for_query(&query_ast.ordering, &mut bindings)?;
+            bindings.into_iter().map(binding_to_row).collect()
         };
         Ok(QueryOutput { rows, warnings })
     }
@@ -5334,6 +5336,93 @@ pub(crate) fn value_from_literal(literal: &Literal) -> Value {
         Literal::Bool(value) => Value::Bool(*value),
         Literal::Null => Value::Null,
         Literal::List(items) => Value::List(items.iter().map(value_from_literal).collect()),
+    }
+}
+
+fn sort_bindings_for_query(
+    ordering: &[OrderKey],
+    bindings: &mut Vec<Binding>,
+) -> Result<(), EvalError> {
+    sort_query_items(ordering, bindings, |binding| binding)
+}
+
+fn sort_traced_bindings_for_query(
+    ordering: &[OrderKey],
+    bindings: &mut Vec<TracedBinding>,
+) -> Result<(), EvalError> {
+    sort_query_items(ordering, bindings, |binding| &binding.values)
+}
+
+fn sort_query_items<T>(
+    ordering: &[OrderKey],
+    items: &mut Vec<T>,
+    binding: impl Fn(&T) -> &Binding,
+) -> Result<(), EvalError> {
+    if ordering.is_empty() {
+        return Ok(());
+    }
+    let mut keyed = std::mem::take(items)
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let keys = eval_order_keys(ordering, binding(&item))?;
+            Ok((index, keys, item))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    keyed.sort_by(|left, right| compare_ordered_query_rows(ordering, left, right));
+    items.extend(keyed.into_iter().map(|(_, _, item)| item));
+    Ok(())
+}
+
+enum QueryOrderKeys {
+    One(Value),
+    Many(Vec<Value>),
+}
+
+fn eval_order_keys(ordering: &[OrderKey], binding: &Binding) -> Result<QueryOrderKeys, EvalError> {
+    if let [key] = ordering {
+        return eval_expr(&key.expr, binding).map(QueryOrderKeys::One);
+    }
+    ordering
+        .iter()
+        .map(|key| eval_expr(&key.expr, binding))
+        .collect::<Result<Vec<_>, _>>()
+        .map(QueryOrderKeys::Many)
+}
+
+fn compare_ordered_query_rows<T>(
+    ordering: &[OrderKey],
+    left: &(usize, QueryOrderKeys, T),
+    right: &(usize, QueryOrderKeys, T),
+) -> Ordering {
+    for (index, key) in ordering.iter().enumerate() {
+        let (left_key, right_key) = order_key_values(index, &left.1, &right.1);
+        let comparison = match key.direction {
+            OrderDirection::Asc => left_key.cmp(right_key),
+            OrderDirection::Desc => right_key.cmp(left_key),
+        };
+        if comparison != Ordering::Equal {
+            return comparison;
+        }
+    }
+    left.0.cmp(&right.0)
+}
+
+fn order_key_values<'a>(
+    index: usize,
+    left: &'a QueryOrderKeys,
+    right: &'a QueryOrderKeys,
+) -> (&'a Value, &'a Value) {
+    match (left, right) {
+        (QueryOrderKeys::One(left), QueryOrderKeys::One(right)) => {
+            debug_assert_eq!(index, 0);
+            (left, right)
+        }
+        (QueryOrderKeys::Many(left), QueryOrderKeys::Many(right)) => (&left[index], &right[index]),
+        (QueryOrderKeys::One(_), QueryOrderKeys::Many(_))
+        | (QueryOrderKeys::Many(_), QueryOrderKeys::One(_)) => {
+            unreachable!("order key arity is fixed for a query")
+        }
     }
 }
 
@@ -10061,6 +10150,147 @@ release_blocker(code) := issue(code, "error").
         let evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 2);
+    }
+
+    #[test]
+    fn query_order_by_desc_sorts_before_projection() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            score("a", 1).
+            score("b", 3).
+            score("c", 2).
+            ? score(h, rank) order by rank desc.
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        let handles = output
+            .rows
+            .iter()
+            .map(|row| row.fields.get("h").expect("h"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(handles, vec![s("b"), s("c"), s("a")]);
+    }
+
+    #[test]
+    fn query_order_by_multi_key_and_stable_tie_break() {
+        let input = r#"
+            score("a", 1, "z").
+            score("b", 1, "x").
+            score("c", 2, "y").
+            score("d", 2, "w").
+            ? score(h, rank, label) order by rank desc, label asc.
+            ? score(h, rank, label) order by rank asc.
+            ? score(h, rank, label).
+        "#;
+        let program = parse_program("fixture", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let queries = analyzed.queries().cloned().collect::<Vec<_>>();
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+
+        let multi = evaluator.eval_query(&queries[0]).expect("multi-key query");
+        let handles = multi
+            .rows
+            .iter()
+            .map(|row| row.fields.get("h").expect("h"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(handles, vec![s("d"), s("c"), s("b"), s("a")]);
+
+        let rank_only = evaluator.eval_query(&queries[1]).expect("rank query");
+        let unordered = evaluator.eval_query(&queries[2]).expect("unordered query");
+        let tied_rank_one = rank_only
+            .rows
+            .iter()
+            .filter(|row| row.fields.get("rank") == Some(&n(1)))
+            .map(|row| row.fields.get("h").expect("h").clone())
+            .collect::<Vec<_>>();
+        let unordered_rank_one = unordered
+            .rows
+            .iter()
+            .filter(|row| row.fields.get("rank") == Some(&n(1)))
+            .map(|row| row.fields.get("h").expect("h").clone())
+            .collect::<Vec<_>>();
+        assert_eq!(tied_rank_one, unordered_rank_one);
+    }
+
+    #[test]
+    fn query_order_by_uses_value_ordering() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            value(2).
+            value("a").
+            value(1).
+            ? value(v) order by v asc.
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        let values = output
+            .rows
+            .iter()
+            .map(|row| row.fields.get("v").expect("v"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut expected = values.clone();
+        expected.sort();
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn query_order_by_supports_arithmetic_key_expression() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            score("a", 3, 1).
+            score("b", 1, 4).
+            score("c", 2, 2).
+            ? score(h, left, right) order by left + right desc.
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let output = evaluator.eval_query(&query).expect("query");
+        let handles = output
+            .rows
+            .iter()
+            .map(|row| row.fields.get("h").expect("h"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(handles, vec![s("b"), s("a"), s("c")]);
+    }
+
+    #[test]
+    fn query_order_by_unbound_key_is_static_error() {
+        let program = parse_program(
+            "fixture",
+            r#"
+            score("a", 1).
+            ? score(h, rank) order by missing.
+            "#,
+        )
+        .expect("program parses");
+        let err = analyze(program).expect_err("program rejects");
+        assert!(matches!(
+            err,
+            StaticError::UnboundExpressionVariable { variable, .. }
+                if variable.as_str() == "missing"
+        ));
     }
 
     #[test]

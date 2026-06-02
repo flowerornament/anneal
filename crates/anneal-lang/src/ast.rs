@@ -413,8 +413,25 @@ impl Rule {
 pub struct Query {
     pub local_rules: Vec<Rule>,
     pub body: Body,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ordering: Vec<OrderKey>,
     #[serde(default, skip_serializing)]
     pub location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct OrderKey {
+    pub expr: Expr,
+    pub direction: OrderDirection,
+    #[serde(default, skip_serializing)]
+    pub location: SourceLocation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderDirection {
+    Asc,
+    Desc,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

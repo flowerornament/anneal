@@ -2,8 +2,9 @@ use crate::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, CallStyle, Comparison,
     ComparisonOp, ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,
     ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation, NumberLiteral,
-    PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer, RuleOrigin, SourceBlock,
-    SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl, named_string_arg,
+    OrderDirection, OrderKey, PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer,
+    RuleOrigin, SourceBlock, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
+    named_string_arg,
 };
 
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
@@ -232,11 +233,12 @@ impl Parser {
                 rule_origin(RuleLayer::Inline, &self.source, &rule_start),
             ));
         }
-        let body = self.parse_body_until(&TokenKind::Dot)?;
+        let (body, ordering) = self.parse_query_body()?;
         self.expect(&TokenKind::Dot)?;
         Ok(Query {
             local_rules,
             body,
+            ordering,
             location,
         })
     }
@@ -259,14 +261,77 @@ impl Parser {
     }
 
     fn parse_body_until(&mut self, end: &TokenKind) -> Result<Body, ParseError> {
+        self.parse_body_until_with_order_sentinel(end, false)
+    }
+
+    fn parse_body_until_with_order_sentinel(
+        &mut self,
+        end: &TokenKind,
+        allow_order_by: bool,
+    ) -> Result<Body, ParseError> {
         let mut atoms = Vec::new();
-        while !self.at(end) {
+        while !self.at_body_end(end, allow_order_by) {
             atoms.push(self.parse_atom()?);
-            if !self.at(end) {
-                self.expect(&TokenKind::Comma)?;
+            if self.at_body_end(end, allow_order_by) {
+                break;
+            }
+            self.expect(&TokenKind::Comma)?;
+            if allow_order_by && self.at_body_end(end, true) {
+                return Err(ParseError::new(
+                    &self.source,
+                    self.peek(),
+                    "expected query atom after comma",
+                ));
             }
         }
         Ok(Body { atoms })
+    }
+
+    fn parse_query_body(&mut self) -> Result<(Body, Vec<OrderKey>), ParseError> {
+        let body = self.parse_body_until_with_order_sentinel(&TokenKind::Dot, true)?;
+        let ordering = if self.peek_order_by() {
+            self.parse_ordering()?
+        } else {
+            Vec::new()
+        };
+        Ok((body, ordering))
+    }
+
+    fn at_body_end(&self, end: &TokenKind, allow_order_by: bool) -> bool {
+        self.at(end) || (allow_order_by && self.peek_order_by())
+    }
+
+    fn parse_ordering(&mut self) -> Result<Vec<OrderKey>, ParseError> {
+        self.expect_keyword("order")?;
+        self.expect_keyword("by")?;
+        let mut ordering = Vec::new();
+        loop {
+            let location = self.peek().location(&self.source);
+            let expr = self.parse_expr()?;
+            let direction = if self.eat_keyword("desc") {
+                OrderDirection::Desc
+            } else {
+                let _ = self.eat_keyword("asc");
+                OrderDirection::Asc
+            };
+            ordering.push(OrderKey {
+                expr,
+                direction,
+                location,
+            });
+            if self.at(&TokenKind::Dot) {
+                break;
+            }
+            self.expect(&TokenKind::Comma)?;
+            if self.at(&TokenKind::Dot) {
+                return Err(ParseError::new(
+                    &self.source,
+                    self.peek(),
+                    "expected order key after comma",
+                ));
+            }
+        }
+        Ok(ordering)
     }
 
     fn parse_atom(&mut self) -> Result<Atom, ParseError> {
@@ -752,6 +817,11 @@ impl Parser {
 
     fn peek_keyword(&self, expected: &str) -> bool {
         matches!(&self.peek().kind, TokenKind::Ident(value) if value == expected)
+    }
+
+    fn peek_order_by(&self) -> bool {
+        self.peek_keyword("order")
+            && matches!(&self.peek_n(1).kind, TokenKind::Ident(value) if value == "by")
     }
 
     fn expect_ident(&mut self) -> Result<Ident, ParseError> {
@@ -1248,6 +1318,60 @@ mod tests {
         };
         assert_eq!(take_until.function, AggregateFunction::TakeUntil);
         assert_eq!(take_until.args.len(), 3);
+    }
+
+    #[test]
+    fn parses_query_ordering_clause() {
+        let program = parse_program("inline", r"? score(h, rank) order by rank, h desc.")
+            .expect("program parses");
+        let query = program.queries().next().expect("query");
+        assert_eq!(query.body.atoms.len(), 1);
+        assert_eq!(query.ordering.len(), 2);
+        assert_eq!(query.ordering[0].direction, OrderDirection::Asc);
+        assert_eq!(query.ordering[1].direction, OrderDirection::Desc);
+    }
+
+    #[test]
+    fn parses_query_ordering_expression_key() {
+        let program = parse_program("inline", r"? score(h, rank) order by rank + 1 desc.")
+            .expect("program parses");
+        let query = program.queries().next().expect("query");
+        assert_eq!(query.ordering.len(), 1);
+        assert!(matches!(query.ordering[0].expr, Expr::Binary { .. }));
+    }
+
+    #[test]
+    fn order_relation_name_still_parses_as_atom() {
+        let program =
+            parse_program("inline", r"? order(h). ? foo(h), order(x).").expect("program parses");
+        let queries = program.queries().collect::<Vec<_>>();
+        assert!(queries[0].ordering.is_empty());
+        assert!(queries[1].ordering.is_empty());
+        assert_eq!(queries[0].body.atoms.len(), 1);
+        assert_eq!(queries[1].body.atoms.len(), 2);
+    }
+
+    #[test]
+    fn order_relation_can_be_followed_by_ordering_clause() {
+        let program = parse_program("inline", r"? order(h) order by h.").expect("program parses");
+        let query = program.queries().next().expect("query");
+        assert_eq!(query.body.atoms.len(), 1);
+        assert_eq!(query.ordering.len(), 1);
+    }
+
+    #[test]
+    fn local_rules_do_not_consume_query_ordering() {
+        let program = parse_program("inline", r"? where r(h) := foo(h). r(h) order by h.")
+            .expect("program parses");
+        let query = program.queries().next().expect("query");
+        assert_eq!(query.local_rules.len(), 1);
+        assert_eq!(query.ordering.len(), 1);
+    }
+
+    #[test]
+    fn rejects_ordering_after_trailing_query_comma() {
+        let err = parse_program("inline", r"? foo(h), order by h.").expect_err("program rejects");
+        assert!(err.message.contains("expected query atom after comma"));
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::fmt;
 use crate::facts::{STORED_RELATION_DESCRIPTORS, StoredRelationDescriptor};
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, DerivedAtom, Expr,
-    Head, Ident, Literal, NegatedAtom, Negation, PredicateDecl, PredicateRef, Program, Query, Rule,
-    RuleLayer, SourceLocation, Statement, StoredAtom, Term,
+    Head, Ident, Literal, NegatedAtom, Negation, OrderKey, PredicateDecl, PredicateRef, Program,
+    Query, Rule, RuleLayer, SourceLocation, Statement, StoredAtom, Term,
 };
 use crate::runtime::primitives::{PrimitivePredicate, PrimitiveSignature, primitive_signatures};
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
@@ -433,6 +433,7 @@ impl Analyzer {
             &PredicateRef::new(Ident::new_unchecked("query")),
             &query.body,
         )?;
+        check_query_ordering_safety(&query)?;
         check_cyclic_stratification(&edges)?;
         let local_strata = compute_strata(&signatures, &edges, Some(&local_predicates));
 
@@ -442,6 +443,34 @@ impl Analyzer {
             local_predicates,
         })
     }
+}
+
+fn check_query_ordering_safety(query: &Query) -> Result<(), StaticError> {
+    if query.ordering.is_empty() {
+        return Ok(());
+    }
+    let predicate = PredicateRef::new(Ident::new_unchecked("query"));
+    let bound = query.body.positive_binding_variables();
+    for key in &query.ordering {
+        ensure_order_key_bound(&predicate, key, &bound)?;
+    }
+    Ok(())
+}
+
+fn ensure_order_key_bound(
+    predicate: &PredicateRef,
+    key: &OrderKey,
+    bound: &BTreeSet<Ident>,
+) -> Result<(), StaticError> {
+    let mut vars = BTreeSet::new();
+    key.expr.variables(&mut vars);
+    ensure_bound(
+        predicate,
+        vars,
+        bound,
+        SafetyContext::Expression,
+        &key.location,
+    )
 }
 
 fn check_no_optional_discovery_fact(statement: &Statement) -> Result<(), StaticError> {
