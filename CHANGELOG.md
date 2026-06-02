@@ -2,6 +2,41 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.15.1 - 2026-06-02
+
+anneal status is a goal-less orientation dashboard.
+
+`anneal status` now renders aggregate corpus vital signs — scale, lifecycle
+coverage, pipeline histogram, convergence counts, and health counts — before
+handing agents copy-runnable queries for reading and work. Goal-less
+orientation lives in the language: `recent_frontier` ranks recently authored
+files for first reading, while `anchor` and `ranked_anchor` surface the durable
+spine of authoritative and high-signal files. Once a goal is known,
+`anneal context GOAL` remains the focused retrieval surface.
+
+### Added
+
+- `recent_frontier(h, rank, recency)`: a recency-ranked reading frontier for
+  cold agents. Authored dates from frontmatter or filenames dominate; git mtime
+  is only a fallback for files without authored dates. Terminal and superseded
+  files are excluded, statusless files remain eligible, and curated hubs are
+  de-prioritized so they do not crowd out newly authored work.
+- `anchor(h, score, why)` and `ranked_anchor(h, rank, score, why)`: durable
+  orientation predicates for the corpus spine. `anchor` remains uncapped for
+  composition; `ranked_anchor` is the ranked projection used by status pointers
+  and read-first examples.
+
+### Changed
+
+- `anneal status` is now an aggregate dashboard instead of a per-handle garden:
+  scale and lifecycle coverage, pipeline histogram, convergence counts, health
+  counts, and always-visible Read-first / Work query pointers.
+- Help, `describe runtime`, README, and the bundled anneal skill teach the
+  cold-start ladder as `status` → `recent_frontier` / `ranked_anchor` →
+  `context GOAL`.
+- The retired `orient` recovery message points at the same status-led
+  orientation ladder.
+
 ## v0.15.0 - 2026-06-01
 
 anneal surfaces spec→code drift, and gets markedly faster.
