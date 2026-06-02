@@ -238,6 +238,74 @@ confirm that `Binding` clone/extend is the dominant allocation site in
 isolation. The rewrite should proceed as the design says: logical/physical
 separation with tuple storage and scope views.
 
+## Phase 2 Measurement: Time-Scope Overlay
+
+Issue: `anneal-ndll`.
+
+Phase 2 added a feature-gated current-representation time-scope overlay behind
+`scope-overlay`. The default build still uses the old clone path. The overlay
+build keeps visibility/auth unchanged and replaces only the `at("snapshot:*")`
+scope mechanism: the scoped database shell borrows shared runtime state, replaces
+the `snapshot` relation with the selected rows, patches `handle` rows from the
+snapshot selection, and reuses the graph snapshot scope.
+
+Correctness gates on `~/code/murail/.design`:
+
+- Derived result sets matched the pre-change binary for `diagnostic`,
+  `frontier`, `blocker`, `flow`, `potential`, `holding`, `advancing`, and
+  `drifting`.
+- `at("snapshot:last")` handle rows matched byte-for-byte.
+- A non-empty time-scoped `--explain` query matched byte-for-byte.
+- A synthetic property test compares clone-scope and overlay-scope behavior for
+  snapshot rows and graph-backed time primitives.
+
+Measured with:
+
+```bash
+RUSTFLAGS='-C force-frame-pointers=yes -C symbol-mangling-version=v0' \
+  cargo build --profile profiling --features 'dhat-heap scope-overlay' -p anneal
+```
+
+### `at("snapshot:last")` Before/After
+
+Query:
+
+```bash
+anneal --root ~/code/murail/.design \
+  -e '? at("snapshot:last") { *handle{id: h, status: status} }.' \
+  --format=json
+```
+
+| Build | Total allocated | Allocations | Peak live | Runtime under dhat |
+| --- | ---: | ---: | ---: | ---: |
+| clone path | 1,003.6 MB | 7.67 M | 507.3 MB | 63.97 s |
+| `scope-overlay` | 842.2 MB | 6.16 M | 364.1 MB | completed |
+
+The scope bucket dropped by roughly 161 MB and 1.51 M allocations for the
+single-at workload. That is close to the original `scoped_to_time_ref` bucket
+estimate of 169.8 MB and 1.73 M allocations; the remaining difference is normal
+measurement drift plus the overlay's smaller handle patch construction.
+
+### Full `status` Under dhat
+
+The pre-Phase-2 `status` workload was terminated after 500.41 s under dhat while
+still CPU-active in `Database::scoped_to_time_ref`.
+
+With `scope-overlay`, `status` completes:
+
+```text
+anneal --root ~/code/murail/.design status --format=text
+dhat total: 1,824.7 MB in 19.95 M blocks
+dhat peak: 374.9 MB in 2.60 M blocks
+runtime under dhat: 172.50 s
+```
+
+A live sample during this run was no longer in `scoped_to_time_ref`. The
+remaining dhat cost is the known physical-row/binding model: `unify_expr`
+cloning `BTreeMap<Ident, Value>` bindings while dhat captures an allocation
+backtrace for each allocation. That belongs to the tuple-store/planned-eval
+rewrite, not to the time-scope overlay.
+
 Recommended implementation order for the arc:
 
 1. Keep the logical API stable: `Row`/`BTreeMap` remains projection-only.

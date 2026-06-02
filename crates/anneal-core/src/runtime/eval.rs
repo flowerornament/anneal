@@ -1288,15 +1288,35 @@ impl Database {
             });
         };
 
-        let mut scoped = self.clone_for_time_scope();
-        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
-        scoped.apply_handle_snapshot(&selection.rows);
-        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(&selection));
+        #[cfg(feature = "scope-overlay")]
+        let scoped = self.time_scope_overlay(&selection);
+        #[cfg(not(feature = "scope-overlay"))]
+        let scoped = self.clone_for_time_scope_selection(&selection);
 
         Ok((
             scoped,
             self.snapshot_partial_history_warnings(reference, &selection.snapshot),
         ))
+    }
+
+    #[cfg(any(not(feature = "scope-overlay"), test))]
+    fn clone_for_time_scope_selection(&self, selection: &SnapshotSelection) -> Self {
+        let mut scoped = self.clone_for_time_scope();
+        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
+        scoped.apply_handle_snapshot(&selection.rows);
+        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
+        scoped
+    }
+
+    #[cfg(feature = "scope-overlay")]
+    fn time_scope_overlay(&self, selection: &SnapshotSelection) -> Self {
+        let mut scoped = self.clone_shell_for_time_scope();
+        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
+        if let Some(rows) = self.time_scoped_handle_rows(&selection.rows) {
+            scoped.set_stored_relation_rows(HANDLE_RELATION, rows);
+        }
+        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
+        scoped
     }
 
     fn resolve_snapshot_selection(&self, reference: &str) -> Option<SnapshotSelection> {
@@ -1311,9 +1331,19 @@ impl Database {
         }
     }
 
+    #[cfg(any(not(feature = "scope-overlay"), test))]
     fn clone_for_time_scope(&self) -> Self {
+        self.clone_for_time_scope_with_stored(self.stored.clone())
+    }
+
+    #[cfg(feature = "scope-overlay")]
+    fn clone_shell_for_time_scope(&self) -> Self {
+        self.clone_for_time_scope_with_stored(BTreeMap::new())
+    }
+
+    fn clone_for_time_scope_with_stored(&self, stored: BTreeMap<Ident, StoredRelation>) -> Self {
         Self {
-            stored: self.stored.clone(),
+            stored,
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
@@ -1326,20 +1356,22 @@ impl Database {
         }
     }
 
+    #[cfg(any(not(feature = "scope-overlay"), test))]
     fn apply_handle_snapshot(&mut self, snapshot_rows: &[NamedRow]) {
         let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
             return;
         };
-        let patches = handle_snapshot_patches(snapshot_rows);
-        if patches.is_empty() {
-            return;
+        if let Some(rows) = patched_handle_rows(handles, snapshot_rows) {
+            self.set_stored_relation_rows(HANDLE_RELATION, rows);
         }
-        let rows = handles
-            .rows
-            .iter()
-            .map(|row| apply_handle_snapshot_patch(row, &patches))
-            .collect::<Vec<_>>();
-        self.set_stored_relation_rows(HANDLE_RELATION, rows);
+    }
+
+    #[cfg(feature = "scope-overlay")]
+    fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
+        let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
+            return None;
+        };
+        Some(patched_handle_rows(handles, snapshot_rows).unwrap_or_else(|| handles.rows.clone()))
     }
 
     fn snapshot_partial_history_warnings(
@@ -1481,6 +1513,23 @@ fn handle_snapshot_patches(
             .push((key.to_string(), value.to_string()));
     }
     patches
+}
+
+fn patched_handle_rows(
+    handles: &StoredRelation,
+    snapshot_rows: &[NamedRow],
+) -> Option<Vec<NamedRow>> {
+    let patches = handle_snapshot_patches(snapshot_rows);
+    if patches.is_empty() {
+        return None;
+    }
+    Some(
+        handles
+            .rows
+            .iter()
+            .map(|row| apply_handle_snapshot_patch(row, &patches))
+            .collect(),
+    )
 }
 
 fn apply_handle_snapshot_patch(
@@ -3793,6 +3842,10 @@ impl TracedBinding {
         self.steps.push(step);
         self
     }
+
+    fn push_step_if(self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
+        if trace { self.push_step(step()) } else { self }
+    }
 }
 
 fn clone_derivation_refs(steps: &[DerivationRef]) -> Vec<DerivationNode> {
@@ -4259,12 +4312,19 @@ fn eval_atom_traced(
         Atom::Stored(stored) => eval_stored_traced(stored, bindings, database, options),
         Atom::Derived(derived) => {
             if let Some(view) = delta {
-                eval_derived_from_delta_traced(derived, bindings, view.delta)
+                eval_derived_from_delta_traced(
+                    derived,
+                    bindings,
+                    view.delta,
+                    options.explain().is_enabled(),
+                )
             } else {
                 eval_derived_traced(derived, bindings, database, options)
             }
         }
-        Atom::Comparison(comparison) => eval_comparison_traced(comparison, bindings),
+        Atom::Comparison(comparison) => {
+            eval_comparison_traced(comparison, bindings, options.explain().is_enabled())
+        }
         Atom::Aggregation(aggregate) => {
             eval_aggregate_traced(aggregate, bindings, database, warnings, options)
         }
@@ -4272,32 +4332,40 @@ fn eval_atom_traced(
             eval_negation_traced(&negation.atom, bindings, database, warnings, options)
         }
         Atom::TimeBlock(time_block) => {
+            let trace = options.explain().is_enabled();
             ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
             let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
             push_warnings(warnings, scoped_warnings);
             let mut out = Vec::new();
             for binding in bindings {
+                let TracedBinding { values, steps } = binding;
                 let children = eval_body_traced(
                     &time_block.body,
-                    vec![TracedBinding::with_values(binding.values.clone())],
+                    vec![TracedBinding::with_values(values)],
                     &scoped,
                     None,
                     warnings,
                     options,
                 )?;
                 out.extend(children.into_iter().map(|child| {
-                    TracedBinding {
-                        values: child.values,
-                        steps: binding
-                            .steps
-                            .clone()
-                            .into_iter()
-                            .chain([derivation_ref(DerivationNode::time_block(
-                                &time_block.reference,
-                                time_block.location.clone(),
-                                clone_derivation_refs(&child.steps),
-                            ))])
-                            .collect(),
+                    if trace {
+                        TracedBinding {
+                            values: child.values,
+                            steps: steps
+                                .clone()
+                                .into_iter()
+                                .chain([derivation_ref(DerivationNode::time_block(
+                                    &time_block.reference,
+                                    time_block.location.clone(),
+                                    clone_derivation_refs(&child.steps),
+                                ))])
+                                .collect(),
+                        }
+                    } else {
+                        TracedBinding {
+                            values: child.values,
+                            steps: steps.clone(),
+                        }
                     }
                 }));
             }
@@ -4416,6 +4484,7 @@ fn eval_stored_traced(
                 relation: atom.relation.clone(),
             })?;
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let constraints = stored_constraints(&atom.fields, &binding.values)?;
         for row in relation.candidate_rows(&constraints) {
@@ -4423,15 +4492,14 @@ fn eval_stored_traced(
                 continue;
             }
             if let Some(next) = unify_stored_fields(&atom.fields, row, &binding.values)? {
-                out.push(TracedBinding {
+                let binding = TracedBinding {
                     values: next,
-                    steps: binding
-                        .steps
-                        .clone()
-                        .into_iter()
-                        .chain([derivation_ref(DerivationNode::stored(&atom.relation, row))])
-                        .collect(),
+                    steps: binding.steps.clone(),
+                }
+                .push_step_if(trace, || {
+                    derivation_ref(DerivationNode::stored(&atom.relation, row))
                 });
+                out.push(binding);
             }
         }
     }
@@ -4474,7 +4542,12 @@ fn eval_derived_traced(
                     predicate: atom.predicate.clone(),
                 }
             })?;
-            return eval_derived_from_relation_traced(atom, bindings, relation);
+            return eval_derived_from_relation_traced(
+                atom,
+                bindings,
+                relation,
+                options.explain().is_enabled(),
+            );
         }
         return eval_primitive_traced(primitive, atom, bindings, database, options);
     }
@@ -4483,24 +4556,26 @@ fn eval_derived_traced(
             predicate: atom.predicate.clone(),
         }
     })?;
-    eval_derived_from_relation_traced(atom, bindings, relation)
+    eval_derived_from_relation_traced(atom, bindings, relation, options.explain().is_enabled())
 }
 
 fn eval_derived_from_delta_traced(
     atom: &crate::runtime::ast::DerivedAtom,
     bindings: Vec<TracedBinding>,
     delta: &DeltaMap,
+    trace: bool,
 ) -> Result<Vec<TracedBinding>, EvalError> {
     let Some(relation) = delta.get(&atom.predicate) else {
         return Ok(Vec::new());
     };
-    eval_derived_from_relation_traced(atom, bindings, relation)
+    eval_derived_from_relation_traced(atom, bindings, relation, trace)
 }
 
 fn eval_derived_from_relation_traced(
     atom: &crate::runtime::ast::DerivedAtom,
     bindings: Vec<TracedBinding>,
     relation: &DerivedRelation,
+    trace: bool,
 ) -> Result<Vec<TracedBinding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
@@ -4510,13 +4585,16 @@ fn eval_derived_from_relation_traced(
                 continue;
             }
             if let Some(next) = unify_call_args(&atom.args, tuple, &binding.values)? {
-                let step = relation.derivation(tuple).unwrap_or_else(|| {
-                    derivation_ref(DerivationNode::fact(&atom.predicate, tuple))
-                });
-                out.push(TracedBinding {
+                let binding = TracedBinding {
                     values: next,
-                    steps: binding.steps.clone().into_iter().chain([step]).collect(),
+                    steps: binding.steps.clone(),
+                }
+                .push_step_if(trace, || {
+                    relation.derivation(tuple).unwrap_or_else(|| {
+                        derivation_ref(DerivationNode::fact(&atom.predicate, tuple))
+                    })
                 });
+                out.push(binding);
             }
         }
     }
@@ -4532,24 +4610,21 @@ fn eval_primitive_traced(
 ) -> Result<Vec<TracedBinding>, EvalError> {
     let mut out = Vec::new();
     let mut regex_cache = BTreeMap::<String, Regex>::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let constraints = call_constraints(&atom.args, &binding.values)?;
         let tuples =
             primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
         for tuple in tuples {
             if let Some(next) = unify_call_args(&atom.args, &tuple, &binding.values)? {
-                out.push(TracedBinding {
+                let binding = TracedBinding {
                     values: next,
-                    steps: binding
-                        .steps
-                        .clone()
-                        .into_iter()
-                        .chain([derivation_ref(DerivationNode::primitive(
-                            &atom.predicate,
-                            &tuple,
-                        ))])
-                        .collect(),
+                    steps: binding.steps.clone(),
+                }
+                .push_step_if(trace, || {
+                    derivation_ref(DerivationNode::primitive(&atom.predicate, &tuple))
                 });
+                out.push(binding);
             }
         }
     }
@@ -4634,13 +4709,16 @@ fn primitive_tuples(
 fn eval_comparison_traced(
     comparison: &Comparison,
     bindings: Vec<TracedBinding>,
+    trace: bool,
 ) -> Result<Vec<TracedBinding>, EvalError> {
     let mut out = Vec::new();
     for binding in bindings {
         let left = eval_expr(&comparison.left, &binding.values)?;
         let right = eval_expr(&comparison.right, &binding.values)?;
         if compare(&left, comparison.op, &right)? {
-            out.push(binding.push_step(derivation_ref(DerivationNode::comparison(comparison))));
+            out.push(binding.push_step_if(trace, || {
+                derivation_ref(DerivationNode::comparison(comparison))
+            }));
         }
     }
     Ok(out)
@@ -4654,6 +4732,7 @@ fn eval_negation_traced(
     options: &EvalOptions,
 ) -> Result<Vec<TracedBinding>, EvalError> {
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let atom = match negated {
             NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
@@ -4668,7 +4747,9 @@ fn eval_negation_traced(
             options,
         )?;
         if matches.is_empty() {
-            out.push(binding.push_step(derivation_ref(DerivationNode::negation(negated))));
+            out.push(
+                binding.push_step_if(trace, || derivation_ref(DerivationNode::negation(negated))),
+            );
         }
     }
     Ok(out)
@@ -4684,6 +4765,7 @@ fn eval_aggregate_traced(
     validate_aggregate_args(aggregate)?;
 
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let inner = eval_body_traced(
             &aggregate.body,
@@ -4706,10 +4788,9 @@ fn eval_aggregate_traced(
                         values: group,
                         steps: binding.steps.clone(),
                     }
-                    .push_step(derivation_ref(DerivationNode::aggregate(
-                        aggregate,
-                        Vec::new(),
-                    ))),
+                    .push_step_if(trace, || {
+                        derivation_ref(DerivationNode::aggregate(aggregate, Vec::new()))
+                    }),
                 );
             }
             continue;
@@ -4718,17 +4799,19 @@ fn eval_aggregate_traced(
             .iter()
             .map(|row| row.values.clone())
             .collect::<Vec<_>>();
-        let aggregate_steps = aggregate_derivation_steps(&inner);
+        let aggregate_steps = trace.then(|| aggregate_derivation_steps(&inner));
         for values in eval_aggregate_group(aggregate, &binding.values, &rows)? {
             out.push(
                 TracedBinding {
                     values,
                     steps: binding.steps.clone(),
                 }
-                .push_step(derivation_ref(DerivationNode::aggregate(
-                    aggregate,
-                    clone_derivation_refs(&aggregate_steps),
-                ))),
+                .push_step_if(trace, || {
+                    derivation_ref(DerivationNode::aggregate(
+                        aggregate,
+                        clone_derivation_refs(aggregate_steps.as_deref().unwrap_or_default()),
+                    ))
+                }),
             );
         }
     }
@@ -8965,6 +9048,29 @@ release_blocker(code) := issue(code, "error").
         assert_eq!(
             output.warnings[0].reference.as_deref(),
             Some("snapshot:last")
+        );
+    }
+
+    #[cfg(feature = "scope-overlay")]
+    #[test]
+    fn time_scope_overlay_matches_clone_scope_for_snapshot_rows_and_graph_primitives() {
+        let database = time_travel_metric_database();
+        let selection = database
+            .resolve_snapshot_selection("snapshot:s2")
+            .expect("snapshot fixture resolves");
+        let clone_scoped = database.clone_for_time_scope_selection(&selection);
+        let overlay_scoped = database.time_scope_overlay(&selection);
+        let query = r#"
+            ? *handle{id: h, status: status}.
+            ? *snapshot{snapshot: snapshot, id: h, key, value}.
+            ? active(h).
+            ? freshness("draft.md", days).
+            ? flux("draft.md", 20, delta).
+        "#;
+
+        assert_eq!(
+            evaluate_queries(query, clone_scoped),
+            evaluate_queries(query, overlay_scoped)
         );
     }
 
