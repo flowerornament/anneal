@@ -25,6 +25,10 @@ impl Interner {
         symbol
     }
 
+    pub(crate) fn lookup(&self, text: &str) -> Option<SymbolId> {
+        self.by_text.get(text).copied()
+    }
+
     pub(crate) fn resolve(&self, symbol: SymbolId) -> Option<&str> {
         self.texts.get(symbol.index()).map(AsRef::as_ref)
     }
