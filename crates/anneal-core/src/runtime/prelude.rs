@@ -22,11 +22,13 @@ pub const GRAPH_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/graph.dl"
 pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/convergence.dl";
 pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
 pub const RANKING_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/ranking.dl";
+pub const ORIENTATION_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/orientation.dl";
 pub const VIEWS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/views.dl";
 pub const GRAPH_PRELUDE: &str = include_str!("../prelude/graph.dl");
 pub const CONVERGENCE_PRELUDE: &str = include_str!("../prelude/convergence.dl");
 pub const CHECKS_PRELUDE: &str = include_str!("../prelude/checks.dl");
 pub const RANKING_PRELUDE: &str = include_str!("../prelude/ranking.dl");
+pub const ORIENTATION_PRELUDE: &str = include_str!("../prelude/orientation.dl");
 pub const VIEWS_PRELUDE: &str = include_str!("../prelude/views.dl");
 static CONTEXT_QUERY_TEMPLATE: LazyLock<String> = LazyLock::new(|| {
     let program = parse_prelude_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE)
@@ -65,6 +67,10 @@ pub const STANDARD_PRELUDE_FILES: &[EmbeddedPreludeFile] = &[
     EmbeddedPreludeFile {
         source_name: RANKING_PRELUDE_SOURCE,
         contents: RANKING_PRELUDE,
+    },
+    EmbeddedPreludeFile {
+        source_name: ORIENTATION_PRELUDE_SOURCE,
+        contents: ORIENTATION_PRELUDE,
     },
     EmbeddedPreludeFile {
         source_name: VIEWS_PRELUDE_SOURCE,
@@ -651,6 +657,7 @@ mod tests {
                 CONVERGENCE_PRELUDE_SOURCE,
                 CHECKS_PRELUDE_SOURCE,
                 RANKING_PRELUDE_SOURCE,
+                ORIENTATION_PRELUDE_SOURCE,
                 VIEWS_PRELUDE_SOURCE,
             ]
         );
@@ -1305,13 +1312,18 @@ mod tests {
                 ("advancing", r#"? advancing("ticket-2")."#),
                 ("holding", r#"? holding("ticket-1")."#),
                 ("flow", r"? flow(h, direction)."),
+                ("recent_frontier", r"? recent_frontier(h, rank, recency)."),
+                ("anchor", r"? anchor(h, score, why)."),
                 ("ranked_work", r"? ranked_work(h, energy, rank)."),
                 ("frontier", r"? frontier(h, energy)."),
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
                 ("examples", r#"? examples("incoming_edge", example)."#),
             ],
-            standard_library_database(),
+            standard_library_database().with_git_mtimes([
+                ("stub.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
+                ("quiet.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
+            ]),
         );
 
         assert!(has_row(
@@ -1449,6 +1461,21 @@ mod tests {
         assert!(has_row(
             output(&outputs, "flow"),
             &[("h", string("ticket-1")), ("direction", string("holding"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "recent_frontier"),
+            &[("h", string("stub.md")), ("recency", int(100))]
+        ));
+        assert!(
+            !has_row(
+                output(&outputs, "recent_frontier"),
+                &[("h", string("quiet.md"))]
+            ),
+            "terminal quiet.md should not be a recent_frontier row"
+        );
+        assert!(has_row(
+            output(&outputs, "anchor"),
+            &[("h", string("stub.md")), ("why", string("recent"))]
         ));
         assert!(
             has_row(

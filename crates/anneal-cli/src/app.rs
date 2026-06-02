@@ -1251,7 +1251,26 @@ fn query_demands_code_target_history(query: &str) -> bool {
         "status_metric",
     ]
     .iter()
-    .any(|needle| query.contains(needle))
+    .any(|needle| query_contains_identifier(query, needle))
+}
+
+fn query_contains_identifier(query: &str, needle: &str) -> bool {
+    let mut start = 0;
+    while let Some(offset) = query[start..].find(needle) {
+        let match_start = start + offset;
+        let match_end = match_start + needle.len();
+        let before = query[..match_start].chars().next_back();
+        let after = query[match_end..].chars().next();
+        if before.is_none_or(|ch| !is_ident_char(ch)) && after.is_none_or(|ch| !is_ident_char(ch)) {
+            return true;
+        }
+        start = match_end;
+    }
+    false
+}
+
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 fn empty_binding_example(analyzed: &AnalyzedProgram, body: &Body) -> Option<String> {
@@ -4985,7 +5004,16 @@ mod tests {
                 "{query} should demand target-history facts through potential/entropy"
             );
         }
+        assert!(query_demands_code_target_history(
+            "? *meta{handle: h, key: \"target_exists\", value: exists}."
+        ));
+        assert!(query_demands_code_target_history(
+            "? frontier(h, energy), *handle{id: h}."
+        ));
         assert!(!query_demands_code_target_history("? *handle{id: h}."));
+        assert!(!query_demands_code_target_history(
+            "? recent_frontier(h, rank, recency), *handle{id: h}."
+        ));
     }
 
     #[test]
