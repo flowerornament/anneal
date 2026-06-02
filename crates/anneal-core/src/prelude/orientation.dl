@@ -12,41 +12,98 @@ orientation_file(h, file) :=
 orientation_replaced(h) :=
   *edge{to: h, kind: "Supersedes"}.
 
-orientation_replaced(h) :=
+orientation_retired_status(h) :=
   status_of(h, "superseded").
 
-orientation_replaced(h) :=
+orientation_retired_status(h) :=
   status_of(h, "retired").
 
-orientation_replaced(h) :=
+orientation_retired_status(h) :=
   status_of(h, "archived").
 
-orientation_replaced(h) :=
+orientation_retired_status(h) :=
   status_of(h, "historical").
 
-orientation_replaced(h) :=
+orientation_retired_status(h) :=
   status_of(h, "prior").
+
+orientation_replaced(h) :=
+  orientation_retired_status(h).
 
 orientation_inbound_count(h, degree) :=
   orientation_file(h, file),
   degree = Count{ from : incoming_edge(h, from, kind) }.
 
-recent_recency(h, 100) :=
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "README.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "INDEX.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "index.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "overview.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "glossary.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "roadmap.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "OPEN-QUESTIONS.md".
+
+orientation_curated_hub(h) :=
+  orientation_file(h, file),
+  file ends_with "LABELS.md".
+
+orientation_historical_file(h) :=
+  orientation_file(h, file),
+  file starts_with "archive/".
+
+orientation_historical_file(h) :=
+  orientation_file(h, file),
+  file contains "/archive/".
+
+orientation_historical_file(h) :=
+  orientation_file(h, file),
+  file contains "/history/".
+
+recent_recency(h, days) :=
+  *handle{id: h, date: date},
+  date != null,
+  freshness(h, days),
+  days <= 365.
+
+recent_recency(h, 45) :=
+  *handle{id: h, date: null},
   changed_within(h, 7).
 
-recent_recency(h, 70) :=
+recent_recency(h, 90) :=
+  *handle{id: h, date: null},
   changed_within(h, 30),
   not changed_within(h, 7).
 
-recent_recency(h, 40) :=
+recent_recency(h, 180) :=
+  *handle{id: h, date: null},
   changed_within(h, 90),
   not changed_within(h, 30).
 
-recent_recency(h, 15) :=
+recent_recency(h, 365) :=
+  *handle{id: h, date: null},
   changed_within(h, 365),
   not changed_within(h, 90).
 
-recent_active_boost(h, 20) :=
+recent_active_boost(h, 200) :=
   orientation_file(h, file),
   status_of(h, status),
   active(h).
@@ -73,18 +130,26 @@ recent_inbound_boost(h, 0) :=
   orientation_inbound_count(h, degree),
   degree < 10.
 
-recent_frontier_candidate(h, recency, active_boost, inbound_boost) :=
+recent_curated_penalty(h, 5000) :=
+  orientation_curated_hub(h).
+
+recent_curated_penalty(h, 0) :=
+  orientation_file(h, file),
+  not orientation_curated_hub(h).
+
+recent_frontier_candidate(h, recency, active_boost, inbound_boost, curated_penalty) :=
   orientation_file(h, file),
   recent_recency(h, recency),
   recent_active_boost(h, active_boost),
   recent_inbound_boost(h, inbound_boost),
+  recent_curated_penalty(h, curated_penalty),
   not terminal(h),
   not orientation_replaced(h).
 
 recent_frontier_ranked(h, rank, recency) :=
-  (h, rank, recency) = Rank{ key: recency * 1000 + active_boost * 10 + inbound_boost, rank: rank :
+  (h, rank, recency) = Rank{ key: 0 - recency + active_boost + inbound_boost - curated_penalty, rank: rank :
     (h, rank, recency) :
-      recent_frontier_candidate(h, recency, active_boost, inbound_boost)
+      recent_frontier_candidate(h, recency, active_boost, inbound_boost, curated_penalty)
   }.
 
 @doc(
@@ -100,54 +165,31 @@ recent_frontier(h, rank, recency) :=
   rank <= 50.
 
 anchor_status_score(h, 250, 0, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "authoritative").
 
 anchor_status_score(h, 150, 1, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "current").
 
 anchor_status_score(h, 150, 1, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "living").
 
 anchor_status_score(h, 150, 1, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "live").
 
 anchor_status_score(h, 120, 2, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "stable").
 
 anchor_status_score(h, 70, 3, "authoritative_status") :=
+  orientation_file(h, file),
   status_of(h, "reference").
 
 anchor_curated_score(h, 65, 4, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "README.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "INDEX.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "index.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "overview.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "glossary.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "roadmap.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "OPEN-QUESTIONS.md".
-
-anchor_curated_score(h, 55, 5, "curated_name") :=
-  orientation_file(h, file),
-  file ends_with "LABELS.md".
+  orientation_curated_hub(h).
 
 anchor_inbound_score(h, 50, 6, "inbound_degree") :=
   orientation_inbound_count(h, degree),
@@ -169,11 +211,17 @@ anchor_inbound_score(h, 10, 9, "inbound_degree") :=
   degree < 10.
 
 anchor_recent_score(h, 8, 10, "recent") :=
-  changed_within(h, 30).
+  *handle{id: h, date: date},
+  date != null,
+  freshness(h, days),
+  days <= 30.
 
 anchor_recent_score(h, 3, 11, "recent") :=
-  changed_within(h, 365),
-  not changed_within(h, 30).
+  *handle{id: h, date: date},
+  date != null,
+  freshness(h, days),
+  days > 30,
+  days <= 365.
 
 anchor_signal(h, score, priority, why) :=
   anchor_status_score(h, score, priority, why).
@@ -190,11 +238,13 @@ anchor_signal(h, score, priority, why) :=
 anchor_eligible(h) :=
   orientation_file(h, file),
   not terminal(h),
-  not orientation_replaced(h).
+  not orientation_retired_status(h),
+  not orientation_historical_file(h).
 
 anchor_eligible(h) :=
   anchor_status_score(h, score, priority, why),
-  not orientation_replaced(h).
+  not orientation_retired_status(h),
+  not orientation_historical_file(h).
 
 anchor_subject(h) :=
   anchor_signal(h, score, priority, why).
@@ -220,8 +270,19 @@ anchor_primary_why(h, why) :=
   args: ["h", "score", "why"]
 ).
 anchor(h, score, why) :=
-  (h, score, why) = TopK{ k: 12, key: score :
-    (h, score, why) :
-      anchor_total(h, score),
-      anchor_primary_why(h, why)
+  anchor_total(h, score),
+  anchor_primary_why(h, why).
+
+@doc(
+  name: "ranked_anchor",
+  doc: "Return anchors with a dense rank by score for bounded read-first lists; anchor itself remains uncapped for composition."
+).
+@predicate(
+  name: "ranked_anchor",
+  args: ["h", "rank", "score", "why"]
+).
+ranked_anchor(h, rank, score, why) :=
+  (h, rank, score, why) = Rank{ key: score, rank: rank :
+    (h, rank, score, why) :
+      anchor(h, score, why)
   }.

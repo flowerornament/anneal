@@ -1314,16 +1314,22 @@ mod tests {
                 ("flow", r"? flow(h, direction)."),
                 ("recent_frontier", r"? recent_frontier(h, rank, recency)."),
                 ("anchor", r"? anchor(h, score, why)."),
+                ("ranked_anchor", r"? ranked_anchor(h, rank, score, why)."),
                 ("ranked_work", r"? ranked_work(h, energy, rank)."),
                 ("frontier", r"? frontier(h, energy)."),
                 ("describe", r#"? describe("potential", doc)."#),
                 ("source_of", r#"? source_of("ranked_work", file, lines)."#),
                 ("examples", r#"? examples("incoming_edge", example)."#),
             ],
-            standard_library_database().with_git_mtimes([
-                ("stub.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
-                ("quiet.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
-            ]),
+            standard_library_database()
+                .with_git_mtimes([
+                    ("stub.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
+                    ("quiet.md".to_string(), "2026-05-30T12:00:00Z".to_string()),
+                ])
+                .with_evaluation_day(
+                    crate::time::snapshot_days_since_epoch("2026-06-01")
+                        .expect("fixture date parses"),
+                ),
         );
 
         assert!(has_row(
@@ -1464,7 +1470,7 @@ mod tests {
         ));
         assert!(has_row(
             output(&outputs, "recent_frontier"),
-            &[("h", string("stub.md")), ("recency", int(100))]
+            &[("h", string("stub.md")), ("recency", int(2))]
         ));
         assert!(
             !has_row(
@@ -1475,6 +1481,10 @@ mod tests {
         );
         assert!(has_row(
             output(&outputs, "anchor"),
+            &[("h", string("stub.md")), ("why", string("recent"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "ranked_anchor"),
             &[("h", string("stub.md")), ("why", string("recent"))]
         ));
         assert!(
@@ -2066,6 +2076,13 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "stub.md", "file", Some("open"), "", "host"),
             handle(&scope, "quiet.md", "file", Some("closed"), "", "quiet"),
         ];
+        if let Some(handle) = batch
+            .handles
+            .iter_mut()
+            .find(|handle| handle.id == "stub.md")
+        {
+            handle.date = Some("2026-05-30".to_string());
+        }
         batch.content = vec![
             content(
                 &scope,

@@ -1909,10 +1909,13 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
         ],
         "recent_frontier" => &[
-            "git-backed change times from changed_within plus file handles. Terminal and superseded files are excluded; statusless files remain eligible.",
+            "authored file dates from frontmatter or filename, with git-backed changed_within only as a no-date fallback. Terminal and superseded files are excluded; statusless files remain eligible.",
         ],
         "anchor" => &[
             "file handles plus authority, curated-name, incoming-edge, and weak recency signals. Terminal files need an explicit authoritative-style status to remain eligible.",
+        ],
+        "ranked_anchor" => &[
+            "the uncapped anchor(h, score, why) relation. Use rank filters for score tiers and --limit for display budgets.",
         ],
         "configured_pipeline_status"
         | "next_pipeline_status"
@@ -1952,6 +1955,9 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         ),
         "anchor" => Some(
             "Goal-less orientation anchors: durable read-first files such as authoritative models, living READMEs, curated indexes, and high-inbound references.",
+        ),
+        "ranked_anchor" => Some(
+            "Dense-ranked projection of `anchor`; useful when you want the top few durable read-first files.",
         ),
         "blocked" => Some("Used by `blocker` and the blocked section of `status`."),
         "blocker" => Some(
@@ -2063,13 +2069,16 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "Join `primary_entropy(h, source)` with the same source variable for one row per blocked handle.".to_string(),
         ],
         "recent_frontier" => vec![
-            "Ranking shape: recency dominates, active status is a boost, statusless files remain eligible, and terminal or superseded files are excluded.".to_string(),
+            "Ranking shape: lower recency means newer; authored dates dominate, active status is a boost, statusless files remain eligible, and curated hubs are de-prioritized.".to_string(),
             "Use `--limit` on the eval command for a reading-list budget; then join to `read` or `context` when you have a goal.".to_string(),
         ],
         "anchor" => vec![
             "Ranking shape: explicit authoritative/living/current status outranks curated names; incoming degree and recency are bounded supporting signals.".to_string(),
-            "The predicate returns the top 12 anchors so the status pointer is a stable read-first list, not an unbounded catalog.".to_string(),
+            "The predicate is intentionally uncapped; wrap it in `TopK` for a bounded read-first list.".to_string(),
             "The `why` column names the strongest signal: authoritative_status, curated_name, inbound_degree, or recent.".to_string(),
+        ],
+        "ranked_anchor" => vec![
+            "Filter `rank <= N` for score tiers; add eval `--limit N` when you need a hard display budget.".to_string(),
         ],
         "asserts_code" => vec![
             "Config syntax: config convergence { asserts_code([stable, current, authoritative, active, draft]). }".to_string(),
@@ -2162,6 +2171,10 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`anchor(h, score, why), *handle{id: h, file: file, status: status}` for durable read-first files",
             "`anchor(h, score, why), incoming_edge(h, from, kind)` to inspect why a graph hub matters",
             "`anchor(h, score, why), area_of{h: h, area: area}` to group anchors by corpus area",
+        ],
+        "ranked_anchor" => &[
+            "`ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}` with eval `--limit 12` for a budgeted anchor list",
+            "`ranked_anchor(h, rank, score, why), h = \"HANDLE\"` to inspect one anchor's rank",
         ],
         "blocked" | "blocker" => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
@@ -2285,12 +2298,21 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "orphan",
             "entropy_priority",
         ],
-        "recent_frontier" => &["anchor", "changed_within", "git_mtime", "*handle", "status"],
+        "recent_frontier" => &["anchor", "freshness", "changed_within", "*handle", "status"],
         "anchor" => &[
+            "recent_frontier",
+            "ranked_anchor",
+            "incoming_edge",
+            "hub",
+            "freshness",
+            "*handle",
+        ],
+        "ranked_anchor" => &[
+            "anchor",
             "recent_frontier",
             "incoming_edge",
             "hub",
-            "changed_within",
+            "freshness",
             "*handle",
         ],
         "blocked" | "blocker" => &["potential", "primary_entropy", "entropy", "flux", "status"],
@@ -2506,6 +2528,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "frontier" => Some("? frontier(h, energy)."),
         "recent_frontier" => Some("? recent_frontier(h, rank, recency)."),
         "anchor" => Some("? anchor(h, score, why)."),
+        "ranked_anchor" => Some("? ranked_anchor(h, rank, score, why)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),
         "broken_reference" => Some("? broken_reference(src, target, file, line)."),
         "undischarged_obligation" => Some("? undischarged_obligation(h, file)."),

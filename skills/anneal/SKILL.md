@@ -24,8 +24,8 @@ Pick the smallest surface that can answer the next question.
 
 ```bash
 anneal status --format=text
-anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file}.' --limit 12 --format=text
-anneal -e '? anchor(h, score, why), *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
+anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file}.' --limit 12 --format=text
 anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal schema --format=text
 anneal describe runtime --format=text
@@ -83,7 +83,7 @@ Common predicate families:
 
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
 - retrieval: `search`, `read`, `top_k` helpers
-- orientation: `recent_frontier`, `anchor`
+- orientation: `recent_frontier`, `anchor`, `ranked_anchor`
 - convergence: `entropy`, `potential`, `frontier`, `blocker`, `flow`
 - change history: `changed_within`, `git_mtime`, `at("snapshot:last")`
 - checks: `diagnostic`
@@ -91,8 +91,8 @@ Common predicate families:
 ## Convergence
 
 ```bash
-anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file, status: status}.'
-anneal -e '? anchor(h, score, why), *handle{id: h, file: file, status: status}.'
+anneal -e '? recent_frontier(h, rank, recency), rank <= 12, *handle{id: h, file: file, status: status}.' --limit 12
+anneal -e '? ranked_anchor(h, rank, score, why), rank <= 12, *handle{id: h, file: file, status: status}.' --limit 12
 anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'
