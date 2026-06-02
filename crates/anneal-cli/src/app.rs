@@ -120,7 +120,7 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
         };
         return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
     }
-    let session = RuntimeSession::load(invocation.root.path())?;
+    let session = RuntimeSession::load(invocation.root.path(), &invocation.command)?;
     let output = session.run(invocation.command)?;
     let stdout = io::stdout();
     let mode = invocation.output.resolve(stdout.is_terminal());
@@ -836,7 +836,7 @@ impl RuntimeRegistry {
 }
 
 impl RuntimeSession {
-    fn load(root: &camino::Utf8Path) -> Result<Self> {
+    fn load(root: &camino::Utf8Path, command: &RuntimeCommand) -> Result<Self> {
         let actor = ActorContext::trusted_cli();
         let corpus = CorpusId::from(DEFAULT_CORPUS);
         let source_info = MarkdownSource::default().describe();
@@ -884,6 +884,7 @@ impl RuntimeSession {
             corpus: corpus.clone(),
             roots: roots.as_slice(),
             config_facts: &config_facts,
+            probe_code_target_history: command.demands_code_target_history(),
             time_ref: None,
             previous_generation: Some(Generation::new(0)),
             actor: actor.clone(),
@@ -926,6 +927,11 @@ impl RuntimeSession {
             prelude_hash: loaded_prelude.set().hash().to_string(),
             git_mtimes,
         })
+    }
+
+    #[cfg(test)]
+    fn load_for_test(root: &camino::Utf8Path) -> Result<Self> {
+        Self::load(root, &RuntimeCommand::Schema)
     }
 
     fn run(&self, command: RuntimeCommand) -> Result<CommandOutput> {
@@ -1192,6 +1198,48 @@ impl RuntimeSession {
         let query = analyzed.queries().next()?.query();
         empty_binding_example(&analyzed, &query.body)
     }
+}
+
+impl RuntimeCommand {
+    fn demands_code_target_history(&self) -> bool {
+        match self {
+            Self::Status | Self::Verb { .. } => true,
+            Self::Eval { query, .. } => query_demands_code_target_history(query),
+            Self::Describe { name } => matches!(
+                name.as_str(),
+                "W006"
+                    | "spec_code_drift"
+                    | "target_exists"
+                    | "target_history_status"
+                    | "target_probe_base"
+                    | "target_resolved_path"
+            ),
+            Self::Check
+            | Self::Search { .. }
+            | Self::Context { .. }
+            | Self::Read { .. }
+            | Self::Handle { .. }
+            | Self::Schema
+            | Self::Help { .. } => false,
+        }
+    }
+}
+
+fn query_demands_code_target_history(query: &str) -> bool {
+    [
+        "diagnostic",
+        "spec_code_drift",
+        "target_exists",
+        "target_history_status",
+        "target_probe_base",
+        "target_resolved_path",
+        "entropy",
+        "potential",
+        "frontier",
+        "blocker",
+    ]
+    .iter()
+    .any(|needle| query.contains(needle))
 }
 
 fn empty_binding_example(analyzed: &AnalyzedProgram, body: &Body) -> Option<String> {
@@ -4162,7 +4210,7 @@ mod tests {
         fs::write(root.join("a.md"), "---\ndepends-on: missing.md\n---\n# A\n")
             .expect("write file");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
                 query: r#"? diagnostic{severity: "error"}."#.to_string(),
@@ -4199,7 +4247,7 @@ mod tests {
         fs::create_dir(&root).expect("create corpus root");
         fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
                 query: r#"? *handle{id: h, kind: "section"}."#.to_string(),
@@ -4224,7 +4272,7 @@ mod tests {
         fs::create_dir(&root).expect("create corpus root");
         fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let Err(error) = session.run(RuntimeCommand::Handle {
             handle: "a.md#A".to_string(),
             impact: false,
@@ -4572,7 +4620,7 @@ mod tests {
         )
         .expect("write included doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Search {
                 query: "shared marker".to_string(),
@@ -4619,7 +4667,7 @@ mod tests {
         )
         .expect("write doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
                 query: r#"? effective_potential_weight("broken_ref", weight), potential("a.md", energy)."#
@@ -4669,7 +4717,7 @@ mod tests {
         )
         .expect("write authoritative doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Search {
                 query: "lease protocol".to_string(),
@@ -4713,7 +4761,7 @@ mod tests {
         fs::write(root.join("d.md"), "---\nreferences: b.md\n---\n# D\n").expect("write d");
         fs::write(root.join("e.md"), "---\ndepends-on: a.md\n---\n# E\n").expect("write e");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Handle {
                 handle: "b.md".to_string(),
@@ -4802,14 +4850,14 @@ mod tests {
         fs::create_dir(&root).expect("create corpus root");
         fs::write(root.join("a.md"), "---\nstatus: draft\n---\n# A\n").expect("write doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let first = session.run(RuntimeCommand::Status).expect("status runs");
         let CommandOutput::Status(first) = first else {
             panic!("status should emit status output");
         };
         assert!(!first.flow_baseline_ready);
 
-        let session = RuntimeSession::load(&root).expect("session reloads");
+        let session = RuntimeSession::load_for_test(&root).expect("session reloads");
         let second = session
             .run(RuntimeCommand::Status)
             .expect("unchanged status runs");
@@ -4849,7 +4897,7 @@ mod tests {
         )
         .expect("append history");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
                 query: r#"? at("snapshot:last") { *handle{id: h, status: prior_status} }, *handle{id: h, status: current_status}, prior_status != current_status."#
@@ -4916,7 +4964,7 @@ mod tests {
             .expect("git commit runs");
         assert!(status.success(), "git commit failed: {status}");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
                 query: "? *handle{id: h, file: file}, git_mtime(file, instant).".to_string(),
@@ -4944,7 +4992,7 @@ mod tests {
         fs::create_dir(&root).expect("create corpus root");
         fs::write(root.join("a.md"), "# A\n").expect("write doc");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let runtime = session
             .run(RuntimeCommand::Describe {
                 name: "runtime".to_string(),
@@ -5107,7 +5155,7 @@ mod tests {
         )
         .expect("write project rules");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Verb {
                 name: "release-blockers".to_string(),
@@ -5180,7 +5228,7 @@ mod tests {
         )
         .expect("write project rules");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let Err(err) = session.run(RuntimeCommand::Verb {
             name: "release-blockers".to_string(),
             args: vec!["--milestone".to_string(), "--strict".to_string()],
@@ -5213,7 +5261,7 @@ mod tests {
         )
         .expect("write project rules");
 
-        let session = RuntimeSession::load(&root).expect("session loads");
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Verb {
                 name: "project-pulse".to_string(),
@@ -5240,7 +5288,7 @@ mod tests {
         )
         .expect("write legacy config");
 
-        let Err(err) = RuntimeSession::load(&root) else {
+        let Err(err) = RuntimeSession::load(&root, &RuntimeCommand::Schema) else {
             panic!("legacy TOML should be migration-only");
         };
 

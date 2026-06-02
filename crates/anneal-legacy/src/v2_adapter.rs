@@ -22,6 +22,7 @@ pub struct MarkdownExtractionOptions {
     pub scan_roots: Vec<Utf8PathBuf>,
     pub exclude: Vec<String>,
     pub linear_namespaces: Vec<String>,
+    pub probe_code_target_history: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +125,13 @@ fn extract_markdown_facts_with_config(
         emit_frontmatter_meta(&mut batch, &mut revisions, &result, &extraction.file);
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
-    emit_code_ref_meta(&mut batch, &mut revisions, root, &result);
+    emit_code_ref_meta(
+        &mut batch,
+        &mut revisions,
+        root,
+        &result,
+        options.probe_code_target_history,
+    );
     emit_content_spans(&mut batch, &mut revisions, &result);
     emit_concerns(&mut batch, &mut revisions, config, &result);
 
@@ -746,6 +753,7 @@ fn emit_code_ref_meta(
     revisions: &mut RevisionCache<'_>,
     root: &Utf8Path,
     result: &parse::BuildResult,
+    probe_history: bool,
 ) {
     let mut seen = HashSet::new();
     let mut probe_cache = CodeTargetProbeCache::new();
@@ -766,7 +774,11 @@ fn emit_code_ref_meta(
             key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
         });
-        let probe = probe_cache.probe(root, &reference.path);
+        let probe = if probe_history {
+            probe_cache.probe(root, &reference.path)
+        } else {
+            probe_cache.probe_without_history(root, &reference.path)
+        };
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: reference.target.clone(),
@@ -1266,11 +1278,14 @@ fn snippets_from_facts(batch: &FactBatch) -> (HashMap<String, String>, HashMap<S
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use anneal_core::{CodeTargetMeta, CorpusId, Generation, SourceName};
-    use camino::Utf8Path;
+    use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
-    use super::{area_for, extract_markdown_facts};
+    use super::{MarkdownExtractionOptions, area_for, extract_markdown_facts};
+    use crate::v2_adapter::extract_markdown_facts_with_options;
 
     #[test]
     fn area_for_groups_root_files_under_root_area() {
@@ -1349,5 +1364,86 @@ mod tests {
                 && meta.key == CodeTargetMeta::TARGET_RESOLVED_PATH
                 && meta.value == resolved_path.as_str()
         }));
+    }
+
+    #[test]
+    fn code_ref_history_probe_is_opt_in_at_extraction_time() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
+        std::fs::create_dir_all(root.join("lib")).expect("create lib");
+        std::fs::write(root.join("lib/old.rs"), "pub fn old() {}\n").expect("write old code");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.name", "Anneal Test"]);
+        run_git(&root, &["config", "user.email", "anneal@example.test"]);
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "add old code"]);
+        std::fs::remove_file(root.join("lib/old.rs")).expect("remove old code");
+        std::fs::write(root.join("doc.md"), "# Doc\n\nSee `lib/old.rs`.\n").expect("write doc");
+
+        let without_history = extract_markdown_facts_with_options(
+            root.as_path(),
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions::default(),
+        )
+        .expect("extract without history");
+        assert_code_ref_meta(
+            &without_history,
+            "lib/old.rs",
+            CodeTargetMeta::TARGET_EXISTS,
+            "unknown",
+        );
+        assert_code_ref_meta(
+            &without_history,
+            "lib/old.rs",
+            CodeTargetMeta::TARGET_HISTORY_STATUS,
+            "unavailable",
+        );
+
+        let with_history = extract_markdown_facts_with_options(
+            root.as_path(),
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                probe_code_target_history: true,
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract with history");
+        assert_code_ref_meta(
+            &with_history,
+            "lib/old.rs",
+            CodeTargetMeta::TARGET_EXISTS,
+            "false",
+        );
+        assert_code_ref_meta(
+            &with_history,
+            "lib/old.rs",
+            CodeTargetMeta::TARGET_HISTORY_STATUS,
+            "present",
+        );
+    }
+
+    fn assert_code_ref_meta(batch: &anneal_core::FactBatch, target: &str, key: &str, value: &str) {
+        assert!(
+            batch
+                .meta
+                .iter()
+                .any(|meta| meta.handle == target && meta.key == key && meta.value == value),
+            "missing {key}={value} for {target} in {:?}",
+            batch.meta
+        );
+    }
+
+    fn run_git(root: &Utf8Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?} failed: {status}");
     }
 }

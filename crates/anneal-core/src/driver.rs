@@ -113,6 +113,7 @@ impl<'a> SourceRefreshRequest<'a> {
             corpus: self.corpus.clone(),
             roots: self.roots,
             config_facts: self.config_facts,
+            probe_code_target_history: false,
             time_ref: self.time_ref.clone(),
             previous_generation,
             actor: self.actor.clone(),

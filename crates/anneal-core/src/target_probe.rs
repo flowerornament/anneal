@@ -75,6 +75,14 @@ impl CodeTargetProbeCache {
         probe_code_target_with_cache(corpus_root, target_path, self)
     }
 
+    pub fn probe_without_history(
+        &mut self,
+        corpus_root: &Utf8Path,
+        target_path: &str,
+    ) -> CodeTargetProbe {
+        probe_code_target_without_history(corpus_root, target_path)
+    }
+
     fn history_contains_target(&mut self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
         let history = self
             .history_by_base
@@ -142,6 +150,49 @@ fn probe_code_target_with_cache(
         };
     }
     missing_target_probe(cache, corpus_root.to_path_buf(), &normalized)
+}
+
+fn probe_code_target_without_history(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
+    let Some(normalized) =
+        normalize_relative_path(target_path, RelativePathPolicy::STRICT_NON_EMPTY)
+    else {
+        return CodeTargetProbe::unknown();
+    };
+
+    if let Some(project_root) = enclosing_project_root(corpus_root) {
+        if let Some(found) = existing_target(&project_root, &normalized) {
+            return existing_target_probe(project_root, found);
+        }
+        if project_root != corpus_root
+            && let Some(found) = existing_target(corpus_root, &normalized)
+        {
+            return existing_target_probe(corpus_root.to_path_buf(), found);
+        }
+        return unknown_missing_target_probe(project_root, &normalized);
+    }
+
+    if let Some(found) = existing_target(corpus_root, &normalized) {
+        return existing_target_probe(corpus_root.to_path_buf(), found);
+    }
+    unknown_missing_target_probe(corpus_root.to_path_buf(), &normalized)
+}
+
+fn existing_target_probe(base: Utf8PathBuf, found: Utf8PathBuf) -> CodeTargetProbe {
+    CodeTargetProbe {
+        exists: TargetExistence::True,
+        history_status: TargetHistoryStatus::Unavailable,
+        probe_base: Some(base),
+        resolved_path: Some(found),
+    }
+}
+
+fn unknown_missing_target_probe(base: Utf8PathBuf, _normalized: &Utf8Path) -> CodeTargetProbe {
+    CodeTargetProbe {
+        exists: TargetExistence::Unknown,
+        history_status: TargetHistoryStatus::Unavailable,
+        probe_base: Some(base),
+        resolved_path: None,
+    }
 }
 
 fn missing_target_probe(

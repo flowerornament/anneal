@@ -30,6 +30,7 @@ pub struct SourceContext<'a> {
     pub corpus: CorpusId,
     pub roots: &'a [camino::Utf8PathBuf],
     pub config_facts: &'a ConfigFacts,
+    pub probe_code_target_history: bool,
     pub time_ref: Option<TimeRef>,
     pub previous_generation: Option<Generation>,
     pub actor: ActorContext,

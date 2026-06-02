@@ -61,3 +61,8 @@ anneal-legacy = { version = "0.14.1", path = "crates/anneal-legacy" }
 [profile.release]
 lto = true
 strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false

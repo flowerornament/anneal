@@ -60,7 +60,8 @@ impl Source for MarkdownSource {
         }
 
         let generation = cx.next_generation();
-        let config = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
+        let mut config = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
+        config.options.probe_code_target_history = cx.probe_code_target_history;
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -132,6 +133,7 @@ impl MarkdownDiscoveryConfig {
                     .values("md.linear_namespace")
                     .map(str::to_string)
                     .collect(),
+                probe_code_target_history: false,
             },
         })
     }
@@ -188,6 +190,7 @@ mod tests {
             corpus: CorpusId::from("test"),
             roots: std::slice::from_ref(root),
             config_facts: config,
+            probe_code_target_history: false,
             time_ref: None,
             previous_generation,
             actor: ActorContext {
