@@ -520,7 +520,7 @@ first write so snapshot-based history queries continue.
 
 Older compatibility commands now return teaching recovery messages instead of
 running the retired commands. Use the language-first ladder above:
-`status` plus its `recent_frontier`/`anchor` queries to arrive,
+`status` plus its `recent_frontier`/`ranked_anchor` queries to arrive,
 `context GOAL` when the goal is known, `schema`/`describe` to discover,
 `search`/`read`/`handle` to retrieve, `handle --impact` for reverse
 dependencies, and `anneal -e` for precise composite questions.
@@ -534,7 +534,7 @@ Common replacements:
 - `diff`: `anneal -e '? at("snapshot:last") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now.'`
 - `obligations`: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`
 - `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
-- `orient`: `anneal status`, then the printed `recent_frontier`/`anchor` queries; use `anneal context "GOAL"` once you have a goal
+- `orient`: `anneal status`, then the printed `recent_frontier`/`ranked_anchor` queries; use `anneal context "GOAL"` once you have a goal
 - `impact H`: `anneal handle H --impact`
 - `work`: `anneal status` or `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`
 - `blocked H`: `anneal handle H` or `anneal -e '? blocker(h, energy, source), h = "H".'`

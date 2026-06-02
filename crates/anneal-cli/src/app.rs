@@ -376,8 +376,8 @@ Print compact corpus status from the programmable runtime.
 
 Use this as the arrival command: it renders aggregate corpus vital signs and
 copy-runnable orientation/work queries. For goal-less reading, run the
-`recent_frontier` and `anchor` queries it prints; use `context GOAL` once you
-have a specific goal.
+`recent_frontier` and `ranked_anchor` queries it prints; use `context GOAL`
+once you have a specific goal.
 
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -750,7 +750,7 @@ fn retired_command_message(command: &str) -> Option<&'static str> {
             "anneal garden has been retired; compose `frontier`, `primary_entropy`, and `*handle` with `anneal -e '? frontier(h, energy), primary_entropy(h, source), *handle{id: h, file: file, summary: summary}.'`, starting from `anneal status`",
         ),
         "orient" => Some(
-            "anneal orient has been retired; start with `anneal status`, then run its `recent_frontier` and `anchor` queries for goal-less orientation or `anneal context \"GOAL\"` once you have a goal",
+            "anneal orient has been retired; start with `anneal status`, then run its `recent_frontier` and `ranked_anchor` queries for goal-less orientation or `anneal context \"GOAL\"` once you have a goal",
         ),
         "query" => Some(
             "anneal query has been retired; use the language directly with `anneal -e '? *handle{id: h}.'`",

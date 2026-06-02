@@ -33,7 +33,8 @@ anneal describe runtime --format=text
 
 Use `status` as the arrival surface: aggregate corpus vital signs plus
 copy-runnable orientation and work queries. For goal-less reading, run
-`recent_frontier` for recent live files and `anchor` for durable spine files.
+`recent_frontier` for recent live files and `ranked_anchor` for durable spine
+files.
 Use `context` only once you can name a goal: ranked span hits, compact span
 metadata, and graph neighborhood in one call. Add `--read-spans` only when
 inline matched bodies are worth the extra output. Use `schema` and
@@ -152,7 +153,7 @@ writing config.
 
 ## Agent Rules
 
-- Start with `anneal status`; run its `recent_frontier` and `anchor` queries
+- Start with `anneal status`; run its `recent_frontier` and `ranked_anchor` queries
   when you do not yet have a goal.
 - Use `anneal context "<goal>"` once you can name the goal.
 - Use `search` then `read` when you need tighter retrieval control.
