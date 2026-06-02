@@ -11,6 +11,8 @@ pub mod facts;
 pub mod hash;
 pub mod history;
 pub mod ids;
+#[cfg(feature = "physical-substrate")]
+pub(crate) mod ir;
 pub mod metadata;
 pub mod path_policy;
 pub mod policy;
@@ -25,6 +27,7 @@ mod time;
 pub mod trail;
 pub mod verbs;
 pub mod visibility;
+pub(crate) mod vm;
 
 pub use config_schema::{
     RUNTIME_CONFIG_DECLARATIONS, RuntimeConfigDeclaration, RuntimeConfigEntryError,

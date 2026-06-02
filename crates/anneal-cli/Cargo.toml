@@ -38,6 +38,7 @@ serde_json = "1.0.149"
 default = []
 scope-overlay = ["anneal-core/scope-overlay"]
 legacy-time-clone = ["anneal-core/legacy-time-clone"]
+physical-substrate = ["anneal-core/physical-substrate"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

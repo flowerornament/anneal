@@ -54,6 +54,7 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::FactVisibility;
+pub use crate::vm::value::NumberValue;
 
 pub type Binding = BTreeMap<Ident, Value>;
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
@@ -729,47 +730,6 @@ impl Ord for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum NumberValue {
-    Int(i64),
-    Float(f64),
-}
-
-impl Eq for NumberValue {}
-
-impl Ord for NumberValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Int(a), Self::Int(b)) => a.cmp(b),
-            (Self::Float(a), Self::Float(b)) => a.total_cmp(b),
-            (Self::Int(_), Self::Float(_)) => Ordering::Less,
-            (Self::Float(_), Self::Int(_)) => Ordering::Greater,
-        }
-    }
-}
-
-impl PartialOrd for NumberValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::hash::Hash for NumberValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            Self::Int(value) => {
-                0_u8.hash(state);
-                value.hash(state);
-            }
-            Self::Float(value) => {
-                1_u8.hash(state);
-                value.to_bits().hash(state);
-            }
-        }
     }
 }
 

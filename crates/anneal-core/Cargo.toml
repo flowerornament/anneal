@@ -38,6 +38,7 @@ toml = "0.8"
 default = []
 scope-overlay = []
 legacy-time-clone = []
+physical-substrate = []
 
 [dev-dependencies]
 tempfile = "3.27.0"
