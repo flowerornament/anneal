@@ -1236,9 +1236,19 @@ fn query_demands_code_target_history(query: &str) -> bool {
         "target_probe_base",
         "target_resolved_path",
         "entropy",
+        "primary_entropy",
         "potential",
+        "potential_subject",
+        "work_candidate",
         "frontier",
+        "ranked_work",
+        "area_frontier",
+        "blocked",
         "blocker",
+        "holding",
+        "flow",
+        "status_item",
+        "status_metric",
     ]
     .iter()
     .any(|needle| query.contains(needle))
@@ -4608,6 +4618,32 @@ mod tests {
         ])
     }
 
+    fn convergence_metric_counts(rows: &[Row]) -> BTreeMap<String, i64> {
+        rows.iter()
+            .filter_map(|row| {
+                let category = required_string(row, "category").ok()?;
+                if category != "convergence" {
+                    return None;
+                }
+                let name = required_string(row, "name").ok()?.to_string();
+                let count = required_number(row, "count").ok()?;
+                let NumberValue::Int(count) = *count else {
+                    return None;
+                };
+                Some((name, count))
+            })
+            .collect()
+    }
+
+    fn status_item_section_counts(rows: &[Row]) -> BTreeMap<String, i64> {
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            let section = required_string(row, "section").expect("status_item row has section");
+            *counts.entry(section.to_string()).or_insert(0) += 1;
+        }
+        counts
+    }
+
     #[test]
     fn project_discovery_facts_affect_markdown_extraction() {
         let dir = tempdir().expect("tempdir");
@@ -4885,6 +4921,71 @@ mod tests {
                 .iter()
                 .any(|fact| { fact.id == "a.md" && fact.key == "status" && fact.value == "draft" })
         );
+    }
+
+    #[test]
+    fn status_dashboard_counts_match_status_item_sections() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("a.md"),
+            "---\nstatus: draft\n---\n# A\n\nThis cites MISSING-REF.\n",
+        )
+        .expect("write a");
+        fs::write(root.join("b.md"), "---\nstatus: draft\n---\n# B\n").expect("write b");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let status = session.run(RuntimeCommand::Status).expect("status runs");
+        let CommandOutput::Status(status) = status else {
+            panic!("status should emit status output");
+        };
+        let metrics = convergence_metric_counts(&status.rows);
+
+        let item_rows = session
+            .run(RuntimeCommand::Eval {
+                query: "? status_item(section, h, score, why).".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("status_item eval runs");
+        let CommandOutput::Rows { rows, .. } = item_rows else {
+            panic!("eval should emit rows");
+        };
+        let section_counts = status_item_section_counts(&rows);
+
+        for (metric, section) in [
+            ("broken", "broken"),
+            ("blocked", "blocked"),
+            ("open", "work"),
+            ("advancing", "advancing"),
+            ("holding", "holding"),
+            ("drifting", "drifting"),
+        ] {
+            assert_eq!(
+                metrics.get(metric).copied().unwrap_or_default(),
+                section_counts.get(section).copied().unwrap_or_default(),
+                "{metric} dashboard count should match status_item({section})"
+            );
+        }
+    }
+
+    #[test]
+    fn transitive_convergence_queries_demand_code_target_history() {
+        for query in [
+            "? status_item(section, h, score, why).",
+            "? holding(h).",
+            "? flow(h, direction).",
+            "? ranked_work(h, energy, rank).",
+            "? area_frontier(area, h, score, why).",
+            "? primary_entropy(h, source).",
+        ] {
+            assert!(
+                query_demands_code_target_history(query),
+                "{query} should demand target-history facts through potential/entropy"
+            );
+        }
+        assert!(!query_demands_code_target_history("? *handle{id: h}."));
     }
 
     #[test]
