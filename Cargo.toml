@@ -69,7 +69,9 @@ debug = "line-tables-only"
 strip = false
 
 [features]
+default = ["physical-substrate"]
 dhat-heap = ["dep:dhat"]
 scope-overlay = ["anneal-cli/scope-overlay"]
 legacy-time-clone = ["anneal-cli/legacy-time-clone"]
 physical-substrate = ["anneal-cli/physical-substrate"]
+legacy-named-store = ["anneal-cli/legacy-named-store"]

@@ -165,8 +165,10 @@ impl<'a> TupleRow<'a> {
     pub(crate) fn string(&self, field: &str) -> Option<&'a str> {
         match self.physical(field)? {
             PhysicalValue::Sym(symbol) => self.interner.resolve(symbol),
-            PhysicalValue::Null => None,
-            PhysicalValue::Number(_) | PhysicalValue::Bool(_) | PhysicalValue::List(_) => None,
+            PhysicalValue::Number(_)
+            | PhysicalValue::Bool(_)
+            | PhysicalValue::Null
+            | PhysicalValue::List(_) => None,
         }
     }
 
@@ -315,7 +317,7 @@ impl TupleDb {
             self.string_value(identity.native_id.as_str()),
             self.string_value(identity.origin_uri.as_str()),
             self.string_value(identity.revision.as_str()),
-            self.generation_value(identity.generation),
+            Self::generation_value(identity.generation),
         ]
     }
 
@@ -401,7 +403,7 @@ impl TupleDb {
         vec![
             self.string_value(fact.corpus.as_str()),
             self.string_value(fact.source.as_str()),
-            self.generation_value(fact.current),
+            Self::generation_value(fact.current),
         ]
     }
 
@@ -413,7 +415,7 @@ impl TupleDb {
         PhysicalValue::Sym(self.interner.intern(value))
     }
 
-    fn generation_value(&self, generation: crate::ids::Generation) -> PhysicalValue {
+    fn generation_value(generation: crate::ids::Generation) -> PhysicalValue {
         physical_int_value(i64::try_from(generation.get()).unwrap_or(i64::MAX))
     }
 
@@ -447,8 +449,8 @@ impl TupleDb {
         rows
     }
 
-    pub(crate) fn for_each_projected_row<'a>(
-        &'a self,
+    pub(crate) fn for_each_projected_row(
+        &self,
         relation: &str,
         mut visit: impl FnMut(BTreeMap<String, Value>),
     ) {
@@ -457,10 +459,7 @@ impl TupleDb {
         });
     }
 
-    pub(crate) fn for_each_relation_row<'a>(
-        &'a self,
-        mut visit: impl FnMut(&'a str, TupleRow<'a>),
-    ) {
+    pub(crate) fn for_each_relation_row(&self, mut visit: impl FnMut(&str, TupleRow<'_>)) {
         for store in self.relations.values() {
             let Some(schema) = self.schemas.relation(store.relation()) else {
                 continue;

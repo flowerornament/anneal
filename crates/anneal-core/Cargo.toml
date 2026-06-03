@@ -39,6 +39,7 @@ default = []
 scope-overlay = []
 legacy-time-clone = []
 physical-substrate = []
+legacy-named-store = []
 
 [dev-dependencies]
 tempfile = "3.27.0"

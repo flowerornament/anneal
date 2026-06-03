@@ -872,7 +872,7 @@ impl Database {
                 ..Self::default()
             };
             db.seed_indexes_from_tuples();
-            return db;
+            db
         }
 
         #[cfg(not(feature = "physical-substrate"))]
@@ -1048,7 +1048,7 @@ impl Database {
     fn build_search_index(&self) -> SearchIndex {
         let mut search = SearchIndex::default();
         self.tuples.for_each_relation_row(|relation, row| {
-            insert_search_tuple_row(&mut search, relation, row)
+            insert_search_tuple_row(&mut search, relation, row);
         });
         for (relation, rows) in &self.stored {
             for row in &rows.rows {
@@ -1716,7 +1716,7 @@ impl Database {
             let Some(value) = row.physical(VALUE_FIELD) else {
                 continue;
             };
-            let Some(field) = handle_snapshot_patch_field(&key) else {
+            let Some(field) = handle_snapshot_patch_field(key) else {
                 continue;
             };
             patches
@@ -3225,9 +3225,9 @@ impl GraphIndex {
                 continue;
             };
             match key {
-                KIND_FIELD => state.kind = value.to_owned(),
+                KIND_FIELD => value.clone_into(&mut state.kind),
                 STATUS_FIELD => state.status = Some(value.to_owned()),
-                NAMESPACE_FIELD => state.namespace = value.to_owned(),
+                NAMESPACE_FIELD => value.clone_into(&mut state.namespace),
                 DATE_FIELD => state.date = iso_days_since_epoch(value),
                 _ => {}
             }

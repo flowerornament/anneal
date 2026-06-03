@@ -39,6 +39,7 @@ default = []
 scope-overlay = ["anneal-core/scope-overlay"]
 legacy-time-clone = ["anneal-core/legacy-time-clone"]
 physical-substrate = ["anneal-core/physical-substrate"]
+legacy-named-store = ["anneal-core/legacy-named-store"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
