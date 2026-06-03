@@ -144,6 +144,18 @@ public currency is `SymbolId`, never a crate-native raw id.
 
 ## 3. PhysicalValue (name the value domain whole)
 
+**Naming note.** anneal is a **query compiler**: it compiles Datalog to a physical
+plan and evaluates it on a relational VM — it is *not* a codegen compiler (no
+emitted machine code, no "lowering to a backend"). In query-compiler vocabulary
+"physical" is the term of art — Codd's logical/physical data independence; the
+logical-plan → physical-plan split of every query optimizer (Postgres, Calcite,
+Catalyst). So the value type deliberately mirrors the model split: `Value`
+(logical/surface) ↔ `PhysicalValue` (physical/evaluator). The pairing is
+self-documenting; it is kept over the standalone term `Datum` precisely because it
+names its place in the logical/physical architecture. Avoid PL-compiler words
+("lowering/backend/codegen") for this layer — they're the wrong dialect and make
+"physical" read as foreign.
+
 The logical `Value` (`String | Number | Bool | Null | List`) survives **only at
 the projection boundary**. The evaluator runs on:
 

@@ -99,8 +99,49 @@ impl RelationStore {
         self.indexes.get(&field)
     }
 
+    pub(crate) fn candidate_rows(
+        &self,
+        constraints: &[(FieldId, PhysicalValue)],
+    ) -> RowCandidates<'_> {
+        let mut best = None;
+        for (field, value) in constraints {
+            let Some(index) = self.index(*field) else {
+                return RowCandidates::Empty;
+            };
+            let rows = index.rows_for(*value);
+            if rows.is_empty() {
+                return RowCandidates::Empty;
+            }
+            if best.is_none_or(|current: &[RowId]| rows.len() < current.len()) {
+                best = Some(rows);
+            }
+        }
+        best.map_or_else(
+            || RowCandidates::All(0..self.rows.len()),
+            |rows| RowCandidates::Indexed(rows.iter()),
+        )
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
+    }
+}
+
+pub(crate) enum RowCandidates<'a> {
+    All(std::ops::Range<usize>),
+    Indexed(std::slice::Iter<'a, RowId>),
+    Empty,
+}
+
+impl Iterator for RowCandidates<'_> {
+    type Item = RowId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::All(rows) => rows.next().map(RowId::from_index),
+            Self::Indexed(rows) => rows.next().copied(),
+            Self::Empty => None,
+        }
     }
 }
 
@@ -119,78 +160,64 @@ impl TupleDb {
     ) -> Self {
         let mut db = Self::with_stored_builtins();
         let hidden_handles = hidden_handles(store, &fact_visible);
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "handle",
             store
                 .handles()
                 .iter()
-                .filter(|fact| fact_visible(&fact.identity))
-                .map(handle_values),
+                .filter(|fact| fact_visible(&fact.identity)),
+            Self::handle_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "edge",
-            store
-                .edges()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity)
-                        && !hidden_handles.contains(&fact.from)
-                        && !hidden_handles.contains(&fact.to)
-                })
-                .map(edge_values),
+            store.edges().iter().filter(|fact| {
+                fact_visible(&fact.identity)
+                    && !hidden_handles.contains(&fact.from)
+                    && !hidden_handles.contains(&fact.to)
+            }),
+            Self::edge_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "meta",
-            store
-                .meta()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(meta_values),
+            store.meta().iter().filter(|fact| {
+                fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+            }),
+            Self::meta_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "content",
-            store
-                .content()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(content_values),
+            store.content().iter().filter(|fact| {
+                fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+            }),
+            Self::content_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "span",
-            store
-                .spans()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(span_values),
+            store.spans().iter().filter(|fact| {
+                fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+            }),
+            Self::span_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "concern",
-            store
-                .concerns()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
-                })
-                .map(concern_values),
+            store.concerns().iter().filter(|fact| {
+                fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
+            }),
+            Self::concern_values,
         );
-        db.insert_relation_rows("config", store.configs().iter().map(config_values));
-        db.insert_relation_rows(
+        db.insert_relation_rows_from("config", store.configs().iter(), Self::config_values);
+        db.insert_relation_rows_from(
             "snapshot",
             store
                 .snapshots()
                 .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.id))
-                .map(snapshot_values),
+                .filter(|fact| !hidden_handles.contains(&fact.id)),
+            Self::snapshot_values,
         );
-        db.insert_relation_rows(
+        db.insert_relation_rows_from(
             "generation",
-            store.generations().iter().map(generation_values),
+            store.generations().iter(),
+            Self::generation_values,
         );
         db
     }
@@ -211,7 +238,12 @@ impl TupleDb {
         self.relations.insert(relation.relation(), relation);
     }
 
-    fn insert_relation_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = Vec<Value>>) {
+    fn insert_relation_rows_from<'a, T: 'a>(
+        &mut self,
+        relation: &str,
+        rows: impl IntoIterator<Item = &'a T>,
+        mut values: impl FnMut(&mut Self, &'a T) -> Vec<PhysicalValue>,
+    ) {
         let relation_name = self.interner.intern(relation);
         let schema = self
             .schemas
@@ -219,17 +251,131 @@ impl TupleDb {
             .expect("stored builtin schema exists")
             .clone();
         let mut store = RelationStore::new(&schema);
-        for row in rows {
+        for item in rows {
+            let row = values(self, item);
             debug_assert_eq!(row.len(), schema.arity());
-            let tuple = row
-                .iter()
-                .map(|value| {
-                    PhysicalValue::from_logical(value, &mut self.interner, &mut self.lists)
-                })
-                .collect::<Vec<_>>();
-            store.push(Tuple::new(tuple));
+            store.push(Tuple::new(row));
         }
         self.insert_relation(store);
+    }
+
+    fn source_values(
+        &mut self,
+        identity: &FactIdentity,
+        values: impl IntoIterator<Item = PhysicalValue>,
+    ) -> Vec<PhysicalValue> {
+        let mut row = self.identity_values(identity);
+        row.extend(values);
+        row
+    }
+
+    fn identity_values(&mut self, identity: &FactIdentity) -> Vec<PhysicalValue> {
+        vec![
+            self.string_value(identity.corpus.as_str()),
+            self.string_value(identity.source.as_str()),
+            self.string_value(identity.native_id.as_str()),
+            self.string_value(identity.origin_uri.as_str()),
+            self.string_value(identity.revision.as_str()),
+            self.generation_value(identity.generation),
+        ]
+    }
+
+    fn handle_values(&mut self, fact: &HandleFact) -> Vec<PhysicalValue> {
+        let id = self.string_value(&fact.id);
+        let kind = self.string_value(&fact.kind);
+        let status = self.opt_string(fact.status.as_ref());
+        let namespace = self.string_value(&fact.namespace);
+        let file = self.string_value(&fact.file);
+        let line = physical_int_value(i64::from(fact.line));
+        let date = self.opt_string(fact.date.as_ref());
+        let area = self.string_value(&fact.area);
+        let summary = self.string_value(&fact.summary);
+        self.source_values(
+            &fact.identity,
+            [id, kind, status, namespace, file, line, date, area, summary],
+        )
+    }
+
+    fn edge_values(&mut self, fact: &EdgeFact) -> Vec<PhysicalValue> {
+        let from = self.string_value(&fact.from);
+        let to = self.string_value(&fact.to);
+        let kind = self.string_value(&fact.kind);
+        let file = self.string_value(&fact.file);
+        let line = physical_int_value(i64::from(fact.line));
+        self.source_values(&fact.identity, [from, to, kind, file, line])
+    }
+
+    fn meta_values(&mut self, fact: &MetaFact) -> Vec<PhysicalValue> {
+        let handle = self.string_value(&fact.handle);
+        let key = self.string_value(&fact.key);
+        let value = self.string_value(&fact.value);
+        self.source_values(&fact.identity, [handle, key, value])
+    }
+
+    fn content_values(&mut self, fact: &ContentFact) -> Vec<PhysicalValue> {
+        let handle = self.string_value(&fact.handle);
+        let span_id = self.string_value(&fact.span_id);
+        let lines = physical_int_value(i64::from(fact.lines));
+        let text = self.string_value(&fact.text);
+        let tokens = physical_int_value(i64::from(fact.tokens));
+        self.source_values(&fact.identity, [handle, span_id, lines, text, tokens])
+    }
+
+    fn span_values(&mut self, fact: &SpanFact) -> Vec<PhysicalValue> {
+        let id = self.string_value(&fact.id);
+        let handle = self.string_value(&fact.handle);
+        let start_line = physical_int_value(i64::from(fact.start_line));
+        let end_line = physical_int_value(i64::from(fact.end_line));
+        let summary = self.string_value(&fact.summary);
+        self.source_values(&fact.identity, [id, handle, start_line, end_line, summary])
+    }
+
+    fn concern_values(&mut self, fact: &ConcernFact) -> Vec<PhysicalValue> {
+        let name = self.string_value(&fact.name);
+        let member = self.string_value(&fact.member);
+        self.source_values(&fact.identity, [name, member])
+    }
+
+    fn config_values(&mut self, fact: &ConfigFact) -> Vec<PhysicalValue> {
+        vec![
+            self.string_value(fact.corpus.as_str()),
+            self.string_value(&fact.key),
+            self.string_value(&fact.value),
+            fact.ordinal.map_or(PhysicalValue::Null, |ordinal| {
+                physical_int_value(i64::from(ordinal))
+            }),
+        ]
+    }
+
+    fn snapshot_values(&mut self, fact: &SnapshotFact) -> Vec<PhysicalValue> {
+        vec![
+            self.string_value(fact.corpus.as_str()),
+            self.string_value(&fact.snapshot),
+            self.string_value(&fact.at),
+            self.string_value(&fact.id),
+            self.string_value(&fact.key),
+            self.string_value(&fact.value),
+        ]
+    }
+
+    fn generation_values(&mut self, fact: &GenerationFact) -> Vec<PhysicalValue> {
+        vec![
+            self.string_value(fact.corpus.as_str()),
+            self.string_value(fact.source.as_str()),
+            self.generation_value(fact.current),
+        ]
+    }
+
+    fn opt_string(&mut self, value: Option<&String>) -> PhysicalValue {
+        value.map_or(PhysicalValue::Null, |value| self.string_value(value))
+    }
+
+    fn string_value(&mut self, value: &str) -> PhysicalValue {
+        PhysicalValue::Sym(self.interner.intern(value))
+    }
+
+    fn generation_value(&self, generation: crate::ids::Generation) -> PhysicalValue {
+        physical_int_value(i64::try_from(generation.get()).unwrap_or(i64::MAX))
     }
 
     pub(crate) fn relation(&self, relation: RelationId) -> Option<&RelationStore> {
@@ -245,20 +391,76 @@ impl TupleDb {
     }
 
     pub(crate) fn projected_rows(&self, relation: &str) -> Vec<BTreeMap<String, Value>> {
+        let mut rows = Vec::new();
+        self.for_each_projected_row(relation, |row| rows.push(row));
+        rows
+    }
+
+    pub(crate) fn for_each_projected_row(
+        &self,
+        relation: &str,
+        mut visit: impl FnMut(BTreeMap<String, Value>),
+    ) {
         let Some(relation_name) = self.interner.lookup(relation) else {
-            return Vec::new();
+            return;
         };
         let Some(schema) = self.schemas.relation_by_name(relation_name) else {
-            return Vec::new();
+            return;
         };
         let Some(store) = self.relation(schema.id()) else {
-            return Vec::new();
+            return;
         };
+        for tuple in store.rows() {
+            visit(self.project_tuple(schema, tuple));
+        }
+    }
+
+    pub(crate) fn candidate_rows(
+        &self,
+        relation: &str,
+        constraints: &[(String, Value)],
+    ) -> RowCandidates<'_> {
+        let Some(relation_name) = self.interner.lookup(relation) else {
+            return RowCandidates::Empty;
+        };
+        let Some(schema) = self.schemas.relation_by_name(relation_name) else {
+            return RowCandidates::Empty;
+        };
+        let Some(store) = self.relation(schema.id()) else {
+            return RowCandidates::Empty;
+        };
+        let Some(constraints) = self.physical_constraints(schema, constraints) else {
+            return RowCandidates::Empty;
+        };
+        store.candidate_rows(&constraints)
+    }
+
+    pub(crate) fn logical_field_value(
+        &self,
+        relation: &str,
+        row: RowId,
+        field: &str,
+    ) -> Option<Value> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let field_name = self.interner.lookup(field)?;
+        let field = schema.field(field_name)?;
+        let store = self.relation(schema.id())?;
         store
-            .rows()
-            .iter()
-            .map(|tuple| self.project_tuple(schema, tuple))
-            .collect()
+            .row(row)?
+            .get(field)?
+            .to_logical(&self.interner, &self.lists)
+    }
+
+    pub(crate) fn project_row(
+        &self,
+        relation: &str,
+        row: RowId,
+    ) -> Option<BTreeMap<String, Value>> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let store = self.relation(schema.id())?;
+        Some(self.project_tuple(schema, store.row(row)?))
     }
 
     pub(crate) fn relation_names(&self) -> BTreeSet<String> {
@@ -267,6 +469,39 @@ impl TupleDb {
             .filter_map(|relation| self.schemas.relation(*relation))
             .filter_map(|schema| self.interner.resolve(schema.name()).map(str::to_owned))
             .collect()
+    }
+
+    pub(crate) fn has_relation(&self, relation: &str) -> bool {
+        self.interner
+            .lookup(relation)
+            .and_then(|name| self.schemas.relation_by_name(name))
+            .is_some_and(|schema| self.relation(schema.id()).is_some())
+    }
+
+    fn physical_constraints(
+        &self,
+        schema: &RelationSchema,
+        constraints: &[(String, Value)],
+    ) -> Option<Vec<(FieldId, PhysicalValue)>> {
+        constraints
+            .iter()
+            .map(|(field, value)| {
+                let field_name = self.interner.lookup(field)?;
+                let field = schema.field(field_name)?;
+                let value = self.physical_value(value)?;
+                Some((field, value))
+            })
+            .collect()
+    }
+
+    fn physical_value(&self, value: &Value) -> Option<PhysicalValue> {
+        match value {
+            Value::String(value) => self.interner.lookup(value).map(PhysicalValue::Sym),
+            Value::Number(value) => Some(PhysicalValue::Number(*value)),
+            Value::Bool(value) => Some(PhysicalValue::Bool(*value)),
+            Value::Null => Some(PhysicalValue::Null),
+            Value::List(_) => None,
+        }
     }
 
     fn project_tuple(&self, schema: &RelationSchema, tuple: &Tuple) -> BTreeMap<String, Value> {
@@ -295,140 +530,8 @@ where
         .collect()
 }
 
-fn source_values(identity: &FactIdentity, values: impl IntoIterator<Item = Value>) -> Vec<Value> {
-    let mut row = identity_values(identity);
-    row.extend(values);
-    row
-}
-
-fn identity_values(identity: &FactIdentity) -> Vec<Value> {
-    vec![
-        string_value(identity.corpus.to_string()),
-        string_value(identity.source.to_string()),
-        string_value(identity.native_id.to_string()),
-        string_value(identity.origin_uri.to_string()),
-        string_value(identity.revision.to_string()),
-        generation_value(identity.generation),
-    ]
-}
-
-fn handle_values(fact: &HandleFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [
-            string_value(&fact.id),
-            string_value(&fact.kind),
-            opt_string(fact.status.as_ref()),
-            string_value(&fact.namespace),
-            string_value(&fact.file),
-            int_value(i64::from(fact.line)),
-            opt_string(fact.date.as_ref()),
-            string_value(&fact.area),
-            string_value(&fact.summary),
-        ],
-    )
-}
-
-fn edge_values(fact: &EdgeFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [
-            string_value(&fact.from),
-            string_value(&fact.to),
-            string_value(&fact.kind),
-            string_value(&fact.file),
-            int_value(i64::from(fact.line)),
-        ],
-    )
-}
-
-fn meta_values(fact: &MetaFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [
-            string_value(&fact.handle),
-            string_value(&fact.key),
-            string_value(&fact.value),
-        ],
-    )
-}
-
-fn content_values(fact: &ContentFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [
-            string_value(&fact.handle),
-            string_value(&fact.span_id),
-            int_value(i64::from(fact.lines)),
-            string_value(&fact.text),
-            int_value(i64::from(fact.tokens)),
-        ],
-    )
-}
-
-fn span_values(fact: &SpanFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [
-            string_value(&fact.id),
-            string_value(&fact.handle),
-            int_value(i64::from(fact.start_line)),
-            int_value(i64::from(fact.end_line)),
-            string_value(&fact.summary),
-        ],
-    )
-}
-
-fn concern_values(fact: &ConcernFact) -> Vec<Value> {
-    source_values(
-        &fact.identity,
-        [string_value(&fact.name), string_value(&fact.member)],
-    )
-}
-
-fn config_values(fact: &ConfigFact) -> Vec<Value> {
-    vec![
-        string_value(fact.corpus.to_string()),
-        string_value(&fact.key),
-        string_value(&fact.value),
-        fact.ordinal
-            .map_or(Value::Null, |ordinal| int_value(i64::from(ordinal))),
-    ]
-}
-
-fn snapshot_values(fact: &SnapshotFact) -> Vec<Value> {
-    vec![
-        string_value(fact.corpus.to_string()),
-        string_value(&fact.snapshot),
-        string_value(&fact.at),
-        string_value(&fact.id),
-        string_value(&fact.key),
-        string_value(&fact.value),
-    ]
-}
-
-fn generation_values(fact: &GenerationFact) -> Vec<Value> {
-    vec![
-        string_value(fact.corpus.to_string()),
-        string_value(fact.source.to_string()),
-        generation_value(fact.current),
-    ]
-}
-
-fn opt_string(value: Option<&String>) -> Value {
-    value.cloned().map_or(Value::Null, Value::String)
-}
-
-fn string_value(value: impl ToString) -> Value {
-    Value::String(value.to_string())
-}
-
-fn int_value(value: i64) -> Value {
-    Value::Number(NumberValue::Int(value))
-}
-
-fn generation_value(generation: crate::ids::Generation) -> Value {
-    int_value(i64::try_from(generation.get()).unwrap_or(i64::MAX))
+fn physical_int_value(value: i64) -> PhysicalValue {
+    PhysicalValue::Number(NumberValue::Int(value))
 }
 
 #[cfg(test)]

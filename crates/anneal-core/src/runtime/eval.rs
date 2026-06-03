@@ -11,11 +11,16 @@ use regex::Regex;
 use serde::Serialize;
 use serde::ser::SerializeMap;
 
+use crate::facts::FactIdentity;
+#[cfg(any(not(feature = "physical-substrate"), test))]
+use crate::facts::SnapshotFact;
+#[cfg(any(not(feature = "physical-substrate"), test))]
 use crate::facts::{
-    ConcernFact, ConfigFact, ContentFact, EdgeFact, FactIdentity, HandleFact, MetaFact,
-    SnapshotFact, SpanFact,
+    ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
 };
 use crate::ids::Generation;
+#[cfg(feature = "physical-substrate")]
+use crate::ir::ids::RowId;
 #[cfg(test)]
 use crate::policy::ActionKind;
 #[cfg(test)]
@@ -54,6 +59,8 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::FactVisibility;
+#[cfg(feature = "physical-substrate")]
+use crate::vm::store::TupleDb;
 pub use crate::vm::value::NumberValue;
 
 pub type Binding = BTreeMap<Ident, Value>;
@@ -736,6 +743,8 @@ impl PartialOrd for Value {
 #[derive(Clone)]
 pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
+    #[cfg(feature = "physical-substrate")]
+    tuples: Arc<TupleDb>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
@@ -751,6 +760,8 @@ impl Default for Database {
     fn default() -> Self {
         Self {
             stored: BTreeMap::new(),
+            #[cfg(feature = "physical-substrate")]
+            tuples: Arc::new(TupleDb::default()),
             derived: BTreeMap::new(),
             graph: Arc::new(GraphIndex::default()),
             content: Arc::new(ContentIndex::default()),
@@ -818,91 +829,109 @@ impl Database {
         store: &FactStore,
         fact_visible: impl Fn(&FactIdentity) -> bool,
     ) -> Self {
-        let mut db = Self::default();
-        let hidden_handles = hidden_handles(store, &fact_visible);
-        let hidden_content_spans = hidden_content_spans(store, &fact_visible);
-        db.insert_named_rows(
-            "handle",
-            store
-                .handles()
-                .iter()
-                .filter(|fact| fact_visible(&fact.identity))
-                .map(handle_row),
-        );
-        db.insert_named_rows(
-            "edge",
-            store
-                .edges()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity)
-                        && !hidden_handles.contains(&fact.from)
-                        && !hidden_handles.contains(&fact.to)
-                })
-                .map(edge_row),
-        );
-        db.insert_named_rows(
-            "meta",
-            store
-                .meta()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(meta_row),
-        );
-        db.insert_named_rows(
-            "content",
-            store
-                .content()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(content_row),
-        );
-        db.insert_named_rows(
-            "span",
-            store
-                .spans()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                })
-                .map(span_row),
-        );
-        db.insert_named_rows(
-            "concern",
-            store
-                .concerns()
-                .iter()
-                .filter(|fact| {
-                    fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
-                })
-                .map(concern_row),
-        );
-        db.insert_named_rows("config", store.configs().iter().map(config_row));
-        db.insert_named_rows(
-            "snapshot",
-            store
-                .snapshots()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.id))
-                .map(snapshot_row),
-        );
-        db.insert_named_rows(
-            "generation",
-            store.generations().iter().map(|row| {
-                named_row([
-                    ("corpus", Value::String(row.corpus.to_string())),
-                    ("source", Value::String(row.source.to_string())),
-                    ("current", generation_value(row.current)),
-                ])
-            }),
-        );
-        db.hidden_handles = Arc::new(hidden_handles);
-        db.hidden_content_spans = Arc::new(hidden_content_spans);
-        db
+        #[cfg(feature = "physical-substrate")]
+        {
+            let tuples = TupleDb::from_store_with_visibility(store, &fact_visible);
+            let hidden_handles = hidden_handles(store, &fact_visible);
+            let hidden_content_spans = hidden_content_spans(store, &fact_visible);
+            let mut db = Self {
+                tuples: Arc::new(tuples),
+                hidden_handles: Arc::new(hidden_handles),
+                hidden_content_spans: Arc::new(hidden_content_spans),
+                ..Self::default()
+            };
+            db.seed_indexes_from_tuples();
+            return db;
+        }
+
+        #[cfg(not(feature = "physical-substrate"))]
+        {
+            let mut db = Self::default();
+            let hidden_handles = hidden_handles(store, &fact_visible);
+            let hidden_content_spans = hidden_content_spans(store, &fact_visible);
+            db.insert_named_rows(
+                "handle",
+                store
+                    .handles()
+                    .iter()
+                    .filter(|fact| fact_visible(&fact.identity))
+                    .map(handle_row),
+            );
+            db.insert_named_rows(
+                "edge",
+                store
+                    .edges()
+                    .iter()
+                    .filter(|fact| {
+                        fact_visible(&fact.identity)
+                            && !hidden_handles.contains(&fact.from)
+                            && !hidden_handles.contains(&fact.to)
+                    })
+                    .map(edge_row),
+            );
+            db.insert_named_rows(
+                "meta",
+                store
+                    .meta()
+                    .iter()
+                    .filter(|fact| {
+                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                    })
+                    .map(meta_row),
+            );
+            db.insert_named_rows(
+                "content",
+                store
+                    .content()
+                    .iter()
+                    .filter(|fact| {
+                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                    })
+                    .map(content_row),
+            );
+            db.insert_named_rows(
+                "span",
+                store
+                    .spans()
+                    .iter()
+                    .filter(|fact| {
+                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
+                    })
+                    .map(span_row),
+            );
+            db.insert_named_rows(
+                "concern",
+                store
+                    .concerns()
+                    .iter()
+                    .filter(|fact| {
+                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
+                    })
+                    .map(concern_row),
+            );
+            db.insert_named_rows("config", store.configs().iter().map(config_row));
+            db.insert_named_rows(
+                "snapshot",
+                store
+                    .snapshots()
+                    .iter()
+                    .filter(|fact| !hidden_handles.contains(&fact.id))
+                    .map(snapshot_row),
+            );
+            db.insert_named_rows(
+                "generation",
+                store.generations().iter().map(|row| {
+                    named_row([
+                        ("corpus", Value::String(row.corpus.to_string())),
+                        ("source", Value::String(row.source.to_string())),
+                        ("current", generation_value(row.current)),
+                    ])
+                }),
+            );
+            db.hidden_handles = Arc::new(hidden_handles);
+            db.hidden_content_spans = Arc::new(hidden_content_spans);
+            db
+        }
     }
 
     pub fn with_sources(mut self, sources: impl IntoIterator<Item = SourceInfo>) -> Self {
@@ -976,8 +1005,43 @@ impl Database {
     fn search_provider(&self) -> &dyn SearchProvider {
         match self.search_provider.as_deref() {
             Some(provider) => provider,
+            #[cfg(feature = "physical-substrate")]
+            None => self.search.get_or_init(|| self.build_search_index()),
+            #[cfg(not(feature = "physical-substrate"))]
             None => self.search.get_or_init(|| build_search_index(&self.stored)),
         }
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn seed_indexes_from_tuples(&mut self) {
+        for relation in self.tuples.relation_names() {
+            let relation = Ident::new_unchecked(relation);
+            let tuples = &self.tuples;
+            let graph = Arc::make_mut(&mut self.graph);
+            let content = Arc::make_mut(&mut self.content);
+            tuples.for_each_projected_row(relation.as_str(), |row| {
+                let row = string_map_to_named_row(row);
+                graph.insert_row(&relation, &row);
+                content.insert_row(&relation, &row);
+            });
+        }
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn build_search_index(&self) -> SearchIndex {
+        let mut search = SearchIndex::default();
+        for relation in self.tuples.relation_names() {
+            let relation = Ident::new_unchecked(relation);
+            self.for_each_projected_tuple_row(&relation, |row| {
+                insert_search_row(&mut search, &relation, &row);
+            });
+        }
+        for (relation, rows) in &self.stored {
+            for row in &rows.rows {
+                insert_search_row(&mut search, relation, row);
+            }
+        }
+        search
     }
 
     fn insert_trail_entry(&mut self, entry: &TrailEntryRedacted) {
@@ -1212,6 +1276,49 @@ impl Database {
             .collect()
     }
 
+    #[cfg(feature = "physical-substrate")]
+    fn projected_tuple_rows(&self, relation: &Ident) -> Vec<NamedRow> {
+        self.tuples
+            .projected_rows(relation.as_str())
+            .into_iter()
+            .map(string_map_to_named_row)
+            .collect()
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn for_each_projected_tuple_row(&self, relation: &Ident, mut visit: impl FnMut(NamedRow)) {
+        self.tuples
+            .for_each_projected_row(relation.as_str(), |row| {
+                visit(string_map_to_named_row(row));
+            });
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn candidate_tuple_rows(
+        &self,
+        relation: &Ident,
+        constraints: &[(Ident, Value)],
+    ) -> crate::vm::store::RowCandidates<'_> {
+        let constraints = constraints
+            .iter()
+            .map(|(field, value)| (field.to_string(), value.clone()))
+            .collect::<Vec<_>>();
+        self.tuples.candidate_rows(relation.as_str(), &constraints)
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn tuple_field_value(&self, relation: &Ident, row: RowId, field: &Ident) -> Option<Value> {
+        self.tuples
+            .logical_field_value(relation.as_str(), row, field.as_str())
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn tuple_named_row(&self, relation: &Ident, row: RowId) -> Option<NamedRow> {
+        self.tuples
+            .project_row(relation.as_str(), row)
+            .map(string_map_to_named_row)
+    }
+
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
         let relation = Ident::new_unchecked(relation);
         let stored = self
@@ -1280,8 +1387,16 @@ impl Database {
     }
 
     fn resolve_snapshot_selection(&self, reference: &str) -> Option<SnapshotSelection> {
-        let relation = self.stored.get(&Ident::new_unchecked(SNAPSHOT_RELATION))?;
-        let candidates = snapshot_candidates(&relation.rows);
+        #[cfg(feature = "physical-substrate")]
+        let snapshot_rows = self.relation_rows_for_scope(SNAPSHOT_RELATION)?;
+        #[cfg(feature = "physical-substrate")]
+        let candidates = snapshot_candidates(&snapshot_rows);
+
+        #[cfg(not(feature = "physical-substrate"))]
+        let candidates = {
+            let relation = self.stored.get(&Ident::new_unchecked(SNAPSHOT_RELATION))?;
+            snapshot_candidates(&relation.rows)
+        };
         match snapshot_reference(reference)? {
             SnapshotReference::Last => latest_snapshot_candidate(candidates.into_values()),
             SnapshotReference::Snapshot(id) => candidates.get(&id).cloned().map(Into::into),
@@ -1291,9 +1406,33 @@ impl Database {
         }
     }
 
-    #[cfg(any(feature = "legacy-time-clone", test))]
+    #[cfg(all(
+        any(feature = "legacy-time-clone", test),
+        not(feature = "physical-substrate")
+    ))]
     fn clone_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(self.stored.clone())
+    }
+
+    #[cfg(all(
+        any(feature = "legacy-time-clone", test),
+        feature = "physical-substrate"
+    ))]
+    fn clone_for_time_scope(&self) -> Self {
+        self.clone_for_time_scope_with_stored(self.materialized_stored_relations())
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    #[allow(dead_code)]
+    fn materialized_stored_relations(&self) -> BTreeMap<Ident, StoredRelation> {
+        let mut stored = self.stored.clone();
+        for relation in self.tuples.relation_names() {
+            let relation = Ident::new_unchecked(relation);
+            stored.entry(relation.clone()).or_insert_with(|| {
+                StoredRelation::from_rows(relation.clone(), self.projected_tuple_rows(&relation))
+            });
+        }
+        stored
     }
 
     #[cfg(not(feature = "legacy-time-clone"))]
@@ -1304,6 +1443,8 @@ impl Database {
     fn clone_for_time_scope_with_stored(&self, stored: BTreeMap<Ident, StoredRelation>) -> Self {
         Self {
             stored,
+            #[cfg(feature = "physical-substrate")]
+            tuples: Arc::clone(&self.tuples),
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
@@ -1321,15 +1462,37 @@ impl Database {
         let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
             return;
         };
-        if let Some(rows) = patched_handle_rows(handles, snapshot_rows) {
+        if let Some(rows) = patched_handle_rows(&handles.rows, snapshot_rows) {
             self.set_stored_relation_rows(HANDLE_RELATION, rows);
         }
     }
 
-    #[cfg(not(feature = "legacy-time-clone"))]
+    #[cfg(all(not(feature = "legacy-time-clone"), feature = "physical-substrate"))]
+    fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
+        let handles = self.relation_rows_for_scope(HANDLE_RELATION)?;
+        Some(patched_handle_rows(&handles, snapshot_rows).unwrap_or(handles))
+    }
+
+    #[cfg(all(
+        not(feature = "legacy-time-clone"),
+        not(feature = "physical-substrate")
+    ))]
     fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
         let handles = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION))?;
-        Some(patched_handle_rows(handles, snapshot_rows).unwrap_or_else(|| handles.rows.clone()))
+        Some(
+            patched_handle_rows(&handles.rows, snapshot_rows)
+                .unwrap_or_else(|| handles.rows.clone()),
+        )
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn relation_rows_for_scope(&self, relation: &str) -> Option<Vec<NamedRow>> {
+        let relation_ident = Ident::new_unchecked(relation);
+        if let Some(stored) = self.stored.get(&relation_ident) {
+            return Some(stored.rows.clone());
+        }
+        let rows = self.projected_tuple_rows(&relation_ident);
+        (!rows.is_empty()).then_some(rows)
     }
 
     fn snapshot_partial_history_warnings(
@@ -1337,12 +1500,18 @@ impl Database {
         reference: &str,
         snapshot: &str,
     ) -> Vec<QueryWarning> {
-        let sources = self
+        #[cfg(feature = "physical-substrate")]
+        let handle_rows = self.relation_rows_for_scope(HANDLE_RELATION);
+        #[cfg(not(feature = "physical-substrate"))]
+        let handle_rows = self
             .stored
             .get(&Ident::new_unchecked(HANDLE_RELATION))
+            .map(|relation| relation.rows.clone());
+
+        let sources = handle_rows
             .into_iter()
-            .flat_map(|relation| relation.rows.iter())
-            .filter_map(|row| row_string(row, SOURCE_FIELD).map(str::to_string))
+            .flat_map(std::iter::IntoIterator::into_iter)
+            .filter_map(|row| row_string(&row, SOURCE_FIELD).map(str::to_string))
             .collect::<BTreeSet<_>>();
         if sources.is_empty() {
             return vec![snapshot_partial_history_warning(reference, snapshot, None)];
@@ -1473,17 +1642,13 @@ fn handle_snapshot_patches(
     patches
 }
 
-fn patched_handle_rows(
-    handles: &StoredRelation,
-    snapshot_rows: &[NamedRow],
-) -> Option<Vec<NamedRow>> {
+fn patched_handle_rows(handles: &[NamedRow], snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
     let patches = handle_snapshot_patches(snapshot_rows);
     if patches.is_empty() {
         return None;
     }
     Some(
         handles
-            .rows
             .iter()
             .map(|row| apply_handle_snapshot_patch(row, &patches))
             .collect(),
@@ -1571,6 +1736,15 @@ impl StoredRelation {
             rows: Vec::new(),
             indexes: BTreeMap::new(),
         }
+    }
+
+    #[allow(dead_code)]
+    fn from_rows(relation: Ident, rows: impl IntoIterator<Item = NamedRow>) -> Self {
+        let mut stored = Self::new(relation);
+        for row in rows {
+            stored.push(row);
+        }
+        stored
     }
 
     fn len(&self) -> usize {
@@ -2062,6 +2236,7 @@ fn optional_string_constraint(constraints: &[(usize, Value)], position: usize) -
     }
 }
 
+#[cfg(not(feature = "physical-substrate"))]
 fn build_search_index(stored: &BTreeMap<Ident, StoredRelation>) -> SearchIndex {
     let mut search = SearchIndex::default();
     for (relation, rows) in stored {
@@ -4434,13 +4609,28 @@ fn eval_stored_traced(
     database: &Database,
     options: &EvalOptions,
 ) -> Result<Vec<TracedBinding>, EvalError> {
-    let relation =
-        database
-            .stored
-            .get(&atom.relation)
-            .ok_or_else(|| EvalError::UnknownStoredRelation {
-                relation: atom.relation.clone(),
-            })?;
+    if let Some(relation) = database.stored.get(&atom.relation) {
+        return eval_stored_relation_traced(atom, bindings, relation, options);
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    {
+        if database.tuples.has_relation(atom.relation.as_str()) {
+            return eval_tuple_stored_traced(atom, bindings, database, options);
+        }
+    }
+
+    Err(EvalError::UnknownStoredRelation {
+        relation: atom.relation.clone(),
+    })
+}
+
+fn eval_stored_relation_traced(
+    atom: &StoredAtom,
+    bindings: Vec<TracedBinding>,
+    relation: &StoredRelation,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
     for binding in bindings {
@@ -4462,6 +4652,55 @@ fn eval_stored_traced(
         }
     }
     Ok(out)
+}
+
+#[cfg(feature = "physical-substrate")]
+fn eval_tuple_stored_traced(
+    atom: &StoredAtom,
+    bindings: Vec<TracedBinding>,
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<TracedBinding>, EvalError> {
+    let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
+    for binding in bindings {
+        let constraints = stored_constraints(&atom.fields, &binding.values)?;
+        for row in database.candidate_tuple_rows(&atom.relation, &constraints) {
+            if let Some(next) = unify_tuple_stored_fields(atom, database, row, &binding.values)? {
+                let binding = TracedBinding {
+                    values: next,
+                    steps: binding.steps.clone(),
+                }
+                .push_step_if(trace, || {
+                    let row = database
+                        .tuple_named_row(&atom.relation, row)
+                        .unwrap_or_default();
+                    derivation_ref(DerivationNode::stored(&atom.relation, &row))
+                });
+                out.push(binding);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "physical-substrate")]
+fn unify_tuple_stored_fields(
+    atom: &StoredAtom,
+    database: &Database,
+    row: RowId,
+    binding: &Binding,
+) -> Result<Option<Binding>, EvalError> {
+    let mut next = None;
+    for field in &atom.fields {
+        let Some(value) = database.tuple_field_value(&atom.relation, row, &field.field) else {
+            return Ok(None);
+        };
+        if !unify_term(&field.term, &value, binding, &mut next)? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(next.unwrap_or_else(|| binding.clone())))
 }
 
 fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -> bool {
@@ -5638,6 +5877,14 @@ fn named_row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> NamedR
         .collect()
 }
 
+#[cfg(feature = "physical-substrate")]
+fn string_map_to_named_row(row: BTreeMap<String, Value>) -> NamedRow {
+    row.into_iter()
+        .map(|(key, value)| (Ident::new_unchecked(key), value))
+        .collect()
+}
+
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn source_fact_row(
     identity: &FactIdentity,
     entries: impl IntoIterator<Item = (&'static str, Value)>,
@@ -5647,6 +5894,7 @@ fn source_fact_row(
     row
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn identity_row(identity: &FactIdentity) -> NamedRow {
     named_row([
         ("corpus", Value::String(identity.corpus.to_string())),
@@ -5728,6 +5976,7 @@ fn trail_generation_row(entry: &TrailEntryRedacted, generation: &TrailGeneration
     ])
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn handle_row(fact: &HandleFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5748,6 +5997,7 @@ fn handle_row(fact: &HandleFact) -> NamedRow {
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn edge_row(fact: &EdgeFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5764,6 +6014,7 @@ fn edge_row(fact: &EdgeFact) -> NamedRow {
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn meta_row(fact: &MetaFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5775,6 +6026,7 @@ fn meta_row(fact: &MetaFact) -> NamedRow {
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn content_row(fact: &ContentFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5794,6 +6046,7 @@ fn content_row(fact: &ContentFact) -> NamedRow {
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn span_row(fact: &SpanFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5813,6 +6066,7 @@ fn span_row(fact: &SpanFact) -> NamedRow {
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn concern_row(fact: &ConcernFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -5868,6 +6122,7 @@ fn hidden_content_span_count(spans_by_handle: &BTreeMap<String, BTreeSet<String>
     spans_by_handle.values().map(BTreeSet::len).sum()
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn config_row(fact: &ConfigFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
@@ -5882,6 +6137,7 @@ fn config_row(fact: &ConfigFact) -> NamedRow {
     ])
 }
 
+#[cfg(any(not(feature = "physical-substrate"), test))]
 fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
@@ -6366,7 +6622,7 @@ mod tests {
             )
             .expect("snapshot rows");
 
-        let named = Database::from_store(&store);
+        let named = legacy_named_database_from_store(&store);
         let tuple = TupleDb::from_store_with_visibility(&store, |_| true);
 
         let named_relations = named
@@ -6400,6 +6656,75 @@ mod tests {
         row.iter()
             .map(|(field, value)| (field.to_string(), value.clone()))
             .collect()
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn legacy_named_database_from_store(store: &FactStore) -> Database {
+        let mut db = Database::default();
+        let hidden_handles = hidden_handles(store, &|_| true);
+        db.insert_named_rows("handle", store.handles().iter().map(handle_row));
+        db.insert_named_rows(
+            "edge",
+            store
+                .edges()
+                .iter()
+                .filter(|fact| {
+                    !hidden_handles.contains(&fact.from) && !hidden_handles.contains(&fact.to)
+                })
+                .map(edge_row),
+        );
+        db.insert_named_rows(
+            "meta",
+            store
+                .meta()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.handle))
+                .map(meta_row),
+        );
+        db.insert_named_rows(
+            "content",
+            store
+                .content()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.handle))
+                .map(content_row),
+        );
+        db.insert_named_rows(
+            "span",
+            store
+                .spans()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.handle))
+                .map(span_row),
+        );
+        db.insert_named_rows(
+            "concern",
+            store
+                .concerns()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.member))
+                .map(concern_row),
+        );
+        db.insert_named_rows("config", store.configs().iter().map(config_row));
+        db.insert_named_rows(
+            "snapshot",
+            store
+                .snapshots()
+                .iter()
+                .filter(|fact| !hidden_handles.contains(&fact.id))
+                .map(snapshot_row),
+        );
+        db.insert_named_rows(
+            "generation",
+            store.generations().iter().map(|row| {
+                named_row([
+                    ("corpus", Value::String(row.corpus.to_string())),
+                    ("source", Value::String(row.source.to_string())),
+                    ("current", generation_value(row.current)),
+                ])
+            }),
+        );
+        db
     }
 
     fn restricted_actor() -> ActorContext {
@@ -9660,6 +9985,7 @@ release_blocker(code) := issue(code, "error").
         );
     }
 
+    #[cfg(not(feature = "physical-substrate"))]
     #[test]
     fn stored_relation_uses_bound_field_candidates() {
         let database = Database::from_store(&fixture_store());
@@ -9674,6 +10000,25 @@ release_blocker(code) := issue(code, "error").
         assert_eq!(
             candidates[0].get(&Ident::new_unchecked("id")),
             Some(&Value::String("v17".to_string()))
+        );
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    #[test]
+    fn tuple_relation_uses_bound_field_candidates() {
+        let database = Database::from_store(&fixture_store());
+        let relation = Ident::new_unchecked("handle");
+        let field = Ident::new_unchecked("id");
+        let candidates = database
+            .candidate_tuple_rows(
+                &relation,
+                &[(Ident::new_unchecked("id"), Value::String("v17".to_string()))],
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            database.tuple_field_value(&relation, candidates[0], &field),
+            Some(Value::String("v17".to_string()))
         );
     }
 
