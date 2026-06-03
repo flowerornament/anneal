@@ -181,7 +181,11 @@ impl<'a> TupleRow<'a> {
         }
     }
 
-    fn physical(&self, field: &str) -> Option<PhysicalValue> {
+    pub(crate) fn logical(&self, field: &str) -> Option<Value> {
+        self.physical(field)?.to_logical(self.interner, self.lists)
+    }
+
+    pub(crate) fn physical(&self, field: &str) -> Option<PhysicalValue> {
         let field_name = self.interner.lookup(field)?;
         let field = self.schema.field(field_name)?;
         self.tuple.get(field)
@@ -417,8 +421,20 @@ impl TupleDb {
         self.relations.get(&relation)
     }
 
+    pub(crate) fn relation_by_name(&self, relation: &str) -> Option<&RelationStore> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        self.relation(schema.id())
+    }
+
     pub(crate) fn relation_mut(&mut self, relation: RelationId) -> Option<&mut RelationStore> {
         self.relations.get_mut(&relation)
+    }
+
+    pub(crate) fn empty_relation_store(&self, relation: &str) -> Option<RelationStore> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        Some(RelationStore::new(schema))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -505,6 +521,26 @@ impl TupleDb {
         let relation_name = self.interner.lookup(relation)?;
         let schema = self.schemas.relation_by_name(relation_name)?;
         let store = self.relation(schema.id())?;
+        self.tuple_row_in_store(schema, store, row)
+    }
+
+    pub(crate) fn tuple_row_in_named_store<'a>(
+        &'a self,
+        relation: &str,
+        store: &'a RelationStore,
+        row: RowId,
+    ) -> Option<TupleRow<'a>> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        self.tuple_row_in_store(schema, store, row)
+    }
+
+    fn tuple_row_in_store<'a>(
+        &'a self,
+        schema: &'a RelationSchema,
+        store: &'a RelationStore,
+        row: RowId,
+    ) -> Option<TupleRow<'a>> {
         Some(TupleRow {
             schema,
             tuple: store.row(row)?,
@@ -525,6 +561,24 @@ impl TupleDb {
             return RowCandidates::Empty;
         };
         let Some(store) = self.relation(schema.id()) else {
+            return RowCandidates::Empty;
+        };
+        let Some(constraints) = self.physical_constraints(schema, constraints) else {
+            return RowCandidates::Empty;
+        };
+        store.candidate_rows(&constraints)
+    }
+
+    pub(crate) fn candidate_rows_in_store<'a>(
+        &'a self,
+        relation: &str,
+        store: &'a RelationStore,
+        constraints: &[(String, Value)],
+    ) -> RowCandidates<'a> {
+        let Some(relation_name) = self.interner.lookup(relation) else {
+            return RowCandidates::Empty;
+        };
+        let Some(schema) = self.schemas.relation_by_name(relation_name) else {
             return RowCandidates::Empty;
         };
         let Some(constraints) = self.physical_constraints(schema, constraints) else {
@@ -559,6 +613,56 @@ impl TupleDb {
         let schema = self.schemas.relation_by_name(relation_name)?;
         let store = self.relation(schema.id())?;
         Some(self.project_tuple(schema, store.row(row)?))
+    }
+
+    pub(crate) fn project_row_in_store(
+        &self,
+        relation: &str,
+        store: &RelationStore,
+        row: RowId,
+    ) -> Option<BTreeMap<String, Value>> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        Some(self.project_tuple(schema, store.row(row)?))
+    }
+
+    pub(crate) fn clone_tuple(&self, relation: &str, row: RowId) -> Option<Tuple> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let store = self.relation(schema.id())?;
+        store.row(row).cloned()
+    }
+
+    pub(crate) fn clone_tuple_with_patches(
+        &self,
+        relation: &str,
+        row: RowId,
+        patches: &BTreeMap<&str, PhysicalValue>,
+    ) -> Option<Tuple> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let mut values = self.relation(schema.id())?.row(row)?.values().to_vec();
+        for (field, value) in patches {
+            let field_name = self.interner.lookup(field)?;
+            let field = schema.field(field_name)?;
+            let slot = values.get_mut(field.index())?;
+            *slot = *value;
+        }
+        Some(Tuple::new(values))
+    }
+
+    pub(crate) fn physical_field_value(
+        &self,
+        relation: &str,
+        row: RowId,
+        field: &str,
+    ) -> Option<PhysicalValue> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let field_name = self.interner.lookup(field)?;
+        let field = schema.field(field_name)?;
+        let store = self.relation(schema.id())?;
+        store.row(row)?.get(field)
     }
 
     pub(crate) fn relation_names(&self) -> BTreeSet<String> {

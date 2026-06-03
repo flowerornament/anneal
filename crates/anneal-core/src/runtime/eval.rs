@@ -60,8 +60,10 @@ use crate::trail::{
 };
 use crate::visibility::FactVisibility;
 #[cfg(feature = "physical-substrate")]
-use crate::vm::store::{TupleDb, TupleRow};
+use crate::vm::store::{RelationStore, TupleDb, TupleRow};
 pub use crate::vm::value::NumberValue;
+#[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+use crate::vm::value::PhysicalValue;
 
 pub type Binding = BTreeMap<Ident, Value>;
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
@@ -82,6 +84,24 @@ impl Tuple {
 pub struct Row {
     pub fields: BTreeMap<String, Value>,
     pub derivation: Option<DerivationNode>,
+}
+
+#[cfg(feature = "physical-substrate")]
+#[derive(Clone, Debug, Default)]
+struct TupleOverlay {
+    relations: BTreeMap<Ident, RelationStore>,
+}
+
+#[cfg(feature = "physical-substrate")]
+impl TupleOverlay {
+    fn relation(&self, relation: &Ident) -> Option<&RelationStore> {
+        self.relations.get(relation)
+    }
+
+    #[cfg(not(feature = "legacy-time-clone"))]
+    fn insert(&mut self, relation: Ident, store: RelationStore) {
+        self.relations.insert(relation, store);
+    }
 }
 
 impl Serialize for Row {
@@ -746,6 +766,8 @@ pub struct Database {
     #[cfg(feature = "physical-substrate")]
     tuples: Arc<TupleDb>,
     #[cfg(feature = "physical-substrate")]
+    tuple_overlay: Arc<TupleOverlay>,
+    #[cfg(feature = "physical-substrate")]
     tuple_content: Arc<TupleContentIndex>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
@@ -764,6 +786,8 @@ impl Default for Database {
             stored: BTreeMap::new(),
             #[cfg(feature = "physical-substrate")]
             tuples: Arc::new(TupleDb::default()),
+            #[cfg(feature = "physical-substrate")]
+            tuple_overlay: Arc::new(TupleOverlay::default()),
             #[cfg(feature = "physical-substrate")]
             tuple_content: Arc::new(TupleContentIndex::default()),
             derived: BTreeMap::new(),
@@ -841,6 +865,7 @@ impl Database {
             let hidden_content_spans = hidden_content_spans(store, &fact_visible);
             let mut db = Self {
                 tuples: Arc::new(tuples),
+                tuple_overlay: Arc::new(TupleOverlay::default()),
                 tuple_content: Arc::new(tuple_content),
                 hidden_handles: Arc::new(hidden_handles),
                 hidden_content_spans: Arc::new(hidden_content_spans),
@@ -1425,17 +1450,34 @@ impl Database {
             .iter()
             .map(|(field, value)| (field.to_string(), value.clone()))
             .collect::<Vec<_>>();
+        if let Some(store) = self.tuple_overlay.relation(relation) {
+            return self
+                .tuples
+                .candidate_rows_in_store(relation.as_str(), store, &constraints);
+        }
         self.tuples.candidate_rows(relation.as_str(), &constraints)
     }
 
     #[cfg(feature = "physical-substrate")]
     fn tuple_field_value(&self, relation: &Ident, row: RowId, field: &Ident) -> Option<Value> {
+        if let Some(store) = self.tuple_overlay.relation(relation) {
+            return self
+                .tuples
+                .tuple_row_in_named_store(relation.as_str(), store, row)?
+                .logical(field.as_str());
+        }
         self.tuples
             .logical_field_value(relation.as_str(), row, field.as_str())
     }
 
     #[cfg(feature = "physical-substrate")]
     fn tuple_named_row(&self, relation: &Ident, row: RowId) -> Option<NamedRow> {
+        if let Some(store) = self.tuple_overlay.relation(relation) {
+            return self
+                .tuples
+                .project_row_in_store(relation.as_str(), store, row)
+                .map(string_map_to_named_row);
+        }
         self.tuples
             .project_row(relation.as_str(), row)
             .map(string_map_to_named_row)
@@ -1457,6 +1499,7 @@ impl Database {
         }
     }
 
+    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
     fn set_stored_relation_rows(
         &mut self,
         relation: &str,
@@ -1488,7 +1531,10 @@ impl Database {
         ))
     }
 
-    #[cfg(any(feature = "legacy-time-clone", test))]
+    #[cfg(any(
+        feature = "legacy-time-clone",
+        all(test, not(feature = "physical-substrate"))
+    ))]
     fn clone_for_time_scope_selection(&self, selection: &SnapshotSelection) -> Self {
         let mut scoped = self.clone_for_time_scope();
         scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
@@ -1500,24 +1546,43 @@ impl Database {
     #[cfg(not(feature = "legacy-time-clone"))]
     fn time_scope_overlay(&self, selection: &SnapshotSelection) -> Self {
         let mut scoped = self.clone_shell_for_time_scope();
-        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
-        if let Some(rows) = self.time_scoped_handle_rows(&selection.rows) {
-            scoped.set_stored_relation_rows(HANDLE_RELATION, rows);
+        #[cfg(feature = "physical-substrate")]
+        {
+            scoped.tuple_overlay = Arc::new(self.time_scope_tuple_overlay(selection));
         }
-        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
+        #[cfg(not(feature = "physical-substrate"))]
+        {
+            scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
+            if let Some(rows) = self.time_scoped_handle_rows(&selection.rows) {
+                scoped.set_stored_relation_rows(HANDLE_RELATION, rows);
+            }
+            scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
+        }
+        #[cfg(feature = "physical-substrate")]
+        {
+            scoped.graph = Arc::new(
+                self.graph
+                    .scoped_to_snapshot_tuples(&self.tuples, selection),
+            );
+        }
         scoped
     }
 
     fn resolve_snapshot_selection(&self, reference: &str) -> Option<SnapshotSelection> {
-        #[cfg(feature = "physical-substrate")]
-        let snapshot_rows = self.relation_rows_for_scope(SNAPSHOT_RELATION)?;
-        #[cfg(feature = "physical-substrate")]
-        let candidates = snapshot_candidates(&snapshot_rows);
+        #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+        let candidates = self.snapshot_candidates_from_tuples();
+        #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+        let candidates = (!candidates.is_empty()).then_some(candidates)?;
 
         #[cfg(not(feature = "physical-substrate"))]
         let candidates = {
             let relation = self.stored.get(&Ident::new_unchecked(SNAPSHOT_RELATION))?;
             snapshot_candidates(&relation.rows)
+        };
+        #[cfg(all(feature = "physical-substrate", feature = "legacy-time-clone"))]
+        let candidates = {
+            let rows = self.relation_rows_for_scope(SNAPSHOT_RELATION)?;
+            snapshot_candidates(&rows)
         };
         match snapshot_reference(reference)? {
             SnapshotReference::Last => latest_snapshot_candidate(candidates.into_values()),
@@ -1528,18 +1593,15 @@ impl Database {
         }
     }
 
-    #[cfg(all(
-        any(feature = "legacy-time-clone", test),
-        not(feature = "physical-substrate")
+    #[cfg(any(
+        all(feature = "legacy-time-clone", not(feature = "physical-substrate")),
+        all(test, not(feature = "physical-substrate"))
     ))]
     fn clone_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(self.stored.clone())
     }
 
-    #[cfg(all(
-        any(feature = "legacy-time-clone", test),
-        feature = "physical-substrate"
-    ))]
+    #[cfg(all(feature = "legacy-time-clone", feature = "physical-substrate"))]
     fn clone_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(self.materialized_stored_relations())
     }
@@ -1557,6 +1619,114 @@ impl Database {
         stored
     }
 
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn snapshot_candidates_from_tuples(&self) -> BTreeMap<String, SnapshotCandidate> {
+        let mut candidates = BTreeMap::<String, SnapshotCandidate>::new();
+        self.tuples
+            .for_each_tuple_row_id(SNAPSHOT_RELATION, |row_id, row| {
+                let Some(at) = row.string(AT_FIELD) else {
+                    return;
+                };
+                let Some(day) = snapshot_days_since_epoch(at) else {
+                    return;
+                };
+                let snapshot = row.string(SNAPSHOT_FIELD).unwrap_or(at).to_string();
+                candidates
+                    .entry(snapshot.clone())
+                    .or_insert_with(|| SnapshotCandidate {
+                        snapshot,
+                        day,
+                        sort_at: at.to_string(),
+                        rows: Vec::new(),
+                        tuple_rows: Vec::new(),
+                    })
+                    .tuple_rows
+                    .push(row_id);
+            });
+        candidates
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn time_scope_tuple_overlay(&self, selection: &SnapshotSelection) -> TupleOverlay {
+        let mut overlay = TupleOverlay::default();
+        if let Some(snapshot_store) = self.snapshot_overlay_store(&selection.tuple_rows) {
+            overlay.insert(Ident::new_unchecked(SNAPSHOT_RELATION), snapshot_store);
+        }
+        if let Some(handle_store) = self.handle_overlay_store(&selection.tuple_rows) {
+            overlay.insert(Ident::new_unchecked(HANDLE_RELATION), handle_store);
+        }
+        overlay
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn snapshot_overlay_store(&self, snapshot_rows: &[RowId]) -> Option<RelationStore> {
+        let mut store = self.tuples.empty_relation_store(SNAPSHOT_RELATION)?;
+        for row in snapshot_rows {
+            if let Some(tuple) = self.tuples.clone_tuple(SNAPSHOT_RELATION, *row) {
+                store.push(tuple);
+            }
+        }
+        Some(store)
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn handle_overlay_store(&self, snapshot_rows: &[RowId]) -> Option<RelationStore> {
+        let patches = self.handle_snapshot_tuple_patches(snapshot_rows);
+        if patches.is_empty() {
+            return None;
+        }
+        let mut store = self.tuples.empty_relation_store(HANDLE_RELATION)?;
+        self.tuples
+            .for_each_tuple_row_id(HANDLE_RELATION, |row_id, row| {
+                let tuple = match (row.string(CORPUS_FIELD), row.string(ID_FIELD)) {
+                    (Some(corpus), Some(handle)) => patches
+                        .get(&(corpus.to_owned(), handle.to_owned()))
+                        .and_then(|fields| {
+                            self.tuples
+                                .clone_tuple_with_patches(HANDLE_RELATION, row_id, fields)
+                        })
+                        .or_else(|| self.tuples.clone_tuple(HANDLE_RELATION, row_id)),
+                    _ => self.tuples.clone_tuple(HANDLE_RELATION, row_id),
+                };
+                if let Some(tuple) = tuple {
+                    store.push(tuple);
+                }
+            });
+        Some(store)
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn handle_snapshot_tuple_patches(
+        &self,
+        snapshot_rows: &[RowId],
+    ) -> BTreeMap<(String, String), BTreeMap<&'static str, PhysicalValue>> {
+        let mut patches =
+            BTreeMap::<(String, String), BTreeMap<&'static str, PhysicalValue>>::new();
+        for row in snapshot_rows {
+            let Some(row) = self.tuples.tuple_row(SNAPSHOT_RELATION, *row) else {
+                continue;
+            };
+            let (Some(corpus), Some(id), Some(key)) = (
+                row.string(CORPUS_FIELD),
+                row.string(ID_FIELD),
+                row.string(KEY_FIELD),
+            ) else {
+                continue;
+            };
+            let Some(value) = row.physical(VALUE_FIELD) else {
+                continue;
+            };
+            let Some(field) = handle_snapshot_patch_field(&key) else {
+                continue;
+            };
+            patches
+                .entry((corpus.to_owned(), id.to_owned()))
+                .or_default()
+                .insert(field, value);
+        }
+        patches
+    }
+
     #[cfg(not(feature = "legacy-time-clone"))]
     fn clone_shell_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(BTreeMap::new())
@@ -1567,6 +1737,8 @@ impl Database {
             stored,
             #[cfg(feature = "physical-substrate")]
             tuples: Arc::clone(&self.tuples),
+            #[cfg(feature = "physical-substrate")]
+            tuple_overlay: Arc::new(TupleOverlay::default()),
             #[cfg(feature = "physical-substrate")]
             tuple_content: Arc::clone(&self.tuple_content),
             derived: BTreeMap::new(),
@@ -1581,7 +1753,10 @@ impl Database {
         }
     }
 
-    #[cfg(any(feature = "legacy-time-clone", test))]
+    #[cfg(any(
+        feature = "legacy-time-clone",
+        all(test, not(feature = "physical-substrate"))
+    ))]
     fn apply_handle_snapshot(&mut self, snapshot_rows: &[NamedRow]) {
         let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
             return;
@@ -1589,12 +1764,6 @@ impl Database {
         if let Some(rows) = patched_handle_rows(&handles.rows, snapshot_rows) {
             self.set_stored_relation_rows(HANDLE_RELATION, rows);
         }
-    }
-
-    #[cfg(all(not(feature = "legacy-time-clone"), feature = "physical-substrate"))]
-    fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
-        let handles = self.relation_rows_for_scope(HANDLE_RELATION)?;
-        Some(patched_handle_rows(&handles, snapshot_rows).unwrap_or(handles))
     }
 
     #[cfg(all(
@@ -1609,7 +1778,7 @@ impl Database {
         )
     }
 
-    #[cfg(feature = "physical-substrate")]
+    #[cfg(all(feature = "physical-substrate", feature = "legacy-time-clone"))]
     fn relation_rows_for_scope(&self, relation: &str) -> Option<Vec<NamedRow>> {
         let relation_ident = Ident::new_unchecked(relation);
         if let Some(stored) = self.stored.get(&relation_ident) {
@@ -1625,13 +1794,14 @@ impl Database {
         snapshot: &str,
     ) -> Vec<QueryWarning> {
         #[cfg(feature = "physical-substrate")]
-        let handle_rows = self.relation_rows_for_scope(HANDLE_RELATION);
+        let sources = self.handle_sources_from_tuples();
         #[cfg(not(feature = "physical-substrate"))]
         let handle_rows = self
             .stored
             .get(&Ident::new_unchecked(HANDLE_RELATION))
             .map(|relation| relation.rows.clone());
 
+        #[cfg(not(feature = "physical-substrate"))]
         let sources = handle_rows
             .into_iter()
             .flat_map(std::iter::IntoIterator::into_iter)
@@ -1645,6 +1815,17 @@ impl Database {
             .map(|source| snapshot_partial_history_warning(reference, snapshot, Some(source)))
             .collect()
     }
+
+    #[cfg(feature = "physical-substrate")]
+    fn handle_sources_from_tuples(&self) -> BTreeSet<String> {
+        let mut sources = BTreeSet::new();
+        self.tuples.for_each_tuple_row(HANDLE_RELATION, |row| {
+            if let Some(source) = row.string(SOURCE_FIELD) {
+                sources.insert(source.to_owned());
+            }
+        });
+        sources
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1652,6 +1833,8 @@ struct SnapshotSelection {
     snapshot: String,
     day: i64,
     rows: Vec<NamedRow>,
+    #[cfg(feature = "physical-substrate")]
+    tuple_rows: Vec<RowId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1660,6 +1843,8 @@ struct SnapshotCandidate {
     day: i64,
     sort_at: String,
     rows: Vec<NamedRow>,
+    #[cfg(feature = "physical-substrate")]
+    tuple_rows: Vec<RowId>,
 }
 
 enum SnapshotReference {
@@ -1681,6 +1866,7 @@ fn snapshot_reference(reference: &str) -> Option<SnapshotReference> {
     relative_days_reference(reference).map(SnapshotReference::Day)
 }
 
+#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
 fn snapshot_candidates(rows: &[NamedRow]) -> BTreeMap<String, SnapshotCandidate> {
     let mut candidates = BTreeMap::<String, SnapshotCandidate>::new();
     for row in rows {
@@ -1698,6 +1884,8 @@ fn snapshot_candidates(rows: &[NamedRow]) -> BTreeMap<String, SnapshotCandidate>
                 day,
                 sort_at: at.to_string(),
                 rows: Vec::new(),
+                #[cfg(feature = "physical-substrate")]
+                tuple_rows: Vec::new(),
             })
             .rows
             .push(row.clone());
@@ -1741,10 +1929,13 @@ impl From<SnapshotCandidate> for SnapshotSelection {
             snapshot: candidate.snapshot,
             day: candidate.day,
             rows: candidate.rows,
+            #[cfg(feature = "physical-substrate")]
+            tuple_rows: candidate.tuple_rows,
         }
     }
 }
 
+#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
 fn handle_snapshot_patches(
     snapshot_rows: &[NamedRow],
 ) -> BTreeMap<(String, String), Vec<(String, String)>> {
@@ -1766,6 +1957,7 @@ fn handle_snapshot_patches(
     patches
 }
 
+#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
 fn patched_handle_rows(handles: &[NamedRow], snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
     let patches = handle_snapshot_patches(snapshot_rows);
     if patches.is_empty() {
@@ -1779,6 +1971,7 @@ fn patched_handle_rows(handles: &[NamedRow], snapshot_rows: &[NamedRow]) -> Opti
     )
 }
 
+#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
 fn apply_handle_snapshot_patch(
     row: &NamedRow,
     patches: &BTreeMap<(String, String), Vec<(String, String)>>,
@@ -1800,6 +1993,20 @@ fn apply_handle_snapshot_patch(
         }
     }
     row
+}
+
+#[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+fn handle_snapshot_patch_field(key: &str) -> Option<&'static str> {
+    match key {
+        KIND_FIELD => Some(KIND_FIELD),
+        STATUS_FIELD => Some(STATUS_FIELD),
+        NAMESPACE_FIELD => Some(NAMESPACE_FIELD),
+        FILE_FIELD => Some(FILE_FIELD),
+        DATE_FIELD => Some(DATE_FIELD),
+        AREA_FIELD => Some(AREA_FIELD),
+        SUMMARY_FIELD => Some(SUMMARY_FIELD),
+        _ => None,
+    }
 }
 
 fn push_warnings(out: &mut Vec<QueryWarning>, warnings: Vec<QueryWarning>) {
@@ -2967,6 +3174,7 @@ impl GraphIndex {
         snapshots.insert(idx, snapshot);
     }
 
+    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
     fn scoped_to_snapshot(&self, selection: &SnapshotSelection) -> Self {
         let mut graph = self.clone();
         graph.evaluation_day = Some(selection.day);
@@ -2974,6 +3182,15 @@ impl GraphIndex {
         graph
     }
 
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn scoped_to_snapshot_tuples(&self, tuples: &TupleDb, selection: &SnapshotSelection) -> Self {
+        let mut graph = self.clone();
+        graph.evaluation_day = Some(selection.day);
+        graph.apply_snapshot_tuple_rows(tuples, &selection.tuple_rows);
+        graph
+    }
+
+    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
     fn apply_snapshot_rows(&mut self, snapshot_rows: &[NamedRow]) {
         for ((_corpus, id), values) in handle_snapshot_patches(snapshot_rows) {
             let Some(state) = self.handles.get_mut(&id) else {
@@ -2987,6 +3204,32 @@ impl GraphIndex {
                     DATE_FIELD => state.date = iso_days_since_epoch(&value),
                     _ => {}
                 }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    fn apply_snapshot_tuple_rows(&mut self, tuples: &TupleDb, snapshot_rows: &[RowId]) {
+        for row in snapshot_rows {
+            let Some(row) = tuples.tuple_row(SNAPSHOT_RELATION, *row) else {
+                continue;
+            };
+            let (Some(id), Some(key), Some(value)) = (
+                row.string(ID_FIELD),
+                row.string(KEY_FIELD),
+                row.string(VALUE_FIELD),
+            ) else {
+                continue;
+            };
+            let Some(state) = self.handles.get_mut(id) else {
+                continue;
+            };
+            match key {
+                KIND_FIELD => state.kind = value.to_owned(),
+                STATUS_FIELD => state.status = Some(value.to_owned()),
+                NAMESPACE_FIELD => state.namespace = value.to_owned(),
+                DATE_FIELD => state.date = iso_days_since_epoch(value),
+                _ => {}
             }
         }
     }
@@ -9914,7 +10157,10 @@ release_blocker(code) := issue(code, "error").
         );
     }
 
-    #[cfg(not(feature = "legacy-time-clone"))]
+    #[cfg(all(
+        not(feature = "physical-substrate"),
+        not(feature = "legacy-time-clone")
+    ))]
     #[test]
     fn time_scope_overlay_matches_clone_scope_for_snapshot_rows_and_graph_primitives() {
         let database = time_travel_metric_database();
@@ -9935,6 +10181,41 @@ release_blocker(code) := issue(code, "error").
             evaluate_queries(query, clone_scoped),
             evaluate_queries(query, overlay_scoped)
         );
+    }
+
+    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
+    #[test]
+    fn tuple_time_scope_overlay_exposes_snapshot_rows_and_patched_handle_tuples() {
+        let database = time_travel_metric_database();
+        let selection = database
+            .resolve_snapshot_selection("snapshot:s2")
+            .expect("snapshot fixture resolves");
+        let overlay_scoped = database.time_scope_overlay(&selection);
+        let query = r#"
+            ? *handle{id: h, status: status}.
+            ? *snapshot{snapshot: snapshot, id: h, key, value}.
+            ? active(h).
+            ? freshness("draft.md", days).
+            ? flux("draft.md", 20, delta).
+        "#;
+
+        let outputs = evaluate_queries(query, overlay_scoped);
+        assert_query_rows(
+            &outputs[0],
+            vec![row([("h", s("draft.md")), ("status", s("draft"))])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![row([
+                ("h", s("draft.md")),
+                ("key", s("status")),
+                ("snapshot", s("s2")),
+                ("value", s("draft")),
+            ])],
+        );
+        assert_query_rows(&outputs[2], vec![row([("h", s("draft.md"))])]);
+        assert_query_rows(&outputs[3], vec![row([("days", n(9))])]);
+        assert_query_rows(&outputs[4], vec![row([("delta", n(1))])]);
     }
 
     #[test]
