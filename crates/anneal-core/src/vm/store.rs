@@ -153,6 +153,41 @@ pub(crate) struct TupleDb {
     relations: BTreeMap<RelationId, RelationStore>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TupleRow<'a> {
+    schema: &'a RelationSchema,
+    tuple: &'a Tuple,
+    interner: &'a Interner,
+    lists: &'a ListArena,
+}
+
+impl<'a> TupleRow<'a> {
+    pub(crate) fn string(&self, field: &str) -> Option<&'a str> {
+        match self.physical(field)? {
+            PhysicalValue::Sym(symbol) => self.interner.resolve(symbol),
+            PhysicalValue::Null => None,
+            PhysicalValue::Number(_) | PhysicalValue::Bool(_) | PhysicalValue::List(_) => None,
+        }
+    }
+
+    pub(crate) fn i64(&self, field: &str) -> Option<i64> {
+        match self.physical(field)? {
+            PhysicalValue::Number(NumberValue::Int(value)) => Some(value),
+            PhysicalValue::Number(NumberValue::Float(_))
+            | PhysicalValue::Sym(_)
+            | PhysicalValue::Bool(_)
+            | PhysicalValue::Null
+            | PhysicalValue::List(_) => None,
+        }
+    }
+
+    fn physical(&self, field: &str) -> Option<PhysicalValue> {
+        let field_name = self.interner.lookup(field)?;
+        let field = self.schema.field(field_name)?;
+        self.tuple.get(field)
+    }
+}
+
 impl TupleDb {
     pub(crate) fn from_store_with_visibility(
         store: &FactStore,
@@ -396,10 +431,53 @@ impl TupleDb {
         rows
     }
 
-    pub(crate) fn for_each_projected_row(
-        &self,
+    pub(crate) fn for_each_projected_row<'a>(
+        &'a self,
         relation: &str,
         mut visit: impl FnMut(BTreeMap<String, Value>),
+    ) {
+        self.for_each_tuple_row(relation, |row| {
+            visit(self.project_tuple(row.schema, row.tuple));
+        });
+    }
+
+    pub(crate) fn for_each_relation_row<'a>(
+        &'a self,
+        mut visit: impl FnMut(&'a str, TupleRow<'a>),
+    ) {
+        for store in self.relations.values() {
+            let Some(schema) = self.schemas.relation(store.relation()) else {
+                continue;
+            };
+            let Some(relation_name) = self.interner.resolve(schema.name()) else {
+                continue;
+            };
+            for tuple in store.rows() {
+                visit(
+                    relation_name,
+                    TupleRow {
+                        schema,
+                        tuple,
+                        interner: &self.interner,
+                        lists: &self.lists,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(crate) fn for_each_tuple_row<'a>(
+        &'a self,
+        relation: &str,
+        mut visit: impl FnMut(TupleRow<'a>),
+    ) {
+        self.for_each_tuple_row_id(relation, |_row_id, row| visit(row));
+    }
+
+    pub(crate) fn for_each_tuple_row_id<'a>(
+        &'a self,
+        relation: &str,
+        mut visit: impl FnMut(RowId, TupleRow<'a>),
     ) {
         let Some(relation_name) = self.interner.lookup(relation) else {
             return;
@@ -410,9 +488,29 @@ impl TupleDb {
         let Some(store) = self.relation(schema.id()) else {
             return;
         };
-        for tuple in store.rows() {
-            visit(self.project_tuple(schema, tuple));
+        for (row_id, tuple) in store.rows().iter().enumerate() {
+            visit(
+                RowId::from_index(row_id),
+                TupleRow {
+                    schema,
+                    tuple,
+                    interner: &self.interner,
+                    lists: &self.lists,
+                },
+            );
         }
+    }
+
+    pub(crate) fn tuple_row(&self, relation: &str, row: RowId) -> Option<TupleRow<'_>> {
+        let relation_name = self.interner.lookup(relation)?;
+        let schema = self.schemas.relation_by_name(relation_name)?;
+        let store = self.relation(schema.id())?;
+        Some(TupleRow {
+            schema,
+            tuple: store.row(row)?,
+            interner: &self.interner,
+            lists: &self.lists,
+        })
     }
 
     pub(crate) fn candidate_rows(

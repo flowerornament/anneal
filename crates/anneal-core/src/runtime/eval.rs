@@ -60,7 +60,7 @@ use crate::trail::{
 };
 use crate::visibility::FactVisibility;
 #[cfg(feature = "physical-substrate")]
-use crate::vm::store::TupleDb;
+use crate::vm::store::{TupleDb, TupleRow};
 pub use crate::vm::value::NumberValue;
 
 pub type Binding = BTreeMap<Ident, Value>;
@@ -745,6 +745,8 @@ pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
     #[cfg(feature = "physical-substrate")]
     tuples: Arc<TupleDb>,
+    #[cfg(feature = "physical-substrate")]
+    tuple_content: Arc<TupleContentIndex>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
@@ -762,6 +764,8 @@ impl Default for Database {
             stored: BTreeMap::new(),
             #[cfg(feature = "physical-substrate")]
             tuples: Arc::new(TupleDb::default()),
+            #[cfg(feature = "physical-substrate")]
+            tuple_content: Arc::new(TupleContentIndex::default()),
             derived: BTreeMap::new(),
             graph: Arc::new(GraphIndex::default()),
             content: Arc::new(ContentIndex::default()),
@@ -832,10 +836,12 @@ impl Database {
         #[cfg(feature = "physical-substrate")]
         {
             let tuples = TupleDb::from_store_with_visibility(store, &fact_visible);
+            let tuple_content = TupleContentIndex::from_tuples(&tuples);
             let hidden_handles = hidden_handles(store, &fact_visible);
             let hidden_content_spans = hidden_content_spans(store, &fact_visible);
             let mut db = Self {
                 tuples: Arc::new(tuples),
+                tuple_content: Arc::new(tuple_content),
                 hidden_handles: Arc::new(hidden_handles),
                 hidden_content_spans: Arc::new(hidden_content_spans),
                 ..Self::default()
@@ -996,12 +1002,6 @@ impl Database {
         self.derived.get(predicate).map(DerivedRelation::tuples)
     }
 
-    fn content_provider(&self) -> &dyn ContentProvider {
-        self.content_provider
-            .as_deref()
-            .unwrap_or_else(|| self.content.as_ref())
-    }
-
     fn search_provider(&self) -> &dyn SearchProvider {
         match self.search_provider.as_deref() {
             Some(provider) => provider,
@@ -1014,28 +1014,17 @@ impl Database {
 
     #[cfg(feature = "physical-substrate")]
     fn seed_indexes_from_tuples(&mut self) {
-        for relation in self.tuples.relation_names() {
-            let relation = Ident::new_unchecked(relation);
-            let tuples = &self.tuples;
-            let graph = Arc::make_mut(&mut self.graph);
-            let content = Arc::make_mut(&mut self.content);
-            tuples.for_each_projected_row(relation.as_str(), |row| {
-                let row = string_map_to_named_row(row);
-                graph.insert_row(&relation, &row);
-                content.insert_row(&relation, &row);
-            });
-        }
+        let graph = Arc::make_mut(&mut self.graph);
+        self.tuples
+            .for_each_relation_row(|relation, row| graph.insert_tuple_row(relation, row));
     }
 
     #[cfg(feature = "physical-substrate")]
     fn build_search_index(&self) -> SearchIndex {
         let mut search = SearchIndex::default();
-        for relation in self.tuples.relation_names() {
-            let relation = Ident::new_unchecked(relation);
-            self.for_each_projected_tuple_row(&relation, |row| {
-                insert_search_row(&mut search, &relation, &row);
-            });
-        }
+        self.tuples.for_each_relation_row(|relation, row| {
+            insert_search_tuple_row(&mut search, relation, row)
+        });
         for (relation, rows) in &self.stored {
             for row in &rows.rows {
                 insert_search_row(&mut search, relation, row);
@@ -1170,11 +1159,24 @@ impl Database {
         if span_id.is_some_and(|span_id| self.span_is_hidden(handle, span_id)) {
             return Ok(Vec::new());
         }
-        let read_ctx = ReadContext::new(&options.actor);
-        let chunks = self
-            .content_provider()
-            .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
-            .map_err(map_read_error)?;
+        let chunks = if let Some(provider) = self.content_provider.as_deref() {
+            let read_ctx = ReadContext::new(&options.actor);
+            provider
+                .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
+                .map_err(map_read_error)?
+        } else {
+            #[cfg(feature = "physical-substrate")]
+            {
+                self.read_chunks_from_tuples(handle, budget, span_id)
+            }
+            #[cfg(not(feature = "physical-substrate"))]
+            {
+                let read_ctx = ReadContext::new(&options.actor);
+                self.content
+                    .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
+                    .map_err(map_read_error)?
+            }
+        };
         let chunks = chunks
             .into_iter()
             .filter(|chunk| self.hit_is_visible(chunk.handle(), Some(chunk.span_id())))
@@ -1202,15 +1204,35 @@ impl Database {
         {
             return Ok(Vec::new());
         }
-        let read_ctx = ReadContext::new(&options.actor);
-        let Some(content) = self
-            .content_provider()
-            .read_full(
-                ReadFullRequest::new(handle, options.read_full_token_limit),
-                &read_ctx,
-            )
-            .map_err(map_read_error)?
-        else {
+        #[cfg(feature = "physical-substrate")]
+        if self.content_provider.is_none() && self.handle_has_hidden_spans(handle) {
+            return Ok(Vec::new());
+        }
+        let content = if let Some(provider) = self.content_provider.as_deref() {
+            let read_ctx = ReadContext::new(&options.actor);
+            provider
+                .read_full(
+                    ReadFullRequest::new(handle, options.read_full_token_limit),
+                    &read_ctx,
+                )
+                .map_err(map_read_error)?
+        } else {
+            #[cfg(feature = "physical-substrate")]
+            {
+                self.full_content_from_tuples(handle, options.read_full_token_limit)?
+            }
+            #[cfg(not(feature = "physical-substrate"))]
+            {
+                let read_ctx = ReadContext::new(&options.actor);
+                self.content
+                    .read_full(
+                        ReadFullRequest::new(handle, options.read_full_token_limit),
+                        &read_ctx,
+                    )
+                    .map_err(map_read_error)?
+            }
+        };
+        let Some(content) = content else {
             return Ok(Vec::new());
         };
         if !self.hit_is_visible(content.handle(), None) {
@@ -1248,6 +1270,114 @@ impl Database {
         self.hidden_content_spans.contains_key(handle)
     }
 
+    #[cfg(feature = "physical-substrate")]
+    fn read_chunks_from_tuples(
+        &self,
+        handle: &str,
+        budget: i64,
+        span_id: Option<&str>,
+    ) -> Vec<ReadChunk> {
+        if budget < 0 {
+            return Vec::new();
+        }
+        if let Some(span_id) = span_id {
+            return self
+                .tuple_content
+                .content_spans_for_handle_and_span(&self.tuples, handle, span_id)
+                .into_iter()
+                .filter_map(|span| read_chunk_with_budget_from_tuple(span, budget))
+                .collect();
+        }
+        let mut used = 0_i64;
+        let mut out = Vec::new();
+        for span in self
+            .tuple_content
+            .content_spans_for_handle(&self.tuples, handle)
+        {
+            let next = used.saturating_add(span.tokens);
+            if next > budget {
+                if out.is_empty()
+                    && let Some(chunk) =
+                        read_chunk_with_budget_from_tuple(span, budget.saturating_sub(used))
+                {
+                    out.push(chunk);
+                }
+                break;
+            }
+            used = next;
+            out.push(read_chunk_from_tuple(span));
+        }
+        out
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn full_content_from_tuples(
+        &self,
+        handle: &str,
+        token_limit: i64,
+    ) -> Result<Option<ReadFullContent>, EvalError> {
+        let mut tokens = 0_i64;
+        let mut content = String::new();
+        for span in self
+            .tuple_content
+            .content_spans_for_handle(&self.tuples, handle)
+        {
+            tokens = tokens.saturating_add(span.tokens);
+            if tokens > token_limit {
+                return Err(EvalError::ReadFullBudgetExceeded {
+                    handle: handle.to_owned(),
+                    tokens,
+                    limit: token_limit,
+                });
+            }
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(span.text);
+        }
+        if content.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ReadFullContent::new(handle, content, tokens)))
+        }
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn match_tuples_from_tuples(
+        &self,
+        constraints: &[(usize, Value)],
+        regex: &Regex,
+    ) -> Vec<Tuple> {
+        let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
+            return Vec::new();
+        };
+        let ArgConstraint::Exact(handle) = string_constraint(constraints, 1) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for span in self
+            .tuple_content
+            .content_spans_for_handle(&self.tuples, handle)
+        {
+            for (line_offset, line) in span.text.lines().enumerate() {
+                if !regex.is_match(line) {
+                    continue;
+                }
+                let line_offset = i64::try_from(line_offset).unwrap_or(i64::MAX);
+                let tuple = Tuple(vec![
+                    string_value(pattern),
+                    string_value(&span.key.handle),
+                    int_value(span.span.start_line.saturating_add(line_offset)),
+                    Value::String(line.to_owned()),
+                ]);
+                if tuple_matches_constraints(&tuple, constraints) {
+                    out.push(tuple);
+                }
+            }
+        }
+        out
+    }
+
     fn ensure_derived(&mut self, predicates: impl IntoIterator<Item = PredicateRef>) {
         for predicate in predicates {
             self.derived.entry(predicate).or_default();
@@ -1283,14 +1413,6 @@ impl Database {
             .into_iter()
             .map(string_map_to_named_row)
             .collect()
-    }
-
-    #[cfg(feature = "physical-substrate")]
-    fn for_each_projected_tuple_row(&self, relation: &Ident, mut visit: impl FnMut(NamedRow)) {
-        self.tuples
-            .for_each_projected_row(relation.as_str(), |row| {
-                visit(string_map_to_named_row(row));
-            });
     }
 
     #[cfg(feature = "physical-substrate")]
@@ -1445,6 +1567,8 @@ impl Database {
             stored,
             #[cfg(feature = "physical-substrate")]
             tuples: Arc::clone(&self.tuples),
+            #[cfg(feature = "physical-substrate")]
+            tuple_content: Arc::clone(&self.tuple_content),
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
             content: Arc::clone(&self.content),
@@ -1831,6 +1955,15 @@ struct ContentIndex {
     span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
 }
 
+#[cfg(feature = "physical-substrate")]
+#[derive(Clone, Debug, Default)]
+struct TupleContentIndex {
+    content_rows: BTreeMap<ContentKey, RowId>,
+    spans: BTreeMap<ContentKey, SpanPayload>,
+    span_keys_by_handle_span: BTreeMap<(String, String), BTreeSet<ContentKey>>,
+    span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContentKey {
     corpus: String,
@@ -1920,6 +2053,15 @@ struct ContentSpan<'a> {
     span: &'a SpanPayload,
 }
 
+#[cfg(feature = "physical-substrate")]
+#[derive(Clone, Copy, Debug)]
+struct TupleContentSpan<'a> {
+    key: &'a ContentKey,
+    text: &'a str,
+    tokens: i64,
+    span: &'a SpanPayload,
+}
+
 impl ContentIndex {
     fn len(&self) -> usize {
         self.content.len()
@@ -1987,6 +2129,7 @@ impl ContentIndex {
         self.spans.insert(key, payload);
     }
 
+    #[cfg(not(feature = "physical-substrate"))]
     fn match_tuples(&self, constraints: &[(usize, Value)], regex: &Regex) -> Vec<Tuple> {
         let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
             return Vec::new();
@@ -2077,6 +2220,125 @@ impl ContentIndex {
     }
 }
 
+#[cfg(feature = "physical-substrate")]
+impl TupleContentIndex {
+    fn from_tuples(tuples: &TupleDb) -> Self {
+        let mut index = Self::default();
+        tuples.for_each_tuple_row_id(CONTENT_RELATION, |row_id, row| {
+            let (Some(corpus), Some(source), Some(handle), Some(span_id)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(HANDLE_FIELD),
+                row.string(SPAN_ID_FIELD),
+            ) else {
+                return;
+            };
+            index
+                .content_rows
+                .insert(ContentKey::new(corpus, source, handle, span_id), row_id);
+        });
+        tuples.for_each_tuple_row(SPAN_RELATION, |row| {
+            let (
+                Some(corpus),
+                Some(source),
+                Some(handle),
+                Some(span_id),
+                Some(start_line),
+                Some(end_line),
+            ) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(HANDLE_FIELD),
+                row.string(ID_FIELD),
+                row.i64(START_LINE_FIELD),
+                row.i64(END_LINE_FIELD),
+            )
+            else {
+                return;
+            };
+            let key = ContentKey::new(corpus, source, handle, span_id);
+            index
+                .span_order_by_handle
+                .entry(handle.to_owned())
+                .or_default()
+                .insert(OrderedSpanKey::new(corpus, source, span_id, start_line));
+            index
+                .span_keys_by_handle_span
+                .entry((handle.to_owned(), span_id.to_owned()))
+                .or_default()
+                .insert(key.clone());
+            index.spans.insert(
+                key,
+                SpanPayload {
+                    start_line,
+                    end_line,
+                },
+            );
+        });
+        index
+    }
+
+    fn content_span<'a>(
+        &'a self,
+        tuples: &'a TupleDb,
+        key: &'a ContentKey,
+    ) -> Option<TupleContentSpan<'a>> {
+        let span = self.spans.get(key)?;
+        let row = tuples.tuple_row(CONTENT_RELATION, *self.content_rows.get(key)?)?;
+        Some(TupleContentSpan {
+            key,
+            text: row.string(TEXT_FIELD)?,
+            tokens: row.i64(TOKENS_FIELD)?,
+            span,
+        })
+    }
+
+    fn content_span_for_ordered_key<'a>(
+        &'a self,
+        tuples: &'a TupleDb,
+        handle: &str,
+        ordered_key: &OrderedSpanKey,
+    ) -> Option<TupleContentSpan<'a>> {
+        let lookup = ContentKey::new(
+            &ordered_key.corpus,
+            &ordered_key.source,
+            handle,
+            &ordered_key.span_id,
+        );
+        let (key, _) = self.content_rows.get_key_value(&lookup)?;
+        self.content_span(tuples, key)
+    }
+
+    fn content_spans_for_handle<'a>(
+        &'a self,
+        tuples: &'a TupleDb,
+        handle: &'a str,
+    ) -> Vec<TupleContentSpan<'a>> {
+        self.span_order_by_handle
+            .get(handle)
+            .into_iter()
+            .flat_map(move |ordered_keys| {
+                ordered_keys.iter().filter_map(move |ordered_key| {
+                    self.content_span_for_ordered_key(tuples, handle, ordered_key)
+                })
+            })
+            .collect()
+    }
+
+    fn content_spans_for_handle_and_span<'a>(
+        &'a self,
+        tuples: &'a TupleDb,
+        handle: &'a str,
+        span_id: &'a str,
+    ) -> Vec<TupleContentSpan<'a>> {
+        self.span_keys_by_handle_span
+            .get(&(handle.to_owned(), span_id.to_owned()))
+            .into_iter()
+            .flat_map(|keys| keys.iter().filter_map(|key| self.content_span(tuples, key)))
+            .collect()
+    }
+}
+
 impl ContentProvider for ContentIndex {
     fn read(
         &self,
@@ -2142,6 +2404,36 @@ fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChun
         &span.key.handle,
         &span.key.span_id,
         clip_text_to_budget(&span.content.text, budget),
+        span.span.start_line,
+        span.span.end_line,
+        budget,
+    ))
+}
+
+#[cfg(feature = "physical-substrate")]
+fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
+    ReadChunk::new(
+        &span.key.handle,
+        &span.key.span_id,
+        span.text.to_owned(),
+        span.span.start_line,
+        span.span.end_line,
+        span.tokens,
+    )
+}
+
+#[cfg(feature = "physical-substrate")]
+fn read_chunk_with_budget_from_tuple(span: TupleContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
+    if budget <= 0 {
+        return None;
+    }
+    if span.tokens <= budget {
+        return Some(read_chunk_from_tuple(span));
+    }
+    Some(ReadChunk::new(
+        &span.key.handle,
+        &span.key.span_id,
+        clip_text_to_budget(span.text, budget),
         span.span.start_line,
         span.span.end_line,
         budget,
@@ -2329,6 +2621,87 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
     }
 }
 
+#[cfg(feature = "physical-substrate")]
+fn insert_search_tuple_row(search: &mut SearchIndex, relation: &str, row: TupleRow<'_>) {
+    match relation {
+        HANDLE_RELATION => {
+            let (Some(corpus), Some(source), Some(handle)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(ID_FIELD),
+            ) else {
+                return;
+            };
+            let file = row.string(FILE_FIELD).unwrap_or(handle);
+            search.insert_handle(SearchHandleDocument {
+                corpus,
+                source,
+                handle,
+                file,
+                summary: row.string(SUMMARY_FIELD),
+                status: row.string(STATUS_FIELD),
+                namespace: row.string(NAMESPACE_FIELD),
+                area: row.string(AREA_FIELD),
+                kind: row.string(KIND_FIELD),
+            });
+        }
+        EDGE_RELATION => {
+            let (Some(corpus), Some(source), Some(from), Some(to)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(FROM_FIELD),
+                row.string(TO_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_edge(corpus, source, from, to);
+        }
+        META_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(HANDLE_FIELD),
+                row.string(KEY_FIELD),
+                row.string(VALUE_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_meta(corpus, source, handle, key, value);
+        }
+        CONFIG_RELATION => {
+            let (Some(key), Some(value)) = (row.string(KEY_FIELD), row.string(VALUE_FIELD)) else {
+                return;
+            };
+            search.insert_config(key, value);
+        }
+        CONTENT_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(HANDLE_FIELD),
+                row.string(SPAN_ID_FIELD),
+                row.string(TEXT_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_content(corpus, source, handle, span_id, text);
+        }
+        SPAN_RELATION => {
+            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(summary)) = (
+                row.string(CORPUS_FIELD),
+                row.string(SOURCE_FIELD),
+                row.string(HANDLE_FIELD),
+                row.string(ID_FIELD),
+                row.string(SUMMARY_FIELD),
+            ) else {
+                return;
+            };
+            search.insert_span_summary(corpus, source, handle, span_id, summary);
+        }
+        _ => {}
+    }
+}
+
 impl SearchProvider for SearchIndex {
     fn search(
         &self,
@@ -2486,6 +2859,100 @@ impl GraphIndex {
         }
     }
 
+    #[cfg(feature = "physical-substrate")]
+    fn insert_tuple_row(&mut self, relation: &str, row: TupleRow<'_>) {
+        match relation {
+            HANDLE_RELATION => {
+                if let Some(id) = row.string(ID_FIELD) {
+                    self.nodes.insert(id.to_owned());
+                    self.handles.insert(
+                        id.to_owned(),
+                        HandleState {
+                            kind: row.string(KIND_FIELD).unwrap_or_default().to_owned(),
+                            status: row.string(STATUS_FIELD).map(str::to_owned),
+                            namespace: row.string(NAMESPACE_FIELD).unwrap_or_default().to_owned(),
+                            file: row.string(FILE_FIELD).unwrap_or_default().to_owned(),
+                            date: row.string(DATE_FIELD).and_then(iso_days_since_epoch),
+                        },
+                    );
+                }
+            }
+            EDGE_RELATION => {
+                let (Some(from), Some(to)) = (row.string(FROM_FIELD), row.string(TO_FIELD)) else {
+                    return;
+                };
+                let from = from.to_owned();
+                let to = to.to_owned();
+                self.nodes.insert(from.clone());
+                self.nodes.insert(to.clone());
+                self.outgoing
+                    .entry(from.clone())
+                    .or_default()
+                    .insert(to.clone());
+                self.incoming
+                    .entry(to.clone())
+                    .or_default()
+                    .insert(from.clone());
+                if let Some(kind) = row.string(KIND_FIELD) {
+                    self.outgoing_edges
+                        .entry(from.clone())
+                        .or_default()
+                        .insert((kind.to_owned(), to.clone()));
+                    self.incoming_edges
+                        .entry(to.clone())
+                        .or_default()
+                        .insert((kind.to_owned(), from.clone()));
+                }
+                *self.out_edge_count.entry(from).or_default() += 1;
+                *self.in_edge_count.entry(to.clone()).or_default() += 1;
+                if row.string(KIND_FIELD) == Some(CITES_EDGE_KIND) {
+                    *self.cite_count.entry(to).or_default() += 1;
+                } else if row.string(KIND_FIELD) == Some(DISCHARGES_EDGE_KIND) {
+                    *self.discharge_count.entry(to).or_default() += 1;
+                }
+            }
+            CONFIG_RELATION => self.insert_config_tuple(row),
+            CONTENT_RELATION => {
+                let (Some(handle), Some(tokens)) =
+                    (row.string(HANDLE_FIELD), row.i64(TOKENS_FIELD))
+                else {
+                    return;
+                };
+                let tokens = usize::try_from(tokens).unwrap_or(0);
+                *self.content_tokens.entry(handle.to_owned()).or_default() += tokens;
+            }
+            SNAPSHOT_RELATION => {
+                let (Some(id), Some(key), Some(status), Some(at)) = (
+                    row.string(ID_FIELD),
+                    row.string(KEY_FIELD),
+                    row.string(VALUE_FIELD),
+                    row.string(AT_FIELD),
+                ) else {
+                    return;
+                };
+                let Some(day) = snapshot_days_since_epoch(at) else {
+                    return;
+                };
+                if key == STATUS_FIELD {
+                    self.insert_status_snapshot(
+                        id,
+                        SnapshotStatus {
+                            day,
+                            sort_at: at.to_owned(),
+                            status: status.to_owned(),
+                        },
+                    );
+                }
+            }
+            LINEAR_NAMESPACE_RELATION => {
+                if let Some(namespace) = row.string(NAMESPACE_FIELD) {
+                    self.linear_namespaces.insert(namespace.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn insert_status_snapshot(&mut self, handle: &str, snapshot: SnapshotStatus) {
         let snapshots = self.status_snapshots.entry(handle.to_owned()).or_default();
         let idx = snapshots
@@ -2529,6 +2996,19 @@ impl GraphIndex {
         else {
             return;
         };
+        let ordinal = row_i64(row, ORDINAL_FIELD);
+        self.insert_config_values(key, value, ordinal);
+    }
+
+    #[cfg(feature = "physical-substrate")]
+    fn insert_config_tuple(&mut self, row: TupleRow<'_>) {
+        let (Some(key), Some(value)) = (row.string(KEY_FIELD), row.string(VALUE_FIELD)) else {
+            return;
+        };
+        self.insert_config_values(key, value, row.i64(ORDINAL_FIELD));
+    }
+
+    fn insert_config_values(&mut self, key: &str, value: &str, ordinal: Option<i64>) {
         match key {
             CONFIG_ACTIVE_STATUS => {
                 self.active_statuses.insert(value.to_owned());
@@ -2540,7 +3020,7 @@ impl GraphIndex {
                 self.settled_statuses.insert(value.to_owned());
             }
             CONFIG_PIPELINE_ORDERING => {
-                let position = row_i64(row, ORDINAL_FIELD).unwrap_or_else(|| {
+                let position = ordinal.unwrap_or_else(|| {
                     i64::try_from(self.pipeline_positions.len()).unwrap_or(i64::MAX)
                 });
                 self.pipeline_positions
@@ -4870,7 +5350,14 @@ fn primitive_tuples(
             let regex = regex_cache
                 .get(pattern)
                 .expect("regex was inserted before lookup");
-            Ok(database.content.match_tuples(constraints, regex))
+            #[cfg(feature = "physical-substrate")]
+            {
+                Ok(database.match_tuples_from_tuples(constraints, regex))
+            }
+            #[cfg(not(feature = "physical-substrate"))]
+            {
+                Ok(database.content.match_tuples(constraints, regex))
+            }
         }
         PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
