@@ -6,11 +6,8 @@ use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
-#[cfg(feature = "physical-substrate")]
 use crate::ir::ids::{ListId, SymbolId};
-#[cfg(feature = "physical-substrate")]
 use crate::ir::interner::Interner;
-#[cfg(feature = "physical-substrate")]
 use crate::runtime::eval::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -54,7 +51,6 @@ impl Hash for NumberValue {
     }
 }
 
-#[cfg(feature = "physical-substrate")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PhysicalValue {
     Sym(SymbolId),
@@ -64,7 +60,6 @@ pub(crate) enum PhysicalValue {
     List(ListId),
 }
 
-#[cfg(feature = "physical-substrate")]
 impl PhysicalValue {
     pub(crate) fn from_logical(
         value: &Value,
@@ -107,13 +102,11 @@ impl PhysicalValue {
     }
 }
 
-#[cfg(feature = "physical-substrate")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ListArena {
     lists: Vec<Box<[PhysicalValue]>>,
 }
 
-#[cfg(feature = "physical-substrate")]
 impl ListArena {
     pub(crate) fn push(&mut self, values: Vec<PhysicalValue>) -> ListId {
         let id = ListId::from_index(self.lists.len());
@@ -130,7 +123,6 @@ impl ListArena {
     }
 }
 
-#[cfg(feature = "physical-substrate")]
 #[cfg(test)]
 mod tests {
     use super::*;

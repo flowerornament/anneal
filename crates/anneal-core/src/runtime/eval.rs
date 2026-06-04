@@ -10,18 +10,16 @@ use std::sync::{Arc, OnceLock};
 use regex::Regex;
 use serde::Serialize;
 use serde::ser::SerializeMap;
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 use smallvec::SmallVec;
 
 use crate::facts::FactIdentity;
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 use crate::facts::SnapshotFact;
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
 };
 use crate::ids::Generation;
-#[cfg(feature = "physical-substrate")]
 use crate::ir::ids::RowId;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -61,25 +59,17 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::FactVisibility;
-#[cfg(feature = "physical-substrate")]
 use crate::vm::store::{RelationStore, TupleDb, TupleRow};
 pub use crate::vm::value::NumberValue;
-#[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
 use crate::vm::value::PhysicalValue;
 
-#[cfg(any(not(feature = "slot-frames"), feature = "legacy-binding-map"))]
-pub type Binding = BTreeMap<Ident, Value>;
-
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 const INLINE_BINDING_SLOTS: usize = 2;
 
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Binding {
     slots: SmallVec<[(Ident, Value); INLINE_BINDING_SLOTS]>,
 }
 
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 impl Binding {
     pub fn new() -> Self {
         Self {
@@ -113,7 +103,6 @@ impl Binding {
     }
 }
 
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 impl IntoIterator for Binding {
     type Item = (Ident, Value);
     type IntoIter = smallvec::IntoIter<[(Ident, Value); INLINE_BINDING_SLOTS]>;
@@ -123,14 +112,12 @@ impl IntoIterator for Binding {
     }
 }
 
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 impl Ord for Binding {
     fn cmp(&self, other: &Self) -> Ordering {
         self.slots.cmp(&other.slots)
     }
 }
 
-#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
 impl PartialOrd for Binding {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -156,19 +143,16 @@ pub struct Row {
     pub derivation: Option<DerivationNode>,
 }
 
-#[cfg(feature = "physical-substrate")]
 #[derive(Clone, Debug, Default)]
 struct TupleOverlay {
     relations: BTreeMap<Ident, RelationStore>,
 }
 
-#[cfg(feature = "physical-substrate")]
 impl TupleOverlay {
     fn relation(&self, relation: &Ident) -> Option<&RelationStore> {
         self.relations.get(relation)
     }
 
-    #[cfg(not(feature = "legacy-time-clone"))]
     fn insert(&mut self, relation: Ident, store: RelationStore) {
         self.relations.insert(relation, store);
     }
@@ -833,11 +817,8 @@ impl PartialOrd for Value {
 #[derive(Clone)]
 pub struct Database {
     stored: BTreeMap<Ident, StoredRelation>,
-    #[cfg(feature = "physical-substrate")]
     tuples: Arc<TupleDb>,
-    #[cfg(feature = "physical-substrate")]
     tuple_overlay: Arc<TupleOverlay>,
-    #[cfg(feature = "physical-substrate")]
     tuple_content: Arc<TupleContentIndex>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
@@ -854,11 +835,8 @@ impl Default for Database {
     fn default() -> Self {
         Self {
             stored: BTreeMap::new(),
-            #[cfg(feature = "physical-substrate")]
             tuples: Arc::new(TupleDb::default()),
-            #[cfg(feature = "physical-substrate")]
             tuple_overlay: Arc::new(TupleOverlay::default()),
-            #[cfg(feature = "physical-substrate")]
             tuple_content: Arc::new(TupleContentIndex::default()),
             derived: BTreeMap::new(),
             graph: Arc::new(GraphIndex::default()),
@@ -927,112 +905,20 @@ impl Database {
         store: &FactStore,
         fact_visible: impl Fn(&FactIdentity) -> bool,
     ) -> Self {
-        #[cfg(feature = "physical-substrate")]
-        {
-            let tuples = TupleDb::from_store_with_visibility(store, &fact_visible);
-            let tuple_content = TupleContentIndex::from_tuples(&tuples);
-            let hidden_handles = hidden_handles(store, &fact_visible);
-            let hidden_content_spans = hidden_content_spans(store, &fact_visible);
-            let mut db = Self {
-                tuples: Arc::new(tuples),
-                tuple_overlay: Arc::new(TupleOverlay::default()),
-                tuple_content: Arc::new(tuple_content),
-                hidden_handles: Arc::new(hidden_handles),
-                hidden_content_spans: Arc::new(hidden_content_spans),
-                ..Self::default()
-            };
-            db.seed_indexes_from_tuples();
-            db
-        }
-
-        #[cfg(not(feature = "physical-substrate"))]
-        {
-            let mut db = Self::default();
-            let hidden_handles = hidden_handles(store, &fact_visible);
-            let hidden_content_spans = hidden_content_spans(store, &fact_visible);
-            db.insert_named_rows(
-                "handle",
-                store
-                    .handles()
-                    .iter()
-                    .filter(|fact| fact_visible(&fact.identity))
-                    .map(handle_row),
-            );
-            db.insert_named_rows(
-                "edge",
-                store
-                    .edges()
-                    .iter()
-                    .filter(|fact| {
-                        fact_visible(&fact.identity)
-                            && !hidden_handles.contains(&fact.from)
-                            && !hidden_handles.contains(&fact.to)
-                    })
-                    .map(edge_row),
-            );
-            db.insert_named_rows(
-                "meta",
-                store
-                    .meta()
-                    .iter()
-                    .filter(|fact| {
-                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                    })
-                    .map(meta_row),
-            );
-            db.insert_named_rows(
-                "content",
-                store
-                    .content()
-                    .iter()
-                    .filter(|fact| {
-                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                    })
-                    .map(content_row),
-            );
-            db.insert_named_rows(
-                "span",
-                store
-                    .spans()
-                    .iter()
-                    .filter(|fact| {
-                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.handle)
-                    })
-                    .map(span_row),
-            );
-            db.insert_named_rows(
-                "concern",
-                store
-                    .concerns()
-                    .iter()
-                    .filter(|fact| {
-                        fact_visible(&fact.identity) && !hidden_handles.contains(&fact.member)
-                    })
-                    .map(concern_row),
-            );
-            db.insert_named_rows("config", store.configs().iter().map(config_row));
-            db.insert_named_rows(
-                "snapshot",
-                store
-                    .snapshots()
-                    .iter()
-                    .filter(|fact| !hidden_handles.contains(&fact.id))
-                    .map(snapshot_row),
-            );
-            db.insert_named_rows(
-                "generation",
-                store.generations().iter().map(|row| {
-                    named_row([
-                        ("corpus", Value::String(row.corpus.to_string())),
-                        ("source", Value::String(row.source.to_string())),
-                        ("current", generation_value(row.current)),
-                    ])
-                }),
-            );
-            db.hidden_handles = Arc::new(hidden_handles);
-            db.hidden_content_spans = Arc::new(hidden_content_spans);
-            db
-        }
+        let tuples = TupleDb::from_store_with_visibility(store, &fact_visible);
+        let tuple_content = TupleContentIndex::from_tuples(&tuples);
+        let hidden_handles = hidden_handles(store, &fact_visible);
+        let hidden_content_spans = hidden_content_spans(store, &fact_visible);
+        let mut db = Self {
+            tuples: Arc::new(tuples),
+            tuple_overlay: Arc::new(TupleOverlay::default()),
+            tuple_content: Arc::new(tuple_content),
+            hidden_handles: Arc::new(hidden_handles),
+            hidden_content_spans: Arc::new(hidden_content_spans),
+            ..Self::default()
+        };
+        db.seed_indexes_from_tuples();
+        db
     }
 
     pub fn with_sources(mut self, sources: impl IntoIterator<Item = SourceInfo>) -> Self {
@@ -1100,21 +986,16 @@ impl Database {
     fn search_provider(&self) -> &dyn SearchProvider {
         match self.search_provider.as_deref() {
             Some(provider) => provider,
-            #[cfg(feature = "physical-substrate")]
             None => self.search.get_or_init(|| self.build_search_index()),
-            #[cfg(not(feature = "physical-substrate"))]
-            None => self.search.get_or_init(|| build_search_index(&self.stored)),
         }
     }
 
-    #[cfg(feature = "physical-substrate")]
     fn seed_indexes_from_tuples(&mut self) {
         let graph = Arc::make_mut(&mut self.graph);
         self.tuples
             .for_each_relation_row(|relation, row| graph.insert_tuple_row(relation, row));
     }
 
-    #[cfg(feature = "physical-substrate")]
     fn build_search_index(&self) -> SearchIndex {
         let mut search = SearchIndex::default();
         self.tuples.for_each_relation_row(|relation, row| {
@@ -1260,17 +1141,7 @@ impl Database {
                 .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
                 .map_err(map_read_error)?
         } else {
-            #[cfg(feature = "physical-substrate")]
-            {
-                self.read_chunks_from_tuples(handle, budget, span_id)
-            }
-            #[cfg(not(feature = "physical-substrate"))]
-            {
-                let read_ctx = ReadContext::new(&options.actor);
-                self.content
-                    .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
-                    .map_err(map_read_error)?
-            }
+            self.read_chunks_from_tuples(handle, budget, span_id)
         };
         let chunks = chunks
             .into_iter()
@@ -1299,7 +1170,6 @@ impl Database {
         {
             return Ok(Vec::new());
         }
-        #[cfg(feature = "physical-substrate")]
         if self.content_provider.is_none() && self.handle_has_hidden_spans(handle) {
             return Ok(Vec::new());
         }
@@ -1312,20 +1182,7 @@ impl Database {
                 )
                 .map_err(map_read_error)?
         } else {
-            #[cfg(feature = "physical-substrate")]
-            {
-                self.full_content_from_tuples(handle, options.read_full_token_limit)?
-            }
-            #[cfg(not(feature = "physical-substrate"))]
-            {
-                let read_ctx = ReadContext::new(&options.actor);
-                self.content
-                    .read_full(
-                        ReadFullRequest::new(handle, options.read_full_token_limit),
-                        &read_ctx,
-                    )
-                    .map_err(map_read_error)?
-            }
+            self.full_content_from_tuples(handle, options.read_full_token_limit)?
         };
         let Some(content) = content else {
             return Ok(Vec::new());
@@ -1364,8 +1221,6 @@ impl Database {
     fn handle_has_hidden_spans(&self, handle: &str) -> bool {
         self.hidden_content_spans.contains_key(handle)
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn read_chunks_from_tuples(
         &self,
         handle: &str,
@@ -1404,8 +1259,6 @@ impl Database {
         }
         out
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn full_content_from_tuples(
         &self,
         handle: &str,
@@ -1436,8 +1289,6 @@ impl Database {
             Ok(Some(ReadFullContent::new(handle, content, tokens)))
         }
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn match_tuples_from_tuples(
         &self,
         constraints: &[(usize, Value)],
@@ -1501,16 +1352,6 @@ impl Database {
             .collect()
     }
 
-    #[cfg(feature = "physical-substrate")]
-    fn projected_tuple_rows(&self, relation: &Ident) -> Vec<NamedRow> {
-        self.tuples
-            .projected_rows(relation.as_str())
-            .into_iter()
-            .map(string_map_to_named_row)
-            .collect()
-    }
-
-    #[cfg(feature = "physical-substrate")]
     fn candidate_tuple_rows(
         &self,
         relation: &Ident,
@@ -1528,7 +1369,6 @@ impl Database {
         self.tuples.candidate_rows(relation.as_str(), &constraints)
     }
 
-    #[cfg(feature = "physical-substrate")]
     fn tuple_field_value(&self, relation: &Ident, row: RowId, field: &Ident) -> Option<Value> {
         if let Some(store) = self.tuple_overlay.relation(relation) {
             return self
@@ -1540,7 +1380,6 @@ impl Database {
             .logical_field_value(relation.as_str(), row, field.as_str())
     }
 
-    #[cfg(feature = "physical-substrate")]
     fn tuple_named_row(&self, relation: &Ident, row: RowId) -> Option<NamedRow> {
         if let Some(store) = self.tuple_overlay.relation(relation) {
             return self
@@ -1569,20 +1408,6 @@ impl Database {
         }
     }
 
-    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-    fn set_stored_relation_rows(
-        &mut self,
-        relation: &str,
-        rows: impl IntoIterator<Item = NamedRow>,
-    ) {
-        let relation = Ident::new_unchecked(relation);
-        let mut stored = StoredRelation::new(relation.clone());
-        for row in rows {
-            stored.push(row);
-        }
-        self.stored.insert(relation, stored);
-    }
-
     fn scoped_to_time_ref(&self, reference: &str) -> Result<(Self, Vec<QueryWarning>), EvalError> {
         let Some(selection) = self.resolve_snapshot_selection(reference) else {
             return Err(EvalError::UnsupportedTimeRef {
@@ -1590,10 +1415,7 @@ impl Database {
             });
         };
 
-        #[cfg(not(feature = "legacy-time-clone"))]
         let scoped = self.time_scope_overlay(&selection);
-        #[cfg(feature = "legacy-time-clone")]
-        let scoped = self.clone_for_time_scope_selection(&selection);
 
         Ok((
             scoped,
@@ -1601,59 +1423,19 @@ impl Database {
         ))
     }
 
-    #[cfg(any(
-        feature = "legacy-time-clone",
-        all(test, not(feature = "physical-substrate"))
-    ))]
-    fn clone_for_time_scope_selection(&self, selection: &SnapshotSelection) -> Self {
-        let mut scoped = self.clone_for_time_scope();
-        scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
-        scoped.apply_handle_snapshot(&selection.rows);
-        scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
-        scoped
-    }
-
-    #[cfg(not(feature = "legacy-time-clone"))]
     fn time_scope_overlay(&self, selection: &SnapshotSelection) -> Self {
         let mut scoped = self.clone_shell_for_time_scope();
-        #[cfg(feature = "physical-substrate")]
-        {
-            scoped.tuple_overlay = Arc::new(self.time_scope_tuple_overlay(selection));
-        }
-        #[cfg(not(feature = "physical-substrate"))]
-        {
-            scoped.set_stored_relation_rows(SNAPSHOT_RELATION, selection.rows.clone());
-            if let Some(rows) = self.time_scoped_handle_rows(&selection.rows) {
-                scoped.set_stored_relation_rows(HANDLE_RELATION, rows);
-            }
-            scoped.graph = Arc::new(self.graph.scoped_to_snapshot(selection));
-        }
-        #[cfg(feature = "physical-substrate")]
-        {
-            scoped.graph = Arc::new(
-                self.graph
-                    .scoped_to_snapshot_tuples(&self.tuples, selection),
-            );
-        }
+        scoped.tuple_overlay = Arc::new(self.time_scope_tuple_overlay(selection));
+        scoped.graph = Arc::new(
+            self.graph
+                .scoped_to_snapshot_tuples(&self.tuples, selection),
+        );
         scoped
     }
 
     fn resolve_snapshot_selection(&self, reference: &str) -> Option<SnapshotSelection> {
-        #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
         let candidates = self.snapshot_candidates_from_tuples();
-        #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
         let candidates = (!candidates.is_empty()).then_some(candidates)?;
-
-        #[cfg(not(feature = "physical-substrate"))]
-        let candidates = {
-            let relation = self.stored.get(&Ident::new_unchecked(SNAPSHOT_RELATION))?;
-            snapshot_candidates(&relation.rows)
-        };
-        #[cfg(all(feature = "physical-substrate", feature = "legacy-time-clone"))]
-        let candidates = {
-            let rows = self.relation_rows_for_scope(SNAPSHOT_RELATION)?;
-            snapshot_candidates(&rows)
-        };
         match snapshot_reference(reference)? {
             SnapshotReference::Last => latest_snapshot_candidate(candidates.into_values()),
             SnapshotReference::Snapshot(id) => candidates.get(&id).cloned().map(Into::into),
@@ -1663,33 +1445,6 @@ impl Database {
         }
     }
 
-    #[cfg(any(
-        all(feature = "legacy-time-clone", not(feature = "physical-substrate")),
-        all(test, not(feature = "physical-substrate"))
-    ))]
-    fn clone_for_time_scope(&self) -> Self {
-        self.clone_for_time_scope_with_stored(self.stored.clone())
-    }
-
-    #[cfg(all(feature = "legacy-time-clone", feature = "physical-substrate"))]
-    fn clone_for_time_scope(&self) -> Self {
-        self.clone_for_time_scope_with_stored(self.materialized_stored_relations())
-    }
-
-    #[cfg(feature = "physical-substrate")]
-    #[allow(dead_code)]
-    fn materialized_stored_relations(&self) -> BTreeMap<Ident, StoredRelation> {
-        let mut stored = self.stored.clone();
-        for relation in self.tuples.relation_names() {
-            let relation = Ident::new_unchecked(relation);
-            stored.entry(relation.clone()).or_insert_with(|| {
-                StoredRelation::from_rows(relation.clone(), self.projected_tuple_rows(&relation))
-            });
-        }
-        stored
-    }
-
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn snapshot_candidates_from_tuples(&self) -> BTreeMap<String, SnapshotCandidate> {
         let mut candidates = BTreeMap::<String, SnapshotCandidate>::new();
         self.tuples
@@ -1707,7 +1462,6 @@ impl Database {
                         snapshot,
                         day,
                         sort_at: at.to_string(),
-                        rows: Vec::new(),
                         tuple_rows: Vec::new(),
                     })
                     .tuple_rows
@@ -1716,7 +1470,6 @@ impl Database {
         candidates
     }
 
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn time_scope_tuple_overlay(&self, selection: &SnapshotSelection) -> TupleOverlay {
         let mut overlay = TupleOverlay::default();
         if let Some(snapshot_store) = self.snapshot_overlay_store(&selection.tuple_rows) {
@@ -1728,7 +1481,6 @@ impl Database {
         overlay
     }
 
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn snapshot_overlay_store(&self, snapshot_rows: &[RowId]) -> Option<RelationStore> {
         let mut store = self.tuples.empty_relation_store(SNAPSHOT_RELATION)?;
         for row in snapshot_rows {
@@ -1739,7 +1491,6 @@ impl Database {
         Some(store)
     }
 
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn handle_overlay_store(&self, snapshot_rows: &[RowId]) -> Option<RelationStore> {
         let patches = self.handle_snapshot_tuple_patches(snapshot_rows);
         if patches.is_empty() {
@@ -1765,7 +1516,6 @@ impl Database {
         Some(store)
     }
 
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn handle_snapshot_tuple_patches(
         &self,
         snapshot_rows: &[RowId],
@@ -1797,7 +1547,6 @@ impl Database {
         patches
     }
 
-    #[cfg(not(feature = "legacy-time-clone"))]
     fn clone_shell_for_time_scope(&self) -> Self {
         self.clone_for_time_scope_with_stored(BTreeMap::new())
     }
@@ -1805,11 +1554,8 @@ impl Database {
     fn clone_for_time_scope_with_stored(&self, stored: BTreeMap<Ident, StoredRelation>) -> Self {
         Self {
             stored,
-            #[cfg(feature = "physical-substrate")]
             tuples: Arc::clone(&self.tuples),
-            #[cfg(feature = "physical-substrate")]
             tuple_overlay: Arc::new(TupleOverlay::default()),
-            #[cfg(feature = "physical-substrate")]
             tuple_content: Arc::clone(&self.tuple_content),
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
@@ -1823,60 +1569,12 @@ impl Database {
         }
     }
 
-    #[cfg(any(
-        feature = "legacy-time-clone",
-        all(test, not(feature = "physical-substrate"))
-    ))]
-    fn apply_handle_snapshot(&mut self, snapshot_rows: &[NamedRow]) {
-        let Some(handles) = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION)) else {
-            return;
-        };
-        if let Some(rows) = patched_handle_rows(&handles.rows, snapshot_rows) {
-            self.set_stored_relation_rows(HANDLE_RELATION, rows);
-        }
-    }
-
-    #[cfg(all(
-        not(feature = "legacy-time-clone"),
-        not(feature = "physical-substrate")
-    ))]
-    fn time_scoped_handle_rows(&self, snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
-        let handles = self.stored.get(&Ident::new_unchecked(HANDLE_RELATION))?;
-        Some(
-            patched_handle_rows(&handles.rows, snapshot_rows)
-                .unwrap_or_else(|| handles.rows.clone()),
-        )
-    }
-
-    #[cfg(all(feature = "physical-substrate", feature = "legacy-time-clone"))]
-    fn relation_rows_for_scope(&self, relation: &str) -> Option<Vec<NamedRow>> {
-        let relation_ident = Ident::new_unchecked(relation);
-        if let Some(stored) = self.stored.get(&relation_ident) {
-            return Some(stored.rows.clone());
-        }
-        let rows = self.projected_tuple_rows(&relation_ident);
-        (!rows.is_empty()).then_some(rows)
-    }
-
     fn snapshot_partial_history_warnings(
         &self,
         reference: &str,
         snapshot: &str,
     ) -> Vec<QueryWarning> {
-        #[cfg(feature = "physical-substrate")]
         let sources = self.handle_sources_from_tuples();
-        #[cfg(not(feature = "physical-substrate"))]
-        let handle_rows = self
-            .stored
-            .get(&Ident::new_unchecked(HANDLE_RELATION))
-            .map(|relation| relation.rows.clone());
-
-        #[cfg(not(feature = "physical-substrate"))]
-        let sources = handle_rows
-            .into_iter()
-            .flat_map(std::iter::IntoIterator::into_iter)
-            .filter_map(|row| row_string(&row, SOURCE_FIELD).map(str::to_string))
-            .collect::<BTreeSet<_>>();
         if sources.is_empty() {
             return vec![snapshot_partial_history_warning(reference, snapshot, None)];
         }
@@ -1886,7 +1584,6 @@ impl Database {
             .collect()
     }
 
-    #[cfg(feature = "physical-substrate")]
     fn handle_sources_from_tuples(&self) -> BTreeSet<String> {
         let mut sources = BTreeSet::new();
         self.tuples.for_each_tuple_row(HANDLE_RELATION, |row| {
@@ -1902,8 +1599,6 @@ impl Database {
 struct SnapshotSelection {
     snapshot: String,
     day: i64,
-    rows: Vec<NamedRow>,
-    #[cfg(feature = "physical-substrate")]
     tuple_rows: Vec<RowId>,
 }
 
@@ -1912,8 +1607,6 @@ struct SnapshotCandidate {
     snapshot: String,
     day: i64,
     sort_at: String,
-    rows: Vec<NamedRow>,
-    #[cfg(feature = "physical-substrate")]
     tuple_rows: Vec<RowId>,
 }
 
@@ -1934,33 +1627,6 @@ fn snapshot_reference(reference: &str) -> Option<SnapshotReference> {
         return Some(SnapshotReference::Day(day));
     }
     relative_days_reference(reference).map(SnapshotReference::Day)
-}
-
-#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-fn snapshot_candidates(rows: &[NamedRow]) -> BTreeMap<String, SnapshotCandidate> {
-    let mut candidates = BTreeMap::<String, SnapshotCandidate>::new();
-    for row in rows {
-        let Some(at) = row_string(row, AT_FIELD) else {
-            continue;
-        };
-        let Some(day) = snapshot_days_since_epoch(at) else {
-            continue;
-        };
-        let snapshot = row_string(row, SNAPSHOT_FIELD).unwrap_or(at).to_string();
-        candidates
-            .entry(snapshot.clone())
-            .or_insert_with(|| SnapshotCandidate {
-                snapshot,
-                day,
-                sort_at: at.to_string(),
-                rows: Vec::new(),
-                #[cfg(feature = "physical-substrate")]
-                tuple_rows: Vec::new(),
-            })
-            .rows
-            .push(row.clone());
-    }
-    candidates
 }
 
 fn latest_snapshot_candidate(
@@ -1998,74 +1664,11 @@ impl From<SnapshotCandidate> for SnapshotSelection {
         Self {
             snapshot: candidate.snapshot,
             day: candidate.day,
-            rows: candidate.rows,
-            #[cfg(feature = "physical-substrate")]
             tuple_rows: candidate.tuple_rows,
         }
     }
 }
 
-#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-fn handle_snapshot_patches(
-    snapshot_rows: &[NamedRow],
-) -> BTreeMap<(String, String), Vec<(String, String)>> {
-    let mut patches = BTreeMap::<(String, String), Vec<(String, String)>>::new();
-    for row in snapshot_rows {
-        let (Some(corpus), Some(id), Some(key), Some(value)) = (
-            row_string(row, CORPUS_FIELD),
-            row_string(row, ID_FIELD),
-            row_string(row, KEY_FIELD),
-            row_string(row, VALUE_FIELD),
-        ) else {
-            continue;
-        };
-        patches
-            .entry((corpus.to_string(), id.to_string()))
-            .or_default()
-            .push((key.to_string(), value.to_string()));
-    }
-    patches
-}
-
-#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-fn patched_handle_rows(handles: &[NamedRow], snapshot_rows: &[NamedRow]) -> Option<Vec<NamedRow>> {
-    let patches = handle_snapshot_patches(snapshot_rows);
-    if patches.is_empty() {
-        return None;
-    }
-    Some(
-        handles
-            .iter()
-            .map(|row| apply_handle_snapshot_patch(row, &patches))
-            .collect(),
-    )
-}
-
-#[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-fn apply_handle_snapshot_patch(
-    row: &NamedRow,
-    patches: &BTreeMap<(String, String), Vec<(String, String)>>,
-) -> NamedRow {
-    let Some(corpus) = row_string(row, CORPUS_FIELD) else {
-        return row.clone();
-    };
-    let Some(id) = row_string(row, ID_FIELD) else {
-        return row.clone();
-    };
-    let Some(values) = patches.get(&(corpus.to_string(), id.to_string())) else {
-        return row.clone();
-    };
-
-    let mut row = row.clone();
-    for (key, value) in values {
-        if let Ok(field) = Ident::new(key.clone()) {
-            row.insert(field, Value::String(value.clone()));
-        }
-    }
-    row
-}
-
-#[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
 fn handle_snapshot_patch_field(key: &str) -> Option<&'static str> {
     match key {
         KIND_FIELD => Some(KIND_FIELD),
@@ -2231,8 +1834,6 @@ struct ContentIndex {
     span_keys_by_handle_span: BTreeMap<(String, String), BTreeSet<ContentKey>>,
     span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
 }
-
-#[cfg(feature = "physical-substrate")]
 #[derive(Clone, Debug, Default)]
 struct TupleContentIndex {
     content_rows: BTreeMap<ContentKey, RowId>,
@@ -2329,8 +1930,6 @@ struct ContentSpan<'a> {
     content: &'a ContentPayload,
     span: &'a SpanPayload,
 }
-
-#[cfg(feature = "physical-substrate")]
 #[derive(Clone, Copy, Debug)]
 struct TupleContentSpan<'a> {
     key: &'a ContentKey,
@@ -2406,35 +2005,6 @@ impl ContentIndex {
         self.spans.insert(key, payload);
     }
 
-    #[cfg(not(feature = "physical-substrate"))]
-    fn match_tuples(&self, constraints: &[(usize, Value)], regex: &Regex) -> Vec<Tuple> {
-        let ArgConstraint::Exact(pattern) = string_constraint(constraints, 0) else {
-            return Vec::new();
-        };
-        let ArgConstraint::Exact(handle) = string_constraint(constraints, 1) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for span in self.content_spans_for_handle(handle) {
-            for (line_offset, line) in span.content.text.lines().enumerate() {
-                if !regex.is_match(line) {
-                    continue;
-                }
-                let line_offset = i64::try_from(line_offset).unwrap_or(i64::MAX);
-                let tuple = Tuple(vec![
-                    string_value(pattern),
-                    string_value(&span.key.handle),
-                    int_value(span.span.start_line.saturating_add(line_offset)),
-                    Value::String(line.to_owned()),
-                ]);
-                if tuple_matches_constraints(&tuple, constraints) {
-                    out.push(tuple);
-                }
-            }
-        }
-        out
-    }
-
     fn content_span(&self, key: &ContentKey) -> Option<ContentSpan<'_>> {
         let (key, content) = self.content.get_key_value(key)?;
         let span = self.spans.get(key)?;
@@ -2496,8 +2066,6 @@ impl ContentIndex {
         }
     }
 }
-
-#[cfg(feature = "physical-substrate")]
 impl TupleContentIndex {
     fn from_tuples(tuples: &TupleDb) -> Self {
         let mut index = Self::default();
@@ -2686,8 +2254,6 @@ fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChun
         budget,
     ))
 }
-
-#[cfg(feature = "physical-substrate")]
 fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
     ReadChunk::new(
         &span.key.handle,
@@ -2698,8 +2264,6 @@ fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
         span.tokens,
     )
 }
-
-#[cfg(feature = "physical-substrate")]
 fn read_chunk_with_budget_from_tuple(span: TupleContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
     if budget <= 0 {
         return None;
@@ -2805,17 +2369,6 @@ fn optional_string_constraint(constraints: &[(usize, Value)], position: usize) -
     }
 }
 
-#[cfg(not(feature = "physical-substrate"))]
-fn build_search_index(stored: &BTreeMap<Ident, StoredRelation>) -> SearchIndex {
-    let mut search = SearchIndex::default();
-    for (relation, rows) in stored {
-        for row in &rows.rows {
-            insert_search_row(&mut search, relation, row);
-        }
-    }
-    search
-}
-
 fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow) {
     match relation.as_str() {
         HANDLE_RELATION => {
@@ -2897,8 +2450,6 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
         _ => {}
     }
 }
-
-#[cfg(feature = "physical-substrate")]
 fn insert_search_tuple_row(search: &mut SearchIndex, relation: &str, row: TupleRow<'_>) {
     match relation {
         HANDLE_RELATION => {
@@ -3135,8 +2686,6 @@ impl GraphIndex {
             _ => {}
         }
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn insert_tuple_row(&mut self, relation: &str, row: TupleRow<'_>) {
         match relation {
             HANDLE_RELATION => {
@@ -3244,15 +2793,6 @@ impl GraphIndex {
         snapshots.insert(idx, snapshot);
     }
 
-    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-    fn scoped_to_snapshot(&self, selection: &SnapshotSelection) -> Self {
-        let mut graph = self.clone();
-        graph.evaluation_day = Some(selection.day);
-        graph.apply_snapshot_rows(&selection.rows);
-        graph
-    }
-
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn scoped_to_snapshot_tuples(&self, tuples: &TupleDb, selection: &SnapshotSelection) -> Self {
         let mut graph = self.clone();
         graph.evaluation_day = Some(selection.day);
@@ -3260,25 +2800,6 @@ impl GraphIndex {
         graph
     }
 
-    #[cfg(any(not(feature = "physical-substrate"), feature = "legacy-time-clone"))]
-    fn apply_snapshot_rows(&mut self, snapshot_rows: &[NamedRow]) {
-        for ((_corpus, id), values) in handle_snapshot_patches(snapshot_rows) {
-            let Some(state) = self.handles.get_mut(&id) else {
-                continue;
-            };
-            for (key, value) in values {
-                match key.as_str() {
-                    KIND_FIELD => state.kind = value,
-                    STATUS_FIELD => state.status = Some(value),
-                    NAMESPACE_FIELD => state.namespace = value,
-                    DATE_FIELD => state.date = iso_days_since_epoch(&value),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     fn apply_snapshot_tuple_rows(&mut self, tuples: &TupleDb, snapshot_rows: &[RowId]) {
         for row in snapshot_rows {
             let Some(row) = tuples.tuple_row(SNAPSHOT_RELATION, *row) else {
@@ -3312,8 +2833,6 @@ impl GraphIndex {
         let ordinal = row_i64(row, ORDINAL_FIELD);
         self.insert_config_values(key, value, ordinal);
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn insert_config_tuple(&mut self, row: TupleRow<'_>) {
         let (Some(key), Some(value)) = (row.string(KEY_FIELD), row.string(VALUE_FIELD)) else {
             return;
@@ -5405,8 +4924,6 @@ fn eval_stored_traced(
     if let Some(relation) = database.stored.get(&atom.relation) {
         return eval_stored_relation_traced(atom, bindings, relation, options);
     }
-
-    #[cfg(feature = "physical-substrate")]
     {
         if database.tuples.has_relation(atom.relation.as_str()) {
             return eval_tuple_stored_traced(atom, bindings, database, options);
@@ -5446,8 +4963,6 @@ fn eval_stored_relation_traced(
     }
     Ok(out)
 }
-
-#[cfg(feature = "physical-substrate")]
 fn eval_tuple_stored_traced(
     atom: &StoredAtom,
     bindings: Vec<TracedBinding>,
@@ -5476,8 +4991,6 @@ fn eval_tuple_stored_traced(
     }
     Ok(out)
 }
-
-#[cfg(feature = "physical-substrate")]
 fn unify_tuple_stored_fields(
     atom: &StoredAtom,
     database: &Database,
@@ -5663,14 +5176,7 @@ fn primitive_tuples(
             let regex = regex_cache
                 .get(pattern)
                 .expect("regex was inserted before lookup");
-            #[cfg(feature = "physical-substrate")]
-            {
-                Ok(database.match_tuples_from_tuples(constraints, regex))
-            }
-            #[cfg(not(feature = "physical-substrate"))]
-            {
-                Ok(database.content.match_tuples(constraints, regex))
-            }
+            Ok(database.match_tuples_from_tuples(constraints, regex))
         }
         PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
@@ -6676,15 +6182,13 @@ fn named_row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> NamedR
         .map(|(key, value)| (Ident::new_unchecked(key), value))
         .collect()
 }
-
-#[cfg(feature = "physical-substrate")]
 fn string_map_to_named_row(row: BTreeMap<String, Value>) -> NamedRow {
     row.into_iter()
         .map(|(key, value)| (Ident::new_unchecked(key), value))
         .collect()
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn source_fact_row(
     identity: &FactIdentity,
     entries: impl IntoIterator<Item = (&'static str, Value)>,
@@ -6694,7 +6198,7 @@ fn source_fact_row(
     row
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn identity_row(identity: &FactIdentity) -> NamedRow {
     named_row([
         ("corpus", Value::String(identity.corpus.to_string())),
@@ -6776,7 +6280,7 @@ fn trail_generation_row(entry: &TrailEntryRedacted, generation: &TrailGeneration
     ])
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn handle_row(fact: &HandleFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6797,7 +6301,7 @@ fn handle_row(fact: &HandleFact) -> NamedRow {
     )
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn edge_row(fact: &EdgeFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6814,7 +6318,7 @@ fn edge_row(fact: &EdgeFact) -> NamedRow {
     )
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn meta_row(fact: &MetaFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6826,7 +6330,7 @@ fn meta_row(fact: &MetaFact) -> NamedRow {
     )
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn content_row(fact: &ContentFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6846,7 +6350,7 @@ fn content_row(fact: &ContentFact) -> NamedRow {
     )
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn span_row(fact: &SpanFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6866,7 +6370,7 @@ fn span_row(fact: &SpanFact) -> NamedRow {
     )
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn concern_row(fact: &ConcernFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
@@ -6922,7 +6426,7 @@ fn hidden_content_span_count(spans_by_handle: &BTreeMap<String, BTreeSet<String>
     spans_by_handle.values().map(BTreeSet::len).sum()
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn config_row(fact: &ConfigFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
@@ -6937,7 +6441,7 @@ fn config_row(fact: &ConfigFact) -> NamedRow {
     ])
 }
 
-#[cfg(any(not(feature = "physical-substrate"), test))]
+#[cfg(test)]
 fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
@@ -6975,7 +6479,6 @@ mod tests {
         summarize_trail_session,
     };
     use crate::visibility::FactVisibility;
-    #[cfg(feature = "physical-substrate")]
     use crate::{facts::STORED_RELATION_DESCRIPTORS, vm::store::TupleDb};
 
     fn identity(native_id: &str) -> FactIdentity {
@@ -7366,8 +6869,6 @@ mod tests {
             .expect("visibility snapshot fixture");
         store
     }
-
-    #[cfg(feature = "physical-substrate")]
     #[test]
     fn tuple_db_lowering_matches_named_database_rows() {
         let mut batch = FactBatch::new(
@@ -7450,15 +6951,11 @@ mod tests {
             );
         }
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn named_row_to_string_map(row: &NamedRow) -> BTreeMap<String, Value> {
         row.iter()
             .map(|(field, value)| (field.to_string(), value.clone()))
             .collect()
     }
-
-    #[cfg(feature = "physical-substrate")]
     fn legacy_named_database_from_store(store: &FactStore) -> Database {
         let mut db = Database::default();
         let hidden_handles = hidden_handles(store, &|_| true);
@@ -10227,33 +9724,6 @@ release_blocker(code) := issue(code, "error").
         );
     }
 
-    #[cfg(all(
-        not(feature = "physical-substrate"),
-        not(feature = "legacy-time-clone")
-    ))]
-    #[test]
-    fn time_scope_overlay_matches_clone_scope_for_snapshot_rows_and_graph_primitives() {
-        let database = time_travel_metric_database();
-        let selection = database
-            .resolve_snapshot_selection("snapshot:s2")
-            .expect("snapshot fixture resolves");
-        let clone_scoped = database.clone_for_time_scope_selection(&selection);
-        let overlay_scoped = database.time_scope_overlay(&selection);
-        let query = r#"
-            ? *handle{id: h, status: status}.
-            ? *snapshot{snapshot: snapshot, id: h, key, value}.
-            ? active(h).
-            ? freshness("draft.md", days).
-            ? flux("draft.md", 20, delta).
-        "#;
-
-        assert_eq!(
-            evaluate_queries(query, clone_scoped),
-            evaluate_queries(query, overlay_scoped)
-        );
-    }
-
-    #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
     #[test]
     fn tuple_time_scope_overlay_exposes_snapshot_rows_and_patched_handle_tuples() {
         let database = time_travel_metric_database();
@@ -10823,25 +10293,6 @@ release_blocker(code) := issue(code, "error").
         );
     }
 
-    #[cfg(not(feature = "physical-substrate"))]
-    #[test]
-    fn stored_relation_uses_bound_field_candidates() {
-        let database = Database::from_store(&fixture_store());
-        let relation = database
-            .stored
-            .get(&Ident::new_unchecked("handle"))
-            .expect("handle relation");
-        let candidates = relation
-            .candidate_rows(&[(Ident::new_unchecked("id"), Value::String("v17".to_string()))])
-            .collect::<Vec<_>>();
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(
-            candidates[0].get(&Ident::new_unchecked("id")),
-            Some(&Value::String("v17".to_string()))
-        );
-    }
-
-    #[cfg(feature = "physical-substrate")]
     #[test]
     fn tuple_relation_uses_bound_field_candidates() {
         let database = Database::from_store(&fixture_store());

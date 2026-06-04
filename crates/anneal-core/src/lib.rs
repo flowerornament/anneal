@@ -11,7 +11,6 @@ pub mod facts;
 pub mod hash;
 pub mod history;
 pub mod ids;
-#[cfg(feature = "physical-substrate")]
 pub(crate) mod ir;
 pub mod metadata;
 pub mod path_policy;
