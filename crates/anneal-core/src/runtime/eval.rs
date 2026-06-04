@@ -10,6 +10,8 @@ use std::sync::{Arc, OnceLock};
 use regex::Regex;
 use serde::Serialize;
 use serde::ser::SerializeMap;
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+use smallvec::SmallVec;
 
 use crate::facts::FactIdentity;
 #[cfg(any(not(feature = "physical-substrate"), test))]
@@ -65,7 +67,75 @@ pub use crate::vm::value::NumberValue;
 #[cfg(all(feature = "physical-substrate", not(feature = "legacy-time-clone")))]
 use crate::vm::value::PhysicalValue;
 
+#[cfg(any(not(feature = "slot-frames"), feature = "legacy-binding-map"))]
 pub type Binding = BTreeMap<Ident, Value>;
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+const INLINE_BINDING_SLOTS: usize = 2;
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Binding {
+    slots: SmallVec<[(Ident, Value); INLINE_BINDING_SLOTS]>,
+}
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+impl Binding {
+    pub fn new() -> Self {
+        Self {
+            slots: SmallVec::new(),
+        }
+    }
+
+    pub fn get(&self, key: &Ident) -> Option<&Value> {
+        self.slots
+            .binary_search_by(|(slot, _)| slot.cmp(key))
+            .ok()
+            .map(|idx| &self.slots[idx].1)
+    }
+
+    pub fn contains_key(&self, key: &Ident) -> bool {
+        self.get(key).is_some()
+    }
+
+    pub fn insert(&mut self, key: Ident, value: Value) -> Option<Value> {
+        match self.slots.binary_search_by(|(slot, _)| slot.cmp(&key)) {
+            Ok(idx) => Some(std::mem::replace(&mut self.slots[idx].1, value)),
+            Err(idx) => {
+                self.slots.insert(idx, (key, value));
+                None
+            }
+        }
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &Ident> {
+        self.slots.iter().map(|(key, _)| key)
+    }
+}
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+impl IntoIterator for Binding {
+    type Item = (Ident, Value);
+    type IntoIter = smallvec::IntoIter<[(Ident, Value); INLINE_BINDING_SLOTS]>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slots.into_iter()
+    }
+}
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+impl Ord for Binding {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.slots.cmp(&other.slots)
+    }
+}
+
+#[cfg(all(feature = "slot-frames", not(feature = "legacy-binding-map")))]
+impl PartialOrd for Binding {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
 type DerivationRef = Arc<DerivationNode>;
 
