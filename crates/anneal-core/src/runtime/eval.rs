@@ -6923,7 +6923,7 @@ mod tests {
             )
             .expect("snapshot rows");
 
-        let named = legacy_named_database_from_store(&store);
+        let named = named_projection_database_from_store(&store);
         let tuple = TupleDb::from_store_with_visibility(&store, |_| true);
 
         let named_relations = named
@@ -6956,7 +6956,7 @@ mod tests {
             .map(|(field, value)| (field.to_string(), value.clone()))
             .collect()
     }
-    fn legacy_named_database_from_store(store: &FactStore) -> Database {
+    fn named_projection_database_from_store(store: &FactStore) -> Database {
         let mut db = Database::default();
         let hidden_handles = hidden_handles(store, &|_| true);
         db.insert_named_rows("handle", store.handles().iter().map(handle_row));
