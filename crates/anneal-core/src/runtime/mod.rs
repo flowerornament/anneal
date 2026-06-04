@@ -13,7 +13,7 @@ pub mod loader;
 pub mod ndjson;
 pub mod parser;
 pub mod prelude;
-mod primitives;
+pub(crate) mod primitives;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze, stored_relation_fields};
 pub use ast::{

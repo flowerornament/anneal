@@ -39,6 +39,26 @@ enum ParameterNames {
     Ambiguous,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnalyzedPredicateKind {
+    Derived,
+    Primitive { sealed: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AnalyzedParameterNames {
+    Unknown,
+    Named(Vec<Ident>),
+    Ambiguous,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AnalyzedPredicateSignature {
+    pub(crate) arity: usize,
+    pub(crate) parameters: AnalyzedParameterNames,
+    pub(crate) kind: AnalyzedPredicateKind,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredFieldSet(Vec<&'static str>);
 
@@ -101,6 +121,14 @@ impl AnalyzedProgram {
         self.signatures
             .iter()
             .filter_map(|(predicate, signature)| signature.kind.is_derived().then_some(predicate))
+    }
+
+    pub(crate) fn predicate_signatures(
+        &self,
+    ) -> impl Iterator<Item = (&PredicateRef, AnalyzedPredicateSignature)> {
+        self.signatures
+            .iter()
+            .map(|(predicate, signature)| (predicate, signature.to_analyzed()))
     }
 
     pub fn predicate_parameter_names(&self, predicate: &PredicateRef) -> Option<Vec<String>> {
@@ -744,6 +772,29 @@ impl ParameterNames {
                 *self = Self::Ambiguous;
             }
             _ => {}
+        }
+    }
+}
+
+impl PredicateSignature {
+    fn to_analyzed(&self) -> AnalyzedPredicateSignature {
+        AnalyzedPredicateSignature {
+            arity: self.arity,
+            parameters: self.parameters.to_analyzed(),
+            kind: match self.kind {
+                PredicateKind::Derived => AnalyzedPredicateKind::Derived,
+                PredicateKind::Primitive { sealed } => AnalyzedPredicateKind::Primitive { sealed },
+            },
+        }
+    }
+}
+
+impl ParameterNames {
+    fn to_analyzed(&self) -> AnalyzedParameterNames {
+        match self {
+            Self::Unknown => AnalyzedParameterNames::Unknown,
+            Self::Named(names) => AnalyzedParameterNames::Named(names.clone()),
+            Self::Ambiguous => AnalyzedParameterNames::Ambiguous,
         }
     }
 }
