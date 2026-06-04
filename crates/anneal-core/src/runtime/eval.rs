@@ -58,7 +58,7 @@ use crate::trail::{
     TrailEntryRedacted, TrailError, TrailGeneration, TrailQuery, TrailRefKind, TrailReference,
     TrailStore,
 };
-use crate::visibility::FactVisibility;
+use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::store::{RelationStore, TupleDb, TupleRow};
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
@@ -6370,18 +6370,6 @@ fn concern_row(fact: &ConcernFact) -> NamedRow {
             ("member", Value::String(fact.member.clone())),
         ],
     )
-}
-
-fn hidden_handles<F>(store: &FactStore, fact_visible: &F) -> BTreeSet<String>
-where
-    F: Fn(&FactIdentity) -> bool,
-{
-    store
-        .handles()
-        .iter()
-        .filter(|fact| !fact_visible(&fact.identity))
-        .map(|fact| fact.id.clone())
-        .collect()
 }
 
 fn hidden_content_spans<F>(

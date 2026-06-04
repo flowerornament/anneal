@@ -1,4 +1,9 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
+
+use crate::facts::FactIdentity;
+use crate::store::FactStore;
 
 /// Evaluation visibility envelope for source-derived facts.
 ///
@@ -23,4 +28,16 @@ impl FactVisibility {
             Self::Private => "private",
         }
     }
+}
+
+pub(crate) fn hidden_handles<F>(store: &FactStore, fact_visible: &F) -> BTreeSet<String>
+where
+    F: Fn(&FactIdentity) -> bool,
+{
+    store
+        .handles()
+        .iter()
+        .filter(|fact| !fact_visible(&fact.identity))
+        .map(|fact| fact.id.clone())
+        .collect()
 }

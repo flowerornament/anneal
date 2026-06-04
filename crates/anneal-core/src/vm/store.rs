@@ -1,6 +1,8 @@
 //! Tuple-backed relation storage for the physical runtime.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactIdentity, HandleFact, MetaFact,
@@ -11,6 +13,7 @@ use crate::ir::interner::Interner;
 use crate::ir::schema::{RelationSchema, SchemaRegistry};
 use crate::runtime::eval::{NumberValue, Value};
 use crate::store::{FactStore, GenerationFact};
+use crate::visibility::hidden_handles;
 
 use super::value::{ListArena, PhysicalValue};
 
@@ -629,23 +632,6 @@ impl TupleDb {
         Some(Tuple::new(values))
     }
 
-    // Reserved for the Plan/IR middle-end, where physical constraints should be
-    // inspectable without first projecting a logical row.
-    #[allow(dead_code)]
-    pub(crate) fn physical_field_value(
-        &self,
-        relation: &str,
-        row: RowId,
-        field: &str,
-    ) -> Option<PhysicalValue> {
-        let relation_name = self.interner.lookup(relation)?;
-        let schema = self.schemas.relation_by_name(relation_name)?;
-        let field_name = self.interner.lookup(field)?;
-        let field = schema.field(field_name)?;
-        let store = self.relation(schema.id())?;
-        store.row(row)?.get(field)
-    }
-
     #[cfg(test)]
     pub(crate) fn relation_names(&self) -> BTreeSet<String> {
         self.relations
@@ -700,18 +686,6 @@ impl TupleDb {
             })
             .collect()
     }
-}
-
-fn hidden_handles<F>(store: &FactStore, fact_visible: &F) -> BTreeSet<String>
-where
-    F: Fn(&FactIdentity) -> bool,
-{
-    store
-        .handles()
-        .iter()
-        .filter(|fact| !fact_visible(&fact.identity))
-        .map(|fact| fact.id.clone())
-        .collect()
 }
 
 fn physical_int_value(value: i64) -> PhysicalValue {
