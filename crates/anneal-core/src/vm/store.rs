@@ -1,5 +1,4 @@
 //! Tuple-backed relation storage for the physical runtime.
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,10 +28,6 @@ impl Tuple {
 
     pub(crate) fn get(&self, field: FieldId) -> Option<PhysicalValue> {
         self.0.get(field.index()).copied()
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
     }
 }
 
@@ -120,10 +115,6 @@ impl RelationStore {
             || RowCandidates::All(0..self.rows.len()),
             |rows| RowCandidates::Indexed(rows.iter()),
         )
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.rows.len()
     }
 }
 
@@ -423,32 +414,20 @@ impl TupleDb {
         self.relations.get(&relation)
     }
 
-    pub(crate) fn relation_by_name(&self, relation: &str) -> Option<&RelationStore> {
-        let relation_name = self.interner.lookup(relation)?;
-        let schema = self.schemas.relation_by_name(relation_name)?;
-        self.relation(schema.id())
-    }
-
-    pub(crate) fn relation_mut(&mut self, relation: RelationId) -> Option<&mut RelationStore> {
-        self.relations.get_mut(&relation)
-    }
-
     pub(crate) fn empty_relation_store(&self, relation: &str) -> Option<RelationStore> {
         let relation_name = self.interner.lookup(relation)?;
         let schema = self.schemas.relation_by_name(relation_name)?;
         Some(RelationStore::new(schema))
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.relations.len()
-    }
-
+    #[cfg(test)]
     pub(crate) fn projected_rows(&self, relation: &str) -> Vec<BTreeMap<String, Value>> {
         let mut rows = Vec::new();
         self.for_each_projected_row(relation, |row| rows.push(row));
         rows
     }
 
+    #[cfg(test)]
     pub(crate) fn for_each_projected_row(
         &self,
         relation: &str,
@@ -650,6 +629,9 @@ impl TupleDb {
         Some(Tuple::new(values))
     }
 
+    // Reserved for the Plan/IR middle-end, where physical constraints should be
+    // inspectable without first projecting a logical row.
+    #[allow(dead_code)]
     pub(crate) fn physical_field_value(
         &self,
         relation: &str,
@@ -664,6 +646,7 @@ impl TupleDb {
         store.row(row)?.get(field)
     }
 
+    #[cfg(test)]
     pub(crate) fn relation_names(&self) -> BTreeSet<String> {
         self.relations
             .keys()

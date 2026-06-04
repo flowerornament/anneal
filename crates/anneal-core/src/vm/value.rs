@@ -1,5 +1,4 @@
 //! Runtime value types used by logical and physical evaluators.
-#![allow(dead_code)]
 
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -57,10 +56,14 @@ pub(crate) enum PhysicalValue {
     Number(NumberValue),
     Bool(bool),
     Null,
+    // Reserved for aggregate list slots once the Plan/IR middle-end owns list
+    // lifetimes. Current logical lists still project at the Value boundary.
+    #[allow(dead_code)]
     List(ListId),
 }
 
 impl PhysicalValue {
+    #[cfg(test)]
     pub(crate) fn from_logical(
         value: &Value,
         interner: &mut Interner,
@@ -108,6 +111,7 @@ pub(crate) struct ListArena {
 }
 
 impl ListArena {
+    #[cfg(test)]
     pub(crate) fn push(&mut self, values: Vec<PhysicalValue>) -> ListId {
         let id = ListId::from_index(self.lists.len());
         self.lists.push(values.into_boxed_slice());
@@ -118,6 +122,7 @@ impl ListArena {
         self.lists.get(id.index()).map(AsRef::as_ref)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.lists.len()
     }

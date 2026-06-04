@@ -1,24 +1,17 @@
 //! Typed numeric identifiers for the planned relational runtime.
-#![allow(dead_code)]
 
 macro_rules! index_id {
-    ($name:ident) => {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub(crate) struct $name(u32);
 
+        $(#[$meta])*
         impl $name {
-            pub(crate) const fn from_raw(raw: u32) -> Self {
-                Self(raw)
-            }
-
             pub(crate) fn from_index(index: usize) -> Self {
                 let raw = u32::try_from(index)
                     .expect(concat!(stringify!($name), " index exceeds u32 range"));
                 Self(raw)
-            }
-
-            pub(crate) const fn raw(self) -> u32 {
-                self.0
             }
 
             pub(crate) const fn index(self) -> usize {
@@ -29,12 +22,24 @@ macro_rules! index_id {
 }
 
 index_id!(SymbolId);
-index_id!(VarId);
+// Reserved for the Plan/IR middle-end, where variables become typed slots.
+index_id!(
+    #[allow(dead_code)]
+    VarId
+);
 index_id!(RelationId);
 index_id!(FieldId);
-index_id!(SlotId);
+// Reserved for the true slot-frame evaluator planned after query planning lands.
+index_id!(
+    #[allow(dead_code)]
+    SlotId
+);
 index_id!(RowId);
-index_id!(ListId);
+// Reserved for eval-scoped aggregate lists once Plan/IR owns list lifetimes.
+index_id!(
+    #[allow(dead_code)]
+    ListId
+);
 
 #[cfg(test)]
 mod tests {

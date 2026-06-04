@@ -1742,15 +1742,6 @@ impl StoredRelation {
         }
     }
 
-    #[allow(dead_code)]
-    fn from_rows(relation: Ident, rows: impl IntoIterator<Item = NamedRow>) -> Self {
-        let mut stored = Self::new(relation);
-        for row in rows {
-            stored.push(row);
-        }
-        stored
-    }
-
     fn len(&self) -> usize {
         self.rows.len()
     }

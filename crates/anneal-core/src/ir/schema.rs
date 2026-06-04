@@ -1,5 +1,4 @@
 //! Relation schema registry for tuple-backed stored relations.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
@@ -9,6 +8,9 @@ use super::ids::{FieldId, RelationId, SymbolId};
 use super::interner::Interner;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Non-symbol variants are reserved for typed Plan/IR validation. The current
+// tuple store keeps them as schema metadata but does not enforce them yet.
+#[allow(dead_code)]
 pub(crate) enum ValueType {
     Symbol,
     Number,
@@ -34,6 +36,7 @@ impl FieldSchema {
         self.name
     }
 
+    #[cfg(test)]
     pub(crate) fn value_type(&self) -> ValueType {
         self.value_type
     }
@@ -92,6 +95,7 @@ impl RelationSchema {
         self.by_name.get(&name).copied()
     }
 
+    #[cfg(test)]
     pub(crate) fn field_by_id(&self, id: FieldId) -> Option<&FieldSchema> {
         self.fields.get(id.index())
     }
@@ -146,10 +150,6 @@ impl SchemaRegistry {
         self.by_name
             .get(&name)
             .and_then(|relation| self.relation(*relation))
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.relations.len()
     }
 }
 

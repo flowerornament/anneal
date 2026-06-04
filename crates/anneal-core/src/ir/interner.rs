@@ -1,5 +1,4 @@
 //! Per-session symbol interner for physical runtime strings.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
@@ -33,12 +32,9 @@ impl Interner {
         self.texts.get(symbol.index()).map(AsRef::as_ref)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.texts.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.texts.is_empty()
     }
 }
 
