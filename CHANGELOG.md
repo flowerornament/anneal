@@ -2,6 +2,44 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.16.0 - 2026-06-04
+
+anneal evaluates over a relational tuple runtime — markedly faster, identical answers.
+
+The Datalog runtime is rebuilt on a logical/physical split: queries and output
+keep names and readable rows, while the evaluator runs on interned symbols,
+schema-addressed tuple rows, and overlay-based time scoping. This removes the
+per-query cost of materializing string-keyed `BTreeMap` rows, deep-cloning the
+database to view a snapshot, and allocating a map per partial match. Cold-start
+`status` on a 15MB reference corpus drops from ~3.1s to ~1.4s (about 2.2×) with
+~54% less allocation churn. Results are unchanged — every phase was gated by
+differential comparison against the prior evaluator, and the shipped engine is
+byte-identical to the previous release across the full query and verb surface.
+
+### Changed
+
+- The runtime stores corpus facts as interned tuples (`TupleDb`) addressed by
+  relation and field identifiers, replacing the string-keyed `BTreeMap` row
+  store. Repeated strings — handle ids, statuses, kinds, edge kinds, paths —
+  collapse to a single interned symbol.
+- Time-scoped queries (`at("snapshot:last")`) compose a borrowed overlay over the
+  base tuples instead of deep-cloning the database per scope, so snapshot and
+  convergence queries no longer pay a full-store copy.
+- Query evaluation binds into a compact slot vector rather than a per-match
+  `BTreeMap`. Stored-relation output remains deterministic, and the logical
+  `Value`/row representation is reconstructed only at the output boundary, so
+  text, JSON, and `--explain` are unchanged.
+
+### Internal
+
+- The physical substrate lives behind `anneal-core`'s `ir/` (typed identifiers,
+  interner, schema registry) and `vm/` (tuple value, store) modules, hidden from
+  the CLI and MCP surfaces. Engine internals do not leak past the logical
+  boundary.
+- The transitional feature flags used to differential the rewrite are retired;
+  the tuple substrate is the single unconditional eval path. Architecture is
+  mapped in `.design/2026-06-04-runtime-architecture.md`.
+
 ## v0.15.2 - 2026-06-02
 
 Ranked queries read in rank order, and stored output is deterministic.
