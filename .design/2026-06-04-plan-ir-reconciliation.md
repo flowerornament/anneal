@@ -177,7 +177,28 @@ architecture, attached at the real seam.
 4. **Settle**: join-order in the plan (the optimization the middle-end unlocks),
    then re-profile.
 
-## Success criteria
+## Success bar — coherence, not just speed (Morgan, locked)
+
+**This epic is judged by architecture, simplicity, and coherence — performance is
+a side effect, not the goal.** The north star: **boring executor, rich plan.**
+
+- `parse`/`analyze` = validity. `PlanCatalog`/`plan()` = one-time resolution of
+  names, schemas, slots, providers, and scope. `execute` = a dull slot-frame VM
+  over the scoped runtime context.
+- `plan()` must be a **real simplifying boundary**, NOT a second evaluator beside
+  the old one. The system should move from "eval rediscovers what an atom means
+  every time" to "the compiler says what this program means once." That is the
+  coherence win, and the **`PlanCatalog`/schema layer is the make-or-break part**.
+- Migration may briefly grow the code, but **every slice must bias toward
+  retiring rediscovery and making the executor duller**. A slice that makes eval
+  faster while leaving runtime decisions scattered across `eval_body`-style
+  branches has missed the point and should be reworked, not accepted.
+- Concretely: scattered `if soft && derived…`, name-based kind dispatch, per-atom
+  field-name lookups, and re-derived constraints should *disappear* from the
+  executor as the plan absorbs them. Reviews check "did the executor get dumber?"
+  not just "did dhat drop?"
+
+## Success criteria (performance — the side effect)
 
 The post-arc profile's remaining eval buckets — stored candidate/result vectors,
 constraint building, derived-relation eval, SmallVec binding clones — collapse
