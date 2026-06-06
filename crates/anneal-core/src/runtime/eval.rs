@@ -22,11 +22,13 @@ use crate::facts::{
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
+#[cfg(feature = "planned-executor-spike")]
+use crate::ir::plan::stratum_has_shadow_planned_target;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanRelationKind,
-    ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, StratumPlan, TermPlan, plan,
-    stratum_has_authoritative_planned_target,
+    ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StratumPlan, TermPlan,
+    plan, stratum_has_authoritative_planned_target,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -4069,11 +4071,18 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
-        let needs_plan = cfg!(feature = "planned-executor-spike")
-            || program
-                .strata()
-                .iter()
-                .any(|stratum| stratum_has_authoritative_planned_target(&stratum.predicates));
+        let needs_authoritative_plan = program
+            .strata()
+            .iter()
+            .any(|stratum| stratum_has_authoritative_planned_target(&stratum.predicates));
+        #[cfg(feature = "planned-executor-spike")]
+        let needs_shadow_plan = program
+            .strata()
+            .iter()
+            .any(|stratum| stratum_has_shadow_planned_target(&stratum.predicates));
+        #[cfg(not(feature = "planned-executor-spike"))]
+        let needs_shadow_plan = false;
+        let needs_plan = needs_authoritative_plan || needs_shadow_plan;
         let planned = needs_plan.then(|| {
             plan(&program).expect("analyzed program should plan before planned execution")
         });
@@ -4328,15 +4337,8 @@ fn run_rule_group(
         .collect::<BTreeSet<_>>();
     database.ensure_derived(stratum_predicates.iter().cloned());
 
-    if let Some((catalog, planned_groups)) =
-        planned_authoritative_for_stratum(planned_stratum, catalog, rules)?
-    {
-        let mut delta = DeltaMap::new();
-        for (planned, predicate) in planned_groups {
-            let tuples = eval_planned_rule_group(planned, catalog, database, options)?;
-            insert_new_tuples(database, &predicate, tuples, &mut delta);
-        }
-        return Ok(());
+    if planned_stratum.is_some_and(|stratum| stratum.authoritative_planned) {
+        return run_staged_rule_group(database, rules, planned_stratum, catalog, warnings, options);
     }
 
     let mut delta = DeltaMap::new();
@@ -4371,72 +4373,117 @@ fn run_rule_group(
             }
         }
     }
+    #[cfg(feature = "planned-executor-spike")]
+    shadow_planned_stages(
+        planned_stratum,
+        catalog,
+        database,
+        options,
+        &stratum_predicates,
+    )?;
     Ok(())
 }
 
-fn planned_authoritative_for_stratum<'a>(
-    planned_stratum: Option<&'a StratumPlan>,
-    catalog: Option<&'a PlanCatalog>,
+fn run_staged_rule_group(
+    database: &mut Database,
     rules: &[Rule],
-) -> Result<Option<AuthoritativePlannedGroups<'a>>, EvalError> {
-    let Some(stratum) = planned_stratum.filter(|stratum| stratum.authoritative_planned) else {
-        return Ok(None);
-    };
+    planned_stratum: Option<&StratumPlan>,
+    catalog: Option<&PlanCatalog>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<(), EvalError> {
     let predicate = rules
         .first()
         .map(|rule| rule.head.predicate.clone())
         .ok_or(EvalError::UnsupportedExpression)?;
+    let planned_stratum =
+        planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+            predicate: predicate.clone(),
+        })?;
     let catalog = catalog.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
         predicate: predicate.clone(),
     })?;
-    if stratum.recursive {
-        return Err(EvalError::PlannedExecutorRecursiveAuthoritative { predicate });
-    }
-
-    let mut rule_heads = Vec::new();
+    let mut rules_by_predicate = BTreeMap::<PredicateRef, Vec<&Rule>>::new();
     for rule in rules {
-        let Some(relation) = catalog.predicate_relation(&rule.head.predicate) else {
-            return Err(EvalError::PlannedExecutorMissingAuthoritative {
-                predicate: predicate.clone(),
-            });
-        };
-        rule_heads.push((relation.id, rule.head.predicate.clone()));
+        rules_by_predicate
+            .entry(rule.head.predicate.clone())
+            .or_default()
+            .push(rule);
     }
-
-    let mut planned_heads = stratum
-        .rule_groups
-        .iter()
-        .map(|group| group.head)
-        .collect::<Vec<_>>();
-    let mut rule_head_ids = rule_heads
-        .iter()
-        .map(|(relation, _)| Some(*relation))
-        .collect::<Vec<_>>();
-    planned_heads.sort();
-    rule_head_ids.sort();
-    if planned_heads != rule_head_ids {
-        return Err(EvalError::PlannedExecutorMixedAuthoritative { predicate });
+    for stage in &planned_stratum.stages {
+        for predicate in &stage.predicates {
+            if stage.authoritative_predicates.contains(predicate) {
+                continue;
+            }
+            let Some(stage_rules) = rules_by_predicate.get(predicate) else {
+                continue;
+            };
+            for rule in stage_rules {
+                let tuples = eval_rule(rule, database, warnings, options)?;
+                insert_tuples(database, &rule.head.predicate, tuples);
+            }
+        }
+        if stage.authoritative_planned {
+            let planned_groups = planned_authoritative_for_stage(stage, planned_stratum)?;
+            for (planned, predicate) in planned_groups {
+                let tuples = eval_planned_rule_group(planned, catalog, database, options)?;
+                insert_tuples(database, &predicate, tuples);
+            }
+        }
     }
-
-    let planned = stratum
-        .rule_groups
-        .iter()
-        .map(|group| {
-            let predicate = rule_heads
-                .iter()
-                .find_map(|(relation, predicate)| {
-                    (group.head == Some(*relation)).then(|| predicate.clone())
-                })
-                .ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                    predicate: predicate.clone(),
-                })?;
-            Ok((group, predicate))
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    Ok(Some((catalog, planned)))
+    #[cfg(feature = "planned-executor-spike")]
+    {
+        let active_predicates = rules
+            .iter()
+            .map(|rule| rule.head.predicate.clone())
+            .collect::<BTreeSet<_>>();
+        shadow_planned_stages(
+            Some(planned_stratum),
+            Some(catalog),
+            database,
+            options,
+            &active_predicates,
+        )?;
+    }
+    Ok(())
 }
 
-type AuthoritativePlannedGroups<'a> = (&'a PlanCatalog, Vec<(&'a RuleGroupPlan, PredicateRef)>);
+fn planned_authoritative_for_stage<'a>(
+    stage: &RuleStagePlan,
+    planned_stratum: &'a StratumPlan,
+) -> Result<Vec<(&'a RuleGroupPlan, PredicateRef)>, EvalError> {
+    if !stage.authoritative_planned {
+        return Ok(Vec::new());
+    }
+    let predicate = stage
+        .authoritative_predicates
+        .iter()
+        .next()
+        .cloned()
+        .ok_or(EvalError::UnsupportedExpression)?;
+    let mut planned = Vec::new();
+    for group_index in &stage.rule_groups {
+        let group = planned_stratum
+            .rule_groups
+            .get(*group_index)
+            .ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+                predicate: predicate.clone(),
+            })?;
+        let Some(provenance) = &group.provenance else {
+            continue;
+        };
+        if stage
+            .authoritative_predicates
+            .contains(&provenance.predicate)
+        {
+            planned.push((group, provenance.predicate.clone()));
+        }
+    }
+    if planned.is_empty() {
+        return Err(EvalError::PlannedExecutorMixedAuthoritative { predicate });
+    }
+    Ok(planned)
+}
 
 #[derive(Clone, Debug)]
 struct DerivedTuple {
@@ -4600,6 +4647,13 @@ fn insert_new_tuples(
     changed
 }
 
+fn insert_tuples(database: &mut Database, predicate: &PredicateRef, tuples: Vec<DerivedTuple>) {
+    let relation = database.derived.entry(predicate.clone()).or_default();
+    for derived in tuples {
+        relation.insert_with_derivation(&derived.tuple, derived.derivation);
+    }
+}
+
 #[cfg(feature = "planned-executor-spike")]
 fn planned_shadow_for_rule<'a>(
     planned_stratum: Option<&'a StratumPlan>,
@@ -4624,13 +4678,16 @@ fn planned_shadow_for_rule<'a>(
     let Some(rule_relation) = catalog.predicate_relation(&rule.head.predicate) else {
         return Ok(None);
     };
-    let planned = stratum
+    let mut planned_groups = stratum
         .rule_groups
         .iter()
-        .find(|planned| planned.shadow_planned && planned.head == Some(rule_relation.id));
-    let Some(planned) = planned else {
+        .filter(|planned| planned.shadow_planned && planned.head == Some(rule_relation.id));
+    let Some(planned) = planned_groups.next() else {
         return Ok(None);
     };
+    if planned_groups.next().is_some() {
+        return Ok(None);
+    }
     Ok(planned_rule_group_is_supported_shadow_target(planned).then_some(planned))
 }
 
@@ -4674,32 +4731,12 @@ fn shadow_planned_rule_group(
     interpreted: &[DerivedTuple],
 ) -> Result<(), EvalError> {
     let planned_rows = eval_planned_rule_group(planned, catalog, database, options)?;
-    let planned_tuples = planned_rows
-        .iter()
-        .map(|row| row.tuple.clone())
-        .collect::<BTreeSet<_>>();
-    let interpreted_tuples = interpreted
-        .iter()
-        .map(|row| row.tuple.clone())
-        .collect::<BTreeSet<_>>();
-    if planned_tuples != interpreted_tuples {
-        return Err(EvalError::PlannedExecutorMismatch {
-            predicate: rule.head.predicate.clone(),
-            interpreted: interpreted_tuples.len(),
-            planned: planned_tuples.len(),
-        });
-    }
-    if options.explain().is_enabled() {
-        let planned_derivations = derivation_map(&planned_rows, &rule.head.predicate)?;
-        let interpreted_derivations = derivation_map(interpreted, &rule.head.predicate)?;
-        if planned_derivations != interpreted_derivations {
-            return Err(EvalError::PlannedExecutorMismatch {
-                predicate: rule.head.predicate.clone(),
-                interpreted: interpreted_derivations.len(),
-                planned: planned_derivations.len(),
-            });
-        }
-    }
+    compare_planned_rows_to_interpreted_rows(
+        &rule.head.predicate,
+        &planned_rows,
+        interpreted,
+        options,
+    )?;
     Ok(())
 }
 
@@ -4717,9 +4754,158 @@ fn derivation_map(
                 planned: out.len(),
             });
         };
-        out.insert(row.tuple.clone(), derivation.as_ref().clone());
+        out.entry(row.tuple.clone())
+            .or_insert_with(|| derivation.as_ref().clone());
     }
     Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn shadow_planned_stages(
+    planned_stratum: Option<&StratumPlan>,
+    catalog: Option<&PlanCatalog>,
+    database: &Database,
+    options: &EvalOptions,
+    active_predicates: &BTreeSet<PredicateRef>,
+) -> Result<(), EvalError> {
+    let Some(stratum) = planned_stratum else {
+        return Ok(());
+    };
+    if !stratum.stages.iter().any(|stage| stage.shadow_planned) {
+        return Ok(());
+    }
+    let Some(catalog) = catalog else {
+        return Err(EvalError::PlannedExecutorMissingShadow {
+            predicate: PredicateRef::parse("stage").expect("static predicate parses"),
+        });
+    };
+
+    for stage in &stratum.stages {
+        if !stage.shadow_planned {
+            continue;
+        }
+        let mut groups_by_predicate = BTreeMap::<PredicateRef, Vec<&RuleGroupPlan>>::new();
+        for group_index in &stage.rule_groups {
+            let Some(group) = stratum.rule_groups.get(*group_index) else {
+                continue;
+            };
+            if !group.shadow_planned || !planned_rule_group_is_supported_shadow_target(group) {
+                continue;
+            }
+            let Some(predicate) = planned_group_predicate(group, catalog) else {
+                continue;
+            };
+            if !active_predicates.contains(&predicate) {
+                continue;
+            }
+            if !stage_predicate_is_fully_shadowed(stage, stratum, catalog, &predicate) {
+                continue;
+            }
+            groups_by_predicate
+                .entry(predicate)
+                .or_default()
+                .push(group);
+        }
+        for (predicate, groups) in groups_by_predicate {
+            let mut rows = Vec::new();
+            for group in groups {
+                rows.extend(eval_planned_rule_group(group, catalog, database, options)?);
+            }
+            compare_planned_rows_to_derived_relation(&predicate, &rows, database, options)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_group_predicate(group: &RuleGroupPlan, catalog: &PlanCatalog) -> Option<PredicateRef> {
+    group
+        .provenance
+        .as_ref()
+        .map(|provenance| provenance.predicate.clone())
+        .or_else(|| {
+            let relation = catalog.relation(group.head?)?;
+            PredicateRef::parse(&relation.name).ok()
+        })
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn stage_predicate_is_fully_shadowed(
+    stage: &RuleStagePlan,
+    stratum: &StratumPlan,
+    catalog: &PlanCatalog,
+    predicate: &PredicateRef,
+) -> bool {
+    let Some(relation) = catalog.predicate_relation(predicate) else {
+        return false;
+    };
+    stratum
+        .rule_groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.head == Some(relation.id))
+        .all(|(index, group)| stage.rule_groups.contains(&index) && group.shadow_planned)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn compare_planned_rows_to_derived_relation(
+    predicate: &PredicateRef,
+    planned_rows: &[DerivedTuple],
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<(), EvalError> {
+    let Some(relation) = database.derived.get(predicate) else {
+        return Err(EvalError::PlannedExecutorMismatch {
+            predicate: predicate.clone(),
+            interpreted: 0,
+            planned: planned_rows.len(),
+        });
+    };
+    let interpreted_rows = relation
+        .tuples()
+        .iter()
+        .map(|tuple| DerivedTuple {
+            tuple: tuple.clone(),
+            derivation: relation.derivation(tuple),
+        })
+        .collect::<Vec<_>>();
+    compare_planned_rows_to_interpreted_rows(predicate, planned_rows, &interpreted_rows, options)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn compare_planned_rows_to_interpreted_rows(
+    predicate: &PredicateRef,
+    planned_rows: &[DerivedTuple],
+    interpreted_rows: &[DerivedTuple],
+    options: &EvalOptions,
+) -> Result<(), EvalError> {
+    let planned_tuples = planned_rows
+        .iter()
+        .map(|row| row.tuple.clone())
+        .collect::<BTreeSet<_>>();
+    let interpreted_tuples = interpreted_rows
+        .iter()
+        .map(|row| row.tuple.clone())
+        .collect::<BTreeSet<_>>();
+    if planned_tuples != interpreted_tuples {
+        return Err(EvalError::PlannedExecutorMismatch {
+            predicate: predicate.clone(),
+            interpreted: interpreted_tuples.len(),
+            planned: planned_tuples.len(),
+        });
+    }
+    if options.explain().is_enabled() {
+        let planned_derivations = derivation_map(planned_rows, predicate)?;
+        let interpreted_derivations = derivation_map(interpreted_rows, predicate)?;
+        if planned_derivations != interpreted_derivations {
+            return Err(EvalError::PlannedExecutorMismatch {
+                predicate: predicate.clone(),
+                interpreted: interpreted_derivations.len(),
+                planned: planned_derivations.len(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4958,7 +5144,7 @@ fn eval_planned_stored_scan(
     let trace = options.explain().is_enabled();
     let relation_ident = trace.then(|| Ident::new_unchecked(relation_name.to_string()));
     for binding in bindings {
-        let constraints = planned_column_constraints(patterns, &binding);
+        let constraints = planned_column_constraints(patterns, &binding, env)?;
         for row in store.candidate_rows(&constraints) {
             let Some(tuple) = store.row(row) else {
                 continue;
@@ -5281,23 +5467,25 @@ fn aggregate_derivation_steps_planned(rows: &[PlannedFrame]) -> Vec<DerivationRe
 fn planned_column_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
-) -> Vec<(crate::ir::ids::FieldId, PhysicalValue)> {
-    patterns
-        .iter()
-        .filter_map(|pattern| {
-            planned_bound_value_for_term(&pattern.term, binding).map(|value| (pattern.field, value))
-        })
-        .collect()
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<(crate::ir::ids::FieldId, PhysicalValue)>, EvalError> {
+    let mut constraints = Vec::new();
+    for pattern in patterns {
+        if let Some(value) = planned_constraint_value_for_term(&pattern.term, binding, env)? {
+            constraints.push((pattern.field, value));
+        }
+    }
+    Ok(constraints)
 }
 
 fn planned_tuple_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
-    env: &PlannedValueEnv,
+    env: &mut PlannedValueEnv,
 ) -> Result<Vec<(usize, Value)>, EvalError> {
     let mut constraints = Vec::new();
     for pattern in patterns {
-        if let Some(value) = planned_bound_value_for_term(&pattern.term, binding) {
+        if let Some(value) = planned_constraint_value_for_term(&pattern.term, binding, env)? {
             constraints.push((pattern.field.index(), env.logical(value)?));
         }
     }
@@ -5307,21 +5495,31 @@ fn planned_tuple_constraints(
 fn planned_call_constraints(
     args: &[CallArgPlan],
     binding: &PlannedFrame,
-    env: &PlannedValueEnv,
+    env: &mut PlannedValueEnv,
 ) -> Result<Vec<(usize, Value)>, EvalError> {
     let mut constraints = Vec::new();
     for arg in args {
-        if let Some(value) = planned_bound_value_for_term(&arg.term, binding) {
+        if let Some(value) = planned_constraint_value_for_term(&arg.term, binding, env)? {
             constraints.push((arg.position, env.logical(value)?));
         }
     }
     Ok(constraints)
 }
 
-fn planned_bound_value_for_term(term: &TermPlan, binding: &PlannedFrame) -> Option<PhysicalValue> {
+fn planned_constraint_value_for_term(
+    term: &TermPlan,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<Option<PhysicalValue>, EvalError> {
     match term {
-        TermPlan::Expr(ExprPlan::Slot(slot)) => binding.get(*slot),
-        TermPlan::Wildcard | TermPlan::Expr(_) => None,
+        TermPlan::Wildcard => Ok(None),
+        TermPlan::Expr(ExprPlan::Slot(slot)) => Ok(binding.get(*slot)),
+        TermPlan::Expr(ExprPlan::Literal(literal)) => Ok(Some(physical_from_literal(literal, env))),
+        TermPlan::Expr(expr) => match eval_planned_expr(expr, binding, env) {
+            Ok(value) => Ok(Some(value)),
+            Err(EvalError::UnboundVariable { .. }) => Ok(None),
+            Err(error) => Err(error),
+        },
     }
 }
 
@@ -8934,6 +9132,51 @@ mod tests {
             .expect("query row has derivation");
         assert!(derivation_contains(derivation, DerivationKind::Rule));
         assert!(derivation_contains(derivation, DerivationKind::Aggregate));
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_stage_shadow_accepts_entropy_after_same_stratum_diagnostic() {
+        let input = r#"
+        diagnostic("T001", "error", h, file, line, target) :=
+          *edge{from: h, to: target, kind: "Pending", file: file, line: line}.
+        entropy(h, "broken_ref") :=
+          diagnostic("T001", severity, h, file, line, evidence).
+        ? entropy(h, source) order by h asc.
+        "#;
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle("a.md", "file", "draft", "", "core")];
+        batch.edges = vec![EdgeFact {
+            identity: identity("a.md->missing:Pending"),
+            from: "a.md".to_string(),
+            to: "missing.md".to_string(),
+            kind: "Pending".to_string(),
+            file: "a.md".to_string(),
+            line: 7,
+        }];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merges");
+
+        let output = evaluate_query_output_with_options(
+            input,
+            Database::from_store(&store),
+            EvalOptions::default().with_explain_all(),
+        );
+
+        assert_eq!(
+            output.rows[0].fields,
+            row([("h", s("a.md")), ("source", s("broken_ref"))])
+        );
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Stored));
     }
 
     #[test]

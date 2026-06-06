@@ -50,9 +50,19 @@ pub(crate) enum PlanKind {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StratumPlan {
     pub(crate) rule_groups: Vec<RuleGroupPlan>,
+    pub(crate) stages: Vec<RuleStagePlan>,
     pub(crate) recursive: bool,
     pub(crate) authoritative_planned: bool,
     pub(crate) deltas: Vec<DeltaPlan>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RuleStagePlan {
+    pub(crate) rule_groups: Vec<usize>,
+    pub(crate) predicates: BTreeSet<PredicateRef>,
+    pub(crate) authoritative_predicates: BTreeSet<PredicateRef>,
+    pub(crate) authoritative_planned: bool,
+    pub(crate) shadow_planned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -495,6 +505,8 @@ pub(crate) enum PlanError {
     UnplannedVariable { variable: Ident },
     #[error("unsupported expression in planning-only artifact")]
     UnsupportedExpression,
+    #[error("positive dependency cycle inside planned stratum: {predicates:?}")]
+    PositiveCycle { predicates: Vec<PredicateRef> },
 }
 
 pub(crate) fn plan(program: &AnalyzedProgram) -> Result<ProgramPlan, PlanError> {
@@ -518,12 +530,13 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
         .iter()
         .map(|stratum| {
             let stratum_predicates = stratum.predicates.iter().cloned().collect::<BTreeSet<_>>();
-            let mut rule_groups = Vec::new();
-            let mut deltas = Vec::new();
-            for rule in program
+            let rules = program
                 .rules()
                 .filter(|rule| stratum_predicates.contains(&rule.head.predicate))
-            {
+                .collect::<Vec<_>>();
+            let mut rule_groups = Vec::new();
+            let mut deltas = Vec::new();
+            for rule in &rules {
                 let rule_group = plan_rule(rule, catalog, None)?;
                 let rule_group_index = rule_groups.len();
                 for atom_index in recursive_atom_indexes(&rule.body, &stratum_predicates) {
@@ -540,10 +553,12 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
                 }
                 rule_groups.push(rule_group);
             }
+            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates)?;
             Ok(StratumPlan {
                 recursive: !deltas.is_empty(),
-                authoritative_planned: stratum_is_authoritative_planned(&stratum_predicates),
+                authoritative_planned: stages.iter().any(|stage| stage.authoritative_planned),
                 rule_groups,
+                stages,
                 deltas,
             })
         })
@@ -564,11 +579,8 @@ pub(crate) fn stratum_has_authoritative_planned_target(predicates: &[PredicateRe
             .any(predicate_is_authoritative_planned_target)
 }
 
-fn stratum_is_authoritative_planned(predicates: &BTreeSet<PredicateRef>) -> bool {
-    predicates.len() == 1
-        && predicates
-            .iter()
-            .any(predicate_is_authoritative_planned_target)
+pub(crate) fn stratum_has_shadow_planned_target(predicates: &[PredicateRef]) -> bool {
+    predicates.iter().any(predicate_is_shadow_planned_target)
 }
 
 fn predicate_is_authoritative_planned_target(predicate: &PredicateRef) -> bool {
@@ -585,17 +597,22 @@ fn plan_query(
         .iter()
         .map(|stratum| {
             let stratum_predicates = stratum.predicates.iter().cloned().collect::<BTreeSet<_>>();
-            let rule_groups = query
+            let rules = query
                 .query()
                 .local_rules
                 .iter()
                 .filter(|rule| stratum_predicates.contains(&rule.head.predicate))
+                .collect::<Vec<_>>();
+            let rule_groups = rules
+                .iter()
                 .map(|rule| plan_rule(rule, catalog, Some(query_index)))
                 .collect::<Result<Vec<_>, _>>()?;
+            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates)?;
             Ok(StratumPlan {
                 recursive: false,
                 authoritative_planned: false,
                 rule_groups,
+                stages,
                 deltas: Vec::new(),
             })
         })
@@ -632,6 +649,13 @@ fn plan_query(
                         body,
                         slots,
                         provenance: None,
+                        shadow_planned: false,
+                    }],
+                    stages: vec![RuleStagePlan {
+                        rule_groups: vec![0],
+                        predicates: BTreeSet::new(),
+                        authoritative_predicates: BTreeSet::new(),
+                        authoritative_planned: false,
                         shadow_planned: false,
                     }],
                     deltas: Vec::new(),
@@ -682,10 +706,104 @@ fn plan_rule(
     })
 }
 
-const SHADOW_PLANNED_PREDICATES: &[&str] = &["incoming_edge"];
+const SHADOW_PLANNED_PREDICATES: &[&str] = &["entropy", "incoming_edge"];
 
 fn predicate_is_shadow_planned_target(predicate: &PredicateRef) -> bool {
     SHADOW_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
+}
+
+fn plan_rule_stages(
+    rules: &[&Rule],
+    rule_groups: &[RuleGroupPlan],
+    stratum_predicates: &BTreeSet<PredicateRef>,
+) -> Result<Vec<RuleStagePlan>, PlanError> {
+    let mut remaining = stratum_predicates.clone();
+    let mut dependencies = BTreeMap::<PredicateRef, BTreeSet<PredicateRef>>::new();
+    let mut groups_by_predicate = BTreeMap::<PredicateRef, Vec<usize>>::new();
+
+    for (index, rule) in rules.iter().enumerate() {
+        groups_by_predicate
+            .entry(rule.head.predicate.clone())
+            .or_default()
+            .push(index);
+        let mut deps = BTreeSet::new();
+        collect_positive_dependencies(&rule.body, stratum_predicates, &mut deps);
+        dependencies
+            .entry(rule.head.predicate.clone())
+            .or_default()
+            .extend(deps);
+    }
+    for predicate in stratum_predicates {
+        dependencies.entry(predicate.clone()).or_default();
+    }
+
+    let mut stages = Vec::new();
+    while !remaining.is_empty() {
+        let ready = remaining
+            .iter()
+            .filter(|predicate| {
+                dependencies
+                    .get(*predicate)
+                    .is_none_or(|deps| deps.is_disjoint(&remaining))
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if ready.is_empty() {
+            return Err(PlanError::PositiveCycle {
+                predicates: remaining.into_iter().collect(),
+            });
+        }
+
+        let rule_group_indexes = ready
+            .iter()
+            .filter_map(|predicate| groups_by_predicate.get(predicate))
+            .flat_map(|groups| groups.iter().copied())
+            .collect::<Vec<_>>();
+        let authoritative_predicates = ready
+            .iter()
+            .filter(|predicate| predicate_is_authoritative_planned_target(predicate))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let authoritative_planned = !authoritative_predicates.is_empty();
+        let shadow_planned = rule_group_indexes.iter().any(|index| {
+            rule_groups
+                .get(*index)
+                .is_some_and(|group| group.shadow_planned)
+        });
+        stages.push(RuleStagePlan {
+            rule_groups: rule_group_indexes,
+            predicates: ready.clone(),
+            authoritative_predicates,
+            authoritative_planned,
+            shadow_planned,
+        });
+        for predicate in ready {
+            remaining.remove(&predicate);
+        }
+    }
+    Ok(stages)
+}
+
+fn collect_positive_dependencies(
+    body: &Body,
+    stratum_predicates: &BTreeSet<PredicateRef>,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    for atom in &body.atoms {
+        match atom {
+            Atom::Derived(derived) if stratum_predicates.contains(&derived.predicate) => {
+                out.insert(derived.predicate.clone());
+            }
+            Atom::TimeBlock(time_block) => {
+                collect_positive_dependencies(&time_block.body, stratum_predicates, out);
+            }
+            Atom::Stored(_)
+            | Atom::Derived(_)
+            | Atom::Comparison(_)
+            | Atom::Aggregation(_)
+            | Atom::Negation(_) => {}
+        }
+    }
 }
 
 fn plan_body(
@@ -992,15 +1110,17 @@ fn plan_negation(
             }
         }
     };
+    let location = match &negation.atom {
+        NegatedAtom::Stored(stored) => stored.location.clone(),
+        NegatedAtom::Derived(derived) => derived.location.clone(),
+    };
     Ok(AtomPlan::Negation {
         inner: Box::new(RuleBodyPlan {
             atoms: vec![planned_atom],
             execution_atoms: vec![0],
         }),
         bound_inputs: bound_inputs.into_iter().collect(),
-        provenance: NegationProvenance {
-            location: negation.location.clone(),
-        },
+        provenance: NegationProvenance { location },
     })
 }
 
@@ -1567,6 +1687,31 @@ mod tests {
     }
 
     #[test]
+    fn stages_topologically_order_positive_dependencies() {
+        let analyzed = analyzed(
+            r#"
+            source(h) := *handle{id: h}.
+            diagnostic("T001", "error", h, file, line, h) :=
+              source(h),
+              *handle{id: h, file: file, line: line}.
+            entropy(h, "broken_ref") :=
+              diagnostic("T001", severity, h, file, line, evidence).
+            "#,
+        );
+
+        let planned = plan(&analyzed).expect("program plans");
+        let source = PredicateRef::parse("source").expect("predicate");
+        let diagnostic = PredicateRef::parse("diagnostic").expect("predicate");
+        let entropy = PredicateRef::parse("entropy").expect("predicate");
+        let source_stage = predicate_stage(&planned, &source).expect("source stage");
+        let diagnostic_stage = predicate_stage(&planned, &diagnostic).expect("diagnostic stage");
+        let entropy_stage = predicate_stage(&planned, &entropy).expect("entropy stage");
+
+        assert!(source_stage < diagnostic_stage);
+        assert!(diagnostic_stage < entropy_stage);
+    }
+
+    #[test]
     fn aggregate_time_scope_and_negation_lower_with_slots() {
         let analyzed = analyzed(
             r#"
@@ -1667,6 +1812,29 @@ mod tests {
                 .iter()
                 .any(|relation| relation.name == "recent_frontier")
         );
+        let diagnostic = PredicateRef::parse("diagnostic").expect("predicate parses");
+        let entropy = PredicateRef::parse("entropy").expect("predicate parses");
+        let diagnostic_stage = predicate_stage(&planned, &diagnostic).expect("diagnostic stage");
+        let entropy_stage = predicate_stage(&planned, &entropy).expect("entropy stage");
+        assert!(
+            diagnostic_stage < entropy_stage,
+            "entropy must run after diagnostic in the planned positive-DAG stage order"
+        );
+        assert!(
+            planned
+                .global
+                .strata
+                .iter()
+                .flat_map(|stratum| &stratum.stages)
+                .any(|stage| {
+                    stage.shadow_planned
+                        && stage
+                            .predicates
+                            .iter()
+                            .any(|predicate| predicate.display_name() == "entropy")
+                }),
+            "entropy should be marked as a stage-level shadow target"
+        );
     }
 
     #[test]
@@ -1728,5 +1896,32 @@ mod tests {
         let planned = plan(&analyzed).expect("external query battery plans");
 
         assert_eq!(planned.queries.len(), 11);
+    }
+
+    fn predicate_stage(planned: &ProgramPlan, predicate: &PredicateRef) -> Option<(usize, usize)> {
+        let relation = planned.catalog.predicate_relation(predicate)?.id;
+        planned
+            .global
+            .strata
+            .iter()
+            .enumerate()
+            .find_map(|(stratum_index, stratum)| {
+                stratum
+                    .stages
+                    .iter()
+                    .enumerate()
+                    .find_map(|(stage_index, stage)| {
+                        stage
+                            .rule_groups
+                            .iter()
+                            .any(|group_index| {
+                                stratum
+                                    .rule_groups
+                                    .get(*group_index)
+                                    .is_some_and(|group| group.head == Some(relation))
+                            })
+                            .then_some((stratum_index, stage_index))
+                    })
+            })
     }
 }
