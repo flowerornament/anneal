@@ -850,6 +850,7 @@ pub(crate) fn planned_aggregate_executable(function: AggregateFunction) -> bool 
             | AggregateFunction::Set
             | AggregateFunction::TopK
             | AggregateFunction::Rank
+            | AggregateFunction::TakeUntil
     )
 }
 

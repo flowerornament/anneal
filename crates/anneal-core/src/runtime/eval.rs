@@ -5262,6 +5262,8 @@ fn eval_planned_aggregate(
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
+    validate_planned_aggregate_shape(aggregate)?;
+
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
     for binding in bindings {
@@ -5298,11 +5300,6 @@ fn eval_planned_aggregate(
             continue;
         }
         let aggregate_steps = trace.then(|| aggregate_derivation_steps_planned(&inner_rows));
-        if !aggregate.args_valid || !planned_aggregate_executable(aggregate.function) {
-            return Err(EvalError::UnsupportedAggregate {
-                function: aggregate.function,
-            });
-        }
         match aggregate.function {
             AggregateFunction::TopK => {
                 out.extend(eval_planned_top_k(
@@ -5342,10 +5339,91 @@ fn eval_planned_aggregate(
                     out.push(binding);
                 }
             }
-            AggregateFunction::TakeUntil => unreachable!("unsupported aggregate returned early"),
+            AggregateFunction::TakeUntil => {
+                out.extend(eval_planned_take_until(
+                    aggregate,
+                    &binding,
+                    &inner_rows,
+                    aggregate_steps.as_deref().unwrap_or_default(),
+                    trace,
+                    env,
+                )?);
+            }
         }
     }
     Ok(out)
+}
+
+fn validate_planned_aggregate_shape(aggregate: &AggregatePlan) -> Result<(), EvalError> {
+    if !planned_aggregate_executable(aggregate.function) {
+        return Err(EvalError::UnsupportedAggregate {
+            function: aggregate.function,
+        });
+    }
+    if aggregate.args_valid {
+        return Ok(());
+    }
+    match aggregate.function {
+        AggregateFunction::TopK => {
+            if aggregate.args.k.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "k",
+                });
+            }
+            if aggregate.args.key.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "key",
+                });
+            }
+        }
+        AggregateFunction::Rank => {
+            if aggregate.args.key.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "key",
+                });
+            }
+            if aggregate.args.synthetic_rank_slot.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "rank",
+                });
+            }
+        }
+        AggregateFunction::TakeUntil => {
+            if aggregate.args.budget.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "budget",
+                });
+            }
+            if aggregate.args.sum.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "sum",
+                });
+            }
+            if aggregate.args.key.is_none() {
+                return Err(EvalError::MissingAggregateArg {
+                    function: aggregate.function,
+                    argument: "key",
+                });
+            }
+        }
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => {}
+    }
+    Err(EvalError::InvalidAggregateArg {
+        function: aggregate.function,
+        argument: "invalid",
+    })
 }
 
 fn eval_planned_scalar_aggregate(
@@ -5392,7 +5470,7 @@ fn eval_planned_top_k(
             function: AggregateFunction::TopK,
             argument: "k",
         })
-        .and_then(|expr| planned_non_negative_int(expr, base, env))?;
+        .and_then(|expr| planned_non_negative_int(AggregateFunction::TopK, "k", expr, base, env))?;
     if k == 0 {
         return Ok(Vec::new());
     }
@@ -5485,6 +5563,97 @@ fn eval_planned_rank(
             PhysicalValue::Number(NumberValue::Int(current_rank)),
         );
         let value = eval_planned_expr(&aggregate.value, &row, env)?;
+        if let Some(binding) = unify_planned_expr(&aggregate.result, value, base, env)? {
+            out.push(binding.push_step(trace, || {
+                derivation_ref(DerivationNode::planned_aggregate(
+                    &aggregate.provenance,
+                    clone_derivation_refs(aggregate_steps),
+                ))
+            }));
+        }
+    }
+    Ok(out)
+}
+
+struct PlannedTakeUntilCandidate {
+    key: Value,
+    value: Value,
+    cost: i64,
+}
+
+fn eval_planned_take_until(
+    aggregate: &AggregatePlan,
+    base: &PlannedFrame,
+    rows: &[PlannedFrame],
+    aggregate_steps: &[DerivationRef],
+    trace: bool,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let budget = aggregate
+        .args
+        .budget
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::TakeUntil,
+            argument: "budget",
+        })
+        .and_then(|expr| {
+            planned_non_negative_int(AggregateFunction::TakeUntil, "budget", expr, base, env)
+        })?;
+    let sum = aggregate
+        .args
+        .sum
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::TakeUntil,
+            argument: "sum",
+        })?;
+    let key = aggregate
+        .args
+        .key
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::TakeUntil,
+            argument: "key",
+        })?;
+    let mut candidates = rows
+        .iter()
+        .map(|row| {
+            let Value::Number(NumberValue::Int(cost)) = eval_planned_expr_logical(sum, row, env)?
+            else {
+                return Err(EvalError::InvalidAggregateArg {
+                    function: AggregateFunction::TakeUntil,
+                    argument: "sum",
+                });
+            };
+            if cost < 0 {
+                return Err(EvalError::InvalidAggregateArg {
+                    function: AggregateFunction::TakeUntil,
+                    argument: "sum",
+                });
+            }
+            Ok(PlannedTakeUntilCandidate {
+                key: eval_planned_expr_logical(key, row, env)?,
+                value: eval_planned_expr_logical(&aggregate.value, row, env)?,
+                cost,
+            })
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    candidates.sort_by(|left, right| {
+        left.key
+            .cmp(&right.key)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+
+    let mut out = Vec::new();
+    let mut used = 0_i64;
+    for candidate in candidates {
+        let next = used.saturating_add(candidate.cost);
+        if next > budget {
+            break;
+        }
+        used = next;
+        let value = env.physical_from_logical(&candidate.value);
         if let Some(binding) = unify_planned_expr(&aggregate.result, value, base, env)? {
             out.push(binding.push_step(trace, || {
                 derivation_ref(DerivationNode::planned_aggregate(
@@ -5703,22 +5872,18 @@ fn eval_planned_binary_values(
 }
 
 fn planned_non_negative_int(
+    function: AggregateFunction,
+    argument: &'static str,
     expr: &ExprPlan,
     binding: &PlannedFrame,
     env: &mut PlannedValueEnv,
 ) -> Result<i64, EvalError> {
     let Value::Number(NumberValue::Int(value)) = eval_planned_expr_logical(expr, binding, env)?
     else {
-        return Err(EvalError::InvalidAggregateArg {
-            function: AggregateFunction::TopK,
-            argument: "k",
-        });
+        return Err(EvalError::InvalidAggregateArg { function, argument });
     };
     if value < 0 {
-        return Err(EvalError::InvalidAggregateArg {
-            function: AggregateFunction::TopK,
-            argument: "k",
-        });
+        return Err(EvalError::InvalidAggregateArg { function, argument });
     }
     Ok(value)
 }
@@ -8903,6 +9068,13 @@ mod tests {
         evaluator.eval_query(&query).expect_err("query errors")
     }
 
+    fn evaluate_fixpoint_error(input: &str, database: Database) -> EvalError {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect_err("fixpoint errors")
+    }
+
     fn evaluate_query_output_with_options(
         input: &str,
         database: Database,
@@ -12075,6 +12247,133 @@ release_blocker(code) := issue(code, "error").
             .expect("query row has derivation");
         assert!(derivation_contains(derivation, DerivationKind::Aggregate));
         assert!(derivation_contains(derivation, DerivationKind::Truncated));
+    }
+
+    #[test]
+    fn planned_take_until_sorts_by_key_value_and_stops_at_budget() {
+        let input = r#"
+            span("s3", 3, 2).
+            span("s2", 2, 4).
+            span("s1", 1, 3).
+            span("s0", 2, 1).
+            selected(span_id, tokens) :=
+              (span_id, tokens) =
+              TakeUntil{ budget: 7, sum: tokens, key: line :
+                (span_id, tokens) :
+                span(span_id, line, tokens)
+              }.
+            ? selected(span_id, tokens).
+        "#;
+        assert_predicate_is_authoritative_planned(input, "selected");
+
+        let outputs = evaluate_queries(input, Database::default());
+
+        assert_query_rows(
+            &outputs[0],
+            vec![
+                row([("span_id", s("s0")), ("tokens", n(1))]),
+                row([("span_id", s("s1")), ("tokens", n(3))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn planned_take_until_provenance_uses_full_inner_evidence() {
+        let mut input = String::new();
+        for idx in 0..40 {
+            writeln!(&mut input, r#"span("s{idx:02}", {idx}, 1)."#).expect("write span fixture");
+        }
+        input.push_str(
+            r"
+            selected(span_id, tokens) :=
+              (span_id, tokens) =
+              TakeUntil{ budget: 1, sum: tokens, key: line :
+                (span_id, tokens) :
+                span(span_id, line, tokens)
+              }.
+            ? selected(span_id, tokens).
+            ",
+        );
+        assert_predicate_is_authoritative_planned(&input, "selected");
+
+        let output = evaluate_query_output_with_options(
+            &input,
+            Database::default(),
+            EvalOptions::default().with_explain_all(),
+        );
+
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("query row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Aggregate));
+        assert!(derivation_contains(derivation, DerivationKind::Truncated));
+    }
+
+    #[test]
+    fn planned_take_until_rejects_negative_budget_and_sum() {
+        let negative_budget = r#"
+            span("s1", 1, 3).
+            selected(span_id) :=
+              span_id =
+              TakeUntil{ budget: 0 - 1, sum: tokens, key: line :
+                span_id :
+                span(span_id, line, tokens)
+              }.
+            ? selected(span_id).
+        "#;
+        assert_predicate_is_authoritative_planned(negative_budget, "selected");
+        let err = evaluate_fixpoint_error(negative_budget, Database::default());
+        assert!(matches!(
+            err,
+            EvalError::InvalidAggregateArg {
+                function: AggregateFunction::TakeUntil,
+                argument: "budget"
+            }
+        ));
+
+        let negative_sum = r#"
+            span("s1", 1, 3).
+            selected(span_id) :=
+              span_id =
+              TakeUntil{ budget: 10, sum: 0 - tokens, key: line :
+                span_id :
+                span(span_id, line, tokens)
+              }.
+            ? selected(span_id).
+        "#;
+        assert_predicate_is_authoritative_planned(negative_sum, "selected");
+        let err = evaluate_fixpoint_error(negative_sum, Database::default());
+        assert!(matches!(
+            err,
+            EvalError::InvalidAggregateArg {
+                function: AggregateFunction::TakeUntil,
+                argument: "sum"
+            }
+        ));
+    }
+
+    #[test]
+    fn planned_take_until_rejects_non_integer_sum() {
+        let input = r#"
+            span("s1", 1, 3.5).
+            selected(span_id) :=
+              span_id =
+              TakeUntil{ budget: 10, sum: tokens, key: line :
+                span_id :
+                span(span_id, line, tokens)
+              }.
+            ? selected(span_id).
+        "#;
+        assert_predicate_is_authoritative_planned(input, "selected");
+        let err = evaluate_fixpoint_error(input, Database::default());
+        assert!(matches!(
+            err,
+            EvalError::InvalidAggregateArg {
+                function: AggregateFunction::TakeUntil,
+                argument: "sum"
+            }
+        ));
     }
 
     #[test]
