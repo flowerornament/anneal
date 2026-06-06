@@ -63,7 +63,6 @@ pub(crate) enum PhysicalValue {
 }
 
 impl PhysicalValue {
-    #[cfg(any(test, feature = "planned-executor-spike"))]
     pub(crate) fn from_logical(
         value: &Value,
         interner: &mut Interner,
@@ -111,7 +110,6 @@ pub(crate) struct ListArena {
 }
 
 impl ListArena {
-    #[cfg(any(test, feature = "planned-executor-spike"))]
     pub(crate) fn push(&mut self, values: Vec<PhysicalValue>) -> ListId {
         let id = ListId::from_index(self.lists.len());
         self.lists.push(values.into_boxed_slice());

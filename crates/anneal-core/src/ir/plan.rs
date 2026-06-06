@@ -51,6 +51,7 @@ pub(crate) enum PlanKind {
 pub(crate) struct StratumPlan {
     pub(crate) rule_groups: Vec<RuleGroupPlan>,
     pub(crate) recursive: bool,
+    pub(crate) authoritative_planned: bool,
     pub(crate) deltas: Vec<DeltaPlan>,
 }
 
@@ -540,6 +541,7 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
             }
             Ok(StratumPlan {
                 recursive: !deltas.is_empty(),
+                authoritative_planned: stratum_is_authoritative_planned(&stratum_predicates),
                 rule_groups,
                 deltas,
             })
@@ -550,6 +552,26 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
         strata,
         output: OutputPlan::default(),
     })
+}
+
+const AUTHORITATIVE_PLANNED_PREDICATES: &[&str] = &["primary_entropy"];
+
+pub(crate) fn stratum_has_authoritative_planned_target(predicates: &[PredicateRef]) -> bool {
+    predicates.len() == 1
+        && predicates
+            .iter()
+            .any(predicate_is_authoritative_planned_target)
+}
+
+fn stratum_is_authoritative_planned(predicates: &BTreeSet<PredicateRef>) -> bool {
+    predicates.len() == 1
+        && predicates
+            .iter()
+            .any(predicate_is_authoritative_planned_target)
+}
+
+fn predicate_is_authoritative_planned_target(predicate: &PredicateRef) -> bool {
+    AUTHORITATIVE_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
 }
 
 fn plan_query(
@@ -571,6 +593,7 @@ fn plan_query(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(StratumPlan {
                 recursive: false,
+                authoritative_planned: false,
                 rule_groups,
                 deltas: Vec::new(),
             })
@@ -601,6 +624,7 @@ fn plan_query(
                 let mut all = strata;
                 all.push(StratumPlan {
                     recursive: false,
+                    authoritative_planned: false,
                     rule_groups: vec![RuleGroupPlan {
                         head: None,
                         head_terms: Vec::new(),

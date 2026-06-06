@@ -417,12 +417,10 @@ impl TupleDb {
         self.relations.get(&relation)
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     pub(crate) fn cloned_interner(&self) -> Interner {
         self.interner.clone()
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     pub(crate) fn cloned_lists(&self) -> ListArena {
         self.lists.clone()
     }

@@ -21,13 +21,12 @@ use crate::facts::{
 };
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
-#[cfg(feature = "planned-executor-spike")]
 use crate::ir::interner::Interner;
-#[cfg(feature = "planned-executor-spike")]
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanRelationKind,
     ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, StratumPlan, TermPlan, plan,
+    stratum_has_authoritative_planned_target,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -70,7 +69,6 @@ use crate::trail::{
 };
 use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::store::{RelationStore, TupleDb, TupleRow};
-#[cfg(feature = "planned-executor-spike")]
 use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
@@ -437,7 +435,6 @@ impl DerivationNode {
         )
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_rule(provenance: &RuleProvenance, tuple: &Tuple, children: Vec<Self>) -> Self {
         Self::rule_from_parts(
             provenance.predicate.display_name(),
@@ -526,7 +523,6 @@ impl DerivationNode {
         )
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_comparison(provenance: &CompareProvenance) -> Self {
         Self::located(
             DerivationKind::Comparison,
@@ -539,7 +535,6 @@ impl DerivationNode {
         Self::aggregate_from_parts(aggregate.function, aggregate.location.clone(), children)
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_aggregate(provenance: &AggregateProvenance, children: Vec<Self>) -> Self {
         Self::aggregate_from_parts(provenance.function, provenance.location.clone(), children)
     }
@@ -566,7 +561,6 @@ impl DerivationNode {
         Self::negation_from_location(location)
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_negation(provenance: &NegationProvenance) -> Self {
         Self::negation_from_location(provenance.location.clone())
     }
@@ -4002,6 +3996,12 @@ pub enum EvalError {
     #[cfg(feature = "planned-executor-spike")]
     #[error("planned executor shadow target '{predicate}' had no planned rule group")]
     PlannedExecutorMissingShadow { predicate: PredicateRef },
+    #[error("planned executor authoritative target '{predicate}' had no planned rule group")]
+    PlannedExecutorMissingAuthoritative { predicate: PredicateRef },
+    #[error("planned executor authoritative target '{predicate}' is recursive")]
+    PlannedExecutorRecursiveAuthoritative { predicate: PredicateRef },
+    #[error("planned executor authoritative target '{predicate}' had an unsafe mixed stratum")]
+    PlannedExecutorMixedAuthoritative { predicate: PredicateRef },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -4024,7 +4024,6 @@ impl From<AuthorizationError> for EvalError {
 
 pub struct Evaluator {
     program: AnalyzedProgram,
-    #[cfg(feature = "planned-executor-spike")]
     planned: Option<ProgramPlan>,
     database: Database,
     facts_seeded: bool,
@@ -4042,13 +4041,20 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
-        #[cfg(feature = "planned-executor-spike")]
-        let planned = plan(&program).ok();
+        let needs_plan = cfg!(feature = "planned-executor-spike")
+            || program
+                .strata()
+                .iter()
+                .any(|stratum| stratum_has_authoritative_planned_target(&stratum.predicates));
+        let planned = needs_plan
+            .then(|| plan(&program))
+            .transpose()
+            .ok()
+            .flatten();
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
-            #[cfg(feature = "planned-executor-spike")]
             planned,
             database,
             facts_seeded: false,
@@ -4076,8 +4082,6 @@ impl Evaluator {
     ) -> Result<(), EvalError> {
         let strata = self.program.strata().to_vec();
         for (stratum_index, stratum) in strata.into_iter().enumerate() {
-            #[cfg(not(feature = "planned-executor-spike"))]
-            let _ = stratum_index;
             if !stratum.predicates.iter().any(&predicate_needed) {
                 continue;
             }
@@ -4090,19 +4094,15 @@ impl Evaluator {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            #[cfg(feature = "planned-executor-spike")]
             let planned_stratum = self
                 .planned
                 .as_ref()
                 .and_then(|planned| planned.global.strata.get(stratum_index));
-            #[cfg(feature = "planned-executor-spike")]
             let planned_catalog = self.planned.as_ref().map(|planned| &planned.catalog);
             run_rule_group(
                 &mut self.database,
                 &rules,
-                #[cfg(feature = "planned-executor-spike")]
                 planned_stratum,
-                #[cfg(feature = "planned-executor-spike")]
                 planned_catalog,
                 &mut self.warnings,
                 &self.options,
@@ -4159,9 +4159,7 @@ impl Evaluator {
             run_rule_group(
                 &mut database,
                 &rules,
-                #[cfg(feature = "planned-executor-spike")]
                 None,
-                #[cfg(feature = "planned-executor-spike")]
                 self.planned.as_ref().map(|planned| &planned.catalog),
                 &mut warnings,
                 &self.options,
@@ -4293,8 +4291,8 @@ fn collect_global_predicate(
 fn run_rule_group(
     database: &mut Database,
     rules: &[Rule],
-    #[cfg(feature = "planned-executor-spike")] planned_stratum: Option<&StratumPlan>,
-    #[cfg(feature = "planned-executor-spike")] catalog: Option<&PlanCatalog>,
+    planned_stratum: Option<&StratumPlan>,
+    catalog: Option<&PlanCatalog>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
@@ -4303,6 +4301,17 @@ fn run_rule_group(
         .map(|rule| rule.head.predicate.clone())
         .collect::<BTreeSet<_>>();
     database.ensure_derived(stratum_predicates.iter().cloned());
+
+    if let Some((catalog, planned_groups)) =
+        planned_authoritative_for_stratum(planned_stratum, catalog, rules)?
+    {
+        let mut delta = DeltaMap::new();
+        for (planned, predicate) in planned_groups {
+            let tuples = eval_planned_rule_group(planned, catalog, database, options)?;
+            insert_new_tuples(database, &predicate, tuples, &mut delta);
+        }
+        return Ok(());
+    }
 
     let mut delta = DeltaMap::new();
     for rule in rules {
@@ -4338,6 +4347,70 @@ fn run_rule_group(
     }
     Ok(())
 }
+
+fn planned_authoritative_for_stratum<'a>(
+    planned_stratum: Option<&'a StratumPlan>,
+    catalog: Option<&'a PlanCatalog>,
+    rules: &[Rule],
+) -> Result<Option<AuthoritativePlannedGroups<'a>>, EvalError> {
+    let Some(stratum) = planned_stratum.filter(|stratum| stratum.authoritative_planned) else {
+        return Ok(None);
+    };
+    let predicate = rules
+        .first()
+        .map(|rule| rule.head.predicate.clone())
+        .ok_or(EvalError::UnsupportedExpression)?;
+    let catalog = catalog.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+        predicate: predicate.clone(),
+    })?;
+    if stratum.recursive {
+        return Err(EvalError::PlannedExecutorRecursiveAuthoritative { predicate });
+    }
+
+    let mut rule_heads = Vec::new();
+    for rule in rules {
+        let Some(relation) = catalog.predicate_relation(&rule.head.predicate) else {
+            return Err(EvalError::PlannedExecutorMissingAuthoritative {
+                predicate: predicate.clone(),
+            });
+        };
+        rule_heads.push((relation.id, rule.head.predicate.clone()));
+    }
+
+    let mut planned_heads = stratum
+        .rule_groups
+        .iter()
+        .map(|group| group.head)
+        .collect::<Vec<_>>();
+    let mut rule_head_ids = rule_heads
+        .iter()
+        .map(|(relation, _)| Some(*relation))
+        .collect::<Vec<_>>();
+    planned_heads.sort();
+    rule_head_ids.sort();
+    if planned_heads != rule_head_ids {
+        return Err(EvalError::PlannedExecutorMixedAuthoritative { predicate });
+    }
+
+    let planned = stratum
+        .rule_groups
+        .iter()
+        .map(|group| {
+            let predicate = rule_heads
+                .iter()
+                .find_map(|(relation, predicate)| {
+                    (group.head == Some(*relation)).then(|| predicate.clone())
+                })
+                .ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+                    predicate: predicate.clone(),
+                })?;
+            Ok((group, predicate))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    Ok(Some((catalog, planned)))
+}
+
+type AuthoritativePlannedGroups<'a> = (&'a PlanCatalog, Vec<(&'a RuleGroupPlan, PredicateRef)>);
 
 #[derive(Clone, Debug)]
 struct DerivedTuple {
@@ -4629,14 +4702,12 @@ fn derivation_map(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PlannedFrame {
     slots: Vec<Option<PhysicalValue>>,
     steps: Vec<DerivationRef>,
 }
 
-#[cfg(feature = "planned-executor-spike")]
 impl PlannedFrame {
     fn empty(slot_count: usize) -> Self {
         Self {
@@ -4678,14 +4749,12 @@ impl PlannedFrame {
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 #[derive(Clone, Debug)]
 struct PlannedValueEnv {
     interner: Interner,
     lists: ListArena,
 }
 
-#[cfg(feature = "planned-executor-spike")]
 impl PlannedValueEnv {
     fn from_database(database: &Database) -> Self {
         Self {
@@ -4705,7 +4774,6 @@ impl PlannedValueEnv {
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_rule_group(
     planned: &RuleGroupPlan,
     catalog: &PlanCatalog,
@@ -4746,7 +4814,6 @@ fn eval_planned_rule_group(
         .collect()
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_body(
     body: &RuleBodyPlan,
     mut bindings: Vec<PlannedFrame>,
@@ -4768,7 +4835,6 @@ fn eval_planned_body(
     Ok(bindings)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_atom(
     atom: &AtomPlan,
     bindings: Vec<PlannedFrame>,
@@ -4819,7 +4885,6 @@ fn eval_planned_atom(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_scan(
     relation: crate::ir::ids::RelationId,
     patterns: &[ColumnPatternPlan],
@@ -4856,7 +4921,6 @@ fn eval_planned_scan(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_stored_scan(
     relation: crate::ir::ids::RelationId,
     relation_name: &str,
@@ -4904,7 +4968,6 @@ fn eval_planned_stored_scan(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_derived_scan(
     predicate: &PredicateRef,
     relation: &DerivedRelation,
@@ -4943,7 +5006,6 @@ fn eval_planned_derived_scan(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_primitive(
     predicate: &PredicateRef,
     primitive: PrimitivePredicate,
@@ -4984,7 +5046,6 @@ fn eval_planned_primitive(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_filter(
     comparison: &ComparePlan,
     bindings: Vec<PlannedFrame>,
@@ -5005,7 +5066,6 @@ fn eval_planned_filter(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 #[allow(clippy::too_many_arguments)]
 fn eval_planned_aggregate(
     aggregate: &AggregatePlan,
@@ -5074,7 +5134,6 @@ fn eval_planned_aggregate(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_top_k(
     aggregate: &AggregatePlan,
     base: &PlannedFrame,
@@ -5140,7 +5199,6 @@ fn eval_planned_top_k(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_rank(
     aggregate: &AggregatePlan,
     base: &PlannedFrame,
@@ -5197,12 +5255,10 @@ fn eval_planned_rank(
     Ok(out)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn aggregate_derivation_steps_planned(rows: &[PlannedFrame]) -> Vec<DerivationRef> {
     collect_aggregate_derivation_steps(rows.iter().flat_map(|row| row.steps.iter()))
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_column_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
@@ -5215,7 +5271,6 @@ fn planned_column_constraints(
         .collect()
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_tuple_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
@@ -5230,7 +5285,6 @@ fn planned_tuple_constraints(
     Ok(constraints)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_call_constraints(
     args: &[CallArgPlan],
     binding: &PlannedFrame,
@@ -5245,7 +5299,6 @@ fn planned_call_constraints(
     Ok(constraints)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_bound_value_for_term(term: &TermPlan, binding: &PlannedFrame) -> Option<PhysicalValue> {
     match term {
         TermPlan::Expr(ExprPlan::Slot(slot)) => binding.get(*slot),
@@ -5253,7 +5306,6 @@ fn planned_bound_value_for_term(term: &TermPlan, binding: &PlannedFrame) -> Opti
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn unify_planned_term(
     term: &TermPlan,
     value: PhysicalValue,
@@ -5266,7 +5318,6 @@ fn unify_planned_term(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn unify_planned_expr(
     expr: &ExprPlan,
     value: PhysicalValue,
@@ -5281,7 +5332,6 @@ fn unify_planned_expr(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn unify_planned_expr_in_place(
     expr: &ExprPlan,
     value: PhysicalValue,
@@ -5311,7 +5361,6 @@ fn unify_planned_expr_in_place(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_expr(
     expr: &ExprPlan,
     binding: &PlannedFrame,
@@ -5338,7 +5387,6 @@ fn eval_planned_expr(
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_expr_logical(
     expr: &ExprPlan,
     binding: &PlannedFrame,
@@ -5348,7 +5396,6 @@ fn eval_planned_expr_logical(
     env.logical(physical)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv) -> PhysicalValue {
     match literal {
         LiteralPlan::String(value) => PhysicalValue::Sym(env.interner.intern(value)),
@@ -5370,7 +5417,6 @@ fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv) -> Ph
     }
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn eval_planned_binary_values(
     left: Value,
     op: crate::runtime::ast::ArithmeticOp,
@@ -5402,7 +5448,6 @@ fn eval_planned_binary_values(
     Ok(Value::Number(NumberValue::Int(value)))
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_non_negative_int(
     expr: &ExprPlan,
     binding: &PlannedFrame,
@@ -5424,7 +5469,6 @@ fn planned_non_negative_int(
     Ok(value)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn planned_frame_logical_cmp(
     left: &PlannedFrame,
     right: &PlannedFrame,
@@ -5442,7 +5486,6 @@ fn planned_frame_logical_cmp(
         .unwrap_or(Ordering::Equal)
 }
 
-#[cfg(feature = "planned-executor-spike")]
 fn project_planned_head(
     terms: &[TermPlan],
     binding: &PlannedFrame,
@@ -8670,9 +8713,30 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "planned-executor-spike")]
+    fn assert_primary_entropy_is_authoritative_planned(input: &str) {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let relation = planned
+            .catalog
+            .predicate_relation(&PredicateRef::parse("primary_entropy").expect("predicate parses"))
+            .expect("primary_entropy planned")
+            .id;
+        assert!(
+            planned.global.strata.iter().any(|stratum| {
+                stratum.authoritative_planned
+                    && !stratum.recursive
+                    && stratum
+                        .rule_groups
+                        .iter()
+                        .any(|group| group.head == Some(relation))
+            }),
+            "primary_entropy must run through the authoritative planned path"
+        );
+    }
+
     #[test]
-    fn planned_executor_shadow_matches_primary_entropy() {
+    fn planned_executor_authoritatively_evaluates_primary_entropy() {
         let input = r#"
         entropy("a.md", "broken_ref").
         entropy("a.md", "missing_meta").
@@ -8682,19 +8746,15 @@ mod tests {
         effective_potential_weight(source, weight) := potential_weight(source, weight).
         entropy_priority("broken_ref", 0).
         entropy_priority("missing_meta", 6).
-        potential_subject(h) := entropy(h, source).
-        potential(h, energy) :=
-          potential_subject(h),
-          energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
         primary_entropy(h, source) :=
-          potential(h, energy),
-          (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
-            (source, weight, priority) :
+          (h, source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
+            (h, source, weight, priority) :
               entropy(h, source),
               effective_potential_weight(source, weight),
               entropy_priority(source, priority)
           }.
         "#;
+        assert_primary_entropy_is_authoritative_planned(input);
 
         let rows = evaluate_queries(
             &format!("{input}\n? primary_entropy(h, source)."),
@@ -8703,22 +8763,15 @@ mod tests {
 
         assert_eq!(
             rows[0],
-            vec![
-                BTreeMap::from([
-                    ("h".to_string(), s("a.md")),
-                    ("source".to_string(), s("broken_ref")),
-                ]),
-                BTreeMap::from([
-                    ("h".to_string(), s("b.md")),
-                    ("source".to_string(), s("missing_meta")),
-                ]),
-            ]
+            vec![BTreeMap::from([
+                ("h".to_string(), s("a.md")),
+                ("source".to_string(), s("broken_ref")),
+            ])]
         );
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     #[test]
-    fn planned_executor_shadow_matches_primary_entropy_derivations() {
+    fn planned_executor_authoritatively_traces_primary_entropy_derivations() {
         let input = r#"
         entropy("a.md", "broken_ref").
         entropy("a.md", "missing_meta").
@@ -8728,20 +8781,16 @@ mod tests {
         effective_potential_weight(source, weight) := potential_weight(source, weight).
         entropy_priority("broken_ref", 0).
         entropy_priority("missing_meta", 6).
-        potential_subject(h) := entropy(h, source).
-        potential(h, energy) :=
-          potential_subject(h),
-          energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
         primary_entropy(h, source) :=
-          potential(h, energy),
-          (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
-            (source, weight, priority) :
+          (h, source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
+            (h, source, weight, priority) :
               entropy(h, source),
               effective_potential_weight(source, weight),
               entropy_priority(source, priority)
           }.
         ? primary_entropy(h, source).
         "#;
+        assert_primary_entropy_is_authoritative_planned(input);
 
         let output = evaluate_query_output_with_options(
             input,
