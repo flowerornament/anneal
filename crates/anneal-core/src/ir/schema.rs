@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::facts::STORED_RELATION_DESCRIPTORS;
+use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 use super::ids::{FieldId, RelationId, SymbolId};
 use super::interner::Interner;
@@ -129,7 +130,10 @@ impl SchemaRegistry {
     }
 
     pub(crate) fn register_stored_builtins(&mut self, interner: &mut Interner) {
-        for descriptor in STORED_RELATION_DESCRIPTORS {
+        for descriptor in STORED_RELATION_DESCRIPTORS
+            .iter()
+            .chain(TRAIL_RELATION_DESCRIPTORS.iter())
+        {
             self.register(
                 interner,
                 descriptor.name,

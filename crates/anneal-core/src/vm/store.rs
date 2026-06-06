@@ -139,12 +139,18 @@ impl Iterator for RowCandidates<'_> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct TupleDb {
     interner: Interner,
     schemas: SchemaRegistry,
     lists: ListArena,
     relations: BTreeMap<RelationId, RelationStore>,
+}
+
+impl Default for TupleDb {
+    fn default() -> Self {
+        Self::with_stored_builtins()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -153,6 +159,13 @@ pub(crate) struct TupleRow<'a> {
     tuple: &'a Tuple,
     interner: &'a Interner,
     lists: &'a ListArena,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogicalRowInsert {
+    Inserted(RowId),
+    UnknownRelation,
+    UnknownField,
 }
 
 impl<'a> TupleRow<'a> {
@@ -294,6 +307,35 @@ impl TupleDb {
 
     pub(crate) fn insert_relation(&mut self, relation: RelationStore) {
         self.relations.insert(relation.relation(), relation);
+    }
+
+    pub(crate) fn insert_logical_row<'a>(
+        &mut self,
+        relation: &str,
+        fields: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    ) -> LogicalRowInsert {
+        let Some(relation_name) = self.interner.lookup(relation) else {
+            return LogicalRowInsert::UnknownRelation;
+        };
+        let Some(schema) = self.schemas.relation_by_name(relation_name).cloned() else {
+            return LogicalRowInsert::UnknownRelation;
+        };
+        let mut values = vec![PhysicalValue::Null; schema.arity()];
+        for (field, value) in fields {
+            let Some(field_name) = self.interner.lookup(field) else {
+                return LogicalRowInsert::UnknownField;
+            };
+            let Some(field) = schema.field(field_name) else {
+                return LogicalRowInsert::UnknownField;
+            };
+            values[field.index()] =
+                PhysicalValue::from_logical(value, &mut self.interner, &mut self.lists);
+        }
+        let store = self
+            .relations
+            .entry(schema.id())
+            .or_insert_with(|| RelationStore::new(&schema));
+        LogicalRowInsert::Inserted(store.push(Tuple::new(values)))
     }
 
     fn insert_relation_rows_from<'a, T: 'a>(

@@ -111,7 +111,6 @@ pub(crate) enum StageMigrationMode {
 pub(crate) enum UnsupportedReason {
     TimeScope,
     UnsupportedAggregate(AggregateFunction),
-    InvalidAggregateArgs(AggregateFunction),
     UnsupportedExpression,
     UnsupportedComparison(ComparisonOp),
     MissingProvenance,
@@ -253,7 +252,6 @@ pub(crate) struct AggregatePlan {
     pub(crate) outer_to_inner_slots: Vec<(SlotId, SlotId)>,
     pub(crate) outer_slots: Vec<SlotId>,
     pub(crate) args: AggregateArgsPlan,
-    pub(crate) args_valid: bool,
     pub(crate) value: ExprPlan,
     pub(crate) result: ExprPlan,
     pub(crate) result_slots: Vec<SlotId>,
@@ -287,6 +285,7 @@ pub(crate) struct AggregateArgsPlan {
     pub(crate) sum: Option<ExprPlan>,
     pub(crate) key: Option<ExprPlan>,
     pub(crate) synthetic_rank_slot: Option<SlotId>,
+    pub(crate) invalid_argument: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1055,9 +1054,6 @@ fn collect_atom_unsupported_reasons(
             }
         }
         AtomPlan::Aggregate(aggregate) => {
-            if !aggregate.args_valid {
-                out.insert(UnsupportedReason::InvalidAggregateArgs(aggregate.function));
-            }
             if !planned_aggregate_executable(aggregate.function) {
                 out.insert(UnsupportedReason::UnsupportedAggregate(aggregate.function));
             }
@@ -1299,7 +1295,6 @@ fn plan_aggregate(
         .map(|var| inner_slots.slot(var))
         .transpose()?;
     let args = plan_aggregate_args(aggregate, &inner_slots, synthetic_rank_slot)?;
-    let args_valid = aggregate_args_valid(aggregate);
     let value = plan_expr(&aggregate.value, &inner_slots)?;
     let result = plan_expr(&aggregate.result, outer_slots).or_else(|_| {
         // Rank injects a synthetic variable inside the aggregate body before the
@@ -1337,7 +1332,6 @@ fn plan_aggregate(
         outer_to_inner_slots,
         outer_slots: outer_slot_set.into_iter().collect(),
         args,
-        args_valid,
         value,
         result,
         result_slots: result_slots.into_iter().collect(),
@@ -1363,36 +1357,23 @@ fn plan_aggregate_args(
             _ => {}
         }
     }
+    args.invalid_argument = aggregate_invalid_argument(aggregate);
     Ok(args)
 }
 
-fn aggregate_args_valid(aggregate: &Aggregate) -> bool {
+fn aggregate_invalid_argument(aggregate: &Aggregate) -> Option<&'static str> {
     let allowed = aggregate_allowed_args(aggregate.function);
     let mut seen = BTreeSet::new();
     for arg in &aggregate.args {
         let name = arg.name.as_str();
-        if !allowed.contains(&name) || !seen.insert(name) {
-            return false;
+        if !allowed.contains(&name) {
+            return Some("unknown");
+        }
+        if !seen.insert(name) {
+            return Some("duplicate");
         }
     }
-    match aggregate.function {
-        AggregateFunction::TopK => seen.contains("k") && seen.contains("key"),
-        AggregateFunction::Rank => {
-            seen.contains("key")
-                && aggregate_rank_var(aggregate).is_some()
-                && aggregate.args.iter().any(|arg| arg.name.as_str() == "rank")
-        }
-        AggregateFunction::TakeUntil => {
-            seen.contains("budget") && seen.contains("sum") && seen.contains("key")
-        }
-        AggregateFunction::Count
-        | AggregateFunction::Sum
-        | AggregateFunction::Min
-        | AggregateFunction::Max
-        | AggregateFunction::Avg
-        | AggregateFunction::List
-        | AggregateFunction::Set => true,
-    }
+    None
 }
 
 fn plan_negation(
@@ -2237,7 +2218,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_argument_shape_is_part_of_migration_certificate() {
+    fn aggregate_argument_errors_stay_planned_and_report_at_eval() {
         let program = parse_prelude_program(
             "<aggregate-arg-certificate>",
             r#"
@@ -2257,14 +2238,8 @@ mod tests {
         for predicate in ["invalid_unknown", "invalid_duplicate"] {
             let predicate = PredicateRef::parse(predicate).expect("predicate parses");
             let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
-            assert_eq!(migration.mode, StageMigrationMode::Interpreted);
-            assert!(
-                migration
-                    .reasons
-                    .iter()
-                    .any(|reason| matches!(reason, UnsupportedReason::InvalidAggregateArgs(_))),
-                "invalid aggregate argument shape must keep the stage interpreted"
-            );
+            assert_eq!(migration.mode, StageMigrationMode::Planned);
+            assert!(migration.reasons.is_empty());
         }
     }
 

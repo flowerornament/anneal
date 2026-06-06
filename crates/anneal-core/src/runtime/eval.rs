@@ -76,7 +76,7 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::{FactVisibility, hidden_handles};
-use crate::vm::store::{RelationStore, TupleDb, TupleRow};
+use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
 use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
@@ -1497,6 +1497,19 @@ impl Database {
             })
     }
 
+    fn stored_tuple_row_visible(
+        &self,
+        relation: &Ident,
+        row: RowId,
+        options: &EvalOptions,
+    ) -> bool {
+        trail_visibility_allowed(
+            self.tuple_row(relation, row)
+                .and_then(|row| row.string(TRAIL_VISIBILITY_FIELD)),
+            options,
+        )
+    }
+
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
         let relation = Ident::new_unchecked(relation);
         let stored = self
@@ -1504,6 +1517,15 @@ impl Database {
             .entry(relation.clone())
             .or_insert_with(|| StoredRelation::new(relation.clone()));
         for row in rows {
+            match Arc::make_mut(&mut self.tuples).insert_logical_row(
+                relation.as_str(),
+                row.iter().map(|(field, value)| (field.as_str(), value)),
+            ) {
+                LogicalRowInsert::Inserted(_) | LogicalRowInsert::UnknownRelation => {}
+                LogicalRowInsert::UnknownField => {
+                    panic!("runtime row for known tuple relation used an unknown field");
+                }
+            }
             Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
             Arc::make_mut(&mut self.content).insert_row(&relation, &row);
             if let Some(search) = Arc::make_mut(&mut self.search).get_mut() {
@@ -4103,7 +4125,7 @@ impl Evaluator {
         self.options.authorize_eval()?;
         self.seed_facts()?;
         let needed = global_predicate_dependencies_for_query(&self.program, query);
-        self.run_fixpoint_matching(|predicate| needed.contains(predicate), false)
+        self.run_fixpoint_matching(|predicate| needed.contains(predicate), true)
     }
 
     fn run_fixpoint_matching(
@@ -4186,15 +4208,9 @@ impl Evaluator {
                 .position(|candidate| candidate == query)
                 .and_then(|index| planned.queries.get(index))
         });
-        let planned_query_output = query_plan.filter(|query_plan| {
-            query_plan
-                .plan
-                .strata
-                .last()
-                .is_some_and(|stratum| stratum.authoritative_planned)
-        });
+        let planned_query_output = query_plan;
         if query_ast.local_rules.is_empty() {
-            if let Some(output) = try_eval_planned_query_output(
+            if let Some(output) = eval_planned_query_output(
                 planned_query_output,
                 planned,
                 &self.database,
@@ -4254,7 +4270,7 @@ impl Evaluator {
                 &self.options,
             )?;
         }
-        if let Some(output) = try_eval_planned_query_output(
+        if let Some(output) = eval_planned_query_output(
             planned_query_output,
             planned,
             &database,
@@ -4474,6 +4490,13 @@ fn run_staged_rule_group(
             .push(rule);
     }
     for stage in &planned_stratum.stages {
+        if stage
+            .predicates
+            .iter()
+            .all(|predicate| !rules_by_predicate.contains_key(predicate))
+        {
+            continue;
+        }
         for predicate in &stage.predicates {
             if stage.authoritative_predicates.contains(predicate) {
                 continue;
@@ -4487,7 +4510,12 @@ fn run_staged_rule_group(
             }
         }
         if stage.authoritative_planned {
-            let planned_groups = planned_authoritative_for_stage(stage, planned_stratum, catalog)?;
+            let planned_groups = planned_authoritative_for_stage(
+                stage,
+                planned_stratum,
+                catalog,
+                &rules_by_predicate,
+            )?;
             for (planned, predicate) in planned_groups {
                 let tuples =
                     eval_planned_rule_group(planned, catalog, database, warnings, options)?;
@@ -4516,6 +4544,7 @@ fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
     catalog: &PlanCatalog,
+    active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
 ) -> Result<Vec<(&'a RuleGroupPlan, PredicateRef)>, EvalError> {
     if !stage.authoritative_planned {
         return Ok(Vec::new());
@@ -4537,6 +4566,9 @@ fn planned_authoritative_for_stage<'a>(
         let Some(provenance) = &group.provenance else {
             continue;
         };
+        if !active_rules.contains_key(&provenance.predicate) {
+            continue;
+        }
         if stage
             .authoritative_predicates
             .contains(&provenance.predicate)
@@ -5085,7 +5117,7 @@ fn eval_planned_rule_group(
         .collect()
 }
 
-fn try_eval_planned_query_output(
+fn eval_planned_query_output(
     query_plan: Option<&QueryPlan>,
     planned: Option<&ProgramPlan>,
     database: &Database,
@@ -5097,17 +5129,14 @@ fn try_eval_planned_query_output(
     };
     let planned = planned.expect("query plan has program plan");
     let mut planned_warnings = warnings.to_vec();
-    match eval_planned_query(
+    eval_planned_query(
         query_plan,
         &planned.catalog,
         database,
         &mut planned_warnings,
         options,
-    ) {
-        Ok(output) => Ok(Some(output)),
-        Err(EvalError::UnsupportedExpression) => Ok(None),
-        Err(error) => Err(error),
-    }
+    )
+    .map(Some)
 }
 
 fn eval_planned_query(
@@ -5270,12 +5299,18 @@ fn eval_planned_stored_scan(
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
     let relation_ident = Ident::new_unchecked(relation_name.to_string());
-    let store = database
-        .physical_tuple_store(&relation_ident, relation)
-        .ok_or(EvalError::UnsupportedExpression)?;
+    let relation_uses_trail_visibility = relation_uses_trail_visibility(&relation_ident);
+    let Some(store) = database.physical_tuple_store(&relation_ident, relation) else {
+        return Ok(Vec::new());
+    };
     for binding in bindings {
         let constraints = planned_column_constraints(patterns, &binding, env)?;
         for row in store.candidate_rows(&constraints) {
+            if relation_uses_trail_visibility
+                && !database.stored_tuple_row_visible(&relation_ident, row, options)
+            {
+                continue;
+            }
             let Some(tuple) = store.row(row) else {
                 continue;
             };
@@ -5593,8 +5628,11 @@ fn validate_planned_aggregate_shape(aggregate: &AggregatePlan) -> Result<(), Eva
             function: aggregate.function,
         });
     }
-    if aggregate.args_valid {
-        return Ok(());
+    if let Some(argument) = aggregate.args.invalid_argument {
+        return Err(EvalError::InvalidAggregateArg {
+            function: aggregate.function,
+            argument,
+        });
     }
     match aggregate.function {
         AggregateFunction::TopK => {
@@ -5653,10 +5691,7 @@ fn validate_planned_aggregate_shape(aggregate: &AggregatePlan) -> Result<(), Eva
         | AggregateFunction::List
         | AggregateFunction::Set => {}
     }
-    Err(EvalError::InvalidAggregateArg {
-        function: aggregate.function,
-        argument: "invalid",
-    })
+    Ok(())
 }
 
 fn eval_planned_scalar_aggregate(
@@ -6609,13 +6644,21 @@ fn unify_tuple_stored_fields(
 }
 
 fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -> bool {
-    if !matches!(
-        relation.as_str(),
-        TRAIL_RELATION | TRAIL_REF_RELATION | TRAIL_GENERATION_RELATION
-    ) {
+    if !relation_uses_trail_visibility(relation) {
         return true;
     }
-    match row_string(row, TRAIL_VISIBILITY_FIELD) {
+    trail_visibility_allowed(row_string(row, TRAIL_VISIBILITY_FIELD), options)
+}
+
+fn relation_uses_trail_visibility(relation: &Ident) -> bool {
+    matches!(
+        relation.as_str(),
+        TRAIL_RELATION | TRAIL_REF_RELATION | TRAIL_GENERATION_RELATION
+    )
+}
+
+fn trail_visibility_allowed(visibility: Option<&str>, options: &EvalOptions) -> bool {
+    match visibility {
         Some("private") => {
             options
                 .actor()
@@ -13098,24 +13141,20 @@ release_blocker(code) := issue(code, "error").
 
     #[test]
     fn stored_index_preserves_same_atom_expression_unification() {
-        let program =
-            parse_program("fixture", r"? *pair{n: x, next: x + 1}.").expect("program parses");
+        let program = parse_program("fixture", r"? *span{start_line: x, end_line: x + 1}.")
+            .expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
         let query = analyzed.queries().next().cloned().expect("query exists");
-        let mut database = Database::default();
-        database.insert_stored_rows(
-            "pair",
-            [
-                named_row([
-                    ("n", Value::Number(NumberValue::Int(1))),
-                    ("next", Value::Number(NumberValue::Int(2))),
-                ]),
-                named_row([
-                    ("n", Value::Number(NumberValue::Int(1))),
-                    ("next", Value::Number(NumberValue::Int(3))),
-                ]),
-            ],
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
         );
+        batch.spans = vec![span("h", "s1", 1, 2), span("h", "s2", 1, 3)];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merge");
+        let database = Database::from_store(&store);
         let evaluator = Evaluator::new(analyzed, database);
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 1);
@@ -13143,24 +13182,23 @@ release_blocker(code) := issue(code, "error").
 
     #[test]
     fn stored_atoms_wait_for_later_bound_expression_inputs() {
-        let program = parse_program("fixture", r"? *pair{next: x + 1}, *pair{n: x}.")
-            .expect("program parses");
+        let program = parse_program(
+            "fixture",
+            r"? *span{end_line: x + 1}, *span{start_line: x}.",
+        )
+        .expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
         let query = analyzed.queries().next().cloned().expect("query exists");
-        let mut database = Database::default();
-        database.insert_stored_rows(
-            "pair",
-            [
-                named_row([
-                    ("n", Value::Number(NumberValue::Int(1))),
-                    ("next", Value::Number(NumberValue::Int(2))),
-                ]),
-                named_row([
-                    ("n", Value::Number(NumberValue::Int(2))),
-                    ("next", Value::Number(NumberValue::Int(3))),
-                ]),
-            ],
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
         );
+        batch.spans = vec![span("h", "s1", 1, 2), span("h", "s2", 2, 3)];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merge");
+        let database = Database::from_store(&store);
         let evaluator = Evaluator::new(analyzed, database);
         let mut rows = evaluator
             .eval_query(&query)
