@@ -224,7 +224,15 @@ fn extract_markdown_facts_from_anneal_config(
         &result,
         options.probe_code_target_history,
     );
-    emit_content_spans(&mut batch, &mut revisions, &result);
+    let file_payloads = std::mem::take(&mut result.file_payloads);
+    let heading_spans = std::mem::take(&mut result.heading_spans);
+    emit_content_spans(
+        &mut batch,
+        &mut revisions,
+        &result,
+        file_payloads,
+        heading_spans,
+    );
     emit_concerns(&mut batch, &mut revisions, config, &result);
 
     Ok(batch)
@@ -1321,72 +1329,99 @@ fn emit_content_spans(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
     result: &parse::BuildResult,
+    mut file_payloads: HashMap<String, parse::ParsedMarkdownFile>,
+    mut heading_spans: HashMap<String, Vec<crate::extract::body_scan::HeadingSpan>>,
 ) {
-    for (node_id, handle) in result.graph.nodes() {
-        match &handle.kind {
-            HandleKind::File(path) => {
-                let path_str = path.as_str();
-                let Some(payload) = result.file_payloads.get(path_str) else {
+    enum ContentTask {
+        File(String),
+        Label(NodeId),
+    }
+
+    let tasks = result
+        .graph
+        .nodes()
+        .filter_map(|(node_id, handle)| match &handle.kind {
+            HandleKind::File(path) => Some(ContentTask::File(path.to_string())),
+            HandleKind::Label { .. } => Some(ContentTask::Label(node_id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for task in tasks {
+        match task {
+            ContentTask::File(path_str) => {
+                let Some(payload) = file_payloads.remove(&path_str) else {
                     continue;
                 };
-                let body = payload.body.as_str();
-                let body_lines = body.lines().collect::<Vec<_>>();
+                let headings = heading_spans.remove(&path_str).unwrap_or_default();
+                let body = payload.body;
                 let start_line = payload.body_start_line;
-                let line_count = u32::try_from(body_lines.len()).unwrap_or(u32::MAX);
+                let line_count = u32::try_from(body.lines().count()).unwrap_or(u32::MAX);
+                let tokens = token_count(&body);
+                let body_ranges = BodyTextRanges::new(&body);
+                let heading_facts = headings
+                    .into_iter()
+                    .map(|heading| {
+                        let text = body_ranges.text_in_range(
+                            start_line,
+                            heading.start_line,
+                            heading.end_line,
+                        );
+                        let lines = heading
+                            .end_line
+                            .saturating_sub(heading.start_line)
+                            .saturating_add(1);
+                        let tokens = token_count(&text);
+                        let identity = identity_for(batch, revisions, &heading.id, &path_str);
+                        (
+                            SpanFact {
+                                identity: identity.clone(),
+                                id: heading.id.clone(),
+                                handle: path_str.clone(),
+                                start_line: heading.start_line,
+                                end_line: heading.end_line,
+                                summary: heading.path,
+                            },
+                            ContentFact {
+                                identity,
+                                handle: path_str.clone(),
+                                span_id: heading.id,
+                                lines,
+                                text,
+                                tokens,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 let span_id = format!("{path_str}#full");
-                let identity = identity_for(batch, revisions, path_str, path_str);
+                let identity = identity_for(batch, revisions, &path_str, &path_str);
                 batch.content.push(ContentFact {
                     identity: identity.clone(),
-                    handle: path_str.to_string(),
+                    handle: path_str.clone(),
                     span_id: span_id.clone(),
                     lines: line_count,
-                    text: body.to_string(),
-                    tokens: token_count(body),
+                    text: body,
+                    tokens,
                 });
                 batch.spans.push(SpanFact {
                     identity,
                     id: span_id,
-                    handle: path_str.to_string(),
+                    handle: path_str.clone(),
                     start_line,
                     end_line: start_line.saturating_add(line_count.saturating_sub(1)),
                     summary: result
                         .file_snippets
-                        .get(path_str)
+                        .get(&path_str)
                         .cloned()
                         .unwrap_or_default(),
                 });
-                for heading in result.heading_spans.get(path_str).into_iter().flatten() {
-                    let text = body_lines_in_range(
-                        &body_lines,
-                        start_line,
-                        heading.start_line,
-                        heading.end_line,
-                    );
-                    let lines = heading
-                        .end_line
-                        .saturating_sub(heading.start_line)
-                        .saturating_add(1);
-                    let tokens = token_count(&text);
-                    let identity = identity_for(batch, revisions, &heading.id, path_str);
-                    batch.spans.push(SpanFact {
-                        identity: identity.clone(),
-                        id: heading.id.clone(),
-                        handle: path_str.to_string(),
-                        start_line: heading.start_line,
-                        end_line: heading.end_line,
-                        summary: heading.path.clone(),
-                    });
-                    batch.content.push(ContentFact {
-                        identity,
-                        handle: path_str.to_string(),
-                        span_id: heading.id.clone(),
-                        lines,
-                        text,
-                        tokens,
-                    });
+                for (span, content) in heading_facts {
+                    batch.spans.push(span);
+                    batch.content.push(content);
                 }
             }
-            HandleKind::Label { .. } => {
+            ContentTask::Label(node_id) => {
+                let handle = result.graph.node(node_id);
                 let Some(summary) = result.label_snippets.get(&handle.id) else {
                     continue;
                 };
@@ -1410,25 +1445,77 @@ fn emit_content_spans(
                     tokens: token_count(summary),
                 });
             }
-            _ => {}
         }
     }
 }
 
-fn body_lines_in_range(
-    body_lines: &[&str],
-    body_start_line: u32,
-    start_line: u32,
-    end_line: u32,
-) -> String {
-    let start = start_line.saturating_sub(body_start_line);
-    let count = end_line.saturating_sub(start_line).saturating_add(1);
-    let start = usize::try_from(start).unwrap_or(usize::MAX);
-    let count = usize::try_from(count).unwrap_or(usize::MAX);
-    let end = start.saturating_add(count).min(body_lines.len());
-    body_lines
-        .get(start..end)
-        .map_or_else(String::new, |lines| lines.join("\n"))
+struct BodyTextRanges<'a> {
+    body: &'a str,
+    line_offsets: Vec<usize>,
+    normalize_cr: bool,
+}
+
+impl<'a> BodyTextRanges<'a> {
+    fn new(body: &'a str) -> Self {
+        let normalize_cr = body.contains('\r');
+        let mut line_offsets = vec![0];
+        if !normalize_cr {
+            line_offsets.extend(
+                body.match_indices('\n')
+                    .map(|(index, _)| index.saturating_add(1)),
+            );
+            if *line_offsets.last().unwrap_or(&0) != body.len() {
+                line_offsets.push(body.len());
+            }
+        }
+        Self {
+            body,
+            line_offsets,
+            normalize_cr,
+        }
+    }
+
+    fn text_in_range(&self, body_start_line: u32, start_line: u32, end_line: u32) -> String {
+        let start = start_line.saturating_sub(body_start_line);
+        let count = end_line.saturating_sub(start_line).saturating_add(1);
+        let start = usize::try_from(start).unwrap_or(usize::MAX);
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
+
+        if self.normalize_cr {
+            return body_text_in_range_normalized(self.body, start, count);
+        }
+
+        let Some(&start_byte) = self.line_offsets.get(start) else {
+            return String::new();
+        };
+        let end_byte = self
+            .line_offsets
+            .get(start.saturating_add(count))
+            .copied()
+            .unwrap_or(self.body.len());
+        self.body[start_byte..end_byte]
+            .strip_suffix('\n')
+            .unwrap_or(&self.body[start_byte..end_byte])
+            .to_string()
+    }
+}
+
+fn body_text_in_range_normalized(body: &str, start: usize, count: usize) -> String {
+    let lines = body.lines().skip(start).take(count).collect::<Vec<_>>();
+    let capacity = lines
+        .iter()
+        .map(|line| line.len())
+        .sum::<usize>()
+        .saturating_add(lines.len().saturating_sub(1));
+    let mut text = String::new();
+    text.reserve_exact(capacity);
+    for line in lines {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(line);
+    }
+    text
 }
 
 fn emit_concerns(
