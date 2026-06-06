@@ -102,6 +102,7 @@ pub(crate) enum StageMigrationMode {
 pub(crate) enum UnsupportedReason {
     TimeScope,
     UnsupportedAggregate(AggregateFunction),
+    InvalidAggregateArgs(AggregateFunction),
     UnsupportedExpression,
     UnsupportedComparison(ComparisonOp),
     MissingProvenance,
@@ -229,6 +230,7 @@ pub(crate) struct AggregatePlan {
     pub(crate) outer_to_inner_slots: Vec<(SlotId, SlotId)>,
     pub(crate) outer_slots: Vec<SlotId>,
     pub(crate) args: AggregateArgsPlan,
+    pub(crate) args_valid: bool,
     pub(crate) value: ExprPlan,
     pub(crate) result: ExprPlan,
     pub(crate) result_slots: Vec<SlotId>,
@@ -837,7 +839,33 @@ pub(crate) fn planned_rule_group_executable(planned: &RuleGroupPlan) -> bool {
 }
 
 pub(crate) fn planned_aggregate_executable(function: AggregateFunction) -> bool {
-    matches!(function, AggregateFunction::TopK | AggregateFunction::Rank)
+    matches!(
+        function,
+        AggregateFunction::Count
+            | AggregateFunction::Sum
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::Avg
+            | AggregateFunction::List
+            | AggregateFunction::Set
+            | AggregateFunction::TopK
+            | AggregateFunction::Rank
+    )
+}
+
+pub(crate) fn aggregate_allowed_args(function: AggregateFunction) -> &'static [&'static str] {
+    match function {
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => &[],
+        AggregateFunction::TopK => &["k", "key"],
+        AggregateFunction::Rank => &["key", "rank"],
+        AggregateFunction::TakeUntil => &["budget", "sum", "key"],
+    }
 }
 
 pub(crate) fn planned_comparison_executable(op: ComparisonOp) -> bool {
@@ -870,6 +898,9 @@ fn collect_atom_unsupported_reasons(atom: &AtomPlan, out: &mut BTreeSet<Unsuppor
             }
         }
         AtomPlan::Aggregate(aggregate) => {
+            if !aggregate.args_valid {
+                out.insert(UnsupportedReason::InvalidAggregateArgs(aggregate.function));
+            }
             if !planned_aggregate_executable(aggregate.function) {
                 out.insert(UnsupportedReason::UnsupportedAggregate(aggregate.function));
             }
@@ -1106,6 +1137,7 @@ fn plan_aggregate(
         .map(|var| inner_slots.slot(var))
         .transpose()?;
     let args = plan_aggregate_args(aggregate, &inner_slots, synthetic_rank_slot)?;
+    let args_valid = aggregate_args_valid(aggregate);
     let value = plan_expr(&aggregate.value, &inner_slots)?;
     let result = plan_expr(&aggregate.result, outer_slots).or_else(|_| {
         // Rank injects a synthetic variable inside the aggregate body before the
@@ -1143,6 +1175,7 @@ fn plan_aggregate(
         outer_to_inner_slots,
         outer_slots: outer_slot_set.into_iter().collect(),
         args,
+        args_valid,
         value,
         result,
         result_slots: result_slots.into_iter().collect(),
@@ -1169,6 +1202,35 @@ fn plan_aggregate_args(
         }
     }
     Ok(args)
+}
+
+fn aggregate_args_valid(aggregate: &Aggregate) -> bool {
+    let allowed = aggregate_allowed_args(aggregate.function);
+    let mut seen = BTreeSet::new();
+    for arg in &aggregate.args {
+        let name = arg.name.as_str();
+        if !allowed.contains(&name) || !seen.insert(name) {
+            return false;
+        }
+    }
+    match aggregate.function {
+        AggregateFunction::TopK => seen.contains("k") && seen.contains("key"),
+        AggregateFunction::Rank => {
+            seen.contains("key")
+                && aggregate_rank_var(aggregate).is_some()
+                && aggregate.args.iter().any(|arg| arg.name.as_str() == "rank")
+        }
+        AggregateFunction::TakeUntil => {
+            seen.contains("budget") && seen.contains("sum") && seen.contains("key")
+        }
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => true,
+    }
 }
 
 fn plan_negation(
@@ -1956,14 +2018,10 @@ mod tests {
         let potential = PredicateRef::parse("potential").expect("predicate parses");
         let potential_migration =
             predicate_migration(&planned, &potential).expect("potential stage");
-        assert_eq!(potential_migration.mode, StageMigrationMode::Interpreted);
+        assert_eq!(potential_migration.mode, StageMigrationMode::Planned);
         assert!(
-            potential_migration
-                .reasons
-                .contains(&UnsupportedReason::UnsupportedAggregate(
-                    AggregateFunction::Sum
-                )),
-            "scalar aggregate exclusions must be explicit"
+            potential_migration.reasons.is_empty(),
+            "supported scalar aggregates should clear the certificate reasons"
         );
 
         let holding = PredicateRef::parse("holding").expect("predicate parses");
@@ -1975,6 +2033,38 @@ mod tests {
                 .contains(&UnsupportedReason::TimeScope),
             "time-scope exclusions must be explicit"
         );
+    }
+
+    #[test]
+    fn aggregate_argument_shape_is_part_of_migration_certificate() {
+        let program = parse_prelude_program(
+            "<aggregate-arg-certificate>",
+            r#"
+            amount("a", 1).
+            invalid_unknown(h, score) :=
+              (h, score) = TopK{ k: 1, bogus: 2, key: score : (h, score) : amount(h, score) }.
+            invalid_duplicate(h, score) :=
+              (h, score) = TopK{ k: 1, k: 2, key: score : (h, score) : amount(h, score) }.
+            ? invalid_unknown(h, score).
+            ? invalid_duplicate(h, score).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+
+        for predicate in ["invalid_unknown", "invalid_duplicate"] {
+            let predicate = PredicateRef::parse(predicate).expect("predicate parses");
+            let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
+            assert_eq!(migration.mode, StageMigrationMode::Interpreted);
+            assert!(
+                migration
+                    .reasons
+                    .iter()
+                    .any(|reason| matches!(reason, UnsupportedReason::InvalidAggregateArgs(_))),
+                "invalid aggregate argument shape must keep the stage interpreted"
+            );
+        }
     }
 
     #[test]

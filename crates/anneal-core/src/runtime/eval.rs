@@ -26,8 +26,8 @@ use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanError,
     PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan,
-    StratumPlan, TermPlan, plan, planned_aggregate_executable, planned_comparison_executable,
-    planned_rule_group_executable,
+    StratumPlan, TermPlan, aggregate_allowed_args, plan, planned_aggregate_executable,
+    planned_comparison_executable, planned_rule_group_executable,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -5280,10 +5280,25 @@ fn eval_planned_aggregate(
             env,
         )?;
         if inner_rows.is_empty() {
+            if aggregate.function == AggregateFunction::Count
+                && let Some(binding) = unify_planned_expr(
+                    &aggregate.result,
+                    PhysicalValue::Number(NumberValue::Int(0)),
+                    &binding,
+                    env,
+                )?
+            {
+                out.push(binding.push_step(trace, || {
+                    derivation_ref(DerivationNode::planned_aggregate(
+                        &aggregate.provenance,
+                        Vec::new(),
+                    ))
+                }));
+            }
             continue;
         }
         let aggregate_steps = trace.then(|| aggregate_derivation_steps_planned(&inner_rows));
-        if !planned_aggregate_executable(aggregate.function) {
+        if !aggregate.args_valid || !planned_aggregate_executable(aggregate.function) {
             return Err(EvalError::UnsupportedAggregate {
                 function: aggregate.function,
             });
@@ -5315,11 +5330,50 @@ fn eval_planned_aggregate(
             | AggregateFunction::Max
             | AggregateFunction::Avg
             | AggregateFunction::List
-            | AggregateFunction::Set
-            | AggregateFunction::TakeUntil => unreachable!("unsupported aggregate returned early"),
+            | AggregateFunction::Set => {
+                if let Some(binding) = eval_planned_scalar_aggregate(
+                    aggregate,
+                    &binding,
+                    &inner_rows,
+                    aggregate_steps.as_deref().unwrap_or_default(),
+                    trace,
+                    env,
+                )? {
+                    out.push(binding);
+                }
+            }
+            AggregateFunction::TakeUntil => unreachable!("unsupported aggregate returned early"),
         }
     }
     Ok(out)
+}
+
+fn eval_planned_scalar_aggregate(
+    aggregate: &AggregatePlan,
+    base: &PlannedFrame,
+    rows: &[PlannedFrame],
+    aggregate_steps: &[DerivationRef],
+    trace: bool,
+    env: &mut PlannedValueEnv,
+) -> Result<Option<PlannedFrame>, EvalError> {
+    let values = rows
+        .iter()
+        .map(|row| eval_planned_expr_logical(&aggregate.value, row, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(value) = scalar_aggregate_value(aggregate.function, &values)? else {
+        return Ok(None);
+    };
+    let value = env.physical_from_logical(&value);
+    Ok(
+        unify_planned_expr(&aggregate.result, value, base, env)?.map(|binding| {
+            binding.push_step(trace, || {
+                derivation_ref(DerivationNode::planned_aggregate(
+                    &aggregate.provenance,
+                    clone_derivation_refs(aggregate_steps),
+                ))
+            })
+        }),
+    )
 }
 
 fn eval_planned_top_k(
@@ -6687,18 +6741,7 @@ fn bind_aggregate_result(
 }
 
 fn validate_aggregate_args(aggregate: &Aggregate) -> Result<(), EvalError> {
-    let allowed = match aggregate.function {
-        AggregateFunction::Count
-        | AggregateFunction::Sum
-        | AggregateFunction::Min
-        | AggregateFunction::Max
-        | AggregateFunction::Avg
-        | AggregateFunction::List
-        | AggregateFunction::Set => &[][..],
-        AggregateFunction::TopK => &["k", "key"][..],
-        AggregateFunction::Rank => &["key", "rank"][..],
-        AggregateFunction::TakeUntil => &["budget", "sum", "key"][..],
-    };
+    let allowed = aggregate_allowed_args(aggregate.function);
     let mut seen = BTreeSet::new();
     for arg in &aggregate.args {
         if !allowed.contains(&arg.name.as_str()) {
@@ -11943,6 +11986,95 @@ release_blocker(code) := issue(code, "error").
         assert_query_rows(&outputs[4], vec![row([("avg", f(3.0))])]);
         assert_query_rows(&outputs[5], vec![row([("values", list([n(2), n(5)]))])]);
         assert_query_rows(&outputs[6], vec![row([("values", list([n(2), n(5)]))])]);
+    }
+
+    #[test]
+    fn planned_scalar_aggregates_match_interpreted_semantics() {
+        let input = r#"
+            amount("a", 2).
+            amount("b", 2).
+            amount("c", 5).
+            area("empty").
+            area("full").
+            item("full", "x").
+
+            total(total) := total = Sum{ value : amount(id, value) }.
+            distinct_count(count) := count = Count{ value : amount(id, value) }.
+            min_value(min) := min = Min{ value : amount(id, value) }.
+            max_value(max) := max = Max{ value : amount(id, value) }.
+            avg_value(avg) := avg = Avg{ value : amount(id, value) }.
+            listed(values) := values = List{ value : amount(id, value) }.
+            set_values(values) := values = Set{ value : amount(id, value) }.
+            per_area(area, count) :=
+              area(area),
+              count = Count{ item : item(area, item) }.
+
+            ? total(total).
+            ? distinct_count(count).
+            ? min_value(min).
+            ? max_value(max).
+            ? avg_value(avg).
+            ? listed(values).
+            ? set_values(values).
+            ? per_area(area, count).
+        "#;
+        for predicate in [
+            "total",
+            "distinct_count",
+            "min_value",
+            "max_value",
+            "avg_value",
+            "listed",
+            "set_values",
+            "per_area",
+        ] {
+            assert_predicate_is_authoritative_planned(input, predicate);
+        }
+
+        let outputs = evaluate_queries(input, Database::default());
+
+        assert_query_rows(&outputs[0], vec![row([("total", n(9))])]);
+        assert_query_rows(&outputs[1], vec![row([("count", n(2))])]);
+        assert_query_rows(&outputs[2], vec![row([("min", n(2))])]);
+        assert_query_rows(&outputs[3], vec![row([("max", n(5))])]);
+        assert_query_rows(&outputs[4], vec![row([("avg", f(3.0))])]);
+        assert_query_rows(&outputs[5], vec![row([("values", list([n(2), n(5)]))])]);
+        assert_query_rows(&outputs[6], vec![row([("values", list([n(2), n(5)]))])]);
+        assert_query_rows(
+            &outputs[7],
+            vec![
+                row([("area", s("empty")), ("count", n(0))]),
+                row([("area", s("full")), ("count", n(1))]),
+            ],
+        );
+    }
+
+    #[test]
+    fn planned_scalar_aggregate_provenance_truncates_all_inner_evidence() {
+        let mut input = String::new();
+        for idx in 0..40 {
+            writeln!(&mut input, r#"amount("h{idx:02}", 1)."#).expect("write amount fixture");
+        }
+        input.push_str(
+            r"
+            total(total) := total = Sum{ value : amount(id, value) }.
+            ? total(total).
+            ",
+        );
+        assert_predicate_is_authoritative_planned(&input, "total");
+
+        let output = evaluate_query_output_with_options(
+            &input,
+            Database::default(),
+            EvalOptions::default().with_explain_all(),
+        );
+
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("query row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Aggregate));
+        assert!(derivation_contains(derivation, DerivationKind::Truncated));
     }
 
     #[test]
