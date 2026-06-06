@@ -1457,6 +1457,17 @@ impl Database {
             .logical_field_value(relation.as_str(), row, field.as_str())
     }
 
+    fn physical_tuple_store(
+        &self,
+        relation: &Ident,
+        relation_id: crate::ir::ids::RelationId,
+    ) -> Option<&crate::vm::store::RelationStore> {
+        if let Some(store) = self.tuple_overlay.relation(relation) {
+            return Some(store);
+        }
+        self.tuples.relation(relation_id)
+    }
+
     fn tuple_row(&self, relation: &Ident, row: RowId) -> Option<TupleRow<'_>> {
         if let Some(store) = self.tuple_overlay.relation(relation) {
             return self
@@ -4430,7 +4441,8 @@ fn run_staged_rule_group(
         if stage.authoritative_planned {
             let planned_groups = planned_authoritative_for_stage(stage, planned_stratum)?;
             for (planned, predicate) in planned_groups {
-                let tuples = eval_planned_rule_group(planned, catalog, database, options)?;
+                let tuples =
+                    eval_planned_rule_group(planned, catalog, database, warnings, options)?;
                 insert_tuples(database, &predicate, tuples);
             }
         }
@@ -4712,7 +4724,8 @@ fn shadow_planned_rule_group(
     options: &EvalOptions,
     interpreted: &[DerivedTuple],
 ) -> Result<(), EvalError> {
-    let planned_rows = eval_planned_rule_group(planned, catalog, database, options)?;
+    let mut warnings = Vec::new();
+    let planned_rows = eval_planned_rule_group(planned, catalog, database, &mut warnings, options)?;
     compare_planned_rows_to_interpreted_rows(
         &rule.head.predicate,
         &planned_rows,
@@ -4790,8 +4803,15 @@ fn shadow_planned_stages(
         }
         for (predicate, groups) in groups_by_predicate {
             let mut rows = Vec::new();
+            let mut warnings = Vec::new();
             for group in groups {
-                rows.extend(eval_planned_rule_group(group, catalog, database, options)?);
+                rows.extend(eval_planned_rule_group(
+                    group,
+                    catalog,
+                    database,
+                    &mut warnings,
+                    options,
+                )?);
             }
             compare_planned_rows_to_derived_relation(&predicate, &rows, database, options)?;
         }
@@ -4904,6 +4924,13 @@ impl PlannedFrame {
         }
     }
 
+    fn with_values_only(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            steps: Vec::new(),
+        }
+    }
+
     fn push_step(mut self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
         if trace {
             self.steps.push(step());
@@ -4966,6 +4993,7 @@ fn eval_planned_rule_group(
     planned: &RuleGroupPlan,
     catalog: &PlanCatalog,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<Vec<DerivedTuple>, EvalError> {
     let mut env = PlannedValueEnv::from_database(database);
@@ -4974,6 +5002,7 @@ fn eval_planned_rule_group(
         vec![PlannedFrame::empty(planned.slots.vars().len())],
         catalog,
         database,
+        warnings,
         options,
         &mut env,
     )?;
@@ -5007,6 +5036,7 @@ fn eval_planned_body(
     mut bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
@@ -5018,7 +5048,7 @@ fn eval_planned_body(
             .atoms
             .get(*atom_index)
             .ok_or(EvalError::UnsupportedExpression)?;
-        bindings = eval_planned_atom(atom, bindings, catalog, database, options, env)?;
+        bindings = eval_planned_atom(atom, bindings, catalog, database, warnings, options, env)?;
     }
     Ok(bindings)
 }
@@ -5028,6 +5058,7 @@ fn eval_planned_atom(
     bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
@@ -5044,9 +5075,9 @@ fn eval_planned_atom(
             predicate, *primitive, args, bindings, database, options, env,
         ),
         AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, options, env),
-        AtomPlan::Aggregate(aggregate) => {
-            eval_planned_aggregate(aggregate, bindings, catalog, database, options, env)
-        }
+        AtomPlan::Aggregate(aggregate) => eval_planned_aggregate(
+            aggregate, bindings, catalog, database, warnings, options, env,
+        ),
         AtomPlan::Negation {
             inner, provenance, ..
         } => {
@@ -5058,6 +5089,7 @@ fn eval_planned_atom(
                     vec![binding.clone()],
                     catalog,
                     database,
+                    warnings,
                     options,
                     env,
                 )?;
@@ -5069,7 +5101,14 @@ fn eval_planned_atom(
             }
             Ok(out)
         }
-        AtomPlan::TimeScope { .. } => Err(EvalError::UnsupportedExpression),
+        AtomPlan::TimeScope {
+            reference,
+            inner,
+            provenance,
+            ..
+        } => eval_planned_time_scope(
+            reference, inner, provenance, bindings, catalog, database, warnings, options, env,
+        ),
     }
 }
 
@@ -5118,13 +5157,12 @@ fn eval_planned_stored_scan(
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    let store = database
-        .tuples
-        .relation(relation)
-        .ok_or(EvalError::UnsupportedExpression)?;
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
-    let relation_ident = trace.then(|| Ident::new_unchecked(relation_name.to_string()));
+    let relation_ident = Ident::new_unchecked(relation_name.to_string());
+    let store = database
+        .physical_tuple_store(&relation_ident, relation)
+        .ok_or(EvalError::UnsupportedExpression)?;
     for binding in bindings {
         let constraints = planned_column_constraints(patterns, &binding, env)?;
         for row in store.candidate_rows(&constraints) {
@@ -5144,15 +5182,139 @@ fn eval_planned_stored_scan(
                 }
             }
             if matched {
-                let step = relation_ident
-                    .as_ref()
-                    .map(|relation| database.stored_tuple_derivation(relation, row))
-                    .transpose()?;
+                let step = if trace {
+                    Some(database.stored_tuple_derivation(&relation_ident, row)?)
+                } else {
+                    None
+                };
                 out.push(next.push_step(trace, || step.expect("trace step exists")));
             }
         }
     }
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_planned_time_scope(
+    reference: &str,
+    inner: &RuleBodyPlan,
+    provenance: &crate::ir::plan::TimeScopeProvenance,
+    bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    ensure_planned_snapshot_time_body_supported(reference, inner, catalog)?;
+    let (scoped, scoped_warnings) = database.scoped_to_time_ref(reference)?;
+    push_warnings(warnings, scoped_warnings);
+    let trace = options.explain().is_enabled();
+    let mut out = Vec::new();
+    for binding in bindings {
+        let outer_steps = trace.then(|| binding.steps.clone());
+        let children = eval_planned_body(
+            inner,
+            vec![binding.with_values_only()],
+            catalog,
+            &scoped,
+            warnings,
+            options,
+            env,
+        )?;
+        out.extend(children.into_iter().map(|child| {
+            if trace {
+                let mut steps = outer_steps.clone().unwrap_or_default();
+                steps.push(derivation_ref(DerivationNode::time_block(
+                    &provenance.reference,
+                    provenance.location.clone(),
+                    clone_derivation_refs(&child.steps),
+                )));
+                PlannedFrame {
+                    slots: child.slots,
+                    steps,
+                }
+            } else {
+                PlannedFrame {
+                    slots: child.slots,
+                    steps: binding.steps.clone(),
+                }
+            }
+        }));
+    }
+    Ok(out)
+}
+
+fn ensure_planned_snapshot_time_body_supported(
+    reference: &str,
+    body: &RuleBodyPlan,
+    catalog: &PlanCatalog,
+) -> Result<(), EvalError> {
+    for atom in &body.atoms {
+        ensure_planned_snapshot_time_atom_supported(reference, atom, catalog)?;
+    }
+    Ok(())
+}
+
+fn ensure_planned_snapshot_time_atom_supported(
+    reference: &str,
+    atom: &AtomPlan,
+    catalog: &PlanCatalog,
+) -> Result<(), EvalError> {
+    match atom {
+        AtomPlan::Scan { relation, .. } => {
+            let relation = catalog
+                .relation(*relation)
+                .ok_or(EvalError::UnsupportedExpression)?;
+            match relation.kind {
+                PlanRelationKind::Stored => {
+                    let relation_name = Ident::new_unchecked(relation.name.clone());
+                    if !time_scoped_stored_relation_supported(&relation_name) {
+                        return Err(EvalError::UnsupportedTimeScopedStoredRelation {
+                            reference: reference.to_string(),
+                            relation: relation_name,
+                        });
+                    }
+                    Ok(())
+                }
+                PlanRelationKind::Derived => {
+                    let predicate = PredicateRef::parse(&relation.name)
+                        .map_err(|_| EvalError::UnsupportedExpression)?;
+                    Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+                        reference: reference.to_string(),
+                        predicate,
+                    })
+                }
+                PlanRelationKind::Primitive { .. } => Err(EvalError::UnsupportedExpression),
+            }
+        }
+        AtomPlan::PrimitiveCall {
+            predicate,
+            primitive,
+            ..
+        } => {
+            if time_scoped_primitive_supported(*primitive) {
+                Ok(())
+            } else {
+                Err(EvalError::UnsupportedTimeScopedPrimitive {
+                    reference: reference.to_string(),
+                    predicate: predicate.clone(),
+                })
+            }
+        }
+        AtomPlan::Filter { .. } => Ok(()),
+        AtomPlan::Aggregate(aggregate) => {
+            ensure_planned_snapshot_time_body_supported(reference, &aggregate.inner, catalog)
+        }
+        AtomPlan::Negation { inner, .. } => {
+            ensure_planned_snapshot_time_body_supported(reference, inner, catalog)
+        }
+        AtomPlan::TimeScope {
+            reference: nested,
+            inner,
+            ..
+        } => ensure_planned_snapshot_time_body_supported(nested, inner, catalog),
+    }
 }
 
 fn eval_planned_derived_scan(
@@ -5259,6 +5421,7 @@ fn eval_planned_aggregate(
     bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
@@ -5278,6 +5441,7 @@ fn eval_planned_aggregate(
             vec![inner_seed],
             catalog,
             database,
+            warnings,
             options,
             env,
         )?;
@@ -9101,7 +9265,6 @@ mod tests {
         evaluator.eval_query(&query).expect_err("query errors")
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_rule<'a>(
         planned: &'a ProgramPlan,
         predicate: &str,
@@ -9139,11 +9302,18 @@ mod tests {
         catalog: &PlanCatalog,
         database: &Database,
     ) -> BTreeSet<Tuple> {
-        eval_planned_rule_group(rule, catalog, database, &EvalOptions::default())
-            .expect("planned rule evaluates")
-            .into_iter()
-            .map(|row| row.tuple)
-            .collect()
+        let mut warnings = Vec::new();
+        eval_planned_rule_group(
+            rule,
+            catalog,
+            database,
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect("planned rule evaluates")
+        .into_iter()
+        .map(|row| row.tuple)
+        .collect()
     }
 
     #[cfg(feature = "planned-executor-spike")]
@@ -11531,6 +11701,155 @@ release_blocker(code) := issue(code, "error").
         );
         assert_eq!(output.warnings.len(), 1);
         assert_eq!(output.warnings[0].code, "partial_history");
+    }
+
+    #[test]
+    fn planned_time_scope_uses_overlay_and_preserves_warning_and_provenance() {
+        let input = r#"
+            prior_status(h, prior) :=
+              at("snapshot:last") { *handle{id: h, status: prior} }.
+        "#;
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "prior_status");
+        assert!(
+            !planned_rule_group_executable(rule),
+            "3a wires planned TimeScope mechanics before the certificate flip"
+        );
+
+        let mut warnings = Vec::new();
+        let rows = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_database(),
+            &mut warnings,
+            &EvalOptions::default().with_explain_all(),
+        )
+        .expect("planned TimeScope evaluates");
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "partial_history");
+        assert_eq!(warnings[0].reference.as_deref(), Some("snapshot:last"));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.tuple.clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                Tuple(vec![s("draft.md"), s("draft")]),
+                Tuple(vec![s("plan.md"), s("plan")]),
+            ])
+        );
+        let derivation = rows[0].derivation.as_ref().expect("row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::TimeBlock));
+        assert!(derivation_contains(derivation, DerivationKind::Stored));
+    }
+
+    #[test]
+    fn planned_time_scope_uses_scoped_graph_primitives() {
+        let input = r#"
+            historical_freshness(h, days) :=
+              at("snapshot:s2") { freshness(h, days) }.
+        "#;
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "historical_freshness");
+
+        let mut warnings = Vec::new();
+        let rows = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_metric_database(),
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect("planned TimeScope evaluates");
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "partial_history");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.tuple.clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([Tuple(vec![s("draft.md"), n(9)])])
+        );
+    }
+
+    #[test]
+    fn planned_time_scope_rejects_unsupported_stored_relations() {
+        let input = r#"
+            historical_edge(to) :=
+              at("snapshot:last") { *edge{from: "draft.md", to, kind} }.
+        "#;
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "historical_edge");
+
+        let mut warnings = Vec::new();
+        let err = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_database(),
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect_err("planned TimeScope rejects unsupported stored relation");
+
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedStoredRelation { relation, .. }
+                if relation.as_str() == "edge"
+        ));
+    }
+
+    #[test]
+    fn planned_time_scope_rejects_unsupported_primitives_and_derived_predicates() {
+        let primitive_input = r#"
+            historical_upstream(h) :=
+              at("snapshot:last") { upstream("draft.md", h) }.
+        "#;
+        let program = parse_program("inline", primitive_input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "historical_upstream");
+        let mut warnings = Vec::new();
+        let err = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_database(),
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect_err("planned TimeScope rejects unsupported primitive");
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedPrimitive { predicate, .. }
+                if predicate.display_name() == "upstream"
+        ));
+
+        let derived_input = r#"
+            historical_current(h) := *handle{id: h, status: "current"}.
+            scoped(h) := at("snapshot:last") { historical_current(h) }.
+        "#;
+        let program = parse_program("inline", derived_input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "scoped");
+        let mut warnings = Vec::new();
+        let err = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_database(),
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect_err("planned TimeScope rejects derived predicate");
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedDerivedPredicate { .. }
+        ));
     }
 
     #[test]
