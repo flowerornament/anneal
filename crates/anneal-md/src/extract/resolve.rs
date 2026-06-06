@@ -682,6 +682,8 @@ mod cascade_tests {
             kind: EdgeKind::Cites,
             inverse: false,
             line: Some(1),
+            unresolved_disposition:
+                crate::extract::extraction::UnresolvedRefDisposition::CorpusGate,
         }
     }
 

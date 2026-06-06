@@ -42,10 +42,20 @@ pub(crate) enum RefHint {
     FilePath,
     /// Section cross-reference like "section:4.1".
     SectionRef,
-    /// External URL like "https://example.com".
+    /// External URI or out-of-corpus reference.
     External,
     /// Rejected as implausible: absolute path, prose, wildcard, etc.
     Implausible { reason: ImplausibleReason },
+}
+
+/// What to do when a reference-looking edge cannot be resolved to a corpus handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) enum UnresolvedRefDisposition {
+    /// Unresolved means a broken corpus reference and should remain visible to E001.
+    #[default]
+    CorpusGate,
+    /// Unresolved is ambiguous: keep it out of gate-level broken-reference diagnostics.
+    AmbiguousExternalOk,
 }
 
 /// Where a reference was discovered within a file.
@@ -130,6 +140,13 @@ pub(crate) struct DiscoveredRef {
     pub(crate) inverse: bool,
     /// Source location (file + line). None until populated by the scanner.
     pub(crate) span: Option<SourceSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileRef {
+    pub(crate) target: String,
+    pub(crate) line: u32,
+    pub(crate) unresolved_disposition: UnresolvedRefDisposition,
 }
 
 /// Uniform per-file extraction output.
@@ -236,6 +253,26 @@ static SECTION_REF_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^section:(\d+(?:\.\d+)*)$").expect("section ref regex must compile")
 });
 
+pub(crate) fn is_external_uri(value: &str) -> bool {
+    let Some(colon) = value.find(':') else {
+        return false;
+    };
+    let scheme = &value[..colon];
+    if scheme.eq_ignore_ascii_case("section") || scheme.is_empty() {
+        return false;
+    }
+    // Keep editor-style or file-ish refs like `foo.md:42` in corpus-ref space.
+    if scheme.contains('.') {
+        return false;
+    }
+    let mut chars = scheme.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter value classification
 // ---------------------------------------------------------------------------
@@ -247,8 +284,8 @@ static SECTION_REF_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
     let trimmed = value.trim();
 
-    // 1. URL
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    // 1. URI schemes outside this corpus.
+    if is_external_uri(trimmed) {
         return RefHint::External;
     }
 
@@ -468,6 +505,23 @@ mod tests {
             classify_frontmatter_value("  https://example.com  "),
             RefHint::External
         );
+    }
+
+    #[test]
+    fn classify_generic_uri_schemes_as_external() {
+        assert_eq!(
+            classify_frontmatter_value("qmd://claims/root"),
+            RefHint::External
+        );
+        assert_eq!(
+            classify_frontmatter_value("mailto:agent@example.test"),
+            RefHint::External
+        );
+    }
+
+    #[test]
+    fn classify_fileish_colon_targets_as_corpus_refs() {
+        assert_eq!(classify_frontmatter_value("foo.md:42"), RefHint::FilePath);
     }
 
     // -- DiscoveredRef construction tests --

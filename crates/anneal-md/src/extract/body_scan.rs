@@ -6,7 +6,8 @@ use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd
 use regex::Regex;
 
 use crate::extract::extraction::{
-    DiscoveredRef, ImplausibleReason, LineIndex, RefHint, RefSource, SourceSpan,
+    DiscoveredRef, FileRef, ImplausibleReason, LineIndex, RefHint, RefSource, SourceSpan,
+    UnresolvedRefDisposition, is_external_uri,
 };
 use crate::extract::graph::EdgeKind;
 
@@ -64,7 +65,7 @@ pub(crate) struct ScanResult {
     /// Section references with their 1-based line numbers.
     pub(crate) section_refs: Vec<(String, u32)>,
     /// File path references with their 1-based line numbers.
-    pub(crate) file_refs: Vec<(String, u32)>,
+    pub(crate) file_refs: Vec<FileRef>,
     /// In-repo code path references discovered in body text.
     pub(crate) code_refs: Vec<CodePathRef>,
 }
@@ -171,6 +172,16 @@ struct BodyRefRecorder<'a> {
 
 impl BodyRefRecorder<'_> {
     fn record(&mut self, raw: &str, hint: RefHint, edge_kind: &EdgeKind) {
+        self.record_with_disposition(raw, hint, edge_kind, UnresolvedRefDisposition::CorpusGate);
+    }
+
+    fn record_with_disposition(
+        &mut self,
+        raw: &str,
+        hint: RefHint,
+        edge_kind: &EdgeKind,
+        unresolved_disposition: UnresolvedRefDisposition,
+    ) {
         let discovered_edge_kind = match &hint {
             RefHint::Label { prefix, number } => {
                 self.result.label_candidates.push(LabelCandidate {
@@ -183,7 +194,11 @@ impl BodyRefRecorder<'_> {
                 edge_kind.clone()
             }
             RefHint::FilePath => {
-                self.result.file_refs.push((raw.to_string(), self.line));
+                self.result.file_refs.push(FileRef {
+                    target: raw.to_string(),
+                    line: self.line,
+                    unresolved_disposition,
+                });
                 edge_kind.clone()
             }
             RefHint::SectionRef => {
@@ -374,21 +389,17 @@ pub(crate) fn scan_file_cmark(
                                 result: &mut result,
                                 discovered_refs: &mut discovered_refs,
                             }
-                            .record(
+                            .record_with_disposition(
                                 dest,
                                 classify_body_ref(dest),
                                 &EdgeKind::Cites,
+                                UnresolvedRefDisposition::AmbiguousExternalOk,
                             );
                         }
                     }
                     _ => {
                         // Standard links: [text](target.md)
-                        if !dest.is_empty()
-                            && !dest.starts_with('#')
-                            && !dest.starts_with("http://")
-                            && !dest.starts_with("https://")
-                            && !dest.starts_with("mailto:")
-                        {
+                        if !dest.is_empty() && !dest.starts_with('#') && !is_external_uri(dest) {
                             // Strip fragment identifiers from file paths
                             let clean_dest = if let Some(pos) = dest.find('#') {
                                 &dest[..pos]
@@ -667,6 +678,11 @@ fn classify_body_ref(value: &str) -> RefHint {
     // Section ref
     if value.starts_with("section:") {
         return RefHint::SectionRef;
+    }
+
+    // External URI schemes.
+    if is_external_uri(value) {
+        return RefHint::External;
     }
 
     // File path (.md extension)
@@ -1004,6 +1020,13 @@ mod tests {
         scan_file_cmark(body, Utf8Path::new("test.md"), &line_index, &[])
     }
 
+    fn has_file_ref(result: &ScanResult, target: &str) -> bool {
+        result
+            .file_refs
+            .iter()
+            .any(|reference| reference.target == target)
+    }
+
     #[test]
     fn cmark_code_block_skipping() {
         let body = "## Heading\nSome OQ-64 ref\n```\nOQ-99 in code\n```\n";
@@ -1176,7 +1199,7 @@ mod tests {
         let body = "[link](foo.md)\n";
         let (result, refs) = cmark_scan(body);
         assert!(
-            result.file_refs.iter().any(|(r, _)| r == "foo.md"),
+            has_file_ref(&result, "foo.md"),
             "should extract foo.md from link, got: {:?}",
             result.file_refs
         );
@@ -1190,7 +1213,16 @@ mod tests {
     #[test]
     fn cmark_wikilink_extraction() {
         let body = "[[wiki-target]]\n";
-        let (_result, refs) = cmark_scan(body);
+        let (result, refs) = cmark_scan(body);
+        assert!(
+            result.file_refs.iter().any(|reference| {
+                reference.target == "wiki-target"
+                    && reference.unresolved_disposition
+                        == UnresolvedRefDisposition::AmbiguousExternalOk
+            }),
+            "wiki-links should remain resolvable corpus refs with ambiguous unresolved disposition: {:?}",
+            result.file_refs
+        );
         // Wiki-links produce a DiscoveredRef
         assert!(!refs.is_empty(), "should extract wiki-link, got no refs");
         assert!(
@@ -1220,7 +1252,7 @@ mod tests {
         let body = "text with guide.md ref\n";
         let (result, refs) = cmark_scan(body);
         assert!(
-            result.file_refs.iter().any(|(r, _)| r == "guide.md"),
+            has_file_ref(&result, "guide.md"),
             "should extract guide.md from text, got: {:?}",
             result.file_refs
         );
@@ -1308,11 +1340,26 @@ mod tests {
     }
 
     #[test]
+    fn cmark_uri_scheme_links_do_not_become_file_refs() {
+        let body = "[claim](qmd://claims/root) and [mail](mailto:agent@example.test)\n";
+        let (result, refs) = cmark_scan(body);
+        assert!(
+            result.file_refs.is_empty(),
+            "URI-scheme links should not become corpus file refs: {:?}",
+            result.file_refs
+        );
+        assert!(
+            refs.is_empty(),
+            "preserve the external-link skip contract for standard links"
+        );
+    }
+
+    #[test]
     fn cmark_version_dot_rejection() {
         let body = "See formal-model/sample-algebra-v1.2.md for details\n";
         let (result, _) = cmark_scan(body);
         assert!(
-            !result.file_refs.iter().any(|(r, _)| r == "2.md"),
+            !has_file_ref(&result, "2.md"),
             "should not match fragment 2.md from v1.2.md, got: {:?}",
             result.file_refs
         );
@@ -1323,7 +1370,10 @@ mod tests {
         let body = "See RQ-01-program-format-encoding.md for details\n";
         let (result, _) = cmark_scan(body);
         assert!(
-            !result.file_refs.iter().any(|(r, _)| r.starts_with('-')),
+            !result
+                .file_refs
+                .iter()
+                .any(|reference| reference.target.starts_with('-')),
             "should not extract hyphen-prefixed fragments, got: {:?}",
             result.file_refs
         );
@@ -1360,7 +1410,7 @@ mod tests {
         let body = "[see](foo.md#section)\n";
         let (result, _refs) = cmark_scan(body);
         assert!(
-            result.file_refs.iter().any(|(r, _)| r == "foo.md"),
+            has_file_ref(&result, "foo.md"),
             "should extract foo.md stripping fragment, got: {:?}",
             result.file_refs
         );

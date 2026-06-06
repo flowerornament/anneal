@@ -11,6 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
 use crate::extract::config;
+use crate::extract::extraction::UnresolvedRefDisposition;
 use crate::extract::graph::{DiGraph, EdgeKind};
 use crate::extract::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::extract::parse::{self, PendingEdge};
@@ -995,6 +996,9 @@ fn emit_ordered_edges(
         if context.node_index.contains_key(&edge.target_identity) {
             continue;
         }
+        if edge.unresolved_disposition == UnresolvedRefDisposition::AmbiguousExternalOk {
+            continue;
+        }
         let source_handle = context.result.graph.node(edge.source);
         // CR-R6: unresolved reference attempts remain stored edge facts so
         // fact-backed diagnostics can reproduce v1 existence checks.
@@ -1696,6 +1700,30 @@ mod tests {
                 && meta.key == CodeTargetMeta::TARGET_RESOLVED_PATH
                 && meta.value == resolved_path.as_str()
         }));
+    }
+
+    #[test]
+    fn unresolved_ambiguous_wikilinks_do_not_emit_broken_corpus_edges() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(temp.path()).expect("utf8 tempdir");
+        std::fs::write(root.join("doc.md"), "# Doc\n\nSee [[claim]].\n").expect("write doc");
+
+        let batch = extract_markdown_facts(
+            root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract facts");
+
+        assert!(
+            !batch
+                .edges
+                .iter()
+                .any(|edge| edge.from == "doc.md" && edge.to == "claim"),
+            "ambiguous unresolved wikilink should not emit an E001-producing edge: {:?}",
+            batch.edges
+        );
     }
 
     #[test]

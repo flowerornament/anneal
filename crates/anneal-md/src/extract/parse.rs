@@ -12,7 +12,8 @@ use crate::extract::body_scan::{
 use crate::extract::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extract::extraction::{
     DiscoveredRef, FileExtraction, ImplausibleReason, LineIndex, RefHint, RefSource,
-    classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
+    UnresolvedRefDisposition, classify_frontmatter_value, extract_file_snippet_from_body,
+    extract_label_snippet_from_content,
 };
 use crate::extract::graph::{DiGraph, EdgeKind};
 use crate::extract::handle::{Handle, HandleMetadata, NodeId};
@@ -267,6 +268,7 @@ pub(crate) struct PendingEdge {
     /// 1-based line number in the source file. Frontmatter edges use line 1 as
     /// pragmatic fallback; body edges carry the line from the cmark scanner.
     pub(crate) line: Option<u32>,
+    pub(crate) unresolved_disposition: UnresolvedRefDisposition,
 }
 
 /// An edge descriptor parsed from a frontmatter field via the extensible mapping.
@@ -678,6 +680,7 @@ pub(crate) fn build_graph_scoped(
                             kind: fe.edge_kind.clone(),
                             inverse: fe.inverse,
                             line: Some(1),
+                            unresolved_disposition: UnresolvedRefDisposition::CorpusGate,
                         });
                     }
                 }
@@ -740,6 +743,7 @@ pub(crate) fn build_graph_scoped(
                 kind: EdgeKind::Cites,
                 inverse: false,
                 line: Some(code_ref.source_line),
+                unresolved_disposition: UnresolvedRefDisposition::CorpusGate,
             });
             code_refs.push(code_ref);
         }
@@ -779,13 +783,14 @@ pub(crate) fn build_graph_scoped(
             },
         );
 
-        for (file_ref, line) in &scan_result.file_refs {
+        for file_ref in &scan_result.file_refs {
             pending_edges.push(PendingEdge {
                 source: file_node,
-                target_identity: file_ref.clone(),
+                target_identity: file_ref.target.clone(),
                 kind: EdgeKind::Cites,
                 inverse: false,
-                line: Some(*line),
+                line: Some(file_ref.line),
+                unresolved_disposition: file_ref.unresolved_disposition,
             });
         }
         for (section_ref, line) in &scan_result.section_refs {
@@ -795,6 +800,7 @@ pub(crate) fn build_graph_scoped(
                 kind: EdgeKind::Cites,
                 inverse: false,
                 line: Some(*line),
+                unresolved_disposition: UnresolvedRefDisposition::CorpusGate,
             });
         }
     }
@@ -1372,6 +1378,91 @@ mod tests {
             impl_ext.refs.iter().any(|r| r.hint == RefHint::External),
             "impl.md should have an External ref"
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unresolved_wikilink_pending_edge_is_ambiguous_not_gate_level() {
+        let tmp = std::env::temp_dir().join("anneal_test_unresolved_wikilink");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "doc.md", "# Doc\n\nSee [[claim]].\n");
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(result.pending_edges.iter().any(|edge| {
+            edge.target_identity == "claim"
+                && edge.unresolved_disposition == UnresolvedRefDisposition::AmbiguousExternalOk
+        }));
+        let doc_ext = result
+            .extractions
+            .iter()
+            .find(|extraction| extraction.file == "doc.md")
+            .expect("doc extraction");
+        assert!(
+            doc_ext.refs.iter().any(|reference| reference.raw == "claim"
+                && reference.hint == RefHint::FilePath
+                && matches!(reference.source, RefSource::Body)),
+            "ambiguous wikilink remains visible in extraction refs: {:?}",
+            doc_ext.refs
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolved_wikilink_builds_normal_corpus_edge() {
+        let tmp = std::env::temp_dir().join("anneal_test_resolved_wikilink");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "doc.md", "# Doc\n\nSee [[target.md]].\n");
+        write_md_file(&tmp, "target.md", "# Target\n");
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let mut result = build_graph(root, &config).unwrap();
+        crate::extract::resolve::resolve_all(
+            &mut result.graph,
+            &result.label_candidates,
+            &result.pending_edges,
+            &config,
+            root,
+            &result.filename_index,
+        );
+        let doc_node = result
+            .graph
+            .nodes()
+            .find_map(|(node_id, handle)| (handle.id == "doc.md").then_some(node_id))
+            .expect("doc node");
+
+        assert!(
+            result.graph.outgoing(doc_node).iter().any(|edge| {
+                result.graph.node(edge.target).id == "target.md" && edge.kind == EdgeKind::Cites
+            }),
+            "resolved wikilink should produce a normal Cites edge"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unresolved_markdown_links_remain_gate_level_pending_edges() {
+        let tmp = std::env::temp_dir().join("anneal_test_unresolved_md_link");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "doc.md", "# Doc\n\nSee [target](missing.md).\n");
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(result.pending_edges.iter().any(|edge| {
+            edge.target_identity == "missing.md"
+                && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
+        }));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
