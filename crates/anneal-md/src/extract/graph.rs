@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 
-use crate::handle::{Handle, NodeId};
+use crate::extract::handle::{Handle, NodeId};
 
 /// Directed edge kinds. The five well-known kinds carry built-in diagnostic
 /// semantics; `Custom` accepts any user-defined string (indexed in the graph,
@@ -124,6 +124,7 @@ impl DiGraph {
         self.nodes.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn edge_count(&self) -> usize {
         self.fwd.iter().map(Vec::len).sum()
     }
@@ -132,12 +133,14 @@ impl DiGraph {
         &self.fwd[id.index()]
     }
 
+    #[cfg(test)]
     pub(crate) fn incoming(&self, id: NodeId) -> &[Edge] {
         &self.rev[id.index()]
     }
 
     /// Outgoing edges filtered by kind. Typed traversal as first-class API
     /// (per spec section 15.3).
+    #[cfg(test)]
     pub(crate) fn edges_by_kind(&self, id: NodeId, kind: EdgeKind) -> impl Iterator<Item = &Edge> {
         self.fwd[id.index()].iter().filter(move |e| e.kind == kind)
     }
@@ -159,7 +162,7 @@ impl Default for DiGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handle::Handle;
+    use crate::extract::handle::Handle;
 
     // -------------------------------------------------------------------
     // add_node

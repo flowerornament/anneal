@@ -9,13 +9,13 @@ use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::config::{AnnealConfig, Direction, FrontmatterConfig};
-use crate::extraction::{
+use crate::extract::config::{AnnealConfig, Direction, FrontmatterConfig};
+use crate::extract::extraction::{
     DiscoveredRef, FileExtraction, ImplausibleReason, LineIndex, RefHint, RefSource, SourceSpan,
     classify_frontmatter_value, extract_file_snippet_from_body, extract_label_snippet_from_content,
 };
-use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleMetadata, NodeId};
+use crate::extract::graph::{DiGraph, EdgeKind};
+use crate::extract::handle::{Handle, HandleMetadata, NodeId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1220,14 +1220,6 @@ fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
 // Root inference
 // ---------------------------------------------------------------------------
 
-/// Infer the root directory to scan.
-///
-/// Walks upward from the current directory, matching the runtime default-root
-/// behavior used by all command surfaces.
-pub(crate) fn infer_root(cwd: &Utf8Path) -> Utf8PathBuf {
-    anneal_core::infer_corpus_root(cwd).into_path()
-}
-
 // ---------------------------------------------------------------------------
 // Graph construction
 // ---------------------------------------------------------------------------
@@ -1281,7 +1273,6 @@ pub(crate) struct BuildResult {
     pub(crate) graph: DiGraph,
     pub(crate) label_candidates: Vec<LabelCandidate>,
     pub(crate) pending_edges: Vec<PendingEdge>,
-    pub(crate) observed_statuses: HashSet<String>,
     /// Statuses found exclusively in terminal-convention directories (D-04).
     pub(crate) terminal_by_directory: HashSet<String>,
     /// Frontmatter keys observed across all files with occurrence counts (D-07).
@@ -1374,8 +1365,6 @@ pub(crate) fn build_graph_scoped(
     let mut graph = DiGraph::new();
     let mut all_label_candidates = Vec::new();
     let mut pending_edges = Vec::new();
-    let mut observed_statuses = HashSet::new();
-
     // D-04: Track which statuses appear in terminal vs non-terminal directories
     let mut status_in_terminal: HashMap<String, usize> = HashMap::new();
     let mut status_in_nonterminal: HashMap<String, usize> = HashMap::new();
@@ -1511,10 +1500,8 @@ pub(crate) fn build_graph_scoped(
         }
 
         if let Some(ref s) = status {
-            observed_statuses.insert(s.clone());
-
             // D-04: Track directory convention for terminal status classification
-            let in_terminal = crate::path_conventions::has_terminal_directory(&relative);
+            let in_terminal = crate::extract::path_conventions::has_terminal_directory(&relative);
             if in_terminal {
                 *status_in_terminal.entry(s.clone()).or_insert(0) += 1;
             } else {
@@ -1704,7 +1691,6 @@ pub(crate) fn build_graph_scoped(
         graph,
         label_candidates: all_label_candidates,
         pending_edges,
-        observed_statuses,
         terminal_by_directory,
         observed_frontmatter_keys,
         filename_index,
@@ -1730,8 +1716,8 @@ fn is_inside_scan_roots(relative: &Utf8Path, scan_roots: &[Utf8PathBuf]) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::DiGraph;
-    use crate::handle::{Handle, HandleKind, HandleMetadata};
+    use crate::extract::graph::DiGraph;
+    use crate::extract::handle::{Handle, HandleKind, HandleMetadata};
 
     // -----------------------------------------------------------------------
     // Plausibility filter integration tests (build_graph)
@@ -2096,12 +2082,10 @@ mod tests {
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
 
-        assert!(
-            result
-                .graph
-                .nodes()
-                .all(|(_, handle)| !matches!(handle.kind, HandleKind::Section { .. })),
-            "section handles should not be emitted"
+        assert_eq!(
+            result.graph.node_count(),
+            1,
+            "section headings should not emit handles"
         );
         let spans = result
             .heading_spans
@@ -2233,11 +2217,7 @@ mod tests {
         assert_eq!(result.heading_spans[0].id, "test.md#h/heading");
         assert_eq!(result.heading_spans[0].title, "Heading");
         assert_eq!(result.heading_spans[0].path, "Heading");
-        let section_count = graph
-            .nodes()
-            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
-            .count();
-        assert_eq!(section_count, 0, "should not create section handles");
+        assert_eq!(graph.node_count(), 1, "should create only the file handle");
     }
 
     #[test]
@@ -2359,11 +2339,7 @@ mod tests {
                 ),
             ]
         );
-        let section_count = graph
-            .nodes()
-            .filter(|(_, h)| matches!(h.kind, HandleKind::Section { .. }))
-            .count();
-        assert_eq!(section_count, 0, "should not create section handles");
+        assert_eq!(graph.node_count(), 1, "should create only the file handle");
     }
 
     #[test]

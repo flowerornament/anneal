@@ -8,7 +8,6 @@ description = "Convergence assistant for knowledge corpora"
 
 [workspace]
 members = [
-    "crates/anneal-legacy",
     "crates/anneal-lang",
     "crates/anneal-core",
     "crates/anneal-md",
@@ -17,7 +16,6 @@ members = [
 ]
 default-members = [
     ".",
-    "crates/anneal-legacy",
     "crates/anneal-lang",
     "crates/anneal-core",
     "crates/anneal-md",
@@ -25,7 +23,6 @@ default-members = [
     "crates/anneal-mcp",
 ]
 exclude = [
-    "tools/parity-runner",
     "tools/spike-runner",
 ]
 resolver = "3"
@@ -56,7 +53,6 @@ struct_excessive_bools = "allow"
 
 [dependencies]
 anneal-cli = { version = "0.16.0", path = "crates/anneal-cli" }
-anneal-legacy = { version = "0.16.0", path = "crates/anneal-legacy" }
 dhat = { version = "0.3.3", optional = true }
 
 [profile.release]

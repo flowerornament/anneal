@@ -4,10 +4,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::config::AnnealConfig;
-use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind, NodeId};
-use crate::parse::{LabelCandidate, PendingEdge};
+use crate::extract::config::AnnealConfig;
+use crate::extract::graph::{DiGraph, EdgeKind};
+use crate::extract::handle::{Handle, HandleKind, NodeId};
+use crate::extract::parse::{LabelCandidate, PendingEdge};
 
 // ---------------------------------------------------------------------------
 // Resolution cascade types (Phase 6, RESOLVE-02..06)
@@ -48,6 +48,10 @@ struct ResolveResult {
 }
 
 /// Overall statistics from the full resolution pipeline.
+///
+/// Native extraction currently runs resolution for its graph side effects; tests
+/// inspect selected counters, while the production adapter ignores the summary.
+#[allow(dead_code)]
 pub(crate) struct ResolveStats {
     pub(crate) namespaces: HashSet<String>,
     pub(crate) labels_resolved: usize,
@@ -350,7 +354,7 @@ pub(crate) fn resolve_file_path(
 ///
 /// If `resolve_file_path` returns `None` (not found relative to referring file),
 /// try a direct root-relative join.
-fn resolve_bare_filename(
+pub(crate) fn resolve_bare_filename(
     reference: &str,
     referring_file: &Utf8Path,
     root: &Utf8Path,
@@ -372,7 +376,7 @@ fn resolve_bare_filename(
 ///
 /// Identity mappings:
 /// - File handles: identity = relative path string
-/// - Section handles: identity = "{file}#{heading-slug}"
+/// - Heading spans are emitted as `*span` rows, not graph handles.
 /// - Label handles: identity = "PREFIX-NUMBER"
 /// - Version handles: identity = "{base}-vN"
 pub(crate) fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {

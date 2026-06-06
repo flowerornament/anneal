@@ -1,4 +1,4 @@
-//! Markdown adapter for anneal v2.
+//! Markdown adapter for anneal.
 
 use anneal_core::{
     ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern, RelativePathPolicy, Source,
@@ -7,6 +7,8 @@ use anneal_core::{
 };
 use camino::Utf8PathBuf;
 use serde::Serialize;
+
+mod extract;
 
 const SOURCE_NAME: &str = "markdown";
 
@@ -36,10 +38,10 @@ pub struct InitOutput {
 
 pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::Result<InitOutput> {
     let mode = match mode {
-        InitMode::DryRun => anneal_legacy::v2_adapter::InitMode::DryRun,
-        InitMode::Write { force } => anneal_legacy::v2_adapter::InitMode::Write { force },
+        InitMode::DryRun => extract::adapter::InitMode::DryRun,
+        InitMode::Write { force } => extract::adapter::InitMode::Write { force },
     };
-    let output = anneal_legacy::v2_adapter::render_or_write_init(root, mode)?;
+    let output = extract::adapter::render_or_write_init(root, mode)?;
     Ok(InitOutput {
         body: output.body,
         written: output.written,
@@ -51,16 +53,15 @@ pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::
 /// Markdown `Source` implementation.
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownSource {
-    legacy_config: Option<anneal_legacy::v2_adapter::MarkdownLegacyConfig>,
+    config: Option<extract::adapter::MarkdownConfig>,
 }
 
 impl MarkdownSource {
     pub fn with_runtime_config(config: &ConfigFacts) -> Result<Self, SourceError> {
-        let legacy_config =
-            anneal_legacy::v2_adapter::MarkdownLegacyConfig::from_runtime_facts(config)
-                .map_err(|err| SourceError::Other(err.to_string()))?;
+        let config = extract::adapter::MarkdownConfig::from_runtime_facts(config)
+            .map_err(|err| SourceError::Other(err.to_string()))?;
         Ok(Self {
-            legacy_config: Some(legacy_config),
+            config: Some(config),
         })
     }
 }
@@ -70,7 +71,7 @@ impl Source for MarkdownSource {
         SourceInfo {
             name: SOURCE_NAME,
             recognizes: vec![Pattern::new("**/*.md")],
-            doc: "Extracts markdown files through the v1 parse/resolve pipeline and emits stored relation facts.",
+            doc: "Extracts markdown files into stored relation facts.",
             config_keys: vec![
                 ConfigKey::required_exact("md.file_extension", 1),
                 ConfigKey::required_exact("md.scan_root", 1),
@@ -99,8 +100,8 @@ impl Source for MarkdownSource {
         }
 
         let generation = cx.next_generation();
-        let mut config = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
-        config.options.probe_code_target_history = cx.probe_code_target_history;
+        let mut discovery = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
+        discovery.options.probe_code_target_history = cx.probe_code_target_history;
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -109,22 +110,22 @@ impl Source for MarkdownSource {
         );
         for root in cx.roots {
             cx.cancellation.check()?;
-            let batch = if let Some(legacy_config) = &self.legacy_config {
-                anneal_legacy::v2_adapter::extract_markdown_facts_with_legacy_config(
+            let batch = if let Some(markdown_config) = &self.config {
+                extract::adapter::extract_markdown_facts_with_markdown_config(
                     root,
                     cx.corpus.clone(),
                     SourceName::from(SOURCE_NAME),
                     generation,
-                    legacy_config,
-                    &config.options,
+                    markdown_config,
+                    &discovery.options,
                 )
             } else {
-                anneal_legacy::v2_adapter::extract_markdown_facts_with_options(
+                extract::adapter::extract_markdown_facts_with_options(
                     root,
                     cx.corpus.clone(),
                     SourceName::from(SOURCE_NAME),
                     generation,
-                    &config.options,
+                    &discovery.options,
                 )
             }
             .map_err(|err| SourceError::Other(err.to_string()))?;
@@ -142,7 +143,7 @@ impl Source for MarkdownSource {
 }
 
 struct MarkdownDiscoveryConfig {
-    options: anneal_legacy::v2_adapter::MarkdownExtractionOptions,
+    options: extract::adapter::MarkdownExtractionOptions,
 }
 
 impl MarkdownDiscoveryConfig {
@@ -162,7 +163,7 @@ impl MarkdownDiscoveryConfig {
         }
 
         Ok(Self {
-            options: anneal_legacy::v2_adapter::MarkdownExtractionOptions {
+            options: extract::adapter::MarkdownExtractionOptions {
                 scan_roots,
                 exclude: facts
                     .values("md.scan_exclude")
@@ -182,7 +183,7 @@ fn validate_file_extensions(facts: &ConfigFacts) -> Result<(), SourceError> {
     for extension in facts.values("md.file_extension") {
         if !matches!(extension, ".md" | "md") {
             return Err(SourceError::Other(format!(
-                "markdown source only supports md.file_extension(\".md\") during the legacy bridge; got {extension:?}"
+                "markdown source only supports md.file_extension(\".md\"); got {extension:?}"
             )));
         }
     }
@@ -192,7 +193,7 @@ fn validate_file_extensions(facts: &ConfigFacts) -> Result<(), SourceError> {
 fn reject_unsupported(facts: &ConfigFacts, key: &str) -> Result<(), SourceError> {
     if let Some(value) = facts.first(key) {
         return Err(SourceError::Other(format!(
-            "markdown source does not support {key}({value:?}) through the legacy bridge yet"
+            "markdown source does not support {key}({value:?}) yet"
         )));
     }
     Ok(())

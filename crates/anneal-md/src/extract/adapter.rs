@@ -10,11 +10,10 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::config;
-use crate::extraction::ImplausibleReason;
-use crate::graph::{DiGraph, EdgeKind};
-use crate::handle::{Handle, HandleKind, HandleMetadata, NodeId, resolved_file};
-use crate::parse::{self, PendingEdge};
+use crate::extract::config;
+use crate::extract::graph::{DiGraph, EdgeKind};
+use crate::extract::handle::{Handle, HandleKind, NodeId, resolved_file};
+use crate::extract::parse::{self, PendingEdge};
 
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
@@ -25,11 +24,11 @@ pub struct MarkdownExtractionOptions {
 }
 
 #[derive(Clone, Debug)]
-pub struct MarkdownLegacyConfig {
+pub struct MarkdownConfig {
     config: config::AnnealConfig,
 }
 
-impl MarkdownLegacyConfig {
+impl MarkdownConfig {
     pub fn from_runtime_facts(facts: &anneal_core::ConfigFacts) -> Result<Self> {
         let mut config = config::AnnealConfig::default();
         config::apply_runtime_config_facts(&mut config, facts)?;
@@ -44,14 +43,6 @@ pub enum InitMode {
 }
 
 impl InitMode {
-    pub const fn from_flags(dry_run: bool, force: bool) -> Self {
-        if dry_run {
-            Self::DryRun
-        } else {
-            Self::Write { force }
-        }
-    }
-
     const fn dry_run(self) -> bool {
         matches!(self, Self::DryRun)
     }
@@ -91,8 +82,8 @@ pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutpu
         });
     }
     if (mode.dry_run() || mode.force()) && (unified_exists || legacy_exists) {
-        let config = if let Some(legacy_config) = config::load_legacy_config(root.as_std_path())? {
-            legacy_config
+        let config = if let Some(toml_config) = config::load_legacy_config(root.as_std_path())? {
+            toml_config
         } else {
             config::load_unified_config_for_init(root.as_std_path())?
         };
@@ -131,6 +122,7 @@ pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutpu
     render_or_write_init_from_config(root, config, mode)
 }
 
+#[cfg(test)]
 pub fn extract_markdown_facts(
     root: &Utf8Path,
     corpus: anneal_core::CorpusId,
@@ -154,10 +146,17 @@ pub fn extract_markdown_facts_with_options(
     options: &MarkdownExtractionOptions,
 ) -> Result<FactBatch> {
     let mut config = config::load_config(root.as_std_path())?;
-    extract_markdown_facts_with_config(root, corpus, source, generation, &mut config, options)
+    extract_markdown_facts_from_anneal_config(
+        root,
+        corpus,
+        source,
+        generation,
+        &mut config,
+        options,
+    )
 }
 
-fn extract_markdown_facts_with_config(
+fn extract_markdown_facts_from_anneal_config(
     root: &Utf8Path,
     corpus: anneal_core::CorpusId,
     source: SourceName,
@@ -176,7 +175,7 @@ fn extract_markdown_facts_with_config(
         options.scan_roots.clone()
     };
     let mut result = parse::build_graph_scoped(root, config, &scan_roots)?;
-    let _stats = crate::resolve::resolve_all(
+    let _stats = crate::extract::resolve::resolve_all(
         &mut result.graph,
         &result.label_candidates,
         &result.pending_edges,
@@ -184,15 +183,15 @@ fn extract_markdown_facts_with_config(
         root,
         &result.filename_index,
     );
-    let pre_cascade_index = crate::resolve::build_node_index(&result.graph);
+    let pre_cascade_index = crate::extract::resolve::build_node_index(&result.graph);
     let root_str = root.to_string();
-    let cascade_results = crate::resolve::cascade_unresolved(
+    let cascade_results = crate::extract::resolve::cascade_unresolved(
         &mut result.graph,
         &result.pending_edges,
         &pre_cascade_index,
         &root_str,
     );
-    let node_index = crate::resolve::build_node_index(&result.graph);
+    let node_index = crate::extract::resolve::build_node_index(&result.graph);
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
@@ -231,16 +230,23 @@ fn extract_markdown_facts_with_config(
     Ok(batch)
 }
 
-pub fn extract_markdown_facts_with_legacy_config(
+pub fn extract_markdown_facts_with_markdown_config(
     root: &Utf8Path,
     corpus: anneal_core::CorpusId,
     source: SourceName,
     generation: Generation,
-    legacy_config: &MarkdownLegacyConfig,
+    markdown_config: &MarkdownConfig,
     options: &MarkdownExtractionOptions,
 ) -> Result<FactBatch> {
-    let mut config = legacy_config.config.clone();
-    extract_markdown_facts_with_config(root, corpus, source, generation, &mut config, options)
+    let mut config = markdown_config.config.clone();
+    extract_markdown_facts_from_anneal_config(
+        root,
+        corpus,
+        source,
+        generation,
+        &mut config,
+        options,
+    )
 }
 
 const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
@@ -926,7 +932,7 @@ struct EdgeOrderContext<'a> {
     result: &'a parse::BuildResult,
     pre_cascade_index: &'a HashMap<String, NodeId>,
     node_index: &'a HashMap<String, NodeId>,
-    cascade_results: &'a [crate::resolve::CascadeResult],
+    cascade_results: &'a [crate::extract::resolve::CascadeResult],
 }
 
 fn emit_ordered_edges(
@@ -1026,7 +1032,7 @@ fn take_label_edges(
     remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
-    let namespaces = crate::resolve::infer_namespaces(&result.label_candidates, config);
+    let namespaces = crate::extract::resolve::infer_namespaces(&result.label_candidates, config);
     let heading_first = result
         .label_candidates
         .iter()
@@ -1100,7 +1106,7 @@ fn take_pending_edges(
 fn take_cascade_edges(
     result: &parse::BuildResult,
     node_index: &HashMap<String, NodeId>,
-    cascade_results: &[crate::resolve::CascadeResult],
+    cascade_results: &[crate::extract::resolve::CascadeResult],
     remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
@@ -1162,27 +1168,20 @@ fn resolve_pending_target(
             return None;
         }
         let referring_file = result.graph.node(edge.source).file_path.as_deref()?;
-        resolve_bare_filename(&edge.target_identity, referring_file, root, node_index).or_else(
-            || {
-                result
-                    .filename_index
-                    .get(&edge.target_identity)
-                    .filter(|paths| paths.len() == 1)
-                    .and_then(|paths| node_index.get(paths[0].as_str()).copied())
-            },
+        crate::extract::resolve::resolve_bare_filename(
+            &edge.target_identity,
+            referring_file,
+            root,
+            node_index,
         )
+        .or_else(|| {
+            result
+                .filename_index
+                .get(&edge.target_identity)
+                .filter(|paths| paths.len() == 1)
+                .and_then(|paths| node_index.get(paths[0].as_str()).copied())
+        })
     })
-}
-
-fn resolve_bare_filename(
-    reference: &str,
-    referring_file: &Utf8Path,
-    root: &Utf8Path,
-    node_index: &HashMap<String, NodeId>,
-) -> Option<NodeId> {
-    crate::resolve::resolve_file_path(reference, referring_file, root)
-        .and_then(|found| node_index.get(found.as_str()).copied())
-        .or_else(|| node_index.get(reference).copied())
 }
 
 fn emit_file_parent_meta(batch: &mut FactBatch, revisions: &mut RevisionCache<'_>, file: &str) {
@@ -1499,7 +1498,7 @@ fn area_for(file: &str) -> String {
     if file.is_empty() {
         String::new()
     } else {
-        crate::area::area_of(file).to_string()
+        crate::extract::area::area_of(file).to_string()
     }
 }
 
@@ -1518,7 +1517,7 @@ mod tests {
     use super::{
         InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts, render_or_write_init,
     };
-    use crate::v2_adapter::extract_markdown_facts_with_options;
+    use crate::extract::adapter::extract_markdown_facts_with_options;
 
     #[test]
     fn area_for_groups_root_files_under_root_area() {

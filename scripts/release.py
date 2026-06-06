@@ -18,7 +18,6 @@ ANNEAL_MANIFESTS = [
     ROOT / "crates/anneal-cli/Cargo.toml",
     ROOT / "crates/anneal-core/Cargo.toml",
     ROOT / "crates/anneal-lang/Cargo.toml",
-    ROOT / "crates/anneal-legacy/Cargo.toml",
     ROOT / "crates/anneal-mcp/Cargo.toml",
     ROOT / "crates/anneal-md/Cargo.toml",
 ]

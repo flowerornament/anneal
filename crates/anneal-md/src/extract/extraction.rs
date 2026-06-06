@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::graph::EdgeKind;
-use crate::handle::HandleMetadata;
+use crate::extract::graph::EdgeKind;
+use crate::extract::handle::HandleMetadata;
 
 // ---------------------------------------------------------------------------
 // Reference classification types

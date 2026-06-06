@@ -1,7 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::graph::DiGraph;
+use crate::extract::graph::DiGraph;
 
 /// Arena index into `DiGraph::nodes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -17,15 +17,13 @@ impl NodeId {
     }
 }
 
-/// The five kinds of handle per KB-D2.
+/// Handle kinds emitted by the markdown adapter.
 ///
 /// Kind determines discovery, resolution, and valid states.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub(crate) enum HandleKind {
     /// A markdown file, identified by its path relative to root.
     File(Utf8PathBuf),
-    /// A heading range within a parent file.
-    Section { parent: NodeId, heading: String },
     /// A cross-reference label (e.g., OQ-64, A-10).
     Label { prefix: String, number: u32 },
     /// A version of a versioned artifact (e.g., v17 of formal-model).
@@ -38,7 +36,6 @@ impl HandleKind {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::File(_) => "file",
-            Self::Section { .. } => "section",
             Self::Label { .. } => "label",
             Self::Version { .. } => "version",
             Self::External { .. } => "external",
@@ -85,19 +82,6 @@ impl Handle {
             date,
             size_bytes,
             metadata,
-        }
-    }
-
-    /// Create a Section handle.
-    pub(crate) fn section(parent: NodeId, heading: String, file_path: Utf8PathBuf) -> Self {
-        Self {
-            id: format!("{}#{}", file_path, heading.to_lowercase().replace(' ', "-")),
-            kind: HandleKind::Section { parent, heading },
-            status: None,
-            file_path: Some(file_path),
-            date: None,
-            size_bytes: None,
-            metadata: HandleMetadata::default(),
         }
     }
 
@@ -192,20 +176,6 @@ impl Handle {
             Utf8PathBuf::from(id),
             status.map(String::from),
             None,
-            None,
-            HandleMetadata::default(),
-        )
-    }
-
-    pub(crate) fn test_file_with_date(
-        id: &str,
-        status: Option<&str>,
-        date: chrono::NaiveDate,
-    ) -> Self {
-        Self::file(
-            Utf8PathBuf::from(id),
-            status.map(String::from),
-            Some(date),
             None,
             HandleMetadata::default(),
         )

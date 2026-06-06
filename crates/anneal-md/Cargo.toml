@@ -26,11 +26,18 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-legacy = { version = "0.16.0", path = "../anneal-legacy" }
 anneal-core = { path = "../anneal-core" }
 camino = "1.2.2"
 anyhow = "1.0.102"
 serde = { version = "1.0.228", features = ["derive"] }
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde"] }
+globset = "0.4.18"
+pulldown-cmark = "0.13.3"
+regex = "1.12.3"
+serde_json = "1.0.149"
+serde_yaml_ng = "0.10.0"
+toml = "0.8.23"
+walkdir = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

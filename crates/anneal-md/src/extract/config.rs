@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use anneal_core::runtime::{CallArg, Expr, Literal, NumberLiteral, Statement, parse_program};
@@ -6,7 +6,6 @@ use anneal_core::{
     ConfigEntry, ConfigFacts, RuntimeConfigLifecycle, runtime_config_declaration_for,
 };
 use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Direction of an edge created from a frontmatter field.
@@ -212,25 +211,6 @@ pub(crate) struct ImpactConfig {
     pub(crate) traverse: Vec<String>,
 }
 
-impl ImpactConfig {
-    /// Resolve the configured traversal set to `EdgeKind` values.
-    /// Returns the default set if `traverse` is empty.
-    pub(crate) fn resolve_traverse_set(&self) -> Vec<crate::graph::EdgeKind> {
-        if self.traverse.is_empty() {
-            vec![
-                crate::graph::EdgeKind::DependsOn,
-                crate::graph::EdgeKind::Supersedes,
-                crate::graph::EdgeKind::Verifies,
-            ]
-        } else {
-            self.traverse
-                .iter()
-                .map(|s| crate::graph::EdgeKind::from_name(s))
-                .collect()
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AnnealConfig {
@@ -287,20 +267,6 @@ pub(crate) struct StateConfig {
     pub(crate) history_dir: Option<String>,
 }
 
-/// Machine-local user configuration loaded from XDG config.
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct UserConfig {
-    pub(crate) state: StateConfig,
-}
-
-/// Fully resolved runtime state settings after applying precedence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedStateConfig {
-    pub(crate) history_mode: HistoryMode,
-    pub(crate) history_dir: Option<Utf8PathBuf>,
-}
-
 /// Configuration for the convergence lattice (active/terminal partition).
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -329,12 +295,6 @@ pub(crate) struct HandlesConfig {
     pub(crate) rejected: Vec<String>,
     /// Namespace prefixes whose handles are linear (must be discharged exactly once).
     pub(crate) linear: Vec<String>,
-}
-
-impl HandlesConfig {
-    pub(crate) fn linear_set(&self) -> HashSet<&str> {
-        self.linear.iter().map(String::as_str).collect()
-    }
 }
 
 /// Configuration for check command behavior.
@@ -449,6 +409,7 @@ fn load_unified_config_with_mode(
         .with_context(|| format!("failed to parse config declarations in {}", path.display()))
 }
 
+#[cfg(test)]
 fn parse_unified_config(source_name: &str, content: &str) -> Result<AnnealConfig> {
     parse_unified_config_with_mode(source_name, content, ObsoleteConfirmedMode::Reject)
 }
@@ -488,8 +449,8 @@ fn parse_unified_config_with_mode(
                     )?);
                 }
             }
-            // v1-parity compatibility only: the legacy command set can project
-            // markdown source config, but future adapters stay on the runtime path.
+            // Compatibility with pre-source-block configs: markdown source
+            // declarations project into this adapter's native config.
             Statement::SourceBlock(block) if block.source.as_str() == "md" => {
                 for declaration in block.declarations {
                     let values = declaration_values(&declaration.args).with_context(|| {
@@ -499,8 +460,8 @@ fn parse_unified_config_with_mode(
                 }
             }
             Statement::SourceBlock(block) => {
-                // The legacy command set is markdown-only. Future adapters are
-                // handled by the runtime surface rather than this v1 bridge.
+                // Non-markdown adapters are handled by the runtime surface; this
+                // extractor only projects markdown config.
                 anyhow::bail!("unknown source block source {} {{ ... }}", block.source);
             }
             _ => {}
@@ -782,68 +743,6 @@ fn apply_first_f64(facts: &ConfigFacts, key: &str, target: &mut f64) -> Result<(
     Ok(())
 }
 
-/// Load machine-local user configuration from XDG config.
-///
-/// Search path:
-/// - `$XDG_CONFIG_HOME/anneal/config.toml`
-/// - `~/.config/anneal/config.toml`
-///
-/// Missing config is valid and resolves to defaults.
-pub(crate) fn load_user_config() -> Result<UserConfig> {
-    let Some(config_path) = user_config_path() else {
-        return Ok(UserConfig::default());
-    };
-
-    let content = match std::fs::read_to_string(config_path.as_std_path()) {
-        Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(UserConfig::default());
-        }
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to read {}", config_path.as_str()));
-        }
-    };
-
-    toml::from_str(&content).with_context(|| format!("failed to parse {}", config_path.as_str()))
-}
-
-pub(crate) fn resolve_state_config(
-    repo_config: &AnnealConfig,
-    user_config: &UserConfig,
-) -> ResolvedStateConfig {
-    let history_mode = repo_config
-        .state
-        .history_mode
-        .or(user_config.state.history_mode)
-        .unwrap_or(HistoryMode::Xdg);
-
-    // Machine-local storage paths come only from user config. Repo config may
-    // choose the backend mode, but not an arbitrary location on the user's
-    // machine.
-    let history_dir = user_config
-        .state
-        .history_dir
-        .as_deref()
-        .map(Utf8PathBuf::from);
-
-    ResolvedStateConfig {
-        history_mode,
-        history_dir,
-    }
-}
-
-fn user_config_path() -> Option<Utf8PathBuf> {
-    let base = if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-        Utf8PathBuf::from_path_buf(dir.into()).ok()
-    } else {
-        std::env::var_os("HOME")
-            .and_then(|home| Utf8PathBuf::from_path_buf(home.into()).ok())
-            .map(|home| home.join(".config"))
-    }?;
-
-    Some(base.join("anneal/config.toml"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,7 +799,7 @@ default_filter = "all"
     }
 
     #[test]
-    fn unified_datalog_config_parses_to_legacy_config() {
+    fn unified_datalog_config_parses_to_markdown_config() {
         let config = parse_unified_config(
             "anneal.dl",
             r#"
@@ -1115,47 +1014,5 @@ history_dir = "/tmp/anneal-state"
             config.state.history_dir.as_deref(),
             Some("/tmp/anneal-state")
         );
-    }
-
-    #[test]
-    fn resolve_state_config_prefers_repo_over_user_over_default() {
-        let repo = AnnealConfig {
-            state: StateConfig {
-                history_mode: Some(HistoryMode::Repo),
-                history_dir: Some("/repo".to_string()),
-            },
-            ..AnnealConfig::default()
-        };
-        let user = UserConfig {
-            state: StateConfig {
-                history_mode: Some(HistoryMode::Off),
-                history_dir: Some("/user".to_string()),
-            },
-        };
-
-        let resolved = resolve_state_config(&repo, &user);
-        assert_eq!(resolved.history_mode, HistoryMode::Repo);
-        assert_eq!(
-            resolved
-                .history_dir
-                .as_deref()
-                .map(camino::Utf8Path::as_str),
-            Some("/user")
-        );
-    }
-
-    #[test]
-    fn resolve_state_config_uses_user_when_repo_omits_state() {
-        let repo = AnnealConfig::default();
-        let user = UserConfig {
-            state: StateConfig {
-                history_mode: Some(HistoryMode::Off),
-                history_dir: None,
-            },
-        };
-
-        let resolved = resolve_state_config(&repo, &user);
-        assert_eq!(resolved.history_mode, HistoryMode::Off);
-        assert_eq!(resolved.history_dir, None);
     }
 }
