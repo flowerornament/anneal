@@ -69,7 +69,6 @@ dependencies = [
  "smallvec",
  "tempfile",
  "thiserror",
- "toml",
 ]
 
 [[package]]

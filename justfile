@@ -32,11 +32,26 @@ check:
     _t install bash -n install.sh
     _t clippy  cargo clippy --all-targets
     _t test    cargo test
+    # Architecture fitness functions (offline, fast): unused deps + crate-DAG /
+    # license / source bans. Guarded so a tool-less env degrades gracefully —
+    # run `just audit` for the full check incl. security advisories.
+    if command -v cargo-machete >/dev/null 2>&1 && command -v cargo-deny >/dev/null 2>&1; then
+        _t machete cargo machete
+        _t deny    cargo deny check bans licenses sources
+    else
+        echo "  (fitness: cargo-machete/cargo-deny not installed; run 'just audit')" >&2
+    fi
     echo "--------------------" >&2
     total=0
     while read -r _ ms; do total=$((total + ms)); done < /tmp/anneal-check-times.$$
     printf "  %-12s %d.%02ds\n" "total:" "$((total / 1000))" "$(( (total % 1000) / 10 ))" >&2
     rm -f /tmp/anneal-check-times.$$
+
+# Architecture fitness functions: unused deps + crate-DAG/license/source/advisory bans
+[group('check')]
+audit:
+    cargo machete
+    cargo deny check
 
 # Format source files (modify in place)
 [group('check')]
