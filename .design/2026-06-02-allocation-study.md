@@ -7,7 +7,7 @@ authors: [codex]
 relates: [.design/2026-06-01-perf-architecture-arc.md]
 ---
 
-# Allocation Study: Compiler Arc Phase 1
+# Allocation Study: Compiler Arc Phase 1 — 2026-06-02
 
 ## Question
 

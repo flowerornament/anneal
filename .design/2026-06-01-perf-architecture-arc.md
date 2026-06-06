@@ -2,7 +2,7 @@
 status: draft
 ---
 
-# Performance & Architecture Arc — anneal is a compiler; build it like one
+# Performance & Architecture Arc — anneal is a compiler; build it like one — 2026-06-01
 
 The reframe that organizes this arc (Morgan, 2026-06-01): **anneal is a
 programming language and its runtime is a compiler — we should build it

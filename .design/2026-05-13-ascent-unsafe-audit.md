@@ -11,7 +11,7 @@ description: >
   engine-derived primitives.
 ---
 
-# Ascent Unsafe Audit
+# Ascent Unsafe Audit — 2026-05-13
 
 This closes the audit artifact requested by SP-R1 §3.6 and the Phase 0
 closure plan. It does **not** prove Ascent is unsafe-free. It proves the

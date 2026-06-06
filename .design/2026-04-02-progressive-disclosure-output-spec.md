@@ -12,7 +12,7 @@ references:
   napkin: https://github.com/Michaelliv/napkin
 ---
 
-# Progressive Disclosure Output Spec
+# Progressive Disclosure Output Spec — 2026-04-02
 
 ## Part I: Rationale
 

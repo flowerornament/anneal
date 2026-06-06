@@ -1,4 +1,4 @@
-# Post-Arc Runtime Profile
+# Post-Arc Runtime Profile — 2026-06-04
 
 Status: measured
 Date: 2026-06-04

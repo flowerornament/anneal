@@ -7,7 +7,7 @@ depends-on:
   - 2026-05-19-compatibility-surface-retire-audit.md
 ---
 
-# Multi-arg positional predicate ergonomics — empirical trace
+# Multi-arg positional predicate ergonomics — empirical trace — 2026-05-21
 
 ## Summary
 

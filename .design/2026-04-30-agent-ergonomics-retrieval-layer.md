@@ -15,7 +15,7 @@ note: >
   outside the v2.0 language epic.
 ---
 
-# Agent Ergonomics and Retrieval Layer Spec
+# Agent Ergonomics and Retrieval Layer Spec — 2026-04-30
 
 ## Summary
 

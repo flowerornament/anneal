@@ -16,7 +16,7 @@ description: >
   navigation for the core "find evidence for X" agent workflow.
 ---
 
-# v0.15 — Retrieval Release Design
+# v0.15 — Retrieval Release Design — 2026-05-28
 
 ## Narrative arc
 

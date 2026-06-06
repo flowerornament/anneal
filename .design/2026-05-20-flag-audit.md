@@ -5,7 +5,7 @@ author: claude (sub-agent flag audit)
 depends-on: 2026-05-19-compatibility-surface-retire-audit.md
 ---
 
-# anneal v0.11.1 — Flag Quality Audit
+# anneal v0.11.1 — Flag Quality Audit — 2026-05-20
 
 ## Summary
 

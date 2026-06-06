@@ -2,7 +2,7 @@
 status: draft
 ---
 
-# Spec→Code Coherence: one diagnostic, no code backend
+# Spec→Code Coherence: one diagnostic, no code backend — 2026-06-01
 
 A live spec that names a code path which no longer exists is lying to the next
 cold agent. This document specifies a single diagnostic that surfaces exactly

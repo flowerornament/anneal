@@ -8,7 +8,7 @@ relates:
   - .design/2026-06-02-allocation-study.md # the WHY
 ---
 
-# anneal runtime architecture (post-compiler-arc, as built)
+# anneal runtime architecture (post-compiler-arc, as built) — 2026-06-04
 
 This documents the runtime **as it actually is** after the compiler arc
 (`anneal-g0l4`), not as the pass-contract appendix planned it. Where the two

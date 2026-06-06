@@ -7,7 +7,7 @@ description: >
   identifying bounded defaults and risky output shapes for agent-oriented use.
 ---
 
-# anneal CLI Output Audit
+# anneal CLI Output Audit — 2026-04-02
 
 Date: 2026-04-02
 

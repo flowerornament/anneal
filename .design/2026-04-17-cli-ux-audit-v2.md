@@ -9,7 +9,7 @@ description: >
   covers payload size rather than presentation.
 ---
 
-# anneal CLI UX Audit (v2, presentation-focused)
+# anneal CLI UX Audit (v2, presentation-focused) — 2026-04-17
 
 The 2026-04-02 audit asked "how much does it dump?". This one asks "does
 it look like a coherent tool?". Same CLI, different lens.

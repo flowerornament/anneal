@@ -10,7 +10,7 @@ depends-on:
   - 2026-04-02-query-explain-spec.md
 ---
 
-# Language-First Redesign
+# Language-First Redesign — 2026-05-03
 
 A proposal to collapse anneal's 14-command CLI into one query language, one
 prelude of vocabulary, and seven verbs that double as worked examples.

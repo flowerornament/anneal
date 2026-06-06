@@ -16,7 +16,7 @@ description: >
   v0.15 (break with migration), or v1.0 (major).
 ---
 
-# Phase 0 — Handle-Kind Consolidation
+# Phase 0 — Handle-Kind Consolidation — 2026-05-28
 
 ## §1 Current uses inventory
 

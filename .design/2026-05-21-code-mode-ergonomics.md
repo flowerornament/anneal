@@ -25,7 +25,7 @@ description: >
   for the language.
 ---
 
-# Code Mode Ergonomics — v0.12 Arc
+# Code Mode Ergonomics — v0.12 Arc — 2026-05-21
 
 ## Why this exists
 

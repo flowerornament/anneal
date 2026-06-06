@@ -8,7 +8,7 @@ depends-on:
   - 2026-04-17-cli-ux-audit-v2.md
 ---
 
-# Orient: Frontier + Foundation
+# Orient: Frontier + Foundation — 2026-04-21
 
 ## Motivation
 

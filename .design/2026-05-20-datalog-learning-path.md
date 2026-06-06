@@ -6,7 +6,7 @@ depends-on:
   - 2026-05-19-compatibility-surface-retire-audit.md
 ---
 
-# Datalog Learning Path — Cold-Agent Audit
+# Datalog Learning Path — Cold-Agent Audit — 2026-05-20
 
 A cold-agent simulation: learn enough of anneal's Datalog dialect from in-binary surfaces alone (no master spec, no prelude source, no runtime source) to compose two non-trivial queries. The point is not the queries — it's the trace of what the surface teaches vs. what the agent must guess.
 

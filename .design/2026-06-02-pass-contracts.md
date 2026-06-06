@@ -8,7 +8,7 @@ reviewers: [codex, subagent-factcheck]
 relates: [.design/2026-06-01-perf-architecture-arc.md, .design/2026-06-02-allocation-study.md]
 ---
 
-# Pass-contract appendix — the compiler's typed artifacts and boundaries
+# Pass-contract appendix — the compiler's typed artifacts and boundaries — 2026-06-02
 
 This is **Phase 0** of the compiler arc. The arc doc
 (`2026-06-01-perf-architecture-arc.md`) argues the *why* and the shape; this

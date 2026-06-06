@@ -11,7 +11,7 @@ description: >
   budget for the dual-CLI deprecation cycle.
 ---
 
-# v2.0 Phase 0: Engine Spike and Parity Protocol
+# v2.0 Phase 0: Engine Spike and Parity Protocol — 2026-05-07
 
 A concrete, executable plan to validate the language-first redesign before
 committing to Phase 1 implementation. The output is real data: a numeric

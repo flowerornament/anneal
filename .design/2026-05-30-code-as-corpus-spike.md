@@ -2,7 +2,7 @@
 status: current
 ---
 
-# Code-As-Corpus Spike
+# Code-As-Corpus Spike — 2026-05-30
 
 Question: can rustdoc JSON become an anneal corpus where Rust API stability acts
 as a convergence lattice?

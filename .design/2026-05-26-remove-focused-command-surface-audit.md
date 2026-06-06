@@ -14,7 +14,7 @@ description: >
   convergence vocabulary that teaches agents how to behave.
 ---
 
-# Remove-Focused Command Surface Audit
+# Remove-Focused Command Surface Audit — 2026-05-26
 
 ## Why This Exists
 

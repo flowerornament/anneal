@@ -5,7 +5,7 @@ date: 2026-04-15
 depends-on: anneal-spec.md
 ---
 
-# Areas, Orient, and Garden
+# Areas, Orient, and Garden — 2026-04-15
 
 ## Motivation
 

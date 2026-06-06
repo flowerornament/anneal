@@ -2,7 +2,7 @@
 status: draft
 ---
 
-# Status is aggregate; orientation is a query: fixing the cold-start surface
+# Status is aggregate; orientation is a query: fixing the cold-start surface — 2026-06-02
 
 Two coupled defects, one elegant fix, **no new command**:
 

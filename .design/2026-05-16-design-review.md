@@ -14,7 +14,7 @@ description: >
   the audit.
 ---
 
-# Design review: anneal v2.0 master spec
+# Design review: anneal v2.0 master spec — 2026-05-16
 
 The spec held up surprisingly well across 12 phases. The CR-D label discipline is the reason — almost every implementation surprise got pinned in spec before code locked in. But the sediment is uneven: late decisions (CR-D57..D72) are denser, more defensive, and occasionally contradict earlier framings that were never revised.
 

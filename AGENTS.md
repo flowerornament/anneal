@@ -7,6 +7,7 @@ Convergence assistant for knowledge corpora.
 ## Project Context
 
 - anneal's own specs are tracked as markdown in this repository. Inspect and maintain them with `anneal`: `anneal status`, `anneal check`, `anneal handle <file> --impact`.
+- Design/spec docs under `.design/` carry the date in the H1 title as `# <Title> — YYYY-MM-DD`, matching the dated filename / frontmatter `date:`.
 - The v2.0 master spec is the authoritative Programmable Corpus Runtime reference.
 - The v1.x spec is superseded but retained as historical record of the shipped shape.
 - The engine-viability artifacts gate v2.0 architecture decisions. Do not casually claim "SP-R1 cleared" — Ascent unsafe is accepted as bounded dependency risk, not eliminated.

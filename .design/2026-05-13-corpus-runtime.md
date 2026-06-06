@@ -16,7 +16,7 @@ depends-on:
   - 2026-05-13-engine-spike-results.md
 ---
 
-# anneal v2.0 — Programmable Corpus Runtime
+# anneal v2.0 — Programmable Corpus Runtime — 2026-05-13
 
 A knowledge corpus is a graph of typed handles with addressable content,
 relationships, lifecycle state, and history. anneal v2.0 is the runtime

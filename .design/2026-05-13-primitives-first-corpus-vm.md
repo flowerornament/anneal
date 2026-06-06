@@ -13,7 +13,7 @@ description: >
   that drove the reframe.
 ---
 
-# v2.0 Reframe: anneal as Programmable Corpus Runtime for Agents
+# v2.0 Reframe: anneal as Programmable Corpus Runtime for Agents — 2026-05-13
 
 This document supersedes the **product framing** of `2026-05-03-language-redesign.md`
 without invalidating its architecture. Sections of that spec that

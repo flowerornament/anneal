@@ -18,7 +18,7 @@ description: >
   do not re-litigate first principles.
 ---
 
-# Surface Evolution Framework
+# Surface Evolution Framework — 2026-05-26
 
 ## Why This Exists
 

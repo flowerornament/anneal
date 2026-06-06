@@ -11,7 +11,7 @@ description: >
   shape so we can confirm the experience before implementation begins.
 ---
 
-# v0.14 — Calibration Release Design
+# v0.14 — Calibration Release Design — 2026-05-28
 
 ## Narrative arc
 

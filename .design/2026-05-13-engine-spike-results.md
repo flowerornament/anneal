@@ -13,7 +13,7 @@ description: >
   project + inline rules together.
 ---
 
-# Engine-Spike Results
+# Engine-Spike Results — 2026-05-13
 
 Phase 0 ran across six sessions (2026-05-07 through 2026-05-13). The
 spike was driven by `.design/2026-05-07-engine-spike-and-parity-protocol.md`

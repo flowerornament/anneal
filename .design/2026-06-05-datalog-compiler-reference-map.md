@@ -11,7 +11,7 @@ relates:
   - .design/2026-06-04-runtime-architecture.md
 ---
 
-# Datalog compiler reference map
+# Datalog compiler reference map — 2026-06-05
 
 The Plan/IR middle-end should not be designed from latent Datalog folklore.
 This note records a first reading pass over external Datalog/compiler systems:
@@ -520,3 +520,89 @@ Each planned-executor slice should be reviewed against these questions:
 - The next design review should ask whether `PlanCatalog` is already rich
   enough to prevent all runtime rediscovery. If not, enrich the catalog before
   migrating more strata.
+
+## Tensions — where this research challenges current kftp assumptions
+
+The rest of this doc records where each reference reinforces the kftp arc, and
+that framing risks confirmation bias. This section deliberately records where the
+research challenges current kftp assumptions: items to evaluate, not assume
+past. (Tracked as bd anneal-kh6p.)
+
+1. **Recursion necessity — is `DeltaPlan` premature?** The prelude is currently
+   100% non-recursive; recursion lives in graph *primitives* (Rust), not Datalog
+   rules. Semi-naive deltas and the planned `DeltaPlan` (Phase-3 slice 3) exist
+   *for* recursion. If recursion stays a primitive concern, the planned executor
+   can be single-pass forever — 1b already asserts `recursive == false` — and
+   slice 3 is premature generality, a real simplification toward a dumber
+   executor. Formulog's "semi-naive is not universal" points the same way. The
+   open question to answer *before* building `DeltaPlan`: does anneal want
+   recursive Datalog rules (e.g. code-as-corpus transitive dependencies) ever,
+   or is recursion permanently a primitive concern?
+
+2. **Lazy vs eager provenance.** Souffle stores minimal annotations and
+   reconstructs proof trees on demand; anneal builds full `DerivationNode`s.
+   Slice 1a made trace collection lazy under explain/shadow, but the
+   eager-vs-lazy trade was never explicitly evaluated. Confirm the
+   default/interpreted path isn't paying eager provenance cost when `--explain`
+   is off.
+
+3. **Join model.** FlowLog/Flan point at worst-case-optimal / leapfrog joins,
+   sideways-information-passing, and a robustness-first *structural* optimizer;
+   anneal's planned order is naive greedy. This is deferred — but is the right
+   defer-rationale durable, or just "corpus scale" (which expires with
+   code-as-corpus)? Don't assume greedy is sufficient. (Resolved below.)
+
+4. **Provenance as algebra (semirings).** `DerivationNode` is a proof tree;
+   provenance semirings are a compositional annotation algebra that handles
+   alternate derivations and deletion. If incremental/persistent evaluation ever
+   lands, the proof-tree *shape* may be wrong. A real future fork, not
+   "obviously future-proof."
+
+### Resolved (kh6p, 2026-06-06)
+
+Four parallel research agents evaluated the tensions above against anneal's code,
+the research graph, and the literature. Two changed the plan, one was validated
+with evidence, one was a premature worry defused with a cheap hedge.
+
+1. **Recursion / `DeltaPlan` — DEFER (plan change).** The *interpreted* executor
+   already has a working, tested semi-naive delta loop; `DeltaPlan` would
+   duplicate it into the planned path for recursive strata that do not exist.
+   code-as-corpus does not force recursive rules (the adapter is shelved; the
+   spike's value was stability-as-lattice, not transitive closure; the Cedar
+   precedent — ban recursion, expose an *indexed* transitive built-in — is
+   anneal's exact stance). Resolution: the **planned executor stays
+   single-pass-only**; recursion stays in the interpreted fallback; keep the
+   `recursive`/`deltas` plan slots as inert markers and the
+   `PlannedExecutorRecursiveAuthoritative` guard as the explicit contract.
+   Revisit only on a real recursive `.dl` rule on a hot path with a measured
+   interpreted-fallback bottleneck. **Caveat:** master-spec `CR-D18` commits the
+   *language* to stratified positive recursion — this defers the *compiled* path
+   only; the interpreted path already honors `CR-D18`.
+
+2. **Lazy vs eager provenance — NO CHANGE (validated).** anneal already builds
+   `DerivationNode` only under `--explain`; the default path produces zero
+   provenance bytes (the post-arc profile has no derivation bucket) — strictly
+   *more* lazy than Souffle's always-on annotations. Adopting Souffle's scheme
+   would regress the common case and expand the shadow-parity surface. Minor
+   low-priority cleanup: the `TracedBinding` wrapper in the unified `eval_body`
+   (empty `Vec` + two map/collect passes) — make trace a type-level distinction,
+   not a runtime `bool`.
+
+3. **Join model — DEFER WCO; rationale corrected.** The durable reason it is safe
+   to defer is *not* corpus scale (that expires with code-as-corpus) but
+   **structural**: every blowup-prone shape (reachability / impact / degree /
+   closure) is an engine *primitive* routed around the greedy executor, and the
+   prelude's own joins are star/path-shaped on indexed keys with no triangle or
+   cyclic joins. The real near-term cliff is the single-column-index **full-scan
+   fallback**, not join order — so the next lever, if needed, is **multi-column
+   indexing on `*edge`**, then sideways-information-passing, then WCO/leapfrog
+   (lowest ROI until a cyclic shape on a large graph exists).
+
+4. **Provenance as algebra — PREMATURE; cheap hedge.** `DerivationNode` is
+   single-proof and explain-only (not on the fixpoint/correctness path), and
+   there is no incremental maintenance to break — so no lock-in. When incremental
+   deletion is built, the entry point is **support counts (DRed / `N`-semiring
+   multiplicity) on `DerivedRelation`**, not extending `DerivationNode`, not full
+   provenance polynomials. Hedge: this note, plus a comment at
+   `insert_with_derivation` that its early-return keeps the first proof only and
+   is not deletion-safe.

@@ -5,7 +5,7 @@ date: 2026-04-15
 depends-on: anneal-spec.md
 ---
 
-# CLI UX Audit
+# CLI UX Audit — 2026-04-15
 
 Findings from a manual audit of anneal's full command and flag surface. Focus is on discoverability for newcomers (both human and agent), flag consistency, and naming clarity.
 

@@ -13,7 +13,7 @@ description: >
   at bottom.
 ---
 
-# Compatibility surface retire audit (v0.11.0 → v0.13)
+# Compatibility surface retire audit (v0.11.0 → v0.13) — 2026-05-19
 
 ## Why this exists
 

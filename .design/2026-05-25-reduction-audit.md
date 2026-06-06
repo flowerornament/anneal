@@ -7,7 +7,7 @@ depends-on:
   - 2026-05-19-compatibility-surface-retire-audit.md
 ---
 
-# Reduction Audit — v0.12.0
+# Reduction Audit — v0.12.0 — 2026-05-25
 
 ## Summary
 

@@ -15,7 +15,7 @@ description: >
   feature and a documentation system at once.
 ---
 
-# anneal — Help and Reference System
+# anneal — Help and Reference System — 2026-05-16
 
 ## Part I: Why this exists [HR-F]
 

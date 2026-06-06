@@ -17,7 +17,7 @@ references:
   souffle: https://www.souffle-lang.com/tutorial
 ---
 
-# Query + Explain Spec
+# Query + Explain Spec — 2026-04-02
 
 ## Part I: Motivation
 

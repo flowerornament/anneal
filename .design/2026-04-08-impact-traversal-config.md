@@ -4,7 +4,7 @@ date: 2026-04-08
 depends-on: anneal-spec.md
 ---
 
-# Impact Traversal Configuration
+# Impact Traversal Configuration — 2026-04-08
 
 ## Motivation
 

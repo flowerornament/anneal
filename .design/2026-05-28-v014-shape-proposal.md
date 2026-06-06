@@ -13,7 +13,7 @@ description: >
   and proposes a four-item v0.14 slice plus deferrals.
 ---
 
-# v0.14 Shape Proposal
+# v0.14 Shape Proposal — 2026-05-28
 
 ## The Mental Model (v0.13.0 as-shipped, six layers)
 

@@ -8,9 +8,10 @@ relates:
   - .design/2026-06-02-pass-contracts.md       # the locked appendix (§§6-8 = the design)
   - .design/2026-06-04-runtime-architecture.md # as-built map
   - .design/2026-06-04-post-arc-profile.md     # why (ranked #1 eval surface)
+  - .design/2026-06-05-datalog-compiler-reference-map.md # Datalog compiler reference map + standing review gate
 ---
 
-# Plan/IR middle-end — reconciliation (anneal-kftp Phase 0)
+# Plan/IR middle-end — reconciliation (anneal-kftp Phase 0) — 2026-06-04
 
 The pass-contract appendix (`§§6-8`) already specs the Plan/IR middle-end and
 true slot frames, locked after codex review. But it was written assuming a
@@ -197,6 +198,20 @@ a side effect, not the goal.** The north star: **boring executor, rich plan.**
   field-name lookups, and re-derived constraints should *disappear* from the
   executor as the plan absorbs them. Reviews check "did the executor get dumber?"
   not just "did dhat drop?"
+
+### Standing review gate
+
+Every planned-executor slice is reviewed against the standing gate defined in
+`.design/2026-06-05-datalog-compiler-reference-map.md` ("Standing kftp review
+gate"). Its seven questions:
+
+1. Did the plan capture predicate meaning once? (relation kind/id, field ids, arity, primitive provider/capability/demand, soft-primitive override status — resolved before execution)
+2. Did execute get dumber? (no name-based predicate dispatch, no runtime greedy readiness scheduling, no field-name lookup, no "is this primitive?" rediscovery in the migrated path)
+3. Did variable binding become a planned slot contract? (each atom knows input + output/binding slots; unsupported shapes fail at plan time)
+4. Did provenance survive as data? (authoritative planned paths emit byte-identical derivations; shadow gates compare tuple→derivation maps)
+5. Did recursive control stay separate from rule logic? (strata/fixpoint/delta own recursive control; rule plans own the relational body)
+6. Did we avoid dual representations? (no internal NamedRow rebuilds, no parallel row models, no projection before the output boundary)
+7. Did we defer incremental/caching until the one-shot executor is clean?
 
 ## Success criteria (performance — the side effect)
 
