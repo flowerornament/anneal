@@ -292,10 +292,6 @@ impl PrimitivePredicate {
         }
     }
 
-    pub(crate) fn is_soft(self) -> bool {
-        !self.signature().sealed
-    }
-
     pub(crate) fn graph_anchor_positions(self) -> Option<&'static [usize]> {
         match self {
             Self::Upstream | Self::Downstream | Self::Impact => Some(&[0, 1]),

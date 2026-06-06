@@ -71,7 +71,6 @@ pub(crate) struct RuleStagePlan {
     pub(crate) execution: StageExecution,
     pub(crate) authoritative_predicates: BTreeSet<PredicateRef>,
     pub(crate) authoritative_planned: bool,
-    pub(crate) shadow_planned: bool,
     pub(crate) migration: StageMigration,
 }
 
@@ -101,9 +100,9 @@ impl StageMigration {
         }
     }
 
-    fn interpreted(reasons: BTreeSet<UnsupportedReason>) -> Self {
+    fn unsupported(reasons: BTreeSet<UnsupportedReason>) -> Self {
         Self {
-            mode: StageMigrationMode::Interpreted,
+            mode: StageMigrationMode::Unsupported,
             reasons,
         }
     }
@@ -116,7 +115,7 @@ impl StageMigration {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StageMigrationMode {
     Planned,
-    Interpreted,
+    Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -157,7 +156,6 @@ pub(crate) struct RuleGroupPlan {
     pub(crate) body: RuleBodyPlan,
     pub(crate) slots: SlotLayout,
     pub(crate) provenance: Option<RuleProvenance>,
-    pub(crate) shadow_planned: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -692,7 +690,6 @@ fn plan_query(
         body,
         slots,
         provenance: None,
-        shadow_planned: false,
     };
     let output_migration = query_output_migration(&output_group, catalog);
     let output_authoritative = output_migration.is_planned();
@@ -711,7 +708,6 @@ fn plan_query(
                         execution: StageExecution::SinglePass,
                         authoritative_predicates: BTreeSet::new(),
                         authoritative_planned: output_authoritative,
-                        shadow_planned: false,
                         migration: output_migration,
                     }],
                 });
@@ -757,14 +753,7 @@ fn plan_rule(
             layer: rule.origin().layer(),
             location: rule.origin().location().clone(),
         }),
-        shadow_planned: predicate_is_shadow_planned_target(&rule.head.predicate),
     })
-}
-
-const SHADOW_PLANNED_PREDICATES: &[&str] = &["entropy", "incoming_edge"];
-
-fn predicate_is_shadow_planned_target(predicate: &PredicateRef) -> bool {
-    SHADOW_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
 }
 
 fn plan_rule_stages(
@@ -839,18 +828,12 @@ fn plan_rule_stages(
                 .cloned()
                 .collect::<BTreeSet<_>>();
             let authoritative_planned = !authoritative_predicates.is_empty();
-            let shadow_planned = rule_group_indexes.iter().any(|index| {
-                rule_groups
-                    .get(*index)
-                    .is_some_and(|group| group.shadow_planned)
-            });
             stages.push(RuleStagePlan {
                 rule_groups: rule_group_indexes,
                 predicates: predicates.clone(),
                 execution,
                 authoritative_predicates,
                 authoritative_planned,
-                shadow_planned,
                 migration,
             });
             remaining.remove(&component_index);
@@ -982,7 +965,7 @@ fn stage_migration(
     if reasons.is_empty() {
         StageMigration::planned()
     } else {
-        StageMigration::interpreted(reasons)
+        StageMigration::unsupported(reasons)
     }
 }
 
@@ -992,7 +975,7 @@ fn query_output_migration(output_group: &RuleGroupPlan, catalog: &PlanCatalog) -
     if reasons.is_empty() {
         StageMigration::planned()
     } else {
-        StageMigration::interpreted(reasons)
+        StageMigration::unsupported(reasons)
     }
 }
 
@@ -2120,7 +2103,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_migration_target_is_a_plan_property() {
+    fn migration_target_is_a_plan_property() {
         let analyzed = analyzed(
             r"
             incoming_edge(h, src, kind) := *edge{to: h, from: src, kind: kind}.
@@ -2142,10 +2125,13 @@ mod tests {
             .flat_map(|stratum| &stratum.rule_groups)
             .find(|rule| rule.head == Some(incoming_relation))
             .expect("incoming_edge rule");
-        assert!(
-            incoming_rule.shadow_planned,
-            "shadow migration target should be marked by the plan"
-        );
+        assert!(planned_rule_group_executable(
+            incoming_rule,
+            &planned.catalog
+        ));
+        let migration = predicate_migration(&planned, &incoming).expect("incoming_edge stage");
+        assert_eq!(migration.mode, StageMigrationMode::Planned);
+        assert!(migration.reasons.is_empty());
     }
 
     #[test]
@@ -2290,7 +2276,6 @@ mod tests {
                 .flat_map(|stratum| &stratum.stages)
                 .any(|stage| {
                     stage.authoritative_planned
-                        && stage.shadow_planned
                         && stage
                             .authoritative_predicates
                             .iter()
@@ -2300,7 +2285,7 @@ mod tests {
                             .iter()
                             .any(|predicate| predicate.display_name() == "entropy")
                 }),
-            "entropy should be marked as a stage-level authoritative and shadow target"
+            "entropy should be marked as a stage-level authoritative target"
         );
     }
 
@@ -2371,7 +2356,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_time_scope_shape_stays_interpreted_by_certificate() {
+    fn unsupported_time_scope_shape_stays_unplanned_by_certificate() {
         let program = parse_prelude_program(
             "<time-scope-certificate>",
             r#"
@@ -2398,10 +2383,10 @@ mod tests {
         ] {
             let predicate = PredicateRef::parse(predicate).expect("predicate parses");
             let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
-            assert_eq!(migration.mode, StageMigrationMode::Interpreted);
+            assert_eq!(migration.mode, StageMigrationMode::Unsupported);
             assert!(
                 migration.reasons.contains(&UnsupportedReason::TimeScope),
-                "unsupported time-scope shape must keep the stage interpreted"
+                "unsupported time-scope shape must keep the stage unplanned"
             );
         }
     }

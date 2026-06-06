@@ -24,9 +24,8 @@ pub use ast::{
     SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
 };
 pub use eval::{
-    Binding, Database, DerivationKind, DerivationNode, EvalError, EvalOptions, Evaluator,
-    ExplainDepth, ExplainOptions, QueryOutput, QueryWarning, READ_FULL_CAPABILITY, Row, Tuple,
-    Value,
+    Database, DerivationKind, DerivationNode, EvalError, EvalOptions, Evaluator, ExplainDepth,
+    ExplainOptions, QueryOutput, QueryWarning, READ_FULL_CAPABILITY, Row, Tuple, Value,
 };
 pub use loader::{LoadError, ProgramLoader, load_prelude, load_program};
 pub use ndjson::{NdjsonError, write_ndjson, write_ndjson_with_meta};

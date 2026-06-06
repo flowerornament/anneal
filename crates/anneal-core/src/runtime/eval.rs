@@ -10,7 +10,6 @@ use std::sync::{Arc, OnceLock};
 use regex::Regex;
 use serde::Serialize;
 use serde::ser::SerializeMap;
-use smallvec::SmallVec;
 
 #[cfg(test)]
 use crate::facts::SnapshotFact;
@@ -30,11 +29,9 @@ use crate::ir::interner::Interner;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, OrderKeyPlan, OutputPlan,
-    PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
+    PlanCatalog, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
     RuleProvenance, RuleStagePlan, StageExecution, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
-    aggregate_allowed_args, plan, planned_aggregate_executable, planned_comparison_executable,
-    planned_rule_group_executable, time_scope_unsupported_atom, time_scoped_primitive_supported,
-    time_scoped_stored_relation_supported,
+    plan, planned_aggregate_executable, planned_comparison_executable, time_scope_unsupported_atom,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -55,15 +52,13 @@ use crate::retrieval::{
 };
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
-    Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
-    FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, OrderDirection, OrderKey,
-    PredicateRef, Rule, SourceLocation, StoredAtom, Term,
+    AggregateFunction, Atom, Body, ComparisonOp, Expr, Head, Ident, Literal, NegatedAtom,
+    NumberLiteral, OrderDirection, PredicateRef, Rule, SourceLocation, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
 };
 use crate::runtime::primitives::PrimitivePredicate;
-use crate::runtime::schedule::atom_ready;
 use crate::source::{ActorContext, RuntimeCapability, SourceInfo};
 use crate::store::FactStore;
 use crate::time::{
@@ -81,66 +76,6 @@ use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
 
-const INLINE_BINDING_SLOTS: usize = 2;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Binding {
-    slots: SmallVec<[(Ident, Value); INLINE_BINDING_SLOTS]>,
-}
-
-impl Binding {
-    pub fn new() -> Self {
-        Self {
-            slots: SmallVec::new(),
-        }
-    }
-
-    pub fn get(&self, key: &Ident) -> Option<&Value> {
-        self.slots
-            .binary_search_by(|(slot, _)| slot.cmp(key))
-            .ok()
-            .map(|idx| &self.slots[idx].1)
-    }
-
-    pub fn contains_key(&self, key: &Ident) -> bool {
-        self.get(key).is_some()
-    }
-
-    pub fn insert(&mut self, key: Ident, value: Value) -> Option<Value> {
-        match self.slots.binary_search_by(|(slot, _)| slot.cmp(&key)) {
-            Ok(idx) => Some(std::mem::replace(&mut self.slots[idx].1, value)),
-            Err(idx) => {
-                self.slots.insert(idx, (key, value));
-                None
-            }
-        }
-    }
-
-    pub fn keys(&self) -> impl Iterator<Item = &Ident> {
-        self.slots.iter().map(|(key, _)| key)
-    }
-}
-
-impl IntoIterator for Binding {
-    type Item = (Ident, Value);
-    type IntoIter = smallvec::IntoIter<[(Ident, Value); INLINE_BINDING_SLOTS]>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.slots.into_iter()
-    }
-}
-
-impl Ord for Binding {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.slots.cmp(&other.slots)
-    }
-}
-
-impl PartialOrd for Binding {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
 type DerivationRef = Arc<DerivationNode>;
 
@@ -431,18 +366,6 @@ impl DerivationNode {
         }
     }
 
-    fn rule(rule: &Rule, tuple: &Tuple, children: Vec<Self>) -> Self {
-        let origin = rule.origin();
-        let location = origin.location();
-        Self::rule_from_parts(
-            rule.head.predicate.display_name(),
-            origin.layer(),
-            location,
-            tuple,
-            children,
-        )
-    }
-
     fn planned_rule(provenance: &RuleProvenance, tuple: &Tuple, children: Vec<Self>) -> Self {
         Self::rule_from_parts(
             provenance.predicate.display_name(),
@@ -491,22 +414,6 @@ impl DerivationNode {
         }
     }
 
-    fn stored(relation: &Ident, row: &NamedRow) -> Self {
-        Self {
-            kind: DerivationKind::Stored,
-            label: format!("stored *{relation} row matched"),
-            relation: Some(relation.to_string()),
-            predicate: None,
-            tuple: Vec::new(),
-            fields: compact_stored_row(relation, row),
-            source: row_string(row, SOURCE_FIELD).map(str::to_owned),
-            line: row_i64(row, "line").and_then(i64_to_usize),
-            column: None,
-            truncated: None,
-            children: Vec::new(),
-        }
-    }
-
     fn stored_tuple(relation: &Ident, row: TupleRow<'_>) -> Self {
         Self {
             kind: DerivationKind::Stored,
@@ -539,24 +446,12 @@ impl DerivationNode {
         }
     }
 
-    fn comparison(comparison: &Comparison) -> Self {
-        Self::located(
-            DerivationKind::Comparison,
-            "comparison matched",
-            comparison.location.clone(),
-        )
-    }
-
     fn planned_comparison(provenance: &CompareProvenance) -> Self {
         Self::located(
             DerivationKind::Comparison,
             "comparison matched",
             provenance.location.clone(),
         )
-    }
-
-    fn aggregate(aggregate: &Aggregate, children: Vec<Self>) -> Self {
-        Self::aggregate_from_parts(aggregate.function, aggregate.location.clone(), children)
     }
 
     fn planned_aggregate(provenance: &AggregateProvenance, children: Vec<Self>) -> Self {
@@ -575,14 +470,6 @@ impl DerivationNode {
         );
         node.children = children;
         node
-    }
-
-    fn negation(negation: &NegatedAtom) -> Self {
-        let location = match negation {
-            NegatedAtom::Stored(atom) => atom.location.clone(),
-            NegatedAtom::Derived(atom) => atom.location.clone(),
-        };
-        Self::negation_from_location(location)
     }
 
     fn planned_negation(provenance: &NegationProvenance) -> Self {
@@ -1436,6 +1323,7 @@ impl Database {
             .collect()
     }
 
+    #[cfg(test)]
     fn candidate_tuple_rows(
         &self,
         relation: &Ident,
@@ -1453,6 +1341,7 @@ impl Database {
         self.tuples.candidate_rows(relation.as_str(), &constraints)
     }
 
+    #[cfg(test)]
     fn tuple_field_value(&self, relation: &Ident, row: RowId, field: &Ident) -> Option<Value> {
         if let Some(store) = self.tuple_overlay.relation(relation) {
             return self
@@ -1895,53 +1784,6 @@ impl StoredRelation {
             fields.extend(row.keys().map(ToString::to_string));
         }
         fields.into_iter().collect()
-    }
-
-    fn candidate_rows(&self, constraints: &[(Ident, Value)]) -> RowCandidates<'_> {
-        let mut best = None;
-        for (field, value) in constraints {
-            if !should_index_stored_field(&self.relation, field) {
-                continue;
-            }
-            let Some(values) = self.indexes.get(field) else {
-                return RowCandidates::Empty;
-            };
-            let Some(indices) = values.get(value) else {
-                return RowCandidates::Empty;
-            };
-            if best.is_none_or(|current: &Vec<usize>| indices.len() < current.len()) {
-                best = Some(indices);
-            }
-        }
-
-        best.map_or_else(
-            || RowCandidates::All(self.rows.iter()),
-            |indices| RowCandidates::Indexed {
-                rows: &self.rows,
-                indices: indices.iter(),
-            },
-        )
-    }
-}
-
-enum RowCandidates<'a> {
-    All(slice::Iter<'a, NamedRow>),
-    Indexed {
-        rows: &'a [NamedRow],
-        indices: slice::Iter<'a, usize>,
-    },
-    Empty,
-}
-
-impl<'a> Iterator for RowCandidates<'a> {
-    type Item = &'a NamedRow;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::All(rows) => rows.next(),
-            Self::Indexed { rows, indices } => indices.next().map(|idx| &rows[*idx]),
-            Self::Empty => None,
-        }
     }
 }
 
@@ -4044,18 +3886,6 @@ pub enum EvalError {
     DivisionByZero,
     #[error("reserved output field '{field}' cannot be bound when explain output is enabled")]
     ReservedExplainField { field: &'static str },
-    #[cfg(feature = "planned-executor-spike")]
-    #[error(
-        "planned executor shadow mismatch for '{predicate}': interpreted={interpreted} planned={planned}"
-    )]
-    PlannedExecutorMismatch {
-        predicate: PredicateRef,
-        interpreted: usize,
-        planned: usize,
-    },
-    #[cfg(feature = "planned-executor-spike")]
-    #[error("planned executor shadow target '{predicate}' had no planned rule group")]
-    PlannedExecutorMissingShadow { predicate: PredicateRef },
     #[error("stored tuple derivation missing for '*{relation}' row {row}")]
     StoredTupleDerivationMissing { relation: Ident, row: usize },
     #[error("planned executor authoritative target '{predicate}' had no planned rule group")]
@@ -4064,6 +3894,11 @@ pub enum EvalError {
     PlannedExecutorRecursiveAuthoritative { predicate: PredicateRef },
     #[error("planned executor authoritative target '{predicate}' had an unsafe mixed stratum")]
     PlannedExecutorMixedAuthoritative { predicate: PredicateRef },
+    #[error("planned executor cannot evaluate '{predicate}': {reasons}")]
+    PlannedExecutorUnsupported {
+        predicate: PredicateRef,
+        reasons: String,
+    },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -4118,24 +3953,21 @@ impl Evaluator {
     pub fn run_fixpoint(&mut self) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
-        self.run_fixpoint_matching(|_| true, true)
+        self.run_fixpoint_matching(|_| true)
     }
 
     pub fn run_fixpoint_for_query(&mut self, query: &AnalyzedQuery) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
         let needed = global_predicate_dependencies_for_query(&self.program, query);
-        self.run_fixpoint_matching(|predicate| needed.contains(predicate), true)
+        self.run_fixpoint_matching(|predicate| needed.contains(predicate))
     }
 
     fn run_fixpoint_matching(
         &mut self,
         predicate_needed: impl Fn(&PredicateRef) -> bool,
-        use_planned: bool,
     ) -> Result<(), EvalError> {
-        if use_planned {
-            self.ensure_planned();
-        }
+        self.ensure_planned();
         let strata = self.program.strata().to_vec();
         for (stratum_index, stratum) in strata.into_iter().enumerate() {
             if !stratum.predicates.iter().any(&predicate_needed) {
@@ -4150,21 +3982,26 @@ impl Evaluator {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let planned_stratum = use_planned
-                .then(|| {
-                    self.planned
-                        .as_ref()
-                        .and_then(|planned| planned.global.strata.get(stratum_index))
-                })
-                .flatten();
-            let planned_catalog = use_planned
-                .then(|| self.planned.as_ref().map(|planned| &planned.catalog))
-                .flatten();
+            if rules.is_empty() {
+                continue;
+            }
+            let planned = self
+                .planned
+                .as_ref()
+                .expect("planned program exists after ensure_planned");
+            let planned_stratum = planned.global.strata.get(stratum_index);
+            let planned_stratum =
+                planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+                    predicate: rules
+                        .first()
+                        .map(|rule| rule.head.predicate.clone())
+                        .expect("non-empty rule group"),
+                })?;
             run_rule_group(
                 &mut self.database,
                 &rules,
                 planned_stratum,
-                planned_catalog,
+                &planned.catalog,
                 &mut self.warnings,
                 &self.options,
             )?;
@@ -4178,7 +4015,6 @@ impl Evaluator {
         }
         self.planned = match plan(&self.program) {
             Ok(planned) => Some(planned),
-            Err(PlanError::UnknownStoredRelation { .. }) => None,
             Err(error) => panic!("analyzed program should plan before planned execution: {error}"),
         };
     }
@@ -4189,62 +4025,29 @@ impl Evaluator {
         let mut warnings = self.warnings.clone();
         let owned_plan;
         let planned = if let Some(planned) = self.planned.as_ref() {
-            Some(planned)
+            planned
         } else {
             owned_plan = match plan(&self.program) {
-                Ok(planned) => Some(planned),
-                Err(PlanError::UnknownStoredRelation { .. }) => None,
+                Ok(planned) => planned,
                 Err(error) => {
                     panic!("analyzed program should plan before planned query execution: {error}")
                 }
             };
-            owned_plan.as_ref()
+            &owned_plan
         };
-        let query_plan = planned.and_then(|planned| {
-            self.program
-                .queries()
-                .position(|candidate| candidate == query)
-                .and_then(|index| planned.queries.get(index))
-        });
-        let planned_query_output = query_plan;
+        let query_plan = self
+            .program
+            .queries()
+            .position(|candidate| candidate == query)
+            .and_then(|index| planned.queries.get(index));
         if query_ast.local_rules.is_empty() {
-            if let Some(output) = eval_planned_query_output(
-                planned_query_output,
+            return eval_planned_query_output(
+                query_plan,
                 planned,
                 &self.database,
                 &warnings,
                 &self.options,
-            )? {
-                return Ok(output);
-            }
-            if self.options.explain().is_enabled() {
-                let mut bindings = eval_body_traced(
-                    &query_ast.body,
-                    vec![TracedBinding::empty()],
-                    &self.database,
-                    None,
-                    &mut warnings,
-                    &self.options,
-                )?;
-                ensure_no_reserved_explain_fields(&bindings)?;
-                sort_traced_bindings_for_query(&query_ast.ordering, &mut bindings)?;
-                return Ok(QueryOutput {
-                    rows: traced_bindings_to_rows(bindings, self.options.explain()),
-                    warnings,
-                });
-            }
-            let mut bindings = eval_body(
-                &query_ast.body,
-                vec![Binding::new()],
-                &self.database,
-                &mut warnings,
-                &self.options,
-            )?;
-            sort_bindings_for_query(&query_ast.ordering, &mut bindings)?;
-            return Ok(QueryOutput {
-                rows: bindings.into_iter().map(binding_to_row).collect(),
-                warnings,
-            });
+            );
         }
 
         let mut database = self.database.clone();
@@ -4259,48 +4062,23 @@ impl Evaluator {
                 .collect::<Vec<_>>();
             let planned_stratum =
                 query_plan.and_then(|query_plan| query_plan.plan.strata.get(stratum_index));
+            let planned_stratum =
+                planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
+                    predicate: rules
+                        .first()
+                        .map(|rule| rule.head.predicate.clone())
+                        .expect("non-empty local rule group"),
+                })?;
             run_rule_group(
                 &mut database,
                 &rules,
                 planned_stratum,
-                planned.map(|planned| &planned.catalog),
+                &planned.catalog,
                 &mut warnings,
                 &self.options,
             )?;
         }
-        if let Some(output) = eval_planned_query_output(
-            planned_query_output,
-            planned,
-            &database,
-            &warnings,
-            &self.options,
-        )? {
-            return Ok(output);
-        }
-        let rows = if self.options.explain().is_enabled() {
-            let mut bindings = eval_body_traced(
-                &query_ast.body,
-                vec![TracedBinding::empty()],
-                &database,
-                None,
-                &mut warnings,
-                &self.options,
-            )?;
-            ensure_no_reserved_explain_fields(&bindings)?;
-            sort_traced_bindings_for_query(&query_ast.ordering, &mut bindings)?;
-            traced_bindings_to_rows(bindings, self.options.explain())
-        } else {
-            let mut bindings = eval_body(
-                &query_ast.body,
-                vec![Binding::new()],
-                &database,
-                &mut warnings,
-                &self.options,
-            )?;
-            sort_bindings_for_query(&query_ast.ordering, &mut bindings)?;
-            bindings.into_iter().map(binding_to_row).collect()
-        };
-        Ok(QueryOutput { rows, warnings })
+        eval_planned_query_output(query_plan, planned, &database, &warnings, &self.options)
     }
 
     pub fn database(&self) -> &Database {
@@ -4403,64 +4181,20 @@ fn collect_global_predicate(
 fn run_rule_group(
     database: &mut Database,
     rules: &[Rule],
-    planned_stratum: Option<&StratumPlan>,
-    catalog: Option<&PlanCatalog>,
+    planned_stratum: &StratumPlan,
+    catalog: &PlanCatalog,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    let stratum_predicates = rules
-        .iter()
-        .map(|rule| rule.head.predicate.clone())
-        .collect::<BTreeSet<_>>();
-    database.ensure_derived(stratum_predicates.iter().cloned());
-
-    if planned_stratum.is_some_and(|stratum| stratum.authoritative_planned) {
-        return run_staged_rule_group(database, rules, planned_stratum, catalog, warnings, options);
-    }
-
-    let mut delta = DeltaMap::new();
-    for rule in rules {
-        #[cfg(feature = "planned-executor-spike")]
-        let planned_shadow = planned_shadow_for_rule(planned_stratum, catalog, rule)?;
-        let tuples = eval_rule(rule, database, warnings, options)?;
-        #[cfg(feature = "planned-executor-spike")]
-        if let Some(planned) = planned_shadow {
-            let catalog = catalog.ok_or_else(|| EvalError::PlannedExecutorMissingShadow {
-                predicate: rule.head.predicate.clone(),
-            })?;
-            shadow_planned_rule_group(planned, catalog, rule, database, options, &tuples)?;
-        }
-        insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
-    }
-
-    let recursive_rules = rules.iter().collect::<Vec<_>>();
-    let recursive_work = recursive_delta_work(&recursive_rules, &stratum_predicates);
-    while !delta.is_empty() {
-        let previous_delta = delta;
-        delta = run_interpreted_recursive_delta_round(
-            database,
-            &recursive_work,
-            &previous_delta,
-            warnings,
-            options,
-        )?;
-    }
-    #[cfg(feature = "planned-executor-spike")]
-    shadow_planned_stages(
-        planned_stratum,
-        catalog,
-        database,
-        options,
-        &stratum_predicates,
-    )?;
-    Ok(())
+    database.ensure_derived(rules.iter().map(|rule| rule.head.predicate.clone()));
+    run_staged_rule_group(database, rules, planned_stratum, catalog, warnings, options)
 }
 
 fn run_staged_rule_group(
     database: &mut Database,
     rules: &[Rule],
-    planned_stratum: Option<&StratumPlan>,
-    catalog: Option<&PlanCatalog>,
+    planned_stratum: &StratumPlan,
+    catalog: &PlanCatalog,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
@@ -4468,13 +4202,6 @@ fn run_staged_rule_group(
         .first()
         .map(|rule| rule.head.predicate.clone())
         .ok_or(EvalError::UnsupportedExpression)?;
-    let planned_stratum =
-        planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-            predicate: predicate.clone(),
-        })?;
-    let catalog = catalog.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-        predicate: predicate.clone(),
-    })?;
     let mut rules_by_predicate = BTreeMap::<PredicateRef, Vec<&Rule>>::new();
     for rule in rules {
         rules_by_predicate
@@ -4490,125 +4217,38 @@ fn run_staged_rule_group(
         {
             continue;
         }
+        if !stage.authoritative_planned {
+            let predicate = stage
+                .predicates
+                .iter()
+                .find(|predicate| rules_by_predicate.contains_key(*predicate))
+                .cloned()
+                .unwrap_or_else(|| predicate.clone());
+            return Err(EvalError::PlannedExecutorUnsupported {
+                predicate,
+                reasons: format!("{:?}", stage.migration.reasons),
+            });
+        }
         if stage.execution.is_recursive() {
-            if stage.authoritative_planned {
-                run_planned_recursive_stage(
-                    database,
-                    stage,
-                    planned_stratum,
-                    catalog,
-                    &rules_by_predicate,
-                    warnings,
-                    options,
-                )?;
-            } else {
-                run_interpreted_recursive_stage(database, stage, rules, warnings, options)?;
-            }
-            continue;
-        }
-        for predicate in &stage.predicates {
-            if stage.authoritative_predicates.contains(predicate) {
-                continue;
-            }
-            let Some(stage_rules) = rules_by_predicate.get(predicate) else {
-                continue;
-            };
-            for rule in stage_rules {
-                let tuples = eval_rule(rule, database, warnings, options)?;
-                insert_tuples(database, &rule.head.predicate, tuples);
-            }
-        }
-        if stage.authoritative_planned {
-            let planned_groups = planned_authoritative_for_stage(
+            run_planned_recursive_stage(
+                database,
                 stage,
                 planned_stratum,
                 catalog,
                 &rules_by_predicate,
-            )?;
-            for (_, planned, predicate) in planned_groups {
-                let tuples =
-                    eval_planned_rule_group(planned, catalog, database, warnings, options)?;
-                insert_tuples(database, &predicate, tuples);
-            }
-        }
-    }
-    #[cfg(feature = "planned-executor-spike")]
-    {
-        let active_predicates = rules
-            .iter()
-            .map(|rule| rule.head.predicate.clone())
-            .collect::<BTreeSet<_>>();
-        shadow_planned_stages(
-            Some(planned_stratum),
-            Some(catalog),
-            database,
-            options,
-            &active_predicates,
-        )?;
-    }
-    Ok(())
-}
-
-fn run_interpreted_recursive_stage(
-    database: &mut Database,
-    stage: &RuleStagePlan,
-    rules: &[Rule],
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<(), EvalError> {
-    let stage_rules = stage_rules(stage, rules);
-    let mut delta = DeltaMap::new();
-    for rule in &stage_rules {
-        let tuples = eval_rule(rule, database, warnings, options)?;
-        insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
-    }
-    let recursive_work = recursive_delta_work(&stage_rules, &stage.predicates);
-    while !delta.is_empty() {
-        let previous_delta = delta;
-        delta = run_interpreted_recursive_delta_round(
-            database,
-            &recursive_work,
-            &previous_delta,
-            warnings,
-            options,
-        )?;
-    }
-    Ok(())
-}
-
-fn recursive_delta_work<'a>(
-    rules: &[&'a Rule],
-    stratum_predicates: &BTreeSet<PredicateRef>,
-) -> Vec<(&'a Rule, Vec<usize>)> {
-    rules
-        .iter()
-        .copied()
-        .map(|rule| (rule, recursive_atom_indexes(&rule.body, stratum_predicates)))
-        .collect()
-}
-
-fn run_interpreted_recursive_delta_round(
-    database: &mut Database,
-    recursive_work: &[(&Rule, Vec<usize>)],
-    previous_delta: &DeltaMap,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<DeltaMap, EvalError> {
-    let mut delta = DeltaMap::new();
-    for (rule, atom_indexes) in recursive_work {
-        for atom_index in atom_indexes {
-            let tuples = eval_rule_with_delta(
-                rule,
-                database,
-                previous_delta,
-                *atom_index,
                 warnings,
                 options,
             )?;
-            insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
+            continue;
+        }
+        let planned_groups =
+            planned_authoritative_for_stage(stage, planned_stratum, &rules_by_predicate)?;
+        for (_, planned, predicate) in planned_groups {
+            let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
+            insert_tuples(database, &predicate, tuples);
         }
     }
-    Ok(delta)
+    Ok(())
 }
 
 fn run_planned_recursive_stage(
@@ -4620,8 +4260,7 @@ fn run_planned_recursive_stage(
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    let planned_groups =
-        planned_authoritative_for_stage(stage, planned_stratum, catalog, active_rules)?;
+    let planned_groups = planned_authoritative_for_stage(stage, planned_stratum, active_rules)?;
     let mut delta = DeltaMap::new();
     for (_, planned, predicate) in &planned_groups {
         let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
@@ -4659,23 +4298,11 @@ fn run_planned_recursive_stage(
     Ok(())
 }
 
-fn stage_rules<'a>(stage: &RuleStagePlan, rules: &'a [Rule]) -> Vec<&'a Rule> {
-    stage
-        .rule_groups
-        .iter()
-        .filter_map(|index| rules.get(*index))
-        .collect()
-}
-
 fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
-    catalog: &PlanCatalog,
     active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
 ) -> Result<Vec<(usize, &'a RuleGroupPlan, PredicateRef)>, EvalError> {
-    if !stage.authoritative_planned {
-        return Ok(Vec::new());
-    }
     let predicate = stage
         .authoritative_predicates
         .iter()
@@ -4700,9 +4327,6 @@ fn planned_authoritative_for_stage<'a>(
             .authoritative_predicates
             .contains(&provenance.predicate)
         {
-            if !planned_rule_group_executable(group, catalog) {
-                return Err(EvalError::UnsupportedExpression);
-            }
             planned.push((*group_index, group, provenance.predicate.clone()));
         }
     }
@@ -4718,140 +4342,12 @@ struct DerivedTuple {
     derivation: Option<DerivationRef>,
 }
 
-#[derive(Clone, Debug)]
-struct TracedBinding {
-    values: Binding,
-    steps: Vec<DerivationRef>,
-}
-
-impl TracedBinding {
-    fn empty() -> Self {
-        Self {
-            values: Binding::new(),
-            steps: Vec::new(),
-        }
-    }
-
-    fn with_values(values: Binding) -> Self {
-        Self {
-            values,
-            steps: Vec::new(),
-        }
-    }
-
-    fn push_step(mut self, step: DerivationRef) -> Self {
-        self.steps.push(step);
-        self
-    }
-
-    fn push_step_if(self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
-        if trace { self.push_step(step()) } else { self }
-    }
-}
-
 fn clone_derivation_refs(steps: &[DerivationRef]) -> Vec<DerivationNode> {
     steps.iter().map(|step| step.as_ref().clone()).collect()
 }
 
 fn derivation_ref(node: DerivationNode) -> DerivationRef {
     Arc::new(node)
-}
-
-fn eval_rule(
-    rule: &Rule,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<DerivedTuple>, EvalError> {
-    if options.explain().is_enabled() {
-        let bindings = eval_body_traced(
-            &rule.body,
-            vec![TracedBinding::empty()],
-            database,
-            None,
-            warnings,
-            options,
-        )?;
-        return bindings
-            .into_iter()
-            .map(|binding| {
-                let tuple = project_head(&rule.head, &binding.values)?;
-                let derivation =
-                    DerivationNode::rule(rule, &tuple, clone_derivation_refs(&binding.steps))
-                        .bounded(options.explain());
-                Ok(DerivedTuple {
-                    tuple,
-                    derivation: Some(Arc::new(derivation)),
-                })
-            })
-            .collect();
-    }
-
-    eval_body(
-        &rule.body,
-        vec![Binding::new()],
-        database,
-        warnings,
-        options,
-    )?
-    .into_iter()
-    .map(|binding| {
-        Ok(DerivedTuple {
-            tuple: project_head(&rule.head, &binding)?,
-            derivation: None,
-        })
-    })
-    .collect()
-}
-
-fn eval_rule_with_delta(
-    rule: &Rule,
-    database: &Database,
-    delta: &DeltaMap,
-    atom_index: usize,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<DerivedTuple>, EvalError> {
-    if options.explain().is_enabled() {
-        let bindings = eval_body_traced(
-            &rule.body,
-            vec![TracedBinding::empty()],
-            database,
-            Some(DeltaView { delta, atom_index }),
-            warnings,
-            options,
-        )?;
-        return bindings
-            .into_iter()
-            .map(|binding| {
-                let tuple = project_head(&rule.head, &binding.values)?;
-                let derivation =
-                    DerivationNode::rule(rule, &tuple, clone_derivation_refs(&binding.steps))
-                        .bounded(options.explain());
-                Ok(DerivedTuple {
-                    tuple,
-                    derivation: Some(Arc::new(derivation)),
-                })
-            })
-            .collect();
-    }
-
-    eval_body_with_delta(
-        &rule.body,
-        vec![Binding::new()],
-        database,
-        Some(DeltaView { delta, atom_index }),
-        warnings,
-        options,
-    )?
-    .into_iter()
-    .map(|binding| {
-        Ok(DerivedTuple {
-            tuple: project_head(&rule.head, &binding)?,
-            derivation: None,
-        })
-    })
-    .collect()
 }
 
 fn insert_new_tuples(
@@ -4879,248 +4375,6 @@ fn insert_tuples(database: &mut Database, predicate: &PredicateRef, tuples: Vec<
     for derived in tuples {
         relation.insert_with_derivation(&derived.tuple, derived.derivation);
     }
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn planned_shadow_for_rule<'a>(
-    planned_stratum: Option<&'a StratumPlan>,
-    catalog: Option<&PlanCatalog>,
-    rule: &Rule,
-) -> Result<Option<&'a RuleGroupPlan>, EvalError> {
-    let Some(stratum) = planned_stratum else {
-        return Ok(None);
-    };
-    if !stratum
-        .rule_groups
-        .iter()
-        .any(|planned| planned.shadow_planned)
-    {
-        return Ok(None);
-    }
-    let Some(catalog) = catalog else {
-        return Err(EvalError::PlannedExecutorMissingShadow {
-            predicate: rule.head.predicate.clone(),
-        });
-    };
-    let Some(rule_relation) = catalog.predicate_relation(&rule.head.predicate) else {
-        return Ok(None);
-    };
-    let mut planned_groups = stratum
-        .rule_groups
-        .iter()
-        .filter(|planned| planned.shadow_planned && planned.head == Some(rule_relation.id));
-    let Some(planned) = planned_groups.next() else {
-        return Ok(None);
-    };
-    if planned_groups.next().is_some() {
-        return Ok(None);
-    }
-    Ok(planned_rule_group_is_supported_shadow_target(planned, catalog).then_some(planned))
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn planned_rule_group_is_supported_shadow_target(
-    planned: &RuleGroupPlan,
-    catalog: &PlanCatalog,
-) -> bool {
-    planned_rule_group_executable(planned, catalog)
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn shadow_planned_rule_group(
-    planned: &RuleGroupPlan,
-    catalog: &PlanCatalog,
-    rule: &Rule,
-    database: &Database,
-    options: &EvalOptions,
-    interpreted: &[DerivedTuple],
-) -> Result<(), EvalError> {
-    let mut warnings = Vec::new();
-    let planned_rows = eval_planned_rule_group(planned, catalog, database, &mut warnings, options)?;
-    compare_planned_rows_to_interpreted_rows(
-        &rule.head.predicate,
-        &planned_rows,
-        interpreted,
-        options,
-    )?;
-    Ok(())
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn derivation_map(
-    rows: &[DerivedTuple],
-    predicate: &PredicateRef,
-) -> Result<BTreeMap<Tuple, DerivationNode>, EvalError> {
-    let mut out = BTreeMap::new();
-    for row in rows {
-        let Some(derivation) = &row.derivation else {
-            return Err(EvalError::PlannedExecutorMismatch {
-                predicate: predicate.clone(),
-                interpreted: rows.len(),
-                planned: out.len(),
-            });
-        };
-        out.entry(row.tuple.clone())
-            .or_insert_with(|| derivation.as_ref().clone());
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn shadow_planned_stages(
-    planned_stratum: Option<&StratumPlan>,
-    catalog: Option<&PlanCatalog>,
-    database: &Database,
-    options: &EvalOptions,
-    active_predicates: &BTreeSet<PredicateRef>,
-) -> Result<(), EvalError> {
-    let Some(stratum) = planned_stratum else {
-        return Ok(());
-    };
-    if !stratum.stages.iter().any(|stage| stage.shadow_planned) {
-        return Ok(());
-    }
-    let Some(catalog) = catalog else {
-        return Err(EvalError::PlannedExecutorMissingShadow {
-            predicate: PredicateRef::parse("stage").expect("static predicate parses"),
-        });
-    };
-
-    for stage in &stratum.stages {
-        if !stage.shadow_planned {
-            continue;
-        }
-        let mut groups_by_predicate = BTreeMap::<PredicateRef, Vec<&RuleGroupPlan>>::new();
-        for group_index in &stage.rule_groups {
-            let Some(group) = stratum.rule_groups.get(*group_index) else {
-                continue;
-            };
-            if !group.shadow_planned
-                || !planned_rule_group_is_supported_shadow_target(group, catalog)
-            {
-                continue;
-            }
-            let Some(predicate) = planned_group_predicate(group, catalog) else {
-                continue;
-            };
-            if !active_predicates.contains(&predicate) {
-                continue;
-            }
-            if !stage_predicate_is_fully_shadowed(stage, stratum, catalog, &predicate) {
-                continue;
-            }
-            groups_by_predicate
-                .entry(predicate)
-                .or_default()
-                .push(group);
-        }
-        for (predicate, groups) in groups_by_predicate {
-            let mut rows = Vec::new();
-            let mut warnings = Vec::new();
-            for group in groups {
-                rows.extend(eval_planned_rule_group(
-                    group,
-                    catalog,
-                    database,
-                    &mut warnings,
-                    options,
-                )?);
-            }
-            compare_planned_rows_to_derived_relation(&predicate, &rows, database, options)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn planned_group_predicate(group: &RuleGroupPlan, catalog: &PlanCatalog) -> Option<PredicateRef> {
-    group
-        .provenance
-        .as_ref()
-        .map(|provenance| provenance.predicate.clone())
-        .or_else(|| {
-            let relation = catalog.relation(group.head?)?;
-            PredicateRef::parse(&relation.name).ok()
-        })
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn stage_predicate_is_fully_shadowed(
-    stage: &RuleStagePlan,
-    stratum: &StratumPlan,
-    catalog: &PlanCatalog,
-    predicate: &PredicateRef,
-) -> bool {
-    let Some(relation) = catalog.predicate_relation(predicate) else {
-        return false;
-    };
-    stratum
-        .rule_groups
-        .iter()
-        .enumerate()
-        .filter(|(_, group)| group.head == Some(relation.id))
-        .all(|(index, group)| stage.rule_groups.contains(&index) && group.shadow_planned)
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn compare_planned_rows_to_derived_relation(
-    predicate: &PredicateRef,
-    planned_rows: &[DerivedTuple],
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<(), EvalError> {
-    let Some(relation) = database.derived.get(predicate) else {
-        return Err(EvalError::PlannedExecutorMismatch {
-            predicate: predicate.clone(),
-            interpreted: 0,
-            planned: planned_rows.len(),
-        });
-    };
-    let interpreted_rows = relation
-        .tuples()
-        .iter()
-        .map(|tuple| DerivedTuple {
-            tuple: tuple.clone(),
-            derivation: relation.derivation(tuple),
-        })
-        .collect::<Vec<_>>();
-    compare_planned_rows_to_interpreted_rows(predicate, planned_rows, &interpreted_rows, options)
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn compare_planned_rows_to_interpreted_rows(
-    predicate: &PredicateRef,
-    planned_rows: &[DerivedTuple],
-    interpreted_rows: &[DerivedTuple],
-    options: &EvalOptions,
-) -> Result<(), EvalError> {
-    let planned_tuples = planned_rows
-        .iter()
-        .map(|row| row.tuple.clone())
-        .collect::<BTreeSet<_>>();
-    let interpreted_tuples = interpreted_rows
-        .iter()
-        .map(|row| row.tuple.clone())
-        .collect::<BTreeSet<_>>();
-    if planned_tuples != interpreted_tuples {
-        return Err(EvalError::PlannedExecutorMismatch {
-            predicate: predicate.clone(),
-            interpreted: interpreted_tuples.len(),
-            planned: planned_tuples.len(),
-        });
-    }
-    if options.explain().is_enabled() {
-        let planned_derivations = derivation_map(planned_rows, predicate)?;
-        let interpreted_derivations = derivation_map(interpreted_rows, predicate)?;
-        if planned_derivations != interpreted_derivations {
-            return Err(EvalError::PlannedExecutorMismatch {
-                predicate: predicate.clone(),
-                interpreted: interpreted_derivations.len(),
-                planned: planned_derivations.len(),
-            });
-        }
-    }
-    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5269,15 +4523,12 @@ fn eval_planned_rule_group_inner(
 
 fn eval_planned_query_output(
     query_plan: Option<&QueryPlan>,
-    planned: Option<&ProgramPlan>,
+    planned: &ProgramPlan,
     database: &Database,
     warnings: &[QueryWarning],
     options: &EvalOptions,
-) -> Result<Option<QueryOutput>, EvalError> {
-    let Some(query_plan) = query_plan else {
-        return Ok(None);
-    };
-    let planned = planned.expect("query plan has program plan");
+) -> Result<QueryOutput, EvalError> {
+    let query_plan = query_plan.ok_or(EvalError::UnsupportedExpression)?;
     let mut planned_warnings = warnings.to_vec();
     eval_planned_query(
         query_plan,
@@ -5286,7 +4537,6 @@ fn eval_planned_query_output(
         &mut planned_warnings,
         options,
     )
-    .map(Some)
 }
 
 fn eval_planned_query(
@@ -6511,343 +5761,11 @@ fn project_planned_head(
         .map(Tuple)
 }
 
-fn recursive_atom_indexes(body: &Body, stratum_predicates: &BTreeSet<PredicateRef>) -> Vec<usize> {
-    body.atoms
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, atom)| match atom {
-            Atom::Derived(derived) if stratum_predicates.contains(&derived.predicate) => Some(idx),
-            _ => None,
-        })
-        .collect()
-}
-
-#[derive(Clone, Copy)]
-struct DeltaView<'a> {
-    delta: &'a DeltaMap,
-    atom_index: usize,
-}
-
 #[derive(Clone, Copy)]
 struct PlannedDeltaView<'a> {
     delta: &'a DeltaMap,
     atom_index: usize,
     delta_relation: crate::ir::ids::RelationId,
-}
-
-fn eval_body(
-    body: &Body,
-    bindings: Vec<Binding>,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    eval_body_with_delta(body, bindings, database, None, warnings, options)
-}
-
-fn eval_body_with_delta(
-    body: &Body,
-    bindings: Vec<Binding>,
-    database: &Database,
-    delta: Option<DeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<Binding>, EvalError> {
-    let bindings = bindings
-        .into_iter()
-        .map(TracedBinding::with_values)
-        .collect::<Vec<_>>();
-    eval_body_traced(body, bindings, database, delta, warnings, options)
-        .map(|bindings| bindings.into_iter().map(|binding| binding.values).collect())
-}
-
-fn eval_body_traced(
-    body: &Body,
-    mut bindings: Vec<TracedBinding>,
-    database: &Database,
-    delta: Option<DeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut remaining = body.atoms.iter().enumerate().collect::<Vec<_>>();
-    while !remaining.is_empty() {
-        if bindings.is_empty() {
-            break;
-        }
-        let bound = common_bound_variables_traced(&bindings);
-        let next_index = remaining
-            .iter()
-            .position(|(atom_index, atom)| atom_ready(body, *atom_index, atom, &bound))
-            .unwrap_or(0);
-        let (atom_index, atom) = remaining.remove(next_index);
-        let atom_delta = delta.filter(|view| view.atom_index == atom_index);
-        bindings = eval_atom_traced(atom, bindings, database, atom_delta, warnings, options)?;
-    }
-    Ok(bindings)
-}
-
-fn common_bound_variables_traced(bindings: &[TracedBinding]) -> BTreeSet<Ident> {
-    let Some((first, rest)) = bindings.split_first() else {
-        return BTreeSet::new();
-    };
-    let mut common = first.values.keys().cloned().collect::<BTreeSet<_>>();
-    for binding in rest {
-        common.retain(|var| binding.values.contains_key(var));
-    }
-    common
-}
-
-fn eval_atom_traced(
-    atom: &Atom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    delta: Option<DeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    match atom {
-        Atom::Stored(stored) => eval_stored_traced(stored, bindings, database, options),
-        Atom::Derived(derived) => {
-            if let Some(view) = delta {
-                eval_derived_from_delta_traced(
-                    derived,
-                    bindings,
-                    view.delta,
-                    options.explain().is_enabled(),
-                )
-            } else {
-                eval_derived_traced(derived, bindings, database, options)
-            }
-        }
-        Atom::Comparison(comparison) => {
-            eval_comparison_traced(comparison, bindings, options.explain().is_enabled())
-        }
-        Atom::Aggregation(aggregate) => {
-            eval_aggregate_traced(aggregate, bindings, database, warnings, options)
-        }
-        Atom::Negation(negation) => {
-            eval_negation_traced(&negation.atom, bindings, database, warnings, options)
-        }
-        Atom::TimeBlock(time_block) => {
-            let trace = options.explain().is_enabled();
-            ensure_snapshot_time_body_supported(&time_block.reference, &time_block.body, database)?;
-            let (scoped, scoped_warnings) = database.scoped_to_time_ref(&time_block.reference)?;
-            push_warnings(warnings, scoped_warnings);
-            let mut out = Vec::new();
-            for binding in bindings {
-                let TracedBinding { values, steps } = binding;
-                let children = eval_body_traced(
-                    &time_block.body,
-                    vec![TracedBinding::with_values(values)],
-                    &scoped,
-                    None,
-                    warnings,
-                    options,
-                )?;
-                out.extend(children.into_iter().map(|child| {
-                    if trace {
-                        TracedBinding {
-                            values: child.values,
-                            steps: steps
-                                .clone()
-                                .into_iter()
-                                .chain([derivation_ref(DerivationNode::time_block(
-                                    &time_block.reference,
-                                    time_block.location.clone(),
-                                    clone_derivation_refs(&child.steps),
-                                ))])
-                                .collect(),
-                        }
-                    } else {
-                        TracedBinding {
-                            values: child.values,
-                            steps: steps.clone(),
-                        }
-                    }
-                }));
-            }
-            Ok(out)
-        }
-    }
-}
-
-fn ensure_snapshot_time_body_supported(
-    reference: &str,
-    body: &Body,
-    database: &Database,
-) -> Result<(), EvalError> {
-    for atom in &body.atoms {
-        match atom {
-            Atom::Stored(stored) => {
-                if !time_scoped_stored_relation_supported(&stored.relation) {
-                    return Err(EvalError::UnsupportedTimeScopedStoredRelation {
-                        reference: reference.to_string(),
-                        relation: stored.relation.clone(),
-                    });
-                }
-            }
-            Atom::Comparison(_) => {}
-            Atom::Derived(derived) => {
-                ensure_snapshot_time_derived_supported(reference, &derived.predicate, database)?;
-            }
-            Atom::Negation(negation) => match &negation.atom {
-                NegatedAtom::Stored(stored) => {
-                    if !time_scoped_stored_relation_supported(&stored.relation) {
-                        return Err(EvalError::UnsupportedTimeScopedStoredRelation {
-                            reference: reference.to_string(),
-                            relation: stored.relation.clone(),
-                        });
-                    }
-                }
-                NegatedAtom::Derived(derived) => {
-                    ensure_snapshot_time_derived_supported(
-                        reference,
-                        &derived.predicate,
-                        database,
-                    )?;
-                }
-            },
-            Atom::Aggregation(aggregate) => {
-                ensure_snapshot_time_body_supported(reference, &aggregate.body, database)?;
-            }
-            Atom::TimeBlock(time_block) => {
-                ensure_snapshot_time_body_supported(
-                    &time_block.reference,
-                    &time_block.body,
-                    database,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_snapshot_time_derived_supported(
-    reference: &str,
-    predicate: &PredicateRef,
-    database: &Database,
-) -> Result<(), EvalError> {
-    let Some(primitive) = PrimitivePredicate::from_predicate(predicate) else {
-        return Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
-            reference: reference.to_string(),
-            predicate: predicate.clone(),
-        });
-    };
-    if database.derived.contains_key(predicate) {
-        return Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
-            reference: reference.to_string(),
-            predicate: predicate.clone(),
-        });
-    }
-    if time_scoped_primitive_supported(primitive) {
-        Ok(())
-    } else {
-        Err(EvalError::UnsupportedTimeScopedPrimitive {
-            reference: reference.to_string(),
-            predicate: predicate.clone(),
-        })
-    }
-}
-
-fn eval_stored_traced(
-    atom: &StoredAtom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    if let Some(relation) = database.stored.get(&atom.relation) {
-        return eval_stored_relation_traced(atom, bindings, relation, options);
-    }
-    {
-        if database.tuples.has_relation(atom.relation.as_str()) {
-            return eval_tuple_stored_traced(atom, bindings, database, options);
-        }
-    }
-
-    Err(EvalError::UnknownStoredRelation {
-        relation: atom.relation.clone(),
-    })
-}
-
-fn eval_stored_relation_traced(
-    atom: &StoredAtom,
-    bindings: Vec<TracedBinding>,
-    relation: &StoredRelation,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
-    for binding in bindings {
-        let constraints = stored_constraints(&atom.fields, &binding.values)?;
-        for row in relation.candidate_rows(&constraints) {
-            if !stored_row_visible(&atom.relation, row, options) {
-                continue;
-            }
-            if let Some(next) = unify_stored_fields(&atom.fields, row, &binding.values)? {
-                let binding = TracedBinding {
-                    values: next,
-                    steps: binding.steps.clone(),
-                }
-                .push_step_if(trace, || {
-                    derivation_ref(DerivationNode::stored(&atom.relation, row))
-                });
-                out.push(binding);
-            }
-        }
-    }
-    Ok(out)
-}
-fn eval_tuple_stored_traced(
-    atom: &StoredAtom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
-    for binding in bindings {
-        let constraints = stored_constraints(&atom.fields, &binding.values)?;
-        for row in database.candidate_tuple_rows(&atom.relation, &constraints) {
-            if let Some(next) = unify_tuple_stored_fields(atom, database, row, &binding.values)? {
-                let step = if trace {
-                    Some(database.stored_tuple_derivation(&atom.relation, row)?)
-                } else {
-                    None
-                };
-                let binding = TracedBinding {
-                    values: next,
-                    steps: binding.steps.clone(),
-                }
-                .push_step_if(trace, || step.expect("trace step exists"));
-                out.push(binding);
-            }
-        }
-    }
-    Ok(out)
-}
-fn unify_tuple_stored_fields(
-    atom: &StoredAtom,
-    database: &Database,
-    row: RowId,
-    binding: &Binding,
-) -> Result<Option<Binding>, EvalError> {
-    let mut next = None;
-    for field in &atom.fields {
-        let Some(value) = database.tuple_field_value(&atom.relation, row, &field.field) else {
-            return Ok(None);
-        };
-        if !unify_term(&field.term, &value, binding, &mut next)? {
-            return Ok(None);
-        }
-    }
-    Ok(Some(next.unwrap_or_else(|| binding.clone())))
-}
-
-fn stored_row_visible(relation: &Ident, row: &NamedRow, options: &EvalOptions) -> bool {
-    if !relation_uses_trail_visibility(relation) {
-        return true;
-    }
-    trail_visibility_allowed(row_string(row, TRAIL_VISIBILITY_FIELD), options)
 }
 
 fn relation_uses_trail_visibility(relation: &Ident) -> bool {
@@ -6872,108 +5790,6 @@ fn trail_visibility_allowed(visibility: Option<&str>, options: &EvalOptions) -> 
         Some("public") | None => true,
         Some(_) => false,
     }
-}
-
-fn eval_derived_traced(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    if let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) {
-        if primitive.is_soft() && database.derived.contains_key(&atom.predicate) {
-            let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
-                EvalError::UnknownDerivedPredicate {
-                    predicate: atom.predicate.clone(),
-                }
-            })?;
-            return eval_derived_from_relation_traced(
-                atom,
-                bindings,
-                relation,
-                options.explain().is_enabled(),
-            );
-        }
-        return eval_primitive_traced(primitive, atom, bindings, database, options);
-    }
-    let relation = database.derived.get(&atom.predicate).ok_or_else(|| {
-        EvalError::UnknownDerivedPredicate {
-            predicate: atom.predicate.clone(),
-        }
-    })?;
-    eval_derived_from_relation_traced(atom, bindings, relation, options.explain().is_enabled())
-}
-
-fn eval_derived_from_delta_traced(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<TracedBinding>,
-    delta: &DeltaMap,
-    trace: bool,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let Some(relation) = delta.get(&atom.predicate) else {
-        return Ok(Vec::new());
-    };
-    eval_derived_from_relation_traced(atom, bindings, relation, trace)
-}
-
-fn eval_derived_from_relation_traced(
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<TracedBinding>,
-    relation: &DerivedRelation,
-    trace: bool,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    for binding in bindings {
-        let constraints = call_constraints(&atom.args, &binding.values)?;
-        for tuple in relation.candidate_tuples(&constraints) {
-            if tuple.0.len() != atom.args.len() {
-                continue;
-            }
-            if let Some(next) = unify_call_args(&atom.args, tuple, &binding.values)? {
-                let binding = TracedBinding {
-                    values: next,
-                    steps: binding.steps.clone(),
-                }
-                .push_step_if(trace, || {
-                    relation.derivation(tuple).unwrap_or_else(|| {
-                        derivation_ref(DerivationNode::fact(&atom.predicate, tuple))
-                    })
-                });
-                out.push(binding);
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn eval_primitive_traced(
-    primitive: PrimitivePredicate,
-    atom: &crate::runtime::ast::DerivedAtom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    let mut regex_cache = BTreeMap::<String, Regex>::new();
-    let trace = options.explain().is_enabled();
-    for binding in bindings {
-        let constraints = call_constraints(&atom.args, &binding.values)?;
-        let tuples =
-            primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
-        for tuple in tuples {
-            if let Some(next) = unify_call_args(&atom.args, &tuple, &binding.values)? {
-                let binding = TracedBinding {
-                    values: next,
-                    steps: binding.steps.clone(),
-                }
-                .push_step_if(trace, || {
-                    derivation_ref(DerivationNode::primitive(&atom.predicate, &tuple))
-                });
-                out.push(binding);
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn primitive_tuples(
@@ -7051,122 +5867,6 @@ fn primitive_tuples(
     }
 }
 
-fn eval_comparison_traced(
-    comparison: &Comparison,
-    bindings: Vec<TracedBinding>,
-    trace: bool,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    for binding in bindings {
-        let left = eval_expr(&comparison.left, &binding.values)?;
-        let right = eval_expr(&comparison.right, &binding.values)?;
-        if compare(&left, comparison.op, &right)? {
-            out.push(binding.push_step_if(trace, || {
-                derivation_ref(DerivationNode::comparison(comparison))
-            }));
-        }
-    }
-    Ok(out)
-}
-
-fn eval_negation_traced(
-    negated: &NegatedAtom,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
-    for binding in bindings {
-        let atom = match negated {
-            NegatedAtom::Stored(stored) => Atom::Stored(stored.clone()),
-            NegatedAtom::Derived(derived) => Atom::Derived(derived.clone()),
-        };
-        let matches = eval_atom_traced(
-            &atom,
-            vec![TracedBinding::with_values(binding.values.clone())],
-            database,
-            None,
-            warnings,
-            options,
-        )?;
-        if matches.is_empty() {
-            out.push(
-                binding.push_step_if(trace, || derivation_ref(DerivationNode::negation(negated))),
-            );
-        }
-    }
-    Ok(out)
-}
-
-fn eval_aggregate_traced(
-    aggregate: &Aggregate,
-    bindings: Vec<TracedBinding>,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-) -> Result<Vec<TracedBinding>, EvalError> {
-    validate_aggregate_args(aggregate)?;
-
-    let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
-    for binding in bindings {
-        let inner = eval_body_traced(
-            &aggregate.body,
-            vec![TracedBinding::with_values(binding.values.clone())],
-            database,
-            None,
-            warnings,
-            options,
-        )?;
-        if inner.is_empty() {
-            if aggregate.function == AggregateFunction::Count
-                && let Some(group) = bind_aggregate_result(
-                    &aggregate.result,
-                    &binding.values,
-                    &Value::Number(NumberValue::Int(0)),
-                )?
-            {
-                out.push(
-                    TracedBinding {
-                        values: group,
-                        steps: binding.steps.clone(),
-                    }
-                    .push_step_if(trace, || {
-                        derivation_ref(DerivationNode::aggregate(aggregate, Vec::new()))
-                    }),
-                );
-            }
-            continue;
-        }
-        let rows = inner
-            .iter()
-            .map(|row| row.values.clone())
-            .collect::<Vec<_>>();
-        let aggregate_steps = trace.then(|| aggregate_derivation_steps(&inner));
-        for values in eval_aggregate_group(aggregate, &binding.values, &rows)? {
-            out.push(
-                TracedBinding {
-                    values,
-                    steps: binding.steps.clone(),
-                }
-                .push_step_if(trace, || {
-                    derivation_ref(DerivationNode::aggregate(
-                        aggregate,
-                        clone_derivation_refs(aggregate_steps.as_deref().unwrap_or_default()),
-                    ))
-                }),
-            );
-        }
-    }
-    Ok(out)
-}
-
-fn aggregate_derivation_steps(rows: &[TracedBinding]) -> Vec<DerivationRef> {
-    collect_aggregate_derivation_steps(rows.iter().flat_map(|row| row.steps.iter()))
-}
-
 fn collect_aggregate_derivation_steps<'a>(
     steps: impl Iterator<Item = &'a DerivationRef>,
 ) -> Vec<DerivationRef> {
@@ -7183,39 +5883,6 @@ fn collect_aggregate_derivation_steps<'a>(
         out.push(derivation_ref(DerivationNode::evidence_truncated(omitted)));
     }
     out
-}
-
-fn eval_aggregate_group(
-    aggregate: &Aggregate,
-    base: &Binding,
-    rows: &[Binding],
-) -> Result<Vec<Binding>, EvalError> {
-    match aggregate.function {
-        AggregateFunction::Count
-        | AggregateFunction::Sum
-        | AggregateFunction::Min
-        | AggregateFunction::Max
-        | AggregateFunction::Avg
-        | AggregateFunction::List
-        | AggregateFunction::Set => {
-            let values = aggregate_values(aggregate, rows)?;
-            let Some(value) = scalar_aggregate_value(aggregate.function, &values)? else {
-                return Ok(Vec::new());
-            };
-            Ok(bind_aggregate_result(&aggregate.result, base, &value)?
-                .into_iter()
-                .collect())
-        }
-        AggregateFunction::TopK => eval_top_k_aggregate(aggregate, base, rows),
-        AggregateFunction::Rank => eval_rank_aggregate(aggregate, base, rows),
-        AggregateFunction::TakeUntil => eval_take_until_aggregate(aggregate, base, rows),
-    }
-}
-
-fn aggregate_values(aggregate: &Aggregate, rows: &[Binding]) -> Result<Vec<Value>, EvalError> {
-    rows.iter()
-        .map(|row| eval_expr(&aggregate.value, row))
-        .collect()
 }
 
 fn scalar_aggregate_value(
@@ -7308,423 +5975,40 @@ fn usize_to_f64(value: usize) -> f64 {
     }
 }
 
-#[derive(Clone, Debug)]
-struct OrderedAggregateCandidate {
-    value: Value,
-    key: Value,
-}
-
-#[derive(Clone, Debug)]
-struct RankAggregateCandidate {
-    key: Value,
-    row: Binding,
-}
-
-fn compare_ordered_candidates(
-    left: &OrderedAggregateCandidate,
-    right: &OrderedAggregateCandidate,
-) -> Ordering {
-    right
-        .key
-        .cmp(&left.key)
-        .then_with(|| left.value.cmp(&right.value))
-}
-
-fn top_k_candidates(
-    aggregate: &Aggregate,
-    rows: &[Binding],
-    limit: usize,
-) -> Result<Vec<OrderedAggregateCandidate>, EvalError> {
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let key = required_aggregate_arg(aggregate, "key")?;
-    let mut candidates = Vec::new();
-    for row in rows {
-        let candidate = OrderedAggregateCandidate {
-            value: eval_expr(&aggregate.value, row)?,
-            key: eval_expr(&key.expr, row)?,
-        };
-        let insert_at = candidates
-            .binary_search_by(|existing| compare_ordered_candidates(existing, &candidate))
-            .unwrap_or_else(|idx| idx);
-        if insert_at < limit {
-            candidates.insert(insert_at, candidate);
-            if candidates.len() > limit {
-                candidates.pop();
-            }
-        }
-    }
-    Ok(candidates)
-}
-
-fn rank_candidates(
-    aggregate: &Aggregate,
-    rows: &[Binding],
-) -> Result<Vec<RankAggregateCandidate>, EvalError> {
-    let key = required_aggregate_arg(aggregate, "key")?;
-    let mut candidates = rows
-        .iter()
-        .map(|row| {
-            Ok(RankAggregateCandidate {
-                key: eval_expr(&key.expr, row)?,
-                row: row.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    candidates.sort_by(|left, right| {
-        right
-            .key
-            .cmp(&left.key)
-            .then_with(|| left.row.cmp(&right.row))
-    });
-    Ok(candidates)
-}
-
-fn eval_top_k_aggregate(
-    aggregate: &Aggregate,
-    base: &Binding,
-    rows: &[Binding],
-) -> Result<Vec<Binding>, EvalError> {
-    let k = required_non_negative_int_arg(aggregate, "k", base)?;
-    let candidates = top_k_candidates(aggregate, rows, usize::try_from(k).unwrap_or(usize::MAX))?;
-    candidates
-        .into_iter()
-        .filter_map(|candidate| {
-            bind_aggregate_result(&aggregate.result, base, &candidate.value).transpose()
-        })
-        .collect()
-}
-
-fn eval_rank_aggregate(
-    aggregate: &Aggregate,
-    base: &Binding,
-    rows: &[Binding],
-) -> Result<Vec<Binding>, EvalError> {
-    let rank_var = required_rank_var_arg(aggregate)?;
-    let candidates = rank_candidates(aggregate, rows)?;
-    let mut out = Vec::new();
-    let mut current_rank = 0_i64;
-    let mut previous_key = None;
-    for candidate in candidates {
-        if previous_key.as_ref() != Some(&candidate.key) {
-            current_rank += 1;
-            previous_key = Some(candidate.key.clone());
-        }
-        let mut row = candidate.row;
-        row.insert(
-            rank_var.clone(),
-            Value::Number(NumberValue::Int(current_rank)),
-        );
-        let value = eval_expr(&aggregate.value, &row)?;
-        if let Some(binding) = bind_aggregate_result(&aggregate.result, base, &value)? {
-            out.push(binding);
-        }
-    }
-    Ok(out)
-}
-
-fn eval_take_until_aggregate(
-    aggregate: &Aggregate,
-    base: &Binding,
-    rows: &[Binding],
-) -> Result<Vec<Binding>, EvalError> {
-    let budget = required_non_negative_int_arg(aggregate, "budget", base)?;
-    let sum = required_aggregate_arg(aggregate, "sum")?;
-    let key = required_aggregate_arg(aggregate, "key")?;
-    let mut candidates = rows
-        .iter()
-        .map(|row| {
-            let cost = eval_expr(&sum.expr, row)?;
-            let NumberValue::Int(cost) = numeric_value(&cost)? else {
-                return Err(EvalError::InvalidAggregateArg {
-                    function: aggregate.function,
-                    argument: "sum",
-                });
-            };
-            if cost < 0 {
-                return Err(EvalError::InvalidAggregateArg {
-                    function: aggregate.function,
-                    argument: "sum",
-                });
-            }
-            Ok((
-                eval_expr(&key.expr, row)?,
-                eval_expr(&aggregate.value, row)?,
-                cost,
-            ))
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-
-    let mut out = Vec::new();
-    let mut used = 0_i64;
-    for (_, value, cost) in candidates {
-        let next = used.saturating_add(cost);
-        if next > budget {
-            break;
-        }
-        used = next;
-        if let Some(binding) = bind_aggregate_result(&aggregate.result, base, &value)? {
-            out.push(binding);
-        }
-    }
-    Ok(out)
-}
-
-fn bind_aggregate_result(
-    result: &Expr,
-    base: &Binding,
-    value: &Value,
-) -> Result<Option<Binding>, EvalError> {
-    let mut next = None;
-    if !unify_expr(result, value, base, &mut next)? {
-        return Ok(None);
-    }
-    Ok(Some(next.unwrap_or_else(|| base.clone())))
-}
-
-fn validate_aggregate_args(aggregate: &Aggregate) -> Result<(), EvalError> {
-    let allowed = aggregate_allowed_args(aggregate.function);
-    let mut seen = BTreeSet::new();
-    for arg in &aggregate.args {
-        if !allowed.contains(&arg.name.as_str()) {
-            return Err(EvalError::InvalidAggregateArg {
-                function: aggregate.function,
-                argument: "unknown",
-            });
-        }
-        if !seen.insert(arg.name.as_str()) {
-            return Err(EvalError::InvalidAggregateArg {
-                function: aggregate.function,
-                argument: "duplicate",
-            });
-        }
-    }
-    Ok(())
-}
-
-fn required_aggregate_arg<'a>(
-    aggregate: &'a Aggregate,
-    name: &'static str,
-) -> Result<&'a crate::runtime::ast::NamedArg, EvalError> {
-    aggregate
-        .args
-        .iter()
-        .find(|arg| arg.name.as_str() == name)
-        .ok_or(EvalError::MissingAggregateArg {
-            function: aggregate.function,
-            argument: name,
-        })
-}
-
-fn required_non_negative_int_arg(
-    aggregate: &Aggregate,
-    name: &'static str,
-    binding: &Binding,
-) -> Result<i64, EvalError> {
-    let value = eval_expr(&required_aggregate_arg(aggregate, name)?.expr, binding)?;
-    let Value::Number(NumberValue::Int(value)) = value else {
-        return Err(EvalError::InvalidAggregateArg {
-            function: aggregate.function,
-            argument: name,
-        });
-    };
-    if value < 0 {
-        return Err(EvalError::InvalidAggregateArg {
-            function: aggregate.function,
-            argument: name,
-        });
-    }
-    Ok(value)
-}
-
-fn required_rank_var_arg(aggregate: &Aggregate) -> Result<Ident, EvalError> {
-    let Expr::Var(var) = &required_aggregate_arg(aggregate, "rank")?.expr else {
-        return Err(EvalError::InvalidAggregateArg {
-            function: aggregate.function,
-            argument: "rank",
-        });
-    };
-    Ok(var.clone())
-}
-
-fn stored_constraints(
-    fields: &[FieldPattern],
-    binding: &Binding,
-) -> Result<Vec<(Ident, Value)>, EvalError> {
-    let mut constraints = Vec::new();
-    for field in fields {
-        if let Some(value) = bound_value_for_term(&field.term, binding)? {
-            constraints.push((field.field.clone(), value));
-        }
-    }
-    Ok(constraints)
-}
-
-fn call_constraints(args: &[CallArg], binding: &Binding) -> Result<Vec<(usize, Value)>, EvalError> {
-    let mut constraints = Vec::new();
-    for (idx, arg) in args.iter().enumerate() {
-        let Some(expr) = arg.expr() else {
-            continue;
-        };
-        if let Some(value) = bound_value_for_expr(expr, binding)? {
-            constraints.push((idx, value));
-        }
-    }
-    Ok(constraints)
-}
-
-fn bound_value_for_term(term: &Term, binding: &Binding) -> Result<Option<Value>, EvalError> {
-    match term {
-        Term::Wildcard => Ok(None),
-        Term::Expr(expr) => bound_value_for_expr(expr, binding),
-    }
-}
-
-fn bound_value_for_expr(expr: &Expr, binding: &Binding) -> Result<Option<Value>, EvalError> {
-    match expr {
-        Expr::Var(var) => Ok(binding.get(var).cloned()),
-        _ if expr_is_bound(expr, binding) => eval_expr(expr, binding).map(Some),
-        _ => Ok(None),
-    }
-}
-
-fn expr_is_bound(expr: &Expr, binding: &Binding) -> bool {
-    let mut vars = BTreeSet::new();
-    expr.variables(&mut vars);
-    vars.iter().all(|var| binding.contains_key(var))
-}
-
-fn unify_stored_fields(
-    fields: &[FieldPattern],
-    row: &NamedRow,
-    binding: &Binding,
-) -> Result<Option<Binding>, EvalError> {
-    let mut next = None;
-    for field in fields {
-        let Some(value) = row.get(&field.field) else {
-            return Ok(None);
-        };
-        if !unify_term(&field.term, value, binding, &mut next)? {
-            return Ok(None);
-        }
-    }
-    Ok(Some(next.unwrap_or_else(|| binding.clone())))
-}
-
-fn unify_call_args(
-    args: &[CallArg],
-    tuple: &Tuple,
-    binding: &Binding,
-) -> Result<Option<Binding>, EvalError> {
-    let mut next = None;
-    for (arg, value) in args.iter().zip(&tuple.0) {
-        let Some(expr) = arg.expr() else {
-            continue;
-        };
-        if !unify_expr(expr, value, binding, &mut next)? {
-            return Ok(None);
-        }
-    }
-    Ok(Some(next.unwrap_or_else(|| binding.clone())))
-}
-
-fn unify_term(
-    term: &Term,
-    value: &Value,
-    binding: &Binding,
-    next: &mut Option<Binding>,
-) -> Result<bool, EvalError> {
-    match term {
-        Term::Wildcard => Ok(true),
-        Term::Expr(expr) => unify_expr(expr, value, binding, next),
-    }
-}
-
-fn unify_expr(
-    expr: &Expr,
-    value: &Value,
-    binding: &Binding,
-    next: &mut Option<Binding>,
-) -> Result<bool, EvalError> {
-    match expr {
-        Expr::Var(var) => {
-            if let Some(existing) = active_binding(binding, next.as_ref()).get(var) {
-                Ok(existing == value)
-            } else {
-                writable_binding(binding, next).insert(var.clone(), value.clone());
-                Ok(true)
-            }
-        }
-        Expr::Tuple(items) => {
-            let Value::List(values) = value else {
-                return Ok(false);
-            };
-            if items.len() != values.len() {
-                return Ok(false);
-            }
-            for (item, value) in items.iter().zip(values) {
-                if !unify_expr(item, value, binding, next)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        _ => Ok(eval_expr(expr, active_binding(binding, next.as_ref()))? == *value),
-    }
-}
-
-fn active_binding<'a>(binding: &'a Binding, next: Option<&'a Binding>) -> &'a Binding {
-    next.map_or(binding, |next| next)
-}
-
-fn writable_binding<'a>(binding: &Binding, next: &'a mut Option<Binding>) -> &'a mut Binding {
-    next.get_or_insert_with(|| binding.clone())
-}
-
-fn project_head(head: &Head, binding: &Binding) -> Result<Tuple, EvalError> {
-    let mut values = Vec::with_capacity(head.terms.len());
-    for term in &head.terms {
-        match term {
-            Term::Wildcard => values.push(Value::Null),
-            Term::Expr(expr) => values.push(eval_expr(expr, binding)?),
-        }
-    }
-    Ok(Tuple(values))
-}
-
 fn project_fact_head(head: &Head) -> Result<Tuple, EvalError> {
-    project_head(head, &Binding::new())
+    head.terms
+        .iter()
+        .map(|term| match term {
+            Term::Wildcard => Ok(Value::Null),
+            Term::Expr(expr) => eval_fact_expr(expr),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Tuple)
 }
 
-fn eval_expr(expr: &Expr, binding: &Binding) -> Result<Value, EvalError> {
+fn eval_fact_expr(expr: &Expr) -> Result<Value, EvalError> {
     match expr {
-        Expr::Var(var) => binding
-            .get(var)
-            .cloned()
-            .ok_or_else(|| EvalError::UnboundVariable {
-                variable: var.clone(),
-            }),
+        Expr::Var(var) => Err(EvalError::UnboundVariable {
+            variable: var.clone(),
+        }),
         Expr::Literal(literal) => Ok(value_from_literal(literal)),
-        Expr::Binary { left, op, right } => eval_binary(left, *op, right, binding),
+        Expr::Binary { left, op, right } => eval_fact_binary(left, *op, right),
         Expr::Tuple(items) => items
             .iter()
-            .map(|item| eval_expr(item, binding))
+            .map(eval_fact_expr)
             .collect::<Result<Vec<_>, _>>()
             .map(Value::List),
         Expr::FunctionCall { .. } => Err(EvalError::UnsupportedExpression),
     }
 }
 
-fn eval_binary(
+fn eval_fact_binary(
     left: &Expr,
     op: crate::runtime::ast::ArithmeticOp,
     right: &Expr,
-    binding: &Binding,
 ) -> Result<Value, EvalError> {
-    let left = eval_expr(left, binding)?;
-    let right = eval_expr(right, binding)?;
+    let left = eval_fact_expr(left)?;
+    let right = eval_fact_expr(right)?;
     let (Value::Number(left), Value::Number(right)) = (left, right) else {
         return Err(EvalError::UnsupportedExpression);
     };
@@ -7762,73 +6046,9 @@ pub(crate) fn value_from_literal(literal: &Literal) -> Value {
     }
 }
 
-fn sort_bindings_for_query(
-    ordering: &[OrderKey],
-    bindings: &mut Vec<Binding>,
-) -> Result<(), EvalError> {
-    sort_query_items(ordering, bindings, |binding| binding)
-}
-
-fn sort_traced_bindings_for_query(
-    ordering: &[OrderKey],
-    bindings: &mut Vec<TracedBinding>,
-) -> Result<(), EvalError> {
-    sort_query_items(ordering, bindings, |binding| &binding.values)
-}
-
-fn sort_query_items<T>(
-    ordering: &[OrderKey],
-    items: &mut Vec<T>,
-    binding: impl Fn(&T) -> &Binding,
-) -> Result<(), EvalError> {
-    if ordering.is_empty() {
-        return Ok(());
-    }
-    let mut keyed = std::mem::take(items)
-        .into_iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let keys = eval_order_keys(ordering, binding(&item))?;
-            Ok((index, keys, item))
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    keyed.sort_by(|left, right| compare_ordered_query_rows(ordering, left, right));
-    items.extend(keyed.into_iter().map(|(_, _, item)| item));
-    Ok(())
-}
-
 enum QueryOrderKeys {
     One(Value),
     Many(Vec<Value>),
-}
-
-fn eval_order_keys(ordering: &[OrderKey], binding: &Binding) -> Result<QueryOrderKeys, EvalError> {
-    if let [key] = ordering {
-        return eval_expr(&key.expr, binding).map(QueryOrderKeys::One);
-    }
-    ordering
-        .iter()
-        .map(|key| eval_expr(&key.expr, binding))
-        .collect::<Result<Vec<_>, _>>()
-        .map(QueryOrderKeys::Many)
-}
-
-fn compare_ordered_query_rows<T>(
-    ordering: &[OrderKey],
-    left: &(usize, QueryOrderKeys, T),
-    right: &(usize, QueryOrderKeys, T),
-) -> Ordering {
-    for (index, key) in ordering.iter().enumerate() {
-        let (left_key, right_key) = order_key_values(index, &left.1, &right.1);
-        let comparison = match key.direction {
-            OrderDirection::Asc => left_key.cmp(right_key),
-            OrderDirection::Desc => right_key.cmp(left_key),
-        };
-        if comparison != Ordering::Equal {
-            return comparison;
-        }
-    }
-    left.0.cmp(&right.0)
 }
 
 fn order_key_values<'a>(
@@ -7880,68 +6100,6 @@ fn compare(left: &Value, op: ComparisonOp, right: &Value) -> Result<bool, EvalEr
         ComparisonOp::Matches => unreachable!("unsupported comparison returned early"),
     };
     Ok(result)
-}
-
-fn binding_to_row(binding: Binding) -> Row {
-    Row {
-        fields: binding
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect(),
-        derivation: None,
-    }
-}
-
-fn traced_bindings_to_rows(bindings: Vec<TracedBinding>, options: &ExplainOptions) -> Vec<Row> {
-    bindings
-        .into_iter()
-        .enumerate()
-        .map(|(index, binding)| {
-            traced_binding_to_row(binding, options, options.explains_row(index))
-        })
-        .collect()
-}
-
-fn traced_binding_to_row(
-    binding: TracedBinding,
-    options: &ExplainOptions,
-    include_derivation: bool,
-) -> Row {
-    debug_assert!(
-        !binding
-            .values
-            .contains_key(&Ident::new_unchecked("_derivation")),
-        "explain output reserves _derivation"
-    );
-    Row {
-        fields: binding
-            .values
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect(),
-        derivation: include_derivation
-            .then(|| DerivationNode::query(clone_derivation_refs(&binding.steps)).bounded(options)),
-    }
-}
-
-fn ensure_no_reserved_explain_fields(bindings: &[TracedBinding]) -> Result<(), EvalError> {
-    let reserved = Ident::new_unchecked("_derivation");
-    if bindings
-        .iter()
-        .any(|binding| binding.values.contains_key(&reserved))
-    {
-        return Err(EvalError::ReservedExplainField {
-            field: "_derivation",
-        });
-    }
-    Ok(())
-}
-
-fn compact_stored_row(relation: &Ident, row: &NamedRow) -> BTreeMap<String, Value> {
-    row.iter()
-        .filter(|(field, _)| explain_field_visible(relation.as_str(), field.as_str()))
-        .map(|(field, value)| (field.to_string(), value.clone()))
-        .collect()
 }
 
 fn compact_stored_tuple(relation: &Ident, row: TupleRow<'_>) -> BTreeMap<String, Value> {
@@ -8304,6 +6462,7 @@ mod tests {
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::ir::plan::planned_rule_group_executable;
     use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
@@ -8442,111 +6601,6 @@ mod tests {
             key: key.to_string(),
             value: value.to_string(),
         }
-    }
-
-    fn assert_stored_tuple_derivation_matches_named(
-        database: &Database,
-        relation: &str,
-        row: RowId,
-        named: &NamedRow,
-    ) {
-        let relation = Ident::new_unchecked(relation);
-        let tuple_row = database
-            .tuple_row(&relation, row)
-            .expect("stored tuple row exists");
-        assert_eq!(
-            DerivationNode::stored_tuple(&relation, tuple_row),
-            DerivationNode::stored(&relation, named)
-        );
-    }
-
-    #[test]
-    fn stored_tuple_derivation_matches_named_row_derivation() {
-        let handle = handle("h", "file", "current", "", "area");
-        let edge = edge("h", "other", "DependsOn");
-        let meta = meta("h", "status.detail", "reviewed");
-        let content = content_with_text("h", "s1", "Body text", 4);
-        let span = span("h", "s1", 3, 5);
-        let concern = ConcernFact {
-            identity: identity("concern:h"),
-            name: "runtime".to_string(),
-            member: "h".to_string(),
-        };
-        let config = config("pipeline.status", "current");
-        let snapshot = snapshot_fact("last", "2026-06-05", "h", "status", "current");
-
-        let mut batch = FactBatch::new(
-            CorpusId::from("test"),
-            SourceName::from("fixture"),
-            FactBatchMode::FullSnapshot,
-            Generation::initial(),
-        );
-        batch.handles = vec![handle.clone()];
-        batch.edges = vec![edge.clone()];
-        batch.meta = vec![meta.clone()];
-        batch.content = vec![content.clone()];
-        batch.spans = vec![span.clone()];
-        batch.concerns = vec![concern.clone()];
-
-        let mut store = FactStore::default();
-        store.merge(batch).expect("fixture merge");
-        store
-            .replace_configs(&CorpusId::from("test"), vec![config.clone()])
-            .expect("config replacement");
-        store
-            .replace_snapshots(&CorpusId::from("test"), vec![snapshot.clone()])
-            .expect("snapshot replacement");
-
-        let database = Database::from_store(&store);
-        let row = RowId::from_index(0);
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            HANDLE_RELATION,
-            row,
-            &handle_row(&handle),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            EDGE_RELATION,
-            row,
-            &edge_row(&edge),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            META_RELATION,
-            row,
-            &meta_row(&meta),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            CONTENT_RELATION,
-            row,
-            &content_row(&content),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            SPAN_RELATION,
-            row,
-            &span_row(&span),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            "concern",
-            row,
-            &concern_row(&concern),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            CONFIG_RELATION,
-            row,
-            &config_row(&config),
-        );
-        assert_stored_tuple_derivation_matches_named(
-            &database,
-            SNAPSHOT_RELATION,
-            row,
-            &snapshot_row(&snapshot),
-        );
     }
 
     fn chain_store(edge_count: usize) -> FactStore {
@@ -9382,19 +7436,7 @@ mod tests {
 
         let mut store = FactStore::default();
         store.merge(batch).expect("mvs fixture merge");
-        let mut database = Database::from_store(&store);
-        database.insert_stored_rows(
-            "pending_edge",
-            [named_row([
-                ("from", s("compiler/jit-spec.md")),
-                ("target", s("OQ-9999")),
-                ("kind", s("DependsOn")),
-                ("file", s("compiler/jit-spec.md")),
-                ("line", n(51)),
-            ])],
-        );
-        database.insert_stored_rows("linear_namespace", [named_row([("namespace", s("OQ"))])]);
-        database
+        Database::from_store(&store)
     }
 
     fn mvs_handle(
@@ -9463,14 +7505,16 @@ mod tests {
               *edge{from: s, to: mid, kind: "Supersedes"},
               supersedes_chain(mid, t, d).
 
+            linear_namespace("OQ").
             obligation(h) :=
               *handle{id: h, kind: "label", namespace: ns},
-              *linear_namespace{namespace: ns}.
+              linear_namespace(ns).
             discharged(h) := *edge{to: h, kind: "Discharges"}.
             undischarged(h) := obligation(h), not discharged(h), not terminal(h).
 
+            pending_edge("compiler/jit-spec.md", "OQ-9999", "compiler/jit-spec.md", 51).
             diagnostic("E001", "error", src, file, line) :=
-              *pending_edge{from: src, target: target, file: file, line: line},
+              pending_edge(src, target, file, line),
               not *handle{id: target}.
             diagnostic("E002", "error", h, file, 1) :=
               undischarged(h),
@@ -9680,32 +7724,6 @@ mod tests {
         evaluator.eval_query(&query).expect_err("query errors")
     }
 
-    fn run_interpreted_database(input: &str, database: Database, options: EvalOptions) -> Database {
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let mut evaluator = Evaluator::with_options(analyzed, database, options);
-        evaluator.seed_facts().expect("facts seed");
-        let strata = evaluator.program.strata().to_vec();
-        for stratum in strata {
-            let rules = evaluator
-                .program
-                .rules()
-                .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
-                .cloned()
-                .collect::<Vec<_>>();
-            run_rule_group(
-                &mut evaluator.database,
-                &rules,
-                None,
-                None,
-                &mut evaluator.warnings,
-                &evaluator.options,
-            )
-            .expect("interpreted fixpoint evaluates");
-        }
-        evaluator.database
-    }
-
     fn run_planned_database(input: &str, database: Database, options: EvalOptions) -> Database {
         let program = parse_program("inline", input).expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
@@ -9716,63 +7734,71 @@ mod tests {
         evaluator.database
     }
 
-    fn assert_recursive_shadow(
+    #[derive(Serialize)]
+    struct RecursiveGoldenRow {
+        tuple: Tuple,
+        derivation: DerivationNode,
+    }
+
+    #[derive(Clone, Copy)]
+    struct GoldenExpectation {
+        bytes: usize,
+        fnv1a64: &'static str,
+    }
+
+    fn planned_recursive_golden(
         input: &str,
         database: Database,
         predicate: &str,
         options: EvalOptions,
-    ) {
-        let explain_enabled = options.explain().is_enabled();
-        let interpreted = run_interpreted_database(input, database.clone(), options.clone());
+    ) -> String {
         let planned = run_planned_database(input, database, options);
         let predicate = PredicateRef::parse(predicate).expect("predicate parses");
-        let interpreted_relation = interpreted
-            .derived
-            .get(&predicate)
-            .expect("interpreted relation exists");
         let planned_relation = planned
             .derived
             .get(&predicate)
             .expect("planned relation exists");
-        assert_eq!(
-            planned_relation.tuples(),
-            interpreted_relation.tuples(),
-            "planned recursive tuples drifted for {predicate}"
+        let rows = planned_relation
+            .tuples()
+            .iter()
+            .map(|tuple| RecursiveGoldenRow {
+                tuple: tuple.clone(),
+                derivation: planned_relation
+                    .derivation(tuple)
+                    .expect("planned derivation")
+                    .as_ref()
+                    .clone(),
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string_pretty(&rows).expect("golden serializes")
+    }
+
+    fn stable_golden_digest(payload: &str) -> String {
+        format!("{:016x}", crate::fnv1a_64(payload.as_bytes()))
+    }
+
+    fn assert_recursive_golden(
+        input: &str,
+        database: Database,
+        predicate: &str,
+        expected: GoldenExpectation,
+    ) {
+        let golden = planned_recursive_golden(
+            input,
+            database,
+            predicate,
+            EvalOptions::default().with_explain_all(),
         );
-        if explain_enabled {
-            let interpreted_derivations = interpreted_relation
-                .tuples()
-                .iter()
-                .map(|tuple| {
-                    (
-                        tuple.clone(),
-                        interpreted_relation
-                            .derivation(tuple)
-                            .expect("interpreted derivation")
-                            .as_ref()
-                            .clone(),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            let planned_derivations = planned_relation
-                .tuples()
-                .iter()
-                .map(|tuple| {
-                    (
-                        tuple.clone(),
-                        planned_relation
-                            .derivation(tuple)
-                            .expect("planned derivation")
-                            .as_ref()
-                            .clone(),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            assert_eq!(
-                planned_derivations, interpreted_derivations,
-                "planned recursive derivations drifted for {predicate}"
-            );
-        }
+        assert_eq!(
+            golden.len(),
+            expected.bytes,
+            "recursive golden size drifted"
+        );
+        assert_eq!(
+            stable_golden_digest(&golden),
+            expected.fnv1a64,
+            "recursive tuple/provenance golden drifted"
+        );
     }
 
     fn planned_rule<'a>(
@@ -9794,7 +7820,6 @@ mod tests {
         (rule, &planned.catalog)
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn derived_tuple_set(database: &Database, predicate: &str) -> BTreeSet<Tuple> {
         database
             .derived
@@ -9806,7 +7831,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     fn planned_tuple_set(
         rule: &RuleGroupPlan,
         catalog: &PlanCatalog,
@@ -9826,9 +7850,8 @@ mod tests {
         .collect()
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     #[test]
-    fn planned_executor_spike_evaluates_slots_from_catalog_decisions() {
+    fn planned_executor_evaluates_slots_from_catalog_decisions() {
         let input = r#"
         active(h) := *handle{id: h, status: "draft"}.
         candidate(h, score) := *handle{id: h}, active(h), in_degree(h, score).
@@ -9867,13 +7890,13 @@ mod tests {
         assert_eq!(
             planned_tuple_set(candidate, catalog, evaluator.database()),
             derived_tuple_set(evaluator.database(), "candidate"),
-            "stored scan + graph primitive + soft-primitive override should match interpreted candidate rows"
+            "stored scan + graph primitive + soft-primitive override should match candidate rows"
         );
         let (ranked, catalog) = planned_rule(&planned, "ranked");
         assert_eq!(
             planned_tuple_set(ranked, catalog, evaluator.database()),
             derived_tuple_set(evaluator.database(), "ranked"),
-            "rank aggregate should match interpreted ranked rows"
+            "rank aggregate should match ranked rows"
         );
 
         let candidate_atoms = &candidate.body.atoms;
@@ -9896,7 +7919,6 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     #[test]
     fn planned_rank_overwrites_inner_rank_binding_like_interpreter() {
         let input = r#"
@@ -10093,19 +8115,6 @@ mod tests {
             entropy_after_same_stratum_diagnostic_db(),
             EvalOptions::default().with_explain_all(),
         );
-        assert_entropy_derivation_from_stored_edge(&output);
-    }
-
-    #[cfg(feature = "planned-executor-spike")]
-    #[test]
-    fn planned_stage_shadow_accepts_entropy_after_same_stratum_diagnostic() {
-        let input = entropy_after_same_stratum_diagnostic_input();
-        let output = evaluate_query_output_with_options(
-            input,
-            entropy_after_same_stratum_diagnostic_db(),
-            EvalOptions::default().with_explain_all(),
-        );
-
         assert_entropy_derivation_from_stored_edge(&output);
     }
 
@@ -12613,7 +10622,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs1_matches_spike_handle_rows() {
+    fn mvs1_matches_handle_rows() {
         assert_query_rows(
             &mvs_outputs().handles,
             vec![
@@ -12727,7 +10736,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs2_matches_spike_release_blocker_rows() {
+    fn mvs2_matches_release_blocker_rows() {
         assert_query_rows(
             &mvs_outputs().release_blockers,
             vec![
@@ -12778,7 +10787,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs3_matches_spike_supersedes_chain_rows() {
+    fn mvs3_matches_supersedes_chain_rows() {
         assert_query_rows(
             &mvs_outputs().supersedes_chain,
             vec![
@@ -12802,7 +10811,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs4_matches_spike_open_oq_rows() {
+    fn mvs4_matches_open_oq_rows() {
         assert_query_rows(
             &mvs_outputs().open_oqs,
             vec![
@@ -12816,7 +10825,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs5a_matches_spike_oq_pressure_rows_including_zero_counts() {
+    fn mvs5a_matches_oq_pressure_rows_including_zero_counts() {
         assert_query_rows(
             &mvs_outputs().oq_pressure,
             vec![
@@ -12830,7 +10839,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn mvs5b_matches_spike_oq_per_area_rows() {
+    fn mvs5b_matches_oq_per_area_rows() {
         assert_query_rows(
             &mvs_outputs().oq_per_area,
             vec![
@@ -13014,7 +11023,7 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn planned_scalar_aggregates_match_interpreted_semantics() {
+    fn planned_scalar_aggregates_match_documented_semantics() {
         let input = r#"
             amount("a", 2).
             amount("b", 2).
@@ -13685,8 +11694,8 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
-    fn planned_recursion_shadow_matches_chain_closure_with_provenance() {
-        assert_recursive_shadow(
+    fn planned_recursion_golden_matches_chain_closure_with_provenance() {
+        assert_recursive_golden(
             r#"
             dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
             dep_path(h, anc) := dep_path(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
@@ -13694,13 +11703,16 @@ release_blocker(code) := issue(code, "error").
             "#,
             Database::from_store(&chain_store(16)),
             "dep_path",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 163_315,
+                fnv1a64: "c30d68b579eec57a",
+            },
         );
     }
 
     #[test]
-    fn planned_recursion_shadow_matches_rule_order_independent_closure() {
-        assert_recursive_shadow(
+    fn planned_recursion_golden_matches_rule_order_independent_closure() {
+        assert_recursive_golden(
             r#"
             dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
             dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
@@ -13708,13 +11720,16 @@ release_blocker(code) := issue(code, "error").
             "#,
             Database::from_store(&fixture_store()),
             "dep_path",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 1_692,
+                fnv1a64: "c40845d4ed305f9c",
+            },
         );
     }
 
     #[test]
-    fn planned_recursion_shadow_terminates_on_cycles() {
-        assert_recursive_shadow(
+    fn planned_recursion_golden_terminates_on_cycles() {
+        assert_recursive_golden(
             r#"
             edge("a", "b").
             edge("b", "a").
@@ -13724,13 +11739,16 @@ release_blocker(code) := issue(code, "error").
             "#,
             Database::default(),
             "path",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 3_002,
+                fnv1a64: "42e240fdcaaa4eef",
+            },
         );
     }
 
     #[test]
-    fn planned_recursion_shadow_matches_mutual_recursion() {
-        assert_recursive_shadow(
+    fn planned_recursion_golden_matches_mutual_recursion() {
+        assert_recursive_golden(
             r"
             zero(0).
             pred(1, 0).
@@ -13743,9 +11761,12 @@ release_blocker(code) := issue(code, "error").
             ",
             Database::default(),
             "even",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 1_958,
+                fnv1a64: "f07be626fa3d036d",
+            },
         );
-        assert_recursive_shadow(
+        assert_recursive_golden(
             r"
             zero(0).
             pred(1, 0).
@@ -13758,13 +11779,16 @@ release_blocker(code) := issue(code, "error").
             ",
             Database::default(),
             "odd",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 2_256,
+                fnv1a64: "31221ac3a9e28426",
+            },
         );
     }
 
     #[test]
-    fn planned_recursion_shadow_matches_multiple_recursive_atoms() {
-        assert_recursive_shadow(
+    fn planned_recursion_golden_matches_multiple_recursive_atoms() {
+        assert_recursive_golden(
             r#"
             edge("a", "b").
             edge("b", "c").
@@ -13776,7 +11800,10 @@ release_blocker(code) := issue(code, "error").
             "#,
             Database::default(),
             "path",
-            EvalOptions::default().with_explain_all(),
+            GoldenExpectation {
+                bytes: 6_812,
+                fnv1a64: "3aee8243785d9794",
+            },
         );
     }
 
@@ -13801,6 +11828,17 @@ release_blocker(code) := issue(code, "error").
             .collect::<Vec<_>>();
         assert_query_rows(&rows, vec![row([("y", s("b"))]), row([("y", s("c"))])]);
         assert!(output.rows.iter().all(|row| row.derivation.is_some()));
+        let golden = serde_json::to_string_pretty(&output).expect("golden serializes");
+        assert_eq!(
+            golden.len(),
+            2_105,
+            "query-local recursion golden size drifted"
+        );
+        assert_eq!(
+            stable_golden_digest(&golden),
+            "fa530c1b903692f3",
+            "query-local recursion tuple/provenance golden drifted"
+        );
     }
 
     #[test]

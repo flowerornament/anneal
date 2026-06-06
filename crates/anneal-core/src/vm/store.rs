@@ -190,6 +190,7 @@ impl<'a> TupleRow<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn logical(&self, field: &str) -> Option<Value> {
         self.physical(field)?.to_logical(self.interner, self.lists)
     }
@@ -603,6 +604,7 @@ impl TupleDb {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn candidate_rows(
         &self,
         relation: &str,
@@ -623,6 +625,7 @@ impl TupleDb {
         store.candidate_rows(&constraints)
     }
 
+    #[cfg(test)]
     pub(crate) fn candidate_rows_in_store<'a>(
         &'a self,
         relation: &str,
@@ -641,6 +644,7 @@ impl TupleDb {
         store.candidate_rows(&constraints)
     }
 
+    #[cfg(test)]
     pub(crate) fn logical_field_value(
         &self,
         relation: &str,
@@ -692,13 +696,7 @@ impl TupleDb {
             .collect()
     }
 
-    pub(crate) fn has_relation(&self, relation: &str) -> bool {
-        self.interner
-            .lookup(relation)
-            .and_then(|name| self.schemas.relation_by_name(name))
-            .is_some_and(|schema| self.relation(schema.id()).is_some())
-    }
-
+    #[cfg(test)]
     fn physical_constraints(
         &self,
         schema: &RelationSchema,
@@ -715,6 +713,7 @@ impl TupleDb {
             .collect()
     }
 
+    #[cfg(test)]
     fn physical_value(&self, value: &Value) -> Option<PhysicalValue> {
         match value {
             Value::String(value) => self.interner.lookup(value).map(PhysicalValue::Sym),
