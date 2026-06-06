@@ -31,7 +31,7 @@ use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, OrderKeyPlan, OutputPlan,
     PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
-    RuleProvenance, RuleStagePlan, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
+    RuleProvenance, RuleStagePlan, StageExecution, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
     aggregate_allowed_args, plan, planned_aggregate_executable, planned_comparison_executable,
     planned_rule_group_executable, time_scope_unsupported_atom, time_scoped_primitive_supported,
     time_scoped_stored_relation_supported,
@@ -4178,7 +4178,7 @@ impl Evaluator {
         }
         self.planned = match plan(&self.program) {
             Ok(planned) => Some(planned),
-            Err(PlanError::PositiveCycle { .. } | PlanError::UnknownStoredRelation { .. }) => None,
+            Err(PlanError::UnknownStoredRelation { .. }) => None,
             Err(error) => panic!("analyzed program should plan before planned execution: {error}"),
         };
     }
@@ -4193,9 +4193,7 @@ impl Evaluator {
         } else {
             owned_plan = match plan(&self.program) {
                 Ok(planned) => Some(planned),
-                Err(PlanError::PositiveCycle { .. } | PlanError::UnknownStoredRelation { .. }) => {
-                    None
-                }
+                Err(PlanError::UnknownStoredRelation { .. }) => None,
                 Err(error) => {
                     panic!("analyzed program should plan before planned query execution: {error}")
                 }
@@ -4435,22 +4433,17 @@ fn run_rule_group(
         insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
     }
 
+    let recursive_rules = rules.iter().collect::<Vec<_>>();
+    let recursive_work = recursive_delta_work(&recursive_rules, &stratum_predicates);
     while !delta.is_empty() {
         let previous_delta = delta;
-        delta = DeltaMap::new();
-        for rule in rules {
-            for atom_index in recursive_atom_indexes(&rule.body, &stratum_predicates) {
-                let tuples = eval_rule_with_delta(
-                    rule,
-                    database,
-                    &previous_delta,
-                    atom_index,
-                    warnings,
-                    options,
-                )?;
-                insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
-            }
-        }
+        delta = run_interpreted_recursive_delta_round(
+            database,
+            &recursive_work,
+            &previous_delta,
+            warnings,
+            options,
+        )?;
     }
     #[cfg(feature = "planned-executor-spike")]
     shadow_planned_stages(
@@ -4497,6 +4490,22 @@ fn run_staged_rule_group(
         {
             continue;
         }
+        if stage.execution.is_recursive() {
+            if stage.authoritative_planned {
+                run_planned_recursive_stage(
+                    database,
+                    stage,
+                    planned_stratum,
+                    catalog,
+                    &rules_by_predicate,
+                    warnings,
+                    options,
+                )?;
+            } else {
+                run_interpreted_recursive_stage(database, stage, rules, warnings, options)?;
+            }
+            continue;
+        }
         for predicate in &stage.predicates {
             if stage.authoritative_predicates.contains(predicate) {
                 continue;
@@ -4516,7 +4525,7 @@ fn run_staged_rule_group(
                 catalog,
                 &rules_by_predicate,
             )?;
-            for (planned, predicate) in planned_groups {
+            for (_, planned, predicate) in planned_groups {
                 let tuples =
                     eval_planned_rule_group(planned, catalog, database, warnings, options)?;
                 insert_tuples(database, &predicate, tuples);
@@ -4540,12 +4549,130 @@ fn run_staged_rule_group(
     Ok(())
 }
 
+fn run_interpreted_recursive_stage(
+    database: &mut Database,
+    stage: &RuleStagePlan,
+    rules: &[Rule],
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<(), EvalError> {
+    let stage_rules = stage_rules(stage, rules);
+    let mut delta = DeltaMap::new();
+    for rule in &stage_rules {
+        let tuples = eval_rule(rule, database, warnings, options)?;
+        insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
+    }
+    let recursive_work = recursive_delta_work(&stage_rules, &stage.predicates);
+    while !delta.is_empty() {
+        let previous_delta = delta;
+        delta = run_interpreted_recursive_delta_round(
+            database,
+            &recursive_work,
+            &previous_delta,
+            warnings,
+            options,
+        )?;
+    }
+    Ok(())
+}
+
+fn recursive_delta_work<'a>(
+    rules: &[&'a Rule],
+    stratum_predicates: &BTreeSet<PredicateRef>,
+) -> Vec<(&'a Rule, Vec<usize>)> {
+    rules
+        .iter()
+        .copied()
+        .map(|rule| (rule, recursive_atom_indexes(&rule.body, stratum_predicates)))
+        .collect()
+}
+
+fn run_interpreted_recursive_delta_round(
+    database: &mut Database,
+    recursive_work: &[(&Rule, Vec<usize>)],
+    previous_delta: &DeltaMap,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<DeltaMap, EvalError> {
+    let mut delta = DeltaMap::new();
+    for (rule, atom_indexes) in recursive_work {
+        for atom_index in atom_indexes {
+            let tuples = eval_rule_with_delta(
+                rule,
+                database,
+                previous_delta,
+                *atom_index,
+                warnings,
+                options,
+            )?;
+            insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
+        }
+    }
+    Ok(delta)
+}
+
+fn run_planned_recursive_stage(
+    database: &mut Database,
+    stage: &RuleStagePlan,
+    planned_stratum: &StratumPlan,
+    catalog: &PlanCatalog,
+    active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<(), EvalError> {
+    let planned_groups =
+        planned_authoritative_for_stage(stage, planned_stratum, catalog, active_rules)?;
+    let mut delta = DeltaMap::new();
+    for (_, planned, predicate) in &planned_groups {
+        let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
+        insert_new_tuples(database, predicate, tuples, &mut delta);
+    }
+    let planned_by_index = planned_groups
+        .into_iter()
+        .map(|(index, group, predicate)| (index, (group, predicate)))
+        .collect::<BTreeMap<_, _>>();
+    while !delta.is_empty() {
+        let previous_delta = delta;
+        delta = DeltaMap::new();
+        let StageExecution::Recursive { deltas } = &stage.execution else {
+            return Err(EvalError::UnsupportedExpression);
+        };
+        for delta_plan in deltas {
+            let Some((planned, predicate)) = planned_by_index.get(&delta_plan.rule_group) else {
+                continue;
+            };
+            let tuples = eval_planned_rule_group_with_delta(
+                planned,
+                catalog,
+                database,
+                PlannedDeltaView {
+                    delta: &previous_delta,
+                    atom_index: delta_plan.atom_index,
+                    delta_relation: delta_plan.delta_relation,
+                },
+                warnings,
+                options,
+            )?;
+            insert_new_tuples(database, predicate, tuples, &mut delta);
+        }
+    }
+    Ok(())
+}
+
+fn stage_rules<'a>(stage: &RuleStagePlan, rules: &'a [Rule]) -> Vec<&'a Rule> {
+    stage
+        .rule_groups
+        .iter()
+        .filter_map(|index| rules.get(*index))
+        .collect()
+}
+
 fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
     catalog: &PlanCatalog,
     active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
-) -> Result<Vec<(&'a RuleGroupPlan, PredicateRef)>, EvalError> {
+) -> Result<Vec<(usize, &'a RuleGroupPlan, PredicateRef)>, EvalError> {
     if !stage.authoritative_planned {
         return Ok(Vec::new());
     }
@@ -4576,7 +4703,7 @@ fn planned_authoritative_for_stage<'a>(
             if !planned_rule_group_executable(group, catalog) {
                 return Err(EvalError::UnsupportedExpression);
             }
-            planned.push((group, provenance.predicate.clone()));
+            planned.push((*group_index, group, provenance.predicate.clone()));
         }
     }
     if planned.is_empty() {
@@ -5082,12 +5209,35 @@ fn eval_planned_rule_group(
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<Vec<DerivedTuple>, EvalError> {
+    eval_planned_rule_group_inner(planned, catalog, database, None, warnings, options)
+}
+
+fn eval_planned_rule_group_with_delta(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+    database: &Database,
+    delta: PlannedDeltaView<'_>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<DerivedTuple>, EvalError> {
+    eval_planned_rule_group_inner(planned, catalog, database, Some(delta), warnings, options)
+}
+
+fn eval_planned_rule_group_inner(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+    database: &Database,
+    delta: Option<PlannedDeltaView<'_>>,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<Vec<DerivedTuple>, EvalError> {
     let mut env = PlannedValueEnv::from_database(database);
-    let bindings = eval_planned_body(
+    let bindings = eval_planned_body_with_delta(
         &planned.body,
         vec![PlannedFrame::empty(planned.slots.vars().len())],
         catalog,
         database,
+        delta,
         warnings,
         options,
         &mut env,
@@ -5172,9 +5322,25 @@ fn eval_planned_query(
 
 fn eval_planned_body(
     body: &RuleBodyPlan,
+    bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    eval_planned_body_with_delta(
+        body, bindings, catalog, database, None, warnings, options, env,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_planned_body_with_delta(
+    body: &RuleBodyPlan,
     mut bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    delta: Option<PlannedDeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
@@ -5187,23 +5353,28 @@ fn eval_planned_body(
             .atoms
             .get(*atom_index)
             .ok_or(EvalError::UnsupportedExpression)?;
-        bindings = eval_planned_atom(atom, bindings, catalog, database, warnings, options, env)?;
+        let atom_delta = delta.filter(|view| view.atom_index == *atom_index);
+        bindings = eval_planned_atom(
+            atom, bindings, catalog, database, atom_delta, warnings, options, env,
+        )?;
     }
     Ok(bindings)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_planned_atom(
     atom: &AtomPlan,
     bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    delta: Option<PlannedDeltaView<'_>>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     match atom {
         AtomPlan::Scan { relation, patterns } => eval_planned_scan(
-            *relation, patterns, bindings, catalog, database, options, env,
+            *relation, patterns, bindings, catalog, database, delta, options, env,
         ),
         AtomPlan::PrimitiveCall {
             predicate,
@@ -5251,12 +5422,14 @@ fn eval_planned_atom(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_planned_scan(
     relation: crate::ir::ids::RelationId,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    delta: Option<PlannedDeltaView<'_>>,
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
@@ -5264,24 +5437,44 @@ fn eval_planned_scan(
         .relation(relation)
         .ok_or(EvalError::UnsupportedExpression)?;
     match relation_info.kind {
-        PlanRelationKind::Stored => eval_planned_stored_scan(
-            relation,
-            &relation_info.name,
-            patterns,
-            bindings,
-            database,
-            options,
-            env,
-        ),
+        PlanRelationKind::Stored => {
+            if delta.is_some() {
+                return Err(EvalError::UnsupportedExpression);
+            }
+            eval_planned_stored_scan(
+                relation,
+                &relation_info.name,
+                patterns,
+                bindings,
+                database,
+                options,
+                env,
+            )
+        }
         PlanRelationKind::Derived => {
             let predicate = PredicateRef::parse(&relation_info.name)
                 .map_err(|_| EvalError::UnsupportedExpression)?;
-            let relation = database.derived.get(&predicate).ok_or_else(|| {
-                EvalError::UnknownDerivedPredicate {
-                    predicate: predicate.clone(),
+            match delta {
+                Some(view) if view.delta_relation == relation => {
+                    let Some(relation) = view.delta.get(&predicate) else {
+                        return Ok(Vec::new());
+                    };
+                    eval_planned_derived_scan(
+                        &predicate, relation, patterns, bindings, options, env,
+                    )
                 }
-            })?;
-            eval_planned_derived_scan(&predicate, relation, patterns, bindings, options, env)
+                Some(_) => Err(EvalError::UnsupportedExpression),
+                None => {
+                    let relation = database.derived.get(&predicate).ok_or_else(|| {
+                        EvalError::UnknownDerivedPredicate {
+                            predicate: predicate.clone(),
+                        }
+                    })?;
+                    eval_planned_derived_scan(
+                        &predicate, relation, patterns, bindings, options, env,
+                    )
+                }
+            }
         }
         PlanRelationKind::Primitive { .. } => Err(EvalError::UnsupportedExpression),
     }
@@ -6333,6 +6526,13 @@ fn recursive_atom_indexes(body: &Body, stratum_predicates: &BTreeSet<PredicateRe
 struct DeltaView<'a> {
     delta: &'a DeltaMap,
     atom_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PlannedDeltaView<'a> {
+    delta: &'a DeltaMap,
+    atom_index: usize,
+    delta_relation: crate::ir::ids::RelationId,
 }
 
 fn eval_body(
@@ -9478,6 +9678,101 @@ mod tests {
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator.run_fixpoint().expect("fixpoint evaluates");
         evaluator.eval_query(&query).expect_err("query errors")
+    }
+
+    fn run_interpreted_database(input: &str, database: Database, options: EvalOptions) -> Database {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let mut evaluator = Evaluator::with_options(analyzed, database, options);
+        evaluator.seed_facts().expect("facts seed");
+        let strata = evaluator.program.strata().to_vec();
+        for stratum in strata {
+            let rules = evaluator
+                .program
+                .rules()
+                .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
+                .cloned()
+                .collect::<Vec<_>>();
+            run_rule_group(
+                &mut evaluator.database,
+                &rules,
+                None,
+                None,
+                &mut evaluator.warnings,
+                &evaluator.options,
+            )
+            .expect("interpreted fixpoint evaluates");
+        }
+        evaluator.database
+    }
+
+    fn run_planned_database(input: &str, database: Database, options: EvalOptions) -> Database {
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let mut evaluator = Evaluator::with_options(analyzed, database, options);
+        evaluator
+            .run_fixpoint()
+            .expect("planned fixpoint evaluates");
+        evaluator.database
+    }
+
+    fn assert_recursive_shadow(
+        input: &str,
+        database: Database,
+        predicate: &str,
+        options: EvalOptions,
+    ) {
+        let explain_enabled = options.explain().is_enabled();
+        let interpreted = run_interpreted_database(input, database.clone(), options.clone());
+        let planned = run_planned_database(input, database, options);
+        let predicate = PredicateRef::parse(predicate).expect("predicate parses");
+        let interpreted_relation = interpreted
+            .derived
+            .get(&predicate)
+            .expect("interpreted relation exists");
+        let planned_relation = planned
+            .derived
+            .get(&predicate)
+            .expect("planned relation exists");
+        assert_eq!(
+            planned_relation.tuples(),
+            interpreted_relation.tuples(),
+            "planned recursive tuples drifted for {predicate}"
+        );
+        if explain_enabled {
+            let interpreted_derivations = interpreted_relation
+                .tuples()
+                .iter()
+                .map(|tuple| {
+                    (
+                        tuple.clone(),
+                        interpreted_relation
+                            .derivation(tuple)
+                            .expect("interpreted derivation")
+                            .as_ref()
+                            .clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let planned_derivations = planned_relation
+                .tuples()
+                .iter()
+                .map(|tuple| {
+                    (
+                        tuple.clone(),
+                        planned_relation
+                            .derivation(tuple)
+                            .expect("planned derivation")
+                            .as_ref()
+                            .clone(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                planned_derivations, interpreted_derivations,
+                "planned recursive derivations drifted for {predicate}"
+            );
+        }
     }
 
     fn planned_rule<'a>(
@@ -13387,6 +13682,158 @@ release_blocker(code) := issue(code, "error").
             output.rows[0].fields.get("anc"),
             Some(&Value::String("OQ-22".to_string()))
         );
+    }
+
+    #[test]
+    fn planned_recursion_shadow_matches_chain_closure_with_provenance() {
+        assert_recursive_shadow(
+            r#"
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            dep_path(h, anc) := dep_path(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
+            ? dep_path("n0", anc).
+            "#,
+            Database::from_store(&chain_store(16)),
+            "dep_path",
+            EvalOptions::default().with_explain_all(),
+        );
+    }
+
+    #[test]
+    fn planned_recursion_shadow_matches_rule_order_independent_closure() {
+        assert_recursive_shadow(
+            r#"
+            dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
+            dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
+            ? dep_path("v17", anc).
+            "#,
+            Database::from_store(&fixture_store()),
+            "dep_path",
+            EvalOptions::default().with_explain_all(),
+        );
+    }
+
+    #[test]
+    fn planned_recursion_shadow_terminates_on_cycles() {
+        assert_recursive_shadow(
+            r#"
+            edge("a", "b").
+            edge("b", "a").
+            path(x, y) := edge(x, y).
+            path(x, z) := edge(x, y), path(y, z).
+            ? path(x, y).
+            "#,
+            Database::default(),
+            "path",
+            EvalOptions::default().with_explain_all(),
+        );
+    }
+
+    #[test]
+    fn planned_recursion_shadow_matches_mutual_recursion() {
+        assert_recursive_shadow(
+            r"
+            zero(0).
+            pred(1, 0).
+            pred(2, 1).
+            pred(3, 2).
+            even(x) := zero(x).
+            even(y) := pred(y, x), odd(x).
+            odd(y) := pred(y, x), even(x).
+            ? even(x).
+            ",
+            Database::default(),
+            "even",
+            EvalOptions::default().with_explain_all(),
+        );
+        assert_recursive_shadow(
+            r"
+            zero(0).
+            pred(1, 0).
+            pred(2, 1).
+            pred(3, 2).
+            even(x) := zero(x).
+            even(y) := pred(y, x), odd(x).
+            odd(y) := pred(y, x), even(x).
+            ? odd(x).
+            ",
+            Database::default(),
+            "odd",
+            EvalOptions::default().with_explain_all(),
+        );
+    }
+
+    #[test]
+    fn planned_recursion_shadow_matches_multiple_recursive_atoms() {
+        assert_recursive_shadow(
+            r#"
+            edge("a", "b").
+            edge("b", "c").
+            edge("c", "d").
+            path(x, y) := edge(x, y).
+            connected(x, z) := path(x, y), path(y, z).
+            path(x, z) := connected(x, z).
+            ? path(x, y).
+            "#,
+            Database::default(),
+            "path",
+            EvalOptions::default().with_explain_all(),
+        );
+    }
+
+    #[test]
+    fn planned_recursion_supports_query_local_recursive_rules() {
+        let output = evaluate_query_output_with_options(
+            r#"
+            edge("a", "b").
+            edge("b", "c").
+            ?
+              where path(x, y) := edge(x, y).
+              where path(x, z) := edge(x, y), path(y, z).
+              path("a", y).
+            "#,
+            Database::default(),
+            EvalOptions::default().with_explain_all(),
+        );
+        let rows = output
+            .rows
+            .iter()
+            .map(|row| row.fields.clone())
+            .collect::<Vec<_>>();
+        assert_query_rows(&rows, vec![row([("y", s("b"))]), row([("y", s("c"))])]);
+        assert!(output.rows.iter().all(|row| row.derivation.is_some()));
+    }
+
+    #[test]
+    fn recursive_stratification_guards_stay_static() {
+        let negation = parse_program(
+            "fixture",
+            r#"
+            a(x) := seed(x), not b(x).
+            b(x) := seed(x), a(x).
+            seed("x").
+            ? a(x).
+            "#,
+        )
+        .expect("program parses");
+        assert!(matches!(
+            analyze(negation),
+            Err(crate::runtime::analysis::StaticError::CyclicNegation { .. })
+        ));
+
+        let aggregate = parse_program(
+            "fixture",
+            r#"
+            a(n) := n = Count{ x : b(x) }.
+            b(x) := a(_), seed(x).
+            seed("x").
+            ? b(x).
+            "#,
+        )
+        .expect("program parses");
+        assert!(matches!(
+            analyze(aggregate),
+            Err(crate::runtime::analysis::StaticError::CyclicStratification { .. })
+        ));
     }
 
     #[test]
