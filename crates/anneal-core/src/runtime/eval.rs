@@ -24,12 +24,11 @@ use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
-    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanRelationKind,
-    ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StratumPlan, TermPlan,
-    plan, stratum_has_authoritative_planned_target,
+    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanError,
+    PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan,
+    StratumPlan, TermPlan, plan, planned_aggregate_executable, planned_comparison_executable,
+    planned_rule_group_executable,
 };
-#[cfg(feature = "planned-executor-spike")]
-use crate::ir::plan::{planned_rule_group_executable, stratum_has_shadow_planned_target};
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -4071,26 +4070,11 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
-        let needs_authoritative_plan = program
-            .strata()
-            .iter()
-            .any(|stratum| stratum_has_authoritative_planned_target(&stratum.predicates));
-        #[cfg(feature = "planned-executor-spike")]
-        let needs_shadow_plan = program
-            .strata()
-            .iter()
-            .any(|stratum| stratum_has_shadow_planned_target(&stratum.predicates));
-        #[cfg(not(feature = "planned-executor-spike"))]
-        let needs_shadow_plan = false;
-        let needs_plan = needs_authoritative_plan || needs_shadow_plan;
-        let planned = needs_plan.then(|| {
-            plan(&program).expect("analyzed program should plan before planned execution")
-        });
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
-            planned,
+            planned: None,
             database,
             facts_seeded: false,
             warnings: Vec::new(),
@@ -4101,20 +4085,24 @@ impl Evaluator {
     pub fn run_fixpoint(&mut self) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
-        self.run_fixpoint_matching(|_| true)
+        self.run_fixpoint_matching(|_| true, true)
     }
 
     pub fn run_fixpoint_for_query(&mut self, query: &AnalyzedQuery) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
         let needed = global_predicate_dependencies_for_query(&self.program, query);
-        self.run_fixpoint_matching(|predicate| needed.contains(predicate))
+        self.run_fixpoint_matching(|predicate| needed.contains(predicate), false)
     }
 
     fn run_fixpoint_matching(
         &mut self,
         predicate_needed: impl Fn(&PredicateRef) -> bool,
+        use_planned: bool,
     ) -> Result<(), EvalError> {
+        if use_planned {
+            self.ensure_planned();
+        }
         let strata = self.program.strata().to_vec();
         for (stratum_index, stratum) in strata.into_iter().enumerate() {
             if !stratum.predicates.iter().any(&predicate_needed) {
@@ -4129,11 +4117,16 @@ impl Evaluator {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let planned_stratum = self
-                .planned
-                .as_ref()
-                .and_then(|planned| planned.global.strata.get(stratum_index));
-            let planned_catalog = self.planned.as_ref().map(|planned| &planned.catalog);
+            let planned_stratum = use_planned
+                .then(|| {
+                    self.planned
+                        .as_ref()
+                        .and_then(|planned| planned.global.strata.get(stratum_index))
+                })
+                .flatten();
+            let planned_catalog = use_planned
+                .then(|| self.planned.as_ref().map(|planned| &planned.catalog))
+                .flatten();
             run_rule_group(
                 &mut self.database,
                 &rules,
@@ -4144,6 +4137,17 @@ impl Evaluator {
             )?;
         }
         Ok(())
+    }
+
+    fn ensure_planned(&mut self) {
+        if self.planned.is_some() {
+            return;
+        }
+        self.planned = match plan(&self.program) {
+            Ok(planned) => Some(planned),
+            Err(PlanError::PositiveCycle { .. } | PlanError::UnknownStoredRelation { .. }) => None,
+            Err(error) => panic!("analyzed program should plan before planned execution: {error}"),
+        };
     }
 
     pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
@@ -4476,6 +4480,9 @@ fn planned_authoritative_for_stage<'a>(
             .authoritative_predicates
             .contains(&provenance.predicate)
         {
+            if !planned_rule_group_executable(group) {
+                return Err(EvalError::UnsupportedExpression);
+            }
             planned.push((group, provenance.predicate.clone()));
         }
     }
@@ -5276,6 +5283,11 @@ fn eval_planned_aggregate(
             continue;
         }
         let aggregate_steps = trace.then(|| aggregate_derivation_steps_planned(&inner_rows));
+        if !planned_aggregate_executable(aggregate.function) {
+            return Err(EvalError::UnsupportedAggregate {
+                function: aggregate.function,
+            });
+        }
         match aggregate.function {
             AggregateFunction::TopK => {
                 out.extend(eval_planned_top_k(
@@ -5304,11 +5316,7 @@ fn eval_planned_aggregate(
             | AggregateFunction::Avg
             | AggregateFunction::List
             | AggregateFunction::Set
-            | AggregateFunction::TakeUntil => {
-                return Err(EvalError::UnsupportedAggregate {
-                    function: aggregate.function,
-                });
-            }
+            | AggregateFunction::TakeUntil => unreachable!("unsupported aggregate returned early"),
         }
     }
     Ok(out)
@@ -7055,6 +7063,9 @@ fn order_key_values<'a>(
 }
 
 fn compare(left: &Value, op: ComparisonOp, right: &Value) -> Result<bool, EvalError> {
+    if !planned_comparison_executable(op) {
+        return Err(EvalError::UnsupportedExpression);
+    }
     let result = match op {
         ComparisonOp::Eq => left == right,
         ComparisonOp::Ne => left != right,
@@ -7079,7 +7090,7 @@ fn compare(left: &Value, op: ComparisonOp, right: &Value) -> Result<bool, EvalEr
             (Value::String(value), Value::String(suffix)) => value.ends_with(suffix),
             _ => return Err(EvalError::UnsupportedExpression),
         },
-        ComparisonOp::Matches => return Err(EvalError::UnsupportedExpression),
+        ComparisonOp::Matches => unreachable!("unsupported comparison returned early"),
     };
     Ok(result)
 }
@@ -9171,14 +9182,15 @@ mod tests {
         assert_entropy_is_authoritative_planned(input);
         let program = parse_program("inline", input).expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
-        let evaluator = Evaluator::with_options(
+        let mut evaluator = Evaluator::with_options(
             analyzed,
             entropy_after_same_stratum_diagnostic_db(),
             EvalOptions::default(),
         );
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
         assert!(
             evaluator.planned.is_some(),
-            "mixed diagnostic/entropy stratum must install the plan so entropy can run authoritatively"
+            "mixed diagnostic/entropy stratum must install the plan on fixpoint demand so entropy can run authoritatively"
         );
 
         let output = evaluate_query_output_with_options(

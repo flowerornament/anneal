@@ -614,26 +614,6 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
     })
 }
 
-const AUTHORITATIVE_PLANNED_PREDICATES: &[&str] = &["entropy", "primary_entropy"];
-
-pub(crate) fn stratum_has_authoritative_planned_target(predicates: &[PredicateRef]) -> bool {
-    predicates
-        .iter()
-        .any(predicate_is_authoritative_planned_target)
-}
-
-pub(crate) fn stratum_has_shadow_planned_target(predicates: &[PredicateRef]) -> bool {
-    predicates.iter().any(predicate_is_shadow_planned_target)
-}
-
-fn predicate_is_authoritative_planned_target(predicate: &PredicateRef) -> bool {
-    AUTHORITATIVE_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
-}
-
-fn predicate_is_legacy_authoritative_planned_target(predicate: &PredicateRef) -> bool {
-    predicate_is_authoritative_planned_target(predicate)
-}
-
 fn plan_query(
     query_index: usize,
     query: &AnalyzedQuery,
@@ -811,9 +791,7 @@ fn plan_rule_stages(
         let authoritative_predicates = ready
             .iter()
             .filter(|predicate| {
-                predicate_is_legacy_authoritative_planned_target(predicate)
-                    && groups_by_predicate.contains_key(*predicate)
-                    && migration.is_planned()
+                groups_by_predicate.contains_key(*predicate) && migration.is_planned()
             })
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -822,7 +800,7 @@ fn plan_rule_stages(
             rule_groups
                 .get(*index)
                 .is_some_and(|group| group.shadow_planned)
-        }) || migration.is_planned();
+        });
         stages.push(RuleStagePlan {
             rule_groups: rule_group_indexes,
             predicates: ready.clone(),
@@ -858,6 +836,14 @@ pub(crate) fn planned_rule_group_executable(planned: &RuleGroupPlan) -> bool {
     planned_rule_group_unsupported_reasons(planned).is_empty()
 }
 
+pub(crate) fn planned_aggregate_executable(function: AggregateFunction) -> bool {
+    matches!(function, AggregateFunction::TopK | AggregateFunction::Rank)
+}
+
+pub(crate) fn planned_comparison_executable(op: ComparisonOp) -> bool {
+    op != ComparisonOp::Matches
+}
+
 pub(crate) fn planned_rule_group_unsupported_reasons(
     planned: &RuleGroupPlan,
 ) -> BTreeSet<UnsupportedReason> {
@@ -879,15 +865,12 @@ fn collect_atom_unsupported_reasons(atom: &AtomPlan, out: &mut BTreeSet<Unsuppor
     match atom {
         AtomPlan::Scan { .. } | AtomPlan::PrimitiveCall { .. } => {}
         AtomPlan::Filter { comparison } => {
-            if comparison.op == ComparisonOp::Matches {
+            if !planned_comparison_executable(comparison.op) {
                 out.insert(UnsupportedReason::UnsupportedComparison(comparison.op));
             }
         }
         AtomPlan::Aggregate(aggregate) => {
-            if !matches!(
-                aggregate.function,
-                AggregateFunction::TopK | AggregateFunction::Rank
-            ) {
+            if !planned_aggregate_executable(aggregate.function) {
                 out.insert(UnsupportedReason::UnsupportedAggregate(aggregate.function));
             }
             collect_body_unsupported_reasons(&aggregate.inner, out);
