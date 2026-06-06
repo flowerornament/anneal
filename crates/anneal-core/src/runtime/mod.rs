@@ -14,6 +14,7 @@ pub mod ndjson;
 pub mod parser;
 pub mod prelude;
 pub(crate) mod primitives;
+pub(crate) mod schedule;
 
 pub use analysis::{AnalyzedProgram, AnalyzedQuery, StaticError, analyze, stored_relation_fields};
 pub use ast::{

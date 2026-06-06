@@ -14,9 +14,10 @@ use crate::runtime::analysis::{
 use crate::runtime::ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, Comparison, ComparisonOp, Expr,
     FieldPattern, Head, Ident, Literal, NegatedAtom, NumberLiteral, OrderDirection, PredicateRef,
-    Rule, SourceLocation, StoredAtom, Term, TimeBlock,
+    Rule, RuleLayer, SourceLocation, StoredAtom, Term, TimeBlock,
 };
 use crate::runtime::primitives::PrimitivePredicate;
+use crate::runtime::schedule::greedy_execution_order;
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 use super::ids::{FieldId, RelationId, SlotId};
@@ -66,12 +67,42 @@ pub(crate) struct RuleGroupPlan {
     pub(crate) head_terms: Vec<TermPlan>,
     pub(crate) body: RuleBodyPlan,
     pub(crate) slots: SlotLayout,
-    pub(crate) origin: SourceLocation,
+    pub(crate) provenance: Option<RuleProvenance>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RuleBodyPlan {
     pub(crate) atoms: Vec<AtomPlan>,
+    pub(crate) execution_atoms: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RuleProvenance {
+    pub(crate) predicate: PredicateRef,
+    pub(crate) layer: RuleLayer,
+    pub(crate) location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AggregateProvenance {
+    pub(crate) function: AggregateFunction,
+    pub(crate) location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompareProvenance {
+    pub(crate) location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NegationProvenance {
+    pub(crate) location: SourceLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TimeScopeProvenance {
+    pub(crate) reference: String,
+    pub(crate) location: SourceLocation,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,8 +117,10 @@ pub(crate) enum AtomPlan {
     Negation {
         inner: Box<RuleBodyPlan>,
         bound_inputs: Vec<SlotId>,
+        provenance: NegationProvenance,
     },
     PrimitiveCall {
+        predicate: PredicateRef,
         primitive: PrimitivePredicate,
         args: Vec<CallArgPlan>,
         input_slots: Vec<SlotId>,
@@ -101,6 +134,7 @@ pub(crate) enum AtomPlan {
         reference: String,
         inner: Box<RuleBodyPlan>,
         outer_slots: Vec<SlotId>,
+        provenance: TimeScopeProvenance,
     },
 }
 
@@ -127,11 +161,13 @@ pub(crate) struct ComparePlan {
     pub(crate) left: ExprPlan,
     pub(crate) op: ComparisonOp,
     pub(crate) right: ExprPlan,
+    pub(crate) provenance: CompareProvenance,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AggregatePlan {
     pub(crate) function: AggregateFunction,
+    pub(crate) provenance: AggregateProvenance,
     pub(crate) inner: Box<RuleBodyPlan>,
     pub(crate) inner_slots: SlotLayout,
     pub(crate) outer_to_inner_slots: Vec<(SlotId, SlotId)>,
@@ -570,7 +606,7 @@ fn plan_query(
                         head_terms: Vec::new(),
                         body,
                         slots,
-                        origin: query.query().location.clone(),
+                        provenance: None,
                     }],
                     deltas: Vec::new(),
                 });
@@ -611,7 +647,11 @@ fn plan_rule(
         head_terms,
         body,
         slots,
-        origin: rule.origin().location().clone(),
+        provenance: Some(RuleProvenance {
+            predicate: rule.head.predicate.clone(),
+            layer: rule.origin().layer(),
+            location: rule.origin().location().clone(),
+        }),
     })
 }
 
@@ -626,7 +666,11 @@ fn plan_body(
         .iter()
         .map(|atom| plan_atom(atom, catalog, slots, query_index))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(RuleBodyPlan { atoms })
+    let execution_atoms = greedy_execution_order(body);
+    Ok(RuleBodyPlan {
+        atoms,
+        execution_atoms,
+    })
 }
 
 fn plan_atom(
@@ -644,9 +688,13 @@ fn plan_atom(
                     predicate: derived.predicate.clone(),
                 })?;
             match relation.kind {
-                PlanRelationKind::Primitive { primitive, .. } => {
-                    plan_primitive_atom(primitive, relation, &derived.args, slots)
-                }
+                PlanRelationKind::Primitive { primitive, .. } => plan_primitive_atom(
+                    derived.predicate.clone(),
+                    primitive,
+                    relation,
+                    &derived.args,
+                    slots,
+                ),
                 PlanRelationKind::Derived => plan_derived_scan(relation, &derived.args, slots),
                 PlanRelationKind::Stored => Err(PlanError::UnknownPredicate {
                     predicate: derived.predicate.clone(),
@@ -703,6 +751,7 @@ fn plan_derived_scan(
 }
 
 fn plan_primitive_atom(
+    predicate: PredicateRef,
     primitive: PrimitivePredicate,
     relation: &PlanRelation,
     args: &[CallArg],
@@ -736,6 +785,7 @@ fn plan_primitive_atom(
         });
     }
     Ok(AtomPlan::PrimitiveCall {
+        predicate,
         primitive,
         args: planned_args,
         input_slots: input_slots.into_iter().collect(),
@@ -772,6 +822,9 @@ fn plan_comparison(comparison: &Comparison, slots: &SlotLayout) -> Result<AtomPl
             left: plan_expr(&comparison.left, slots)?,
             op: comparison.op,
             right: plan_expr(&comparison.right, slots)?,
+            provenance: CompareProvenance {
+                location: comparison.location.clone(),
+            },
         },
     })
 }
@@ -827,6 +880,10 @@ fn plan_aggregate(
         .collect::<Result<BTreeSet<_>, _>>()?;
     Ok(AtomPlan::Aggregate(Box::new(AggregatePlan {
         function: aggregate.function,
+        provenance: AggregateProvenance {
+            function: aggregate.function,
+            location: aggregate.location.clone(),
+        },
         inner: Box::new(plan_body(
             &aggregate.body,
             catalog,
@@ -886,9 +943,13 @@ fn plan_negation(
                     predicate: derived.predicate.clone(),
                 })?;
             match relation.kind {
-                PlanRelationKind::Primitive { primitive, .. } => {
-                    plan_primitive_atom(primitive, relation, &derived.args, slots)?
-                }
+                PlanRelationKind::Primitive { primitive, .. } => plan_primitive_atom(
+                    derived.predicate.clone(),
+                    primitive,
+                    relation,
+                    &derived.args,
+                    slots,
+                )?,
                 PlanRelationKind::Derived => plan_derived_scan(relation, &derived.args, slots)?,
                 PlanRelationKind::Stored => {
                     return Err(PlanError::UnknownPredicate {
@@ -901,8 +962,12 @@ fn plan_negation(
     Ok(AtomPlan::Negation {
         inner: Box::new(RuleBodyPlan {
             atoms: vec![planned_atom],
+            execution_atoms: vec![0],
         }),
         bound_inputs: bound_inputs.into_iter().collect(),
+        provenance: NegationProvenance {
+            location: negation.location.clone(),
+        },
     })
 }
 
@@ -922,6 +987,10 @@ fn plan_time_scope(
         reference: time_block.reference.clone(),
         inner: Box::new(plan_body(&time_block.body, catalog, slots, query_index)?),
         outer_slots: outer_slots.into_iter().collect(),
+        provenance: TimeScopeProvenance {
+            reference: time_block.reference.clone(),
+            location: time_block.location.clone(),
+        },
     })
 }
 

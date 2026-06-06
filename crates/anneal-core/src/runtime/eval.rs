@@ -25,9 +25,9 @@ use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 #[cfg(feature = "planned-executor-spike")]
 use crate::ir::plan::{
-    AggregateArgsPlan, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
-    ExprPlan, LiteralPlan, PlanCatalog, PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan,
-    StratumPlan, TermPlan, plan,
+    AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
+    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanRelationKind,
+    ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, StratumPlan, TermPlan, plan,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -56,6 +56,7 @@ use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
 };
 use crate::runtime::primitives::PrimitivePredicate;
+use crate::runtime::schedule::atom_ready;
 use crate::source::{ActorContext, RuntimeCapability, SourceInfo};
 use crate::store::FactStore;
 use crate::time::{
@@ -427,15 +428,38 @@ impl DerivationNode {
     fn rule(rule: &Rule, tuple: &Tuple, children: Vec<Self>) -> Self {
         let origin = rule.origin();
         let location = origin.location();
+        Self::rule_from_parts(
+            rule.head.predicate.display_name(),
+            origin.layer(),
+            location,
+            tuple,
+            children,
+        )
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_rule(provenance: &RuleProvenance, tuple: &Tuple, children: Vec<Self>) -> Self {
+        Self::rule_from_parts(
+            provenance.predicate.display_name(),
+            provenance.layer,
+            &provenance.location,
+            tuple,
+            children,
+        )
+    }
+
+    fn rule_from_parts(
+        predicate: String,
+        layer: crate::runtime::ast::RuleLayer,
+        location: &SourceLocation,
+        tuple: &Tuple,
+        children: Vec<Self>,
+    ) -> Self {
         Self {
             kind: DerivationKind::Rule,
-            label: format!(
-                "rule {} fired from {:?}",
-                rule.head.predicate.display_name(),
-                origin.layer()
-            ),
+            label: format!("rule {predicate} fired from {layer:?}"),
             relation: None,
-            predicate: Some(rule.head.predicate.display_name()),
+            predicate: Some(predicate),
             tuple: tuple.0.clone(),
             fields: BTreeMap::new(),
             source: Some(location.source_name.clone()),
@@ -502,11 +526,33 @@ impl DerivationNode {
         )
     }
 
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_comparison(provenance: &CompareProvenance) -> Self {
+        Self::located(
+            DerivationKind::Comparison,
+            "comparison matched",
+            provenance.location.clone(),
+        )
+    }
+
     fn aggregate(aggregate: &Aggregate, children: Vec<Self>) -> Self {
+        Self::aggregate_from_parts(aggregate.function, aggregate.location.clone(), children)
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_aggregate(provenance: &AggregateProvenance, children: Vec<Self>) -> Self {
+        Self::aggregate_from_parts(provenance.function, provenance.location.clone(), children)
+    }
+
+    fn aggregate_from_parts(
+        function: AggregateFunction,
+        location: SourceLocation,
+        children: Vec<Self>,
+    ) -> Self {
         let mut node = Self::located(
             DerivationKind::Aggregate,
-            &format!("aggregate {:?} produced a value", aggregate.function),
-            aggregate.location.clone(),
+            &format!("aggregate {function:?} produced a value"),
+            location,
         );
         node.children = children;
         node
@@ -517,6 +563,15 @@ impl DerivationNode {
             NegatedAtom::Stored(atom) => atom.location.clone(),
             NegatedAtom::Derived(atom) => atom.location.clone(),
         };
+        Self::negation_from_location(location)
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_negation(provenance: &NegationProvenance) -> Self {
+        Self::negation_from_location(provenance.location.clone())
+    }
+
+    fn negation_from_location(location: SourceLocation) -> Self {
         Self::located(
             DerivationKind::Negation,
             "negated atom had no matches",
@@ -3970,7 +4025,7 @@ impl From<AuthorizationError> for EvalError {
 pub struct Evaluator {
     program: AnalyzedProgram,
     #[cfg(feature = "planned-executor-spike")]
-    planned: ProgramPlan,
+    planned: Option<ProgramPlan>,
     database: Database,
     facts_seeded: bool,
     warnings: Vec<QueryWarning>,
@@ -3988,7 +4043,7 @@ impl Evaluator {
         options: EvalOptions,
     ) -> Self {
         #[cfg(feature = "planned-executor-spike")]
-        let planned = plan(&program).expect("analyzed program should lower to plan");
+        let planned = plan(&program).ok();
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
@@ -4036,14 +4091,19 @@ impl Evaluator {
                 .cloned()
                 .collect::<Vec<_>>();
             #[cfg(feature = "planned-executor-spike")]
-            let planned_stratum = self.planned.global.strata.get(stratum_index);
+            let planned_stratum = self
+                .planned
+                .as_ref()
+                .and_then(|planned| planned.global.strata.get(stratum_index));
+            #[cfg(feature = "planned-executor-spike")]
+            let planned_catalog = self.planned.as_ref().map(|planned| &planned.catalog);
             run_rule_group(
                 &mut self.database,
                 &rules,
                 #[cfg(feature = "planned-executor-spike")]
                 planned_stratum,
                 #[cfg(feature = "planned-executor-spike")]
-                &self.planned.catalog,
+                planned_catalog,
                 &mut self.warnings,
                 &self.options,
             )?;
@@ -4102,7 +4162,7 @@ impl Evaluator {
                 #[cfg(feature = "planned-executor-spike")]
                 None,
                 #[cfg(feature = "planned-executor-spike")]
-                &self.planned.catalog,
+                self.planned.as_ref().map(|planned| &planned.catalog),
                 &mut warnings,
                 &self.options,
             )?;
@@ -4234,7 +4294,7 @@ fn run_rule_group(
     database: &mut Database,
     rules: &[Rule],
     #[cfg(feature = "planned-executor-spike")] planned_stratum: Option<&StratumPlan>,
-    #[cfg(feature = "planned-executor-spike")] catalog: &PlanCatalog,
+    #[cfg(feature = "planned-executor-spike")] catalog: Option<&PlanCatalog>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
@@ -4251,6 +4311,9 @@ fn run_rule_group(
         let tuples = eval_rule(rule, database, warnings, options)?;
         #[cfg(feature = "planned-executor-spike")]
         if let Some(planned) = planned_shadow {
+            let catalog = catalog.ok_or_else(|| EvalError::PlannedExecutorMissingShadow {
+                predicate: rule.head.predicate.clone(),
+            })?;
             shadow_planned_rule_group(planned, catalog, rule, database, options, &tuples)?;
         }
         insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
@@ -4441,12 +4504,17 @@ fn insert_new_tuples(
 #[cfg(feature = "planned-executor-spike")]
 fn planned_shadow_for_rule<'a>(
     planned_stratum: Option<&'a StratumPlan>,
-    catalog: &PlanCatalog,
+    catalog: Option<&PlanCatalog>,
     rule: &Rule,
 ) -> Result<Option<&'a RuleGroupPlan>, EvalError> {
     if rule.head.predicate.display_name() != "primary_entropy" {
         return Ok(None);
     }
+    let Some(catalog) = catalog else {
+        return Err(EvalError::PlannedExecutorMissingShadow {
+            predicate: rule.head.predicate.clone(),
+        });
+    };
     let Some(stratum) = planned_stratum else {
         return Err(EvalError::PlannedExecutorMissingShadow {
             predicate: rule.head.predicate.clone(),
@@ -4512,9 +4580,6 @@ fn shadow_planned_rule_group(
     options: &EvalOptions,
     interpreted: &[DerivedTuple],
 ) -> Result<(), EvalError> {
-    if options.explain().is_enabled() {
-        return Ok(());
-    }
     let planned_rows = eval_planned_rule_group(planned, catalog, database, options)?;
     let planned_tuples = planned_rows
         .iter()
@@ -4531,13 +4596,44 @@ fn shadow_planned_rule_group(
             planned: planned_tuples.len(),
         });
     }
+    if options.explain().is_enabled() {
+        let planned_derivations = derivation_map(&planned_rows, &rule.head.predicate)?;
+        let interpreted_derivations = derivation_map(interpreted, &rule.head.predicate)?;
+        if planned_derivations != interpreted_derivations {
+            return Err(EvalError::PlannedExecutorMismatch {
+                predicate: rule.head.predicate.clone(),
+                interpreted: interpreted_derivations.len(),
+                planned: planned_derivations.len(),
+            });
+        }
+    }
     Ok(())
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn derivation_map(
+    rows: &[DerivedTuple],
+    predicate: &PredicateRef,
+) -> Result<BTreeMap<Tuple, DerivationNode>, EvalError> {
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let Some(derivation) = &row.derivation else {
+            return Err(EvalError::PlannedExecutorMismatch {
+                predicate: predicate.clone(),
+                interpreted: rows.len(),
+                planned: out.len(),
+            });
+        };
+        out.insert(row.tuple.clone(), derivation.as_ref().clone());
+    }
+    Ok(out)
 }
 
 #[cfg(feature = "planned-executor-spike")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PlannedFrame {
     slots: Vec<Option<PhysicalValue>>,
+    steps: Vec<DerivationRef>,
 }
 
 #[cfg(feature = "planned-executor-spike")]
@@ -4545,7 +4641,15 @@ impl PlannedFrame {
     fn empty(slot_count: usize) -> Self {
         Self {
             slots: vec![None; slot_count],
+            steps: Vec::new(),
         }
+    }
+
+    fn push_step(mut self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
+        if trace {
+            self.steps.push(step());
+        }
+        self
     }
 
     fn get(&self, slot: crate::ir::ids::SlotId) -> Option<PhysicalValue> {
@@ -4620,10 +4724,24 @@ fn eval_planned_rule_group(
     bindings
         .iter()
         .map(|binding| {
-            Ok(DerivedTuple {
-                tuple: project_planned_head(&planned.head_terms, binding, &env)?,
-                derivation: None,
-            })
+            let tuple = project_planned_head(&planned.head_terms, binding, &env)?;
+            let derivation = if options.explain().is_enabled() {
+                let provenance = planned
+                    .provenance
+                    .as_ref()
+                    .ok_or(EvalError::UnsupportedExpression)?;
+                Some(derivation_ref(
+                    DerivationNode::planned_rule(
+                        provenance,
+                        &tuple,
+                        clone_derivation_refs(&binding.steps),
+                    )
+                    .bounded(options.explain()),
+                ))
+            } else {
+                None
+            };
+            Ok(DerivedTuple { tuple, derivation })
         })
         .collect()
 }
@@ -4637,10 +4755,14 @@ fn eval_planned_body(
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    for atom in &body.atoms {
+    for atom_index in &body.execution_atoms {
         if bindings.is_empty() {
             break;
         }
+        let atom = body
+            .atoms
+            .get(*atom_index)
+            .ok_or(EvalError::UnsupportedExpression)?;
         bindings = eval_planned_atom(atom, bindings, catalog, database, options, env)?;
     }
     Ok(bindings)
@@ -4656,18 +4778,26 @@ fn eval_planned_atom(
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     match atom {
-        AtomPlan::Scan { relation, patterns } => {
-            eval_planned_scan(*relation, patterns, bindings, catalog, database, env)
-        }
+        AtomPlan::Scan { relation, patterns } => eval_planned_scan(
+            *relation, patterns, bindings, catalog, database, options, env,
+        ),
         AtomPlan::PrimitiveCall {
-            primitive, args, ..
-        } => eval_planned_primitive(*primitive, args, bindings, database, options, env),
-        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, env),
+            predicate,
+            primitive,
+            args,
+            ..
+        } => eval_planned_primitive(
+            predicate, *primitive, args, bindings, database, options, env,
+        ),
+        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, options, env),
         AtomPlan::Aggregate(aggregate) => {
             eval_planned_aggregate(aggregate, bindings, catalog, database, options, env)
         }
-        AtomPlan::Negation { inner, .. } => {
+        AtomPlan::Negation {
+            inner, provenance, ..
+        } => {
             let mut out = Vec::new();
+            let trace = options.explain().is_enabled();
             for binding in bindings {
                 let matches = eval_planned_body(
                     inner,
@@ -4678,7 +4808,9 @@ fn eval_planned_atom(
                     env,
                 )?;
                 if matches.is_empty() {
-                    out.push(binding);
+                    out.push(binding.push_step(trace, || {
+                        derivation_ref(DerivationNode::planned_negation(provenance))
+                    }));
                 }
             }
             Ok(out)
@@ -4694,15 +4826,22 @@ fn eval_planned_scan(
     bindings: Vec<PlannedFrame>,
     catalog: &PlanCatalog,
     database: &Database,
+    options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let relation_info = catalog
         .relation(relation)
         .ok_or(EvalError::UnsupportedExpression)?;
     match relation_info.kind {
-        PlanRelationKind::Stored => {
-            eval_planned_stored_scan(relation, patterns, bindings, database, env)
-        }
+        PlanRelationKind::Stored => eval_planned_stored_scan(
+            relation,
+            &relation_info.name,
+            patterns,
+            bindings,
+            database,
+            options,
+            env,
+        ),
         PlanRelationKind::Derived => {
             let predicate = PredicateRef::parse(&relation_info.name)
                 .map_err(|_| EvalError::UnsupportedExpression)?;
@@ -4711,7 +4850,7 @@ fn eval_planned_scan(
                     predicate: predicate.clone(),
                 }
             })?;
-            eval_planned_derived_scan(relation, patterns, bindings, env)
+            eval_planned_derived_scan(&predicate, relation, patterns, bindings, options, env)
         }
         PlanRelationKind::Primitive { .. } => Err(EvalError::UnsupportedExpression),
     }
@@ -4720,9 +4859,11 @@ fn eval_planned_scan(
 #[cfg(feature = "planned-executor-spike")]
 fn eval_planned_stored_scan(
     relation: crate::ir::ids::RelationId,
+    relation_name: &str,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
     database: &Database,
+    options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let store = database
@@ -4730,6 +4871,7 @@ fn eval_planned_stored_scan(
         .relation(relation)
         .ok_or(EvalError::UnsupportedExpression)?;
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let constraints = planned_column_constraints(patterns, &binding);
         for row in store.candidate_rows(&constraints) {
@@ -4749,7 +4891,13 @@ fn eval_planned_stored_scan(
                 }
             }
             if matched {
-                out.push(next);
+                out.push(next.push_step(trace, || {
+                    let relation_ident = Ident::new_unchecked(relation_name.to_string());
+                    let row = database
+                        .tuple_named_row(&relation_ident, row)
+                        .unwrap_or_default();
+                    derivation_ref(DerivationNode::stored(&relation_ident, &row))
+                }));
             }
         }
     }
@@ -4758,12 +4906,15 @@ fn eval_planned_stored_scan(
 
 #[cfg(feature = "planned-executor-spike")]
 fn eval_planned_derived_scan(
+    predicate: &PredicateRef,
     relation: &DerivedRelation,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
+    options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let constraints = planned_tuple_constraints(patterns, &binding, env)?;
         for tuple in relation.candidate_tuples(&constraints) {
@@ -4781,7 +4932,11 @@ fn eval_planned_derived_scan(
                 }
             }
             if matched {
-                out.push(next);
+                out.push(next.push_step(trace, || {
+                    relation
+                        .derivation(tuple)
+                        .unwrap_or_else(|| derivation_ref(DerivationNode::fact(predicate, tuple)))
+                }));
             }
         }
     }
@@ -4790,6 +4945,7 @@ fn eval_planned_derived_scan(
 
 #[cfg(feature = "planned-executor-spike")]
 fn eval_planned_primitive(
+    predicate: &PredicateRef,
     primitive: PrimitivePredicate,
     args: &[CallArgPlan],
     bindings: Vec<PlannedFrame>,
@@ -4799,6 +4955,7 @@ fn eval_planned_primitive(
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let mut regex_cache = BTreeMap::<String, Regex>::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let constraints = planned_call_constraints(args, &binding, env)?;
         let tuples =
@@ -4818,7 +4975,9 @@ fn eval_planned_primitive(
                 }
             }
             if matched {
-                out.push(next);
+                out.push(next.push_step(trace, || {
+                    derivation_ref(DerivationNode::primitive(predicate, &tuple))
+                }));
             }
         }
     }
@@ -4829,14 +4988,18 @@ fn eval_planned_primitive(
 fn eval_planned_filter(
     comparison: &ComparePlan,
     bindings: Vec<PlannedFrame>,
+    options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let left = eval_planned_expr_logical(&comparison.left, &binding, env)?;
         let right = eval_planned_expr_logical(&comparison.right, &binding, env)?;
         if compare(&left, comparison.op, &right)? {
-            out.push(binding);
+            out.push(binding.push_step(trace, || {
+                derivation_ref(DerivationNode::planned_comparison(&comparison.provenance))
+            }));
         }
     }
     Ok(out)
@@ -4853,6 +5016,7 @@ fn eval_planned_aggregate(
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
+    let trace = options.explain().is_enabled();
     for binding in bindings {
         let mut inner_seed = PlannedFrame::empty(aggregate.inner_slots.vars().len());
         for (outer, inner) in &aggregate.outer_to_inner_slots {
@@ -4868,24 +5032,28 @@ fn eval_planned_aggregate(
             options,
             env,
         )?;
+        if inner_rows.is_empty() {
+            continue;
+        }
+        let aggregate_steps = trace.then(|| aggregate_derivation_steps_planned(&inner_rows));
         match aggregate.function {
             AggregateFunction::TopK => {
                 out.extend(eval_planned_top_k(
-                    &aggregate.args,
-                    &aggregate.value,
-                    &aggregate.result,
+                    aggregate,
                     &binding,
                     &inner_rows,
+                    aggregate_steps.as_deref().unwrap_or_default(),
+                    trace,
                     env,
                 )?);
             }
             AggregateFunction::Rank => {
                 out.extend(eval_planned_rank(
-                    &aggregate.args,
-                    &aggregate.value,
-                    &aggregate.result,
+                    aggregate,
                     &binding,
                     inner_rows,
+                    aggregate_steps.as_deref().unwrap_or_default(),
+                    trace,
                     env,
                 )?);
             }
@@ -4908,14 +5076,15 @@ fn eval_planned_aggregate(
 
 #[cfg(feature = "planned-executor-spike")]
 fn eval_planned_top_k(
-    args: &AggregateArgsPlan,
-    value: &ExprPlan,
-    result: &ExprPlan,
+    aggregate: &AggregatePlan,
     base: &PlannedFrame,
     rows: &[PlannedFrame],
+    aggregate_steps: &[DerivationRef],
+    trace: bool,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    let k = args
+    let k = aggregate
+        .args
         .k
         .as_ref()
         .ok_or(EvalError::MissingAggregateArg {
@@ -4926,16 +5095,20 @@ fn eval_planned_top_k(
     if k == 0 {
         return Ok(Vec::new());
     }
-    let key = args.key.as_ref().ok_or(EvalError::MissingAggregateArg {
-        function: AggregateFunction::TopK,
-        argument: "key",
-    })?;
+    let key = aggregate
+        .args
+        .key
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::TopK,
+            argument: "key",
+        })?;
     let limit = usize::try_from(k).unwrap_or(usize::MAX);
     let mut candidates = Vec::<(Value, PhysicalValue)>::new();
     for row in rows {
         let candidate = (
             eval_planned_expr_logical(key, row, env)?,
-            eval_planned_expr(value, row, env)?,
+            eval_planned_expr(&aggregate.value, row, env)?,
         );
         let insert_at = candidates
             .binary_search_by(|existing| {
@@ -4953,26 +5126,39 @@ fn eval_planned_top_k(
             }
         }
     }
-    candidates
-        .into_iter()
-        .filter_map(|(_, value)| unify_planned_expr(result, value, base, env).transpose())
-        .collect()
+    let mut out = Vec::new();
+    for (_, value) in candidates {
+        if let Some(binding) = unify_planned_expr(&aggregate.result, value, base, env)? {
+            out.push(binding.push_step(trace, || {
+                derivation_ref(DerivationNode::planned_aggregate(
+                    &aggregate.provenance,
+                    clone_derivation_refs(aggregate_steps),
+                ))
+            }));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(feature = "planned-executor-spike")]
 fn eval_planned_rank(
-    args: &AggregateArgsPlan,
-    value: &ExprPlan,
-    result: &ExprPlan,
+    aggregate: &AggregatePlan,
     base: &PlannedFrame,
     mut rows: Vec<PlannedFrame>,
+    aggregate_steps: &[DerivationRef],
+    trace: bool,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    let key = args.key.as_ref().ok_or(EvalError::MissingAggregateArg {
-        function: AggregateFunction::Rank,
-        argument: "key",
-    })?;
-    let rank_slot = args
+    let key = aggregate
+        .args
+        .key
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::Rank,
+            argument: "key",
+        })?;
+    let rank_slot = aggregate
+        .args
         .synthetic_rank_slot
         .ok_or(EvalError::MissingAggregateArg {
             function: AggregateFunction::Rank,
@@ -4998,12 +5184,22 @@ fn eval_planned_rank(
             rank_slot,
             PhysicalValue::Number(NumberValue::Int(current_rank)),
         );
-        let value = eval_planned_expr(value, &row, env)?;
-        if let Some(binding) = unify_planned_expr(result, value, base, env)? {
-            out.push(binding);
+        let value = eval_planned_expr(&aggregate.value, &row, env)?;
+        if let Some(binding) = unify_planned_expr(&aggregate.result, value, base, env)? {
+            out.push(binding.push_step(trace, || {
+                derivation_ref(DerivationNode::planned_aggregate(
+                    &aggregate.provenance,
+                    clone_derivation_refs(aggregate_steps),
+                ))
+            }));
         }
     }
     Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn aggregate_derivation_steps_planned(rows: &[PlannedFrame]) -> Vec<DerivationRef> {
+    collect_aggregate_derivation_steps(rows.iter().flat_map(|row| row.steps.iter()))
 }
 
 #[cfg(feature = "planned-executor-spike")]
@@ -5348,254 +5544,6 @@ fn common_bound_variables_traced(bindings: &[TracedBinding]) -> BTreeSet<Ident> 
         common.retain(|var| binding.values.contains_key(var));
     }
     common
-}
-
-fn atom_ready(body: &Body, atom_index: usize, atom: &Atom, bound: &BTreeSet<Ident>) -> bool {
-    match atom {
-        Atom::Stored(stored) => variables_are_bound(&stored_atom_input_variables(stored), bound),
-        Atom::TimeBlock(time_block) => variables_are_bound(
-            &positive_body_outer_input_variables(&time_block.body),
-            bound,
-        ),
-        Atom::Derived(derived) => derived_atom_ready(derived, bound),
-        Atom::Comparison(comparison) => {
-            expr_variables_are_bound(&comparison.left, bound)
-                && expr_variables_are_bound(&comparison.right, bound)
-        }
-        Atom::Aggregation(aggregate) => aggregate_atom_ready(body, atom_index, aggregate, bound),
-        Atom::Negation(negation) => negated_atom_variables_are_bound(&negation.atom, bound),
-    }
-}
-
-fn derived_atom_ready(atom: &crate::runtime::ast::DerivedAtom, bound: &BTreeSet<Ident>) -> bool {
-    if !variables_are_bound(&derived_atom_input_variables(atom), bound) {
-        return false;
-    }
-    let Some(primitive) = PrimitivePredicate::from_predicate(&atom.predicate) else {
-        return true;
-    };
-    let graph_ready = primitive.graph_anchor_positions().is_none_or(|positions| {
-        positions.iter().any(|idx| {
-            atom.args.get(*idx).is_some_and(|arg| {
-                arg.expr()
-                    .is_some_and(|expr| expr_variables_are_bound(expr, bound))
-            })
-        })
-    });
-    graph_ready && content_primitive_inputs_ready(atom, primitive, bound)
-}
-
-fn content_primitive_inputs_ready(
-    atom: &crate::runtime::ast::DerivedAtom,
-    primitive: PrimitivePredicate,
-    bound: &BTreeSet<Ident>,
-) -> bool {
-    primitive.required_bound_inputs().iter().all(|input| {
-        atom.args.get(input.position).is_some_and(|arg| {
-            arg.expr()
-                .is_some_and(|expr| expr_variables_are_bound(expr, bound))
-        })
-    })
-}
-
-fn aggregate_atom_ready(
-    body: &Body,
-    atom_index: usize,
-    aggregate: &Aggregate,
-    bound: &BTreeSet<Ident>,
-) -> bool {
-    let mut outside = BTreeSet::new();
-    for (other_index, atom) in body.atoms.iter().enumerate() {
-        if other_index != atom_index {
-            collect_non_aggregate_positive_atom_variables(atom, &mut outside);
-        }
-    }
-
-    let mut inner = BTreeSet::new();
-    collect_positive_body_variables(&aggregate.body, &mut inner);
-
-    let mut required = inner
-        .intersection(&outside)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    required.extend(
-        positive_body_input_variables(&aggregate.body)
-            .into_iter()
-            .filter(|var| !inner.contains(var)),
-    );
-    collect_aggregate_outer_input_variables(aggregate, &inner, &mut required);
-    required.iter().all(|var| bound.contains(var))
-}
-
-fn collect_aggregate_outer_input_variables(
-    aggregate: &Aggregate,
-    inner_bound: &BTreeSet<Ident>,
-    out: &mut BTreeSet<Ident>,
-) {
-    let rank_var = rank_arg_variable(aggregate);
-    let mut value_vars = BTreeSet::new();
-    aggregate.value.variables(&mut value_vars);
-    if let Some(rank_var) = &rank_var {
-        value_vars.remove(rank_var);
-    }
-    out.extend(
-        value_vars
-            .into_iter()
-            .filter(|var| !inner_bound.contains(var)),
-    );
-
-    for arg in &aggregate.args {
-        if aggregate.function == AggregateFunction::Rank && arg.name.as_str() == "rank" {
-            continue;
-        }
-        let mut arg_vars = BTreeSet::new();
-        if matches!(
-            (aggregate.function, arg.name.as_str()),
-            (AggregateFunction::TopK, "k") | (AggregateFunction::TakeUntil, "budget")
-        ) {
-            arg.expr.variables(&mut arg_vars);
-        } else {
-            arg.expr.variables(&mut arg_vars);
-            arg_vars.retain(|var| !inner_bound.contains(var));
-        }
-        out.extend(arg_vars);
-    }
-}
-
-fn rank_arg_variable(aggregate: &Aggregate) -> Option<Ident> {
-    if aggregate.function != AggregateFunction::Rank {
-        return None;
-    }
-    aggregate
-        .args
-        .iter()
-        .find(|arg| arg.name.as_str() == "rank")
-        .and_then(|arg| match &arg.expr {
-            Expr::Var(var) => Some(var.clone()),
-            _ => None,
-        })
-}
-
-fn negated_atom_variables_are_bound(atom: &NegatedAtom, bound: &BTreeSet<Ident>) -> bool {
-    let mut vars = BTreeSet::new();
-    collect_negated_atom_variables(atom, &mut vars);
-    vars.iter().all(|var| bound.contains(var))
-}
-
-fn expr_variables_are_bound(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
-    let mut vars = BTreeSet::new();
-    expr.variables(&mut vars);
-    variables_are_bound(&vars, bound)
-}
-
-fn variables_are_bound(vars: &BTreeSet<Ident>, bound: &BTreeSet<Ident>) -> bool {
-    vars.iter().all(|var| bound.contains(var))
-}
-
-fn collect_non_aggregate_positive_atom_variables(atom: &Atom, out: &mut BTreeSet<Ident>) {
-    match atom {
-        Atom::Stored(stored) => collect_stored_atom_binding_variables(stored, out),
-        Atom::Derived(derived) => collect_derived_atom_binding_variables(derived, out),
-        Atom::TimeBlock(time_block) => collect_positive_body_variables(&time_block.body, out),
-        Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
-    }
-}
-
-fn collect_positive_body_variables(body: &Body, out: &mut BTreeSet<Ident>) {
-    for atom in &body.atoms {
-        match atom {
-            Atom::Aggregation(aggregate) => aggregate.result.binding_variables(out),
-            _ => collect_non_aggregate_positive_atom_variables(atom, out),
-        }
-    }
-}
-
-fn collect_negated_atom_variables(atom: &NegatedAtom, out: &mut BTreeSet<Ident>) {
-    match atom {
-        NegatedAtom::Stored(stored) => collect_stored_atom_variables(stored, out),
-        NegatedAtom::Derived(derived) => collect_derived_atom_variables(derived, out),
-    }
-}
-
-fn collect_stored_atom_variables(atom: &StoredAtom, out: &mut BTreeSet<Ident>) {
-    for field in &atom.fields {
-        if let Some(expr) = field.term.expr() {
-            expr.variables(out);
-        }
-    }
-}
-
-fn collect_derived_atom_variables(
-    atom: &crate::runtime::ast::DerivedAtom,
-    out: &mut BTreeSet<Ident>,
-) {
-    for arg in &atom.args {
-        if let Some(expr) = arg.expr() {
-            expr.variables(out);
-        }
-    }
-}
-
-fn collect_stored_atom_binding_variables(atom: &StoredAtom, out: &mut BTreeSet<Ident>) {
-    for field in &atom.fields {
-        if let Some(expr) = field.term.expr() {
-            expr.binding_variables(out);
-        }
-    }
-}
-
-fn collect_derived_atom_binding_variables(
-    atom: &crate::runtime::ast::DerivedAtom,
-    out: &mut BTreeSet<Ident>,
-) {
-    for arg in &atom.args {
-        if let Some(expr) = arg.expr() {
-            expr.binding_variables(out);
-        }
-    }
-}
-
-fn stored_atom_input_variables(atom: &StoredAtom) -> BTreeSet<Ident> {
-    let mut vars = BTreeSet::new();
-    for field in &atom.fields {
-        if let Some(expr) = field.term.expr() {
-            expr.input_variables(&mut vars);
-        }
-    }
-    vars
-}
-
-fn derived_atom_input_variables(atom: &crate::runtime::ast::DerivedAtom) -> BTreeSet<Ident> {
-    let mut vars = BTreeSet::new();
-    for arg in &atom.args {
-        if let Some(expr) = arg.expr() {
-            expr.input_variables(&mut vars);
-        }
-    }
-    vars
-}
-
-fn positive_body_input_variables(body: &Body) -> BTreeSet<Ident> {
-    let mut vars = BTreeSet::new();
-    for atom in &body.atoms {
-        match atom {
-            Atom::Stored(stored) => vars.extend(stored_atom_input_variables(stored)),
-            Atom::Derived(derived) => vars.extend(derived_atom_input_variables(derived)),
-            Atom::TimeBlock(time_block) => {
-                vars.extend(positive_body_input_variables(&time_block.body));
-            }
-            Atom::Comparison(_) | Atom::Aggregation(_) | Atom::Negation(_) => {}
-        }
-    }
-    vars
-}
-
-fn positive_body_outer_input_variables(body: &Body) -> BTreeSet<Ident> {
-    let mut inputs = positive_body_input_variables(body);
-    let mut binders = BTreeSet::new();
-    collect_positive_body_variables(body, &mut binders);
-    inputs.retain(|var| !binders.contains(var));
-    inputs
 }
 
 fn eval_atom_traced(
@@ -6175,9 +6123,15 @@ fn eval_aggregate_traced(
 }
 
 fn aggregate_derivation_steps(rows: &[TracedBinding]) -> Vec<DerivationRef> {
+    collect_aggregate_derivation_steps(rows.iter().flat_map(|row| row.steps.iter()))
+}
+
+fn collect_aggregate_derivation_steps<'a>(
+    steps: impl Iterator<Item = &'a DerivationRef>,
+) -> Vec<DerivationRef> {
     let mut out = Vec::new();
     let mut omitted = 0_usize;
-    for step in rows.iter().flat_map(|row| row.steps.iter()) {
+    for step in steps {
         if out.len() < MAX_AGGREGATE_DERIVATION_CHILDREN {
             out.push(Arc::clone(step));
         } else {
@@ -8760,6 +8714,47 @@ mod tests {
                 ]),
             ]
         );
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_executor_shadow_matches_primary_entropy_derivations() {
+        let input = r#"
+        entropy("a.md", "broken_ref").
+        entropy("a.md", "missing_meta").
+        entropy("b.md", "missing_meta").
+        potential_weight("broken_ref", 4).
+        potential_weight("missing_meta", 1).
+        effective_potential_weight(source, weight) := potential_weight(source, weight).
+        entropy_priority("broken_ref", 0).
+        entropy_priority("missing_meta", 6).
+        potential_subject(h) := entropy(h, source).
+        potential(h, energy) :=
+          potential_subject(h),
+          energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
+        primary_entropy(h, source) :=
+          potential(h, energy),
+          (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
+            (source, weight, priority) :
+              entropy(h, source),
+              effective_potential_weight(source, weight),
+              entropy_priority(source, priority)
+          }.
+        ? primary_entropy(h, source).
+        "#;
+
+        let output = evaluate_query_output_with_options(
+            input,
+            Database::default(),
+            EvalOptions::default().with_explain_all(),
+        );
+
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("query row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Rule));
+        assert!(derivation_contains(derivation, DerivationKind::Aggregate));
     }
 
     #[test]
