@@ -9041,26 +9041,82 @@ mod tests {
         );
     }
 
-    fn assert_primary_entropy_is_authoritative_planned(input: &str) {
+    fn assert_predicate_is_authoritative_planned(input: &str, predicate: &str) {
         let program = parse_program("inline", input).expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
         let planned = plan(&analyzed).expect("program plans");
+        let predicate_ref = PredicateRef::parse(predicate).expect("predicate parses");
         let relation = planned
             .catalog
-            .predicate_relation(&PredicateRef::parse("primary_entropy").expect("predicate parses"))
-            .expect("primary_entropy planned")
+            .predicate_relation(&predicate_ref)
+            .expect("predicate planned")
             .id;
         assert!(
             planned.global.strata.iter().any(|stratum| {
                 stratum.authoritative_planned
-                    && !stratum.recursive
-                    && stratum
-                        .rule_groups
-                        .iter()
-                        .any(|group| group.head == Some(relation))
+                    && stratum.stages.iter().any(|stage| {
+                        stage.authoritative_predicates.contains(&predicate_ref)
+                            && stage.rule_groups.iter().any(|group_index| {
+                                stratum
+                                    .rule_groups
+                                    .get(*group_index)
+                                    .is_some_and(|group| group.head == Some(relation))
+                            })
+                    })
             }),
-            "primary_entropy must run through the authoritative planned path"
+            "{predicate} must run through the authoritative planned path"
         );
+    }
+
+    fn assert_primary_entropy_is_authoritative_planned(input: &str) {
+        assert_predicate_is_authoritative_planned(input, "primary_entropy");
+    }
+
+    fn assert_entropy_is_authoritative_planned(input: &str) {
+        assert_predicate_is_authoritative_planned(input, "entropy");
+    }
+
+    fn entropy_after_same_stratum_diagnostic_input() -> &'static str {
+        r#"
+        diagnostic("T001", "error", h, file, line, target) :=
+          *edge{from: h, to: target, kind: "Pending", file: file, line: line}.
+        entropy(h, "broken_ref") :=
+          diagnostic("T001", severity, h, file, line, evidence).
+        ? entropy(h, source) order by h asc.
+        "#
+    }
+
+    fn entropy_after_same_stratum_diagnostic_db() -> Database {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle("a.md", "file", "draft", "", "core")];
+        batch.edges = vec![EdgeFact {
+            identity: identity("a.md->missing:Pending"),
+            from: "a.md".to_string(),
+            to: "missing.md".to_string(),
+            kind: "Pending".to_string(),
+            file: "a.md".to_string(),
+            line: 7,
+        }];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merges");
+        Database::from_store(&store)
+    }
+
+    fn assert_entropy_derivation_from_stored_edge(output: &QueryOutput) {
+        assert_eq!(
+            output.rows[0].fields,
+            row([("h", s("a.md")), ("source", s("broken_ref"))])
+        );
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Stored));
     }
 
     #[test]
@@ -9134,49 +9190,41 @@ mod tests {
         assert!(derivation_contains(derivation, DerivationKind::Aggregate));
     }
 
-    #[cfg(feature = "planned-executor-spike")]
     #[test]
-    fn planned_stage_shadow_accepts_entropy_after_same_stratum_diagnostic() {
-        let input = r#"
-        diagnostic("T001", "error", h, file, line, target) :=
-          *edge{from: h, to: target, kind: "Pending", file: file, line: line}.
-        entropy(h, "broken_ref") :=
-          diagnostic("T001", severity, h, file, line, evidence).
-        ? entropy(h, source) order by h asc.
-        "#;
-        let mut batch = FactBatch::new(
-            CorpusId::from("test"),
-            SourceName::from("fixture"),
-            FactBatchMode::FullSnapshot,
-            Generation::initial(),
+    fn planned_executor_authoritatively_evaluates_entropy_after_same_stratum_diagnostic() {
+        let input = entropy_after_same_stratum_diagnostic_input();
+        assert_entropy_is_authoritative_planned(input);
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let evaluator = Evaluator::with_options(
+            analyzed,
+            entropy_after_same_stratum_diagnostic_db(),
+            EvalOptions::default(),
         );
-        batch.handles = vec![handle("a.md", "file", "draft", "", "core")];
-        batch.edges = vec![EdgeFact {
-            identity: identity("a.md->missing:Pending"),
-            from: "a.md".to_string(),
-            to: "missing.md".to_string(),
-            kind: "Pending".to_string(),
-            file: "a.md".to_string(),
-            line: 7,
-        }];
-        let mut store = FactStore::default();
-        store.merge(batch).expect("fixture merges");
+        assert!(
+            evaluator.planned.is_some(),
+            "mixed diagnostic/entropy stratum must install the plan so entropy can run authoritatively"
+        );
 
         let output = evaluate_query_output_with_options(
             input,
-            Database::from_store(&store),
+            entropy_after_same_stratum_diagnostic_db(),
+            EvalOptions::default().with_explain_all(),
+        );
+        assert_entropy_derivation_from_stored_edge(&output);
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_stage_shadow_accepts_entropy_after_same_stratum_diagnostic() {
+        let input = entropy_after_same_stratum_diagnostic_input();
+        let output = evaluate_query_output_with_options(
+            input,
+            entropy_after_same_stratum_diagnostic_db(),
             EvalOptions::default().with_explain_all(),
         );
 
-        assert_eq!(
-            output.rows[0].fields,
-            row([("h", s("a.md")), ("source", s("broken_ref"))])
-        );
-        let derivation = output.rows[0]
-            .derivation
-            .as_ref()
-            .expect("row has derivation");
-        assert!(derivation_contains(derivation, DerivationKind::Stored));
+        assert_entropy_derivation_from_stored_edge(&output);
     }
 
     #[test]

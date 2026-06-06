@@ -570,13 +570,12 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
     })
 }
 
-const AUTHORITATIVE_PLANNED_PREDICATES: &[&str] = &["primary_entropy"];
+const AUTHORITATIVE_PLANNED_PREDICATES: &[&str] = &["entropy", "primary_entropy"];
 
 pub(crate) fn stratum_has_authoritative_planned_target(predicates: &[PredicateRef]) -> bool {
-    predicates.len() == 1
-        && predicates
-            .iter()
-            .any(predicate_is_authoritative_planned_target)
+    predicates
+        .iter()
+        .any(predicate_is_authoritative_planned_target)
 }
 
 pub(crate) fn stratum_has_shadow_planned_target(predicates: &[PredicateRef]) -> bool {
@@ -761,7 +760,10 @@ fn plan_rule_stages(
             .collect::<Vec<_>>();
         let authoritative_predicates = ready
             .iter()
-            .filter(|predicate| predicate_is_authoritative_planned_target(predicate))
+            .filter(|predicate| {
+                predicate_is_authoritative_planned_target(predicate)
+                    && groups_by_predicate.contains_key(*predicate)
+            })
             .cloned()
             .collect::<BTreeSet<_>>();
         let authoritative_planned = !authoritative_predicates.is_empty();
@@ -1827,13 +1829,18 @@ mod tests {
                 .iter()
                 .flat_map(|stratum| &stratum.stages)
                 .any(|stage| {
-                    stage.shadow_planned
+                    stage.authoritative_planned
+                        && stage.shadow_planned
+                        && stage
+                            .authoritative_predicates
+                            .iter()
+                            .any(|predicate| predicate.display_name() == "entropy")
                         && stage
                             .predicates
                             .iter()
                             .any(|predicate| predicate.display_name() == "entropy")
                 }),
-            "entropy should be marked as a stage-level shadow target"
+            "entropy should be marked as a stage-level authoritative and shadow target"
         );
     }
 
