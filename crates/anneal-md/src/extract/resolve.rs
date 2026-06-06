@@ -4,10 +4,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 use regex::Regex;
 use std::sync::LazyLock;
 
+use crate::extract::body_scan::LabelCandidate;
 use crate::extract::config::AnnealConfig;
 use crate::extract::graph::{DiGraph, EdgeKind};
 use crate::extract::handle::{Handle, HandleKind, NodeId};
-use crate::extract::parse::{LabelCandidate, PendingEdge};
+use crate::extract::parse::PendingEdge;
 
 // ---------------------------------------------------------------------------
 // Resolution cascade types (Phase 6, RESOLVE-02..06)

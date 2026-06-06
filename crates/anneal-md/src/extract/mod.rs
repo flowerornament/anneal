@@ -1,4 +1,5 @@
 pub(crate) mod area;
+pub(crate) mod body_scan;
 pub(crate) mod config;
 pub(crate) mod extraction;
 pub(crate) mod graph;
