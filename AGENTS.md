@@ -45,6 +45,8 @@ Avoid broad default dumps like raw `check --json`, empty search queries, or full
 - `rust-toolchain.toml` pins Rust 1.94.0 with `rustfmt` and `clippy`.
 - Use `just`. `just check` is the default gate (fmt + `install.sh` syntax + clippy + test, each step timed). Inspect `justfile` or run `just --list` for the full command surface.
 - `just build` for a release binary; `just release-verify` for release-readiness gates.
+- `just audit` = architecture fitness functions: `cargo-machete` (unused deps) + `cargo-deny` (advisories/bans/licenses/sources, configured in `deny.toml`). `just check` runs the offline subset (machete + deny bans/licenses/sources), guarded to skip if the tools aren't installed.
+- Do NOT run `just check`/the test suite inside a git worktree (bug anneal-re9h): a git-fixture test writes `core.bare=true` into the shared `.git/config` and bricks git repo-wide. Recover with `git config core.bare false`.
 - Add dependencies with `cargo add`; never hand-write version strings.
 - `ast-grep run -p 'PATTERN' -l rust` for AST-aware code search (no config needed). Useful patterns: `$X.unwrap()`, `todo!($$$)`, `#[allow($$$)]`. Add `-r 'REPLACEMENT'` for structural refactoring; `--json` for machine-readable output.
 
