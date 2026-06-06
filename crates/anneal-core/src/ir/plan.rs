@@ -653,7 +653,7 @@ fn plan_query(
             let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates, catalog)?;
             Ok(StratumPlan {
                 recursive: false,
-                authoritative_planned: false,
+                authoritative_planned: stages.iter().any(|stage| stage.authoritative_planned),
                 rule_groups,
                 stages,
                 deltas: Vec::new(),
@@ -678,6 +678,16 @@ fn plan_query(
             })
         })
         .collect::<Result<Vec<_>, PlanError>>()?;
+    let output_group = RuleGroupPlan {
+        head: None,
+        head_terms: Vec::new(),
+        body,
+        slots,
+        provenance: None,
+        shadow_planned: false,
+    };
+    let output_migration = query_output_migration(&output_group, catalog);
+    let output_authoritative = output_migration.is_planned();
     Ok(QueryPlan {
         plan: Plan {
             kind: PlanKind::Query,
@@ -685,22 +695,15 @@ fn plan_query(
                 let mut all = strata;
                 all.push(StratumPlan {
                     recursive: false,
-                    authoritative_planned: false,
-                    rule_groups: vec![RuleGroupPlan {
-                        head: None,
-                        head_terms: Vec::new(),
-                        body,
-                        slots,
-                        provenance: None,
-                        shadow_planned: false,
-                    }],
+                    authoritative_planned: output_authoritative,
+                    rule_groups: vec![output_group],
                     stages: vec![RuleStagePlan {
                         rule_groups: vec![0],
                         predicates: BTreeSet::new(),
                         authoritative_predicates: BTreeSet::new(),
-                        authoritative_planned: false,
+                        authoritative_planned: output_authoritative,
                         shadow_planned: false,
-                        migration: StageMigration::interpreted(BTreeSet::new()),
+                        migration: output_migration,
                     }],
                     deltas: Vec::new(),
                 });
@@ -846,6 +849,16 @@ fn stage_migration(
         };
         reasons.extend(planned_rule_group_unsupported_reasons(group, catalog));
     }
+    if reasons.is_empty() {
+        StageMigration::planned()
+    } else {
+        StageMigration::interpreted(reasons)
+    }
+}
+
+fn query_output_migration(output_group: &RuleGroupPlan, catalog: &PlanCatalog) -> StageMigration {
+    let mut reasons = BTreeSet::new();
+    collect_body_unsupported_reasons(&output_group.body, catalog, &mut reasons);
     if reasons.is_empty() {
         StageMigration::planned()
     } else {
@@ -1914,6 +1927,38 @@ mod tests {
         assert_eq!(first.fields().len(), 1);
         assert_eq!(second.fields().len(), 2);
         assert!(planned.catalog.predicate_relation(&local).is_none());
+    }
+
+    #[test]
+    fn query_local_stages_use_the_migration_certificate() {
+        let analyzed = analyzed(
+            r"
+            ?
+              where local_item(h) := *handle{id: h}, active(h).
+              local_item(h) order by h asc.
+            ",
+        );
+
+        let planned = plan(&analyzed).expect("program plans");
+        let query = planned.queries.first().expect("query planned");
+        let local = query.plan.strata.first().expect("local stratum planned");
+        let output = query.plan.strata.last().expect("output stratum planned");
+
+        assert!(
+            local.authoritative_planned,
+            "query-local rule stage should be certified planned"
+        );
+        assert!(
+            local
+                .stages
+                .iter()
+                .all(|stage| stage.migration.is_planned()),
+            "query-local stage reasons should be empty for supported atoms"
+        );
+        assert!(
+            output.authoritative_planned,
+            "final query body is a planned projection stage"
+        );
     }
 
     #[test]

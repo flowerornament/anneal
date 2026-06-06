@@ -29,11 +29,11 @@ use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
-    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanError,
-    PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan,
-    StratumPlan, TermPlan, UnsupportedTimeScopeAtom, aggregate_allowed_args, plan,
-    planned_aggregate_executable, planned_comparison_executable, planned_rule_group_executable,
-    time_scope_unsupported_atom, time_scoped_primitive_supported,
+    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, OrderKeyPlan, OutputPlan,
+    PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
+    RuleProvenance, RuleStagePlan, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
+    aggregate_allowed_args, plan, planned_aggregate_executable, planned_comparison_executable,
+    planned_rule_group_executable, time_scope_unsupported_atom, time_scoped_primitive_supported,
     time_scoped_stored_relation_supported,
 };
 use crate::lifecycle::is_terminal_status;
@@ -4165,7 +4165,49 @@ impl Evaluator {
         self.options.authorize_eval()?;
         let query_ast = query.query();
         let mut warnings = self.warnings.clone();
+        let owned_plan;
+        let planned = if let Some(planned) = self.planned.as_ref() {
+            Some(planned)
+        } else {
+            owned_plan = match plan(&self.program) {
+                Ok(planned) => Some(planned),
+                Err(PlanError::PositiveCycle { .. } | PlanError::UnknownStoredRelation { .. }) => {
+                    None
+                }
+                Err(error) => {
+                    panic!("analyzed program should plan before planned query execution: {error}")
+                }
+            };
+            owned_plan.as_ref()
+        };
+        let query_plan = planned.and_then(|planned| {
+            self.program
+                .queries()
+                .position(|candidate| candidate == query)
+                .and_then(|index| planned.queries.get(index))
+        });
+        let planned_query_output = query_plan.filter(|query_plan| {
+            query_plan
+                .plan
+                .strata
+                .last()
+                .is_some_and(|stratum| stratum.authoritative_planned)
+        });
         if query_ast.local_rules.is_empty() {
+            if let Some(query_plan) = planned_query_output {
+                let mut planned_warnings = warnings.clone();
+                match eval_planned_query(
+                    query_plan,
+                    &planned.expect("query plan has program plan").catalog,
+                    &self.database,
+                    &mut planned_warnings,
+                    &self.options,
+                ) {
+                    Ok(output) => return Ok(output),
+                    Err(EvalError::UnsupportedExpression) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             if self.options.explain().is_enabled() {
                 let mut bindings = eval_body_traced(
                     &query_ast.body,
@@ -4199,21 +4241,46 @@ impl Evaluator {
         let mut database = self.database.clone();
         database.ensure_derived(query.local_predicates().cloned());
         database.install_query_introspection(query);
-        for stratum in query.local_strata() {
+        let local_planned_strata = query_plan.map(|query_plan| {
+            query_plan
+                .plan
+                .strata
+                .iter()
+                .take(query.local_strata().len())
+                .collect::<Vec<_>>()
+        });
+        for (stratum_index, stratum) in query.local_strata().iter().enumerate() {
             let rules = query_ast
                 .local_rules
                 .iter()
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
+            let planned_stratum = local_planned_strata
+                .as_ref()
+                .and_then(|strata| strata.get(stratum_index).copied());
             run_rule_group(
                 &mut database,
                 &rules,
-                None,
-                self.planned.as_ref().map(|planned| &planned.catalog),
+                planned_stratum,
+                planned.map(|planned| &planned.catalog),
                 &mut warnings,
                 &self.options,
             )?;
+        }
+        if let Some(query_plan) = planned_query_output {
+            let mut planned_warnings = warnings.clone();
+            match eval_planned_query(
+                query_plan,
+                &planned.expect("query plan has program plan").catalog,
+                &database,
+                &mut planned_warnings,
+                &self.options,
+            ) {
+                Ok(output) => return Ok(output),
+                Err(EvalError::UnsupportedExpression) => {}
+                Err(error) => return Err(error),
+            }
         }
         let rows = if self.options.explain().is_enabled() {
             let mut bindings = eval_body_traced(
@@ -5035,6 +5102,40 @@ fn eval_planned_rule_group(
             Ok(DerivedTuple { tuple, derivation })
         })
         .collect()
+}
+
+fn eval_planned_query(
+    query: &QueryPlan,
+    catalog: &PlanCatalog,
+    database: &Database,
+    warnings: &mut Vec<QueryWarning>,
+    options: &EvalOptions,
+) -> Result<QueryOutput, EvalError> {
+    let output_group = query
+        .plan
+        .strata
+        .last()
+        .and_then(|stratum| stratum.rule_groups.first())
+        .ok_or(EvalError::UnsupportedExpression)?;
+    let mut env = PlannedValueEnv::from_database(database);
+    let mut bindings = eval_planned_body(
+        &output_group.body,
+        vec![PlannedFrame::empty(output_group.slots.vars().len())],
+        catalog,
+        database,
+        warnings,
+        options,
+        &mut env,
+    )?;
+    if options.explain().is_enabled() {
+        ensure_no_reserved_planned_explain_fields(&query.plan.output, &bindings, &mut env)?;
+    }
+    sort_planned_bindings_for_query(&query.plan.output.ordering, &mut bindings, &mut env)?;
+    let rows = planned_bindings_to_rows(&query.plan.output, bindings, &env, options.explain())?;
+    Ok(QueryOutput {
+        rows,
+        warnings: warnings.clone(),
+    })
 }
 
 fn eval_planned_body(
@@ -6032,6 +6133,130 @@ fn planned_frame_logical_cmp(
         })
         .find(|ordering| *ordering != Ordering::Equal)
         .unwrap_or(Ordering::Equal)
+}
+
+fn sort_planned_bindings_for_query(
+    ordering: &[OrderKeyPlan],
+    bindings: &mut Vec<PlannedFrame>,
+    env: &mut PlannedValueEnv,
+) -> Result<(), EvalError> {
+    if ordering.is_empty() {
+        return Ok(());
+    }
+    let mut keyed = std::mem::take(bindings)
+        .into_iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            let keys = eval_planned_order_keys(ordering, &binding, env)?;
+            Ok((index, keys, binding))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    keyed.sort_by(|left, right| compare_ordered_planned_query_rows(ordering, left, right));
+    bindings.extend(keyed.into_iter().map(|(_, _, binding)| binding));
+    Ok(())
+}
+
+fn eval_planned_order_keys(
+    ordering: &[OrderKeyPlan],
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<QueryOrderKeys, EvalError> {
+    if let [key] = ordering {
+        return eval_planned_expr_logical(&key.expr, binding, env).map(QueryOrderKeys::One);
+    }
+    ordering
+        .iter()
+        .map(|key| eval_planned_expr_logical(&key.expr, binding, env))
+        .collect::<Result<Vec<_>, _>>()
+        .map(QueryOrderKeys::Many)
+}
+
+fn compare_ordered_planned_query_rows<T>(
+    ordering: &[OrderKeyPlan],
+    left: &(usize, QueryOrderKeys, T),
+    right: &(usize, QueryOrderKeys, T),
+) -> Ordering {
+    for (index, key) in ordering.iter().enumerate() {
+        let (left_key, right_key) = order_key_values(index, &left.1, &right.1);
+        let comparison = match key.direction {
+            OrderDirection::Asc => left_key.cmp(right_key),
+            OrderDirection::Desc => right_key.cmp(left_key),
+        };
+        if comparison != Ordering::Equal {
+            return comparison;
+        }
+    }
+    left.0.cmp(&right.0)
+}
+
+fn ensure_no_reserved_planned_explain_fields(
+    output: &OutputPlan,
+    bindings: &[PlannedFrame],
+    env: &mut PlannedValueEnv,
+) -> Result<(), EvalError> {
+    if !output
+        .projection
+        .iter()
+        .any(|(name, _)| name.as_str() == "_derivation")
+    {
+        return Ok(());
+    }
+    for binding in bindings {
+        if planned_projected_fields(output, binding, env)?.contains_key("_derivation") {
+            return Err(EvalError::ReservedExplainField {
+                field: "_derivation",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn planned_bindings_to_rows(
+    output: &OutputPlan,
+    bindings: Vec<PlannedFrame>,
+    env: &PlannedValueEnv,
+    options: &ExplainOptions,
+) -> Result<Vec<Row>, EvalError> {
+    bindings
+        .into_iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            planned_binding_to_row(output, &binding, env, options, options.explains_row(index))
+        })
+        .collect()
+}
+
+fn planned_binding_to_row(
+    output: &OutputPlan,
+    binding: &PlannedFrame,
+    env: &PlannedValueEnv,
+    options: &ExplainOptions,
+    include_derivation: bool,
+) -> Result<Row, EvalError> {
+    let mut env = env.clone();
+    let fields = planned_projected_fields(output, binding, &mut env)?;
+    Ok(Row {
+        fields,
+        derivation: include_derivation
+            .then(|| DerivationNode::query(clone_derivation_refs(&binding.steps)).bounded(options)),
+    })
+}
+
+fn planned_projected_fields(
+    output: &OutputPlan,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<BTreeMap<String, Value>, EvalError> {
+    output
+        .projection
+        .iter()
+        .map(|(name, expr)| {
+            Ok((
+                name.to_string(),
+                eval_planned_expr_logical(expr, binding, env)?,
+            ))
+        })
+        .collect()
 }
 
 fn project_planned_head(
