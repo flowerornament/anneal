@@ -186,6 +186,29 @@ impl<'a> TupleRow<'a> {
         let field = self.schema.field(field_name)?;
         self.tuple.get(field)
     }
+
+    pub(crate) fn for_each_logical_field_filtered(
+        &self,
+        mut include: impl FnMut(&str) -> bool,
+        mut visit: impl FnMut(&str, Value),
+    ) {
+        for field in self.schema.fields() {
+            let Some(name) = self.interner.resolve(field.name()) else {
+                continue;
+            };
+            if !include(name) {
+                continue;
+            }
+            let Some(value) = self
+                .tuple
+                .get(field.id())
+                .and_then(|value| value.to_logical(self.interner, self.lists))
+            else {
+                continue;
+            };
+            visit(name, value);
+        }
+    }
 }
 
 impl TupleDb {
@@ -593,28 +616,6 @@ impl TupleDb {
             .to_logical(&self.interner, &self.lists)
     }
 
-    pub(crate) fn project_row(
-        &self,
-        relation: &str,
-        row: RowId,
-    ) -> Option<BTreeMap<String, Value>> {
-        let relation_name = self.interner.lookup(relation)?;
-        let schema = self.schemas.relation_by_name(relation_name)?;
-        let store = self.relation(schema.id())?;
-        Some(self.project_tuple(schema, store.row(row)?))
-    }
-
-    pub(crate) fn project_row_in_store(
-        &self,
-        relation: &str,
-        store: &RelationStore,
-        row: RowId,
-    ) -> Option<BTreeMap<String, Value>> {
-        let relation_name = self.interner.lookup(relation)?;
-        let schema = self.schemas.relation_by_name(relation_name)?;
-        Some(self.project_tuple(schema, store.row(row)?))
-    }
-
     pub(crate) fn clone_tuple(&self, relation: &str, row: RowId) -> Option<Tuple> {
         let relation_name = self.interner.lookup(relation)?;
         let schema = self.schemas.relation_by_name(relation_name)?;
@@ -682,6 +683,7 @@ impl TupleDb {
         }
     }
 
+    #[cfg(test)]
     fn project_tuple(&self, schema: &RelationSchema, tuple: &Tuple) -> BTreeMap<String, Value> {
         schema
             .fields()

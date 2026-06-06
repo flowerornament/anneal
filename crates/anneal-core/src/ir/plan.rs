@@ -69,6 +69,7 @@ pub(crate) struct RuleGroupPlan {
     pub(crate) body: RuleBodyPlan,
     pub(crate) slots: SlotLayout,
     pub(crate) provenance: Option<RuleProvenance>,
+    pub(crate) shadow_planned: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -631,6 +632,7 @@ fn plan_query(
                         body,
                         slots,
                         provenance: None,
+                        shadow_planned: false,
                     }],
                     deltas: Vec::new(),
                 });
@@ -676,7 +678,14 @@ fn plan_rule(
             layer: rule.origin().layer(),
             location: rule.origin().location().clone(),
         }),
+        shadow_planned: predicate_is_shadow_planned_target(&rule.head.predicate),
     })
+}
+
+const SHADOW_PLANNED_PREDICATES: &[&str] = &["incoming_edge"];
+
+fn predicate_is_shadow_planned_target(predicate: &PredicateRef) -> bool {
+    SHADOW_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
 }
 
 fn plan_body(
@@ -1526,6 +1535,35 @@ mod tests {
                 } if *id == relation.id
             )
         }));
+    }
+
+    #[test]
+    fn shadow_migration_target_is_a_plan_property() {
+        let analyzed = analyzed(
+            r"
+            incoming_edge(h, src, kind) := *edge{to: h, from: src, kind: kind}.
+            ",
+        );
+
+        let planned = plan(&analyzed).expect("program plans");
+        let incoming = PredicateRef::parse("incoming_edge").expect("predicate");
+        let incoming_relation = planned
+            .catalog
+            .predicate_relation(&incoming)
+            .expect("incoming_edge relation")
+            .id;
+
+        let incoming_rule = planned
+            .global
+            .strata
+            .iter()
+            .flat_map(|stratum| &stratum.rule_groups)
+            .find(|rule| rule.head == Some(incoming_relation))
+            .expect("incoming_edge rule");
+        assert!(
+            incoming_rule.shadow_planned,
+            "shadow migration target should be marked by the plan"
+        );
     }
 
     #[test]

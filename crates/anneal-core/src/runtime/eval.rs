@@ -499,6 +499,22 @@ impl DerivationNode {
         }
     }
 
+    fn stored_tuple(relation: &Ident, row: TupleRow<'_>) -> Self {
+        Self {
+            kind: DerivationKind::Stored,
+            label: format!("stored *{relation} row matched"),
+            relation: Some(relation.to_string()),
+            predicate: None,
+            tuple: Vec::new(),
+            fields: compact_stored_tuple(relation, row),
+            source: row.string(SOURCE_FIELD).map(str::to_owned),
+            line: row.i64("line").and_then(i64_to_usize),
+            column: None,
+            truncated: None,
+            children: Vec::new(),
+        }
+    }
+
     fn primitive(predicate: &PredicateRef, tuple: &Tuple) -> Self {
         Self {
             kind: DerivationKind::Primitive,
@@ -1440,16 +1456,26 @@ impl Database {
             .logical_field_value(relation.as_str(), row, field.as_str())
     }
 
-    fn tuple_named_row(&self, relation: &Ident, row: RowId) -> Option<NamedRow> {
+    fn tuple_row(&self, relation: &Ident, row: RowId) -> Option<TupleRow<'_>> {
         if let Some(store) = self.tuple_overlay.relation(relation) {
             return self
                 .tuples
-                .project_row_in_store(relation.as_str(), store, row)
-                .map(string_map_to_named_row);
+                .tuple_row_in_named_store(relation.as_str(), store, row);
         }
-        self.tuples
-            .project_row(relation.as_str(), row)
-            .map(string_map_to_named_row)
+        self.tuples.tuple_row(relation.as_str(), row)
+    }
+
+    fn stored_tuple_derivation(
+        &self,
+        relation: &Ident,
+        row: RowId,
+    ) -> Result<DerivationRef, EvalError> {
+        self.tuple_row(relation, row)
+            .map(|row| derivation_ref(DerivationNode::stored_tuple(relation, row)))
+            .ok_or_else(|| EvalError::StoredTupleDerivationMissing {
+                relation: relation.clone(),
+                row: row.index(),
+            })
     }
 
     fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
@@ -3996,6 +4022,8 @@ pub enum EvalError {
     #[cfg(feature = "planned-executor-spike")]
     #[error("planned executor shadow target '{predicate}' had no planned rule group")]
     PlannedExecutorMissingShadow { predicate: PredicateRef },
+    #[error("stored tuple derivation missing for '*{relation}' row {row}")]
+    StoredTupleDerivationMissing { relation: Ident, row: usize },
     #[error("planned executor authoritative target '{predicate}' had no planned rule group")]
     PlannedExecutorMissingAuthoritative { predicate: PredicateRef },
     #[error("planned executor authoritative target '{predicate}' is recursive")]
@@ -4046,11 +4074,9 @@ impl Evaluator {
                 .strata()
                 .iter()
                 .any(|stratum| stratum_has_authoritative_planned_target(&stratum.predicates));
-        let planned = needs_plan
-            .then(|| plan(&program))
-            .transpose()
-            .ok()
-            .flatten();
+        let planned = needs_plan.then(|| {
+            plan(&program).expect("analyzed program should plan before planned execution")
+        });
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
@@ -4580,7 +4606,14 @@ fn planned_shadow_for_rule<'a>(
     catalog: Option<&PlanCatalog>,
     rule: &Rule,
 ) -> Result<Option<&'a RuleGroupPlan>, EvalError> {
-    if rule.head.predicate.display_name() != "primary_entropy" {
+    let Some(stratum) = planned_stratum else {
+        return Ok(None);
+    };
+    if !stratum
+        .rule_groups
+        .iter()
+        .any(|planned| planned.shadow_planned)
+    {
         return Ok(None);
     }
     let Some(catalog) = catalog else {
@@ -4588,30 +4621,17 @@ fn planned_shadow_for_rule<'a>(
             predicate: rule.head.predicate.clone(),
         });
     };
-    let Some(stratum) = planned_stratum else {
-        return Err(EvalError::PlannedExecutorMissingShadow {
-            predicate: rule.head.predicate.clone(),
-        });
+    let Some(rule_relation) = catalog.predicate_relation(&rule.head.predicate) else {
+        return Ok(None);
     };
     let planned = stratum
         .rule_groups
         .iter()
-        .find(|planned| planned_rule_head_name(planned, catalog) == Some("primary_entropy"))
-        .ok_or_else(|| EvalError::PlannedExecutorMissingShadow {
-            predicate: rule.head.predicate.clone(),
-        })?;
+        .find(|planned| planned.shadow_planned && planned.head == Some(rule_relation.id));
+    let Some(planned) = planned else {
+        return Ok(None);
+    };
     Ok(planned_rule_group_is_supported_shadow_target(planned).then_some(planned))
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn planned_rule_head_name<'a>(
-    planned: &RuleGroupPlan,
-    catalog: &'a PlanCatalog,
-) -> Option<&'a str> {
-    planned
-        .head
-        .and_then(|id| catalog.relation(id))
-        .map(|head| head.name.as_str())
 }
 
 #[cfg(feature = "planned-executor-spike")]
@@ -4936,6 +4956,7 @@ fn eval_planned_stored_scan(
         .ok_or(EvalError::UnsupportedExpression)?;
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
+    let relation_ident = trace.then(|| Ident::new_unchecked(relation_name.to_string()));
     for binding in bindings {
         let constraints = planned_column_constraints(patterns, &binding);
         for row in store.candidate_rows(&constraints) {
@@ -4955,13 +4976,11 @@ fn eval_planned_stored_scan(
                 }
             }
             if matched {
-                out.push(next.push_step(trace, || {
-                    let relation_ident = Ident::new_unchecked(relation_name.to_string());
-                    let row = database
-                        .tuple_named_row(&relation_ident, row)
-                        .unwrap_or_default();
-                    derivation_ref(DerivationNode::stored(&relation_ident, &row))
-                }));
+                let step = relation_ident
+                    .as_ref()
+                    .map(|relation| database.stored_tuple_derivation(relation, row))
+                    .transpose()?;
+                out.push(next.push_step(trace, || step.expect("trace step exists")));
             }
         }
     }
@@ -5819,16 +5838,16 @@ fn eval_tuple_stored_traced(
         let constraints = stored_constraints(&atom.fields, &binding.values)?;
         for row in database.candidate_tuple_rows(&atom.relation, &constraints) {
             if let Some(next) = unify_tuple_stored_fields(atom, database, row, &binding.values)? {
+                let step = if trace {
+                    Some(database.stored_tuple_derivation(&atom.relation, row)?)
+                } else {
+                    None
+                };
                 let binding = TracedBinding {
                     values: next,
                     steps: binding.steps.clone(),
                 }
-                .push_step_if(trace, || {
-                    let row = database
-                        .tuple_named_row(&atom.relation, row)
-                        .unwrap_or_default();
-                    derivation_ref(DerivationNode::stored(&atom.relation, &row))
-                });
+                .push_step_if(trace, || step.expect("trace step exists"));
                 out.push(binding);
             }
         }
@@ -6954,6 +6973,17 @@ fn compact_stored_row(relation: &Ident, row: &NamedRow) -> BTreeMap<String, Valu
         .collect()
 }
 
+fn compact_stored_tuple(relation: &Ident, row: TupleRow<'_>) -> BTreeMap<String, Value> {
+    let mut fields = BTreeMap::new();
+    row.for_each_logical_field_filtered(
+        |field| explain_field_visible(relation.as_str(), field),
+        |field, value| {
+            fields.insert(field.to_string(), value);
+        },
+    );
+    fields
+}
+
 fn explain_field_visible(relation: &str, field: &str) -> bool {
     let identity = matches!(
         field,
@@ -7029,11 +7059,6 @@ fn explain_field_visible(relation: &str, field: &str) -> bool {
 fn named_row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> NamedRow {
     entries
         .into_iter()
-        .map(|(key, value)| (Ident::new_unchecked(key), value))
-        .collect()
-}
-fn string_map_to_named_row(row: BTreeMap<String, Value>) -> NamedRow {
-    row.into_iter()
         .map(|(key, value)| (Ident::new_unchecked(key), value))
         .collect()
 }
@@ -7446,6 +7471,111 @@ mod tests {
             key: key.to_string(),
             value: value.to_string(),
         }
+    }
+
+    fn assert_stored_tuple_derivation_matches_named(
+        database: &Database,
+        relation: &str,
+        row: RowId,
+        named: &NamedRow,
+    ) {
+        let relation = Ident::new_unchecked(relation);
+        let tuple_row = database
+            .tuple_row(&relation, row)
+            .expect("stored tuple row exists");
+        assert_eq!(
+            DerivationNode::stored_tuple(&relation, tuple_row),
+            DerivationNode::stored(&relation, named)
+        );
+    }
+
+    #[test]
+    fn stored_tuple_derivation_matches_named_row_derivation() {
+        let handle = handle("h", "file", "current", "", "area");
+        let edge = edge("h", "other", "DependsOn");
+        let meta = meta("h", "status.detail", "reviewed");
+        let content = content_with_text("h", "s1", "Body text", 4);
+        let span = span("h", "s1", 3, 5);
+        let concern = ConcernFact {
+            identity: identity("concern:h"),
+            name: "runtime".to_string(),
+            member: "h".to_string(),
+        };
+        let config = config("pipeline.status", "current");
+        let snapshot = snapshot_fact("last", "2026-06-05", "h", "status", "current");
+
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![handle.clone()];
+        batch.edges = vec![edge.clone()];
+        batch.meta = vec![meta.clone()];
+        batch.content = vec![content.clone()];
+        batch.spans = vec![span.clone()];
+        batch.concerns = vec![concern.clone()];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merge");
+        store
+            .replace_configs(&CorpusId::from("test"), vec![config.clone()])
+            .expect("config replacement");
+        store
+            .replace_snapshots(&CorpusId::from("test"), vec![snapshot.clone()])
+            .expect("snapshot replacement");
+
+        let database = Database::from_store(&store);
+        let row = RowId::from_index(0);
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            HANDLE_RELATION,
+            row,
+            &handle_row(&handle),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            EDGE_RELATION,
+            row,
+            &edge_row(&edge),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            META_RELATION,
+            row,
+            &meta_row(&meta),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            CONTENT_RELATION,
+            row,
+            &content_row(&content),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            SPAN_RELATION,
+            row,
+            &span_row(&span),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            "concern",
+            row,
+            &concern_row(&concern),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            CONFIG_RELATION,
+            row,
+            &config_row(&config),
+        );
+        assert_stored_tuple_derivation_matches_named(
+            &database,
+            SNAPSHOT_RELATION,
+            row,
+            &snapshot_row(&snapshot),
+        );
     }
 
     fn chain_store(edge_count: usize) -> FactStore {
