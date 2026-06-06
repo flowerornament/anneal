@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::facts::STORED_RELATION_DESCRIPTORS;
+use crate::facts::{HANDLE_RELATION_NAME, SNAPSHOT_RELATION_NAME, STORED_RELATION_DESCRIPTORS};
 use crate::runtime::analysis::{
     AnalyzedParameterNames, AnalyzedPredicateKind, AnalyzedPredicateSignature, AnalyzedProgram,
     AnalyzedQuery,
@@ -108,6 +108,20 @@ pub(crate) enum UnsupportedReason {
     MissingProvenance,
     Recursive,
     PositiveCycle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UnsupportedTimeScopeAtom {
+    StoredRelation { relation: Ident },
+    DerivedPredicate { predicate: PredicateRef },
+    Primitive { predicate: PredicateRef },
+    UnknownRelation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnsupportedTimeScope {
+    pub(crate) reference: String,
+    pub(crate) atom: UnsupportedTimeScopeAtom,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -599,7 +613,7 @@ fn plan_global(program: &AnalyzedProgram, catalog: &PlanCatalog) -> Result<Plan,
                 }
                 rule_groups.push(rule_group);
             }
-            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates)?;
+            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates, catalog)?;
             Ok(StratumPlan {
                 recursive: !deltas.is_empty(),
                 authoritative_planned: stages.iter().any(|stage| stage.authoritative_planned),
@@ -636,7 +650,7 @@ fn plan_query(
                 .iter()
                 .map(|rule| plan_rule(rule, catalog, Some(query_index)))
                 .collect::<Result<Vec<_>, _>>()?;
-            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates)?;
+            let stages = plan_rule_stages(&rules, &rule_groups, &stratum_predicates, catalog)?;
             Ok(StratumPlan {
                 recursive: false,
                 authoritative_planned: false,
@@ -746,6 +760,7 @@ fn plan_rule_stages(
     rules: &[&Rule],
     rule_groups: &[RuleGroupPlan],
     stratum_predicates: &BTreeSet<PredicateRef>,
+    catalog: &PlanCatalog,
 ) -> Result<Vec<RuleStagePlan>, PlanError> {
     let mut remaining = stratum_predicates.clone();
     let mut dependencies = BTreeMap::<PredicateRef, BTreeSet<PredicateRef>>::new();
@@ -789,7 +804,7 @@ fn plan_rule_stages(
             .filter_map(|predicate| groups_by_predicate.get(predicate))
             .flat_map(|groups| groups.iter().copied())
             .collect::<Vec<_>>();
-        let migration = stage_migration(&rule_group_indexes, rule_groups);
+        let migration = stage_migration(&rule_group_indexes, rule_groups, catalog);
         let authoritative_predicates = ready
             .iter()
             .filter(|predicate| {
@@ -818,14 +833,18 @@ fn plan_rule_stages(
     Ok(stages)
 }
 
-fn stage_migration(rule_group_indexes: &[usize], rule_groups: &[RuleGroupPlan]) -> StageMigration {
+fn stage_migration(
+    rule_group_indexes: &[usize],
+    rule_groups: &[RuleGroupPlan],
+    catalog: &PlanCatalog,
+) -> StageMigration {
     let mut reasons = BTreeSet::new();
     for index in rule_group_indexes {
         let Some(group) = rule_groups.get(*index) else {
             reasons.insert(UnsupportedReason::UnsupportedExpression);
             continue;
         };
-        reasons.extend(planned_rule_group_unsupported_reasons(group));
+        reasons.extend(planned_rule_group_unsupported_reasons(group, catalog));
     }
     if reasons.is_empty() {
         StageMigration::planned()
@@ -834,8 +853,11 @@ fn stage_migration(rule_group_indexes: &[usize], rule_groups: &[RuleGroupPlan]) 
     }
 }
 
-pub(crate) fn planned_rule_group_executable(planned: &RuleGroupPlan) -> bool {
-    planned_rule_group_unsupported_reasons(planned).is_empty()
+pub(crate) fn planned_rule_group_executable(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+) -> bool {
+    planned_rule_group_unsupported_reasons(planned, catalog).is_empty()
 }
 
 pub(crate) fn planned_aggregate_executable(function: AggregateFunction) -> bool {
@@ -873,24 +895,136 @@ pub(crate) fn planned_comparison_executable(op: ComparisonOp) -> bool {
     op != ComparisonOp::Matches
 }
 
+pub(crate) fn time_scope_executable(
+    reference: &str,
+    inner: &RuleBodyPlan,
+    catalog: &PlanCatalog,
+) -> bool {
+    time_scope_unsupported_atom(reference, inner, catalog).is_none()
+}
+
+pub(crate) fn time_scope_unsupported_atom(
+    reference: &str,
+    inner: &RuleBodyPlan,
+    catalog: &PlanCatalog,
+) -> Option<UnsupportedTimeScope> {
+    inner
+        .atoms
+        .iter()
+        .find_map(|atom| time_scope_atom_unsupported(reference, atom, catalog))
+}
+
+fn time_scope_atom_unsupported(
+    reference: &str,
+    atom: &AtomPlan,
+    catalog: &PlanCatalog,
+) -> Option<UnsupportedTimeScope> {
+    let atom = match atom {
+        AtomPlan::Scan { relation, .. } => {
+            let Some(relation) = catalog.relation(*relation) else {
+                return Some(UnsupportedTimeScope {
+                    reference: reference.to_string(),
+                    atom: UnsupportedTimeScopeAtom::UnknownRelation,
+                });
+            };
+            match relation.kind {
+                PlanRelationKind::Stored => {
+                    (!time_scoped_stored_relation_supported_name(&relation.name)).then(|| {
+                        UnsupportedTimeScopeAtom::StoredRelation {
+                            relation: Ident::new_unchecked(relation.name.clone()),
+                        }
+                    })
+                }
+                PlanRelationKind::Derived => {
+                    let Ok(predicate) = PredicateRef::parse(&relation.name) else {
+                        return Some(UnsupportedTimeScope {
+                            reference: reference.to_string(),
+                            atom: UnsupportedTimeScopeAtom::UnknownRelation,
+                        });
+                    };
+                    Some(UnsupportedTimeScopeAtom::DerivedPredicate { predicate })
+                }
+                PlanRelationKind::Primitive { .. } => {
+                    Some(UnsupportedTimeScopeAtom::UnknownRelation)
+                }
+            }
+        }
+        AtomPlan::PrimitiveCall {
+            predicate,
+            primitive,
+            ..
+        } => (!time_scoped_primitive_supported(*primitive)).then_some(
+            UnsupportedTimeScopeAtom::Primitive {
+                predicate: predicate.clone(),
+            },
+        ),
+        AtomPlan::Filter { .. } => None,
+        AtomPlan::Aggregate(aggregate) => {
+            return time_scope_unsupported_atom(reference, &aggregate.inner, catalog);
+        }
+        AtomPlan::Negation { inner, .. } => {
+            return time_scope_unsupported_atom(reference, inner, catalog);
+        }
+        AtomPlan::TimeScope {
+            reference: nested,
+            inner,
+            ..
+        } => return time_scope_unsupported_atom(nested, inner, catalog),
+    };
+    atom.map(|atom| UnsupportedTimeScope {
+        reference: reference.to_string(),
+        atom,
+    })
+}
+
+pub(crate) fn time_scoped_stored_relation_supported(relation: &Ident) -> bool {
+    time_scoped_stored_relation_supported_name(relation.as_str())
+}
+
+fn time_scoped_stored_relation_supported_name(relation: &str) -> bool {
+    matches!(relation, HANDLE_RELATION_NAME | SNAPSHOT_RELATION_NAME)
+}
+
+pub(crate) fn time_scoped_primitive_supported(primitive: PrimitivePredicate) -> bool {
+    matches!(
+        primitive,
+        PrimitivePredicate::Terminal
+            | PrimitivePredicate::Active
+            | PrimitivePredicate::Settled
+            | PrimitivePredicate::PipelinePosition
+            | PrimitivePredicate::PipelinePositionFor
+            | PrimitivePredicate::Obligation
+            | PrimitivePredicate::Freshness
+            | PrimitivePredicate::Flux
+    )
+}
 pub(crate) fn planned_rule_group_unsupported_reasons(
     planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
 ) -> BTreeSet<UnsupportedReason> {
     let mut reasons = BTreeSet::new();
     if planned.provenance.is_none() {
         reasons.insert(UnsupportedReason::MissingProvenance);
     }
-    collect_body_unsupported_reasons(&planned.body, &mut reasons);
+    collect_body_unsupported_reasons(&planned.body, catalog, &mut reasons);
     reasons
 }
 
-fn collect_body_unsupported_reasons(body: &RuleBodyPlan, out: &mut BTreeSet<UnsupportedReason>) {
+fn collect_body_unsupported_reasons(
+    body: &RuleBodyPlan,
+    catalog: &PlanCatalog,
+    out: &mut BTreeSet<UnsupportedReason>,
+) {
     for atom in &body.atoms {
-        collect_atom_unsupported_reasons(atom, out);
+        collect_atom_unsupported_reasons(atom, catalog, out);
     }
 }
 
-fn collect_atom_unsupported_reasons(atom: &AtomPlan, out: &mut BTreeSet<UnsupportedReason>) {
+fn collect_atom_unsupported_reasons(
+    atom: &AtomPlan,
+    catalog: &PlanCatalog,
+    out: &mut BTreeSet<UnsupportedReason>,
+) {
     match atom {
         AtomPlan::Scan { .. } | AtomPlan::PrimitiveCall { .. } => {}
         AtomPlan::Filter { comparison } => {
@@ -905,11 +1039,16 @@ fn collect_atom_unsupported_reasons(atom: &AtomPlan, out: &mut BTreeSet<Unsuppor
             if !planned_aggregate_executable(aggregate.function) {
                 out.insert(UnsupportedReason::UnsupportedAggregate(aggregate.function));
             }
-            collect_body_unsupported_reasons(&aggregate.inner, out);
+            collect_body_unsupported_reasons(&aggregate.inner, catalog, out);
         }
-        AtomPlan::Negation { inner, .. } => collect_body_unsupported_reasons(inner, out),
-        AtomPlan::TimeScope { .. } => {
-            out.insert(UnsupportedReason::TimeScope);
+        AtomPlan::Negation { inner, .. } => collect_body_unsupported_reasons(inner, catalog, out),
+        AtomPlan::TimeScope {
+            reference, inner, ..
+        } => {
+            collect_body_unsupported_reasons(inner, catalog, out);
+            if !time_scope_executable(reference, inner, catalog) {
+                out.insert(UnsupportedReason::TimeScope);
+            }
         }
     }
 }
@@ -2025,15 +2164,22 @@ mod tests {
             "supported scalar aggregates should clear the certificate reasons"
         );
 
-        let holding = PredicateRef::parse("holding").expect("predicate parses");
-        let holding_migration = predicate_migration(&planned, &holding).expect("holding stage");
-        assert_eq!(holding_migration.mode, StageMigrationMode::Interpreted);
-        assert!(
-            holding_migration
-                .reasons
-                .contains(&UnsupportedReason::TimeScope),
-            "time-scope exclusions must be explicit"
-        );
+        for predicate in [
+            "primary_entropy",
+            "holding",
+            "regressed",
+            "re_opened",
+            "recently_advanced",
+            "previous_status_population",
+        ] {
+            let predicate = PredicateRef::parse(predicate).expect("predicate parses");
+            let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
+            assert_eq!(migration.mode, StageMigrationMode::Planned);
+            assert!(
+                migration.reasons.is_empty(),
+                "supported time scopes should clear the certificate reasons"
+            );
+        }
     }
 
     #[test]
@@ -2064,6 +2210,42 @@ mod tests {
                     .iter()
                     .any(|reason| matches!(reason, UnsupportedReason::InvalidAggregateArgs(_))),
                 "invalid aggregate argument shape must keep the stage interpreted"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_time_scope_shape_stays_interpreted_by_certificate() {
+        let program = parse_prelude_program(
+            "<time-scope-certificate>",
+            r#"
+            unsupported_stored(from, to) :=
+              at("snapshot:last") { *edge{from: from, to: to} }.
+            unsupported_primitive(h) :=
+              at("snapshot:last") { upstream(h, "x") }.
+            inner(h) := *handle{id: h}.
+            unsupported_derived(h) :=
+              at("snapshot:last") { inner(h) }.
+            ? unsupported_stored(from, to).
+            ? unsupported_primitive(h).
+            ? unsupported_derived(h).
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+
+        for predicate in [
+            "unsupported_stored",
+            "unsupported_primitive",
+            "unsupported_derived",
+        ] {
+            let predicate = PredicateRef::parse(predicate).expect("predicate parses");
+            let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
+            assert_eq!(migration.mode, StageMigrationMode::Interpreted);
+            assert!(
+                migration.reasons.contains(&UnsupportedReason::TimeScope),
+                "unsupported time-scope shape must keep the stage interpreted"
             );
         }
     }

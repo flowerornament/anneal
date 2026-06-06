@@ -132,9 +132,19 @@ pub(crate) struct StoredRelationDescriptor {
     pub(crate) example: &'static str,
 }
 
+pub(crate) const HANDLE_RELATION_NAME: &str = "handle";
+pub(crate) const EDGE_RELATION_NAME: &str = "edge";
+pub(crate) const META_RELATION_NAME: &str = "meta";
+pub(crate) const CONFIG_RELATION_NAME: &str = "config";
+pub(crate) const CONTENT_RELATION_NAME: &str = "content";
+pub(crate) const SPAN_RELATION_NAME: &str = "span";
+pub(crate) const CONCERN_RELATION_NAME: &str = "concern";
+pub(crate) const SNAPSHOT_RELATION_NAME: &str = "snapshot";
+pub(crate) const GENERATION_RELATION_NAME: &str = "generation";
+
 pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
     StoredRelationDescriptor {
-        name: "handle",
+        name: HANDLE_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -157,7 +167,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r#"? *handle{id: h, kind: "file", status: status}."#,
     },
     StoredRelationDescriptor {
-        name: "edge",
+        name: EDGE_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -176,7 +186,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r#"? *edge{from: src, to: dst, kind: "DependsOn"}."#,
     },
     StoredRelationDescriptor {
-        name: "meta",
+        name: META_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -193,7 +203,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r"? *meta{handle: h, key: key, value: value}.",
     },
     StoredRelationDescriptor {
-        name: "content",
+        name: CONTENT_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -212,7 +222,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r"? *content{handle: h, span_id: span, tokens: tokens}.",
     },
     StoredRelationDescriptor {
-        name: "span",
+        name: SPAN_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -231,7 +241,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r"? *span{id: span, handle: h, start_line: start, end_line: end}.",
     },
     StoredRelationDescriptor {
-        name: "concern",
+        name: CONCERN_RELATION_NAME,
         fields: &[
             "corpus",
             "source",
@@ -247,21 +257,21 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
         example: r"? *concern{name: concern, member: h}.",
     },
     StoredRelationDescriptor {
-        name: "config",
+        name: CONFIG_RELATION_NAME,
         fields: &["corpus", "key", "value", "ordinal"],
         doc: "Runtime-populated configuration facts.",
         provenance: "runtime",
         example: r"? *config{key: key, value: value, ordinal: ordinal}.",
     },
     StoredRelationDescriptor {
-        name: "snapshot",
+        name: SNAPSHOT_RELATION_NAME,
         fields: &["corpus", "snapshot", "at", "id", "key", "value"],
         doc: "Runtime-populated historical snapshot facts.",
         provenance: "runtime",
         example: r"? *snapshot{snapshot: snapshot, id: h, key: key, value: value}.",
     },
     StoredRelationDescriptor {
-        name: "generation",
+        name: GENERATION_RELATION_NAME,
         fields: &["corpus", "source", "current"],
         doc: "Runtime-populated current generation per source.",
         provenance: "runtime",

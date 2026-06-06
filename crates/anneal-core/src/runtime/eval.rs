@@ -12,9 +12,14 @@ use serde::Serialize;
 use serde::ser::SerializeMap;
 use smallvec::SmallVec;
 
-use crate::facts::FactIdentity;
 #[cfg(test)]
 use crate::facts::SnapshotFact;
+use crate::facts::{
+    CONFIG_RELATION_NAME as CONFIG_RELATION, CONTENT_RELATION_NAME as CONTENT_RELATION,
+    EDGE_RELATION_NAME as EDGE_RELATION, FactIdentity, HANDLE_RELATION_NAME as HANDLE_RELATION,
+    META_RELATION_NAME as META_RELATION, SNAPSHOT_RELATION_NAME as SNAPSHOT_RELATION,
+    SPAN_RELATION_NAME as SPAN_RELATION,
+};
 #[cfg(test)]
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
@@ -26,8 +31,10 @@ use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanError,
     PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan,
-    StratumPlan, TermPlan, aggregate_allowed_args, plan, planned_aggregate_executable,
-    planned_comparison_executable, planned_rule_group_executable,
+    StratumPlan, TermPlan, UnsupportedTimeScopeAtom, aggregate_allowed_args, plan,
+    planned_aggregate_executable, planned_comparison_executable, planned_rule_group_executable,
+    time_scope_unsupported_atom, time_scoped_primitive_supported,
+    time_scoped_stored_relation_supported,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -3717,13 +3724,6 @@ fn row_i64(row: &NamedRow, field: &str) -> Option<i64> {
     Some(*value)
 }
 
-const HANDLE_RELATION: &str = "handle";
-const EDGE_RELATION: &str = "edge";
-const META_RELATION: &str = "meta";
-const CONFIG_RELATION: &str = "config";
-const CONTENT_RELATION: &str = "content";
-const SPAN_RELATION: &str = "span";
-const SNAPSHOT_RELATION: &str = "snapshot";
 const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
 const CORPUS_FIELD: &str = "corpus";
 const SOURCE_FIELD: &str = "source";
@@ -4439,7 +4439,7 @@ fn run_staged_rule_group(
             }
         }
         if stage.authoritative_planned {
-            let planned_groups = planned_authoritative_for_stage(stage, planned_stratum)?;
+            let planned_groups = planned_authoritative_for_stage(stage, planned_stratum, catalog)?;
             for (planned, predicate) in planned_groups {
                 let tuples =
                     eval_planned_rule_group(planned, catalog, database, warnings, options)?;
@@ -4467,6 +4467,7 @@ fn run_staged_rule_group(
 fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
+    catalog: &PlanCatalog,
 ) -> Result<Vec<(&'a RuleGroupPlan, PredicateRef)>, EvalError> {
     if !stage.authoritative_planned {
         return Ok(Vec::new());
@@ -4492,7 +4493,7 @@ fn planned_authoritative_for_stage<'a>(
             .authoritative_predicates
             .contains(&provenance.predicate)
         {
-            if !planned_rule_group_executable(group) {
+            if !planned_rule_group_executable(group, catalog) {
                 return Err(EvalError::UnsupportedExpression);
             }
             planned.push((group, provenance.predicate.clone()));
@@ -4707,12 +4708,15 @@ fn planned_shadow_for_rule<'a>(
     if planned_groups.next().is_some() {
         return Ok(None);
     }
-    Ok(planned_rule_group_is_supported_shadow_target(planned).then_some(planned))
+    Ok(planned_rule_group_is_supported_shadow_target(planned, catalog).then_some(planned))
 }
 
 #[cfg(feature = "planned-executor-spike")]
-fn planned_rule_group_is_supported_shadow_target(planned: &RuleGroupPlan) -> bool {
-    planned_rule_group_executable(planned)
+fn planned_rule_group_is_supported_shadow_target(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+) -> bool {
+    planned_rule_group_executable(planned, catalog)
 }
 
 #[cfg(feature = "planned-executor-spike")]
@@ -4784,7 +4788,9 @@ fn shadow_planned_stages(
             let Some(group) = stratum.rule_groups.get(*group_index) else {
                 continue;
             };
-            if !group.shadow_planned || !planned_rule_group_is_supported_shadow_target(group) {
+            if !group.shadow_planned
+                || !planned_rule_group_is_supported_shadow_target(group, catalog)
+            {
                 continue;
             }
             let Some(predicate) = planned_group_predicate(group, catalog) else {
@@ -5250,70 +5256,29 @@ fn ensure_planned_snapshot_time_body_supported(
     body: &RuleBodyPlan,
     catalog: &PlanCatalog,
 ) -> Result<(), EvalError> {
-    for atom in &body.atoms {
-        ensure_planned_snapshot_time_atom_supported(reference, atom, catalog)?;
-    }
-    Ok(())
-}
-
-fn ensure_planned_snapshot_time_atom_supported(
-    reference: &str,
-    atom: &AtomPlan,
-    catalog: &PlanCatalog,
-) -> Result<(), EvalError> {
-    match atom {
-        AtomPlan::Scan { relation, .. } => {
-            let relation = catalog
-                .relation(*relation)
-                .ok_or(EvalError::UnsupportedExpression)?;
-            match relation.kind {
-                PlanRelationKind::Stored => {
-                    let relation_name = Ident::new_unchecked(relation.name.clone());
-                    if !time_scoped_stored_relation_supported(&relation_name) {
-                        return Err(EvalError::UnsupportedTimeScopedStoredRelation {
-                            reference: reference.to_string(),
-                            relation: relation_name,
-                        });
-                    }
-                    Ok(())
-                }
-                PlanRelationKind::Derived => {
-                    let predicate = PredicateRef::parse(&relation.name)
-                        .map_err(|_| EvalError::UnsupportedExpression)?;
-                    Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
-                        reference: reference.to_string(),
-                        predicate,
-                    })
-                }
-                PlanRelationKind::Primitive { .. } => Err(EvalError::UnsupportedExpression),
-            }
-        }
-        AtomPlan::PrimitiveCall {
-            predicate,
-            primitive,
-            ..
-        } => {
-            if time_scoped_primitive_supported(*primitive) {
-                Ok(())
-            } else {
-                Err(EvalError::UnsupportedTimeScopedPrimitive {
-                    reference: reference.to_string(),
-                    predicate: predicate.clone(),
+    match time_scope_unsupported_atom(reference, body, catalog) {
+        None => Ok(()),
+        Some(unsupported) => match unsupported.atom {
+            UnsupportedTimeScopeAtom::StoredRelation { relation } => {
+                Err(EvalError::UnsupportedTimeScopedStoredRelation {
+                    reference: unsupported.reference,
+                    relation,
                 })
             }
-        }
-        AtomPlan::Filter { .. } => Ok(()),
-        AtomPlan::Aggregate(aggregate) => {
-            ensure_planned_snapshot_time_body_supported(reference, &aggregate.inner, catalog)
-        }
-        AtomPlan::Negation { inner, .. } => {
-            ensure_planned_snapshot_time_body_supported(reference, inner, catalog)
-        }
-        AtomPlan::TimeScope {
-            reference: nested,
-            inner,
-            ..
-        } => ensure_planned_snapshot_time_body_supported(nested, inner, catalog),
+            UnsupportedTimeScopeAtom::DerivedPredicate { predicate } => {
+                Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
+                    reference: unsupported.reference,
+                    predicate,
+                })
+            }
+            UnsupportedTimeScopeAtom::Primitive { predicate } => {
+                Err(EvalError::UnsupportedTimeScopedPrimitive {
+                    reference: unsupported.reference,
+                    predicate,
+                })
+            }
+            UnsupportedTimeScopeAtom::UnknownRelation => Err(EvalError::UnsupportedExpression),
+        },
     }
 }
 
@@ -6297,10 +6262,6 @@ fn ensure_snapshot_time_body_supported(
     Ok(())
 }
 
-fn time_scoped_stored_relation_supported(relation: &Ident) -> bool {
-    matches!(relation.as_str(), HANDLE_RELATION | SNAPSHOT_RELATION)
-}
-
 fn ensure_snapshot_time_derived_supported(
     reference: &str,
     predicate: &PredicateRef,
@@ -6326,20 +6287,6 @@ fn ensure_snapshot_time_derived_supported(
             predicate: predicate.clone(),
         })
     }
-}
-
-fn time_scoped_primitive_supported(primitive: PrimitivePredicate) -> bool {
-    matches!(
-        primitive,
-        PrimitivePredicate::Terminal
-            | PrimitivePredicate::Active
-            | PrimitivePredicate::Settled
-            | PrimitivePredicate::PipelinePosition
-            | PrimitivePredicate::PipelinePositionFor
-            | PrimitivePredicate::Obligation
-            | PrimitivePredicate::Freshness
-            | PrimitivePredicate::Flux
-    )
 }
 
 fn eval_stored_traced(
@@ -11713,10 +11660,7 @@ release_blocker(code) := issue(code, "error").
         let analyzed = analyze(program).expect("program analyzes");
         let planned = plan(&analyzed).expect("program plans");
         let (rule, catalog) = planned_rule(&planned, "prior_status");
-        assert!(
-            !planned_rule_group_executable(rule),
-            "3a wires planned TimeScope mechanics before the certificate flip"
-        );
+        assert!(planned_rule_group_executable(rule, catalog));
 
         let mut warnings = Vec::new();
         let rows = eval_planned_rule_group(
@@ -11849,6 +11793,33 @@ release_blocker(code) := issue(code, "error").
         assert!(matches!(
             err,
             EvalError::UnsupportedTimeScopedDerivedPredicate { .. }
+        ));
+
+        let nested_input = r#"
+            nested_bad(to) :=
+              at("snapshot:outer") {
+                at("snapshot:inner") { *edge{from: "draft.md", to, kind} }
+              }.
+        "#;
+        let program = parse_program("inline", nested_input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let (rule, catalog) = planned_rule(&planned, "nested_bad");
+        let mut warnings = Vec::new();
+        let err = eval_planned_rule_group(
+            rule,
+            catalog,
+            &time_travel_database(),
+            &mut warnings,
+            &EvalOptions::default(),
+        )
+        .expect_err("planned nested TimeScope preserves unsupported inner reference");
+        assert!(matches!(
+            err,
+            EvalError::UnsupportedTimeScopedStoredRelation {
+                reference,
+                relation,
+            } if reference == "snapshot:inner" && relation.as_str() == "edge"
         ));
     }
 
