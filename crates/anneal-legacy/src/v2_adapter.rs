@@ -1,16 +1,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use anneal_core::runtime::prelude::datalog_string_literal;
 use anneal_core::{
     CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch,
     FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision,
-    SourceName, SpanFact,
+    RuntimeConfigKey, SourceName, SpanFact, runtime_config_declaration_by_key,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use serde_json::Value;
+use serde::Serialize;
 
-use crate::checks;
-use crate::cli;
 use crate::config;
 use crate::extraction::ImplausibleReason;
 use crate::graph::{DiGraph, EdgeKind};
@@ -36,6 +35,100 @@ impl MarkdownLegacyConfig {
         config::apply_runtime_config_facts(&mut config, facts)?;
         Ok(Self { config })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InitMode {
+    DryRun,
+    Write { force: bool },
+}
+
+impl InitMode {
+    pub const fn from_flags(dry_run: bool, force: bool) -> Self {
+        if dry_run {
+            Self::DryRun
+        } else {
+            Self::Write { force }
+        }
+    }
+
+    const fn dry_run(self) -> bool {
+        matches!(self, Self::DryRun)
+    }
+
+    const fn force(self) -> bool {
+        matches!(self, Self::Write { force: true })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct InitOutput {
+    pub body: String,
+    pub written: bool,
+    pub path: String,
+    pub backup_path: Option<String>,
+}
+
+pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutput> {
+    let config_path = root.join("anneal.dl");
+    let legacy_path = root.join("anneal.toml");
+    let unified_exists = config_path.exists();
+    let legacy_exists = legacy_path.exists();
+    if matches!(mode, InitMode::Write { force: false }) && (unified_exists || legacy_exists) {
+        anyhow::bail!("{}", existing_config_message(root));
+    }
+    if (mode.dry_run() || mode.force()) && unified_exists && !legacy_exists {
+        let body = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("failed to read {config_path}"))?;
+        if mode.force() {
+            write_unified_config(root, &body)?;
+        }
+        return Ok(InitOutput {
+            body,
+            written: mode.force(),
+            path: config_path.to_string(),
+            backup_path: None,
+        });
+    }
+    if (mode.dry_run() || mode.force()) && (unified_exists || legacy_exists) {
+        let config = if let Some(legacy_config) = config::load_legacy_config(root.as_std_path())? {
+            legacy_config
+        } else {
+            config::load_unified_config_for_init(root.as_std_path())?
+        };
+        return render_or_write_init_from_config(root, config, mode);
+    }
+
+    let mut config = config::load_config(root.as_std_path())?;
+    let result = parse::build_graph(root, &config)?;
+    let observed_statuses = result
+        .graph
+        .nodes()
+        .filter_map(|(_, handle)| handle.status.clone())
+        .collect::<HashSet<_>>();
+    let (active, terminal) =
+        infer_lifecycle_partition(&observed_statuses, &config, &result.terminal_by_directory);
+    config.convergence.active = active;
+    config.convergence.terminal = terminal;
+    if config.convergence.active.is_empty()
+        && config.convergence.terminal.is_empty()
+        && config.convergence.ordering.is_empty()
+    {
+        config.convergence.active = vec![
+            "draft".to_string(),
+            "current".to_string(),
+            "stable".to_string(),
+        ];
+        config.convergence.terminal = vec!["superseded".to_string(), "archived".to_string()];
+        config.convergence.ordering = vec![
+            "raw".to_string(),
+            "draft".to_string(),
+            "current".to_string(),
+            "stable".to_string(),
+        ];
+    }
+    config.frontmatter.fields = inferred_frontmatter_fields(&result.observed_frontmatter_keys);
+    render_or_write_init_from_config(root, config, mode)
 }
 
 pub fn extract_markdown_facts(
@@ -150,74 +243,473 @@ pub fn extract_markdown_facts_with_legacy_config(
     extract_markdown_facts_with_config(root, corpus, source, generation, &mut config, options)
 }
 
-pub fn health_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {
-    let loaded = LoadedFacts::from_batch(root, batch)?;
-    let diagnostics = loaded.diagnostics();
-    let snap = crate::snapshot::build_snapshot(
-        &loaded.graph,
-        &loaded.lattice,
-        &loaded.config,
-        &diagnostics,
-    );
-    let output = cli::cmd_health(
-        &loaded.graph,
-        &loaded.lattice,
-        &snap,
-        &diagnostics,
-        None,
-        None,
-    );
-    let output = output.with_convergence(None);
-    serde_json::to_value(cli::JsonEnvelope::new(cli::OutputMeta::full(), output))
-        .context("serialize fact-backed health output")
+const METADATA_ONLY_KEYS: &[&str] = &["status", "updated", "title", "description", "tags", "date"];
+
+fn infer_lifecycle_partition(
+    observed_statuses: &HashSet<String>,
+    config: &config::AnnealConfig,
+    terminal_by_directory: &HashSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut active = config
+        .convergence
+        .active
+        .iter()
+        .filter(|status| observed_statuses.contains(*status))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut terminal = config
+        .convergence
+        .terminal
+        .iter()
+        .filter(|status| observed_statuses.contains(*status))
+        .cloned()
+        .collect::<HashSet<_>>();
+    for status in observed_statuses {
+        if active.contains(status) || terminal.contains(status) {
+            continue;
+        }
+        if terminal_by_directory.contains(status) || anneal_core::is_terminal_status(status) {
+            terminal.insert(status.clone());
+        } else {
+            active.insert(status.clone());
+        }
+    }
+    let mut active = active.into_iter().collect::<Vec<_>>();
+    let mut terminal = terminal.into_iter().collect::<Vec<_>>();
+    active.sort();
+    terminal.sort();
+    (active, terminal)
 }
 
-pub fn check_json_from_facts(root: &Utf8Path, batch: &FactBatch) -> Result<Value> {
-    let loaded = LoadedFacts::from_batch(root, batch)?;
-    let diagnostics = loaded.diagnostics();
-    let terminal_files = cli::terminal_file_set(&loaded.graph, &loaded.lattice);
-    let output = cli::cmd_check(
-        diagnostics,
-        &cli::CheckFilters {
-            errors_only: false,
-            suggest: false,
-            stale: false,
-            obligations: false,
-            active_only: true,
-        },
-        &terminal_files,
-    );
-    let json_output = cli::build_check_json_output(
-        &output,
-        &[],
-        &cli::CheckJsonOptions {
-            include_diagnostics: false,
-            diagnostics_limit: 50,
-            include_extractions_summary: false,
-            include_full_extractions: false,
-            full: false,
-        },
-    );
-    serde_json::to_value(json_output).context("serialize fact-backed check output")
+fn inferred_frontmatter_fields(
+    observed_frontmatter_keys: &HashMap<String, usize>,
+) -> HashMap<String, config::FrontmatterFieldMapping> {
+    let default_fm = config::FrontmatterConfig::default();
+    let default_keys = default_fm.fields.keys().cloned().collect::<HashSet<_>>();
+    let mut fields = default_fm.fields;
+    for (key, count) in observed_frontmatter_keys {
+        if default_keys.contains(key) || METADATA_ONLY_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if *count >= 3
+            && let Some(mapping) = propose_mapping(key)
+        {
+            fields.insert(key.clone(), mapping);
+        }
+    }
+    fields
 }
 
-pub fn get_refs_json_from_facts(root: &Utf8Path, batch: &FactBatch, handle: &str) -> Result<Value> {
-    let loaded = LoadedFacts::from_batch(root, batch)?;
-    let snippets = cli::SnippetIndex {
-        files: &loaded.file_snippets,
-        labels: &loaded.label_snippets,
+fn propose_mapping(field_name: &str) -> Option<config::FrontmatterFieldMapping> {
+    let lower = field_name.to_lowercase();
+    match lower.as_str() {
+        "affects" | "impacts" => Some(config::FrontmatterFieldMapping {
+            edge_kind: "DependsOn".to_string(),
+            direction: config::Direction::Inverse,
+        }),
+        "source" | "sources" | "based-on" | "builds-on" | "extends" | "parent" => {
+            Some(config::FrontmatterFieldMapping {
+                edge_kind: "DependsOn".to_string(),
+                direction: config::Direction::Forward,
+            })
+        }
+        "resolves" | "addresses" => Some(config::FrontmatterFieldMapping {
+            edge_kind: "Discharges".to_string(),
+            direction: config::Direction::Forward,
+        }),
+        "references" | "refs" | "related" | "see-also" | "cites" => {
+            Some(config::FrontmatterFieldMapping {
+                edge_kind: "Cites".to_string(),
+                direction: config::Direction::Forward,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn render_or_write_init_from_config(
+    root: &Utf8Path,
+    mut config: config::AnnealConfig,
+    mode: InitMode,
+) -> Result<InitOutput> {
+    let config_path = root.join("anneal.dl");
+    let legacy_path = root.join("anneal.toml");
+    let backup_path = root.join("anneal.toml.legacy");
+    let migrating_legacy = legacy_path.exists();
+    if migrating_legacy && !config_path.exists() {
+        config.handles.force.clear();
+    }
+    let body = render_unified_config(&config);
+    let (written, backup_path) = if mode.dry_run() {
+        (false, None)
+    } else if (config_path.exists() || migrating_legacy) && !mode.force() {
+        anyhow::bail!("{}", existing_config_message(root));
+    } else {
+        write_unified_config(root, &body)?;
+        (true, migrating_legacy.then(|| backup_path.to_string()))
     };
-    let Some(data) = cli::cmd_get(&loaded.graph, &loaded.node_index, snippets, handle) else {
-        bail!("handle {handle:?} not found in fact-backed graph");
-    };
-    let output = cli::build_get_json_output(
-        &data,
-        &cli::GetJsonOptions {
-            mode: cli::GetJsonMode::Refs,
-            limit_edges: 10,
-        },
+    Ok(InitOutput {
+        body,
+        written,
+        path: config_path.to_string(),
+        backup_path,
+    })
+}
+
+fn existing_config_message(root: &Utf8Path) -> String {
+    let config_path = root.join("anneal.dl");
+    let legacy_path = root.join("anneal.toml");
+    match (config_path.exists(), legacy_path.exists()) {
+        (true, true) => format!(
+            "{config_path} and {legacy_path} already exist; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to replace anneal.dl and move anneal.toml aside"
+        ),
+        (true, false) => format!(
+            "{config_path} already exists; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to replace it"
+        ),
+        (false, true) => format!(
+            "{legacy_path} already exists; no files were changed. Rerun `anneal init --dry-run` to preview or `anneal init --force` to write unified anneal.dl and move anneal.toml aside"
+        ),
+        (false, false) => "config already exists".to_string(),
+    }
+}
+
+fn write_unified_config(root: &Utf8Path, body: &str) -> Result<()> {
+    let config_path = root.join("anneal.dl");
+    let legacy_path = root.join("anneal.toml");
+    let backup_path = root.join("anneal.toml.legacy");
+    let temp_path = root.join("anneal.dl.tmp");
+    if legacy_path.exists() && backup_path.exists() {
+        anyhow::bail!("{backup_path} already exists; move it before forcing config migration");
+    }
+    std::fs::write(&temp_path, body)
+        .with_context(|| format!("failed to write temporary config {temp_path}"))?;
+    if legacy_path.exists() {
+        std::fs::rename(&legacy_path, &backup_path)
+            .with_context(|| format!("failed to move {legacy_path} to {backup_path}"))?;
+        if let Err(err) = std::fs::rename(&temp_path, &config_path) {
+            let restore_result = std::fs::rename(&backup_path, &legacy_path);
+            if let Err(restore_err) = restore_result {
+                anyhow::bail!(
+                    "failed to install {config_path}: {err}; also failed to restore {legacy_path}: {restore_err}"
+                );
+            }
+            return Err(err).with_context(|| format!("failed to install {config_path}"));
+        }
+    } else {
+        std::fs::rename(&temp_path, &config_path)
+            .with_context(|| format!("failed to install {config_path}"))?;
+    }
+    Ok(())
+}
+
+fn render_unified_config(config: &config::AnnealConfig) -> String {
+    let mut out = String::new();
+    out.push_str("source md {\n");
+    out.push_str("  file_extension(\".md\").\n");
+    if config.root.is_empty() {
+        out.push_str("  scan_root(\".\").\n");
+    } else {
+        line_call(&mut out, "scan_root", &[config.root.as_str()]);
+    }
+    if !config.exclude.is_empty() {
+        list_call(&mut out, "scan_exclude", &config.exclude);
+    }
+    out.push_str("}\n\n");
+
+    if !config.convergence.ordering.is_empty()
+        || !config.convergence.active.is_empty()
+        || !config.convergence.terminal.is_empty()
+        || !config.convergence.asserts_code.is_empty()
+        || !config.convergence.descriptions.is_empty()
+    {
+        out.push_str("config convergence {\n");
+        if !config.convergence.ordering.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceOrdering,
+                &config.convergence.ordering,
+            );
+        }
+        if !config.convergence.active.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceActive,
+                &config.convergence.active,
+            );
+        }
+        if !config.convergence.terminal.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceTerminal,
+                &config.convergence.terminal,
+            );
+        }
+        if !config.convergence.asserts_code.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceAssertsCode,
+                &config.convergence.asserts_code,
+            );
+        }
+        for (status, description) in sorted_map(&config.convergence.descriptions) {
+            line_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceDescription,
+                &[status, description],
+            );
+        }
+        out.push_str("}\n\n");
+    }
+
+    if !config.handles.force.is_empty()
+        || !config.handles.rejected.is_empty()
+        || !config.handles.linear.is_empty()
+    {
+        out.push_str("config handles {\n");
+        if !config.handles.force.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesForce,
+                &config.handles.force,
+            );
+        }
+        if !config.handles.rejected.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesRejected,
+                &config.handles.rejected,
+            );
+        }
+        if !config.handles.linear.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::HandlesLinear,
+                &config.handles.linear,
+            );
+        }
+        out.push_str("}\n\n");
+    }
+
+    out.push_str("config frontmatter {\n");
+    for (field, mapping) in sorted_map(&config.frontmatter.fields) {
+        let direction = match &mapping.direction {
+            config::Direction::Forward => "forward",
+            config::Direction::Inverse => "inverse",
+        };
+        line_config_call(
+            &mut out,
+            RuntimeConfigKey::FrontmatterField,
+            &[field, mapping.edge_kind.as_str(), direction],
+        );
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("config freshness {\n");
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::FreshnessWarn,
+        config.freshness.warn,
     );
-    serde_json::to_value(output).context("serialize fact-backed get output")
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::FreshnessError,
+        config.freshness.error,
+    );
+    out.push_str("}\n\n");
+
+    out.push_str("config check {\n");
+    if let Some(filter) = &config.check.default_filter {
+        line_config_call(&mut out, RuntimeConfigKey::CheckDefaultFilter, &[filter]);
+    }
+    out.push_str("}\n\n");
+
+    if config.state.history_mode.is_some() {
+        out.push_str("config state {\n");
+        if let Some(mode) = config.state.history_mode {
+            let value = match mode {
+                config::HistoryMode::Xdg => "xdg",
+                config::HistoryMode::Repo => "repo",
+                config::HistoryMode::Off => "off",
+            };
+            line_config_call(&mut out, RuntimeConfigKey::StateHistoryMode, &[value]);
+        }
+        out.push_str("}\n\n");
+    }
+
+    if !config.suppress.codes.is_empty() || !config.suppress.rules.is_empty() {
+        out.push_str("config suppress {\n");
+        if !config.suppress.codes.is_empty() {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::SuppressCode,
+                &config.suppress.codes,
+            );
+        }
+        for rule in &config.suppress.rules {
+            line_config_call(
+                &mut out,
+                RuntimeConfigKey::SuppressRule,
+                &[rule.code.as_str(), rule.target.as_str()],
+            );
+        }
+        out.push_str("}\n\n");
+    }
+
+    for (name, patterns) in sorted_map(&config.concerns) {
+        out.push_str("config concerns {\n");
+        let mut values = Vec::with_capacity(patterns.len() + 1);
+        values.push(name);
+        values.extend(patterns.iter().map(String::as_str));
+        line_config_call(&mut out, RuntimeConfigKey::ConcernsGroup, &values);
+        out.push_str("}\n\n");
+    }
+
+    if !config.impact.traverse.is_empty() {
+        out.push_str("config impact {\n");
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::ImpactTraverse,
+            &config.impact.traverse,
+        );
+        out.push_str("}\n\n");
+    }
+
+    if !config.code_path_root.root.is_empty() {
+        out.push_str("config code_path_root {\n");
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::CodePathRoot,
+            &config.code_path_root.root,
+        );
+        out.push_str("}\n\n");
+    }
+
+    out.push_str("config areas {\n");
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::AreasOrphanThreshold,
+        config.areas.orphan_threshold,
+    );
+    out.push_str("}\n\n");
+
+    out.push_str("config temporal {\n");
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::TemporalRecentDays,
+        config.temporal.recent_days,
+    );
+    out.push_str("}\n\n");
+
+    out.push_str("config orient {\n");
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientEdgeWeight,
+        config.orient.edge_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientLabelWeight,
+        config.orient.label_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientRecencyWeight,
+        config.orient.recency_weight,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientRecencyHalfLifeDays,
+        config.orient.recency_half_life_days,
+    );
+    line_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientBudget,
+        &[config.orient.budget.as_str()],
+    );
+    scalar_config_call(&mut out, RuntimeConfigKey::OrientDepth, config.orient.depth);
+    if !config.orient.pin.is_empty() {
+        list_config_call(&mut out, RuntimeConfigKey::OrientPin, &config.orient.pin);
+    }
+    if !config.orient.exclude.is_empty() {
+        list_config_call(
+            &mut out,
+            RuntimeConfigKey::OrientExclude,
+            &config.orient.exclude,
+        );
+    }
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientStubBytes,
+        config.orient.stub_bytes,
+    );
+    scalar_config_call(
+        &mut out,
+        RuntimeConfigKey::OrientCuratedHubWeight,
+        config.orient.curated_hub_weight,
+    );
+    out.push_str("}\n");
+    out
+}
+
+fn sorted_map<V>(map: &HashMap<String, V>) -> Vec<(&str, &V)> {
+    let mut items = map
+        .iter()
+        .map(|(key, value)| (key.as_str(), value))
+        .collect::<Vec<_>>();
+    items.sort_by_key(|(key, _)| *key);
+    items
+}
+
+fn line_call(out: &mut String, name: &str, values: &[&str]) {
+    out.push_str("  ");
+    out.push_str(name);
+    out.push('(');
+    for (idx, value) in values.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&datalog_string_literal(value));
+    }
+    out.push_str(").\n");
+}
+
+fn list_call(out: &mut String, name: &str, values: &[String]) {
+    out.push_str("  ");
+    out.push_str(name);
+    out.push_str("([");
+    for (idx, value) in values.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&datalog_string_literal(value));
+    }
+    out.push_str("]).\n");
+}
+
+fn scalar_call(out: &mut String, name: &str, value: impl std::fmt::Display) {
+    out.push_str("  ");
+    out.push_str(name);
+    out.push('(');
+    out.push_str(&value.to_string());
+    out.push_str(").\n");
+}
+
+fn line_config_call(out: &mut String, key: RuntimeConfigKey, values: &[&str]) {
+    line_call(out, runtime_config_name(key), values);
+}
+
+fn list_config_call(out: &mut String, key: RuntimeConfigKey, values: &[String]) {
+    list_call(out, runtime_config_name(key), values);
+}
+
+fn scalar_config_call(out: &mut String, key: RuntimeConfigKey, value: impl std::fmt::Display) {
+    scalar_call(out, runtime_config_name(key), value);
+}
+
+fn runtime_config_name(key: RuntimeConfigKey) -> &'static str {
+    runtime_config_declaration_by_key(key)
+        .expect("runtime config key has declaration")
+        .name()
 }
 
 struct RevisionCache<'a> {
@@ -1015,267 +1507,6 @@ fn token_count(text: &str) -> u32 {
     u32::try_from(text.split_whitespace().count()).unwrap_or(u32::MAX)
 }
 
-struct LoadedFacts {
-    graph: DiGraph,
-    node_index: HashMap<String, NodeId>,
-    config: config::AnnealConfig,
-    lattice: crate::lattice::Lattice,
-    pending_edges: Vec<PendingEdge>,
-    section_ref_count: usize,
-    implausible_refs: Vec<parse::ImplausibleRef>,
-    file_snippets: HashMap<String, String>,
-    label_snippets: HashMap<String, String>,
-}
-
-impl LoadedFacts {
-    fn from_batch(root: &Utf8Path, batch: &FactBatch) -> Result<Self> {
-        let config = config::load_config(root.as_std_path())?;
-        let mut graph = DiGraph::new();
-        let meta = metadata_by_handle(batch);
-        let content_sizes = content_sizes(batch);
-        let mut id_to_node = HashMap::new();
-
-        for fact in &batch.handles {
-            let handle = handle_from_fact(fact, &meta, &content_sizes, &id_to_node)?;
-            let node_id = graph.add_node(handle);
-            id_to_node.insert(fact.id.clone(), node_id);
-        }
-
-        let mut pending_edges = Vec::new();
-        let mut section_ref_count = 0usize;
-        for fact in &batch.edges {
-            let Some(&source) = id_to_node.get(&fact.from) else {
-                continue;
-            };
-            if let Some(&target) = id_to_node.get(&fact.to) {
-                graph.add_edge(source, target, EdgeKind::from_name(&fact.kind));
-            } else {
-                if fact.to.starts_with("section:") {
-                    section_ref_count += 1;
-                }
-                pending_edges.push(PendingEdge {
-                    source,
-                    target_identity: fact.to.clone(),
-                    kind: EdgeKind::from_name(&fact.kind),
-                    inverse: false,
-                    line: (fact.line != 0).then_some(fact.line),
-                });
-            }
-        }
-
-        let observed_statuses = batch
-            .handles
-            .iter()
-            .filter_map(|fact| fact.status.clone())
-            .collect();
-        let terminal_by_directory = batch
-            .handles
-            .iter()
-            .filter(|fact| crate::path_conventions::has_terminal_directory_str(&fact.file))
-            .filter_map(|fact| fact.status.clone())
-            .collect();
-        let lattice =
-            crate::lattice::infer_lattice(observed_statuses, &config, &terminal_by_directory);
-        let node_index = crate::resolve::build_node_index(&graph);
-        let (file_snippets, label_snippets) = snippets_from_facts(batch);
-        let implausible_refs = implausible_refs_from_facts(batch);
-
-        Ok(Self {
-            graph,
-            node_index,
-            config,
-            lattice,
-            pending_edges,
-            section_ref_count,
-            implausible_refs,
-            file_snippets,
-            label_snippets,
-        })
-    }
-
-    fn diagnostics(&self) -> Vec<checks::Diagnostic> {
-        let check_input = checks::CheckInput {
-            graph: &self.graph,
-            lattice: &self.lattice,
-            config: &self.config,
-            unresolved_edges: &self.pending_edges,
-            section_ref_count: self.section_ref_count,
-            implausible_refs: self.implausible_refs.as_slice(),
-            cascade_candidates: &HashMap::new(),
-            previous_snapshot: None,
-        };
-        let mut diagnostics = checks::run_checks(&check_input);
-        checks::apply_suppressions(&mut diagnostics, &self.config.suppress);
-        diagnostics
-    }
-}
-
-fn implausible_refs_from_facts(batch: &FactBatch) -> Vec<parse::ImplausibleRef> {
-    batch
-        .meta
-        .iter()
-        .filter(|fact| fact.key == "md.implausible_ref")
-        .filter_map(|fact| {
-            let value = serde_json::from_str::<serde_json::Value>(&fact.value).ok()?;
-            let raw_value = value.get("value")?.as_str()?.to_string();
-            let reason = value
-                .get("reason")
-                .and_then(serde_json::Value::as_str)
-                .and_then(parse_implausible_reason)?;
-            let line = value
-                .get("line")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|line| u32::try_from(line).ok());
-            Some(parse::ImplausibleRef {
-                file: fact.handle.clone(),
-                raw_value,
-                reason,
-                line,
-            })
-        })
-        .collect()
-}
-
-fn parse_implausible_reason(reason: &str) -> Option<ImplausibleReason> {
-    match reason {
-        "absolute path" => Some(ImplausibleReason::AbsolutePath),
-        "wildcard pattern" => Some(ImplausibleReason::WildcardPattern),
-        "comma-separated list" => Some(ImplausibleReason::CommaSeparatedList),
-        "freeform prose" => Some(ImplausibleReason::FreeformProse),
-        _ => None,
-    }
-}
-
-fn metadata_by_handle(batch: &FactBatch) -> HashMap<String, HandleMetadata> {
-    let mut by_handle = HashMap::<String, HandleMetadata>::new();
-    for fact in &batch.meta {
-        let metadata = by_handle.entry(fact.handle.clone()).or_default();
-        match fact.key.as_str() {
-            "updated" => {
-                metadata.updated = chrono::NaiveDate::parse_from_str(&fact.value, "%Y-%m-%d").ok();
-            }
-            "superseded-by" => metadata.superseded_by = Some(fact.value.clone()),
-            "depends-on" => metadata.depends_on.push(fact.value.clone()),
-            "discharges" => metadata.discharges.push(fact.value.clone()),
-            "verifies" => metadata.verifies.push(fact.value.clone()),
-            "purpose" => metadata.purpose = Some(fact.value.clone()),
-            "note" => metadata.note = Some(fact.value.clone()),
-            _ => {}
-        }
-    }
-    by_handle
-}
-
-fn content_sizes(batch: &FactBatch) -> HashMap<String, u32> {
-    batch
-        .content
-        .iter()
-        .filter(|fact| {
-            std::path::Path::new(&fact.handle)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-        })
-        .map(|fact| {
-            (
-                fact.handle.clone(),
-                u32::try_from(fact.text.len()).unwrap_or(u32::MAX),
-            )
-        })
-        .collect()
-}
-
-fn handle_from_fact(
-    fact: &HandleFact,
-    meta: &HashMap<String, HandleMetadata>,
-    content_sizes: &HashMap<String, u32>,
-    id_to_node: &HashMap<String, NodeId>,
-) -> Result<Handle> {
-    let file_path = (!fact.file.is_empty()).then(|| Utf8PathBuf::from(fact.file.clone()));
-    let metadata = meta.get(&fact.id).cloned().unwrap_or_default();
-    let date = fact
-        .date
-        .as_deref()
-        .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
-    let kind = match fact.kind.as_str() {
-        "file" => HandleKind::File(Utf8PathBuf::from(fact.id.clone())),
-        "section" => HandleKind::Section {
-            parent: file_path
-                .as_ref()
-                .and_then(|file| id_to_node.get(file.as_str()).copied())
-                .unwrap_or_else(|| NodeId::new(0)),
-            heading: fact
-                .id
-                .split('#')
-                .nth(1)
-                .unwrap_or(fact.id.as_str())
-                .replace('-', " "),
-        },
-        "label" => {
-            let (prefix, number) = label_parts(&fact.id)
-                .with_context(|| format!("invalid label fact id {}", fact.id))?;
-            HandleKind::Label { prefix, number }
-        }
-        "version" => HandleKind::Version {
-            artifact: file_path
-                .as_ref()
-                .and_then(|file| id_to_node.get(file.as_str()).copied())
-                .unwrap_or_else(|| NodeId::new(0)),
-            version: version_number(&fact.id).unwrap_or(0),
-        },
-        "external" => HandleKind::External {
-            url: fact.id.clone(),
-        },
-        other => bail!("unknown handle fact kind {other:?}"),
-    };
-    Ok(Handle {
-        id: fact.id.clone(),
-        kind,
-        status: fact.status.clone(),
-        file_path,
-        date,
-        size_bytes: content_sizes.get(&fact.id).copied(),
-        metadata,
-    })
-}
-
-fn label_parts(id: &str) -> Option<(String, u32)> {
-    let (prefix, number) = id.rsplit_once('-')?;
-    Some((prefix.to_string(), number.parse().ok()?))
-}
-
-fn version_number(id: &str) -> Option<u32> {
-    id.rsplit_once("-v")?.1.parse().ok()
-}
-
-fn snippets_from_facts(batch: &FactBatch) -> (HashMap<String, String>, HashMap<String, String>) {
-    let kinds = batch
-        .handles
-        .iter()
-        .map(|fact| (fact.id.as_str(), fact.kind.as_str()))
-        .collect::<HashMap<_, _>>();
-    let mut files = HashMap::new();
-    let mut labels = HashMap::new();
-    for span in &batch.spans {
-        if span.summary.is_empty() {
-            continue;
-        }
-        match kinds.get(span.handle.as_str()).copied() {
-            Some("file") => {
-                files
-                    .entry(span.handle.clone())
-                    .or_insert(span.summary.clone());
-            }
-            Some("label") => {
-                labels
-                    .entry(span.handle.clone())
-                    .or_insert(span.summary.clone());
-            }
-            _ => {}
-        }
-    }
-    (files, labels)
-}
-
 #[cfg(test)]
 mod tests {
     use std::process::Command;
@@ -1284,7 +1515,9 @@ mod tests {
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
-    use super::{MarkdownExtractionOptions, area_for, extract_markdown_facts};
+    use super::{
+        InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts, render_or_write_init,
+    };
     use crate::v2_adapter::extract_markdown_facts_with_options;
 
     #[test]
@@ -1293,6 +1526,19 @@ mod tests {
         assert_eq!(area_for("compiler/design.md"), "compiler");
         assert_eq!(area_for("compiler/sub/design.md"), "compiler");
         assert_eq!(area_for(""), "");
+    }
+
+    #[test]
+    fn init_preserves_existing_unified_config_body() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(temp.path()).expect("utf8 tempdir");
+        let body = "source md {\n  file_extension(\".md\").\n  scan_root(\".\").\n}\n\nconfig search_boost {\n  status(\"authoritative\", 1.5).\n}\n";
+        std::fs::write(root.join("anneal.dl"), body).expect("write config");
+
+        let output = render_or_write_init(root, InitMode::DryRun).expect("init dry run");
+
+        assert!(!output.written);
+        assert_eq!(output.body, body);
     }
 
     #[test]

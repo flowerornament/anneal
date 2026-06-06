@@ -117,7 +117,9 @@ version = "0.16.0"
 dependencies = [
  "anneal-core",
  "anneal-legacy",
+ "anyhow",
  "camino",
+ "serde",
  "tempfile",
 ]
 

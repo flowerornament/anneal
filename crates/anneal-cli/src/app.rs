@@ -42,7 +42,7 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         let Some(arg) = arg.to_str() else {
-            return false;
+            return true;
         };
         if matches!(arg, "-e" | "--eval") {
             return true;
@@ -61,15 +61,14 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         }
         if arg == "help" {
             let Some(topic) = iter.next().and_then(|next| next.to_str()) else {
-                return false;
+                return true;
             };
-            return HelpTopic::parse(topic).is_some()
-                || (!topic.starts_with('-') && !is_legacy_surface_command(topic));
+            return HelpTopic::parse(topic).is_some() || !topic.starts_with('-');
         }
         if arg == "check" {
             return true;
         }
-        return !arg.starts_with('-') && !is_legacy_surface_command(arg);
+        return !arg.starts_with('-');
     }
     true
 }
@@ -83,7 +82,17 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
     if let RuntimeCommand::Help { topic } = invocation.command {
         return write_text(io::stdout().lock(), &topic.render());
     }
+    if let RuntimeCommand::Prime = invocation.command {
+        return write_text(io::stdout().lock(), &HelpTopic::Agent.render());
+    }
     invocation.resolve_root()?;
+    if let RuntimeCommand::Init { dry_run, force } = invocation.command {
+        let output = run_init(invocation.root.path(), dry_run, force)?;
+        let stdout = io::stdout();
+        let mode = invocation.output.resolve(stdout.is_terminal());
+        output.write(stdout.lock(), mode)?;
+        return Ok(());
+    }
     let stdin_explain = match &invocation.command {
         RuntimeCommand::Eval {
             query,
@@ -289,6 +298,11 @@ impl Invocation {
 #[derive(Debug, PartialEq, Eq)]
 enum RuntimeCommand {
     Status,
+    Init {
+        dry_run: bool,
+        force: bool,
+    },
+    Prime,
     Context {
         goal: String,
         budget: i64,
@@ -333,6 +347,7 @@ enum RuntimeCommand {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HelpTopic {
     Agent,
+    Init,
     Status,
     Context,
     Search,
@@ -348,6 +363,7 @@ impl HelpTopic {
     fn parse(command: &str) -> Option<Self> {
         Some(match command {
             "agent" => Self::Agent,
+            "init" => Self::Init,
             "status" => Self::Status,
             "context" => Self::Context,
             "search" => Self::Search,
@@ -368,6 +384,20 @@ impl HelpTopic {
 
         let body = match self {
             Self::Agent => unreachable!("agent help returns before static help rendering"),
+            Self::Init => {
+                "\
+Usage: anneal [OPTIONS] init [OPTIONS]
+
+Generate an anneal.dl project declaration from inferred markdown corpus
+structure, or migrate an older anneal.toml to the unified runtime config.
+
+Options:
+      --dry-run                  Print the generated anneal.dl without writing
+      --force                    Replace anneal.dl or migrate anneal.toml
+
+Output: readable config preview at a terminal or with --format=text; JSON object when piped or with --json.
+"
+            }
             Self::Status => {
                 "\
 Usage: anneal [OPTIONS] status
@@ -669,6 +699,11 @@ impl RuntimeCommand {
                 ensure_no_args(rest, "status")?;
                 Ok(Self::Status)
             }
+            "init" => parse_init(rest),
+            "prime" => {
+                ensure_no_args(rest, "prime")?;
+                Ok(Self::Prime)
+            }
             "context" => parse_context(rest),
             "search" => parse_search(rest),
             "read" => parse_read(rest),
@@ -698,6 +733,9 @@ impl RuntimeCommand {
                 Ok(Self::Schema)
             }
             "save" => bail!("{}", retired_save_message()),
+            "anneal" => bail!(
+                "anneal anneal has been retired; bare `anneal` already runs `anneal status`, and goal-less orientation starts there"
+            ),
             "-e" | "--eval" | "eval" => parse_eval(rest),
             other if other.starts_with('-') => bail!("unknown runtime option {other:?}"),
             other => {
@@ -1017,6 +1055,9 @@ impl RuntimeSession {
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
+            RuntimeCommand::Init { .. } | RuntimeCommand::Prime => {
+                bail!("command is handled before runtime session load")
+            }
         }
     }
 
@@ -1227,6 +1268,8 @@ impl RuntimeCommand {
                     | "target_resolved_path"
             ),
             Self::Check
+            | Self::Init { .. }
+            | Self::Prime
             | Self::Search { .. }
             | Self::Context { .. }
             | Self::Read { .. }
@@ -1710,6 +1753,19 @@ enum CommandOutput {
     Status(StatusOutput),
     Context(ContextOutput),
     Text(String),
+}
+
+struct InitCommandOutput {
+    inner: anneal_md::InitOutput,
+}
+
+impl InitCommandOutput {
+    fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
+        match mode {
+            OutputMode::Human => write_init_text(writer, &self.inner),
+            OutputMode::Json | OutputMode::JsonExplicit => write_json_object(writer, &self.inner),
+        }
+    }
 }
 
 struct StatusOutput {
@@ -2221,7 +2277,37 @@ fn render_dynamic_verb_query(query_source: &str, bindings: &[(String, Literal)])
 
 fn write_text<W: Write>(mut writer: W, text: &str) -> Result<()> {
     writer.write_all(text.as_bytes())?;
+    if !text.ends_with('\n') {
+        writer.write_all(b"\n")?;
+    }
     Ok(())
+}
+
+fn write_json_object<W: Write, T: Serialize>(mut writer: W, value: &T) -> Result<()> {
+    serde_json::to_writer(&mut writer, value)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn run_init(root: &Utf8Path, dry_run: bool, force: bool) -> Result<InitCommandOutput> {
+    let mode = anneal_md::InitMode::from_flags(dry_run, force);
+    let inner =
+        anneal_md::render_or_write_init(root, mode).context("failed to initialize anneal.dl")?;
+    Ok(InitCommandOutput { inner })
+}
+
+fn write_init_text<W: Write>(mut writer: W, output: &anneal_md::InitOutput) -> Result<()> {
+    if output.written {
+        writeln!(writer, "Wrote {}", output.path)?;
+        if let Some(path) = &output.backup_path {
+            writeln!(writer, "Moved existing anneal.toml to {path}")?;
+        }
+    } else {
+        writeln!(writer, "anneal.dl")?;
+        writeln!(writer, "dry run — not written")?;
+    }
+    writeln!(writer)?;
+    write_text(writer, &output.body)
 }
 
 fn write_status_text<W: Write>(
@@ -2986,6 +3072,25 @@ fn parse_context(args: &[String]) -> Result<RuntimeCommand> {
     })
 }
 
+fn parse_init(args: &[String]) -> Result<RuntimeCommand> {
+    let mut dry_run = false;
+    let mut force = false;
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            "--force" => force = true,
+            "-h" | "--help" => {
+                return Ok(RuntimeCommand::Help {
+                    topic: HelpTopic::Init,
+                });
+            }
+            other if other.starts_with('-') => bail!("unknown init option {other:?}"),
+            other => bail!("init does not accept positional argument {other:?}"),
+        }
+    }
+    Ok(RuntimeCommand::Init { dry_run, force })
+}
+
 fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
     let mut query = None;
     let mut limit = DEFAULT_SEARCH_LIMIT;
@@ -3271,10 +3376,6 @@ fn is_compatibility_render_flag(arg: &str) -> bool {
         || arg.starts_with("--no-color=")
 }
 
-fn is_legacy_surface_command(arg: &str) -> bool {
-    matches!(arg, "init" | "prime" | "anneal")
-}
-
 fn default_root() -> Result<InferredCorpusRoot> {
     let cwd = current_dir_utf8()?;
     Ok(infer_corpus_root(&cwd))
@@ -3416,7 +3517,7 @@ mod tests {
             "help",
             "release-blockers"
         ])));
-        assert!(!should_handle_args(&os(&["anneal", "anneal"])));
+        assert!(should_handle_args(&os(&["anneal", "anneal"])));
         assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "status"
         ])));
@@ -3470,8 +3571,8 @@ mod tests {
         assert!(should_handle_args(&os(&[
             "anneal", "--area", "compiler", "check"
         ])));
-        assert!(!should_handle_args(&os(&["anneal", "init"])));
-        assert!(!should_handle_args(&os(&["anneal", "prime"])));
+        assert!(should_handle_args(&os(&["anneal", "init"])));
+        assert!(should_handle_args(&os(&["anneal", "prime"])));
         assert!(should_handle_args(&os(&["anneal", "help", "check"])));
         assert!(!should_handle_args(&os(&["anneal", "--help"])));
         assert!(should_handle_args(&os(&["anneal", "check", "--json"])));

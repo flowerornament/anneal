@@ -69,13 +69,6 @@ pub(crate) struct Handle {
 }
 
 impl Handle {
-    /// Whether this handle's status is in the terminal set.
-    pub(crate) fn is_terminal(&self, lattice: &crate::lattice::Lattice) -> bool {
-        self.status
-            .as_ref()
-            .is_some_and(|s| lattice.terminal.contains(s))
-    }
-
     /// Create a File handle.
     pub(crate) fn file(
         path: Utf8PathBuf,

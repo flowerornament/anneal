@@ -217,7 +217,11 @@ impl ImpactConfig {
     /// Returns the default set if `traverse` is empty.
     pub(crate) fn resolve_traverse_set(&self) -> Vec<crate::graph::EdgeKind> {
         if self.traverse.is_empty() {
-            crate::impact::DEFAULT_TRAVERSE.to_vec()
+            vec![
+                crate::graph::EdgeKind::DependsOn,
+                crate::graph::EdgeKind::Supersedes,
+                crate::graph::EdgeKind::Verifies,
+            ]
         } else {
             self.traverse
                 .iter()

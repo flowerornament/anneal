@@ -6,8 +6,47 @@ use anneal_core::{
     default_lexical_search_info, normalize_relative_path,
 };
 use camino::Utf8PathBuf;
+use serde::Serialize;
 
 const SOURCE_NAME: &str = "markdown";
+
+#[derive(Clone, Copy, Debug)]
+pub enum InitMode {
+    DryRun,
+    Write { force: bool },
+}
+
+impl InitMode {
+    pub const fn from_flags(dry_run: bool, force: bool) -> Self {
+        if dry_run {
+            Self::DryRun
+        } else {
+            Self::Write { force }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct InitOutput {
+    pub body: String,
+    pub written: bool,
+    pub path: String,
+    pub backup_path: Option<String>,
+}
+
+pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::Result<InitOutput> {
+    let mode = match mode {
+        InitMode::DryRun => anneal_legacy::v2_adapter::InitMode::DryRun,
+        InitMode::Write { force } => anneal_legacy::v2_adapter::InitMode::Write { force },
+    };
+    let output = anneal_legacy::v2_adapter::render_or_write_init(root, mode)?;
+    Ok(InitOutput {
+        body: output.body,
+        written: output.written,
+        path: output.path,
+        backup_path: output.backup_path,
+    })
+}
 
 /// Markdown `Source` implementation.
 #[derive(Clone, Debug, Default)]

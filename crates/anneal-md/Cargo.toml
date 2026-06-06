@@ -29,6 +29,8 @@ struct_excessive_bools = "allow"
 anneal-legacy = { version = "0.16.0", path = "../anneal-legacy" }
 anneal-core = { path = "../anneal-core" }
 camino = "1.2.2"
+anyhow = "1.0.102"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

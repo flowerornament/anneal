@@ -21,6 +21,7 @@ use crate::facts::{
 };
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
+use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
 #[cfg(test)]
@@ -3680,33 +3681,8 @@ const CANONICAL_PIPELINE_ORDERING: &[&str] = &[
     "stable",
     "authoritative",
 ];
-const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
-    "superseded",
-    "archived",
-    "historical",
-    "prior",
-    "retired",
-    "deprecated",
-    "obsolete",
-    "withdrawn",
-    "cancelled",
-    "canceled",
-    "closed",
-    "resolved",
-    "done",
-    "completed",
-    "incorporated",
-    "digested",
-];
 const CANONICAL_SETTLED_STATUSES: &[&str] =
     &["authoritative", "current", "active", "stable", "living"];
-
-fn is_terminal_status(status: &str) -> bool {
-    let lower = status.to_lowercase();
-    TERMINAL_STATUS_HEURISTICS
-        .iter()
-        .any(|heuristic| lower.contains(heuristic))
-}
 
 fn is_canonical_settled_status(status: &str) -> bool {
     CANONICAL_SETTLED_STATUSES.contains(&status)

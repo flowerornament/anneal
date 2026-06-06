@@ -12,6 +12,7 @@ pub mod hash;
 pub mod history;
 pub mod ids;
 pub(crate) mod ir;
+pub mod lifecycle;
 pub mod metadata;
 pub mod path_policy;
 pub mod policy;
@@ -48,6 +49,7 @@ pub use history::{
     repo_history_path,
 };
 pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+pub use lifecycle::is_terminal_status;
 pub use metadata::CodeTargetMeta;
 pub use path_policy::{RelativePathPolicy, normalize_path_inside_root, normalize_relative_path};
 pub use policy::{
