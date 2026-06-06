@@ -417,6 +417,16 @@ impl TupleDb {
         self.relations.get(&relation)
     }
 
+    #[cfg(feature = "planned-executor-spike")]
+    pub(crate) fn cloned_interner(&self) -> Interner {
+        self.interner.clone()
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    pub(crate) fn cloned_lists(&self) -> ListArena {
+        self.lists.clone()
+    }
+
     pub(crate) fn empty_relation_store(&self, relation: &str) -> Option<RelationStore> {
         let relation_name = self.interner.lookup(relation)?;
         let schema = self.schemas.relation_by_name(relation_name)?;

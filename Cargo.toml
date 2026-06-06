@@ -64,3 +64,4 @@ strip = false
 [features]
 default = []
 dhat-heap = ["dep:dhat"]
+planned-executor-spike = ["anneal-cli/planned-executor-spike"]

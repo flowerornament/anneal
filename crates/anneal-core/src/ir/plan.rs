@@ -96,15 +96,7 @@ pub(crate) enum AtomPlan {
         capability: CapabilityAction,
         demand: DemandPolicy,
     },
-    Aggregate {
-        function: AggregateFunction,
-        inner: Box<RuleBodyPlan>,
-        outer_slots: Vec<SlotId>,
-        args: AggregateArgsPlan,
-        value: ExprPlan,
-        result: ExprPlan,
-        result_slots: Vec<SlotId>,
-    },
+    Aggregate(Box<AggregatePlan>),
     TimeScope {
         reference: String,
         inner: Box<RuleBodyPlan>,
@@ -135,6 +127,19 @@ pub(crate) struct ComparePlan {
     pub(crate) left: ExprPlan,
     pub(crate) op: ComparisonOp,
     pub(crate) right: ExprPlan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AggregatePlan {
+    pub(crate) function: AggregateFunction,
+    pub(crate) inner: Box<RuleBodyPlan>,
+    pub(crate) inner_slots: SlotLayout,
+    pub(crate) outer_to_inner_slots: Vec<(SlotId, SlotId)>,
+    pub(crate) outer_slots: Vec<SlotId>,
+    pub(crate) args: AggregateArgsPlan,
+    pub(crate) value: ExprPlan,
+    pub(crate) result: ExprPlan,
+    pub(crate) result_slots: Vec<SlotId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -786,6 +791,15 @@ fn plan_aggregate(
     }
     inner_vars.extend(outer_slots.vars().iter().cloned());
     let inner_slots = SlotLayout::from_vars(inner_vars);
+    let outer_to_inner_slots = outer_slots
+        .vars()
+        .iter()
+        .filter_map(|var| {
+            let outer = outer_slots.slot(var).ok()?;
+            let inner = inner_slots.slot(var).ok()?;
+            Some((outer, inner))
+        })
+        .collect::<Vec<_>>();
     let synthetic_rank_slot = aggregate_rank_var(aggregate)
         .map(|var| inner_slots.slot(var))
         .transpose()?;
@@ -811,7 +825,7 @@ fn plan_aggregate(
         .filter(|var| outer_slots.vars.contains_key(var))
         .map(|var| outer_slots.slot(&var))
         .collect::<Result<BTreeSet<_>, _>>()?;
-    Ok(AtomPlan::Aggregate {
+    Ok(AtomPlan::Aggregate(Box::new(AggregatePlan {
         function: aggregate.function,
         inner: Box::new(plan_body(
             &aggregate.body,
@@ -819,12 +833,14 @@ fn plan_aggregate(
             &inner_slots,
             query_index,
         )?),
+        inner_slots,
+        outer_to_inner_slots,
         outer_slots: outer_slot_set.into_iter().collect(),
         args,
         value,
         result,
         result_slots: result_slots.into_iter().collect(),
-    })
+    })))
 }
 
 fn plan_aggregate_args(
@@ -1456,7 +1472,7 @@ mod tests {
 
         assert!(atoms.iter().any(|atom| matches!(atom, AtomPlan::Negation { bound_inputs, .. } if !bound_inputs.is_empty())));
         assert!(atoms.iter().any(|atom| matches!(atom, AtomPlan::TimeScope { reference, outer_slots, .. } if reference == "snapshot:last" && !outer_slots.is_empty())));
-        assert!(atoms.iter().any(|atom| matches!(atom, AtomPlan::Aggregate { args, outer_slots, .. } if args.synthetic_rank_slot.is_some() && !outer_slots.is_empty())));
+        assert!(atoms.iter().any(|atom| matches!(atom, AtomPlan::Aggregate(aggregate) if aggregate.args.synthetic_rank_slot.is_some() && !aggregate.outer_slots.is_empty())));
         assert!(
             !ranked_rule
                 .slots

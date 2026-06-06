@@ -21,6 +21,14 @@ use crate::facts::{
 };
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
+#[cfg(feature = "planned-executor-spike")]
+use crate::ir::interner::Interner;
+#[cfg(feature = "planned-executor-spike")]
+use crate::ir::plan::{
+    AggregateArgsPlan, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
+    ExprPlan, LiteralPlan, PlanCatalog, PlanRelationKind, ProgramPlan, RuleBodyPlan, RuleGroupPlan,
+    StratumPlan, TermPlan, plan,
+};
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -61,6 +69,8 @@ use crate::trail::{
 };
 use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::store::{RelationStore, TupleDb, TupleRow};
+#[cfg(feature = "planned-executor-spike")]
+use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
 
@@ -3925,6 +3935,18 @@ pub enum EvalError {
     DivisionByZero,
     #[error("reserved output field '{field}' cannot be bound when explain output is enabled")]
     ReservedExplainField { field: &'static str },
+    #[cfg(feature = "planned-executor-spike")]
+    #[error(
+        "planned executor shadow mismatch for '{predicate}': interpreted={interpreted} planned={planned}"
+    )]
+    PlannedExecutorMismatch {
+        predicate: PredicateRef,
+        interpreted: usize,
+        planned: usize,
+    },
+    #[cfg(feature = "planned-executor-spike")]
+    #[error("planned executor shadow target '{predicate}' had no planned rule group")]
+    PlannedExecutorMissingShadow { predicate: PredicateRef },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -3947,6 +3969,8 @@ impl From<AuthorizationError> for EvalError {
 
 pub struct Evaluator {
     program: AnalyzedProgram,
+    #[cfg(feature = "planned-executor-spike")]
+    planned: ProgramPlan,
     database: Database,
     facts_seeded: bool,
     warnings: Vec<QueryWarning>,
@@ -3963,10 +3987,14 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
+        #[cfg(feature = "planned-executor-spike")]
+        let planned = plan(&program).expect("analyzed program should lower to plan");
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
+            #[cfg(feature = "planned-executor-spike")]
+            planned,
             database,
             facts_seeded: false,
             warnings: Vec::new(),
@@ -3992,7 +4020,9 @@ impl Evaluator {
         predicate_needed: impl Fn(&PredicateRef) -> bool,
     ) -> Result<(), EvalError> {
         let strata = self.program.strata().to_vec();
-        for stratum in strata {
+        for (stratum_index, stratum) in strata.into_iter().enumerate() {
+            #[cfg(not(feature = "planned-executor-spike"))]
+            let _ = stratum_index;
             if !stratum.predicates.iter().any(&predicate_needed) {
                 continue;
             }
@@ -4005,9 +4035,15 @@ impl Evaluator {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+            #[cfg(feature = "planned-executor-spike")]
+            let planned_stratum = self.planned.global.strata.get(stratum_index);
             run_rule_group(
                 &mut self.database,
                 &rules,
+                #[cfg(feature = "planned-executor-spike")]
+                planned_stratum,
+                #[cfg(feature = "planned-executor-spike")]
+                &self.planned.catalog,
                 &mut self.warnings,
                 &self.options,
             )?;
@@ -4060,7 +4096,16 @@ impl Evaluator {
                 .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
                 .cloned()
                 .collect::<Vec<_>>();
-            run_rule_group(&mut database, &rules, &mut warnings, &self.options)?;
+            run_rule_group(
+                &mut database,
+                &rules,
+                #[cfg(feature = "planned-executor-spike")]
+                None,
+                #[cfg(feature = "planned-executor-spike")]
+                &self.planned.catalog,
+                &mut warnings,
+                &self.options,
+            )?;
         }
         let rows = if self.options.explain().is_enabled() {
             let mut bindings = eval_body_traced(
@@ -4188,6 +4233,8 @@ fn collect_global_predicate(
 fn run_rule_group(
     database: &mut Database,
     rules: &[Rule],
+    #[cfg(feature = "planned-executor-spike")] planned_stratum: Option<&StratumPlan>,
+    #[cfg(feature = "planned-executor-spike")] catalog: &PlanCatalog,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
@@ -4199,7 +4246,13 @@ fn run_rule_group(
 
     let mut delta = DeltaMap::new();
     for rule in rules {
+        #[cfg(feature = "planned-executor-spike")]
+        let planned_shadow = planned_shadow_for_rule(planned_stratum, catalog, rule)?;
         let tuples = eval_rule(rule, database, warnings, options)?;
+        #[cfg(feature = "planned-executor-spike")]
+        if let Some(planned) = planned_shadow {
+            shadow_planned_rule_group(planned, catalog, rule, database, options, &tuples)?;
+        }
         insert_new_tuples(database, &rule.head.predicate, tuples, &mut delta);
     }
 
@@ -4383,6 +4436,839 @@ fn insert_new_tuples(
         }
     }
     changed
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_shadow_for_rule<'a>(
+    planned_stratum: Option<&'a StratumPlan>,
+    catalog: &PlanCatalog,
+    rule: &Rule,
+) -> Result<Option<&'a RuleGroupPlan>, EvalError> {
+    if rule.head.predicate.display_name() != "primary_entropy" {
+        return Ok(None);
+    }
+    let Some(stratum) = planned_stratum else {
+        return Err(EvalError::PlannedExecutorMissingShadow {
+            predicate: rule.head.predicate.clone(),
+        });
+    };
+    let planned = stratum
+        .rule_groups
+        .iter()
+        .find(|planned| planned_rule_head_name(planned, catalog) == Some("primary_entropy"))
+        .ok_or_else(|| EvalError::PlannedExecutorMissingShadow {
+            predicate: rule.head.predicate.clone(),
+        })?;
+    Ok(planned_rule_group_is_supported_shadow_target(planned).then_some(planned))
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_rule_head_name<'a>(
+    planned: &RuleGroupPlan,
+    catalog: &'a PlanCatalog,
+) -> Option<&'a str> {
+    planned
+        .head
+        .and_then(|id| catalog.relation(id))
+        .map(|head| head.name.as_str())
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_rule_group_is_supported_shadow_target(planned: &RuleGroupPlan) -> bool {
+    planned
+        .body
+        .atoms
+        .iter()
+        .all(planned_atom_supported_for_shadow)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_atom_supported_for_shadow(atom: &AtomPlan) -> bool {
+    match atom {
+        AtomPlan::Scan { .. } | AtomPlan::Filter { .. } | AtomPlan::PrimitiveCall { .. } => true,
+        AtomPlan::Aggregate(aggregate) => {
+            matches!(
+                aggregate.function,
+                AggregateFunction::TopK | AggregateFunction::Rank
+            ) && aggregate
+                .inner
+                .atoms
+                .iter()
+                .all(planned_atom_supported_for_shadow)
+        }
+        AtomPlan::Negation { inner, .. } => {
+            inner.atoms.iter().all(planned_atom_supported_for_shadow)
+        }
+        AtomPlan::TimeScope { .. } => false,
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn shadow_planned_rule_group(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+    rule: &Rule,
+    database: &Database,
+    options: &EvalOptions,
+    interpreted: &[DerivedTuple],
+) -> Result<(), EvalError> {
+    if options.explain().is_enabled() {
+        return Ok(());
+    }
+    let planned_rows = eval_planned_rule_group(planned, catalog, database, options)?;
+    let planned_tuples = planned_rows
+        .iter()
+        .map(|row| row.tuple.clone())
+        .collect::<BTreeSet<_>>();
+    let interpreted_tuples = interpreted
+        .iter()
+        .map(|row| row.tuple.clone())
+        .collect::<BTreeSet<_>>();
+    if planned_tuples != interpreted_tuples {
+        return Err(EvalError::PlannedExecutorMismatch {
+            predicate: rule.head.predicate.clone(),
+            interpreted: interpreted_tuples.len(),
+            planned: planned_tuples.len(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "planned-executor-spike")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlannedFrame {
+    slots: Vec<Option<PhysicalValue>>,
+}
+
+#[cfg(feature = "planned-executor-spike")]
+impl PlannedFrame {
+    fn empty(slot_count: usize) -> Self {
+        Self {
+            slots: vec![None; slot_count],
+        }
+    }
+
+    fn get(&self, slot: crate::ir::ids::SlotId) -> Option<PhysicalValue> {
+        self.slots.get(slot.index()).and_then(|value| *value)
+    }
+
+    fn set(&mut self, slot: crate::ir::ids::SlotId, value: PhysicalValue) -> bool {
+        let Some(current) = self.slots.get_mut(slot.index()) else {
+            return false;
+        };
+        match current {
+            Some(existing) => *existing == value,
+            slot @ None => {
+                *slot = Some(value);
+                true
+            }
+        }
+    }
+
+    fn overwrite(&mut self, slot: crate::ir::ids::SlotId, value: PhysicalValue) -> bool {
+        let Some(current) = self.slots.get_mut(slot.index()) else {
+            return false;
+        };
+        *current = Some(value);
+        true
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+#[derive(Clone, Debug)]
+struct PlannedValueEnv {
+    interner: Interner,
+    lists: ListArena,
+}
+
+#[cfg(feature = "planned-executor-spike")]
+impl PlannedValueEnv {
+    fn from_database(database: &Database) -> Self {
+        Self {
+            interner: database.tuples.cloned_interner(),
+            lists: database.tuples.cloned_lists(),
+        }
+    }
+
+    fn physical_from_logical(&mut self, value: &Value) -> PhysicalValue {
+        PhysicalValue::from_logical(value, &mut self.interner, &mut self.lists)
+    }
+
+    fn logical(&self, value: PhysicalValue) -> Result<Value, EvalError> {
+        value
+            .to_logical(&self.interner, &self.lists)
+            .ok_or(EvalError::UnsupportedExpression)
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_rule_group(
+    planned: &RuleGroupPlan,
+    catalog: &PlanCatalog,
+    database: &Database,
+    options: &EvalOptions,
+) -> Result<Vec<DerivedTuple>, EvalError> {
+    let mut env = PlannedValueEnv::from_database(database);
+    let bindings = eval_planned_body(
+        &planned.body,
+        vec![PlannedFrame::empty(planned.slots.vars().len())],
+        catalog,
+        database,
+        options,
+        &mut env,
+    )?;
+    bindings
+        .iter()
+        .map(|binding| {
+            Ok(DerivedTuple {
+                tuple: project_planned_head(&planned.head_terms, binding, &env)?,
+                derivation: None,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_body(
+    body: &RuleBodyPlan,
+    mut bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    for atom in &body.atoms {
+        if bindings.is_empty() {
+            break;
+        }
+        bindings = eval_planned_atom(atom, bindings, catalog, database, options, env)?;
+    }
+    Ok(bindings)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_atom(
+    atom: &AtomPlan,
+    bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    match atom {
+        AtomPlan::Scan { relation, patterns } => {
+            eval_planned_scan(*relation, patterns, bindings, catalog, database, env)
+        }
+        AtomPlan::PrimitiveCall {
+            primitive, args, ..
+        } => eval_planned_primitive(*primitive, args, bindings, database, options, env),
+        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, env),
+        AtomPlan::Aggregate(aggregate) => {
+            eval_planned_aggregate(aggregate, bindings, catalog, database, options, env)
+        }
+        AtomPlan::Negation { inner, .. } => {
+            let mut out = Vec::new();
+            for binding in bindings {
+                let matches = eval_planned_body(
+                    inner,
+                    vec![binding.clone()],
+                    catalog,
+                    database,
+                    options,
+                    env,
+                )?;
+                if matches.is_empty() {
+                    out.push(binding);
+                }
+            }
+            Ok(out)
+        }
+        AtomPlan::TimeScope { .. } => Err(EvalError::UnsupportedExpression),
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_scan(
+    relation: crate::ir::ids::RelationId,
+    patterns: &[ColumnPatternPlan],
+    bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let relation_info = catalog
+        .relation(relation)
+        .ok_or(EvalError::UnsupportedExpression)?;
+    match relation_info.kind {
+        PlanRelationKind::Stored => {
+            eval_planned_stored_scan(relation, patterns, bindings, database, env)
+        }
+        PlanRelationKind::Derived => {
+            let predicate = PredicateRef::parse(&relation_info.name)
+                .map_err(|_| EvalError::UnsupportedExpression)?;
+            let relation = database.derived.get(&predicate).ok_or_else(|| {
+                EvalError::UnknownDerivedPredicate {
+                    predicate: predicate.clone(),
+                }
+            })?;
+            eval_planned_derived_scan(relation, patterns, bindings, env)
+        }
+        PlanRelationKind::Primitive { .. } => Err(EvalError::UnsupportedExpression),
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_stored_scan(
+    relation: crate::ir::ids::RelationId,
+    patterns: &[ColumnPatternPlan],
+    bindings: Vec<PlannedFrame>,
+    database: &Database,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let store = database
+        .tuples
+        .relation(relation)
+        .ok_or(EvalError::UnsupportedExpression)?;
+    let mut out = Vec::new();
+    for binding in bindings {
+        let constraints = planned_column_constraints(patterns, &binding);
+        for row in store.candidate_rows(&constraints) {
+            let Some(tuple) = store.row(row) else {
+                continue;
+            };
+            let mut next = binding.clone();
+            let mut matched = true;
+            for pattern in patterns {
+                let Some(value) = tuple.get(pattern.field) else {
+                    matched = false;
+                    break;
+                };
+                if !unify_planned_term(&pattern.term, value, &mut next, env)? {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                out.push(next);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_derived_scan(
+    relation: &DerivedRelation,
+    patterns: &[ColumnPatternPlan],
+    bindings: Vec<PlannedFrame>,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let constraints = planned_tuple_constraints(patterns, &binding, env)?;
+        for tuple in relation.candidate_tuples(&constraints) {
+            let mut next = binding.clone();
+            let mut matched = true;
+            for pattern in patterns {
+                let Some(value) = tuple.0.get(pattern.field.index()) else {
+                    matched = false;
+                    break;
+                };
+                let physical = env.physical_from_logical(value);
+                if !unify_planned_term(&pattern.term, physical, &mut next, env)? {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                out.push(next);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_primitive(
+    primitive: PrimitivePredicate,
+    args: &[CallArgPlan],
+    bindings: Vec<PlannedFrame>,
+    database: &Database,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let mut out = Vec::new();
+    let mut regex_cache = BTreeMap::<String, Regex>::new();
+    for binding in bindings {
+        let constraints = planned_call_constraints(args, &binding, env)?;
+        let tuples =
+            primitive_tuples(primitive, &constraints, database, options, &mut regex_cache)?;
+        for tuple in tuples {
+            let mut next = binding.clone();
+            let mut matched = true;
+            for arg in args {
+                let Some(value) = tuple.0.get(arg.position) else {
+                    matched = false;
+                    break;
+                };
+                let physical = env.physical_from_logical(value);
+                if !unify_planned_term(&arg.term, physical, &mut next, env)? {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                out.push(next);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_filter(
+    comparison: &ComparePlan,
+    bindings: Vec<PlannedFrame>,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let left = eval_planned_expr_logical(&comparison.left, &binding, env)?;
+        let right = eval_planned_expr_logical(&comparison.right, &binding, env)?;
+        if compare(&left, comparison.op, &right)? {
+            out.push(binding);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+#[allow(clippy::too_many_arguments)]
+fn eval_planned_aggregate(
+    aggregate: &AggregatePlan,
+    bindings: Vec<PlannedFrame>,
+    catalog: &PlanCatalog,
+    database: &Database,
+    options: &EvalOptions,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        let mut inner_seed = PlannedFrame::empty(aggregate.inner_slots.vars().len());
+        for (outer, inner) in &aggregate.outer_to_inner_slots {
+            if let Some(value) = binding.get(*outer) {
+                inner_seed.set(*inner, value);
+            }
+        }
+        let inner_rows = eval_planned_body(
+            &aggregate.inner,
+            vec![inner_seed],
+            catalog,
+            database,
+            options,
+            env,
+        )?;
+        match aggregate.function {
+            AggregateFunction::TopK => {
+                out.extend(eval_planned_top_k(
+                    &aggregate.args,
+                    &aggregate.value,
+                    &aggregate.result,
+                    &binding,
+                    &inner_rows,
+                    env,
+                )?);
+            }
+            AggregateFunction::Rank => {
+                out.extend(eval_planned_rank(
+                    &aggregate.args,
+                    &aggregate.value,
+                    &aggregate.result,
+                    &binding,
+                    inner_rows,
+                    env,
+                )?);
+            }
+            AggregateFunction::Count
+            | AggregateFunction::Sum
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::Avg
+            | AggregateFunction::List
+            | AggregateFunction::Set
+            | AggregateFunction::TakeUntil => {
+                return Err(EvalError::UnsupportedAggregate {
+                    function: aggregate.function,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_top_k(
+    args: &AggregateArgsPlan,
+    value: &ExprPlan,
+    result: &ExprPlan,
+    base: &PlannedFrame,
+    rows: &[PlannedFrame],
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let k = args
+        .k
+        .as_ref()
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::TopK,
+            argument: "k",
+        })
+        .and_then(|expr| planned_non_negative_int(expr, base, env))?;
+    if k == 0 {
+        return Ok(Vec::new());
+    }
+    let key = args.key.as_ref().ok_or(EvalError::MissingAggregateArg {
+        function: AggregateFunction::TopK,
+        argument: "key",
+    })?;
+    let limit = usize::try_from(k).unwrap_or(usize::MAX);
+    let mut candidates = Vec::<(Value, PhysicalValue)>::new();
+    for row in rows {
+        let candidate = (
+            eval_planned_expr_logical(key, row, env)?,
+            eval_planned_expr(value, row, env)?,
+        );
+        let insert_at = candidates
+            .binary_search_by(|existing| {
+                existing.0.cmp(&candidate.0).reverse().then_with(|| {
+                    env.logical(existing.1)
+                        .unwrap_or(Value::Null)
+                        .cmp(&env.logical(candidate.1).unwrap_or(Value::Null))
+                })
+            })
+            .unwrap_or_else(|idx| idx);
+        if insert_at < limit {
+            candidates.insert(insert_at, candidate);
+            if candidates.len() > limit {
+                candidates.pop();
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(_, value)| unify_planned_expr(result, value, base, env).transpose())
+        .collect()
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_rank(
+    args: &AggregateArgsPlan,
+    value: &ExprPlan,
+    result: &ExprPlan,
+    base: &PlannedFrame,
+    mut rows: Vec<PlannedFrame>,
+    env: &mut PlannedValueEnv,
+) -> Result<Vec<PlannedFrame>, EvalError> {
+    let key = args.key.as_ref().ok_or(EvalError::MissingAggregateArg {
+        function: AggregateFunction::Rank,
+        argument: "key",
+    })?;
+    let rank_slot = args
+        .synthetic_rank_slot
+        .ok_or(EvalError::MissingAggregateArg {
+            function: AggregateFunction::Rank,
+            argument: "rank",
+        })?;
+    rows.sort_by(|left, right| {
+        let left_key = eval_planned_expr_logical(key, left, env).unwrap_or(Value::Null);
+        let right_key = eval_planned_expr_logical(key, right, env).unwrap_or(Value::Null);
+        right_key
+            .cmp(&left_key)
+            .then_with(|| planned_frame_logical_cmp(left, right, env))
+    });
+    let mut out = Vec::new();
+    let mut current_rank = 0_i64;
+    let mut previous_key = None;
+    for mut row in rows {
+        let key_value = eval_planned_expr_logical(key, &row, env)?;
+        if previous_key.as_ref() != Some(&key_value) {
+            current_rank += 1;
+            previous_key = Some(key_value);
+        }
+        row.overwrite(
+            rank_slot,
+            PhysicalValue::Number(NumberValue::Int(current_rank)),
+        );
+        let value = eval_planned_expr(value, &row, env)?;
+        if let Some(binding) = unify_planned_expr(result, value, base, env)? {
+            out.push(binding);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_column_constraints(
+    patterns: &[ColumnPatternPlan],
+    binding: &PlannedFrame,
+) -> Vec<(crate::ir::ids::FieldId, PhysicalValue)> {
+    patterns
+        .iter()
+        .filter_map(|pattern| {
+            planned_bound_value_for_term(&pattern.term, binding).map(|value| (pattern.field, value))
+        })
+        .collect()
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_tuple_constraints(
+    patterns: &[ColumnPatternPlan],
+    binding: &PlannedFrame,
+    env: &PlannedValueEnv,
+) -> Result<Vec<(usize, Value)>, EvalError> {
+    let mut constraints = Vec::new();
+    for pattern in patterns {
+        if let Some(value) = planned_bound_value_for_term(&pattern.term, binding) {
+            constraints.push((pattern.field.index(), env.logical(value)?));
+        }
+    }
+    Ok(constraints)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_call_constraints(
+    args: &[CallArgPlan],
+    binding: &PlannedFrame,
+    env: &PlannedValueEnv,
+) -> Result<Vec<(usize, Value)>, EvalError> {
+    let mut constraints = Vec::new();
+    for arg in args {
+        if let Some(value) = planned_bound_value_for_term(&arg.term, binding) {
+            constraints.push((arg.position, env.logical(value)?));
+        }
+    }
+    Ok(constraints)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_bound_value_for_term(term: &TermPlan, binding: &PlannedFrame) -> Option<PhysicalValue> {
+    match term {
+        TermPlan::Expr(ExprPlan::Slot(slot)) => binding.get(*slot),
+        TermPlan::Wildcard | TermPlan::Expr(_) => None,
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn unify_planned_term(
+    term: &TermPlan,
+    value: PhysicalValue,
+    binding: &mut PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<bool, EvalError> {
+    match term {
+        TermPlan::Wildcard => Ok(true),
+        TermPlan::Expr(expr) => unify_planned_expr_in_place(expr, value, binding, env),
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn unify_planned_expr(
+    expr: &ExprPlan,
+    value: PhysicalValue,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<Option<PlannedFrame>, EvalError> {
+    let mut next = binding.clone();
+    if unify_planned_expr_in_place(expr, value, &mut next, env)? {
+        Ok(Some(next))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn unify_planned_expr_in_place(
+    expr: &ExprPlan,
+    value: PhysicalValue,
+    binding: &mut PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<bool, EvalError> {
+    match expr {
+        ExprPlan::Slot(slot) => Ok(binding.set(*slot, value)),
+        ExprPlan::Tuple(items) => {
+            let PhysicalValue::List(list) = value else {
+                return Ok(false);
+            };
+            let Some(values) = env.lists.get(list).map(<[PhysicalValue]>::to_vec) else {
+                return Ok(false);
+            };
+            if values.len() != items.len() {
+                return Ok(false);
+            }
+            for (item, value) in items.iter().zip(values) {
+                if !unify_planned_expr_in_place(item, value, binding, env)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(eval_planned_expr(expr, binding, env)? == value),
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_expr(
+    expr: &ExprPlan,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<PhysicalValue, EvalError> {
+    match expr {
+        ExprPlan::Slot(slot) => binding.get(*slot).ok_or(EvalError::UnboundVariable {
+            variable: Ident::new_unchecked(format!("slot{}", slot.index())),
+        }),
+        ExprPlan::Literal(literal) => Ok(physical_from_literal(literal, env)),
+        ExprPlan::Binary { left, op, right } => {
+            let left = eval_planned_expr_logical(left, binding, env)?;
+            let right = eval_planned_expr_logical(right, binding, env)?;
+            let value = eval_planned_binary_values(left, *op, right)?;
+            Ok(env.physical_from_logical(&value))
+        }
+        ExprPlan::Tuple(items) => {
+            let values = items
+                .iter()
+                .map(|item| eval_planned_expr(item, binding, env))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PhysicalValue::List(env.lists.push(values)))
+        }
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_expr_logical(
+    expr: &ExprPlan,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<Value, EvalError> {
+    let physical = eval_planned_expr(expr, binding, env)?;
+    env.logical(physical)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv) -> PhysicalValue {
+    match literal {
+        LiteralPlan::String(value) => PhysicalValue::Sym(env.interner.intern(value)),
+        LiteralPlan::Number(NumberLiteral::Int(value)) => {
+            PhysicalValue::Number(NumberValue::Int(*value))
+        }
+        LiteralPlan::Number(NumberLiteral::Float(value)) => {
+            PhysicalValue::Number(NumberValue::Float(*value))
+        }
+        LiteralPlan::Bool(value) => PhysicalValue::Bool(*value),
+        LiteralPlan::Null => PhysicalValue::Null,
+        LiteralPlan::List(values) => {
+            let values = values
+                .iter()
+                .map(|value| physical_from_literal(value, env))
+                .collect::<Vec<_>>();
+            PhysicalValue::List(env.lists.push(values))
+        }
+    }
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn eval_planned_binary_values(
+    left: Value,
+    op: crate::runtime::ast::ArithmeticOp,
+    right: Value,
+) -> Result<Value, EvalError> {
+    let (Value::Number(left), Value::Number(right)) = (left, right) else {
+        return Err(EvalError::UnsupportedExpression);
+    };
+    let (NumberValue::Int(left), NumberValue::Int(right)) = (left, right) else {
+        return Err(EvalError::UnsupportedExpression);
+    };
+    let value = match op {
+        crate::runtime::ast::ArithmeticOp::Add => left + right,
+        crate::runtime::ast::ArithmeticOp::Sub => left - right,
+        crate::runtime::ast::ArithmeticOp::Mul => left * right,
+        crate::runtime::ast::ArithmeticOp::Div => {
+            if right == 0 {
+                return Err(EvalError::DivisionByZero);
+            }
+            left / right
+        }
+        crate::runtime::ast::ArithmeticOp::Rem => {
+            if right == 0 {
+                return Err(EvalError::DivisionByZero);
+            }
+            left % right
+        }
+    };
+    Ok(Value::Number(NumberValue::Int(value)))
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_non_negative_int(
+    expr: &ExprPlan,
+    binding: &PlannedFrame,
+    env: &mut PlannedValueEnv,
+) -> Result<i64, EvalError> {
+    let Value::Number(NumberValue::Int(value)) = eval_planned_expr_logical(expr, binding, env)?
+    else {
+        return Err(EvalError::InvalidAggregateArg {
+            function: AggregateFunction::TopK,
+            argument: "k",
+        });
+    };
+    if value < 0 {
+        return Err(EvalError::InvalidAggregateArg {
+            function: AggregateFunction::TopK,
+            argument: "k",
+        });
+    }
+    Ok(value)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn planned_frame_logical_cmp(
+    left: &PlannedFrame,
+    right: &PlannedFrame,
+    env: &PlannedValueEnv,
+) -> Ordering {
+    left.slots
+        .iter()
+        .zip(&right.slots)
+        .map(|(left, right)| {
+            let left = left.and_then(|value| env.logical(value).ok());
+            let right = right.and_then(|value| env.logical(value).ok());
+            left.cmp(&right)
+        })
+        .find(|ordering| *ordering != Ordering::Equal)
+        .unwrap_or(Ordering::Equal)
+}
+
+#[cfg(feature = "planned-executor-spike")]
+fn project_planned_head(
+    terms: &[TermPlan],
+    binding: &PlannedFrame,
+    env: &PlannedValueEnv,
+) -> Result<Tuple, EvalError> {
+    terms
+        .iter()
+        .map(|term| match term {
+            TermPlan::Wildcard => Ok(Value::Null),
+            TermPlan::Expr(ExprPlan::Slot(slot)) => binding
+                .get(*slot)
+                .ok_or(EvalError::UnboundVariable {
+                    variable: Ident::new_unchecked(format!("slot{}", slot.index())),
+                })
+                .and_then(|value| env.logical(value)),
+            TermPlan::Expr(expr) => {
+                let mut env = env.clone();
+                eval_planned_expr_logical(expr, binding, &mut env)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Tuple)
 }
 
 fn recursive_atom_indexes(body: &Body, stratum_predicates: &BTreeSet<PredicateRef>) -> Vec<usize> {
@@ -7687,6 +8573,193 @@ mod tests {
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator.run_fixpoint().expect("fixpoint evaluates");
         evaluator.eval_query(&query).expect_err("query errors")
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_rule<'a>(
+        planned: &'a ProgramPlan,
+        predicate: &str,
+    ) -> (&'a RuleGroupPlan, &'a PlanCatalog) {
+        let relation = planned
+            .catalog
+            .predicate_relation(&PredicateRef::parse(predicate).expect("predicate parses"))
+            .expect("planned relation")
+            .id;
+        let rule = planned
+            .global
+            .strata
+            .iter()
+            .flat_map(|stratum| &stratum.rule_groups)
+            .find(|rule| rule.head == Some(relation))
+            .expect("planned rule");
+        (rule, &planned.catalog)
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn derived_tuple_set(database: &Database, predicate: &str) -> BTreeSet<Tuple> {
+        database
+            .derived
+            .get(&PredicateRef::parse(predicate).expect("predicate parses"))
+            .expect("derived relation")
+            .tuples()
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    fn planned_tuple_set(
+        rule: &RuleGroupPlan,
+        catalog: &PlanCatalog,
+        database: &Database,
+    ) -> BTreeSet<Tuple> {
+        eval_planned_rule_group(rule, catalog, database, &EvalOptions::default())
+            .expect("planned rule evaluates")
+            .into_iter()
+            .map(|row| row.tuple)
+            .collect()
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_executor_spike_evaluates_slots_from_catalog_decisions() {
+        let input = r#"
+        active(h) := *handle{id: h, status: "draft"}.
+        candidate(h, score) := *handle{id: h}, active(h), in_degree(h, score).
+        ranked(h, rank) :=
+          (h, rank) = Rank{ key: score, rank: rank :
+            (h, rank) : candidate(h, score)
+          }.
+        "#;
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("a.md", "file", "draft", "", "core"),
+            handle("b.md", "file", "draft", "", "core"),
+            handle("c.md", "file", "stable", "", "core"),
+        ];
+        batch.edges = vec![
+            edge("x.md", "a.md", "DependsOn"),
+            edge("y.md", "a.md", "DependsOn"),
+            edge("z.md", "b.md", "DependsOn"),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("fixture merges");
+        let database = Database::from_store(&store);
+        let mut evaluator = Evaluator::new(analyzed, database);
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+
+        let (candidate, catalog) = planned_rule(&planned, "candidate");
+        assert_eq!(
+            planned_tuple_set(candidate, catalog, evaluator.database()),
+            derived_tuple_set(evaluator.database(), "candidate"),
+            "stored scan + graph primitive + soft-primitive override should match interpreted candidate rows"
+        );
+        let (ranked, catalog) = planned_rule(&planned, "ranked");
+        assert_eq!(
+            planned_tuple_set(ranked, catalog, evaluator.database()),
+            derived_tuple_set(evaluator.database(), "ranked"),
+            "rank aggregate should match interpreted ranked rows"
+        );
+
+        let candidate_atoms = &candidate.body.atoms;
+        assert!(candidate_atoms.iter().any(|atom| {
+            matches!(atom, AtomPlan::Scan { relation, .. }
+                if catalog.relation(*relation).is_some_and(|relation| relation.kind == PlanRelationKind::Stored))
+        }));
+        assert!(candidate_atoms.iter().any(|atom| {
+            matches!(atom, AtomPlan::Scan { relation, .. }
+                if catalog.relation(*relation).is_some_and(|relation| relation.name == "active" && relation.kind == PlanRelationKind::Derived))
+        }));
+        assert!(candidate_atoms.iter().any(|atom| {
+            matches!(
+                atom,
+                AtomPlan::PrimitiveCall {
+                    primitive: PrimitivePredicate::InDegree,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_rank_overwrites_inner_rank_binding_like_interpreter() {
+        let input = r#"
+        seed_rank(99).
+        candidate("a.md", 10).
+        candidate("b.md", 3).
+        ranked(h, rank) :=
+          (h, rank) = Rank{ key: score, rank: rank :
+            (h, rank) : candidate(h, score), seed_rank(rank)
+          }.
+        "#;
+        let program = parse_program("inline", input).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let planned = plan(&analyzed).expect("program plans");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint evaluates");
+
+        let (ranked, catalog) = planned_rule(&planned, "ranked");
+        assert_eq!(
+            planned_tuple_set(ranked, catalog, evaluator.database()),
+            derived_tuple_set(evaluator.database(), "ranked"),
+            "planned Rank must overwrite the synthetic rank slot before projecting the aggregate value"
+        );
+    }
+
+    #[cfg(feature = "planned-executor-spike")]
+    #[test]
+    fn planned_executor_shadow_matches_primary_entropy() {
+        let input = r#"
+        entropy("a.md", "broken_ref").
+        entropy("a.md", "missing_meta").
+        entropy("b.md", "missing_meta").
+        potential_weight("broken_ref", 4).
+        potential_weight("missing_meta", 1).
+        effective_potential_weight(source, weight) := potential_weight(source, weight).
+        entropy_priority("broken_ref", 0).
+        entropy_priority("missing_meta", 6).
+        potential_subject(h) := entropy(h, source).
+        potential(h, energy) :=
+          potential_subject(h),
+          energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
+        primary_entropy(h, source) :=
+          potential(h, energy),
+          (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
+            (source, weight, priority) :
+              entropy(h, source),
+              effective_potential_weight(source, weight),
+              entropy_priority(source, priority)
+          }.
+        "#;
+
+        let rows = evaluate_queries(
+            &format!("{input}\n? primary_entropy(h, source)."),
+            Database::default(),
+        );
+
+        assert_eq!(
+            rows[0],
+            vec![
+                BTreeMap::from([
+                    ("h".to_string(), s("a.md")),
+                    ("source".to_string(), s("broken_ref")),
+                ]),
+                BTreeMap::from([
+                    ("h".to_string(), s("b.md")),
+                    ("source".to_string(), s("missing_meta")),
+                ]),
+            ]
+        );
     }
 
     #[test]
