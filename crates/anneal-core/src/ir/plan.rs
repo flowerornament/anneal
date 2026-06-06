@@ -63,6 +63,50 @@ pub(crate) struct RuleStagePlan {
     pub(crate) authoritative_predicates: BTreeSet<PredicateRef>,
     pub(crate) authoritative_planned: bool,
     pub(crate) shadow_planned: bool,
+    pub(crate) migration: StageMigration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StageMigration {
+    pub(crate) mode: StageMigrationMode,
+    pub(crate) reasons: BTreeSet<UnsupportedReason>,
+}
+
+impl StageMigration {
+    fn planned() -> Self {
+        Self {
+            mode: StageMigrationMode::Planned,
+            reasons: BTreeSet::new(),
+        }
+    }
+
+    fn interpreted(reasons: BTreeSet<UnsupportedReason>) -> Self {
+        Self {
+            mode: StageMigrationMode::Interpreted,
+            reasons,
+        }
+    }
+
+    pub(crate) fn is_planned(&self) -> bool {
+        self.mode == StageMigrationMode::Planned
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageMigrationMode {
+    Planned,
+    Interpreted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum UnsupportedReason {
+    TimeScope,
+    UnsupportedAggregate(AggregateFunction),
+    UnsupportedExpression,
+    UnsupportedComparison(ComparisonOp),
+    MissingProvenance,
+    Recursive,
+    PositiveCycle,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -586,6 +630,10 @@ fn predicate_is_authoritative_planned_target(predicate: &PredicateRef) -> bool {
     AUTHORITATIVE_PLANNED_PREDICATES.contains(&predicate.display_name().as_str())
 }
 
+fn predicate_is_legacy_authoritative_planned_target(predicate: &PredicateRef) -> bool {
+    predicate_is_authoritative_planned_target(predicate)
+}
+
 fn plan_query(
     query_index: usize,
     query: &AnalyzedQuery,
@@ -656,6 +704,7 @@ fn plan_query(
                         authoritative_predicates: BTreeSet::new(),
                         authoritative_planned: false,
                         shadow_planned: false,
+                        migration: StageMigration::interpreted(BTreeSet::new()),
                     }],
                     deltas: Vec::new(),
                 });
@@ -758,11 +807,13 @@ fn plan_rule_stages(
             .filter_map(|predicate| groups_by_predicate.get(predicate))
             .flat_map(|groups| groups.iter().copied())
             .collect::<Vec<_>>();
+        let migration = stage_migration(&rule_group_indexes, rule_groups);
         let authoritative_predicates = ready
             .iter()
             .filter(|predicate| {
-                predicate_is_authoritative_planned_target(predicate)
+                predicate_is_legacy_authoritative_planned_target(predicate)
                     && groups_by_predicate.contains_key(*predicate)
+                    && migration.is_planned()
             })
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -771,19 +822,81 @@ fn plan_rule_stages(
             rule_groups
                 .get(*index)
                 .is_some_and(|group| group.shadow_planned)
-        });
+        }) || migration.is_planned();
         stages.push(RuleStagePlan {
             rule_groups: rule_group_indexes,
             predicates: ready.clone(),
             authoritative_predicates,
             authoritative_planned,
             shadow_planned,
+            migration,
         });
         for predicate in ready {
             remaining.remove(&predicate);
         }
     }
     Ok(stages)
+}
+
+fn stage_migration(rule_group_indexes: &[usize], rule_groups: &[RuleGroupPlan]) -> StageMigration {
+    let mut reasons = BTreeSet::new();
+    for index in rule_group_indexes {
+        let Some(group) = rule_groups.get(*index) else {
+            reasons.insert(UnsupportedReason::UnsupportedExpression);
+            continue;
+        };
+        reasons.extend(planned_rule_group_unsupported_reasons(group));
+    }
+    if reasons.is_empty() {
+        StageMigration::planned()
+    } else {
+        StageMigration::interpreted(reasons)
+    }
+}
+
+pub(crate) fn planned_rule_group_executable(planned: &RuleGroupPlan) -> bool {
+    planned_rule_group_unsupported_reasons(planned).is_empty()
+}
+
+pub(crate) fn planned_rule_group_unsupported_reasons(
+    planned: &RuleGroupPlan,
+) -> BTreeSet<UnsupportedReason> {
+    let mut reasons = BTreeSet::new();
+    if planned.provenance.is_none() {
+        reasons.insert(UnsupportedReason::MissingProvenance);
+    }
+    collect_body_unsupported_reasons(&planned.body, &mut reasons);
+    reasons
+}
+
+fn collect_body_unsupported_reasons(body: &RuleBodyPlan, out: &mut BTreeSet<UnsupportedReason>) {
+    for atom in &body.atoms {
+        collect_atom_unsupported_reasons(atom, out);
+    }
+}
+
+fn collect_atom_unsupported_reasons(atom: &AtomPlan, out: &mut BTreeSet<UnsupportedReason>) {
+    match atom {
+        AtomPlan::Scan { .. } | AtomPlan::PrimitiveCall { .. } => {}
+        AtomPlan::Filter { comparison } => {
+            if comparison.op == ComparisonOp::Matches {
+                out.insert(UnsupportedReason::UnsupportedComparison(comparison.op));
+            }
+        }
+        AtomPlan::Aggregate(aggregate) => {
+            if !matches!(
+                aggregate.function,
+                AggregateFunction::TopK | AggregateFunction::Rank
+            ) {
+                out.insert(UnsupportedReason::UnsupportedAggregate(aggregate.function));
+            }
+            collect_body_unsupported_reasons(&aggregate.inner, out);
+        }
+        AtomPlan::Negation { inner, .. } => collect_body_unsupported_reasons(inner, out),
+        AtomPlan::TimeScope { .. } => {
+            out.insert(UnsupportedReason::TimeScope);
+        }
+    }
 }
 
 fn collect_positive_dependencies(
@@ -1845,6 +1958,43 @@ mod tests {
     }
 
     #[test]
+    fn standard_prelude_migration_policy_explains_planned_and_excluded_stages() {
+        let prelude = PreludeSet::standard()
+            .program()
+            .expect("checked-in prelude parses");
+        let analyzed = analyze(prelude).expect("checked-in prelude analyzes");
+        let planned = plan(&analyzed).expect("checked-in prelude plans");
+
+        let entropy = PredicateRef::parse("entropy").expect("predicate parses");
+        let entropy_migration = predicate_migration(&planned, &entropy).expect("entropy stage");
+        assert_eq!(entropy_migration.mode, StageMigrationMode::Planned);
+        assert!(entropy_migration.reasons.is_empty());
+
+        let potential = PredicateRef::parse("potential").expect("predicate parses");
+        let potential_migration =
+            predicate_migration(&planned, &potential).expect("potential stage");
+        assert_eq!(potential_migration.mode, StageMigrationMode::Interpreted);
+        assert!(
+            potential_migration
+                .reasons
+                .contains(&UnsupportedReason::UnsupportedAggregate(
+                    AggregateFunction::Sum
+                )),
+            "scalar aggregate exclusions must be explicit"
+        );
+
+        let holding = PredicateRef::parse("holding").expect("predicate parses");
+        let holding_migration = predicate_migration(&planned, &holding).expect("holding stage");
+        assert_eq!(holding_migration.mode, StageMigrationMode::Interpreted);
+        assert!(
+            holding_migration
+                .reasons
+                .contains(&UnsupportedReason::TimeScope),
+            "time-scope exclusions must be explicit"
+        );
+    }
+
+    #[test]
     fn all_prelude_files_plan_individually_with_standard_context() {
         let mut statements = PreludeSet::standard()
             .program()
@@ -1930,5 +2080,19 @@ mod tests {
                             .then_some((stratum_index, stage_index))
                     })
             })
+    }
+
+    fn predicate_migration<'a>(
+        planned: &'a ProgramPlan,
+        predicate: &PredicateRef,
+    ) -> Option<&'a StageMigration> {
+        let (stratum_index, stage_index) = predicate_stage(planned, predicate)?;
+        planned
+            .global
+            .strata
+            .get(stratum_index)?
+            .stages
+            .get(stage_index)
+            .map(|stage| &stage.migration)
     }
 }

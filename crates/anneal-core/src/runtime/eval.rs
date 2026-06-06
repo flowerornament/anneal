@@ -22,14 +22,14 @@ use crate::facts::{
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
-#[cfg(feature = "planned-executor-spike")]
-use crate::ir::plan::stratum_has_shadow_planned_target;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, PlanCatalog, PlanRelationKind,
     ProgramPlan, RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StratumPlan, TermPlan,
     plan, stratum_has_authoritative_planned_target,
 };
+#[cfg(feature = "planned-executor-spike")]
+use crate::ir::plan::{planned_rule_group_executable, stratum_has_shadow_planned_target};
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -4693,32 +4693,7 @@ fn planned_shadow_for_rule<'a>(
 
 #[cfg(feature = "planned-executor-spike")]
 fn planned_rule_group_is_supported_shadow_target(planned: &RuleGroupPlan) -> bool {
-    planned
-        .body
-        .atoms
-        .iter()
-        .all(planned_atom_supported_for_shadow)
-}
-
-#[cfg(feature = "planned-executor-spike")]
-fn planned_atom_supported_for_shadow(atom: &AtomPlan) -> bool {
-    match atom {
-        AtomPlan::Scan { .. } | AtomPlan::Filter { .. } | AtomPlan::PrimitiveCall { .. } => true,
-        AtomPlan::Aggregate(aggregate) => {
-            matches!(
-                aggregate.function,
-                AggregateFunction::TopK | AggregateFunction::Rank
-            ) && aggregate
-                .inner
-                .atoms
-                .iter()
-                .all(planned_atom_supported_for_shadow)
-        }
-        AtomPlan::Negation { inner, .. } => {
-            inner.atoms.iter().all(planned_atom_supported_for_shadow)
-        }
-        AtomPlan::TimeScope { .. } => false,
-    }
+    planned_rule_group_executable(planned)
 }
 
 #[cfg(feature = "planned-executor-spike")]

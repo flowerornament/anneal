@@ -670,7 +670,7 @@ pub struct Comparison {
     pub location: SourceLocation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ComparisonOp {
     Eq,
     Ne,
@@ -697,7 +697,7 @@ pub struct Aggregate {
     pub location: SourceLocation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AggregateFunction {
     Count,
     Sum,
