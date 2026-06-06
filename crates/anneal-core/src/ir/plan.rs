@@ -34,6 +34,15 @@ pub(crate) struct QueryPlan {
     pub(crate) plan: Plan,
 }
 
+impl QueryPlan {
+    pub(crate) fn output_group(&self) -> Option<&RuleGroupPlan> {
+        self.plan
+            .strata
+            .last()
+            .and_then(|stratum| stratum.rule_groups.first())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Plan {
     pub(crate) kind: PlanKind,
