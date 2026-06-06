@@ -1313,6 +1313,20 @@ pub(crate) struct ParsedMarkdownFile {
     pub(crate) revision: String,
 }
 
+struct ParsedMarkdownFileScan {
+    relative: Utf8PathBuf,
+    content: String,
+    body: String,
+    body_start_line: u32,
+    frontmatter_scalars: Vec<(String, String)>,
+    revision: String,
+    frontmatter: FrontmatterParseResult,
+    file_date: Option<chrono::NaiveDate>,
+    file_snippet: Option<String>,
+    scan_result: ScanResult,
+    body_refs: Vec<DiscoveredRef>,
+}
+
 /// Split `exclude` entries into plain directory names and glob patterns.
 ///
 /// An entry is treated as a glob pattern if it contains `*`, `?`, `[`, or `/`.
@@ -1355,6 +1369,68 @@ pub(crate) fn build_exclude_sets(exclude: &[String]) -> (Vec<&str>, Option<GlobS
 /// later resolution.
 pub(crate) fn build_graph(root: &Utf8Path, config: &AnnealConfig) -> Result<BuildResult> {
     build_graph_scoped(root, config, &[Utf8PathBuf::from(".")])
+}
+
+fn parse_markdown_file(
+    utf8_path: &Utf8Path,
+    relative: Utf8PathBuf,
+    frontmatter_config: &FrontmatterConfig,
+    code_path_roots: &[String],
+) -> Result<ParsedMarkdownFileScan> {
+    let content = std::fs::read_to_string(utf8_path)
+        .with_context(|| format!("failed to read {utf8_path}"))?;
+
+    let (frontmatter_yaml, body) = split_frontmatter(&content);
+    let file_snippet = extract_file_snippet_from_body(body);
+
+    // Compute frontmatter line count for LineIndex offset calculation.
+    // LineIndex::from_content expects the opening --- plus yaml content lines;
+    // it adds the closing --- itself via +1 in base_line.
+    #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
+    let frontmatter_line_count = frontmatter_yaml.map_or(0, |yaml| {
+        // +1 for the opening --- line only (closing --- handled by LineIndex)
+        yaml.lines().count() as u32 + 1
+    });
+    let body_start_line = if frontmatter_line_count == 0 {
+        1
+    } else {
+        frontmatter_line_count.saturating_add(2)
+    };
+    let frontmatter_scalars = frontmatter_scalars(frontmatter_yaml);
+    let revision = format!("{:016x}", anneal_core::fnv1a_64(content.as_bytes()));
+
+    // D-05: table-driven frontmatter parsing with extensible field mapping
+    // D-07: all_keys returned here to avoid double-parsing YAML
+    let frontmatter = frontmatter_yaml
+        .map(|yaml| parse_frontmatter(yaml, frontmatter_config))
+        .unwrap_or_default();
+
+    let filename = relative.file_name().unwrap_or(relative.as_str());
+    let file_date = resolve_file_date(
+        &frontmatter.metadata,
+        frontmatter.frontmatter_date,
+        filename,
+    );
+
+    // Use pulldown-cmark scanner for production body scanning
+    let line_index = LineIndex::from_content(body, frontmatter_line_count);
+    let (scan_result, body_refs) = scan_file_cmark(body, &relative, &line_index, code_path_roots);
+
+    let body = body.to_string();
+
+    Ok(ParsedMarkdownFileScan {
+        relative,
+        content,
+        body,
+        body_start_line,
+        frontmatter_scalars,
+        revision,
+        frontmatter,
+        file_date,
+        file_snippet,
+        scan_result,
+        body_refs,
+    })
 }
 
 pub(crate) fn build_graph_scoped(
@@ -1451,35 +1527,27 @@ pub(crate) fn build_graph_scoped(
                 .push(relative.clone());
         }
 
-        let content = std::fs::read_to_string(&utf8_path)
-            .with_context(|| format!("failed to read {utf8_path}"))?;
-
-        let (frontmatter_yaml, body) = split_frontmatter(&content);
-        if let Some(snippet) = extract_file_snippet_from_body(body) {
+        let ParsedMarkdownFileScan {
+            relative,
+            content,
+            body,
+            body_start_line,
+            frontmatter_scalars,
+            revision,
+            frontmatter,
+            file_date,
+            file_snippet,
+            mut scan_result,
+            body_refs,
+        } = parse_markdown_file(
+            &utf8_path,
+            relative,
+            &config.frontmatter,
+            &config.code_path_root.root,
+        )?;
+        if let Some(snippet) = file_snippet {
             file_snippets.insert(relative.to_string(), snippet);
         }
-
-        // Compute frontmatter line count for LineIndex offset calculation.
-        // LineIndex::from_content expects the opening --- plus yaml content lines;
-        // it adds the closing --- itself via +1 in base_line.
-        #[allow(clippy::cast_possible_truncation)] // frontmatter line count won't exceed u32::MAX
-        let frontmatter_line_count = frontmatter_yaml.map_or(0, |yaml| {
-            // +1 for the opening --- line only (closing --- handled by LineIndex)
-            yaml.lines().count() as u32 + 1
-        });
-        let body_start_line = if frontmatter_line_count == 0 {
-            1
-        } else {
-            frontmatter_line_count.saturating_add(2)
-        };
-        let frontmatter_scalars = frontmatter_scalars(frontmatter_yaml);
-        let revision = format!("{:016x}", anneal_core::fnv1a_64(content.as_bytes()));
-
-        // D-05: table-driven frontmatter parsing with extensible field mapping
-        // D-07: all_keys returned here to avoid double-parsing YAML
-        let fm = frontmatter_yaml
-            .map(|yaml| parse_frontmatter(yaml, &config.frontmatter))
-            .unwrap_or_default();
 
         let FrontmatterParseResult {
             status,
@@ -1487,8 +1555,8 @@ pub(crate) fn build_graph_scoped(
             field_edges,
             all_keys,
             yaml_failed,
-            frontmatter_date,
-        } = fm;
+            frontmatter_date: _,
+        } = frontmatter;
 
         // §7.2: Track files whose YAML frontmatter was present but malformed.
         if yaml_failed {
@@ -1556,9 +1624,6 @@ pub(crate) fn build_graph_scoped(
             }
         }
 
-        let filename = relative.file_name().unwrap_or(relative.as_str());
-        let file_date = resolve_file_date(&metadata, frontmatter_date, filename);
-
         let file_node = graph.add_node(Handle::file(
             relative.clone(),
             status.clone(),
@@ -1584,10 +1649,6 @@ pub(crate) fn build_graph_scoped(
             graph.add_edge(file_node, external_node, EdgeKind::Cites);
         }
 
-        // Use pulldown-cmark scanner for production body scanning
-        let line_index = LineIndex::from_content(body, frontmatter_line_count);
-        let (mut scan_result, body_refs) =
-            scan_file_cmark(body, &relative, &line_index, &config.code_path_root.root);
         if !scan_result.heading_spans.is_empty() {
             heading_spans.insert(
                 relative.to_string(),
@@ -1651,7 +1712,7 @@ pub(crate) fn build_graph_scoped(
         file_payloads.insert(
             relative.to_string(),
             ParsedMarkdownFile {
-                body: body.to_string(),
+                body,
                 body_start_line,
                 frontmatter_scalars,
                 revision,
@@ -1725,6 +1786,82 @@ mod tests {
 
     fn write_md_file(dir: &std::path::Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).expect("write test file");
+    }
+
+    #[test]
+    fn parse_markdown_file_boundary_matches_build_graph_artifacts() {
+        let tmp = std::env::temp_dir().join("anneal_test_parse_file_boundary");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "source.md",
+            "---\nstatus: draft\nupdated: 2026-01-02\npurpose: Boundary test\ndepends-on: target.md\n---\n# Source\n\nThis incorporates OQ-42.\n\n## Details\nSee guide.md and §4.1.\n",
+        );
+        write_md_file(&tmp, "target.md", "# Target\n");
+        write_md_file(&tmp, "guide.md", "# Guide\n");
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let parsed = parse_markdown_file(
+            &root.join("source.md"),
+            Utf8PathBuf::from("source.md"),
+            &config.frontmatter,
+            &config.code_path_root.root,
+        )
+        .expect("parse file");
+        let result = build_graph(root, &config).expect("build graph");
+
+        let payload = result
+            .file_payloads
+            .get("source.md")
+            .expect("source payload");
+        assert_eq!(payload.body, parsed.body);
+        assert_eq!(payload.body_start_line, parsed.body_start_line);
+        assert_eq!(payload.frontmatter_scalars, parsed.frontmatter_scalars);
+        assert_eq!(payload.revision, parsed.revision);
+        assert_eq!(
+            result.file_snippets.get("source.md"),
+            parsed.file_snippet.as_ref()
+        );
+        assert_eq!(
+            result
+                .heading_spans
+                .get("source.md")
+                .map_or(0, std::vec::Vec::len),
+            parsed.scan_result.heading_spans.len()
+        );
+
+        let source_extraction = result
+            .extractions
+            .iter()
+            .find(|extraction| extraction.file == "source.md")
+            .expect("source extraction");
+        assert_eq!(source_extraction.status, parsed.frontmatter.status);
+        assert_eq!(
+            source_extraction.metadata.updated,
+            parsed.frontmatter.metadata.updated
+        );
+        assert_eq!(
+            source_extraction.metadata.purpose,
+            parsed.frontmatter.metadata.purpose
+        );
+        assert_eq!(
+            source_extraction.metadata.depends_on,
+            parsed.frontmatter.metadata.depends_on
+        );
+        assert!(
+            source_extraction
+                .refs
+                .iter()
+                .any(|reference| reference.raw == "target.md"
+                    && matches!(reference.source, RefSource::Frontmatter { .. }))
+        );
+        assert!(source_extraction.refs.iter().any(
+            |reference| reference.raw == "OQ-42" && matches!(reference.source, RefSource::Body)
+        ));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
