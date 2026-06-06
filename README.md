@@ -600,7 +600,6 @@ crates/
   anneal-lang/     private parser, AST, source spans, loader (publish = false)
   anneal-core/     runtime, facts, store, evaluator, prelude, verbs, trails
   anneal-md/       markdown Source adapter
-  anneal-legacy/   transition bridge for older parser/config behavior
   anneal-cli/      CLI surface over core + adapters
   anneal-mcp/      MCP library surface over core + adapters
 ```
