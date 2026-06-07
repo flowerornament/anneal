@@ -32,6 +32,22 @@ The local `qmd` research-graph query failed with `SQLITE_CANTOPEN` during review
 
 ## Initial Findings
 
+### High: User-Written Function Calls Can Panic The Planned-Only CLI
+
+The language parser accepts expression function calls, and analysis only rejects named function arguments ([analysis.rs:1078](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs:1078), [parser.rs:1542](/Users/morgan/code/anneal/crates/anneal-lang/src/parser.rs:1542)). The planner rejects every `Expr::FunctionCall` as `PlanError::UnsupportedExpression` ([plan.rs:1565](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:1565)). `ensure_planned` then panics because planning failure is treated as impossible after analysis ([eval.rs:4012](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4012)).
+
+Reproduced:
+
+```bash
+./target/debug/anneal -e '? lower("A") = "a".' --format=json
+```
+
+The command panics at `eval.rs:4018` with `analyzed program should plan before planned execution: unsupported expression in planning-only artifact`.
+
+This is the most important miss from the first review. It is a planned-only surface regression class: once the interpreter is retired, `PlanError` can no longer be treated as an internal impossibility for any syntax that parse/analyze still accepts.
+
+Suggested follow-up: either implement the documented expression functions in the planner/evaluator, or reject them during analysis with a normal `StaticError`. Independently, replace the panic in `ensure_planned`/query planning with a user-facing error so unsupported planner gaps cannot crash the CLI.
+
 ### Medium: `Evaluator` Still Treats The Plan As Optional
 
 `Evaluator` stores `planned: Option<ProgramPlan>` and lazily fills it in `ensure_planned` ([eval.rs:3922](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:3922), [eval.rs:4012](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4012)). `eval_query` has a second local planning path when `self.planned` is absent ([eval.rs:4022](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4022)).
@@ -70,6 +86,14 @@ That is compact and avoids bulky fixture churn, but a failure will say "digest d
 
 Suggested follow-up: keep the digest gate, but improve assertion diagnostics by printing the first differing row against a stored expected payload or by writing temporary failure artifacts under `target/`.
 
+### Low: Stale `v2` And `legacy` Language Still Needs A Naming Pass
+
+The one-engine runtime still contains public-facing or near-public comments/docs with old framing, for example `anneal-cli` crate docs say the crate owns runtime commands "while the legacy crate" existed ([lib.rs:1](/Users/morgan/code/anneal/crates/anneal-cli/src/lib.rs:1)), `anneal-core` crate docs still call the substrate "anneal v2" ([lib.rs:1](/Users/morgan/code/anneal/crates/anneal-core/src/lib.rs:1)), and history comments refer to "v2 snapshot" entries ([history.rs:12](/Users/morgan/code/anneal/crates/anneal-core/src/history.rs:12)).
+
+Some `legacy` terms are still correct, especially `anneal.toml` migration handling, so this should not be a blind rename. But after the interpreted/runtime migration, stale `v2` and "legacy crate" language weakens the coherence story and can mislead future reviewers about what still exists.
+
+Suggested follow-up: do a targeted naming pass after the architecture review. Keep compatibility labels where they describe old data formats; remove language that describes already-retired architecture.
+
 ## Review Passes
 
 1. Certificate and executor coherence (`anneal-kbgj.3`)
@@ -91,4 +115,4 @@ Suggested follow-up: keep the digest gate, but improve assertion diagnostics by 
 
 The migration appears directionally sound: the plan/certificate architecture exists, recursive stages are represented explicitly, and the interpreted executor has been removed rather than left as a parallel engine.
 
-The main review pressure is now cleanup of migration-shaped seams, not rollback-level correctness. The two highest-value follow-ups so far are making the evaluator own a mandatory plan and removing the AST-rule bridge from the staged runner.
+The main review pressure is now split. Most findings are cleanup of migration-shaped seams, but the function-call panic is a real user-facing correctness bug and should be handled before treating the planned-only surface as fully hardened. The two highest-value coherence follow-ups remain making the evaluator own a mandatory plan and removing the AST-rule bridge from the staged runner.
