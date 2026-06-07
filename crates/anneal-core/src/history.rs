@@ -9,7 +9,7 @@ use crate::ids::CorpusId;
 use crate::runtime::prelude::PreludeSet;
 use crate::time::snapshot_days_since_epoch;
 
-/// One append-only v2 snapshot entry in `.anneal/history.jsonl`.
+/// One append-only snapshot entry in `.anneal/history.jsonl`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotEntry {
     pub snapshot: String,
@@ -126,12 +126,12 @@ pub struct HistoryWarning {
     pub message: String,
 }
 
-/// Repository-local v2 history path.
+/// Repository-local snapshot history path.
 pub fn repo_history_path(root: &Utf8Path) -> Utf8PathBuf {
     root.join(".anneal/history.jsonl")
 }
 
-/// Append one v2 snapshot entry as a single JSON line.
+/// Append one snapshot entry as a single JSON line.
 pub fn append_snapshot_entry(root: &Utf8Path, entry: &SnapshotEntry) -> Result<(), HistoryError> {
     validate_snapshot_entry(entry).map_err(HistoryError::InvalidEntry)?;
 
@@ -167,7 +167,7 @@ pub enum SnapshotAppendOutcome {
     SkippedDuplicate,
 }
 
-/// Append one v2 snapshot entry while keeping only the latest `max_entries`.
+/// Append one snapshot entry while keeping only the latest `max_entries`.
 ///
 /// If the latest valid entry already captures the same corpus/prelude/facts,
 /// the new timestamp is ignored. This lets frequent automatic snapshots avoid
@@ -231,7 +231,7 @@ fn write_snapshot_entries(
     })
 }
 
-/// Read repository-local v2 snapshot history.
+/// Read repository-local snapshot history.
 ///
 /// Missing history returns an empty history. Unparseable lines are skipped and
 /// reported as structured warnings so a truncated append cannot poison all

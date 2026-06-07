@@ -1,4 +1,4 @@
-//! Dynamic rule-layer runtime for anneal v2.
+//! Dynamic rule-layer runtime for anneal.
 //!
 //! The runtime treats source facts as immutable stored relations and
 //! derives query relations by fixed point. Engine-derived primitives may

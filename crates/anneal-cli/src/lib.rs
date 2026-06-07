@@ -1,7 +1,7 @@
 //! CLI surface crate for anneal.
 //!
-//! This crate owns the programmable runtime commands while the legacy crate
-//! keeps the compatibility corpus-health surface available.
+//! This crate owns the programmable runtime commands and renders their
+//! user-facing CLI output.
 
 pub mod app;
 mod context;

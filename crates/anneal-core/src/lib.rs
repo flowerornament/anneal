@@ -1,4 +1,4 @@
-//! Core substrate contracts for anneal v2.
+//! Core substrate contracts for anneal.
 //!
 //! This crate owns source-agnostic runtime types: source extraction,
 //! stored relation facts, actor/cancellation context, and generation
