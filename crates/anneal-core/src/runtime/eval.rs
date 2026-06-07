@@ -29,7 +29,7 @@ use crate::ir::interner::Interner;
 use crate::ir::plan::{
     AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
     CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, OrderKeyPlan, OutputPlan,
-    PlanCatalog, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
+    PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
     RuleProvenance, RuleStagePlan, StageExecution, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
     plan, planned_aggregate_executable, planned_comparison_executable, time_scope_unsupported_atom,
 };
@@ -53,7 +53,7 @@ use crate::retrieval::{
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     AggregateFunction, Atom, Body, ComparisonOp, Expr, Head, Ident, Literal, NegatedAtom,
-    NumberLiteral, OrderDirection, PredicateRef, Rule, SourceLocation, Term,
+    NumberLiteral, OrderDirection, PredicateRef, SourceLocation, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
@@ -3905,8 +3905,8 @@ pub enum EvalError {
     Io(#[from] io::Error),
 }
 
-impl From<crate::ir::plan::PlanError> for EvalError {
-    fn from(error: crate::ir::plan::PlanError) -> Self {
+impl From<PlanError> for EvalError {
+    fn from(error: PlanError) -> Self {
         Self::PlannedExecutorPlanning {
             error: error.to_string(),
         }
@@ -3931,7 +3931,7 @@ impl From<AuthorizationError> for EvalError {
 
 pub struct Evaluator {
     program: AnalyzedProgram,
-    planned: Option<ProgramPlan>,
+    planned: Result<ProgramPlan, PlanError>,
     database: Database,
     facts_seeded: bool,
     warnings: Vec<QueryWarning>,
@@ -3948,11 +3948,12 @@ impl Evaluator {
         mut database: Database,
         options: EvalOptions,
     ) -> Self {
+        let planned = plan(&program);
         database.install_program_introspection(&program);
         database.ensure_derived(program.predicates().cloned());
         Self {
             program,
-            planned: None,
+            planned,
             database,
             facts_seeded: false,
             warnings: Vec::new(),
@@ -3977,39 +3978,33 @@ impl Evaluator {
         &mut self,
         predicate_needed: impl Fn(&PredicateRef) -> bool,
     ) -> Result<(), EvalError> {
-        self.ensure_planned()?;
+        let planned = self
+            .planned
+            .as_ref()
+            .map_err(|error| EvalError::from(error.clone()))?;
         let strata = self.program.strata().to_vec();
         for (stratum_index, stratum) in strata.into_iter().enumerate() {
-            if !stratum.predicates.iter().any(&predicate_needed) {
-                continue;
-            }
-            let rules = self
-                .program
-                .rules()
-                .filter(|rule| {
-                    stratum.predicates.contains(&rule.head.predicate)
-                        && predicate_needed(&rule.head.predicate)
-                })
+            let active_predicates = stratum
+                .predicates
+                .iter()
+                .filter(|predicate| predicate_needed(predicate))
                 .cloned()
-                .collect::<Vec<_>>();
-            if rules.is_empty() {
+                .collect::<BTreeSet<_>>();
+            if active_predicates.is_empty() {
                 continue;
             }
-            let planned = self
-                .planned
-                .as_ref()
-                .expect("planned program exists after ensure_planned");
             let planned_stratum = planned.global.strata.get(stratum_index);
             let planned_stratum =
                 planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                    predicate: rules
-                        .first()
-                        .map(|rule| rule.head.predicate.clone())
+                    predicate: active_predicates
+                        .iter()
+                        .next()
+                        .cloned()
                         .expect("non-empty rule group"),
                 })?;
             run_rule_group(
                 &mut self.database,
-                &rules,
+                &active_predicates,
                 planned_stratum,
                 &planned.catalog,
                 &mut self.warnings,
@@ -4019,25 +4014,14 @@ impl Evaluator {
         Ok(())
     }
 
-    fn ensure_planned(&mut self) -> Result<(), EvalError> {
-        if self.planned.is_some() {
-            return Ok(());
-        }
-        self.planned = Some(plan(&self.program)?);
-        Ok(())
-    }
-
     pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
         self.options.authorize_eval()?;
         let query_ast = query.query();
         let mut warnings = self.warnings.clone();
-        let owned_plan;
-        let planned = if let Some(planned) = self.planned.as_ref() {
-            planned
-        } else {
-            owned_plan = plan(&self.program)?;
-            &owned_plan
-        };
+        let planned = self
+            .planned
+            .as_ref()
+            .map_err(|error| EvalError::from(error.clone()))?;
         let query_plan = self
             .program
             .queries()
@@ -4057,24 +4041,20 @@ impl Evaluator {
         database.ensure_derived(query.local_predicates().cloned());
         database.install_query_introspection(query);
         for (stratum_index, stratum) in query.local_strata().iter().enumerate() {
-            let rules = query_ast
-                .local_rules
-                .iter()
-                .filter(|rule| stratum.predicates.contains(&rule.head.predicate))
-                .cloned()
-                .collect::<Vec<_>>();
+            let active_predicates = stratum.predicates.iter().cloned().collect::<BTreeSet<_>>();
             let planned_stratum =
                 query_plan.and_then(|query_plan| query_plan.plan.strata.get(stratum_index));
             let planned_stratum =
                 planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                    predicate: rules
-                        .first()
-                        .map(|rule| rule.head.predicate.clone())
+                    predicate: active_predicates
+                        .iter()
+                        .next()
+                        .cloned()
                         .expect("non-empty local rule group"),
                 })?;
             run_rule_group(
                 &mut database,
-                &rules,
+                &active_predicates,
                 planned_stratum,
                 &planned.catalog,
                 &mut warnings,
@@ -4183,52 +4163,43 @@ fn collect_global_predicate(
 
 fn run_rule_group(
     database: &mut Database,
-    rules: &[Rule],
+    active_predicates: &BTreeSet<PredicateRef>,
     planned_stratum: &StratumPlan,
     catalog: &PlanCatalog,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    database.ensure_derived(rules.iter().map(|rule| rule.head.predicate.clone()));
-    run_staged_rule_group(database, rules, planned_stratum, catalog, warnings, options)
+    database.ensure_derived(active_predicates.iter().cloned());
+    run_staged_rule_group(
+        database,
+        active_predicates,
+        planned_stratum,
+        catalog,
+        warnings,
+        options,
+    )
 }
 
 fn run_staged_rule_group(
     database: &mut Database,
-    rules: &[Rule],
+    active_predicates: &BTreeSet<PredicateRef>,
     planned_stratum: &StratumPlan,
     catalog: &PlanCatalog,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    let predicate = rules
-        .first()
-        .map(|rule| rule.head.predicate.clone())
-        .ok_or(EvalError::UnsupportedExpression)?;
-    let mut rules_by_predicate = BTreeMap::<PredicateRef, Vec<&Rule>>::new();
-    for rule in rules {
-        rules_by_predicate
-            .entry(rule.head.predicate.clone())
-            .or_default()
-            .push(rule);
+    if active_predicates.is_empty() {
+        return Err(EvalError::UnsupportedExpression);
     }
     for stage in &planned_stratum.stages {
-        if stage
-            .predicates
-            .iter()
-            .all(|predicate| !rules_by_predicate.contains_key(predicate))
-        {
+        let Some(stage_predicate) =
+            active_stage_predicate(stage, planned_stratum, active_predicates)?
+        else {
             continue;
-        }
+        };
         if !stage.authoritative_planned {
-            let predicate = stage
-                .predicates
-                .iter()
-                .find(|predicate| rules_by_predicate.contains_key(*predicate))
-                .cloned()
-                .unwrap_or_else(|| predicate.clone());
             return Err(EvalError::PlannedExecutorUnsupported {
-                predicate,
+                predicate: stage_predicate,
                 reasons: format!("{:?}", stage.migration.reasons),
             });
         }
@@ -4238,14 +4209,14 @@ fn run_staged_rule_group(
                 stage,
                 planned_stratum,
                 catalog,
-                &rules_by_predicate,
+                active_predicates,
                 warnings,
                 options,
             )?;
             continue;
         }
         let planned_groups =
-            planned_authoritative_for_stage(stage, planned_stratum, &rules_by_predicate)?;
+            planned_authoritative_for_stage(stage, planned_stratum, active_predicates)?;
         for (_, planned, predicate) in planned_groups {
             let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
             insert_tuples(database, &predicate, tuples);
@@ -4254,16 +4225,37 @@ fn run_staged_rule_group(
     Ok(())
 }
 
+fn active_stage_predicate(
+    stage: &RuleStagePlan,
+    planned_stratum: &StratumPlan,
+    active_predicates: &BTreeSet<PredicateRef>,
+) -> Result<Option<PredicateRef>, EvalError> {
+    for group_index in &stage.rule_groups {
+        let group = planned_stratum
+            .rule_groups
+            .get(*group_index)
+            .ok_or(EvalError::UnsupportedExpression)?;
+        let Some(provenance) = &group.provenance else {
+            continue;
+        };
+        if active_predicates.contains(&provenance.predicate) {
+            return Ok(Some(provenance.predicate.clone()));
+        }
+    }
+    Ok(None)
+}
+
 fn run_planned_recursive_stage(
     database: &mut Database,
     stage: &RuleStagePlan,
     planned_stratum: &StratumPlan,
     catalog: &PlanCatalog,
-    active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
+    active_predicates: &BTreeSet<PredicateRef>,
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    let planned_groups = planned_authoritative_for_stage(stage, planned_stratum, active_rules)?;
+    let planned_groups =
+        planned_authoritative_for_stage(stage, planned_stratum, active_predicates)?;
     let mut delta = DeltaMap::new();
     for (_, planned, predicate) in &planned_groups {
         let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
@@ -4304,7 +4296,7 @@ fn run_planned_recursive_stage(
 fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
-    active_rules: &BTreeMap<PredicateRef, Vec<&Rule>>,
+    active_predicates: &BTreeSet<PredicateRef>,
 ) -> Result<Vec<(usize, &'a RuleGroupPlan, PredicateRef)>, EvalError> {
     let predicate = stage
         .authoritative_predicates
@@ -4323,7 +4315,7 @@ fn planned_authoritative_for_stage<'a>(
         let Some(provenance) = &group.provenance else {
             continue;
         };
-        if !active_rules.contains_key(&provenance.predicate) {
+        if !active_predicates.contains(&provenance.predicate) {
             continue;
         }
         if stage
@@ -8120,8 +8112,8 @@ mod tests {
         );
         evaluator.run_fixpoint().expect("fixpoint evaluates");
         assert!(
-            evaluator.planned.is_some(),
-            "mixed diagnostic/entropy stratum must install the plan on fixpoint demand so entropy can run authoritatively"
+            evaluator.planned.is_ok(),
+            "mixed diagnostic/entropy stratum must have a plan so entropy can run authoritatively"
         );
 
         let output = evaluate_query_output_with_options(
