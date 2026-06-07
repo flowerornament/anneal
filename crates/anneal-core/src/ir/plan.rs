@@ -580,7 +580,7 @@ pub(crate) enum PlanError {
     },
     #[error("unplanned variable '{variable}'")]
     UnplannedVariable { variable: Ident },
-    #[error("unsupported expression in planning-only artifact")]
+    #[error("unsupported expression")]
     UnsupportedExpression,
 }
 

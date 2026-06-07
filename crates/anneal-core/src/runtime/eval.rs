@@ -3899,8 +3899,18 @@ pub enum EvalError {
         predicate: PredicateRef,
         reasons: String,
     },
+    #[error("planned executor could not lower analyzed program: {error}")]
+    PlannedExecutorPlanning { error: String },
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+impl From<crate::ir::plan::PlanError> for EvalError {
+    fn from(error: crate::ir::plan::PlanError) -> Self {
+        Self::PlannedExecutorPlanning {
+            error: error.to_string(),
+        }
+    }
 }
 
 impl From<AuthorizationError> for EvalError {
@@ -3967,7 +3977,7 @@ impl Evaluator {
         &mut self,
         predicate_needed: impl Fn(&PredicateRef) -> bool,
     ) -> Result<(), EvalError> {
-        self.ensure_planned();
+        self.ensure_planned()?;
         let strata = self.program.strata().to_vec();
         for (stratum_index, stratum) in strata.into_iter().enumerate() {
             if !stratum.predicates.iter().any(&predicate_needed) {
@@ -4009,14 +4019,12 @@ impl Evaluator {
         Ok(())
     }
 
-    fn ensure_planned(&mut self) {
+    fn ensure_planned(&mut self) -> Result<(), EvalError> {
         if self.planned.is_some() {
-            return;
+            return Ok(());
         }
-        self.planned = match plan(&self.program) {
-            Ok(planned) => Some(planned),
-            Err(error) => panic!("analyzed program should plan before planned execution: {error}"),
-        };
+        self.planned = Some(plan(&self.program)?);
+        Ok(())
     }
 
     pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
@@ -4027,12 +4035,7 @@ impl Evaluator {
         let planned = if let Some(planned) = self.planned.as_ref() {
             planned
         } else {
-            owned_plan = match plan(&self.program) {
-                Ok(planned) => planned,
-                Err(error) => {
-                    panic!("analyzed program should plan before planned query execution: {error}")
-                }
-            };
+            owned_plan = plan(&self.program)?;
             &owned_plan
         };
         let query_plan = self
@@ -7696,6 +7699,17 @@ mod tests {
         let analyzed = analyze(program).expect("program analyzes");
         let mut evaluator = Evaluator::new(analyzed, database);
         evaluator.run_fixpoint().expect_err("fixpoint errors")
+    }
+
+    fn assert_planning_error(error: &EvalError) {
+        assert!(
+            matches!(
+                error,
+                EvalError::PlannedExecutorPlanning { error }
+                    if error.contains("unsupported expression")
+            ),
+            "expected planned executor planning error, got {error:?}"
+        );
     }
 
     fn evaluate_query_output_with_options(
@@ -11890,6 +11904,30 @@ release_blocker(code) := issue(code, "error").
         let evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
         let output = evaluator.eval_query(&query).expect("query");
         assert_eq!(output.rows.len(), 2);
+    }
+
+    #[test]
+    fn planned_fixpoint_errors_instead_of_panicking_on_unplanned_expression() {
+        let error = evaluate_fixpoint_error(
+            r#"
+            bad(h) := *handle{id: h}, lower(h) = "a".
+            ? bad(h).
+            "#,
+            Database::from_store(&fixture_store()),
+        );
+
+        assert_planning_error(&error);
+    }
+
+    #[test]
+    fn planned_query_errors_instead_of_panicking_on_unplanned_expression() {
+        let program = parse_program("fixture", r#"? lower("A") = "a"."#).expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let evaluator = Evaluator::new(analyzed, Database::default());
+        let error = evaluator.eval_query(&query).expect_err("query errors");
+
+        assert_planning_error(&error);
     }
 
     #[test]
