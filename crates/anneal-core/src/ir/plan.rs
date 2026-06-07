@@ -1,8 +1,9 @@
-//! Planning-only IR for the Plan/IR middle-end.
+//! Planned IR for the runtime executor.
 //!
 //! This module lowers an already-analyzed program into relation, field, and slot
-//! ids. It intentionally does not execute the plan yet; the old evaluator remains
-//! the runtime path while this artifact proves the compiler boundary.
+//! ids. The executor consumes this artifact directly, so predicate meaning,
+//! stage migration, variable slots, and capability support are decided here
+//! rather than rediscovered at runtime.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,6 +41,13 @@ impl QueryPlan {
             .strata
             .last()
             .and_then(|stratum| stratum.rule_groups.first())
+    }
+
+    pub(crate) fn output_stage(&self) -> Option<&RuleStagePlan> {
+        self.plan
+            .strata
+            .last()
+            .and_then(|stratum| stratum.stages.first())
     }
 }
 
@@ -191,6 +199,7 @@ pub(crate) struct NegationProvenance {
 pub(crate) struct TimeScopeProvenance {
     pub(crate) reference: String,
     pub(crate) location: SourceLocation,
+    pub(crate) unsupported: Option<UnsupportedTimeScope>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -568,6 +577,7 @@ impl PlanCatalog {
         self.predicate_relation(predicate)
     }
 
+    #[cfg(test)]
     pub(crate) fn relations(&self) -> &[PlanRelation] {
         &self.relations
     }
@@ -596,6 +606,7 @@ impl PlanRelation {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn fields(&self) -> &[Ident] {
         &self.fields
     }
@@ -1018,6 +1029,7 @@ fn query_output_migration(output_group: &RuleGroupPlan, catalog: &PlanCatalog) -
     }
 }
 
+#[cfg(test)]
 pub(crate) fn planned_rule_group_executable(
     planned: &RuleGroupPlan,
     catalog: &PlanCatalog,
@@ -1144,10 +1156,6 @@ fn time_scope_atom_unsupported(
         reference: reference.to_string(),
         atom,
     })
-}
-
-pub(crate) fn time_scoped_stored_relation_supported(relation: &Ident) -> bool {
-    time_scoped_stored_relation_supported_name(relation.as_str())
 }
 
 fn time_scoped_stored_relation_supported_name(relation: &str) -> bool {
@@ -1447,7 +1455,7 @@ fn plan_aggregate(
     let result = plan_expr(&aggregate.result, outer_slots).or_else(|_| {
         // Rank injects a synthetic variable inside the aggregate body before the
         // value/result expression is evaluated. Keep that slot explicit in the
-        // aggregate node even though old eval still executes this phase.
+        // aggregate node so execution can read it without reconstructing scope.
         plan_expr(&aggregate.result, &inner_slots)
     })?;
     let mut result_slots = BTreeSet::new();
@@ -1615,13 +1623,16 @@ fn plan_time_scope(
     for var in scoped_vars {
         outer_slots.insert(slots.slot(&var)?);
     }
+    let inner = plan_body(&time_block.body, catalog, slots, query_index)?;
+    let unsupported = time_scope_unsupported_atom(&time_block.reference, &inner, catalog);
     Ok(AtomPlan::TimeScope {
         reference: time_block.reference.clone(),
-        inner: Box::new(plan_body(&time_block.body, catalog, slots, query_index)?),
+        inner: Box::new(inner),
         outer_slots: outer_slots.into_iter().collect(),
         provenance: TimeScopeProvenance {
             reference: time_block.reference.clone(),
             location: time_block.location.clone(),
+            unsupported,
         },
     })
 }

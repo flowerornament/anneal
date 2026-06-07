@@ -31,8 +31,7 @@ use crate::ir::plan::{
     ColumnPatternPlan, ComparePlan, CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance,
     OrderKeyPlan, OutputPlan, PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan,
     RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StageExecution, StratumPlan,
-    TermPlan, UnsupportedTimeScopeAtom, plan, planned_aggregate_executable,
-    planned_comparison_executable, time_scope_unsupported_atom,
+    TermPlan, UnsupportedTimeScope, UnsupportedTimeScopeAtom, plan,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -4576,6 +4575,17 @@ fn eval_planned_query(
     let output_group = query
         .output_group()
         .ok_or(EvalError::UnsupportedExpression)?;
+    if let Some(output_stage) = query.output_stage()
+        && !output_stage.authoritative_planned
+    {
+        if let Some(error) = planned_body_time_scope_error(&output_group.body) {
+            return Err(error);
+        }
+        return Err(EvalError::PlannedExecutorUnsupported {
+            predicate: query_output_predicate(),
+            reasons: format!("{:?}", output_stage.migration.reasons),
+        });
+    }
     let mut env = PlannedValueEnv::from_database(database);
     let mut bindings = eval_planned_body(
         &output_group.body,
@@ -4821,7 +4831,9 @@ fn eval_planned_time_scope(
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    ensure_planned_snapshot_time_body_supported(reference, inner, catalog)?;
+    if let Some(unsupported) = &provenance.unsupported {
+        return Err(unsupported_time_scope_error(unsupported));
+    }
     let (scoped, scoped_warnings) = database.scoped_to_time_ref(reference)?;
     push_warnings(warnings, scoped_warnings);
     let trace = options.explain().is_enabled();
@@ -4860,34 +4872,46 @@ fn eval_planned_time_scope(
     Ok(out)
 }
 
-fn ensure_planned_snapshot_time_body_supported(
-    reference: &str,
-    body: &RuleBodyPlan,
-    catalog: &PlanCatalog,
-) -> Result<(), EvalError> {
-    match time_scope_unsupported_atom(reference, body, catalog) {
-        None => Ok(()),
-        Some(unsupported) => match unsupported.atom {
-            UnsupportedTimeScopeAtom::StoredRelation { relation } => {
-                Err(EvalError::UnsupportedTimeScopedStoredRelation {
-                    reference: unsupported.reference,
-                    relation,
-                })
+fn planned_body_time_scope_error(body: &RuleBodyPlan) -> Option<EvalError> {
+    body.atoms.iter().find_map(planned_atom_time_scope_error)
+}
+
+fn planned_atom_time_scope_error(atom: &AtomPlan) -> Option<EvalError> {
+    match atom {
+        AtomPlan::TimeScope {
+            inner, provenance, ..
+        } => provenance
+            .unsupported
+            .as_ref()
+            .map(unsupported_time_scope_error)
+            .or_else(|| planned_body_time_scope_error(inner)),
+        AtomPlan::Aggregate(aggregate) => planned_body_time_scope_error(&aggregate.inner),
+        AtomPlan::Negation { inner, .. } => planned_body_time_scope_error(inner),
+        AtomPlan::Scan { .. } | AtomPlan::Filter { .. } | AtomPlan::PrimitiveCall { .. } => None,
+    }
+}
+
+fn unsupported_time_scope_error(unsupported: &UnsupportedTimeScope) -> EvalError {
+    match &unsupported.atom {
+        UnsupportedTimeScopeAtom::StoredRelation { relation } => {
+            EvalError::UnsupportedTimeScopedStoredRelation {
+                reference: unsupported.reference.clone(),
+                relation: relation.clone(),
             }
-            UnsupportedTimeScopeAtom::DerivedPredicate { predicate } => {
-                Err(EvalError::UnsupportedTimeScopedDerivedPredicate {
-                    reference: unsupported.reference,
-                    predicate,
-                })
+        }
+        UnsupportedTimeScopeAtom::DerivedPredicate { predicate } => {
+            EvalError::UnsupportedTimeScopedDerivedPredicate {
+                reference: unsupported.reference.clone(),
+                predicate: predicate.clone(),
             }
-            UnsupportedTimeScopeAtom::Primitive { predicate } => {
-                Err(EvalError::UnsupportedTimeScopedPrimitive {
-                    reference: unsupported.reference,
-                    predicate,
-                })
+        }
+        UnsupportedTimeScopeAtom::Primitive { predicate } => {
+            EvalError::UnsupportedTimeScopedPrimitive {
+                reference: unsupported.reference.clone(),
+                predicate: predicate.clone(),
             }
-            UnsupportedTimeScopeAtom::UnknownRelation => Err(EvalError::UnsupportedExpression),
-        },
+        }
+        UnsupportedTimeScopeAtom::UnknownRelation => EvalError::UnsupportedExpression,
     }
 }
 
@@ -5000,7 +5024,6 @@ fn eval_planned_aggregate(
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     report_planned_aggregate_arg_error(aggregate)?;
-    debug_assert!(planned_aggregate_executable(aggregate.function));
 
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
@@ -5635,6 +5658,10 @@ fn ensure_no_reserved_planned_explain_fields(output: &OutputPlan) -> Result<(), 
     Ok(())
 }
 
+fn query_output_predicate() -> PredicateRef {
+    PredicateRef::new(Ident::new_unchecked("query_output"))
+}
+
 fn planned_bindings_to_rows(
     output: &OutputPlan,
     bindings: Vec<PlannedFrame>,
@@ -6022,9 +6049,6 @@ fn order_key_values<'a>(
 }
 
 fn compare(left: &Value, op: ComparisonOp, right: &Value) -> Result<bool, EvalError> {
-    if !planned_comparison_executable(op) {
-        return Err(EvalError::UnsupportedExpression);
-    }
     let result = match op {
         ComparisonOp::Eq => left == right,
         ComparisonOp::Ne => left != right,
@@ -6049,7 +6073,7 @@ fn compare(left: &Value, op: ComparisonOp, right: &Value) -> Result<bool, EvalEr
             (Value::String(value), Value::String(suffix)) => value.ends_with(suffix),
             _ => return Err(EvalError::UnsupportedExpression),
         },
-        ComparisonOp::Matches => unreachable!("unsupported comparison returned early"),
+        ComparisonOp::Matches => unreachable!("planner excludes unsupported comparison"),
     };
     Ok(result)
 }
@@ -11926,6 +11950,23 @@ release_blocker(code) := issue(code, "error").
         let error = evaluator.eval_query(&query).expect_err("query errors");
 
         assert_planning_error(&error);
+    }
+
+    #[test]
+    fn planned_query_output_uses_migration_certificate() {
+        let error = evaluate_query_error(r#"? "alpha" matches "a.*"."#, Database::default());
+
+        assert!(
+            matches!(
+                error,
+                EvalError::PlannedExecutorUnsupported {
+                    ref predicate,
+                    ref reasons,
+                } if predicate.display_name() == "query_output"
+                    && reasons.contains("UnsupportedComparison")
+            ),
+            "expected query output migration error, got {error:?}"
+        );
     }
 
     #[test]
