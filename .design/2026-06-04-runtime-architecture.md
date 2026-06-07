@@ -1,5 +1,6 @@
 ---
-status: current
+status: superseded
+superseded-by: 2026-06-07-core-decomposition-plan.md
 date: 2026-06-04
 epic: anneal-g0l4
 authors: [claude]
@@ -9,6 +10,14 @@ relates:
 ---
 
 # anneal runtime architecture (post-compiler-arc, as built) — 2026-06-04
+
+> **Superseded by `2026-06-07-core-decomposition-plan.md`.** This was the as-built
+> after the `g0l4` perf arc but **before kftp**. Its "plan vs actual" gap table
+> below (Plan/IR middle-end `❌ not built`, `SmallVec` `Binding`, no `plan.rs`) was
+> reversed by the kftp arc: `ir/plan.rs` exists, the executor is planned, the
+> interpreted evaluator and `SmallVec` `Binding` are deleted. Retained as the
+> point-in-time record of the perf-arc stopping point. For current shape and the
+> decomposition plan, read the successor.
 
 This documents the runtime **as it actually is** after the compiler arc
 (`anneal-g0l4`), not as the pass-contract appendix planned it. Where the two
