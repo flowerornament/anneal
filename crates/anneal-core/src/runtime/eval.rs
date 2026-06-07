@@ -3818,6 +3818,17 @@ impl<'a> Iterator for TupleCandidates<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanningErrorKind {
+    UnknownStoredRelation,
+    UnknownPredicate,
+    UnknownPrimitive,
+    UnknownField,
+    ArityMismatch,
+    UnplannedVariable,
+    UnsupportedExpression,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
     #[error("unknown stored relation '*{relation}'")]
@@ -3899,16 +3910,29 @@ pub enum EvalError {
         predicate: PredicateRef,
         reasons: String,
     },
-    #[error("planned executor could not lower analyzed program: {error}")]
-    PlannedExecutorPlanning { error: String },
+    #[error("planned executor could not lower analyzed program: {message}")]
+    PlannedExecutorPlanning {
+        kind: PlanningErrorKind,
+        message: String,
+    },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
 
 impl From<PlanError> for EvalError {
     fn from(error: PlanError) -> Self {
+        let kind = match error {
+            PlanError::UnknownStoredRelation { .. } => PlanningErrorKind::UnknownStoredRelation,
+            PlanError::UnknownPredicate { .. } => PlanningErrorKind::UnknownPredicate,
+            PlanError::UnknownPrimitive { .. } => PlanningErrorKind::UnknownPrimitive,
+            PlanError::UnknownField { .. } => PlanningErrorKind::UnknownField,
+            PlanError::ArityMismatch { .. } => PlanningErrorKind::ArityMismatch,
+            PlanError::UnplannedVariable { .. } => PlanningErrorKind::UnplannedVariable,
+            PlanError::UnsupportedExpression => PlanningErrorKind::UnsupportedExpression,
+        };
         Self::PlannedExecutorPlanning {
-            error: error.to_string(),
+            kind,
+            message: error.to_string(),
         }
     }
 }
@@ -4215,8 +4239,12 @@ fn run_staged_rule_group(
             )?;
             continue;
         }
-        let planned_groups =
-            planned_authoritative_for_stage(stage, planned_stratum, active_predicates)?;
+        let planned_groups = planned_authoritative_for_stage(
+            stage,
+            planned_stratum,
+            stage_predicate,
+            active_predicates,
+        )?;
         for (_, planned, predicate) in planned_groups {
             let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
             insert_tuples(database, &predicate, tuples);
@@ -4254,8 +4282,14 @@ fn run_planned_recursive_stage(
     warnings: &mut Vec<QueryWarning>,
     options: &EvalOptions,
 ) -> Result<(), EvalError> {
-    let planned_groups =
-        planned_authoritative_for_stage(stage, planned_stratum, active_predicates)?;
+    let active_predicate = active_stage_predicate(stage, planned_stratum, active_predicates)?
+        .ok_or(EvalError::UnsupportedExpression)?;
+    let planned_groups = planned_authoritative_for_stage(
+        stage,
+        planned_stratum,
+        active_predicate,
+        active_predicates,
+    )?;
     let mut delta = DeltaMap::new();
     for (_, planned, predicate) in &planned_groups {
         let tuples = eval_planned_rule_group(planned, catalog, database, warnings, options)?;
@@ -4296,21 +4330,16 @@ fn run_planned_recursive_stage(
 fn planned_authoritative_for_stage<'a>(
     stage: &RuleStagePlan,
     planned_stratum: &'a StratumPlan,
+    active_predicate: PredicateRef,
     active_predicates: &BTreeSet<PredicateRef>,
 ) -> Result<Vec<(usize, &'a RuleGroupPlan, PredicateRef)>, EvalError> {
-    let predicate = stage
-        .authoritative_predicates
-        .iter()
-        .next()
-        .cloned()
-        .ok_or(EvalError::UnsupportedExpression)?;
     let mut planned = Vec::new();
     for group_index in &stage.rule_groups {
         let group = planned_stratum
             .rule_groups
             .get(*group_index)
             .ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                predicate: predicate.clone(),
+                predicate: active_predicate.clone(),
             })?;
         let Some(provenance) = &group.provenance else {
             continue;
@@ -4326,7 +4355,9 @@ fn planned_authoritative_for_stage<'a>(
         }
     }
     if planned.is_empty() {
-        return Err(EvalError::PlannedExecutorMixedAuthoritative { predicate });
+        return Err(EvalError::PlannedExecutorMixedAuthoritative {
+            predicate: active_predicate,
+        });
     }
     Ok(planned)
 }
@@ -7697,8 +7728,10 @@ mod tests {
         assert!(
             matches!(
                 error,
-                EvalError::PlannedExecutorPlanning { error }
-                    if error.contains("unsupported expression")
+                EvalError::PlannedExecutorPlanning {
+                    kind: PlanningErrorKind::UnsupportedExpression,
+                    ..
+                }
             ),
             "expected planned executor planning error, got {error:?}"
         );
