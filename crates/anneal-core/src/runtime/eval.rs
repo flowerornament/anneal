@@ -6481,6 +6481,7 @@ fn generation_value(generation: Generation) -> Value {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+    use std::fs;
     use std::sync::OnceLock;
 
     use camino::Utf8PathBuf;
@@ -7816,7 +7817,32 @@ mod tests {
         format!("{:016x}", crate::fnv1a_64(payload.as_bytes()))
     }
 
+    fn write_recursive_golden_failure(name: &str, payload: &str) -> String {
+        let dir = std::env::current_dir()
+            .unwrap_or_else(|_| ".".into())
+            .join("target")
+            .join("recursive-goldens");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(format!("{name}.json"));
+        let _ = fs::write(&path, payload);
+        path.display().to_string()
+    }
+
+    fn assert_golden_payload(name: &str, payload: &str, expected: GoldenExpectation) {
+        let actual_bytes = payload.len();
+        let actual_digest = stable_golden_digest(payload);
+        if actual_bytes != expected.bytes || actual_digest != expected.fnv1a64 {
+            let artifact = write_recursive_golden_failure(name, payload);
+            panic!(
+                "recursive tuple/provenance golden drifted for {name}: \
+                 expected bytes={} digest={}, actual bytes={} digest={}; wrote actual payload to {}",
+                expected.bytes, expected.fnv1a64, actual_bytes, actual_digest, artifact
+            );
+        }
+    }
+
     fn assert_recursive_golden(
+        name: &str,
         input: &str,
         database: Database,
         predicate: &str,
@@ -7828,16 +7854,7 @@ mod tests {
             predicate,
             EvalOptions::default().with_explain_all(),
         );
-        assert_eq!(
-            golden.len(),
-            expected.bytes,
-            "recursive golden size drifted"
-        );
-        assert_eq!(
-            stable_golden_digest(&golden),
-            expected.fnv1a64,
-            "recursive tuple/provenance golden drifted"
-        );
+        assert_golden_payload(name, &golden, expected);
     }
 
     fn planned_rule<'a>(
@@ -11735,6 +11752,7 @@ release_blocker(code) := issue(code, "error").
     #[test]
     fn planned_recursion_golden_matches_chain_closure_with_provenance() {
         assert_recursive_golden(
+            "chain_closure_with_provenance",
             r#"
             dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
             dep_path(h, anc) := dep_path(h, mid), *edge{from: mid, to: anc, kind: "DependsOn"}.
@@ -11752,6 +11770,7 @@ release_blocker(code) := issue(code, "error").
     #[test]
     fn planned_recursion_golden_matches_rule_order_independent_closure() {
         assert_recursive_golden(
+            "rule_order_independent_closure",
             r#"
             dep_path(h, anc) := *edge{from: h, to: mid, kind: "DependsOn"}, dep_path(mid, anc).
             dep_path(h, anc) := *edge{from: h, to: anc, kind: "DependsOn"}.
@@ -11769,6 +11788,7 @@ release_blocker(code) := issue(code, "error").
     #[test]
     fn planned_recursion_golden_terminates_on_cycles() {
         assert_recursive_golden(
+            "cycle_termination",
             r#"
             edge("a", "b").
             edge("b", "a").
@@ -11788,6 +11808,7 @@ release_blocker(code) := issue(code, "error").
     #[test]
     fn planned_recursion_golden_matches_mutual_recursion() {
         assert_recursive_golden(
+            "mutual_recursion_even",
             r"
             zero(0).
             pred(1, 0).
@@ -11806,6 +11827,7 @@ release_blocker(code) := issue(code, "error").
             },
         );
         assert_recursive_golden(
+            "mutual_recursion_odd",
             r"
             zero(0).
             pred(1, 0).
@@ -11828,6 +11850,7 @@ release_blocker(code) := issue(code, "error").
     #[test]
     fn planned_recursion_golden_matches_multiple_recursive_atoms() {
         assert_recursive_golden(
+            "multiple_recursive_atoms",
             r#"
             edge("a", "b").
             edge("b", "c").
@@ -11868,15 +11891,13 @@ release_blocker(code) := issue(code, "error").
         assert_query_rows(&rows, vec![row([("y", s("b"))]), row([("y", s("c"))])]);
         assert!(output.rows.iter().all(|row| row.derivation.is_some()));
         let golden = serde_json::to_string_pretty(&output).expect("golden serializes");
-        assert_eq!(
-            golden.len(),
-            2_105,
-            "query-local recursion golden size drifted"
-        );
-        assert_eq!(
-            stable_golden_digest(&golden),
-            "fa530c1b903692f3",
-            "query-local recursion tuple/provenance golden drifted"
+        assert_golden_payload(
+            "query_local_recursion",
+            &golden,
+            GoldenExpectation {
+                bytes: 2_105,
+                fnv1a64: "fa530c1b903692f3",
+            },
         );
     }
 
