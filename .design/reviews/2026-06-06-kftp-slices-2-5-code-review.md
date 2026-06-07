@@ -26,7 +26,7 @@ The review bar is architectural coherence first: did the plan capture meaning on
 
 ## Research Lens
 
-The local `qmd` research-graph query failed with `SQLITE_CANTOPEN` during review startup, so this pass used the checked-in topic map `~/code/systems-research-graph/notes/compiler-and-adoption.md` as a fallback lens. Non-binding reminders applied here:
+This pass used the checked-in compiler/adoption research topic map as a non-binding review lens. Reminders applied here:
 
 - Observable interpreter behavior becomes API. The byte-identical differential and recursion goldens are the right retirement gate.
 - Compilation artifacts should be inspectable. `StageMigration { mode, reasons }` is a good direction; review should keep asking whether it explains the plan's decision.
@@ -76,13 +76,15 @@ Suggested follow-up: introduce `PlannedEvalCtx` after this review, not during it
 
 This is not a correctness problem, but it is an easy post-migration efficiency cut. Decorate rows with `(key, frame)` once, sort the decorated rows, then consume the cached keys in the rank loop.
 
+Tracking: `anneal-txkp` ("generic sort unification").
+
 ### Low: Recursion Goldens Are Stable But Opaque
 
 The recursion suite now checks planned output against byte count plus FNV digest of the tuple/provenance JSON ([eval.rs:7737](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:7737), [eval.rs:7780](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:7780), [eval.rs:11697](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:11697)).
 
 That is compact and avoids bulky fixture churn, but a failure will say "digest drifted" without showing the semantic drift. It also pretty-serializes every tuple/provenance row before hashing, including a 163 KB chain golden ([eval.rs:7749](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:7749), [eval.rs:7773](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:7773), [eval.rs:11707](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:11707)). The suite is now the only recursion oracle after interpreted deletion, so its failure mode matters.
 
-Suggested follow-up: keep the digest gate, but improve assertion diagnostics by printing the first differing row against a stored expected payload or by writing temporary failure artifacts under `target/`. If the suite grows, consider compact serialization or a streaming digest plus first-drift output so recursion coverage stays cheap.
+Suggested follow-up: keep the digest gate, but improve assertion diagnostics by printing the first differing row and, when useful, writing temporary failure artifacts under `target/`. Avoid promoting bulky stored fixtures unless a specific golden needs that extra oracle. If the suite grows, consider compact serialization or a streaming digest plus first-drift output so recursion coverage stays cheap.
 
 ### Low: Stale `v2` And `legacy` Language Still Needs A Naming Pass
 
@@ -100,31 +102,33 @@ These are applications of the locked kftp success bar, not new architecture: "bo
 
 `eval.rs` is down from the pre-retirement peak, but it is still 12,177 lines. It contains the public `Database` representation ([eval.rs:789](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:789)), derived relation storage and indexes ([eval.rs:3744](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:3744)), staged execution and recursion ([eval.rs:4193](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4193)), frame/value execution ([eval.rs:4381](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4381)), all planned atom evaluators ([eval.rs:4459](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:4459)), plus the large test tail through the end of the file.
 
-This is not a condemnation of the migration; keeping one file during the cutover made the differential safer. But after 5c, the one-engine architecture deserves module boundaries that match the new concepts.
+This is not a condemnation of the migration; keeping one file during the cutover made the differential safer. But after 5c, the one-engine architecture deserves module boundaries that match the new concepts and the pass-contract target: `ir/` owns the middle-end, `vm/` owns the hidden relational backend, and `runtime/` becomes the thin logical facade ([pass-contracts §12](/Users/morgan/code/anneal/.design/2026-06-02-pass-contracts.md)).
 
-Suggested split:
+Possible end-state modules, aligned with that contract:
 
-- `runtime/database.rs`: `Database` as the facade/composition root.
+- `runtime/database.rs`: `Database` as the facade/composition root, until the facade can thin further over `vm`.
 - `runtime/relation.rs` or `runtime/derived.rs`: `DerivedRelation`, indexes, base relation storage helpers.
 - `runtime/content.rs` or `runtime/providers.rs`: content/search providers and indexes.
 - `runtime/graph_index.rs`: graph primitive backing state.
 - `runtime/time_scope.rs`: tuple overlay and scoped snapshot mechanics.
-- `runtime/execute/mod.rs`: staged runner, recursive loop, query execution entry points.
-- `runtime/execute/frame.rs`: `PlannedFrame`, `PlannedValueEnv`, list/interner helpers.
-- `runtime/execute/atom.rs`: scan, primitive, filter, negation, time-scope dispatch.
-- `runtime/execute/aggregate.rs`: scalar aggregates, `TopK`, `Rank`, `TakeUntil`.
-- `runtime/execute/recursion.rs`: `DeltaMap`, `PlannedDeltaView`, recursive insertion/fixpoint loop.
-- `runtime/execute/provenance.rs`: planned derivation constructors and bounded explain helpers.
+- `vm/execute.rs` or an `execute/` subtree under `vm`: staged runner, recursive loop, frame/value execution, atom dispatch, aggregate helpers, and planned provenance. The exact file shape should follow the pass-contract boundary rather than invent a second runtime-owned VM.
 
 Tracking: `anneal-kbgj.2`.
 
-This should be a decomposition slice, not a behavior slice. Preservation checklist: mechanical moves only; no logic cleanup in the same commit; no visibility widening solely to satisfy moved tests; keep module-private seams where possible; run focused planner/runtime tests after each move; finish with the normal full gate.
+This should be an incremental decomposition arc, not one heroic move. Start with the cheapest review-cost reducers, then reassess:
+
+1. Move the architecture-critical tests/goldens into owning test modules without changing production code.
+2. Extract one leaf runtime area, probably `DerivedRelation`/indexes or planned aggregate helpers.
+3. Extract time-scope or recursion only after the leaf move proves the visibility seams are clean.
+4. Finish each move with named gates: the planned-only panic repro, query-local planned execution, recursion goldens, a representative `at()`/`--explain` query, and `just check`.
+
+Preservation checklist: mechanical moves only; no logic cleanup in the same commit; no visibility widening solely to satisfy moved tests; keep module-private seams where possible.
 
 ### Medium: `plan.rs` Mixes Catalog, Lowering, Scheduling, And Certification
 
 `plan.rs` is 2,495 lines and currently owns several separate compiler phases: `PlanCatalog` ([plan.rs:367](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:367)), top-level `plan()` ([plan.rs:587](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:587)), global/query lowering ([plan.rs:602](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:602), [plan.rs:634](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:634)), positive stage scheduling/SCCs ([plan.rs:759](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:759)), migration certification ([plan.rs:946](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:946)), time-scope support checks ([plan.rs:1024](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:1024)), and atom/expression lowering ([plan.rs:1201](/Users/morgan/code/anneal/crates/anneal-core/src/ir/plan.rs:1201)).
 
-The file is coherent in concept, but too broad for future compiler work. The risk is that new planned capabilities get added "wherever they fit" instead of through explicit pass boundaries.
+The file is coherent in concept, and the Plan/IR reconciliation already locked the main boundary: `plan()` is the middle-end and the executor is supposed to be dull ([reconciliation](/Users/morgan/code/anneal/.design/2026-06-04-plan-ir-reconciliation.md)). The remaining risk is that new planned capabilities get added "wherever they fit" instead of through explicit internal pass boundaries.
 
 Suggested split:
 
@@ -135,7 +139,7 @@ Suggested split:
 - `ir/plan/support.rs` or `ir/plan/capabilities.rs`: aggregate/comparison/time-scope support matrix, primitive provider/capability/demand lowering.
 - `ir/plan/types.rs`: shared plan structs, ids, provenance payloads.
 
-The key is not smaller files for their own sake; it is preserving the "rich plan, boring executor" boundary by making catalog, lowering, scheduling, and certification independently reviewable.
+The key is not smaller files for their own sake; it is preserving the standing kftp gate from the compiler reference map: did the plan capture predicate meaning once, and did execute get dumber ([reference map](/Users/morgan/code/anneal/.design/2026-06-05-datalog-compiler-reference-map.md))? The split should make catalog, lowering, scheduling, and certification independently reviewable.
 
 Tracking: `anneal-kbgj.3`.
 
@@ -145,13 +149,13 @@ Tracking: `anneal-kbgj.3`.
 
 This is mostly defensive, but it is also the same conceptual smell as the AST-rule bridge: the executor still re-certifies things the plan has already decided. In the short term, keep correctness guards. In the cleanup phase, move toward plan types that make invalid states unrepresentable, for example a pre-certified `TimeScopePlan` and aggregate arg structs where required fields are not `Option`.
 
-Tracking: `anneal-kbgj.3`.
+Tracking: `anneal-kbgj.5` for the fully-authoritative plan cut; keep this as review evidence for the concrete cleanup shape.
 
 ### Low: Derived Indexes Clone Whole Tuples Per Indexed Column
 
 `DerivedRelation::insert_with_derivation` stores the tuple in the set and then pushes a full `tuple.clone()` into every column index ([eval.rs:3759](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:3759), [eval.rs:3769](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:3769)). Candidate lookup then picks the shortest matching column index ([eval.rs:3782](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/eval.rs:3782)).
 
-This is a reasonable first planned-executor shape and it preserves deterministic tuple ordering, but it is a clear next profiling surface for recursive or high-cardinality derived relations. Consider tuple ids/arena indexes or plan-selected indexes after the planned-only architecture is decomposed.
+This is a reasonable first planned-executor shape and it preserves deterministic tuple ordering, but it is a clear candidate for measurement on recursive or high-cardinality derived relations. Do not jump straight to tuple ids/arena indexes or plan-selected indexes; profile first, then pick the representation if this becomes a real bucket.
 
 Tracking: `anneal-kbgj.2`.
 
