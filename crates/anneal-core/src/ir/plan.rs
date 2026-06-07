@@ -294,7 +294,13 @@ pub(crate) struct AggregateArgsPlan {
     pub(crate) sum: Option<ExprPlan>,
     pub(crate) key: Option<ExprPlan>,
     pub(crate) synthetic_rank_slot: Option<SlotId>,
-    pub(crate) invalid_argument: Option<&'static str>,
+    pub(crate) error: Option<AggregateArgPlanError>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AggregateArgPlanError {
+    Invalid(&'static str),
+    Missing(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1462,8 +1468,54 @@ fn plan_aggregate_args(
             _ => {}
         }
     }
-    args.invalid_argument = aggregate_invalid_argument(aggregate);
+    args.error = aggregate_arg_error(aggregate, &args);
     Ok(args)
+}
+
+fn aggregate_arg_error(
+    aggregate: &Aggregate,
+    args: &AggregateArgsPlan,
+) -> Option<AggregateArgPlanError> {
+    if let Some(argument) = aggregate_invalid_argument(aggregate) {
+        return Some(AggregateArgPlanError::Invalid(argument));
+    }
+    match aggregate.function {
+        AggregateFunction::TopK => {
+            if args.k.is_none() {
+                return Some(AggregateArgPlanError::Missing("k"));
+            }
+            if args.key.is_none() {
+                return Some(AggregateArgPlanError::Missing("key"));
+            }
+        }
+        AggregateFunction::Rank => {
+            if args.key.is_none() {
+                return Some(AggregateArgPlanError::Missing("key"));
+            }
+            if args.synthetic_rank_slot.is_none() {
+                return Some(AggregateArgPlanError::Missing("rank"));
+            }
+        }
+        AggregateFunction::TakeUntil => {
+            if args.budget.is_none() {
+                return Some(AggregateArgPlanError::Missing("budget"));
+            }
+            if args.sum.is_none() {
+                return Some(AggregateArgPlanError::Missing("sum"));
+            }
+            if args.key.is_none() {
+                return Some(AggregateArgPlanError::Missing("key"));
+            }
+        }
+        AggregateFunction::Count
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg
+        | AggregateFunction::List
+        | AggregateFunction::Set => {}
+    }
+    None
 }
 
 fn aggregate_invalid_argument(aggregate: &Aggregate) -> Option<&'static str> {
@@ -2339,19 +2391,36 @@ mod tests {
               (h, score) = TopK{ k: 1, bogus: 2, key: score : (h, score) : amount(h, score) }.
             invalid_duplicate(h, score) :=
               (h, score) = TopK{ k: 1, k: 2, key: score : (h, score) : amount(h, score) }.
+            invalid_missing(h, score) :=
+              (h, score) = TopK{ k: 1 : (h, score) : amount(h, score) }.
             ? invalid_unknown(h, score).
             ? invalid_duplicate(h, score).
+            ? invalid_missing(h, score).
             "#,
         )
         .expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
         let planned = plan(&analyzed).expect("program plans");
 
-        for predicate in ["invalid_unknown", "invalid_duplicate"] {
+        for predicate in ["invalid_unknown", "invalid_duplicate", "invalid_missing"] {
             let predicate = PredicateRef::parse(predicate).expect("predicate parses");
             let migration = predicate_migration(&planned, &predicate).expect("predicate stage");
             assert_eq!(migration.mode, StageMigrationMode::Planned);
             assert!(migration.reasons.is_empty());
+        }
+
+        let cases = [
+            ("invalid_unknown", AggregateArgPlanError::Invalid("unknown")),
+            (
+                "invalid_duplicate",
+                AggregateArgPlanError::Invalid("duplicate"),
+            ),
+            ("invalid_missing", AggregateArgPlanError::Missing("key")),
+        ];
+        for (predicate, expected) in cases {
+            let predicate = PredicateRef::parse(predicate).expect("predicate parses");
+            let aggregate = predicate_aggregate(&planned, &predicate).expect("aggregate plan");
+            assert_eq!(aggregate.args.error, Some(expected));
         }
     }
 
@@ -2491,5 +2560,22 @@ mod tests {
             .stages
             .get(stage_index)
             .map(|stage| &stage.migration)
+    }
+
+    fn predicate_aggregate<'a>(
+        planned: &'a ProgramPlan,
+        predicate: &PredicateRef,
+    ) -> Option<&'a AggregatePlan> {
+        let relation = planned.catalog.predicate_relation(predicate)?.id;
+        planned.global.strata.iter().find_map(|stratum| {
+            stratum.rule_groups.iter().find_map(|group| {
+                (group.head == Some(relation)).then(|| {
+                    group.body.atoms.iter().find_map(|atom| match atom {
+                        AtomPlan::Aggregate(aggregate) => Some(aggregate.as_ref()),
+                        _ => None,
+                    })
+                })?
+            })
+        })
     }
 }

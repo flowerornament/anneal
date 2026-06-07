@@ -27,11 +27,12 @@ use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
-    AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
-    CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance, OrderKeyPlan, OutputPlan,
-    PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan,
-    RuleProvenance, RuleStagePlan, StageExecution, StratumPlan, TermPlan, UnsupportedTimeScopeAtom,
-    plan, planned_aggregate_executable, planned_comparison_executable, time_scope_unsupported_atom,
+    AggregateArgPlanError, AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan,
+    ColumnPatternPlan, ComparePlan, CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance,
+    OrderKeyPlan, OutputPlan, PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan,
+    RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StageExecution, StratumPlan,
+    TermPlan, UnsupportedTimeScopeAtom, plan, planned_aggregate_executable,
+    planned_comparison_executable, time_scope_unsupported_atom,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -4998,7 +4999,8 @@ fn eval_planned_aggregate(
     options: &EvalOptions,
     env: &mut PlannedValueEnv,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    validate_planned_aggregate_shape(aggregate)?;
+    report_planned_aggregate_arg_error(aggregate)?;
+    debug_assert!(planned_aggregate_executable(aggregate.function));
 
     let mut out = Vec::new();
     let trace = options.explain().is_enabled();
@@ -5091,76 +5093,18 @@ fn eval_planned_aggregate(
     Ok(out)
 }
 
-fn validate_planned_aggregate_shape(aggregate: &AggregatePlan) -> Result<(), EvalError> {
-    if !planned_aggregate_executable(aggregate.function) {
-        return Err(EvalError::UnsupportedAggregate {
-            function: aggregate.function,
-        });
-    }
-    if let Some(argument) = aggregate.args.invalid_argument {
-        return Err(EvalError::InvalidAggregateArg {
+fn report_planned_aggregate_arg_error(aggregate: &AggregatePlan) -> Result<(), EvalError> {
+    match aggregate.args.error {
+        Some(AggregateArgPlanError::Invalid(argument)) => Err(EvalError::InvalidAggregateArg {
             function: aggregate.function,
             argument,
-        });
+        }),
+        Some(AggregateArgPlanError::Missing(argument)) => Err(EvalError::MissingAggregateArg {
+            function: aggregate.function,
+            argument,
+        }),
+        None => Ok(()),
     }
-    match aggregate.function {
-        AggregateFunction::TopK => {
-            if aggregate.args.k.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "k",
-                });
-            }
-            if aggregate.args.key.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "key",
-                });
-            }
-        }
-        AggregateFunction::Rank => {
-            if aggregate.args.key.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "key",
-                });
-            }
-            if aggregate.args.synthetic_rank_slot.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "rank",
-                });
-            }
-        }
-        AggregateFunction::TakeUntil => {
-            if aggregate.args.budget.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "budget",
-                });
-            }
-            if aggregate.args.sum.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "sum",
-                });
-            }
-            if aggregate.args.key.is_none() {
-                return Err(EvalError::MissingAggregateArg {
-                    function: aggregate.function,
-                    argument: "key",
-                });
-            }
-        }
-        AggregateFunction::Count
-        | AggregateFunction::Sum
-        | AggregateFunction::Min
-        | AggregateFunction::Max
-        | AggregateFunction::Avg
-        | AggregateFunction::List
-        | AggregateFunction::Set => {}
-    }
-    Ok(())
 }
 
 fn eval_planned_scalar_aggregate(
@@ -5203,11 +5147,8 @@ fn eval_planned_top_k(
         .args
         .k
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::TopK,
-            argument: "k",
-        })
-        .and_then(|expr| planned_non_negative_int(AggregateFunction::TopK, "k", expr, base, env))?;
+        .expect("planner requires TopK k argument");
+    let k = planned_non_negative_int(AggregateFunction::TopK, "k", k, base, env)?;
     if k == 0 {
         return Ok(Vec::new());
     }
@@ -5215,10 +5156,7 @@ fn eval_planned_top_k(
         .args
         .key
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::TopK,
-            argument: "key",
-        })?;
+        .expect("planner requires TopK key argument");
     let limit = usize::try_from(k).unwrap_or(usize::MAX);
     let mut candidates = Vec::<(Value, PhysicalValue)>::new();
     for row in rows {
@@ -5268,17 +5206,11 @@ fn eval_planned_rank(
         .args
         .key
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::Rank,
-            argument: "key",
-        })?;
+        .expect("planner requires Rank key argument");
     let rank_slot = aggregate
         .args
         .synthetic_rank_slot
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::Rank,
-            argument: "rank",
-        })?;
+        .expect("planner requires Rank rank argument");
     rows.sort_by(|left, right| {
         let left_key = eval_planned_expr_logical(key, left, env).unwrap_or(Value::Null);
         let right_key = eval_planned_expr_logical(key, right, env).unwrap_or(Value::Null);
@@ -5330,29 +5262,19 @@ fn eval_planned_take_until(
         .args
         .budget
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::TakeUntil,
-            argument: "budget",
-        })
-        .and_then(|expr| {
-            planned_non_negative_int(AggregateFunction::TakeUntil, "budget", expr, base, env)
-        })?;
+        .expect("planner requires TakeUntil budget argument");
+    let budget =
+        planned_non_negative_int(AggregateFunction::TakeUntil, "budget", budget, base, env)?;
     let sum = aggregate
         .args
         .sum
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::TakeUntil,
-            argument: "sum",
-        })?;
+        .expect("planner requires TakeUntil sum argument");
     let key = aggregate
         .args
         .key
         .as_ref()
-        .ok_or(EvalError::MissingAggregateArg {
-            function: AggregateFunction::TakeUntil,
-            argument: "key",
-        })?;
+        .expect("planner requires TakeUntil key argument");
     let mut candidates = rows
         .iter()
         .map(|row| {
@@ -11371,6 +11293,32 @@ release_blocker(code) := issue(code, "error").
             EvalError::InvalidAggregateArg {
                 argument: "duplicate",
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn aggregate_missing_required_args_are_rejected() {
+        let program = parse_program(
+            "inline",
+            r#"
+            score("a", 5).
+            ? (h, score) = TopK{ k: 1 : (h, score) : score(h, score) }.
+            "#,
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().cloned().expect("query exists");
+        let mut evaluator = Evaluator::new(analyzed, Database::default());
+        evaluator.run_fixpoint().expect("fixpoint");
+        let err = evaluator
+            .eval_query(&query)
+            .expect_err("missing aggregate arg rejected");
+        assert!(matches!(
+            err,
+            EvalError::MissingAggregateArg {
+                function: AggregateFunction::TopK,
+                argument: "key",
             }
         ));
     }
