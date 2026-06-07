@@ -299,8 +299,41 @@ pub(crate) struct AggregateArgsPlan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AggregateArgPlanError {
-    Invalid(&'static str),
-    Missing(&'static str),
+    Unknown,
+    Duplicate,
+    Missing(AggregateArgName),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum AggregateArgName {
+    K,
+    Budget,
+    Sum,
+    Key,
+    Rank,
+}
+
+impl AggregateArgName {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "k" => Some(Self::K),
+            "budget" => Some(Self::Budget),
+            "sum" => Some(Self::Sum),
+            "key" => Some(Self::Key),
+            "rank" => Some(Self::Rank),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::K => "k",
+            Self::Budget => "budget",
+            Self::Sum => "sum",
+            Self::Key => "key",
+            Self::Rank => "rank",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1008,7 +1041,7 @@ pub(crate) fn planned_aggregate_executable(function: AggregateFunction) -> bool 
     )
 }
 
-pub(crate) fn aggregate_allowed_args(function: AggregateFunction) -> &'static [&'static str] {
+pub(crate) fn aggregate_allowed_args(function: AggregateFunction) -> &'static [AggregateArgName] {
     match function {
         AggregateFunction::Count
         | AggregateFunction::Sum
@@ -1017,9 +1050,13 @@ pub(crate) fn aggregate_allowed_args(function: AggregateFunction) -> &'static [&
         | AggregateFunction::Avg
         | AggregateFunction::List
         | AggregateFunction::Set => &[],
-        AggregateFunction::TopK => &["k", "key"],
-        AggregateFunction::Rank => &["key", "rank"],
-        AggregateFunction::TakeUntil => &["budget", "sum", "key"],
+        AggregateFunction::TopK => &[AggregateArgName::K, AggregateArgName::Key],
+        AggregateFunction::Rank => &[AggregateArgName::Key, AggregateArgName::Rank],
+        AggregateFunction::TakeUntil => &[
+            AggregateArgName::Budget,
+            AggregateArgName::Sum,
+            AggregateArgName::Key,
+        ],
     }
 }
 
@@ -1476,58 +1513,40 @@ fn aggregate_arg_error(
     aggregate: &Aggregate,
     args: &AggregateArgsPlan,
 ) -> Option<AggregateArgPlanError> {
-    if let Some(argument) = aggregate_invalid_argument(aggregate) {
-        return Some(AggregateArgPlanError::Invalid(argument));
+    if let Some(error) = aggregate_invalid_argument(aggregate) {
+        return Some(error);
     }
-    match aggregate.function {
-        AggregateFunction::TopK => {
-            if args.k.is_none() {
-                return Some(AggregateArgPlanError::Missing("k"));
-            }
-            if args.key.is_none() {
-                return Some(AggregateArgPlanError::Missing("key"));
-            }
-        }
-        AggregateFunction::Rank => {
-            if args.key.is_none() {
-                return Some(AggregateArgPlanError::Missing("key"));
-            }
-            if args.synthetic_rank_slot.is_none() {
-                return Some(AggregateArgPlanError::Missing("rank"));
-            }
-        }
-        AggregateFunction::TakeUntil => {
-            if args.budget.is_none() {
-                return Some(AggregateArgPlanError::Missing("budget"));
-            }
-            if args.sum.is_none() {
-                return Some(AggregateArgPlanError::Missing("sum"));
-            }
-            if args.key.is_none() {
-                return Some(AggregateArgPlanError::Missing("key"));
-            }
-        }
-        AggregateFunction::Count
-        | AggregateFunction::Sum
-        | AggregateFunction::Min
-        | AggregateFunction::Max
-        | AggregateFunction::Avg
-        | AggregateFunction::List
-        | AggregateFunction::Set => {}
-    }
-    None
+    aggregate_allowed_args(aggregate.function)
+        .iter()
+        .find(|arg| !args.has(**arg))
+        .copied()
+        .map(AggregateArgPlanError::Missing)
 }
 
-fn aggregate_invalid_argument(aggregate: &Aggregate) -> Option<&'static str> {
+impl AggregateArgsPlan {
+    fn has(&self, name: AggregateArgName) -> bool {
+        match name {
+            AggregateArgName::K => self.k.is_some(),
+            AggregateArgName::Budget => self.budget.is_some(),
+            AggregateArgName::Sum => self.sum.is_some(),
+            AggregateArgName::Key => self.key.is_some(),
+            AggregateArgName::Rank => self.synthetic_rank_slot.is_some(),
+        }
+    }
+}
+
+fn aggregate_invalid_argument(aggregate: &Aggregate) -> Option<AggregateArgPlanError> {
     let allowed = aggregate_allowed_args(aggregate.function);
     let mut seen = BTreeSet::new();
     for arg in &aggregate.args {
-        let name = arg.name.as_str();
+        let Some(name) = AggregateArgName::parse(arg.name.as_str()) else {
+            return Some(AggregateArgPlanError::Unknown);
+        };
         if !allowed.contains(&name) {
-            return Some("unknown");
+            return Some(AggregateArgPlanError::Unknown);
         }
         if !seen.insert(name) {
-            return Some("duplicate");
+            return Some(AggregateArgPlanError::Duplicate);
         }
     }
     None
@@ -2410,12 +2429,12 @@ mod tests {
         }
 
         let cases = [
-            ("invalid_unknown", AggregateArgPlanError::Invalid("unknown")),
+            ("invalid_unknown", AggregateArgPlanError::Unknown),
+            ("invalid_duplicate", AggregateArgPlanError::Duplicate),
             (
-                "invalid_duplicate",
-                AggregateArgPlanError::Invalid("duplicate"),
+                "invalid_missing",
+                AggregateArgPlanError::Missing(AggregateArgName::Key),
             ),
-            ("invalid_missing", AggregateArgPlanError::Missing("key")),
         ];
         for (predicate, expected) in cases {
             let predicate = PredicateRef::parse(predicate).expect("predicate parses");

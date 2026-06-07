@@ -5095,13 +5095,17 @@ fn eval_planned_aggregate(
 
 fn report_planned_aggregate_arg_error(aggregate: &AggregatePlan) -> Result<(), EvalError> {
     match aggregate.args.error {
-        Some(AggregateArgPlanError::Invalid(argument)) => Err(EvalError::InvalidAggregateArg {
+        Some(AggregateArgPlanError::Unknown) => Err(EvalError::InvalidAggregateArg {
             function: aggregate.function,
-            argument,
+            argument: "unknown",
+        }),
+        Some(AggregateArgPlanError::Duplicate) => Err(EvalError::InvalidAggregateArg {
+            function: aggregate.function,
+            argument: "duplicate",
         }),
         Some(AggregateArgPlanError::Missing(argument)) => Err(EvalError::MissingAggregateArg {
             function: aggregate.function,
-            argument,
+            argument: argument.as_str(),
         }),
         None => Ok(()),
     }
