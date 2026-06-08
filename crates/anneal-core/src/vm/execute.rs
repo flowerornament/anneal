@@ -157,6 +157,20 @@ struct PlannedEvalCtx<'a> {
     delta: Option<PlannedDeltaView<'a>>,
 }
 
+impl PlannedEvalCtx<'_> {
+    fn with_delta_for_atom<T>(
+        &mut self,
+        atom_index: usize,
+        f: impl FnOnce(&mut Self) -> Result<T, EvalError>,
+    ) -> Result<T, EvalError> {
+        let previous_delta = self.delta;
+        self.delta = previous_delta.filter(|view| view.atom_index == atom_index);
+        let result = f(self);
+        self.delta = previous_delta;
+        result
+    }
+}
+
 pub(crate) fn eval_planned_rule_group(
     planned: &RuleGroupPlan,
     catalog: &PlanCatalog,
@@ -307,10 +321,8 @@ fn eval_planned_body(
             .atoms
             .get(*atom_index)
             .ok_or(EvalError::UnsupportedExpression)?;
-        let previous_delta = ctx.delta;
-        ctx.delta = previous_delta.filter(|view| view.atom_index == *atom_index);
-        bindings = eval_planned_atom(atom, bindings, ctx)?;
-        ctx.delta = previous_delta;
+        bindings =
+            ctx.with_delta_for_atom(*atom_index, |ctx| eval_planned_atom(atom, bindings, ctx))?;
     }
     Ok(bindings)
 }
