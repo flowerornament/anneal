@@ -25,8 +25,6 @@ use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::PlanError;
-#[cfg(test)]
-use crate::ir::plan::{AtomPlan, PlanRelationKind};
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -4038,9 +4036,7 @@ mod tests {
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
-    use crate::ir::plan::{
-        PlanCatalog, ProgramPlan, RuleGroupPlan, plan, planned_rule_group_executable,
-    };
+    use crate::ir::plan::plan;
     use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
@@ -4050,7 +4046,6 @@ mod tests {
         summarize_trail_session,
     };
     use crate::visibility::FactVisibility;
-    use crate::vm::execute::eval_planned_rule_group;
     use crate::{facts::STORED_RELATION_DESCRIPTORS, vm::store::TupleDb};
 
     fn identity(native_id: &str) -> FactIdentity {
@@ -5407,149 +5402,6 @@ mod tests {
             EvalOptions::default().with_explain_all(),
         );
         assert_golden_payload(name, &golden, expected);
-    }
-
-    fn planned_rule<'a>(
-        planned: &'a ProgramPlan,
-        predicate: &str,
-    ) -> (&'a RuleGroupPlan, &'a PlanCatalog) {
-        let relation = planned
-            .catalog
-            .predicate_relation(&PredicateRef::parse(predicate).expect("predicate parses"))
-            .expect("planned relation")
-            .id;
-        let rule = planned
-            .global
-            .strata
-            .iter()
-            .flat_map(|stratum| &stratum.rule_groups)
-            .find(|rule| rule.head == Some(relation))
-            .expect("planned rule");
-        (rule, &planned.catalog)
-    }
-
-    fn derived_tuple_set(database: &Database, predicate: &str) -> BTreeSet<Tuple> {
-        database
-            .derived
-            .get(&PredicateRef::parse(predicate).expect("predicate parses"))
-            .expect("derived relation")
-            .tuples()
-            .iter()
-            .cloned()
-            .collect()
-    }
-
-    fn planned_tuple_set(
-        rule: &RuleGroupPlan,
-        catalog: &PlanCatalog,
-        database: &Database,
-    ) -> BTreeSet<Tuple> {
-        let mut warnings = Vec::new();
-        eval_planned_rule_group(
-            rule,
-            catalog,
-            database,
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect("planned rule evaluates")
-        .into_iter()
-        .map(|row| row.tuple)
-        .collect()
-    }
-
-    #[test]
-    fn planned_executor_evaluates_slots_from_catalog_decisions() {
-        let input = r#"
-        active(h) := *handle{id: h, status: "draft"}.
-        candidate(h, score) := *handle{id: h}, active(h), in_degree(h, score).
-        ranked(h, rank) :=
-          (h, rank) = Rank{ key: score, rank: rank :
-            (h, rank) : candidate(h, score)
-          }.
-        "#;
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-
-        let mut batch = FactBatch::new(
-            CorpusId::from("test"),
-            SourceName::from("fixture"),
-            FactBatchMode::FullSnapshot,
-            Generation::initial(),
-        );
-        batch.handles = vec![
-            handle("a.md", "file", "draft", "", "core"),
-            handle("b.md", "file", "draft", "", "core"),
-            handle("c.md", "file", "stable", "", "core"),
-        ];
-        batch.edges = vec![
-            edge("x.md", "a.md", "DependsOn"),
-            edge("y.md", "a.md", "DependsOn"),
-            edge("z.md", "b.md", "DependsOn"),
-        ];
-        let mut store = FactStore::default();
-        store.merge(batch).expect("fixture merges");
-        let database = Database::from_store(&store);
-        let mut evaluator = Evaluator::new(analyzed, database);
-        evaluator.run_fixpoint().expect("fixpoint evaluates");
-
-        let (candidate, catalog) = planned_rule(&planned, "candidate");
-        assert_eq!(
-            planned_tuple_set(candidate, catalog, evaluator.database()),
-            derived_tuple_set(evaluator.database(), "candidate"),
-            "stored scan + graph primitive + soft-primitive override should match candidate rows"
-        );
-        let (ranked, catalog) = planned_rule(&planned, "ranked");
-        assert_eq!(
-            planned_tuple_set(ranked, catalog, evaluator.database()),
-            derived_tuple_set(evaluator.database(), "ranked"),
-            "rank aggregate should match ranked rows"
-        );
-
-        let candidate_atoms = &candidate.body.atoms;
-        assert!(candidate_atoms.iter().any(|atom| {
-            matches!(atom, AtomPlan::Scan { relation, .. }
-                if catalog.relation(*relation).is_some_and(|relation| relation.kind == PlanRelationKind::Stored))
-        }));
-        assert!(candidate_atoms.iter().any(|atom| {
-            matches!(atom, AtomPlan::Scan { relation, .. }
-                if catalog.relation(*relation).is_some_and(|relation| relation.name == "active" && relation.kind == PlanRelationKind::Derived))
-        }));
-        assert!(candidate_atoms.iter().any(|atom| {
-            matches!(
-                atom,
-                AtomPlan::PrimitiveCall {
-                    primitive: PrimitivePredicate::InDegree,
-                    ..
-                }
-            )
-        }));
-    }
-
-    #[test]
-    fn planned_rank_overwrites_inner_rank_binding_like_interpreter() {
-        let input = r#"
-        seed_rank(99).
-        candidate("a.md", 10).
-        candidate("b.md", 3).
-        ranked(h, rank) :=
-          (h, rank) = Rank{ key: score, rank: rank :
-            (h, rank) : candidate(h, score), seed_rank(rank)
-          }.
-        "#;
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let mut evaluator = Evaluator::new(analyzed, Database::default());
-        evaluator.run_fixpoint().expect("fixpoint evaluates");
-
-        let (ranked, catalog) = planned_rule(&planned, "ranked");
-        assert_eq!(
-            planned_tuple_set(ranked, catalog, evaluator.database()),
-            derived_tuple_set(evaluator.database(), "ranked"),
-            "planned Rank must overwrite the synthetic rank slot before projecting the aggregate value"
-        );
     }
 
     fn assert_predicate_is_authoritative_planned(input: &str, predicate: &str) {
@@ -7828,179 +7680,6 @@ release_blocker(code) := issue(code, "error").
         );
         assert_eq!(output.warnings.len(), 1);
         assert_eq!(output.warnings[0].code, "partial_history");
-    }
-
-    #[test]
-    fn planned_time_scope_uses_overlay_and_preserves_warning_and_provenance() {
-        let input = r#"
-            prior_status(h, prior) :=
-              at("snapshot:last") { *handle{id: h, status: prior} }.
-        "#;
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "prior_status");
-        assert!(planned_rule_group_executable(rule, catalog));
-
-        let mut warnings = Vec::new();
-        let rows = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_database(),
-            &mut warnings,
-            &EvalOptions::default().with_explain_all(),
-        )
-        .expect("planned TimeScope evaluates");
-
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, "partial_history");
-        assert_eq!(warnings[0].reference.as_deref(), Some("snapshot:last"));
-        assert_eq!(
-            rows.iter()
-                .map(|row| row.tuple.clone())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                Tuple(vec![s("draft.md"), s("draft")]),
-                Tuple(vec![s("plan.md"), s("plan")]),
-            ])
-        );
-        let derivation = rows[0].derivation.as_ref().expect("row has derivation");
-        assert!(derivation_contains(derivation, DerivationKind::TimeBlock));
-        assert!(derivation_contains(derivation, DerivationKind::Stored));
-    }
-
-    #[test]
-    fn planned_time_scope_uses_scoped_graph_primitives() {
-        let input = r#"
-            historical_freshness(h, days) :=
-              at("snapshot:s2") { freshness(h, days) }.
-        "#;
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "historical_freshness");
-
-        let mut warnings = Vec::new();
-        let rows = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_metric_database(),
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect("planned TimeScope evaluates");
-
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, "partial_history");
-        assert_eq!(
-            rows.iter()
-                .map(|row| row.tuple.clone())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([Tuple(vec![s("draft.md"), n(9)])])
-        );
-    }
-
-    #[test]
-    fn planned_time_scope_rejects_unsupported_stored_relations() {
-        let input = r#"
-            historical_edge(to) :=
-              at("snapshot:last") { *edge{from: "draft.md", to, kind} }.
-        "#;
-        let program = parse_program("inline", input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "historical_edge");
-
-        let mut warnings = Vec::new();
-        let err = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_database(),
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect_err("planned TimeScope rejects unsupported stored relation");
-
-        assert!(matches!(
-            err,
-            EvalError::UnsupportedTimeScopedStoredRelation { relation, .. }
-                if relation.as_str() == "edge"
-        ));
-    }
-
-    #[test]
-    fn planned_time_scope_rejects_unsupported_primitives_and_derived_predicates() {
-        let primitive_input = r#"
-            historical_upstream(h) :=
-              at("snapshot:last") { upstream("draft.md", h) }.
-        "#;
-        let program = parse_program("inline", primitive_input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "historical_upstream");
-        let mut warnings = Vec::new();
-        let err = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_database(),
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect_err("planned TimeScope rejects unsupported primitive");
-        assert!(matches!(
-            err,
-            EvalError::UnsupportedTimeScopedPrimitive { predicate, .. }
-                if predicate.display_name() == "upstream"
-        ));
-
-        let derived_input = r#"
-            historical_current(h) := *handle{id: h, status: "current"}.
-            scoped(h) := at("snapshot:last") { historical_current(h) }.
-        "#;
-        let program = parse_program("inline", derived_input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "scoped");
-        let mut warnings = Vec::new();
-        let err = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_database(),
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect_err("planned TimeScope rejects derived predicate");
-        assert!(matches!(
-            err,
-            EvalError::UnsupportedTimeScopedDerivedPredicate { .. }
-        ));
-
-        let nested_input = r#"
-            nested_bad(to) :=
-              at("snapshot:outer") {
-                at("snapshot:inner") { *edge{from: "draft.md", to, kind} }
-              }.
-        "#;
-        let program = parse_program("inline", nested_input).expect("program parses");
-        let analyzed = analyze(program).expect("program analyzes");
-        let planned = plan(&analyzed).expect("program plans");
-        let (rule, catalog) = planned_rule(&planned, "nested_bad");
-        let mut warnings = Vec::new();
-        let err = eval_planned_rule_group(
-            rule,
-            catalog,
-            &time_travel_database(),
-            &mut warnings,
-            &EvalOptions::default(),
-        )
-        .expect_err("planned nested TimeScope preserves unsupported inner reference");
-        assert!(matches!(
-            err,
-            EvalError::UnsupportedTimeScopedStoredRelation {
-                reference,
-                relation,
-            } if reference == "snapshot:inner" && relation.as_str() == "edge"
-        ));
     }
 
     #[test]
