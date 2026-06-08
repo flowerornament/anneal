@@ -12,29 +12,25 @@ orientation_file(h, file) :=
 orientation_replaced(h) :=
   *edge{from: h, kind: "Supersedes"}.
 
-currency_minted(h) :=
+operative(h) :=
   orientation_file(h, file),
   status_of(h, "authoritative").
 
-currency_minted(h) :=
+operative(h) :=
   orientation_file(h, file),
   status_of(h, "current").
 
-currency_minted(h) :=
+operative(h) :=
   orientation_file(h, file),
   status_of(h, "active").
 
-currency_minted(h) :=
+operative(h) :=
   orientation_file(h, file),
   status_of(h, "stable").
 
-currency_minted(h) :=
+operative(h) :=
   orientation_file(h, file),
   status_of(h, "living").
-
-currency_minted(h) :=
-  orientation_file(h, file),
-  status_of(h, "live").
 
 currency_superseded(h) :=
   orientation_file(h, file),
@@ -45,12 +41,12 @@ currency_successor(h) :=
   *edge{to: h, kind: "Supersedes"}.
 
 currency_current(h) :=
-  currency_minted(h),
+  orientation_file(h, file),
   not currency_superseded(h).
 
 currency_current_head(h) :=
   currency_successor(h),
-  currency_current(h).
+  not currency_superseded(h).
 
 currency_disposition(h, "superseded") :=
   currency_superseded(h).
@@ -63,8 +59,8 @@ currency_disposition(h, "current") :=
   not currency_current_head(h).
 
 currency_disposition(h, "unknown") :=
-  orientation_file(h, file),
-  not currency_minted(h),
+  *handle{id: h},
+  not currency_current(h),
   not currency_superseded(h).
 
 orientation_retired_status(h) :=
@@ -279,6 +275,7 @@ anchor_recent_score(h, 3, 11, "recent") :=
   days <= 365.
 
 anchor_currency_score(h, 110, 5, "current_head") :=
+  operative(h),
   currency_current_head(h).
 
 anchor_signal(h, score, priority, why) :=

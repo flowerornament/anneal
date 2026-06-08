@@ -1321,12 +1321,7 @@ impl RuntimeSession {
                     .as_deref()
                     .and_then(|date| authored_age_days(date, today));
                 let disposition = if handle.kind == "file" {
-                    currency_disposition(
-                        handle.id.as_str(),
-                        handle.status.as_deref(),
-                        &superseded,
-                        &successors,
-                    )
+                    currency_disposition(handle.id.as_str(), &superseded, &successors)
                 } else {
                     "unknown"
                 };
@@ -1506,26 +1501,16 @@ fn authored_age_days(date: &str, today: NaiveDate) -> Option<i64> {
 
 fn currency_disposition(
     handle: &str,
-    status: Option<&str>,
     superseded: &BTreeSet<&str>,
     successors: &BTreeSet<&str>,
 ) -> &'static str {
     if superseded.contains(handle) {
         "superseded"
-    } else if successors.contains(handle) && status.is_some_and(is_currency_minted_status) {
+    } else if successors.contains(handle) {
         "current_head"
-    } else if status.is_some_and(is_currency_minted_status) {
-        "current"
     } else {
-        "unknown"
+        "current"
     }
-}
-
-fn is_currency_minted_status(status: &str) -> bool {
-    matches!(
-        status,
-        "authoritative" | "current" | "active" | "stable" | "living" | "live"
-    )
 }
 
 fn warning_applies_to_query(query_source: &str, warning: &QueryWarning) -> bool {

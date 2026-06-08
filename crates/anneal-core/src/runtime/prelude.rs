@@ -1575,6 +1575,8 @@ mod tests {
                 "",
                 "model",
             ),
+            handle(&scope, "draft/old.md", "file", Some("active"), "", "draft"),
+            handle(&scope, "draft/new.md", "file", Some("draft"), "", "draft"),
         ];
         batch.edges = vec![
             edge(
@@ -1591,6 +1593,7 @@ mod tests {
                 "Supersedes",
                 1,
             ),
+            edge(&scope, "draft/old.md", "draft/new.md", "Supersedes", 1),
         ];
         let mut store = FactStore::default();
         store.merge(batch).expect("merge currency fixture");
@@ -1620,6 +1623,14 @@ mod tests {
                     "old-anchor",
                     r#"? ranked_anchor("perf/2026-05-30.md", rank, score, why)."#,
                 ),
+                (
+                    "draft-current-head",
+                    r#"? currency_current_head("draft/new.md")."#,
+                ),
+                (
+                    "draft-no-current-head-boost",
+                    r#"? anchor_currency_score("draft/new.md", score, priority, why)."#,
+                ),
             ],
             Database::from_store(&store),
         );
@@ -1640,6 +1651,12 @@ mod tests {
             output(&outputs, "old-anchor"),
             &[("score", int(1)), ("why", string("superseded"))]
         ));
+        assert_eq!(output(&outputs, "draft-current-head").rows.len(), 1);
+        assert_eq!(
+            output(&outputs, "draft-no-current-head-boost").rows.len(),
+            0,
+            "a draft successor is displacement-current but not operative enough to boost"
+        );
     }
 
     #[test]

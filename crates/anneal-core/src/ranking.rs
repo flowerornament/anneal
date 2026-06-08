@@ -721,9 +721,11 @@ impl SearchIndex {
 
     fn currency_boost_for_key(&self, key: &SearchDocumentKey) -> f32 {
         match self.currency_disposition_for_key(key) {
-            Some(CurrencyDisposition::CurrentHead) => CURRENT_HEAD_SCORE_BOOST,
+            Some(CurrencyDisposition::CurrentHead) if self.is_operative_key(key) => {
+                CURRENT_HEAD_SCORE_BOOST
+            }
             Some(CurrencyDisposition::Superseded) => -SUPERSEDED_SCORE_PENALTY,
-            Some(CurrencyDisposition::Current | CurrencyDisposition::Unknown) | None => 0.0,
+            Some(CurrencyDisposition::CurrentHead | CurrencyDisposition::Current) | None => 0.0,
         }
     }
 
@@ -735,17 +737,18 @@ impl SearchIndex {
         if self.supersedes_from.contains(key) {
             return Some(CurrencyDisposition::Superseded);
         }
-        let minted = document
-            .status
-            .as_deref()
-            .is_some_and(is_currency_minted_status);
-        if self.supersedes_to.contains(key) && minted {
+        if self.supersedes_to.contains(key) {
             Some(CurrencyDisposition::CurrentHead)
-        } else if minted {
-            Some(CurrencyDisposition::Current)
         } else {
-            Some(CurrencyDisposition::Unknown)
+            Some(CurrencyDisposition::Current)
         }
+    }
+
+    fn is_operative_key(&self, key: &SearchDocumentKey) -> bool {
+        self.documents
+            .get(key)
+            .and_then(|document| document.status.as_deref())
+            .is_some_and(is_operative_status)
     }
 
     fn term_specificity(&self, query: &SearchQuery) -> TermSpecificity {
@@ -777,13 +780,12 @@ enum CurrencyDisposition {
     Current,
     CurrentHead,
     Superseded,
-    Unknown,
 }
 
-fn is_currency_minted_status(status: &str) -> bool {
+fn is_operative_status(status: &str) -> bool {
     matches!(
         status,
-        "authoritative" | "current" | "active" | "stable" | "living" | "live"
+        "authoritative" | "current" | "active" | "stable" | "living"
     )
 }
 
