@@ -148,6 +148,15 @@ impl PlannedValueEnv {
     }
 }
 
+struct PlannedEvalCtx<'a> {
+    catalog: &'a PlanCatalog,
+    database: &'a Database,
+    warnings: &'a mut Vec<QueryWarning>,
+    options: &'a EvalOptions,
+    env: &'a mut PlannedValueEnv,
+    delta: Option<PlannedDeltaView<'a>>,
+}
+
 pub(crate) fn eval_planned_rule_group(
     planned: &RuleGroupPlan,
     catalog: &PlanCatalog,
@@ -178,16 +187,21 @@ fn eval_planned_rule_group_inner(
     options: &EvalOptions,
 ) -> Result<Vec<DerivedTuple>, EvalError> {
     let mut env = PlannedValueEnv::from_database(database);
-    let bindings = eval_planned_body_with_delta(
-        &planned.body,
-        vec![PlannedFrame::empty(planned.slots.vars().len())],
-        catalog,
-        database,
-        delta,
-        warnings,
-        options,
-        &mut env,
-    )?;
+    let bindings = {
+        let mut ctx = PlannedEvalCtx {
+            catalog,
+            database,
+            warnings,
+            options,
+            env: &mut env,
+            delta,
+        };
+        eval_planned_body(
+            &planned.body,
+            vec![PlannedFrame::empty(planned.slots.vars().len())],
+            &mut ctx,
+        )?
+    };
     bindings
         .iter()
         .map(|binding| {
@@ -253,15 +267,21 @@ fn eval_planned_query(
         });
     }
     let mut env = PlannedValueEnv::from_database(database);
-    let mut bindings = eval_planned_body(
-        &output_group.body,
-        vec![PlannedFrame::empty(output_group.slots.vars().len())],
-        catalog,
-        database,
-        warnings,
-        options,
-        &mut env,
-    )?;
+    let mut bindings = {
+        let mut ctx = PlannedEvalCtx {
+            catalog,
+            database,
+            warnings,
+            options,
+            env: &mut env,
+            delta: None,
+        };
+        eval_planned_body(
+            &output_group.body,
+            vec![PlannedFrame::empty(output_group.slots.vars().len())],
+            &mut ctx,
+        )?
+    };
     if options.explain().is_enabled() {
         ensure_no_reserved_planned_explain_fields(&query.plan.output)?;
     }
@@ -276,28 +296,9 @@ fn eval_planned_query(
 fn eval_planned_body(
     body: &RuleBodyPlan,
     bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    eval_planned_body_with_delta(
-        body, bindings, catalog, database, None, warnings, options, env,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn eval_planned_body_with_delta(
-    body: &RuleBodyPlan,
-    mut bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    delta: Option<PlannedDeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
-) -> Result<Vec<PlannedFrame>, EvalError> {
+    let mut bindings = bindings;
     for atom_index in &body.execution_atoms {
         if bindings.is_empty() {
             break;
@@ -306,56 +307,38 @@ fn eval_planned_body_with_delta(
             .atoms
             .get(*atom_index)
             .ok_or(EvalError::UnsupportedExpression)?;
-        let atom_delta = delta.filter(|view| view.atom_index == *atom_index);
-        bindings = eval_planned_atom(
-            atom, bindings, catalog, database, atom_delta, warnings, options, env,
-        )?;
+        let previous_delta = ctx.delta;
+        ctx.delta = previous_delta.filter(|view| view.atom_index == *atom_index);
+        bindings = eval_planned_atom(atom, bindings, ctx)?;
+        ctx.delta = previous_delta;
     }
     Ok(bindings)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_planned_atom(
     atom: &AtomPlan,
     bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    delta: Option<PlannedDeltaView<'_>>,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     match atom {
-        AtomPlan::Scan { relation, patterns } => eval_planned_scan(
-            *relation, patterns, bindings, catalog, database, delta, options, env,
-        ),
+        AtomPlan::Scan { relation, patterns } => {
+            eval_planned_scan(*relation, patterns, bindings, ctx)
+        }
         AtomPlan::PrimitiveCall {
             predicate,
             primitive,
             args,
             ..
-        } => eval_planned_primitive(
-            predicate, *primitive, args, bindings, database, options, env,
-        ),
-        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, options, env),
-        AtomPlan::Aggregate(aggregate) => eval_planned_aggregate(
-            aggregate, bindings, catalog, database, warnings, options, env,
-        ),
+        } => eval_planned_primitive(predicate, *primitive, args, bindings, ctx),
+        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, ctx),
+        AtomPlan::Aggregate(aggregate) => eval_planned_aggregate(aggregate, bindings, ctx),
         AtomPlan::Negation {
             inner, provenance, ..
         } => {
             let mut out = Vec::new();
-            let trace = options.explain().is_enabled();
+            let trace = ctx.options.explain().is_enabled();
             for binding in bindings {
-                let matches = eval_planned_body(
-                    inner,
-                    vec![binding.clone()],
-                    catalog,
-                    database,
-                    warnings,
-                    options,
-                    env,
-                )?;
+                let matches = eval_planned_body(inner, vec![binding.clone()], ctx)?;
                 if matches.is_empty() {
                     out.push(binding.push_step(trace, || {
                         derivation_ref(DerivationNode::planned_negation(provenance))
@@ -369,63 +352,45 @@ fn eval_planned_atom(
             inner,
             provenance,
             ..
-        } => eval_planned_time_scope(
-            reference, inner, provenance, bindings, catalog, database, warnings, options, env,
-        ),
+        } => eval_planned_time_scope(reference, inner, provenance, bindings, ctx),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_planned_scan(
     relation: crate::ir::ids::RelationId,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    delta: Option<PlannedDeltaView<'_>>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    let relation_info = catalog
+    let relation_info = ctx
+        .catalog
         .relation(relation)
         .ok_or(EvalError::UnsupportedExpression)?;
     match relation_info.kind {
         PlanRelationKind::Stored => {
-            if delta.is_some() {
+            if ctx.delta.is_some() {
                 return Err(EvalError::UnsupportedExpression);
             }
-            eval_planned_stored_scan(
-                relation,
-                &relation_info.name,
-                patterns,
-                bindings,
-                database,
-                options,
-                env,
-            )
+            eval_planned_stored_scan(relation, &relation_info.name, patterns, bindings, ctx)
         }
         PlanRelationKind::Derived => {
             let predicate = PredicateRef::parse(&relation_info.name)
                 .map_err(|_| EvalError::UnsupportedExpression)?;
-            match delta {
+            match ctx.delta {
                 Some(view) if view.delta_relation == relation => {
                     let Some(relation) = view.delta.get(&predicate) else {
                         return Ok(Vec::new());
                     };
-                    eval_planned_derived_scan(
-                        &predicate, relation, patterns, bindings, options, env,
-                    )
+                    eval_planned_derived_scan(&predicate, relation, patterns, bindings, ctx)
                 }
                 Some(_) => Err(EvalError::UnsupportedExpression),
                 None => {
-                    let relation = database.derived_relation(&predicate).ok_or_else(|| {
+                    let relation = ctx.database.derived_relation(&predicate).ok_or_else(|| {
                         EvalError::UnknownDerivedPredicate {
                             predicate: predicate.clone(),
                         }
                     })?;
-                    eval_planned_derived_scan(
-                        &predicate, relation, patterns, bindings, options, env,
-                    )
+                    eval_planned_derived_scan(&predicate, relation, patterns, bindings, ctx)
                 }
             }
         }
@@ -438,20 +403,21 @@ fn eval_planned_stored_scan(
     relation_name: &str,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    database: &Database,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
+    let trace = ctx.options.explain().is_enabled();
     let relation_ident = Ident::new_unchecked(relation_name.to_string());
-    let Some(store) = database.physical_tuple_store(&relation_ident, relation) else {
+    let Some(store) = ctx.database.physical_tuple_store(&relation_ident, relation) else {
         return Ok(Vec::new());
     };
     for binding in bindings {
-        let constraints = planned_column_constraints(patterns, &binding, env)?;
+        let constraints = planned_column_constraints(patterns, &binding, ctx.env)?;
         for row in store.candidate_rows(&constraints) {
-            if !database.stored_tuple_row_visible(&relation_ident, row, options) {
+            if !ctx
+                .database
+                .stored_tuple_row_visible(&relation_ident, row, ctx.options)
+            {
                 continue;
             }
             let Some(tuple) = store.row(row) else {
@@ -464,14 +430,14 @@ fn eval_planned_stored_scan(
                     matched = false;
                     break;
                 };
-                if !unify_planned_term(&pattern.term, value, &mut next, env)? {
+                if !unify_planned_term(&pattern.term, value, &mut next, ctx.env)? {
                     matched = false;
                     break;
                 }
             }
             if matched {
                 let step = if trace {
-                    Some(database.stored_tuple_derivation(&relation_ident, row)?)
+                    Some(ctx.database.stored_tuple_derivation(&relation_ident, row)?)
                 } else {
                     None
                 };
@@ -482,36 +448,33 @@ fn eval_planned_stored_scan(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_planned_time_scope(
     reference: &str,
     inner: &RuleBodyPlan,
     provenance: &crate::ir::plan::TimeScopeProvenance,
     bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     if let Some(unsupported) = &provenance.unsupported {
         return Err(unsupported_time_scope_error(unsupported));
     }
-    let (scoped, scoped_warnings) = database.scoped_to_time_ref(reference)?;
-    push_warnings(warnings, scoped_warnings);
-    let trace = options.explain().is_enabled();
+    let (scoped, scoped_warnings) = ctx.database.scoped_to_time_ref(reference)?;
+    push_warnings(ctx.warnings, scoped_warnings);
+    let trace = ctx.options.explain().is_enabled();
     let mut out = Vec::new();
     for binding in bindings {
         let outer_steps = trace.then(|| binding.steps.clone());
-        let children = eval_planned_body(
-            inner,
-            vec![binding.with_values_only()],
-            catalog,
-            &scoped,
-            warnings,
-            options,
-            env,
-        )?;
+        let children = {
+            let mut scoped_ctx = PlannedEvalCtx {
+                catalog: ctx.catalog,
+                database: &scoped,
+                warnings: &mut *ctx.warnings,
+                options: ctx.options,
+                env: &mut *ctx.env,
+                delta: None,
+            };
+            eval_planned_body(inner, vec![binding.with_values_only()], &mut scoped_ctx)?
+        };
         out.extend(children.into_iter().map(|child| {
             if trace {
                 let mut steps = outer_steps.clone().unwrap_or_default();
@@ -583,13 +546,12 @@ fn eval_planned_derived_scan(
     relation: &DerivedRelation,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
+    let trace = ctx.options.explain().is_enabled();
     for binding in bindings {
-        let constraints = planned_tuple_constraints(patterns, &binding, env)?;
+        let constraints = planned_tuple_constraints(patterns, &binding, ctx.env)?;
         for tuple in relation.candidate_tuples(&constraints) {
             let mut next = binding.clone();
             let mut matched = true;
@@ -598,8 +560,8 @@ fn eval_planned_derived_scan(
                     matched = false;
                     break;
                 };
-                let physical = env.physical_from_logical(value);
-                if !unify_planned_term(&pattern.term, physical, &mut next, env)? {
+                let physical = ctx.env.physical_from_logical(value);
+                if !unify_planned_term(&pattern.term, physical, &mut next, ctx.env)? {
                     matched = false;
                     break;
                 }
@@ -621,17 +583,19 @@ fn eval_planned_primitive(
     primitive: PrimitivePredicate,
     args: &[CallArgPlan],
     bindings: Vec<PlannedFrame>,
-    database: &Database,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let mut regex_cache = BTreeMap::<String, Regex>::new();
-    let trace = options.explain().is_enabled();
+    let trace = ctx.options.explain().is_enabled();
     for binding in bindings {
-        let constraints = planned_call_constraints(args, &binding, env)?;
-        let tuples =
-            database.primitive_tuples(primitive, &constraints, options, &mut regex_cache)?;
+        let constraints = planned_call_constraints(args, &binding, ctx.env)?;
+        let tuples = ctx.database.primitive_tuples(
+            primitive,
+            &constraints,
+            ctx.options,
+            &mut regex_cache,
+        )?;
         for tuple in tuples {
             let mut next = binding.clone();
             let mut matched = true;
@@ -640,8 +604,8 @@ fn eval_planned_primitive(
                     matched = false;
                     break;
                 };
-                let physical = env.physical_from_logical(value);
-                if !unify_planned_term(&arg.term, physical, &mut next, env)? {
+                let physical = ctx.env.physical_from_logical(value);
+                if !unify_planned_term(&arg.term, physical, &mut next, ctx.env)? {
                     matched = false;
                     break;
                 }
@@ -659,14 +623,13 @@ fn eval_planned_primitive(
 fn eval_planned_filter(
     comparison: &ComparePlan,
     bindings: Vec<PlannedFrame>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
+    let trace = ctx.options.explain().is_enabled();
     for binding in bindings {
-        let left = eval_planned_expr_logical(&comparison.left, &binding, env)?;
-        let right = eval_planned_expr_logical(&comparison.right, &binding, env)?;
+        let left = eval_planned_expr_logical(&comparison.left, &binding, ctx.env)?;
+        let right = eval_planned_expr_logical(&comparison.right, &binding, ctx.env)?;
         if compare(&left, comparison.op, &right)? {
             out.push(binding.push_step(trace, || {
                 derivation_ref(DerivationNode::planned_comparison(&comparison.provenance))
@@ -676,20 +639,15 @@ fn eval_planned_filter(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_planned_aggregate(
     aggregate: &AggregatePlan,
     bindings: Vec<PlannedFrame>,
-    catalog: &PlanCatalog,
-    database: &Database,
-    warnings: &mut Vec<QueryWarning>,
-    options: &EvalOptions,
-    env: &mut PlannedValueEnv,
+    ctx: &mut PlannedEvalCtx<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     report_planned_aggregate_arg_error(aggregate)?;
 
     let mut out = Vec::new();
-    let trace = options.explain().is_enabled();
+    let trace = ctx.options.explain().is_enabled();
     for binding in bindings {
         let mut inner_seed = PlannedFrame::empty(aggregate.inner_slots.vars().len());
         for (outer, inner) in &aggregate.outer_to_inner_slots {
@@ -697,22 +655,14 @@ fn eval_planned_aggregate(
                 inner_seed.set(*inner, value);
             }
         }
-        let inner_rows = eval_planned_body(
-            &aggregate.inner,
-            vec![inner_seed],
-            catalog,
-            database,
-            warnings,
-            options,
-            env,
-        )?;
+        let inner_rows = eval_planned_body(&aggregate.inner, vec![inner_seed], ctx)?;
         if inner_rows.is_empty() {
             if aggregate.function == AggregateFunction::Count
                 && let Some(binding) = unify_planned_expr(
                     &aggregate.result,
                     PhysicalValue::Number(NumberValue::Int(0)),
                     &binding,
-                    env,
+                    ctx.env,
                 )?
             {
                 out.push(binding.push_step(trace, || {
@@ -733,7 +683,7 @@ fn eval_planned_aggregate(
                     &inner_rows,
                     aggregate_steps.as_deref().unwrap_or_default(),
                     trace,
-                    env,
+                    ctx.env,
                 )?);
             }
             AggregateFunction::Rank => {
@@ -743,7 +693,7 @@ fn eval_planned_aggregate(
                     inner_rows,
                     aggregate_steps.as_deref().unwrap_or_default(),
                     trace,
-                    env,
+                    ctx.env,
                 )?);
             }
             AggregateFunction::Count
@@ -759,7 +709,7 @@ fn eval_planned_aggregate(
                     &inner_rows,
                     aggregate_steps.as_deref().unwrap_or_default(),
                     trace,
-                    env,
+                    ctx.env,
                 )? {
                     out.push(binding);
                 }
@@ -771,7 +721,7 @@ fn eval_planned_aggregate(
                     &inner_rows,
                     aggregate_steps.as_deref().unwrap_or_default(),
                     trace,
-                    env,
+                    ctx.env,
                 )?);
             }
         }
