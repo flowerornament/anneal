@@ -465,8 +465,6 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     let design = repo.join(".design");
     std::fs::create_dir_all(&repo).expect("create repo");
     run_git(&repo, &["init"]);
-    run_git(&repo, &["config", "user.name", "Anneal Test"]);
-    run_git(&repo, &["config", "user.email", "anneal@example.test"]);
     std::fs::create_dir_all(repo.join("lib")).expect("create lib");
     std::fs::create_dir_all(&design).expect("create design root");
     write_file(&repo, "lib/live.rs", "pub fn live() {}\n");
@@ -569,6 +567,15 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
 
 fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env("GIT_CONFIG_GLOBAL", root.join(".anneal-test-gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .arg("-c")
+        .arg("user.name=Anneal Test")
+        .arg("-c")
+        .arg("user.email=anneal@example.test")
         .arg("-C")
         .arg(root)
         .args(args)

@@ -336,8 +336,6 @@ mod tests {
         fs::create_dir_all(repo.join("lib")).expect("create lib");
         fs::create_dir_all(&corpus).expect("create corpus");
         fs::write(repo.join("lib/old.rs"), "pub fn old() {}\n").expect("write old");
-        run_git(&repo, &["config", "user.name", "Anneal Test"]);
-        run_git(&repo, &["config", "user.email", "anneal@example.test"]);
         run_git(&repo, &["add", "."]);
         run_git(&repo, &["commit", "-m", "add old"]);
         fs::remove_file(repo.join("lib/old.rs")).expect("remove old");
@@ -372,6 +370,15 @@ mod tests {
 
     fn run_git(root: &Utf8Path, args: &[&str]) {
         let output = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env("GIT_CONFIG_GLOBAL", root.join(".anneal-test-gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-c")
+            .arg("user.name=Anneal Test")
+            .arg("-c")
+            .arg("user.email=anneal@example.test")
             .arg("-C")
             .arg(root.as_std_path())
             .args(args)
