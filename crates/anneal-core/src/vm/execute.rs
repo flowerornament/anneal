@@ -837,7 +837,7 @@ fn eval_planned_top_k(
 fn eval_planned_rank(
     aggregate: &AggregatePlan,
     base: &PlannedFrame,
-    mut rows: Vec<PlannedFrame>,
+    rows: Vec<PlannedFrame>,
     aggregate_steps: &[DerivationRef],
     trace: bool,
     env: &mut PlannedValueEnv,
@@ -851,18 +851,22 @@ fn eval_planned_rank(
         .args
         .synthetic_rank_slot
         .expect("planner requires Rank rank argument");
-    rows.sort_by(|left, right| {
-        let left_key = eval_planned_expr_logical(key, left, env).unwrap_or(Value::Null);
-        let right_key = eval_planned_expr_logical(key, right, env).unwrap_or(Value::Null);
+    let mut rows = rows
+        .into_iter()
+        .map(|row| {
+            let key = eval_planned_expr_logical(key, &row, env)?;
+            Ok((key, row))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    rows.sort_by(|(left_key, left), (right_key, right)| {
         right_key
-            .cmp(&left_key)
+            .cmp(left_key)
             .then_with(|| planned_frame_logical_cmp(left, right, env))
     });
     let mut out = Vec::new();
     let mut current_rank = 0_i64;
     let mut previous_key = None;
-    for mut row in rows {
-        let key_value = eval_planned_expr_logical(key, &row, env)?;
+    for (key_value, mut row) in rows {
         if previous_key.as_ref() != Some(&key_value) {
             current_rank += 1;
             previous_key = Some(key_value);
