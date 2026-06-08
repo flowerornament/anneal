@@ -60,10 +60,7 @@ use crate::runtime::introspection::{
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::source::{ActorContext, RuntimeCapability, SourceInfo};
 use crate::store::FactStore;
-use crate::time::{
-    current_days_since_epoch, iso_days_since_epoch, relative_days_reference,
-    snapshot_days_since_epoch,
-};
+use crate::time::{current_days_since_epoch, iso_days_since_epoch, snapshot_days_since_epoch};
 use crate::trail::{
     TRAIL_GENERATION_RELATION, TRAIL_REF_RELATION, TRAIL_RELATION, TrailContext,
     TrailEntryRedacted, TrailError, TrailGeneration, TrailQuery, TrailRefKind, TrailReference,
@@ -77,6 +74,11 @@ use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
 use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
+use crate::vm::view::{
+    SnapshotCandidate, SnapshotReference, SnapshotSelection, TupleOverlay,
+    handle_snapshot_patch_field, latest_snapshot_candidate, nearest_snapshot_candidate,
+    snapshot_reference,
+};
 
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
 
@@ -95,21 +97,6 @@ impl Tuple {
 pub struct Row {
     pub fields: BTreeMap<String, Value>,
     pub derivation: Option<DerivationNode>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct TupleOverlay {
-    relations: BTreeMap<Ident, RelationStore>,
-}
-
-impl TupleOverlay {
-    fn relation(&self, relation: &Ident) -> Option<&RelationStore> {
-        self.relations.get(relation)
-    }
-
-    fn insert(&mut self, relation: Ident, store: RelationStore) {
-        self.relations.insert(relation, store);
-    }
 }
 
 impl Serialize for Row {
@@ -1292,93 +1279,6 @@ impl Database {
             }
         });
         sources
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SnapshotSelection {
-    snapshot: String,
-    day: i64,
-    tuple_rows: Vec<RowId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SnapshotCandidate {
-    snapshot: String,
-    day: i64,
-    sort_at: String,
-    tuple_rows: Vec<RowId>,
-}
-
-enum SnapshotReference {
-    Last,
-    Snapshot(String),
-    Day(i64),
-}
-
-fn snapshot_reference(reference: &str) -> Option<SnapshotReference> {
-    if reference == "snapshot:last" {
-        return Some(SnapshotReference::Last);
-    }
-    if let Some(snapshot) = reference.strip_prefix("snapshot:") {
-        return (!snapshot.is_empty()).then(|| SnapshotReference::Snapshot(snapshot.to_string()));
-    }
-    if let Some(day) = snapshot_days_since_epoch(reference) {
-        return Some(SnapshotReference::Day(day));
-    }
-    relative_days_reference(reference).map(SnapshotReference::Day)
-}
-
-fn latest_snapshot_candidate(
-    candidates: impl Iterator<Item = SnapshotCandidate>,
-) -> Option<SnapshotSelection> {
-    candidates
-        .max_by(|left, right| {
-            left.day
-                .cmp(&right.day)
-                .then_with(|| left.sort_at.cmp(&right.sort_at))
-                .then_with(|| left.snapshot.cmp(&right.snapshot))
-        })
-        .map(SnapshotSelection::from)
-}
-
-fn nearest_snapshot_candidate(
-    candidates: impl Iterator<Item = SnapshotCandidate>,
-    target_day: i64,
-) -> Option<SnapshotSelection> {
-    candidates
-        .min_by(|left, right| {
-            let left_distance = left.day.abs_diff(target_day);
-            let right_distance = right.day.abs_diff(target_day);
-            left_distance
-                .cmp(&right_distance)
-                .then_with(|| right.day.cmp(&left.day))
-                .then_with(|| right.sort_at.cmp(&left.sort_at))
-                .then_with(|| right.snapshot.cmp(&left.snapshot))
-        })
-        .map(SnapshotSelection::from)
-}
-
-impl From<SnapshotCandidate> for SnapshotSelection {
-    fn from(candidate: SnapshotCandidate) -> Self {
-        Self {
-            snapshot: candidate.snapshot,
-            day: candidate.day,
-            tuple_rows: candidate.tuple_rows,
-        }
-    }
-}
-
-fn handle_snapshot_patch_field(key: &str) -> Option<&'static str> {
-    match key {
-        KIND_FIELD => Some(KIND_FIELD),
-        STATUS_FIELD => Some(STATUS_FIELD),
-        NAMESPACE_FIELD => Some(NAMESPACE_FIELD),
-        FILE_FIELD => Some(FILE_FIELD),
-        DATE_FIELD => Some(DATE_FIELD),
-        AREA_FIELD => Some(AREA_FIELD),
-        SUMMARY_FIELD => Some(SUMMARY_FIELD),
-        _ => None,
     }
 }
 
