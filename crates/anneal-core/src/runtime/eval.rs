@@ -71,6 +71,7 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::{FactVisibility, hidden_handles};
+use crate::vm::frame::PlannedFrame;
 use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
 use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
@@ -4400,60 +4401,6 @@ fn insert_tuples(database: &mut Database, predicate: &PredicateRef, tuples: Vec<
     let relation = database.derived.entry(predicate.clone()).or_default();
     for derived in tuples {
         relation.insert_with_derivation(&derived.tuple, derived.derivation);
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PlannedFrame {
-    slots: Vec<Option<PhysicalValue>>,
-    steps: Vec<DerivationRef>,
-}
-
-impl PlannedFrame {
-    fn empty(slot_count: usize) -> Self {
-        Self {
-            slots: vec![None; slot_count],
-            steps: Vec::new(),
-        }
-    }
-
-    fn with_values_only(&self) -> Self {
-        Self {
-            slots: self.slots.clone(),
-            steps: Vec::new(),
-        }
-    }
-
-    fn push_step(mut self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
-        if trace {
-            self.steps.push(step());
-        }
-        self
-    }
-
-    fn get(&self, slot: crate::ir::ids::SlotId) -> Option<PhysicalValue> {
-        self.slots.get(slot.index()).and_then(|value| *value)
-    }
-
-    fn set(&mut self, slot: crate::ir::ids::SlotId, value: PhysicalValue) -> bool {
-        let Some(current) = self.slots.get_mut(slot.index()) else {
-            return false;
-        };
-        match current {
-            Some(existing) => *existing == value,
-            slot @ None => {
-                *slot = Some(value);
-                true
-            }
-        }
-    }
-
-    fn overwrite(&mut self, slot: crate::ir::ids::SlotId, value: PhysicalValue) -> bool {
-        let Some(current) = self.slots.get_mut(slot.index()) else {
-            return false;
-        };
-        *current = Some(value);
-        true
     }
 }
 
