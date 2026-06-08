@@ -160,6 +160,35 @@ concerns — absorb them into the steps they touch rather than as a separate pas
 
 ---
 
+## Progress (updated 2026-06-07)
+
+Underway, each step byte-identical on murail (status/check + the relevant
+`--explain` surface) with 344/344 `anneal-core` tests and `just check` green per
+commit. `eval.rs` 12,183 → 10,259 so far (−16%).
+
+| step | module | commit | gate beyond status/check |
+|---|---|---|---|
+| leaf | `vm/frame.rs` | `0e3dd9a` | — |
+| leaf | `vm/provenance.rs` | `c8a20ef` | `--explain` identical |
+| leaf | `vm/view.rs` | `bae4a32` | `at(snapshot:last) --explain` identical |
+| bulk | `vm/execute.rs` (executor core) | `2c92a70` | real-recursion `dep_path` `--explain` identical; §12 grep-evidenced |
+
+The executor core is out of `eval.rs` and Plan-driven — no `analysis`/raw-AST
+imports (machine-checked by grep in the commit report). Residual `vm/* →
+runtime::eval::{Database, Value, ExplainOptions, …}` edges are explicit and named
+at single import blocks, to resolve when those types relocate to boundary
+modules.
+
+Note on staging: step 1 above was split in execution — the planned **executor
+core** moved to `vm/execute.rs` while the **coordinator/fixpoint** (`Evaluator`,
+`run_fixpoint*`, the stage runner) deliberately stayed in `runtime/eval.rs` for a
+separate move, to keep each commit's byte-identical blast radius understandable.
+
+Remaining: coordinator/fixpoint extraction (planning in progress), then the
+residual relocations (`Value`/`ExplainOptions`/`DbView`), `PlannedExecCtx`
+param-sprawl, the public runtime façade (step 5), and the deferred
+`ir/analyzed.rs` re-key (step 6).
+
 ## Done-when
 
 `eval.rs` is no longer the center of gravity: `vm/execute.rs` owns execution,
