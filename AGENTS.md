@@ -16,6 +16,7 @@ Convergence assistant for knowledge corpora.
 - `install.sh` ships with releases — treat installer correctness as release-critical.
 - `.beads/config.yaml` is tracked repo config only; keep machine-specific federation settings local to your shell environment.
 - Store state in specs sparingly. Use `bd` for state.
+- On the maintainer's machine, `main` runs as `anneal-dev` beside release `anneal`, sharing `~/.config/anneal/config.toml` + history state. Keep config/history formats backward-compatible or migrate, else the release binary breaks.
 
 For orientation in the v2.0 master spec (`2026-05-13-corpus-runtime.md`):
 - Part I (`§1-§3`) for framing and the cold-agent test
