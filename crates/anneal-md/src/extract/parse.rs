@@ -745,7 +745,7 @@ pub(crate) fn build_graph_scoped(
                 kind: EdgeKind::Cites,
                 inverse: false,
                 line: Some(code_ref.source_line),
-                unresolved_disposition: UnresolvedRefDisposition::CorpusGate,
+                unresolved_disposition: UnresolvedRefDisposition::AmbiguousExternalOk,
             });
             code_refs.push(code_ref);
         }
@@ -786,13 +786,15 @@ pub(crate) fn build_graph_scoped(
         );
 
         for file_ref in &scan_result.file_refs {
+            let (target_identity, unresolved_disposition) =
+                normalize_body_file_ref(root, &file_ref.target, file_ref.unresolved_disposition);
             pending_edges.push(PendingEdge {
                 source: file_node,
-                target_identity: file_ref.target.clone(),
+                target_identity,
                 kind: EdgeKind::Cites,
                 inverse: false,
                 line: Some(file_ref.line),
-                unresolved_disposition: file_ref.unresolved_disposition,
+                unresolved_disposition,
             });
         }
         for (section_ref, line) in &scan_result.section_refs {
@@ -834,6 +836,30 @@ pub(crate) fn build_graph_scoped(
         malformed_frontmatter,
         skipped_non_utf8: skipped_non_utf8.get(),
     })
+}
+
+fn normalize_body_file_ref(
+    root: &Utf8Path,
+    target: &str,
+    disposition: UnresolvedRefDisposition,
+) -> (String, UnresolvedRefDisposition) {
+    let target_path = Utf8Path::new(target);
+    if !target_path.is_absolute() {
+        return (target.to_string(), disposition);
+    }
+    if let Ok(relative) = target_path.strip_prefix(root) {
+        return (relative.to_string(), disposition);
+    }
+    if target_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        return (
+            target.to_string(),
+            UnresolvedRefDisposition::AmbiguousExternalOk,
+        );
+    }
+    (target.to_string(), disposition)
 }
 
 fn is_inside_scan_roots(relative: &Utf8Path, scan_roots: &[Utf8PathBuf]) -> bool {
@@ -1461,6 +1487,92 @@ mod tests {
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
 
+        assert!(result.pending_edges.iter().any(|edge| {
+            edge.target_identity == "missing.md"
+                && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
+        }));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn absolute_markdown_links_inside_corpus_normalize_to_relative_refs() {
+        let tmp = std::env::temp_dir().join("anneal_test_absolute_md_link");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(&tmp, "target.md", "# Target\n");
+        let absolute_target = tmp.join("target.md");
+        write_md_file(
+            &tmp,
+            "doc.md",
+            &format!("# Doc\n\nSee [target]({}).\n", absolute_target.display()),
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let mut result = build_graph(root, &config).unwrap();
+        assert!(result.pending_edges.iter().any(|edge| {
+            edge.target_identity == "target.md"
+                && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
+        }));
+        crate::extract::resolve::resolve_all(
+            &mut result.graph,
+            &result.label_candidates,
+            &result.pending_edges,
+            &config,
+            root,
+            &result.filename_index,
+        );
+        let doc_node = result
+            .graph
+            .nodes()
+            .find_map(|(node_id, handle)| (handle.id == "doc.md").then_some(node_id))
+            .expect("doc node");
+        assert!(
+            result.graph.outgoing(doc_node).iter().any(|edge| {
+                result.graph.node(edge.target).id == "target.md" && edge.kind == EdgeKind::Cites
+            }),
+            "absolute in-corpus markdown link should resolve to target.md"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn source_code_links_do_not_create_gate_level_pending_edges() {
+        let tmp = std::env::temp_dir().join("anneal_test_source_code_link");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_md_file(
+            &tmp,
+            "doc.md",
+            "# Doc\n\nSee [analysis](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs:1078) and [missing](missing.md).\n",
+        );
+
+        let config = AnnealConfig::default();
+        let root = Utf8Path::from_path(&tmp).unwrap();
+        let result = build_graph(root, &config).unwrap();
+
+        assert!(
+            !result
+                .pending_edges
+                .iter()
+                .any(|edge| edge.target_identity.contains("analysis.rs")
+                    && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate),
+            "source-code citations should not enter gate-level pending edges: {:?}",
+            result
+                .pending_edges
+                .iter()
+                .map(|edge| (edge.target_identity.as_str(), edge.unresolved_disposition))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            result.code_refs.iter().any(|reference| reference.path
+                == "/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs"
+                && reference.start_line == Some(1078)),
+            "source-code citation should be preserved as a code ref: {:?}",
+            result.code_refs
+        );
         assert!(result.pending_edges.iter().any(|edge| {
             edge.target_identity == "missing.md"
                 && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate

@@ -48,6 +48,10 @@ static CODE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 const DEFAULT_CODE_PATH_ROOTS: &[&str] = &["crates", "lib", "src", "app", "test", "priv", "native"];
 const EXCLUDED_CODE_PATH_ROOTS: &[&str] = &["_build", "target", "node_modules"];
+const SOURCE_FILE_EXTENSIONS: &[&str] = &[
+    "c", "cc", "cpp", "cs", "css", "ex", "exs", "go", "h", "hpp", "hs", "java", "js", "jsx", "kt",
+    "lua", "m", "mm", "php", "py", "rb", "rs", "scala", "sh", "sql", "swift", "ts", "tsx",
+];
 
 /// A label match found during content scanning, not yet resolved to a namespace.
 pub(crate) struct LabelCandidate {
@@ -409,6 +413,17 @@ pub(crate) fn scan_file_cmark(
                                 dest
                             };
                             if !clean_dest.is_empty() {
+                                if record_source_link_ref(
+                                    dest,
+                                    offset,
+                                    file_path,
+                                    file_path_str,
+                                    line_index,
+                                    &mut result,
+                                    &mut discovered_refs,
+                                ) {
+                                    continue;
+                                }
                                 if record_code_path_ref(
                                     clean_dest,
                                     offset,
@@ -687,6 +702,10 @@ fn classify_body_ref(value: &str) -> RefHint {
         return RefHint::External;
     }
 
+    if is_source_file_ref(value) {
+        return RefHint::External;
+    }
+
     // File path (.md extension)
     if std::path::Path::new(value)
         .extension()
@@ -923,6 +942,38 @@ fn record_code_path_ref(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn record_source_link_ref(
+    raw: &str,
+    block_start_offset: usize,
+    file_path: &Utf8Path,
+    file_path_str: &str,
+    line_index: &LineIndex,
+    result: &mut ScanResult,
+    discovered_refs: &mut Vec<DiscoveredRef>,
+) -> bool {
+    let (without_fragment, fragment_line) = split_line_fragment(raw);
+    let (path, suffix_start, suffix_end) = split_line_suffix(without_fragment);
+    let path = trim_code_path_punctuation(path);
+    if !is_source_file_path(path) {
+        return false;
+    }
+    let start_line = suffix_start.or(fragment_line);
+    let end_line = suffix_end.or(start_line);
+    let source_line = line_index.offset_to_line(block_start_offset);
+    record_normalized_code_path_ref(
+        path,
+        start_line,
+        end_line,
+        source_line,
+        file_path,
+        file_path_str,
+        result,
+        discovered_refs,
+    );
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_normalized_code_path_ref(
     path: &str,
     start_line: Option<u32>,
@@ -971,6 +1022,39 @@ fn trim_code_path_punctuation(path: &str) -> &str {
     path.trim_end_matches(['.', ',', ';', ':', '!', '?'])
 }
 
+fn split_line_fragment(raw: &str) -> (&str, Option<u32>) {
+    let Some((path, fragment)) = raw.split_once('#') else {
+        return (raw, None);
+    };
+    let fragment = fragment.strip_prefix('L').unwrap_or(fragment);
+    let line = fragment
+        .split(['-', ':'])
+        .next()
+        .and_then(|line| line.parse::<u32>().ok());
+    (path, line)
+}
+
+fn split_line_suffix(raw: &str) -> (&str, Option<u32>, Option<u32>) {
+    let Some((path, suffix)) = raw.rsplit_once(':') else {
+        return (raw, None, None);
+    };
+    let Some((start, end)) = parse_line_range(suffix) else {
+        return (raw, None, None);
+    };
+    (path, Some(start), end.or(Some(start)))
+}
+
+fn parse_line_range(raw: &str) -> Option<(u32, Option<u32>)> {
+    let (start, end) = raw.split_once('-').unwrap_or((raw, ""));
+    let start = start.parse::<u32>().ok()?;
+    let end = if end.is_empty() {
+        None
+    } else {
+        Some(end.parse::<u32>().ok()?)
+    };
+    Some((start, end))
+}
+
 fn has_code_path_left_boundary(text: &str, start: usize) -> bool {
     if start == 0 {
         return true;
@@ -1007,6 +1091,24 @@ fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
             .iter()
             .map(|root| root.trim_matches('/'))
             .any(|configured| configured == root)
+}
+
+fn is_source_file_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            !ext.eq_ignore_ascii_case("md")
+                && SOURCE_FILE_EXTENSIONS
+                    .iter()
+                    .any(|source_ext| ext.eq_ignore_ascii_case(source_ext))
+        })
+}
+
+fn is_source_file_ref(raw: &str) -> bool {
+    let (without_fragment, _) = split_line_fragment(raw);
+    let (path, _, _) = split_line_suffix(without_fragment);
+    is_source_file_path(trim_code_path_punctuation(path))
 }
 
 #[cfg(test)]
@@ -1357,6 +1459,53 @@ mod tests {
     }
 
     #[test]
+    fn cmark_source_file_links_become_code_refs_not_file_refs() {
+        let body = "[analysis](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs:1078) and [eval](crates/anneal-core/src/runtime/eval.rs#L42)\n";
+        let (result, refs) = cmark_scan(body);
+        assert!(
+            result.file_refs.is_empty(),
+            "source-file links should not become corpus file refs: {:?}",
+            result.file_refs
+        );
+        assert!(
+            result.code_refs.iter().any(|reference| reference.path
+                == "/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs"
+                && reference.start_line == Some(1078)),
+            "absolute source link should become a code ref: {:?}",
+            result.code_refs
+        );
+        assert!(
+            result.code_refs.iter().any(|reference| reference.path
+                == "crates/anneal-core/src/runtime/eval.rs"
+                && reference.start_line == Some(42)),
+            "fragment line source link should become a code ref: {:?}",
+            result.code_refs
+        );
+        assert!(
+            refs.iter()
+                .filter(|reference| reference.hint == RefHint::External)
+                .count()
+                >= 2,
+            "source-file links should remain report-visible as external refs: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn cmark_source_file_link_with_markdown_link_keeps_only_markdown_file_ref() {
+        let body = "[analysis](/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs:1078) and [missing](missing.md).\n";
+        let (result, _) = cmark_scan(body);
+        assert_eq!(
+            result
+                .file_refs
+                .iter()
+                .map(|reference| reference.target.as_str())
+                .collect::<Vec<_>>(),
+            ["missing.md"],
+            "only the missing markdown link should become a corpus file ref"
+        );
+    }
+
+    #[test]
     fn cmark_version_dot_rejection() {
         let body = "See formal-model/sample-algebra-v1.2.md for details\n";
         let (result, _) = cmark_scan(body);
@@ -1534,6 +1683,15 @@ mod tests {
         assert!(
             matches!(hint, RefHint::FilePath),
             "design.md should be FilePath, got: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn classify_body_ref_treats_source_file_as_external() {
+        let hint = classify_body_ref("crates/anneal-core/src/runtime/analysis.rs:1078");
+        assert!(
+            matches!(hint, RefHint::External),
+            "source-file citation should be External, got: {hint:?}"
         );
     }
 
