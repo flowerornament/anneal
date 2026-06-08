@@ -38,6 +38,8 @@ const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
 const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
+const SUPERSEDES_EDGE_KIND: &str = "Supersedes";
+const RESOLVED_FILE_META_KEY: &str = "md.resolved_file";
 const SKILL_MARKDOWN: &str = include_str!("../../../skills/anneal/SKILL.md");
 
 pub fn should_handle_args(args: &[OsString]) -> bool {
@@ -336,6 +338,7 @@ enum RuntimeCommand {
     Handle {
         handle: String,
         impact: bool,
+        lineage: bool,
     },
     Check,
     Describe {
@@ -492,6 +495,7 @@ Arguments:
 
 Options:
       --impact                   Include direct/indirect reverse dependencies
+      --lineage                  Include file supersession DAG and current head
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
@@ -1055,7 +1059,11 @@ impl RuntimeSession {
                     .datalog();
                 self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
             }
-            RuntimeCommand::Handle { handle, impact } => self.run_handle(handle, impact),
+            RuntimeCommand::Handle {
+                handle,
+                impact,
+                lineage,
+            } => self.run_handle(handle, impact, lineage),
             RuntimeCommand::Check => self.run_check_gate(),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(&name).datalog();
@@ -1097,7 +1105,7 @@ impl RuntimeSession {
         self.run_query(plan.query_source(), ExplainOptions::disabled(), view)
     }
 
-    fn run_handle(&self, handle: String, impact: bool) -> Result<CommandOutput> {
+    fn run_handle(&self, handle: String, impact: bool, lineage: bool) -> Result<CommandOutput> {
         let mut output = self.eval(&handle_query(&handle), ExplainOptions::disabled())?;
         if output.rows.is_empty() && looks_like_retired_section_handle(&handle) {
             bail!("{}", retired_section_handle_message(&handle));
@@ -1105,9 +1113,18 @@ impl RuntimeSession {
         if impact {
             output.rows.extend(self.handle_impact_rows(&handle));
         }
+        if lineage {
+            output
+                .rows
+                .extend(handle_lineage_rows(&self.store, &handle));
+        }
         Ok(CommandOutput::rows(
             output.rows,
-            RowView::Handle { handle, impact },
+            RowView::Handle {
+                handle,
+                impact,
+                lineage,
+            },
         ))
     }
 
@@ -1857,6 +1874,171 @@ fn compute_handle_impact(store: &FactStore, handle: &str) -> Vec<ImpactDependenc
     dependencies
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LineageNode {
+    handle: String,
+    role: &'static str,
+    depth: u32,
+    disposition: &'static str,
+    is_head: bool,
+    status: Option<String>,
+    file: String,
+    line: u32,
+    summary: String,
+}
+
+fn handle_lineage_rows(store: &FactStore, handle: &str) -> Vec<Row> {
+    let Some(root) = resolve_lineage_file_handle(store, handle) else {
+        return Vec::new();
+    };
+    compute_file_lineage(store, root.as_str())
+        .into_iter()
+        .map(|node| lineage_node_row(handle, root.as_str(), node))
+        .collect()
+}
+
+fn resolve_lineage_file_handle(store: &FactStore, handle: &str) -> Option<String> {
+    let file_handles = store
+        .handles()
+        .iter()
+        .filter(|fact| fact.kind == "file")
+        .map(|fact| fact.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if file_handles.contains(handle) {
+        return Some(handle.to_string());
+    }
+
+    if let Some(resolved) = store
+        .meta()
+        .iter()
+        .find(|fact| fact.handle == handle && fact.key == RESOLVED_FILE_META_KEY)
+        .map(|fact| fact.value.as_str())
+        && file_handles.contains(resolved)
+    {
+        return Some(resolved.to_string());
+    }
+
+    let stem_matches = file_handles
+        .iter()
+        .filter(|candidate| file_handle_stem(candidate).is_some_and(|stem| stem == handle))
+        .copied()
+        .collect::<Vec<_>>();
+    match stem_matches.as_slice() {
+        [single] => Some((*single).to_string()),
+        _ => None,
+    }
+}
+
+fn file_handle_stem(handle: &str) -> Option<&str> {
+    let file_name = handle.rsplit('/').next().unwrap_or(handle);
+    file_name.strip_suffix(".md")
+}
+
+fn compute_file_lineage(store: &FactStore, root: &str) -> Vec<LineageNode> {
+    let file_handles = store
+        .handles()
+        .iter()
+        .filter(|fact| fact.kind == "file")
+        .map(|fact| fact.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let handle_index = store
+        .handles()
+        .iter()
+        .map(|fact| (fact.id.as_str(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let mut successors = BTreeMap::<&str, BTreeSet<&str>>::new();
+    let mut predecessors = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for edge in store.edges() {
+        if edge.kind != SUPERSEDES_EDGE_KIND
+            || !file_handles.contains(edge.from.as_str())
+            || !file_handles.contains(edge.to.as_str())
+        {
+            continue;
+        }
+        successors
+            .entry(edge.from.as_str())
+            .or_default()
+            .insert(edge.to.as_str());
+        predecessors
+            .entry(edge.to.as_str())
+            .or_default()
+            .insert(edge.from.as_str());
+    }
+
+    let successor_depths = lineage_distances(root, &successors);
+    let predecessor_depths = lineage_distances(root, &predecessors);
+    let mut all_handles = BTreeSet::from([root]);
+    all_handles.extend(successor_depths.keys().copied());
+    all_handles.extend(predecessor_depths.keys().copied());
+
+    all_handles
+        .into_iter()
+        .filter_map(|handle| {
+            let fact = handle_index.get(handle).copied()?;
+            let successor_depth = successor_depths.get(handle).copied();
+            let predecessor_depth = predecessor_depths.get(handle).copied();
+            let role = if handle == root {
+                "root"
+            } else if successor_depth.is_some() {
+                "successor"
+            } else if predecessor_depth.is_some() {
+                "predecessor"
+            } else {
+                "related"
+            };
+            let depth = successor_depth.or(predecessor_depth).unwrap_or(0);
+            let is_superseded = successors
+                .get(handle)
+                .is_some_and(|edges| !edges.is_empty());
+            let is_head = !is_superseded
+                && predecessors
+                    .get(handle)
+                    .is_some_and(|edges| !edges.is_empty());
+            let disposition = if is_superseded {
+                "superseded"
+            } else if is_head {
+                "current_head"
+            } else {
+                "current"
+            };
+            Some(LineageNode {
+                handle: handle.to_string(),
+                role,
+                depth,
+                disposition,
+                is_head,
+                status: fact.status.clone(),
+                file: fact.file.clone(),
+                line: fact.line,
+                summary: fact.summary.clone(),
+            })
+        })
+        .collect()
+}
+
+fn lineage_distances<'a>(
+    root: &'a str,
+    graph: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+) -> BTreeMap<&'a str, u32> {
+    let mut distances = BTreeMap::new();
+    let mut seen = BTreeSet::from([root]);
+    let mut queue = VecDeque::from([(root, 0_u32)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        let Some(next_nodes) = graph.get(current) else {
+            continue;
+        };
+        for next in next_nodes {
+            if !seen.insert(*next) {
+                continue;
+            }
+            let next_depth = depth.saturating_add(1);
+            distances.insert(*next, next_depth);
+            queue.push_back((*next, next_depth));
+        }
+    }
+    distances
+}
+
 fn impact_traverse_set(configs: &[ConfigFact]) -> BTreeSet<&str> {
     let configured = configs
         .iter()
@@ -1867,6 +2049,45 @@ fn impact_traverse_set(configs: &[ConfigFact]) -> BTreeSet<&str> {
         DEFAULT_IMPACT_TRAVERSE.iter().copied().collect()
     } else {
         configured
+    }
+}
+
+fn lineage_node_row(requested: &str, normalized_root: &str, node: LineageNode) -> Row {
+    Row {
+        fields: BTreeMap::from([
+            ("h".to_string(), Value::String(requested.to_string())),
+            ("relation".to_string(), Value::String("lineage".to_string())),
+            ("other".to_string(), Value::String(node.handle)),
+            (
+                "kind".to_string(),
+                Value::String(SUPERSEDES_EDGE_KIND.to_string()),
+            ),
+            (
+                "status".to_string(),
+                node.status.map_or(Value::Null, Value::String),
+            ),
+            ("file".to_string(), Value::String(node.file)),
+            (
+                "line".to_string(),
+                Value::Number(NumberValue::Int(i64::from(node.line))),
+            ),
+            ("summary".to_string(), Value::String(node.summary)),
+            ("role".to_string(), Value::String(node.role.to_string())),
+            (
+                "depth".to_string(),
+                Value::Number(NumberValue::Int(i64::from(node.depth))),
+            ),
+            (
+                "disposition".to_string(),
+                Value::String(node.disposition.to_string()),
+            ),
+            ("head".to_string(), Value::Bool(node.is_head)),
+            (
+                "normalized_root".to_string(),
+                Value::String(normalized_root.to_string()),
+            ),
+        ]),
+        derivation: None,
     }
 }
 
@@ -2102,12 +2323,18 @@ fn empty_binding_hint_text(row_count: usize, example: &str) -> String {
 enum RowView {
     Search,
     Read,
-    Handle { handle: String, impact: bool },
+    Handle {
+        handle: String,
+        impact: bool,
+        lineage: bool,
+    },
     Broken,
     Describe,
     Schema,
     Eval,
-    Verb { name: String },
+    Verb {
+        name: String,
+    },
 }
 
 impl RowView {
@@ -2767,8 +2994,13 @@ fn write_rows_text<W: Write>(
     view: &RowView,
     empty_binding_hint: Option<&str>,
 ) -> Result<()> {
-    if let RowView::Handle { handle, impact } = view {
-        return write_handle_text(writer, handle, *impact, rows);
+    if let RowView::Handle {
+        handle,
+        impact,
+        lineage,
+    } = view
+    {
+        return write_handle_text(writer, handle, *impact, *lineage, rows);
     }
 
     if *view == RowView::Describe {
@@ -2904,6 +3136,7 @@ fn write_handle_text<W: Write>(
     mut writer: W,
     handle: &str,
     include_impact: bool,
+    include_lineage: bool,
     rows: &[Row],
 ) -> Result<()> {
     let edge_count = rows
@@ -2927,6 +3160,7 @@ fn write_handle_text<W: Write>(
     let mut code_refs = Vec::new();
     let mut direct_impact = Vec::new();
     let mut indirect_impact = Vec::new();
+    let mut lineage = Vec::new();
     let mut wrote_self = false;
     for row in rows {
         let relation = required_string(row, "relation")?;
@@ -2959,6 +3193,7 @@ fn write_handle_text<W: Write>(
                     indirect_impact.push(row);
                 }
             }
+            "lineage" => lineage.push(row),
             _ => {}
         }
     }
@@ -2971,6 +3206,9 @@ fn write_handle_text<W: Write>(
     write_handle_edges(&mut writer, "Incoming", "<-", &incoming)?;
     if include_impact {
         write_handle_impact(&mut writer, &direct_impact, &indirect_impact)?;
+    }
+    if include_lineage {
+        write_handle_lineage(&mut writer, handle, &lineage)?;
     }
     Ok(())
 }
@@ -3063,6 +3301,114 @@ fn write_handle_impact_group<W: Write>(writer: &mut W, heading: &str, rows: &[&R
     Ok(())
 }
 
+fn write_handle_lineage<W: Write>(writer: &mut W, handle: &str, rows: &[&Row]) -> Result<()> {
+    writeln!(writer)?;
+    writeln!(writer, "Lineage (file supersession)")?;
+    if rows.is_empty() {
+        writeln!(
+            writer,
+            "    (none; no file-handle Supersedes lineage found)"
+        )?;
+        return Ok(());
+    }
+
+    let normalized_root = rows
+        .first()
+        .map(|row| required_string(row, "normalized_root"))
+        .transpose()?
+        .unwrap_or(handle);
+    if normalized_root != handle {
+        writeln!(writer, "normalized_root={normalized_root}")?;
+    }
+
+    let root = rows
+        .iter()
+        .find(|row| required_string(row, "role").is_ok_and(|role| role == "root"));
+    if let Some(root) = root {
+        writeln!(writer, "root: {}", lineage_row_summary(root)?)?;
+    }
+
+    let mut heads = lineage_rows_with_bool(rows, "head", true)?;
+    let mut successors = lineage_rows_with_role(rows, "successor")?;
+    let mut predecessors = lineage_rows_with_role(rows, "predecessor")?;
+    sort_lineage_rows(&mut heads, false);
+    sort_lineage_rows(&mut successors, false);
+    sort_lineage_rows(&mut predecessors, true);
+
+    write_handle_lineage_group(writer, "Current head(s)", &heads)?;
+    write_handle_lineage_group(writer, "Newer", &successors)?;
+    write_handle_lineage_group(writer, "Older", &predecessors)?;
+    Ok(())
+}
+
+fn lineage_rows_with_bool<'a>(rows: &[&'a Row], field: &str, value: bool) -> Result<Vec<&'a Row>> {
+    rows.iter()
+        .copied()
+        .filter(|row| required_bool(row, field).is_ok_and(|actual| actual == value))
+        .map(Ok)
+        .collect()
+}
+
+fn lineage_rows_with_role<'a>(rows: &[&'a Row], role: &str) -> Result<Vec<&'a Row>> {
+    rows.iter()
+        .copied()
+        .filter(|row| required_string(row, "role").is_ok_and(|actual| actual == role))
+        .map(Ok)
+        .collect()
+}
+
+fn sort_lineage_rows(rows: &mut [&Row], reverse_depth: bool) {
+    rows.sort_by(|left, right| {
+        let left_depth = lineage_row_depth(left);
+        let right_depth = lineage_row_depth(right);
+        let depth_order = if reverse_depth {
+            right_depth.cmp(&left_depth)
+        } else {
+            left_depth.cmp(&right_depth)
+        };
+        depth_order.then_with(|| lineage_row_handle(left).cmp(lineage_row_handle(right)))
+    });
+}
+
+fn lineage_row_depth(row: &Row) -> i64 {
+    required_number(row, "depth")
+        .ok()
+        .and_then(number_to_i64)
+        .unwrap_or(i64::MAX)
+}
+
+fn lineage_row_handle(row: &Row) -> &str {
+    required_string(row, "other").unwrap_or("")
+}
+
+fn write_handle_lineage_group<W: Write>(
+    writer: &mut W,
+    heading: &str,
+    rows: &[&Row],
+) -> Result<()> {
+    writeln!(writer, "{heading} ({})", rows.len())?;
+    if rows.is_empty() {
+        writeln!(writer, "    (none)")?;
+        return Ok(());
+    }
+    for (index, row) in rows.iter().enumerate() {
+        writeln!(writer, "{:>2}. {}", index + 1, lineage_row_summary(row)?)?;
+    }
+    Ok(())
+}
+
+fn lineage_row_summary(row: &Row) -> Result<String> {
+    let handle = required_string(row, "other")?;
+    let disposition = required_string(row, "disposition")?;
+    let status = optional_string(row, "status")?.unwrap_or("unknown");
+    let depth = required_number(row, "depth")?;
+    let file = required_string(row, "file")?;
+    Ok(format!(
+        "{handle}  disposition={disposition}  status={status}  depth={}  read=`anneal read {file}`",
+        display_number(depth),
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct StatusMetric<'a> {
     category: &'a str,
@@ -3109,6 +3455,14 @@ fn optional_number<'a>(row: &'a Row, field: &str) -> Result<Option<&'a NumberVal
         Some(Value::Number(value)) => Ok(Some(value)),
         Some(Value::Null) | None => Ok(None),
         Some(_) => bail!("row field {field:?} must be a number"),
+    }
+}
+
+fn required_bool(row: &Row, field: &str) -> Result<bool> {
+    match row.fields.get(field) {
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => bail!("row field {field:?} must be a bool"),
+        None => bail!("row missing field {field:?}"),
     }
 }
 
@@ -3324,9 +3678,11 @@ fn parse_read(args: &[String]) -> Result<RuntimeCommand> {
 fn parse_handle(args: &[String]) -> Result<RuntimeCommand> {
     let mut handle = None;
     let mut impact = false;
+    let mut lineage = false;
     for arg in args {
         match arg.as_str() {
             "--impact" => impact = true,
+            "--lineage" => lineage = true,
             value if value.starts_with('-') => {
                 reject_runtime_compatibility_flag("handle", value)?;
                 bail!("unknown handle option {value:?}");
@@ -3337,6 +3693,7 @@ fn parse_handle(args: &[String]) -> Result<RuntimeCommand> {
     Ok(RuntimeCommand::Handle {
         handle: handle.context("handle requires a handle")?,
         impact,
+        lineage,
     })
 }
 
@@ -3641,6 +3998,10 @@ mod tests {
     use super::*;
     use anneal_core::runtime::eval::ExplainRowLimit;
     use anneal_core::runtime::prelude::standard_prelude_program;
+    use anneal_core::{
+        FactBatch, FactBatchMode, FactIdentity, HandleFact, MetaFact, NativeId, OriginUri,
+        Revision, SourceName,
+    };
     use std::fs;
     use std::num::NonZeroUsize;
     use tempfile::tempdir;
@@ -3657,6 +4018,128 @@ mod tests {
             .status()
             .unwrap_or_else(|err| panic!("git {args:?} failed to run: {err}"));
         assert!(status.success(), "git {args:?} failed: {status}");
+    }
+
+    fn test_identity(native_id: &str) -> FactIdentity {
+        FactIdentity::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            NativeId::from(native_id),
+            OriginUri::from(format!("file:///{native_id}")),
+            Revision::from("test-revision"),
+            Generation::new(1),
+        )
+    }
+
+    fn test_handle(id: &str, kind: &str, status: Option<&str>, file: &str) -> HandleFact {
+        HandleFact {
+            identity: test_identity(id),
+            id: id.to_string(),
+            kind: kind.to_string(),
+            status: status.map(str::to_string),
+            namespace: String::new(),
+            file: file.to_string(),
+            line: 1,
+            date: None,
+            area: String::new(),
+            summary: String::new(),
+        }
+    }
+
+    fn test_edge(from: &str, to: &str, kind: &str) -> EdgeFact {
+        EdgeFact {
+            identity: test_identity(from),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            file: from.to_string(),
+            line: 1,
+        }
+    }
+
+    fn test_meta(handle: &str, key: &str, value: &str) -> MetaFact {
+        MetaFact {
+            identity: test_identity(handle),
+            handle: handle.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn lineage_store() -> FactStore {
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("test-source"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        batch.handles.extend([
+            test_handle(
+                "implementation/2026-05-30-unified.md",
+                "file",
+                Some("superseded"),
+                "implementation/2026-05-30-unified.md",
+            ),
+            test_handle(
+                "compiler/2026-03-30-cell-graph.md",
+                "file",
+                Some("superseded"),
+                "compiler/2026-03-30-cell-graph.md",
+            ),
+            test_handle(
+                "implementation/2026-05-31-program-space.md",
+                "file",
+                Some("active"),
+                "implementation/2026-05-31-program-space.md",
+            ),
+            test_handle(
+                "formal-model/history/murail-formal-model-v14.md",
+                "file",
+                Some("superseded"),
+                "formal-model/history/murail-formal-model-v14.md",
+            ),
+            test_handle(
+                "formal-model/murail-formal-model-v17.md",
+                "file",
+                Some("authoritative"),
+                "formal-model/murail-formal-model-v17.md",
+            ),
+            test_handle("murail-formal-model-v14", "version", None, ""),
+            test_handle("murail-formal-model-v17", "version", None, ""),
+            test_handle("raw-v14", "version", None, ""),
+            test_handle("raw-v17", "version", None, ""),
+        ]);
+        batch.edges.extend([
+            test_edge(
+                "implementation/2026-05-30-unified.md",
+                "implementation/2026-05-31-program-space.md",
+                SUPERSEDES_EDGE_KIND,
+            ),
+            test_edge(
+                "compiler/2026-03-30-cell-graph.md",
+                "implementation/2026-05-31-program-space.md",
+                SUPERSEDES_EDGE_KIND,
+            ),
+            test_edge(
+                "formal-model/history/murail-formal-model-v14.md",
+                "formal-model/murail-formal-model-v17.md",
+                SUPERSEDES_EDGE_KIND,
+            ),
+            test_edge(
+                "murail-formal-model-v17",
+                "murail-formal-model-v14",
+                SUPERSEDES_EDGE_KIND,
+            ),
+            test_edge("raw-v17", "raw-v14", SUPERSEDES_EDGE_KIND),
+        ]);
+        batch.meta.push(test_meta(
+            "murail-formal-model-v14",
+            RESOLVED_FILE_META_KEY,
+            "formal-model/history/murail-formal-model-v14.md",
+        ));
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge lineage batch");
+        store
     }
 
     #[test]
@@ -4287,6 +4770,7 @@ mod tests {
             RuntimeCommand::Handle {
                 handle: "b.md".to_string(),
                 impact: true,
+                lineage: false,
             }
         );
 
@@ -4296,10 +4780,27 @@ mod tests {
             RuntimeCommand::Handle {
                 handle: "b.md".to_string(),
                 impact: true,
+                lineage: false,
             }
         );
 
         assert!(HelpTopic::Handle.render().contains("--impact"));
+        assert!(HelpTopic::Handle.render().contains("--lineage"));
+    }
+
+    #[test]
+    fn parses_handle_lineage_flag() {
+        let parsed =
+            Invocation::parse(os(&["anneal", "handle", "b.md", "--lineage"])).expect("parse");
+
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Handle {
+                handle: "b.md".to_string(),
+                impact: false,
+                lineage: true,
+            }
+        );
     }
 
     #[test]
@@ -4338,6 +4839,7 @@ mod tests {
                 RowView::Handle {
                     handle: "missing.md".to_string(),
                     impact: false,
+                    lineage: false,
                 },
             )
             .empty_rows_diagnostic(OutputMode::Human),
@@ -4604,6 +5106,7 @@ mod tests {
         let Err(error) = session.run(RuntimeCommand::Handle {
             handle: "a.md#A".to_string(),
             impact: false,
+            lineage: false,
         }) else {
             panic!("retired section handle should recover");
         };
@@ -4916,13 +5419,65 @@ mod tests {
         ];
         let mut rendered = Vec::new();
 
-        write_handle_text(&mut rendered, "doc.md", false, &rows).expect("render handle");
+        write_handle_text(&mut rendered, "doc.md", false, false, &rows).expect("render handle");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.contains("Outgoing\nDependsOn (1)"));
         assert!(rendered.contains(" 1. -> plan.md  at=doc.md:4"));
         assert!(rendered.contains("Code references (1)"));
         assert!(rendered.contains(" 1. lib/example/admission.rs:142-167  at=doc.md:8"));
+    }
+
+    #[test]
+    fn lineage_normalizes_short_handles_before_walking_file_edges() {
+        let store = lineage_store();
+        let rows = handle_lineage_rows(&store, "murail-formal-model-v14");
+        let lineage = rows
+            .iter()
+            .filter(|row| required_string(row, "relation").is_ok_and(|value| value == "lineage"))
+            .collect::<Vec<_>>();
+
+        assert!(lineage.iter().all(|row| {
+            required_string(row, "normalized_root")
+                .is_ok_and(|root| root == "formal-model/history/murail-formal-model-v14.md")
+        }));
+        assert!(lineage.iter().any(|row| {
+            required_string(row, "other")
+                .is_ok_and(|other| other == "formal-model/murail-formal-model-v17.md")
+                && required_string(row, "role").is_ok_and(|role| role == "successor")
+                && required_string(row, "disposition")
+                    .is_ok_and(|disposition| disposition == "current_head")
+        }));
+        assert!(
+            handle_lineage_rows(&store, "raw-v14").is_empty(),
+            "raw reversed short-id edges must not be walked without file normalization"
+        );
+    }
+
+    #[test]
+    fn lineage_renderer_shows_merge_predecessors_and_heads() {
+        let store = lineage_store();
+        let rows = handle_lineage_rows(&store, "implementation/2026-05-31-program-space.md");
+        let mut rendered = Vec::new();
+
+        CommandOutput::rows(
+            rows,
+            RowView::Handle {
+                handle: "implementation/2026-05-31-program-space.md".to_string(),
+                impact: false,
+                lineage: true,
+            },
+        )
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render lineage");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("Lineage (file supersession)"));
+        assert!(rendered.contains("Current head(s) (1)"));
+        assert!(rendered.contains("implementation/2026-05-31-program-space.md"));
+        assert!(rendered.contains("Older (2)"));
+        assert!(rendered.contains("implementation/2026-05-30-unified.md"));
+        assert!(rendered.contains("compiler/2026-03-30-cell-graph.md"));
     }
 
     fn status_output(rows: Vec<Row>) -> CommandOutput {
@@ -5139,6 +5694,7 @@ mod tests {
             .run(RuntimeCommand::Handle {
                 handle: "b.md".to_string(),
                 impact: true,
+                lineage: false,
             })
             .expect("handle runs");
         let CommandOutput::Rows { rows, view, .. } = output else {
@@ -5149,6 +5705,7 @@ mod tests {
             RowView::Handle {
                 handle: "b.md".to_string(),
                 impact: true,
+                lineage: false,
             }
         );
 
@@ -5198,6 +5755,7 @@ mod tests {
             RowView::Handle {
                 handle: "b.md".to_string(),
                 impact: true,
+                lineage: false,
             },
         )
         .write(&mut rendered, OutputMode::Human)
