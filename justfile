@@ -30,6 +30,7 @@ check:
     echo "--- quality gate ---" >&2
     _t fmt     cargo fmt --check
     _t install bash -n install.sh
+    _t arch    just check-arch
     _t clippy  cargo clippy --all-targets
     _t test    cargo test
     # Architecture fitness functions (offline, fast): unused deps + crate-DAG /
@@ -52,6 +53,11 @@ check:
 audit:
     cargo machete
     cargo deny check
+
+# Architecture fitness functions that are cheap enough for every local check.
+[group('check')]
+check-arch:
+    python3 scripts/check-arch.py
 
 # Format source files (modify in place)
 [group('check')]
