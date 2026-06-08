@@ -2,6 +2,39 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.17.0 - 2026-06-07
+
+anneal runs on one planned executor, with the same answers and a smaller core.
+
+The runtime now uses a single planned execution path for global rules,
+query-local rules, recursion, aggregates, time scopes, and provenance. The
+former interpreted evaluator is retired, and the core is decomposed into
+focused `vm/` modules for execution, fixpoint scheduling, frames, provenance,
+and time overlays. Results remain byte-identical across the query and verb
+surface; the release is mostly internal, with a few user-facing correctness
+fixes for honest diagnostics and graceful query errors.
+
+### Fixed
+
+- Parseable-but-unplannable queries report a normal error instead of panicking
+  the CLI.
+- External references, unresolved cross-corpus wikilinks, URI-scheme links, and
+  source-code citations such as `file.rs:123` classify as external references
+  rather than broken corpus links, so `anneal check` stays honest for docs that
+  cite external or code targets.
+
+### Internal
+
+- The runtime has one planned executor. The interpreted evaluator and its
+  `Binding`/`TracedBinding` path are retired; recursion, `--explain`, and
+  query-local rules execute through the same planned engine as global prelude
+  rules.
+- `anneal-core` is split into focused VM modules: `execute`, `fixpoint`,
+  `frame`, `provenance`, and `view`, with the runtime facade keeping analysis
+  and CLI/MCP entry points outside the executor.
+- `just check` includes `check-arch`, an architecture gate for the VM boundary
+  and workspace crate graph.
+
 ## v0.16.0 - 2026-06-04
 
 anneal evaluates over a relational tuple runtime — markedly faster, identical answers.

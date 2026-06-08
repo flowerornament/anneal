@@ -46,6 +46,9 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         let Some(arg) = arg.to_str() else {
             return true;
         };
+        if arg == "--version" {
+            return true;
+        }
         if matches!(arg, "-e" | "--eval") {
             return true;
         }
@@ -81,6 +84,12 @@ pub fn main_entry() -> Result<()> {
 
 pub fn run_args(args: Vec<OsString>) -> Result<()> {
     let mut invocation = Invocation::parse(args)?;
+    if let RuntimeCommand::Version = invocation.command {
+        return write_text(
+            io::stdout().lock(),
+            &format!("anneal {}\n", env!("CARGO_PKG_VERSION")),
+        );
+    }
     if let RuntimeCommand::Help { topic } = invocation.command {
         return write_text(io::stdout().lock(), &topic.render());
     }
@@ -299,6 +308,7 @@ impl Invocation {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RuntimeCommand {
+    Version,
     Status,
     Init {
         dry_run: bool,
@@ -697,6 +707,10 @@ impl RuntimeCommand {
             ));
         }
         match command.as_str() {
+            "--version" | "version" => {
+                ensure_no_args(rest, "--version")?;
+                Ok(Self::Version)
+            }
             "status" => {
                 ensure_no_args(rest, "status")?;
                 Ok(Self::Status)
@@ -1057,7 +1071,7 @@ impl RuntimeSession {
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
-            RuntimeCommand::Init { .. } | RuntimeCommand::Prime => {
+            RuntimeCommand::Version | RuntimeCommand::Init { .. } | RuntimeCommand::Prime => {
                 bail!("command is handled before runtime session load")
             }
         }
@@ -1270,6 +1284,7 @@ impl RuntimeCommand {
                     | "target_resolved_path"
             ),
             Self::Check
+            | Self::Version
             | Self::Init { .. }
             | Self::Prime
             | Self::Search { .. }
@@ -3576,9 +3591,23 @@ mod tests {
         assert!(should_handle_args(&os(&["anneal", "init"])));
         assert!(should_handle_args(&os(&["anneal", "prime"])));
         assert!(should_handle_args(&os(&["anneal", "help", "check"])));
+        assert!(should_handle_args(&os(&["anneal", "--version"])));
         assert!(!should_handle_args(&os(&["anneal", "--help"])));
         assert!(should_handle_args(&os(&["anneal", "check", "--json"])));
         assert!(!should_handle_args(&os(&["anneal", "--mcp"])));
+    }
+
+    #[test]
+    fn parses_version_without_loading_corpus() {
+        let parsed = Invocation::parse(os(&["anneal", "--version"])).expect("parse version");
+        assert_eq!(parsed.command, RuntimeCommand::Version);
+
+        let parsed = Invocation::parse(os(&["anneal", "version"])).expect("parse version command");
+        assert_eq!(parsed.command, RuntimeCommand::Version);
+
+        let err = Invocation::parse(os(&["anneal", "--version", "status"]))
+            .expect_err("version accepts no args");
+        assert!(err.to_string().contains("accepts no arguments"), "{err}");
     }
 
     #[test]
