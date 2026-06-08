@@ -1,3 +1,5 @@
+//! Runtime schema and predicate introspection.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::facts::STORED_RELATION_DESCRIPTORS;

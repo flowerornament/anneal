@@ -1,3 +1,5 @@
+//! Command-line argument parsing and human-facing rendering.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;

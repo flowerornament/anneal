@@ -1,3 +1,5 @@
+//! Low-level markdown extraction helpers for classified references.
+
 use std::sync::LazyLock;
 
 use regex::Regex;

@@ -1,3 +1,5 @@
+//! Lifecycle-status helpers shared by runtime and adapters.
+
 const TERMINAL_STATUS_HEURISTICS: &[&str] = &[
     "superseded",
     "archived",

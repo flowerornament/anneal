@@ -1,3 +1,5 @@
+//! MCP server entry point for anneal tools.
+
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

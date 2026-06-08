@@ -1,3 +1,5 @@
+//! Path naming conventions used by the markdown extractor.
+
 use camino::Utf8Path;
 
 pub(crate) const TERMINAL_DIRS: &[&str] = &["archive", "history", "prior"];

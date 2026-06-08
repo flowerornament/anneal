@@ -1,3 +1,5 @@
+//! Reference resolution from extracted markdown artifacts into graph facts.
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use camino::{Utf8Path, Utf8PathBuf};

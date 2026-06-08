@@ -1,3 +1,5 @@
+//! Parser for anneal's Datalog-like language.
+
 use crate::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, CallStyle, Comparison,
     ComparisonOp, ConfigBlock, Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident,

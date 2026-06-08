@@ -1,3 +1,5 @@
+//! Stable hashing utilities for deterministic local identifiers.
+
 /// Stable FNV-1a 64-bit hash used for deterministic local identifiers.
 pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     Fnv1a64::new().write(bytes).finish()

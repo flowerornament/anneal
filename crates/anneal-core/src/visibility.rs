@@ -1,3 +1,5 @@
+//! Visibility filtering for actor-scoped fact stores.
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,5 @@
+//! Program loading helpers for prelude, project, and inline rule layers.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};

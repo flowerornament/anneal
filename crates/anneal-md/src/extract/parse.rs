@@ -1,3 +1,5 @@
+//! Markdown parser that turns source files into extraction artifacts.
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 

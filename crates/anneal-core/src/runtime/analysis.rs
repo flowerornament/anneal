@@ -1,3 +1,5 @@
+//! Static analysis for rule safety, stratification, and signatures.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

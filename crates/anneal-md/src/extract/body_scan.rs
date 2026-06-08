@@ -1,3 +1,5 @@
+//! Text-body scanners for markdown references and code citations.
+
 use std::collections::HashMap;
 use std::sync::LazyLock;
 

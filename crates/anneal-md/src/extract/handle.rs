@@ -1,3 +1,5 @@
+//! Handle identity helpers for markdown-derived corpus nodes.
+
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 

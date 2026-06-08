@@ -1,3 +1,5 @@
+//! Time parsing and snapshot reference helpers.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ISO_DATE_LEN: usize = "YYYY-MM-DD".len();

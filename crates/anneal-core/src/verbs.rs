@@ -1,3 +1,5 @@
+//! Verb registry contracts for CLI and MCP command surfaces.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

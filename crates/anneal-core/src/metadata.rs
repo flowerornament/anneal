@@ -1,3 +1,5 @@
+//! Metadata markers for code-target probes.
+
 pub struct CodeTargetMeta;
 
 impl CodeTargetMeta {

@@ -1,3 +1,5 @@
+//! Runtime database, public eval types, and compatibility facade.
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;

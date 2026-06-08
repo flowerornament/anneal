@@ -1,3 +1,5 @@
+//! Shared identity newtypes for corpora, sources, and generations.
+
 use serde::{Deserialize, Serialize};
 
 macro_rules! string_id {

@@ -1,3 +1,5 @@
+//! Cold-start honesty integration tests for the bundled agent briefing.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

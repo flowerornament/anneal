@@ -1,3 +1,5 @@
+//! Code-target existence and history probes for source references.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 

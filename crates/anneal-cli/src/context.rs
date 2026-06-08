@@ -1,3 +1,5 @@
+//! Goal-oriented context selection for the CLI.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;

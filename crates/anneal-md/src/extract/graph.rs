@@ -1,3 +1,5 @@
+//! Lightweight extraction graph structures for markdown references.
+
 use std::fmt;
 
 use serde::{Serialize, Serializer};

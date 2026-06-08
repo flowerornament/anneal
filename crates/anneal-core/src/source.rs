@@ -1,3 +1,5 @@
+//! Source adapter contracts and actor capability types.
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::{

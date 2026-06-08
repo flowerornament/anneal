@@ -1,3 +1,5 @@
+//! Path normalization policy for files inside corpus roots.
+
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

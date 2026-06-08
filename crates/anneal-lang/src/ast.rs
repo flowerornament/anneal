@@ -1,3 +1,5 @@
+//! Abstract syntax tree types for anneal language programs and queries.
+
 use std::collections::BTreeSet;
 use std::fmt;
 

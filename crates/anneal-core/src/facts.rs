@@ -1,3 +1,5 @@
+//! Stored fact types emitted by source adapters.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

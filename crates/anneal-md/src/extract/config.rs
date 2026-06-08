@@ -1,3 +1,5 @@
+//! Markdown adapter configuration and migration parsing.
+
 use std::collections::HashMap;
 use std::path::Path;
 

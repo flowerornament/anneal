@@ -1,3 +1,5 @@
+//! Native markdown extraction pipeline.
+
 pub(crate) mod area;
 pub(crate) mod body_scan;
 pub(crate) mod config;

@@ -1,3 +1,5 @@
+//! Static rule-body scheduling shared by planner and evaluator.
+
 use std::collections::BTreeSet;
 
 use super::ast::{Aggregate, AggregateFunction, Atom, Body, Expr, Ident, NegatedAtom, StoredAtom};

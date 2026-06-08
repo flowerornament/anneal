@@ -1,3 +1,5 @@
+//! Deterministic in-memory fact store used to build runtime databases.
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

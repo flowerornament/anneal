@@ -1,3 +1,5 @@
+//! Project-extension loading and program-layer merging.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

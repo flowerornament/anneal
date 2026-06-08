@@ -1,3 +1,5 @@
+//! NDJSON output helpers for runtime query rows.
+
 use std::io::{self, Write};
 
 use serde::Serialize;

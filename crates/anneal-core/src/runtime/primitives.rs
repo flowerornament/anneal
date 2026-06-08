@@ -1,3 +1,5 @@
+//! Runtime primitive predicate declarations.
+
 use crate::runtime::ast::{Ident, PredicateRef};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,3 +1,5 @@
+//! Adapter entry points that lower markdown extraction into core facts.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use anneal_core::runtime::prelude::datalog_string_literal;

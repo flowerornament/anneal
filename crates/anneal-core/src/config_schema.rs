@@ -1,3 +1,5 @@
+//! Runtime configuration declaration schema.
+
 use crate::source::ConfigEntry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,3 +1,5 @@
+//! Repository-local snapshot history persistence.
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 
