@@ -119,9 +119,10 @@ search_heading_path(h, span_id, heading_path) :=
 search_heading_path(h, null, null) :=
     *handle{{id: h}}.
 
-? (h, span_id, score, reason, field, low_confidence, heading_path) = TopK{{ k: {limit}, key: score :
-    (h, span_id, score, reason, field, low_confidence, heading_path) :
+? (h, span_id, score, reason, field, low_confidence, heading_path, status, disposition, age_days) = TopK{{ k: {limit}, key: score :
+    (h, span_id, score, reason, field, low_confidence, heading_path, status, \"unknown\", null) :
         search({query}, h, span_id, score, reason, field, low_confidence){confidence_filter},
+        *handle{{id: h, status: status}},
         search_heading_path(h, span_id, heading_path)
 }}.",
             limit = self.limit,

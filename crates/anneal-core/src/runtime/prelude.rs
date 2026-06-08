@@ -14,7 +14,7 @@ pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
 pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
 pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked heading-span hits, span metadata, and nearby handles in one call. Use the CLI --read-spans flag to include matched span bodies.";
-pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","heading_path":"String|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
+pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","heading_path":"String|null","status":"String|null","disposition":"String","age_days":"Number|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
 pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
@@ -566,6 +566,10 @@ pub fn low_confidence_filter(include_low_confidence: bool) -> &'static str {
     }
 }
 
+fn context_low_confidence_filter() -> &'static str {
+    "\n    low_confidence = false,"
+}
+
 pub fn datalog_string_literal(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -593,7 +597,7 @@ fn render_context_query_terms(
 ) -> String {
     let mut query = CONTEXT_QUERY_TEMPLATE.clone();
     if include_low_confidence {
-        replace_required(&mut query, low_confidence_filter(false), "");
+        replace_all_required(&mut query, context_low_confidence_filter(), "");
     }
     format!(
         "\
@@ -605,8 +609,8 @@ verb_arg(\"depth\", {neighborhood_depth_term}).
     )
 }
 
-fn replace_required(query: &mut String, from: &str, to: &str) {
-    let replaced = query.replacen(from, to, 1);
+fn replace_all_required(query: &mut String, from: &str, to: &str) {
+    let replaced = query.replace(from, to);
     assert_ne!(replaced, *query, "context query template missing {from:?}");
     *query = replaced;
 }
@@ -880,6 +884,9 @@ mod tests {
                         "h",
                         "heading_path",
                         "hit_span_id",
+                        "status",
+                        "disposition",
+                        "age_days",
                         "neighbor",
                         "reason",
                         "score",
@@ -1516,6 +1523,122 @@ mod tests {
         assert!(matches!(
             output(&outputs, "examples").rows[0].fields.get("example"),
             Some(Value::String(example)) if example.contains("incoming_edge")
+        ));
+    }
+
+    #[test]
+    fn standard_prelude_derives_currency_from_old_to_new_file_edges() {
+        let corpus = CorpusId::from("test");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(
+                &scope,
+                "perf/2026-05-30.md",
+                "file",
+                Some("active"),
+                "",
+                "perf",
+            ),
+            handle(
+                &scope,
+                "perf/2026-05-31.md",
+                "file",
+                Some("active"),
+                "",
+                "perf",
+            ),
+            handle(
+                &scope,
+                "formal-model/history/v16.md",
+                "file",
+                Some("superseded"),
+                "",
+                "model",
+            ),
+            handle(
+                &scope,
+                "formal-model/v17.md",
+                "file",
+                Some("authoritative"),
+                "",
+                "model",
+            ),
+        ];
+        batch.edges = vec![
+            edge(
+                &scope,
+                "perf/2026-05-30.md",
+                "perf/2026-05-31.md",
+                "Supersedes",
+                1,
+            ),
+            edge(
+                &scope,
+                "formal-model/history/v16.md",
+                "formal-model/v17.md",
+                "Supersedes",
+                1,
+            ),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge currency fixture");
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "new-current-head",
+                    r#"? currency_current_head("perf/2026-05-31.md")."#,
+                ),
+                (
+                    "v17-current-head",
+                    r#"? currency_current_head("formal-model/v17.md")."#,
+                ),
+                (
+                    "old-superseded",
+                    r#"? currency_superseded("perf/2026-05-30.md")."#,
+                ),
+                (
+                    "old-not-head",
+                    r#"? currency_current_head("perf/2026-05-30.md")."#,
+                ),
+                (
+                    "new-anchor",
+                    r#"? ranked_anchor("perf/2026-05-31.md", rank, score, why)."#,
+                ),
+                (
+                    "old-anchor",
+                    r#"? ranked_anchor("perf/2026-05-30.md", rank, score, why)."#,
+                ),
+            ],
+            Database::from_store(&store),
+        );
+
+        assert_eq!(output(&outputs, "new-current-head").rows.len(), 1);
+        assert_eq!(output(&outputs, "v17-current-head").rows.len(), 1);
+        assert_eq!(output(&outputs, "old-superseded").rows.len(), 1);
+        assert_eq!(
+            output(&outputs, "old-not-head").rows.len(),
+            0,
+            "intermediate chain heads are not current heads after replacement"
+        );
+        assert!(has_row(
+            output(&outputs, "new-anchor"),
+            &[("score", int(110)), ("why", string("current_head"))]
+        ));
+        assert!(has_row(
+            output(&outputs, "old-anchor"),
+            &[("score", int(1)), ("why", string("superseded"))]
         ));
     }
 

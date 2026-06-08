@@ -25,7 +25,7 @@ use anneal_core::{
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::{
@@ -863,6 +863,12 @@ struct RuntimeSession {
     git_mtimes: BTreeMap<String, String>,
 }
 
+struct CurrencyHitAnnotation {
+    status: Option<String>,
+    disposition: String,
+    age_days: Option<i64>,
+}
+
 struct RuntimeRegistry {
     registry: VerbRegistry,
     actor: ActorContext,
@@ -1016,7 +1022,9 @@ impl RuntimeSession {
                     .include_low_confidence(include_low_confidence)
                     .read_spans(read_spans);
                 let output = self.eval(command.datalog().as_str(), ExplainOptions::disabled())?;
-                Ok(CommandOutput::Context(command.group_rows(&output.rows)?))
+                let mut output = command.group_rows(&output.rows)?;
+                self.annotate_context_hits(&mut output);
+                Ok(CommandOutput::Context(output))
             }
             RuntimeCommand::Search {
                 query,
@@ -1027,7 +1035,14 @@ impl RuntimeSession {
                     .with_limit(limit)
                     .include_low_confidence(include_low_confidence)
                     .datalog();
-                self.run_query(&query, ExplainOptions::disabled(), RowView::Search)
+                let output = self.eval(&query, ExplainOptions::disabled())?;
+                let mut rows = output.rows;
+                self.annotate_search_rows(&mut rows);
+                Ok(CommandOutput::rows_with_warnings(
+                    rows,
+                    RowView::Search,
+                    warning_texts(&output.warnings),
+                ))
             }
             RuntimeCommand::Read {
                 handle,
@@ -1222,6 +1237,111 @@ impl RuntimeSession {
         ))
     }
 
+    fn annotate_context_hits(&self, output: &mut ContextOutput) {
+        let handles = output
+            .hits
+            .iter()
+            .map(|hit| hit.handle.clone())
+            .collect::<BTreeSet<_>>();
+        let annotations = self.currency_hit_annotations(&handles);
+        for hit in &mut output.hits {
+            let Some(annotation) = annotations.get(hit.handle.as_str()) else {
+                continue;
+            };
+            if hit.status.is_none() {
+                hit.status = annotation.status.clone();
+            }
+            hit.age_days = annotation.age_days;
+            hit.disposition = annotation.disposition.clone();
+        }
+    }
+
+    fn annotate_search_rows(&self, rows: &mut [Row]) {
+        let handles = rows
+            .iter()
+            .filter_map(|row| match row.fields.get("h") {
+                Some(Value::String(handle)) => Some(handle.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let annotations = self.currency_hit_annotations(&handles);
+        for row in rows {
+            let Some(Value::String(handle)) = row.fields.get("h") else {
+                continue;
+            };
+            let Some(annotation) = annotations.get(handle.as_str()) else {
+                continue;
+            };
+            row.fields.insert(
+                "status".to_string(),
+                annotation
+                    .status
+                    .as_ref()
+                    .map_or(Value::Null, |status| Value::String(status.clone())),
+            );
+            row.fields.insert(
+                "disposition".to_string(),
+                Value::String(annotation.disposition.clone()),
+            );
+            row.fields.insert(
+                "age_days".to_string(),
+                annotation
+                    .age_days
+                    .map_or(Value::Null, |days| Value::Number(NumberValue::Int(days))),
+            );
+        }
+    }
+
+    fn currency_hit_annotations(
+        &self,
+        handles: &BTreeSet<String>,
+    ) -> BTreeMap<&str, CurrencyHitAnnotation> {
+        let today = Utc::now().date_naive();
+        let superseded = self
+            .store
+            .edges()
+            .iter()
+            .filter(|edge| edge.kind == "Supersedes" && handles.contains(edge.from.as_str()))
+            .map(|edge| edge.from.as_str())
+            .collect::<BTreeSet<_>>();
+        let successors = self
+            .store
+            .edges()
+            .iter()
+            .filter(|edge| edge.kind == "Supersedes" && handles.contains(edge.to.as_str()))
+            .map(|edge| edge.to.as_str())
+            .collect::<BTreeSet<_>>();
+        self.store
+            .handles()
+            .iter()
+            .filter(|handle| handles.contains(handle.id.as_str()))
+            .map(|handle| {
+                let age_days = handle
+                    .date
+                    .as_deref()
+                    .and_then(|date| authored_age_days(date, today));
+                let disposition = if handle.kind == "file" {
+                    currency_disposition(
+                        handle.id.as_str(),
+                        handle.status.as_deref(),
+                        &superseded,
+                        &successors,
+                    )
+                } else {
+                    "unknown"
+                };
+                (
+                    handle.id.as_str(),
+                    CurrencyHitAnnotation {
+                        status: handle.status.clone(),
+                        disposition: disposition.to_string(),
+                        age_days,
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn eval(&self, query_source: &str, explain: ExplainOptions) -> Result<QueryOutput> {
         let mut program = self.program.clone();
         let query_program = parse_program("cli-query", query_source)
@@ -1377,6 +1497,35 @@ fn warning_texts(warnings: &[QueryWarning]) -> Vec<String> {
         .iter()
         .map(|warning| format!("warning: {}", warning.message))
         .collect()
+}
+
+fn authored_age_days(date: &str, today: NaiveDate) -> Option<i64> {
+    let authored = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    Some(today.signed_duration_since(authored).num_days().max(0))
+}
+
+fn currency_disposition(
+    handle: &str,
+    status: Option<&str>,
+    superseded: &BTreeSet<&str>,
+    successors: &BTreeSet<&str>,
+) -> &'static str {
+    if superseded.contains(handle) {
+        "superseded"
+    } else if successors.contains(handle) && status.is_some_and(is_currency_minted_status) {
+        "current_head"
+    } else if status.is_some_and(is_currency_minted_status) {
+        "current"
+    } else {
+        "unknown"
+    }
+}
+
+fn is_currency_minted_status(status: &str) -> bool {
+    matches!(
+        status,
+        "authoritative" | "current" | "active" | "stable" | "living" | "live"
+    )
 }
 
 fn warning_applies_to_query(query_source: &str, warning: &QueryWarning) -> bool {
@@ -2490,14 +2639,24 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             .map_or(String::new(), |heading| {
                 format!(" heading={}", display_string_value(heading))
             });
+        let status = hit
+            .status
+            .as_deref()
+            .map_or(String::new(), |status| format!(" status={status}"));
+        let age = hit
+            .age_days
+            .map_or(String::new(), |days| format!(" age_days={days}"));
         writeln!(
             writer,
-            "{:>2}. {}  score={:.3}  field={}  reason={}{}{}",
+            "{:>2}. {}  score={:.3}  field={}  reason={} disposition={}{}{}{}{}",
             index + 1,
             hit.handle,
             hit.score,
             hit.field,
             hit.reason,
+            hit.disposition,
+            status,
+            age,
             span,
             heading
         )?;
@@ -2563,6 +2722,9 @@ enum ContextEvent<'a> {
         reason: &'a str,
         field: &'a str,
         heading_path: Option<&'a str>,
+        status: Option<&'a str>,
+        disposition: &'a str,
+        age_days: Option<i64>,
     },
     #[serde(rename = "span")]
     Span {
@@ -2589,6 +2751,9 @@ fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<(
         reason: hit.reason.as_str(),
         field: hit.field.as_str(),
         heading_path: hit.heading_path.as_deref(),
+        status: hit.status.as_deref(),
+        disposition: hit.disposition.as_str(),
+        age_days: hit.age_days,
     }))
     .chain(output.spans.iter().map(|span| ContextEvent::Span {
         handle: span.handle.as_str(),
@@ -4615,6 +4780,9 @@ mod tests {
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
                 heading_path: Some("Release".to_string()),
+                status: Some("active".to_string()),
+                disposition: "current_head".to_string(),
+                age_days: Some(12),
             }],
             spans: vec![crate::ContextSpan {
                 handle: "plan.md".to_string(),
@@ -4638,6 +4806,7 @@ mod tests {
 
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
+        assert!(rendered.contains("disposition=current_head status=active age_days=12"));
         assert!(rendered.contains("heading=Release"));
         assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
         assert!(rendered.contains("Neighborhood\nplan.md: dep.md"));
@@ -4654,6 +4823,9 @@ mod tests {
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
                 heading_path: Some("Release".to_string()),
+                status: Some("active".to_string()),
+                disposition: "current_head".to_string(),
+                age_days: Some(12),
             }],
             spans: vec![crate::ContextSpan {
                 handle: "plan.md".to_string(),
@@ -4684,6 +4856,9 @@ mod tests {
         assert_eq!(rows[0]["goal"], "find release blockers");
         assert_eq!(rows[1]["section"], "hit");
         assert_eq!(rows[1]["handle"], "plan.md");
+        assert_eq!(rows[1]["disposition"], "current_head");
+        assert_eq!(rows[1]["status"], "active");
+        assert_eq!(rows[1]["age_days"], 12);
         assert_eq!(rows[2]["section"], "span");
         assert_eq!(rows[2]["span_id"], "body");
         assert!(rows[2].get("text").is_none());

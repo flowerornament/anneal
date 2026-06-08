@@ -137,6 +137,9 @@ impl ContextOutput {
                             reason: string_field(row, "reason")?,
                             field: string_field(row, "field")?,
                             heading_path: optional_string_field(row, "heading_path")?,
+                            status: optional_string_field(row, "status")?,
+                            disposition: string_field(row, "disposition")?,
+                            age_days: optional_int_field(row, "age_days")?,
                         },
                     };
                     hits.push(hit);
@@ -305,6 +308,9 @@ pub struct ContextHit {
     pub reason: String,
     pub field: String,
     pub heading_path: Option<String>,
+    pub status: Option<String>,
+    pub disposition: String,
+    pub age_days: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -391,6 +397,18 @@ fn int_field(row: &Row, field: &'static str) -> Result<i64, ContextGroupError> {
     }
 }
 
+fn optional_int_field(row: &Row, field: &'static str) -> Result<Option<i64>, ContextGroupError> {
+    match row.fields.get(field) {
+        Some(Value::Number(NumberValue::Int(value))) => Ok(Some(*value)),
+        Some(Value::Null) => Ok(None),
+        Some(_) => Err(ContextGroupError::WrongFieldType {
+            field,
+            expected: "integer or null",
+        }),
+        None => Err(ContextGroupError::MissingField { field }),
+    }
+}
+
 fn number_field(row: &Row, field: &'static str) -> Result<f64, ContextGroupError> {
     match row.fields.get(field) {
         Some(Value::Number(NumberValue::Int(value))) => {
@@ -455,6 +473,9 @@ mod tests {
         assert_eq!(schema["hits"][0]["handle"], "HandleId");
         assert_eq!(schema["hits"][0]["span_id"], "String|null");
         assert_eq!(schema["hits"][0]["heading_path"], "String|null");
+        assert_eq!(schema["hits"][0]["status"], "String|null");
+        assert_eq!(schema["hits"][0]["disposition"], "String");
+        assert_eq!(schema["hits"][0]["age_days"], "Number|null");
         assert_eq!(schema["spans"][0]["handle"], "HandleId");
         assert_eq!(
             schema["spans"][0]["text"],
@@ -582,6 +603,9 @@ mod tests {
 
         assert_eq!(output.goal, "v17 conformance audit");
         assert_eq!(output.hits.len(), 2);
+        assert_eq!(output.hits[0].status.as_deref(), Some("current"));
+        assert_eq!(output.hits[0].disposition, "unknown");
+        assert_eq!(output.hits[0].age_days, None);
         assert_eq!(output.spans.len(), 1);
         assert_eq!(
             output.neighborhood,
@@ -1031,6 +1055,9 @@ mod tests {
                 ("reason".to_string(), s("body-substring")),
                 ("field".to_string(), s("body")),
                 ("heading_path".to_string(), s("Intro")),
+                ("status".to_string(), s("current")),
+                ("disposition".to_string(), s("unknown")),
+                ("age_days".to_string(), Value::Null),
             ]),
             derivation: None,
         }

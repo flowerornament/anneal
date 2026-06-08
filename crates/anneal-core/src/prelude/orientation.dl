@@ -10,7 +10,62 @@ orientation_file(h, file) :=
   file != "".
 
 orientation_replaced(h) :=
+  *edge{from: h, kind: "Supersedes"}.
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "authoritative").
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "current").
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "active").
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "stable").
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "living").
+
+currency_minted(h) :=
+  orientation_file(h, file),
+  status_of(h, "live").
+
+currency_superseded(h) :=
+  orientation_file(h, file),
+  *edge{from: h, kind: "Supersedes"}.
+
+currency_successor(h) :=
+  orientation_file(h, file),
   *edge{to: h, kind: "Supersedes"}.
+
+currency_current(h) :=
+  currency_minted(h),
+  not currency_superseded(h).
+
+currency_current_head(h) :=
+  currency_successor(h),
+  currency_current(h).
+
+currency_disposition(h, "superseded") :=
+  currency_superseded(h).
+
+currency_disposition(h, "current_head") :=
+  currency_current_head(h).
+
+currency_disposition(h, "current") :=
+  currency_current(h),
+  not currency_current_head(h).
+
+currency_disposition(h, "unknown") :=
+  orientation_file(h, file),
+  not currency_minted(h),
+  not currency_superseded(h).
 
 orientation_retired_status(h) :=
   status_of(h, "superseded").
@@ -223,6 +278,9 @@ anchor_recent_score(h, 3, 11, "recent") :=
   days > 30,
   days <= 365.
 
+anchor_currency_score(h, 110, 5, "current_head") :=
+  currency_current_head(h).
+
 anchor_signal(h, score, priority, why) :=
   anchor_status_score(h, score, priority, why).
 
@@ -235,15 +293,20 @@ anchor_signal(h, score, priority, why) :=
 anchor_signal(h, score, priority, why) :=
   anchor_recent_score(h, score, priority, why).
 
+anchor_signal(h, score, priority, why) :=
+  anchor_currency_score(h, score, priority, why).
+
 anchor_eligible(h) :=
   orientation_file(h, file),
   not terminal(h),
   not orientation_retired_status(h),
+  not currency_superseded(h),
   not orientation_historical_file(h).
 
 anchor_eligible(h) :=
   anchor_status_score(h, score, priority, why),
   not orientation_retired_status(h),
+  not currency_superseded(h),
   not orientation_historical_file(h).
 
 anchor_subject(h) :=
@@ -272,6 +335,11 @@ anchor_primary_why(h, why) :=
 anchor(h, score, why) :=
   anchor_total(h, score),
   anchor_primary_why(h, why).
+
+anchor(h, 1, "superseded") :=
+  currency_superseded(h),
+  not orientation_retired_status(h),
+  not orientation_historical_file(h).
 
 @doc(
   name: "ranked_anchor",

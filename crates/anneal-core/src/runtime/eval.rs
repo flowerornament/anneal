@@ -1985,15 +1985,16 @@ fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow)
             });
         }
         EDGE_RELATION => {
-            let (Some(corpus), Some(source), Some(from), Some(to)) = (
+            let (Some(corpus), Some(source), Some(from), Some(to), Some(kind)) = (
                 row_string(row, CORPUS_FIELD),
                 row_string(row, SOURCE_FIELD),
                 row_string(row, FROM_FIELD),
                 row_string(row, TO_FIELD),
+                row_string(row, KIND_FIELD),
             ) else {
                 return;
             };
-            search.insert_edge(corpus, source, from, to);
+            search.insert_edge(corpus, source, from, to, kind);
         }
         META_RELATION => {
             let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (
@@ -2066,15 +2067,16 @@ fn insert_search_tuple_row(search: &mut SearchIndex, relation: &str, row: TupleR
             });
         }
         EDGE_RELATION => {
-            let (Some(corpus), Some(source), Some(from), Some(to)) = (
+            let (Some(corpus), Some(source), Some(from), Some(to), Some(kind)) = (
                 row.string(CORPUS_FIELD),
                 row.string(SOURCE_FIELD),
                 row.string(FROM_FIELD),
                 row.string(TO_FIELD),
+                row.string(KIND_FIELD),
             ) else {
                 return;
             };
-            search.insert_edge(corpus, source, from, to);
+            search.insert_edge(corpus, source, from, to, kind);
         }
         META_RELATION => {
             let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (

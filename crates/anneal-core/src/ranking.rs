@@ -21,9 +21,13 @@ const PARENT_CLUSTER_MAX_SCORE: f32 = 0.99;
 const HISTORICAL_PATH_SCORE_PENALTY: f32 = 0.08;
 const DEFAULT_HUB_EDGE_SCORE_BOOST: f32 = 0.01;
 const HUB_SCORE_BOOST_MAX: f32 = 0.12;
+const CURRENT_HEAD_SCORE_BOOST: f32 = 0.10;
+const SUPERSEDED_SCORE_PENALTY: f32 = 0.12;
 const TERM_SPECIFICITY_MAX_FACTOR: f32 = 2.5;
 const HANDLE_KIND_LABEL: &str = "label";
 const HANDLE_KIND_EXTERNAL: &str = "external";
+const HANDLE_KIND_FILE: &str = "file";
+const SUPERSEDES_EDGE_KIND: &str = "Supersedes";
 
 pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
@@ -282,6 +286,8 @@ fn historical_path_penalty(handle: &str) -> f32 {
 pub(crate) struct SearchIndex {
     documents: BTreeMap<SearchDocumentKey, SearchDocument>,
     incoming_edge_counts: BTreeMap<SearchDocumentKey, u32>,
+    supersedes_from: BTreeSet<SearchDocumentKey>,
+    supersedes_to: BTreeSet<SearchDocumentKey>,
     boosts: SearchBoosts,
 }
 
@@ -566,11 +572,24 @@ impl SearchIndex {
         hits
     }
 
-    pub(crate) fn insert_edge(&mut self, corpus: &str, source: &str, _from: &str, to: &str) {
+    pub(crate) fn insert_edge(
+        &mut self,
+        corpus: &str,
+        source: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+    ) {
         *self
             .incoming_edge_counts
             .entry(SearchDocumentKey::new(corpus, source, to))
             .or_default() += 1;
+        if kind == SUPERSEDES_EDGE_KIND {
+            self.supersedes_from
+                .insert(SearchDocumentKey::new(corpus, source, from));
+            self.supersedes_to
+                .insert(SearchDocumentKey::new(corpus, source, to));
+        }
     }
 
     fn document_mut(&mut self, corpus: &str, source: &str, handle: &str) -> &mut SearchDocument {
@@ -695,7 +714,38 @@ impl SearchIndex {
     fn ranker_boost_for_key(&self, key: &SearchDocumentKey) -> f32 {
         let count = self.incoming_edge_counts.get(key).copied().unwrap_or(0);
         let status = self.documents.get(key).and_then(boosted_status);
-        self.boosts.status_boost(status) + self.boosts.hub_boost(count)
+        self.boosts.status_boost(status)
+            + self.boosts.hub_boost(count)
+            + self.currency_boost_for_key(key)
+    }
+
+    fn currency_boost_for_key(&self, key: &SearchDocumentKey) -> f32 {
+        match self.currency_disposition_for_key(key) {
+            Some(CurrencyDisposition::CurrentHead) => CURRENT_HEAD_SCORE_BOOST,
+            Some(CurrencyDisposition::Superseded) => -SUPERSEDED_SCORE_PENALTY,
+            Some(CurrencyDisposition::Current | CurrencyDisposition::Unknown) | None => 0.0,
+        }
+    }
+
+    fn currency_disposition_for_key(&self, key: &SearchDocumentKey) -> Option<CurrencyDisposition> {
+        let document = self.documents.get(key)?;
+        if document.kind.as_deref() != Some(HANDLE_KIND_FILE) {
+            return None;
+        }
+        if self.supersedes_from.contains(key) {
+            return Some(CurrencyDisposition::Superseded);
+        }
+        let minted = document
+            .status
+            .as_deref()
+            .is_some_and(is_currency_minted_status);
+        if self.supersedes_to.contains(key) && minted {
+            Some(CurrencyDisposition::CurrentHead)
+        } else if minted {
+            Some(CurrencyDisposition::Current)
+        } else {
+            Some(CurrencyDisposition::Unknown)
+        }
     }
 
     fn term_specificity(&self, query: &SearchQuery) -> TermSpecificity {
@@ -720,6 +770,21 @@ impl SearchIndex {
         }
         TermSpecificity::from_frequency(query, field_count, &field_frequency)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurrencyDisposition {
+    Current,
+    CurrentHead,
+    Superseded,
+    Unknown,
+}
+
+fn is_currency_minted_status(status: &str) -> bool {
+    matches!(
+        status,
+        "authoritative" | "current" | "active" | "stable" | "living" | "live"
+    )
 }
 
 fn boosted_status(document: &SearchDocument) -> Option<&str> {
@@ -1585,6 +1650,7 @@ mod tests {
                 "fixture",
                 &format!("ref-{idx}.md"),
                 "formal-model/sample-formal-model-v17.md",
+                "Cites",
             );
         }
 
@@ -1694,6 +1760,66 @@ mod tests {
         assert_eq!(
             ranked.first().expect("ranked hit").hit().handle(),
             "draft.md"
+        );
+    }
+
+    #[test]
+    fn currency_boost_prefers_current_head_without_filtering_history() {
+        let mut index = SearchIndex::default();
+        insert_handle_with_status(
+            &mut index,
+            "perf/2026-05-30.md",
+            "perf/2026-05-30.md",
+            "Parametric performance",
+            Some("active"),
+        );
+        insert_handle_with_status(
+            &mut index,
+            "perf/2026-05-31.md",
+            "perf/2026-05-31.md",
+            "Parametric performance",
+            Some("active"),
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "perf/2026-05-30.md",
+            "body",
+            "program space parametric performance",
+        );
+        index.insert_content(
+            "test",
+            "fixture",
+            "perf/2026-05-31.md",
+            "body",
+            "program space parametric performance",
+        );
+        index.insert_edge(
+            "test",
+            "fixture",
+            "perf/2026-05-30.md",
+            "perf/2026-05-31.md",
+            SUPERSEDES_EDGE_KIND,
+        );
+
+        let query =
+            SearchQuery::parse("program space parametric performance").expect("query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        let ranked = rank_search_hits(
+            hits,
+            &RankingContext::new("program space parametric performance", 0.5),
+            &DefaultRanker,
+        );
+
+        assert_eq!(
+            ranked.first().expect("ranked hit").hit().handle(),
+            "perf/2026-05-31.md"
+        );
+        assert!(
+            ranked
+                .iter()
+                .any(|hit| hit.hit().handle() == "perf/2026-05-30.md"),
+            "superseded material stays reachable"
         );
     }
 
