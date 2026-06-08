@@ -2,6 +2,30 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.18.0 - 2026-06-08
+
+Retrieval follows the corpus's currency signal.
+
+`context`, `search`, and `ranked_anchor` now factor whether a document has
+been superseded. Current operative specs surface ahead of stale predecessors,
+while superseded material stays reachable for "what changed?" work. Context
+and search hits show each document's currency disposition, lifecycle status,
+and age so orientation can distinguish live framing from stale-but-relevant or
+newest-but-draft material.
+
+### Added
+
+- Retrieval currency ranks current operative successors ahead of superseded
+  documents across `context`, `search`, and `ranked_anchor`, while keeping
+  superseded handles accessible.
+
+### Changed
+
+- Context and search hit output includes currency disposition
+  (`current`, `current_head`, or `superseded`), lifecycle status, and handle age.
+- Currency is derived from displacement edges; lifecycle remains a separate
+  status-band signal, and the two compose only at ranking.
+
 ## v0.17.0 - 2026-06-07
 
 anneal runs on one planned executor, with the same answers and a smaller core.

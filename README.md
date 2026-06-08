@@ -300,8 +300,11 @@ anneal handle formal-model/v17.md --impact
 ```
 
 `search` ranks content and metadata hits and includes `heading_path` for
-heading-span matches. Scores combine lexical strength with status and hub
-boosts, so authoritative/highly-cited sections win ties against draft mentions.
+heading-span matches. Scores combine lexical strength with lifecycle status,
+hub degree, and currency: current operative successors outrank superseded
+predecessors, while superseded material stays reachable. Search and context
+hits include disposition, status, and age so you can tell current framing from
+stale-but-relevant history.
 `read` retrieves bounded content spans for one handle; use `--span-id` when a
 search hit already identified the section you need.
 `handle` shows incoming and outgoing edges grouped by kind and separates
