@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use anneal_core::ranking::context_sort_score;
+use anneal_core::ranking::{context_neighbor_sort_score, context_sort_score};
 use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::prelude::{ContextQueryArgs, render_context_query};
 use anneal_core::runtime::{Row, Value};
@@ -161,6 +161,11 @@ impl ContextOutput {
                     let neighbor = ContextNeighbor {
                         handle: string_field(row, "h")?,
                         neighbor: string_field(row, "neighbor")?,
+                        status: optional_string_field(row, "neighbor_status")?,
+                        disposition: string_field(row, "neighbor_disposition")?,
+                        age_days: optional_int_field(row, "neighbor_age_days")?,
+                        degree: int_field(row, "neighbor_degree")?,
+                        group: string_field(row, "neighbor_group")?,
                     };
                     if neighborhood_keys
                         .insert((neighbor.handle.clone(), neighbor.neighbor.clone()))
@@ -196,6 +201,7 @@ impl ContextOutput {
         neighborhood.sort_by(|left, right| {
             handle_rank(&handle_ranks, &left.handle)
                 .cmp(&handle_rank(&handle_ranks, &right.handle))
+                .then_with(|| right.sort_score().total_cmp(&left.sort_score()))
                 .then_with(|| left.handle.cmp(&right.handle))
                 .then_with(|| left.neighbor.cmp(&right.neighbor))
         });
@@ -328,6 +334,22 @@ pub struct ContextSpan {
 pub struct ContextNeighbor {
     pub handle: String,
     pub neighbor: String,
+    pub status: Option<String>,
+    pub disposition: String,
+    pub age_days: Option<i64>,
+    pub degree: i64,
+    pub group: String,
+}
+
+impl ContextNeighbor {
+    fn sort_score(&self) -> f64 {
+        context_neighbor_sort_score(
+            self.group.as_str(),
+            self.disposition.as_str(),
+            self.degree,
+            self.handle == self.neighbor,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,9 +460,10 @@ mod tests {
     use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
     use anneal_core::runtime::{Database, EvalOptions, Evaluator, analyze, parse_program};
     use anneal_core::{
-        ActorContext, CancellationToken, ConfigFacts, ContentFact, FactBatch, FactBatchMode,
-        FactIdentity, FactStore, Generation, HandleFact, NativeId, OneShotSourceDriver, OriginUri,
-        Revision, SourceDriver, SourceName, SourceRefreshRequest, SpanFact, refresh_source,
+        ActorContext, CancellationToken, ConfigFacts, ContentFact, EdgeFact, FactBatch,
+        FactBatchMode, FactIdentity, FactStore, Generation, HandleFact, NativeId,
+        OneShotSourceDriver, OriginUri, Revision, SourceDriver, SourceName, SourceRefreshRequest,
+        SpanFact, refresh_source,
     };
     use camino::Utf8PathBuf;
 
@@ -459,7 +482,8 @@ mod tests {
         assert!(query.contains("TakeUntil{"));
         assert!(query.contains("low_confidence = false"));
         assert!(query.contains("context_hit_handle(h) := context_hit"));
-        assert!(query.contains("context_neighbor(h, h) := context_hit_handle"));
+        assert!(query.contains("context_neighbor_seed(h, h) := context_hit_handle"));
+        assert!(query.contains("TopK{ k: 16, key: group_score + disposition_score"));
         assert!(query.contains(r#"context_output("hit""#));
         analyze(parse_program("context", &query).expect("query parses")).expect("query analyzes");
     }
@@ -482,6 +506,11 @@ mod tests {
             "String|null; present with --read-spans"
         );
         assert_eq!(schema["neighborhood"][0]["handle"], "HandleId");
+        assert_eq!(schema["neighborhood"][0]["status"], "String|null");
+        assert_eq!(schema["neighborhood"][0]["disposition"], "String");
+        assert_eq!(schema["neighborhood"][0]["age_days"], "Number|null");
+        assert_eq!(schema["neighborhood"][0]["degree"], "Number");
+        assert_eq!(schema["neighborhood"][0]["group"], "String");
         assert!(schema["hits"][0].get("h").is_none());
         assert!(schema["hits"][0].get("hit_span_id").is_none());
     }
@@ -535,6 +564,11 @@ mod tests {
             vec![ContextNeighbor {
                 handle: "audit/v17.md".to_string(),
                 neighbor: "audit/v17.md".to_string(),
+                status: Some("current".to_string()),
+                disposition: "current".to_string(),
+                age_days: None,
+                degree: 0,
+                group: "current".to_string(),
             }]
         );
     }
@@ -613,10 +647,20 @@ mod tests {
                 ContextNeighbor {
                     handle: "audit/v17.md".to_string(),
                     neighbor: "audit/v17.md".to_string(),
+                    status: Some("current".to_string()),
+                    disposition: "current".to_string(),
+                    age_days: None,
+                    degree: 0,
+                    group: "current".to_string(),
                 },
                 ContextNeighbor {
                     handle: "audit/v17.md".to_string(),
                     neighbor: "formal-model/v17.md".to_string(),
+                    status: Some("current".to_string()),
+                    disposition: "current".to_string(),
+                    age_days: None,
+                    degree: 0,
+                    group: "current".to_string(),
                 },
             ]
         );
@@ -770,6 +814,47 @@ mod tests {
             output.spans.iter().all(|span| span.text.is_none()),
             "default context should not inline span bodies: {:?}",
             output.spans
+        );
+    }
+
+    #[test]
+    fn context_neighbors_group_inventory_history_and_high_degree_current() {
+        let output = evaluate_context(
+            &ContextCommand::new("parametric perf")
+                .with_hits(1)
+                .with_budget(40),
+            ranked_neighbor_database(),
+            EvalOptions::default(),
+        );
+
+        let grouped = output
+            .neighborhood
+            .iter()
+            .map(|neighbor| {
+                (
+                    neighbor.neighbor.as_str(),
+                    neighbor.disposition.as_str(),
+                    neighbor.group.as_str(),
+                    neighbor.degree,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            grouped.contains(&("docs/current.md", "current_head", "current", 3)),
+            "self current head should stay visible: {grouped:?}"
+        );
+        assert!(
+            grouped.contains(&("docs/v17.md", "current_head", "current", 32)),
+            "high-degree current anchor should stay visible: {grouped:?}"
+        );
+        assert!(
+            grouped.contains(&("LABELS.md", "current", "hidden", 32)),
+            "inventory hub should be hidden/collapsed, not promoted: {grouped:?}"
+        );
+        assert!(
+            grouped.contains(&("docs/old.md", "superseded", "superseded", 2)),
+            "superseded neighbor should remain reachable in history group: {grouped:?}"
         );
     }
 
@@ -1022,6 +1107,44 @@ mod tests {
         Database::from_store(&store)
     }
 
+    fn ranked_neighbor_database() -> Database {
+        let mut batch = FactBatch::new(
+            "test".into(),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("docs/current.md", "parametric perf current"),
+            handle("docs/v17.md", "V17 current anchor"),
+            handle("docs/old.md", "Old superseded spec"),
+            handle("LABELS.md", "Label inventory"),
+        ];
+        batch.content = vec![content(
+            "docs/current.md",
+            "body",
+            "parametric perf current anchor",
+            4,
+        )];
+        batch.spans = vec![span("docs/current.md", "body", 1, 1)];
+        batch.edges = vec![
+            edge("docs/old.md", "docs/current.md", "Supersedes"),
+            edge("docs/old.md", "docs/v17.md", "Supersedes"),
+            edge("docs/current.md", "docs/v17.md", "Cites"),
+            edge("docs/current.md", "LABELS.md", "Cites"),
+            edge("docs/current.md", "docs/old.md", "Cites"),
+        ];
+        for index in 0..32 {
+            let leaf = format!("docs/leaf-{index}.md");
+            batch.handles.push(handle(&leaf, "Leaf"));
+            batch.edges.push(edge("docs/v17.md", &leaf, "Cites"));
+            batch.edges.push(edge("LABELS.md", &leaf, "Cites"));
+        }
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge ranked neighbor fixture");
+        Database::from_store(&store)
+    }
+
     fn frozen_sample_database() -> Database {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest.join("../../.fixtures/sample-corpus");
@@ -1084,6 +1207,11 @@ mod tests {
                 ("section".to_string(), s("neighbor")),
                 ("h".to_string(), s(handle)),
                 ("neighbor".to_string(), s(neighbor)),
+                ("neighbor_status".to_string(), s("current")),
+                ("neighbor_disposition".to_string(), s("current")),
+                ("neighbor_age_days".to_string(), Value::Null),
+                ("neighbor_degree".to_string(), n(0)),
+                ("neighbor_group".to_string(), s("current")),
             ]),
             derivation: None,
         }
@@ -1137,6 +1265,17 @@ mod tests {
             start_line,
             end_line,
             summary: summary.to_string(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, kind: &str) -> EdgeFact {
+        EdgeFact {
+            identity: identity(&format!("{from}->{to}:{kind}")),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            file: "fixture.md".to_string(),
+            line: 1,
         }
     }
 

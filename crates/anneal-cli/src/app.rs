@@ -32,6 +32,10 @@ use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
     ReadCommand, SearchCommand,
 };
+use anneal_core::ranking::{
+    CONTEXT_NEIGHBOR_GROUP_CURRENT, CONTEXT_NEIGHBOR_GROUP_HIDDEN,
+    CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT, CONTEXT_NEIGHBOR_GROUP_SUPERSEDED,
+};
 
 const DEFAULT_CORPUS: &str = "cli";
 const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
@@ -2891,29 +2895,61 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
     }
 
     if !output.neighborhood.is_empty() {
-        let mut by_handle: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut by_handle: BTreeMap<&str, Vec<&crate::ContextNeighbor>> = BTreeMap::new();
         for neighbor in &output.neighborhood {
             by_handle
                 .entry(&neighbor.handle)
                 .or_default()
-                .push(&neighbor.neighbor);
+                .push(neighbor);
         }
 
         writeln!(writer)?;
         writeln!(writer, "Neighborhood")?;
         for (handle, neighbors) in by_handle {
-            let omitted = neighbors.len().saturating_sub(MAX_NEIGHBORS_PER_HANDLE);
-            write!(writer, "{handle}: ")?;
-            for (index, neighbor) in neighbors.iter().take(MAX_NEIGHBORS_PER_HANDLE).enumerate() {
-                if index > 0 {
-                    write!(writer, ", ")?;
+            writeln!(writer, "{handle}:")?;
+            let groups = [
+                (CONTEXT_NEIGHBOR_GROUP_CURRENT, "current"),
+                (CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT, "in-flight"),
+                (CONTEXT_NEIGHBOR_GROUP_SUPERSEDED, "superseded"),
+                (CONTEXT_NEIGHBOR_GROUP_HIDDEN, "hidden"),
+            ];
+            for (group, label) in groups {
+                let group_neighbors = neighbors
+                    .iter()
+                    .copied()
+                    .filter(|neighbor| neighbor.group == group)
+                    .collect::<Vec<_>>();
+                if group_neighbors.is_empty() {
+                    continue;
                 }
-                write!(writer, "{neighbor}")?;
-            }
-            if omitted == 0 {
-                writeln!(writer)?;
-            } else {
-                writeln!(writer, ", ... {omitted} more")?;
+                let limit = if group == CONTEXT_NEIGHBOR_GROUP_HIDDEN {
+                    1
+                } else {
+                    MAX_NEIGHBORS_PER_HANDLE
+                };
+                let omitted = group_neighbors.len().saturating_sub(limit);
+                write!(writer, "  {label}: ")?;
+                for (index, neighbor) in group_neighbors.iter().take(limit).enumerate() {
+                    if index > 0 {
+                        write!(writer, ", ")?;
+                    }
+                    write!(writer, "{}", neighbor.neighbor)?;
+                    write!(writer, " disposition={}", neighbor.disposition)?;
+                    if let Some(status) = &neighbor.status {
+                        write!(writer, " status={status}")?;
+                    }
+                    if let Some(age_days) = neighbor.age_days {
+                        write!(writer, " age_days={age_days}")?;
+                    }
+                    write!(writer, " degree={}", neighbor.degree)?;
+                }
+                if omitted == 0 {
+                    writeln!(writer)?;
+                } else if group == CONTEXT_NEIGHBOR_GROUP_HIDDEN {
+                    writeln!(writer, ", ... {omitted} hidden inventory handles")?;
+                } else {
+                    writeln!(writer, ", ... {omitted} more")?;
+                }
             }
         }
     }
@@ -2949,7 +2985,15 @@ enum ContextEvent<'a> {
         text: Option<&'a str>,
     },
     #[serde(rename = "neighbor")]
-    Neighbor { handle: &'a str, neighbor: &'a str },
+    Neighbor {
+        handle: &'a str,
+        neighbor: &'a str,
+        status: Option<&'a str>,
+        disposition: &'a str,
+        age_days: Option<i64>,
+        degree: i64,
+        group: &'a str,
+    },
 }
 
 fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<()> {
@@ -2982,6 +3026,11 @@ fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<(
             .map(|neighbor| ContextEvent::Neighbor {
                 handle: neighbor.handle.as_str(),
                 neighbor: neighbor.neighbor.as_str(),
+                status: neighbor.status.as_deref(),
+                disposition: neighbor.disposition.as_str(),
+                age_days: neighbor.age_days,
+                degree: neighbor.degree,
+                group: neighbor.group.as_str(),
             }),
     );
     write_ndjson(writer, events)?;
@@ -5283,6 +5332,11 @@ mod tests {
             neighborhood: vec![crate::ContextNeighbor {
                 handle: "plan.md".to_string(),
                 neighbor: "dep.md".to_string(),
+                status: Some("active".to_string()),
+                disposition: "current".to_string(),
+                age_days: Some(3),
+                degree: 4,
+                group: "current".to_string(),
             }],
         });
         let mut rendered = Vec::new();
@@ -5297,7 +5351,7 @@ mod tests {
         assert!(rendered.contains("disposition=current_head status=active age_days=12"));
         assert!(rendered.contains("heading=Release"));
         assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
-        assert!(rendered.contains("Neighborhood\nplan.md: dep.md"));
+        assert!(rendered.contains("Neighborhood\nplan.md:\n  current: dep.md disposition=current status=active age_days=3 degree=4"));
     }
 
     #[test]
@@ -5326,6 +5380,11 @@ mod tests {
             neighborhood: vec![crate::ContextNeighbor {
                 handle: "plan.md".to_string(),
                 neighbor: "dep.md".to_string(),
+                status: Some("active".to_string()),
+                disposition: "current".to_string(),
+                age_days: Some(3),
+                degree: 4,
+                group: "current".to_string(),
             }],
         });
         let mut rendered = Vec::new();
@@ -5352,6 +5411,11 @@ mod tests {
         assert!(rows[2].get("text").is_none());
         assert_eq!(rows[3]["section"], "neighbor");
         assert_eq!(rows[3]["neighbor"], "dep.md");
+        assert_eq!(rows[3]["disposition"], "current");
+        assert_eq!(rows[3]["status"], "active");
+        assert_eq!(rows[3]["age_days"], 3);
+        assert_eq!(rows[3]["degree"], 4);
+        assert_eq!(rows[3]["group"], "current");
     }
 
     #[test]

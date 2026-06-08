@@ -257,6 +257,59 @@ pub fn context_sort_score(score: f64, reason: &str, field: &str) -> f64 {
     score + context_reason_bonus(reason) + context_field_bonus(field)
 }
 
+pub const CONTEXT_NEIGHBOR_GROUP_CURRENT: &str = "current";
+pub const CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT: &str = "in_flight";
+pub const CONTEXT_NEIGHBOR_GROUP_SUPERSEDED: &str = "superseded";
+pub const CONTEXT_NEIGHBOR_GROUP_HIDDEN: &str = "hidden";
+
+#[must_use]
+pub fn context_neighbor_sort_score(
+    group: &str,
+    disposition: &str,
+    degree: i64,
+    is_self: bool,
+) -> f64 {
+    context_neighbor_group_bonus(group)
+        + context_neighbor_disposition_bonus(disposition)
+        + context_neighbor_self_bonus(is_self)
+        - context_neighbor_degree_penalty(degree)
+}
+
+fn context_neighbor_group_bonus(group: &str) -> f64 {
+    match group {
+        CONTEXT_NEIGHBOR_GROUP_CURRENT => 300.0,
+        CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT => 200.0,
+        CONTEXT_NEIGHBOR_GROUP_SUPERSEDED => 100.0,
+        CONTEXT_NEIGHBOR_GROUP_HIDDEN => 0.0,
+        _ => 150.0,
+    }
+}
+
+fn context_neighbor_disposition_bonus(disposition: &str) -> f64 {
+    match disposition {
+        "current_head" => 35.0,
+        "current" => 20.0,
+        "superseded" => -40.0,
+        _ => 0.0,
+    }
+}
+
+fn context_neighbor_self_bonus(is_self: bool) -> f64 {
+    if is_self { 50.0 } else { 0.0 }
+}
+
+fn context_neighbor_degree_penalty(degree: i64) -> f64 {
+    let degree = degree.max(0);
+    match degree {
+        0..=9 => 0.0,
+        10..=24 => 8.0,
+        25..=49 => 16.0,
+        50..=99 => 28.0,
+        100..=249 => 40.0,
+        _ => 55.0,
+    }
+}
+
 fn context_reason_bonus(reason: &str) -> f64 {
     match reason {
         REASON_PARENT_CLUSTER => 0.250,
