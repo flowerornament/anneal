@@ -27,11 +27,10 @@ use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
-    AggregateArgPlanError, AggregatePlan, AggregateProvenance, AtomPlan, CallArgPlan,
-    ColumnPatternPlan, ComparePlan, CompareProvenance, ExprPlan, LiteralPlan, NegationProvenance,
-    OrderKeyPlan, OutputPlan, PlanCatalog, PlanError, PlanRelationKind, ProgramPlan, QueryPlan,
-    RuleBodyPlan, RuleGroupPlan, RuleProvenance, RuleStagePlan, StageExecution, StratumPlan,
-    TermPlan, UnsupportedTimeScope, UnsupportedTimeScopeAtom, plan,
+    AggregateArgPlanError, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
+    ExprPlan, LiteralPlan, OrderKeyPlan, OutputPlan, PlanCatalog, PlanError, PlanRelationKind,
+    ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan, RuleStagePlan, StageExecution,
+    StratumPlan, TermPlan, UnsupportedTimeScope, UnsupportedTimeScopeAtom, plan,
 };
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
@@ -53,7 +52,7 @@ use crate::retrieval::{
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     AggregateFunction, Atom, Body, ComparisonOp, Expr, Head, Ident, Literal, NegatedAtom,
-    NumberLiteral, OrderDirection, PredicateRef, SourceLocation, Term,
+    NumberLiteral, OrderDirection, PredicateRef, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
@@ -72,13 +71,14 @@ use crate::trail::{
 };
 use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::frame::PlannedFrame;
+pub use crate::vm::provenance::{DerivationKind, DerivationNode};
+use crate::vm::provenance::{DerivationRef, derivation_ref};
 use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
 use crate::vm::value::ListArena;
 pub use crate::vm::value::NumberValue;
 use crate::vm::value::PhysicalValue;
 
 type DeltaMap = BTreeMap<PredicateRef, DerivedRelation>;
-type DerivationRef = Arc<DerivationNode>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);
@@ -283,332 +283,6 @@ impl ExplainOptions {
             ExplainRowLimit::All => true,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct DerivationNode {
-    kind: DerivationKind,
-    label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    relation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    predicate: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    tuple: Vec<Value>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    fields: BTreeMap<String, Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    line: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    column: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    truncated: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    children: Vec<Self>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DerivationKind {
-    Query,
-    Rule,
-    Fact,
-    Stored,
-    Primitive,
-    Comparison,
-    Aggregate,
-    Negation,
-    TimeBlock,
-    RecursiveChain,
-    Truncated,
-}
-
-impl DerivationNode {
-    #[must_use]
-    pub fn synthetic_query(children: Vec<Self>) -> Self {
-        Self::query(children)
-    }
-
-    #[must_use]
-    pub const fn kind(&self) -> DerivationKind {
-        self.kind
-    }
-
-    #[must_use]
-    pub fn label(&self) -> &str {
-        &self.label
-    }
-
-    #[must_use]
-    pub fn children(&self) -> &[Self] {
-        &self.children
-    }
-
-    #[must_use]
-    pub fn fields(&self) -> &BTreeMap<String, Value> {
-        &self.fields
-    }
-
-    fn query(children: Vec<Self>) -> Self {
-        Self {
-            kind: DerivationKind::Query,
-            label: "query output row".to_string(),
-            relation: None,
-            predicate: None,
-            tuple: Vec::new(),
-            fields: BTreeMap::new(),
-            source: None,
-            line: None,
-            column: None,
-            truncated: None,
-            children,
-        }
-    }
-
-    fn planned_rule(provenance: &RuleProvenance, tuple: &Tuple, children: Vec<Self>) -> Self {
-        Self::rule_from_parts(
-            provenance.predicate.display_name(),
-            provenance.layer,
-            &provenance.location,
-            tuple,
-            children,
-        )
-    }
-
-    fn rule_from_parts(
-        predicate: String,
-        layer: crate::runtime::ast::RuleLayer,
-        location: &SourceLocation,
-        tuple: &Tuple,
-        children: Vec<Self>,
-    ) -> Self {
-        Self {
-            kind: DerivationKind::Rule,
-            label: format!("rule {predicate} fired from {layer:?}"),
-            relation: None,
-            predicate: Some(predicate),
-            tuple: tuple.0.clone(),
-            fields: BTreeMap::new(),
-            source: Some(location.source_name.clone()),
-            line: non_zero(location.line),
-            column: non_zero(location.column),
-            truncated: None,
-            children,
-        }
-    }
-
-    fn fact(predicate: &PredicateRef, tuple: &Tuple) -> Self {
-        Self {
-            kind: DerivationKind::Fact,
-            label: format!("fact {}", predicate.display_name()),
-            relation: None,
-            predicate: Some(predicate.display_name()),
-            tuple: tuple.0.clone(),
-            fields: BTreeMap::new(),
-            source: None,
-            line: None,
-            column: None,
-            truncated: None,
-            children: Vec::new(),
-        }
-    }
-
-    fn stored_tuple(relation: &Ident, row: TupleRow<'_>) -> Self {
-        Self {
-            kind: DerivationKind::Stored,
-            label: format!("stored *{relation} row matched"),
-            relation: Some(relation.to_string()),
-            predicate: None,
-            tuple: Vec::new(),
-            fields: compact_stored_tuple(relation, row),
-            source: row.string(SOURCE_FIELD).map(str::to_owned),
-            line: row.i64("line").and_then(i64_to_usize),
-            column: None,
-            truncated: None,
-            children: Vec::new(),
-        }
-    }
-
-    fn primitive(predicate: &PredicateRef, tuple: &Tuple) -> Self {
-        Self {
-            kind: DerivationKind::Primitive,
-            label: format!("primitive {} returned a tuple", predicate.display_name()),
-            relation: None,
-            predicate: Some(predicate.display_name()),
-            tuple: tuple.0.clone(),
-            fields: BTreeMap::new(),
-            source: None,
-            line: None,
-            column: None,
-            truncated: None,
-            children: Vec::new(),
-        }
-    }
-
-    fn planned_comparison(provenance: &CompareProvenance) -> Self {
-        Self::located(
-            DerivationKind::Comparison,
-            "comparison matched",
-            provenance.location.clone(),
-        )
-    }
-
-    fn planned_aggregate(provenance: &AggregateProvenance, children: Vec<Self>) -> Self {
-        Self::aggregate_from_parts(provenance.function, provenance.location.clone(), children)
-    }
-
-    fn aggregate_from_parts(
-        function: AggregateFunction,
-        location: SourceLocation,
-        children: Vec<Self>,
-    ) -> Self {
-        let mut node = Self::located(
-            DerivationKind::Aggregate,
-            &format!("aggregate {function:?} produced a value"),
-            location,
-        );
-        node.children = children;
-        node
-    }
-
-    fn planned_negation(provenance: &NegationProvenance) -> Self {
-        Self::negation_from_location(provenance.location.clone())
-    }
-
-    fn negation_from_location(location: SourceLocation) -> Self {
-        Self::located(
-            DerivationKind::Negation,
-            "negated atom had no matches",
-            location,
-        )
-    }
-
-    fn time_block(reference: &str, location: SourceLocation, children: Vec<Self>) -> Self {
-        let mut node = Self::located(
-            DerivationKind::TimeBlock,
-            &format!("evaluated at {reference:?}"),
-            location,
-        );
-        node.children = children;
-        node
-    }
-
-    fn located(kind: DerivationKind, label: &str, location: SourceLocation) -> Self {
-        Self {
-            kind,
-            label: label.to_string(),
-            relation: None,
-            predicate: None,
-            tuple: Vec::new(),
-            fields: BTreeMap::new(),
-            source: Some(location.source_name),
-            line: non_zero(location.line),
-            column: non_zero(location.column),
-            truncated: None,
-            children: Vec::new(),
-        }
-    }
-
-    fn bounded(&self, options: &ExplainOptions) -> Self {
-        let mut rule_stack = Vec::new();
-        self.bounded_inner(options.depth().get(), options, &mut rule_stack)
-    }
-
-    fn evidence_truncated(omitted: usize) -> Self {
-        Self {
-            kind: DerivationKind::Truncated,
-            label: format!("... {omitted} more aggregate evidence nodes omitted"),
-            relation: None,
-            predicate: None,
-            tuple: Vec::new(),
-            fields: BTreeMap::new(),
-            source: None,
-            line: None,
-            column: None,
-            truncated: Some("aggregate evidence limit reached".to_string()),
-            children: Vec::new(),
-        }
-    }
-
-    fn bounded_inner(
-        &self,
-        remaining_depth: usize,
-        options: &ExplainOptions,
-        rule_stack: &mut Vec<String>,
-    ) -> Self {
-        if remaining_depth == 0 {
-            return Self {
-                kind: DerivationKind::Truncated,
-                label: "... more derivation levels (use --explain-depth)".to_string(),
-                relation: None,
-                predicate: None,
-                tuple: Vec::new(),
-                fields: BTreeMap::new(),
-                source: None,
-                line: None,
-                column: None,
-                truncated: Some("depth limit reached".to_string()),
-                children: Vec::new(),
-            };
-        }
-
-        let fingerprint = self.rule_fingerprint();
-        if !options.explicit_depth()
-            && let Some(fingerprint) = &fingerprint
-            && rule_stack.contains(fingerprint)
-        {
-            let hops = rule_stack
-                .iter()
-                .filter(|existing| *existing == fingerprint)
-                .count()
-                + 1;
-            return Self {
-                kind: DerivationKind::RecursiveChain,
-                label: format!("via {fingerprint} x {hops} recursive hops"),
-                relation: None,
-                predicate: self.predicate.clone(),
-                tuple: self.tuple.clone(),
-                fields: BTreeMap::new(),
-                source: self.source.clone(),
-                line: self.line,
-                column: self.column,
-                truncated: Some("recursive chain summarized".to_string()),
-                children: Vec::new(),
-            };
-        }
-
-        if let Some(fingerprint) = &fingerprint {
-            rule_stack.push(fingerprint.clone());
-        }
-        let mut node = self.clone();
-        node.children = self
-            .children
-            .iter()
-            .map(|child| child.bounded_inner(remaining_depth - 1, options, rule_stack))
-            .collect();
-        if fingerprint.is_some() {
-            rule_stack.pop();
-        }
-        node
-    }
-
-    fn rule_fingerprint(&self) -> Option<String> {
-        if self.kind != DerivationKind::Rule {
-            return None;
-        }
-        let predicate = self.predicate.as_ref()?;
-        Some(match (&self.source, self.line) {
-            (Some(source), Some(line)) => format!("{predicate}@{source}:{line}"),
-            (Some(source), None) => format!("{predicate}@{source}"),
-            (None, _) => predicate.clone(),
-        })
-    }
-}
-
-fn non_zero(value: usize) -> Option<usize> {
-    (value != 0).then_some(value)
 }
 
 fn i64_to_usize(value: i64) -> Option<usize> {
@@ -1380,7 +1054,16 @@ impl Database {
         row: RowId,
     ) -> Result<DerivationRef, EvalError> {
         self.tuple_row(relation, row)
-            .map(|row| derivation_ref(DerivationNode::stored_tuple(relation, row)))
+            .map(|row| {
+                let source = row.string(SOURCE_FIELD).map(str::to_owned);
+                let line = row.i64(LINE_FIELD).and_then(i64_to_usize);
+                derivation_ref(DerivationNode::stored(
+                    relation,
+                    compact_stored_tuple(relation, row),
+                    source,
+                    line,
+                ))
+            })
             .ok_or_else(|| EvalError::StoredTupleDerivationMissing {
                 relation: relation.clone(),
                 row: row.index(),
@@ -4103,7 +3786,7 @@ impl Evaluator {
                 .options
                 .explain()
                 .is_enabled()
-                .then(|| Arc::new(DerivationNode::fact(&fact.predicate, &tuple)));
+                .then(|| derivation_ref(DerivationNode::fact(&fact.predicate, &tuple.0)));
             self.database
                 .derived
                 .entry(fact.predicate.clone())
@@ -4373,10 +4056,6 @@ fn clone_derivation_refs(steps: &[DerivationRef]) -> Vec<DerivationNode> {
     steps.iter().map(|step| step.as_ref().clone()).collect()
 }
 
-fn derivation_ref(node: DerivationNode) -> DerivationRef {
-    Arc::new(node)
-}
-
 fn insert_new_tuples(
     database: &mut Database,
     predicate: &PredicateRef,
@@ -4481,7 +4160,7 @@ fn eval_planned_rule_group_inner(
                 Some(derivation_ref(
                     DerivationNode::planned_rule(
                         provenance,
-                        &tuple,
+                        &tuple.0,
                         clone_derivation_refs(&binding.steps),
                     )
                     .bounded(options.explain()),
@@ -4890,9 +4569,9 @@ fn eval_planned_derived_scan(
             }
             if matched {
                 out.push(next.push_step(trace, || {
-                    relation
-                        .derivation(tuple)
-                        .unwrap_or_else(|| derivation_ref(DerivationNode::fact(predicate, tuple)))
+                    relation.derivation(tuple).unwrap_or_else(|| {
+                        derivation_ref(DerivationNode::fact(predicate, &tuple.0))
+                    })
                 }));
             }
         }
@@ -4932,7 +4611,7 @@ fn eval_planned_primitive(
             }
             if matched {
                 out.push(next.push_step(trace, || {
-                    derivation_ref(DerivationNode::primitive(predicate, &tuple))
+                    derivation_ref(DerivationNode::primitive(predicate, &tuple.0))
                 }));
             }
         }
@@ -7550,21 +7229,21 @@ mod tests {
     }
 
     fn derivation_contains(node: &DerivationNode, kind: DerivationKind) -> bool {
-        node.kind == kind
+        node.kind() == kind
             || node
-                .children
+                .children()
                 .iter()
                 .any(|child| derivation_contains(child, kind))
     }
 
     fn derivation_rule_depth(node: &DerivationNode) -> usize {
         let child_depth = node
-            .children
+            .children()
             .iter()
             .map(derivation_rule_depth)
             .max()
             .unwrap_or(0);
-        if node.kind == DerivationKind::Rule {
+        if node.kind() == DerivationKind::Rule {
             child_depth + 1
         } else {
             child_depth
@@ -9512,7 +9191,7 @@ release_blocker(code) := issue(code, "error").
             .derivation
             .as_ref()
             .expect("row has derivation");
-        assert_eq!(derivation.kind, DerivationKind::Query);
+        assert_eq!(derivation.kind(), DerivationKind::Query);
         assert!(derivation_contains(derivation, DerivationKind::Rule));
         assert!(derivation_contains(derivation, DerivationKind::Stored));
         assert!(!output.rows[0].fields.contains_key("_derivation"));
@@ -9677,7 +9356,7 @@ release_blocker(code) := issue(code, "error").
             .expect("row has derivation");
         assert!(derivation_contains(derivation, DerivationKind::Stored));
         let stored = derivation
-            .children
+            .children()
             .iter()
             .find(|node| derivation_contains(node, DerivationKind::Stored))
             .expect("stored trail derivation present");

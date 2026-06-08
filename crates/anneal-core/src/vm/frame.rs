@@ -1,15 +1,13 @@
 //! Slot-frame bindings for the planned executor.
 
-use std::sync::Arc;
-
 use crate::ir::ids::SlotId;
-use crate::runtime::eval::DerivationNode;
+use crate::vm::provenance::DerivationRef;
 use crate::vm::value::PhysicalValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlannedFrame {
     pub(crate) slots: Vec<Option<PhysicalValue>>,
-    pub(crate) steps: Vec<Arc<DerivationNode>>,
+    pub(crate) steps: Vec<DerivationRef>,
 }
 
 impl PlannedFrame {
@@ -27,11 +25,7 @@ impl PlannedFrame {
         }
     }
 
-    pub(crate) fn push_step(
-        mut self,
-        trace: bool,
-        step: impl FnOnce() -> Arc<DerivationNode>,
-    ) -> Self {
+    pub(crate) fn push_step(mut self, trace: bool, step: impl FnOnce() -> DerivationRef) -> Self {
         if trace {
             self.steps.push(step());
         }
