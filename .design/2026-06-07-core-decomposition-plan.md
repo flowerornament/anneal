@@ -164,7 +164,7 @@ concerns — absorb them into the steps they touch rather than as a separate pas
 
 Underway, each step byte-identical on murail (status/check + the relevant
 `--explain` surface) with 344/344 `anneal-core` tests and `just check` green per
-commit. `eval.rs` 12,183 → 10,259 so far (−16%).
+commit. `eval.rs` 12,183 → 9,537 (**−22%**).
 
 | step | module | commit | gate beyond status/check |
 |---|---|---|---|
@@ -172,6 +172,10 @@ commit. `eval.rs` 12,183 → 10,259 so far (−16%).
 | leaf | `vm/provenance.rs` | `c8a20ef` | `--explain` identical |
 | leaf | `vm/view.rs` | `bae4a32` | `at(snapshot:last) --explain` identical |
 | bulk | `vm/execute.rs` (executor core) | `2c92a70` | real-recursion `dep_path` `--explain` identical; §12 grep-evidenced |
+| bulk | `vm/fixpoint.rs` (scheduler) | `3fd8c74` | recursion `--explain` identical; §12 grep-evidenced |
+| split | `runtime/evaluator.rs` (coordinator façade) | `1161822` | recursion `--explain` identical; vm/ stayed clean; `Evaluator` re-exported |
+| tests | executor coverage → `vm/execute` (0→6) | `336804e` | suite is the gate (344, relocation-only); oracles untouched |
+| polish | `PlannedEvalCtx`, rank decorate-once, module-doc headers | `d76b894` | recursion + `recent_frontier` `--explain` identical |
 
 The executor core is out of `eval.rs` and Plan-driven — no `analysis`/raw-AST
 imports (machine-checked by grep in the commit report). Residual `vm/* →
@@ -184,10 +188,19 @@ core** moved to `vm/execute.rs` while the **coordinator/fixpoint** (`Evaluator`,
 `run_fixpoint*`, the stage runner) deliberately stayed in `runtime/eval.rs` for a
 separate move, to keep each commit's byte-identical blast radius understandable.
 
-Remaining: coordinator/fixpoint extraction (planning in progress), then the
-residual relocations (`Value`/`ExplainOptions`/`DbView`), `PlannedExecCtx`
-param-sprawl, the public runtime façade (step 5), and the deferred
-`ir/analyzed.rs` re-key (step 6).
+**Status: the major structural decomposition is done.** Executor (`vm/execute`),
+scheduler (`vm/fixpoint`), and coordinator (`runtime/evaluator`) are separated;
+the executor owns its tests; param-sprawl, `Rank` recompute, and stale wording are
+cleaned. The §12 backend boundary held and is grep-evidenced at every step.
+
+Remaining (deferred — own arcs, not blocking feature work):
+- `plan.rs` split (catalog/lower/stages/certificate/support — the second monolith);
+- residual type relocation (`Value`/`ExplainOptions`/`DbView` → boundary modules)
+  to retire the named `vm/* → runtime::eval` edges, and `DbView` consolidation
+  toward §12's `execute(&Plan, &DbView)` signature;
+- the public runtime façade (step 5; CLI/MCP currently work via re-exports);
+- the deferred `ir/analyzed.rs` re-key (step 6, highest-risk);
+- derived-index representation (measure-first).
 
 ## Done-when
 
