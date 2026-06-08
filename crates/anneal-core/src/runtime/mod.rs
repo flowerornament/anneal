@@ -8,6 +8,7 @@
 pub mod analysis;
 pub mod ast;
 pub mod eval;
+mod evaluator;
 mod introspection;
 pub mod loader;
 pub mod ndjson;

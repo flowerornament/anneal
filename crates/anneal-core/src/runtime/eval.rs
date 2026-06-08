@@ -24,9 +24,9 @@ use crate::facts::{
 use crate::ids::Generation;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
+use crate::ir::plan::PlanError;
 #[cfg(test)]
 use crate::ir::plan::{AtomPlan, PlanRelationKind};
-use crate::ir::plan::{PlanError, ProgramPlan, plan};
 use crate::lifecycle::is_terminal_status;
 #[cfg(test)]
 use crate::policy::ActionKind;
@@ -46,8 +46,7 @@ use crate::retrieval::{
 };
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
-    AggregateFunction, Atom, Body, Expr, Head, Ident, Literal, NegatedAtom, NumberLiteral,
-    PredicateRef, Term,
+    AggregateFunction, Expr, Head, Ident, Literal, NumberLiteral, PredicateRef, Term,
 };
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
@@ -62,8 +61,7 @@ use crate::trail::{
     TrailStore,
 };
 use crate::visibility::{FactVisibility, hidden_handles};
-use crate::vm::execute::{DeltaMap, DerivedRelation, DerivedTuple, eval_planned_query_output};
-use crate::vm::fixpoint::run_rule_group;
+use crate::vm::execute::{DeltaMap, DerivedRelation, DerivedTuple};
 pub use crate::vm::provenance::{DerivationKind, DerivationNode};
 use crate::vm::provenance::{DerivationRef, derivation_ref};
 use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
@@ -75,6 +73,8 @@ use crate::vm::view::{
     handle_snapshot_patch_field, latest_snapshot_candidate, nearest_snapshot_candidate,
     snapshot_reference,
 };
+
+pub use crate::runtime::evaluator::Evaluator;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);
@@ -983,10 +983,14 @@ impl Database {
         predicate: &PredicateRef,
         tuples: Vec<DerivedTuple>,
     ) {
-        let relation = self.derived.entry(predicate.clone()).or_default();
         for derived in tuples {
-            relation.insert_with_derivation(&derived.tuple, derived.derivation);
+            self.insert_derived_tuple(predicate, derived);
         }
+    }
+
+    pub(crate) fn insert_derived_tuple(&mut self, predicate: &PredicateRef, derived: DerivedTuple) {
+        let relation = self.derived.entry(predicate.clone()).or_default();
+        relation.insert_with_derivation(&derived.tuple, derived.derivation);
     }
 
     pub(crate) fn insert_new_derived_tuples(
@@ -1009,14 +1013,14 @@ impl Database {
         changed
     }
 
-    fn install_program_introspection(&mut self, program: &AnalyzedProgram) {
+    pub(crate) fn install_program_introspection(&mut self, program: &AnalyzedProgram) {
         self.introspection = Arc::new(
             self.introspection
                 .for_program(program, self.stored_relation_summaries()),
         );
     }
 
-    fn install_query_introspection(&mut self, query: &AnalyzedQuery) {
+    pub(crate) fn install_query_introspection(&mut self, query: &AnalyzedQuery) {
         self.introspection = Arc::new(self.introspection.for_query(query));
     }
 
@@ -3503,238 +3507,6 @@ impl From<AuthorizationError> for EvalError {
     }
 }
 
-pub struct Evaluator {
-    program: AnalyzedProgram,
-    planned: Result<ProgramPlan, PlanError>,
-    database: Database,
-    facts_seeded: bool,
-    warnings: Vec<QueryWarning>,
-    options: EvalOptions,
-}
-
-impl Evaluator {
-    pub fn new(program: AnalyzedProgram, database: Database) -> Self {
-        Self::with_options(program, database, EvalOptions::default())
-    }
-
-    pub fn with_options(
-        program: AnalyzedProgram,
-        mut database: Database,
-        options: EvalOptions,
-    ) -> Self {
-        let planned = plan(&program);
-        database.install_program_introspection(&program);
-        database.ensure_derived(program.predicates().cloned());
-        Self {
-            program,
-            planned,
-            database,
-            facts_seeded: false,
-            warnings: Vec::new(),
-            options,
-        }
-    }
-
-    pub fn run_fixpoint(&mut self) -> Result<(), EvalError> {
-        self.options.authorize_eval()?;
-        self.seed_facts()?;
-        self.run_fixpoint_matching(|_| true)
-    }
-
-    pub fn run_fixpoint_for_query(&mut self, query: &AnalyzedQuery) -> Result<(), EvalError> {
-        self.options.authorize_eval()?;
-        self.seed_facts()?;
-        let needed = global_predicate_dependencies_for_query(&self.program, query);
-        self.run_fixpoint_matching(|predicate| needed.contains(predicate))
-    }
-
-    fn run_fixpoint_matching(
-        &mut self,
-        predicate_needed: impl Fn(&PredicateRef) -> bool,
-    ) -> Result<(), EvalError> {
-        let planned = self
-            .planned
-            .as_ref()
-            .map_err(|error| EvalError::from(error.clone()))?;
-        let strata = self.program.strata().to_vec();
-        for (stratum_index, stratum) in strata.into_iter().enumerate() {
-            let active_predicates = stratum
-                .predicates
-                .iter()
-                .filter(|predicate| predicate_needed(predicate))
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            if active_predicates.is_empty() {
-                continue;
-            }
-            let planned_stratum = planned.global.strata.get(stratum_index);
-            let planned_stratum =
-                planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                    predicate: active_predicates
-                        .iter()
-                        .next()
-                        .cloned()
-                        .expect("non-empty rule group"),
-                })?;
-            run_rule_group(
-                &mut self.database,
-                &active_predicates,
-                planned_stratum,
-                &planned.catalog,
-                &mut self.warnings,
-                &self.options,
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn eval_query(&self, query: &AnalyzedQuery) -> Result<QueryOutput, EvalError> {
-        self.options.authorize_eval()?;
-        let query_ast = query.query();
-        let mut warnings = self.warnings.clone();
-        let planned = self
-            .planned
-            .as_ref()
-            .map_err(|error| EvalError::from(error.clone()))?;
-        let query_plan = self
-            .program
-            .queries()
-            .position(|candidate| candidate == query)
-            .and_then(|index| planned.queries.get(index));
-        if query_ast.local_rules.is_empty() {
-            return eval_planned_query_output(
-                query_plan,
-                planned,
-                &self.database,
-                &warnings,
-                &self.options,
-            );
-        }
-
-        let mut database = self.database.clone();
-        database.ensure_derived(query.local_predicates().cloned());
-        database.install_query_introspection(query);
-        for (stratum_index, stratum) in query.local_strata().iter().enumerate() {
-            let active_predicates = stratum.predicates.iter().cloned().collect::<BTreeSet<_>>();
-            let planned_stratum =
-                query_plan.and_then(|query_plan| query_plan.plan.strata.get(stratum_index));
-            let planned_stratum =
-                planned_stratum.ok_or_else(|| EvalError::PlannedExecutorMissingAuthoritative {
-                    predicate: active_predicates
-                        .iter()
-                        .next()
-                        .cloned()
-                        .expect("non-empty local rule group"),
-                })?;
-            run_rule_group(
-                &mut database,
-                &active_predicates,
-                planned_stratum,
-                &planned.catalog,
-                &mut warnings,
-                &self.options,
-            )?;
-        }
-        eval_planned_query_output(query_plan, planned, &database, &warnings, &self.options)
-    }
-
-    pub fn database(&self) -> &Database {
-        &self.database
-    }
-
-    fn seed_facts(&mut self) -> Result<(), EvalError> {
-        if self.facts_seeded {
-            return Ok(());
-        }
-        for fact in self.program.facts() {
-            let tuple = project_fact_head(fact)?;
-            let derivation = self
-                .options
-                .explain()
-                .is_enabled()
-                .then(|| derivation_ref(DerivationNode::fact(&fact.predicate, &tuple.0)));
-            self.database
-                .derived
-                .entry(fact.predicate.clone())
-                .or_default()
-                .insert_with_derivation(&tuple, derivation);
-        }
-        self.facts_seeded = true;
-        Ok(())
-    }
-}
-
-fn global_predicate_dependencies_for_query(
-    program: &AnalyzedProgram,
-    query: &AnalyzedQuery,
-) -> BTreeSet<PredicateRef> {
-    let mut needed = BTreeSet::new();
-    collect_body_global_predicates(&query.query().body, query, &mut needed);
-    for rule in &query.query().local_rules {
-        collect_body_global_predicates(&rule.body, query, &mut needed);
-    }
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for rule in program.rules() {
-            if !needed.contains(&rule.head.predicate) {
-                continue;
-            }
-            let before = needed.len();
-            collect_body_global_predicates(&rule.body, query, &mut needed);
-            changed |= needed.len() != before;
-        }
-    }
-    needed
-}
-
-fn collect_body_global_predicates(
-    body: &Body,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    for atom in &body.atoms {
-        collect_atom_global_predicates(atom, query, out);
-    }
-}
-
-fn collect_atom_global_predicates(
-    atom: &Atom,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    match atom {
-        Atom::Derived(derived) => collect_global_predicate(&derived.predicate, query, out),
-        Atom::Aggregation(aggregate) => {
-            collect_body_global_predicates(&aggregate.body, query, out);
-        }
-        Atom::Negation(negation) => {
-            if let NegatedAtom::Derived(derived) = &negation.atom {
-                collect_global_predicate(&derived.predicate, query, out);
-            }
-        }
-        Atom::TimeBlock(time_block) => {
-            collect_body_global_predicates(&time_block.body, query, out);
-        }
-        Atom::Stored(_) | Atom::Comparison(_) => {}
-    }
-}
-
-fn collect_global_predicate(
-    predicate: &PredicateRef,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    if PrimitivePredicate::from_predicate(predicate).is_some() {
-        return;
-    }
-    if query.local_predicates().any(|local| local == predicate) {
-        return;
-    }
-    out.insert(predicate.clone());
-}
-
 fn relation_uses_trail_visibility(relation: &Ident) -> bool {
     matches!(
         relation.as_str(),
@@ -3834,7 +3606,7 @@ fn primitive_tuples(
     }
 }
 
-fn project_fact_head(head: &Head) -> Result<Tuple, EvalError> {
+pub(crate) fn project_fact_head(head: &Head) -> Result<Tuple, EvalError> {
     head.terms
         .iter()
         .map(|term| match term {
@@ -4266,7 +4038,9 @@ mod tests {
 
     use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
-    use crate::ir::plan::{PlanCatalog, RuleGroupPlan, planned_rule_group_executable};
+    use crate::ir::plan::{
+        PlanCatalog, ProgramPlan, RuleGroupPlan, plan, planned_rule_group_executable,
+    };
     use crate::ranking::{SearchHit, default_lexical_search_info};
     use crate::runtime::{StaticError, analyze, parse_prelude_program, parse_program};
     use crate::source::{Pattern, SourceCapabilities};
@@ -5549,7 +5323,7 @@ mod tests {
         evaluator
             .run_fixpoint()
             .expect("planned fixpoint evaluates");
-        evaluator.database
+        evaluator.database().clone()
     }
 
     #[derive(Serialize)]
@@ -5933,16 +5707,16 @@ mod tests {
         assert_entropy_is_authoritative_planned(input);
         let program = parse_program("inline", input).expect("program parses");
         let analyzed = analyze(program).expect("program analyzes");
+        assert!(
+            plan(&analyzed).is_ok(),
+            "mixed diagnostic/entropy stratum must have a plan so entropy can run authoritatively"
+        );
         let mut evaluator = Evaluator::with_options(
             analyzed,
             entropy_after_same_stratum_diagnostic_db(),
             EvalOptions::default(),
         );
         evaluator.run_fixpoint().expect("fixpoint evaluates");
-        assert!(
-            evaluator.planned.is_ok(),
-            "mixed diagnostic/entropy stratum must have a plan so entropy can run authoritatively"
-        );
 
         let output = evaluate_query_output_with_options(
             input,
@@ -9293,7 +9067,7 @@ release_blocker(code) := issue(code, "error").
         let mut evaluator = Evaluator::new(analyzed, Database::from_store(&fixture_store()));
         evaluator.run_fixpoint().expect("fixpoint");
         let relation = evaluator
-            .database
+            .database()
             .derived
             .get(&PredicateRef::new(Ident::new_unchecked("dep_path")))
             .expect("dep_path relation");
