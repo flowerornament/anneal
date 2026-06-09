@@ -120,3 +120,87 @@ ongoing code simplification — not a re-architecture.
   per the synthesis. If a slice only adds metadata ceremony, it doesn't ship.
 - The corpus stays its own witness: `anneal check` clean, and the prelude/specs
   themselves trend toward settled (anneal annealing itself).
+
+---
+
+# The axis map — first pass (jkt4.1)
+
+Assigning all 183 relations (12 stored · 32 primitive · 139 derived) against the
+live `schema`. **First finding: the vocabulary is three categories, not one flat
+axis set.** Only one category is "the dimensions"; the other two are diagnostics
+and infrastructure that *cut across* them.
+
+## A — the retrieval / orientation AXES (the dimensions)
+
+| axis | predicates (primitive **bold** · derived) |
+|---|---|
+| **relevance** | **search · match** · (hit selection feeds the ranker) |
+| **currency** | currency_current · currency_current_head · currency_successor · currency_superseded · currency_disposition · hit_currency_disposition(_known) · orientation_replaced · re_opened |
+| **lifecycle** | **active · settled · terminal** · operative · status_of · lifecycle_status_candidate · orientation_retired_status · frontmatter_adoption_high · aspirational_code_status · asserts_code |
+| **recency** | **freshness · changed_within · git_mtime · flux** · recent_recency · snapshot_history_exists/_present |
+| **importance** | **cite_count · in_degree · out_degree · impact · neighborhood · upstream · downstream** · hub · incoming_edge · outgoing_edge |
+| **convergence** | advancing · holding · drifting · flow · status_flow · regressed · recently_advanced · entropy · entropy_priority · primary_entropy · potential · potential_subject · potential_weight · effective_potential_weight · frontier · blocked · blocker · ranked_work · work_candidate · status_population · previous_status_population · status_handle_count · status_drifting_reason · status_item · confidence_gap |
+| **structure** | **edge · pipeline_position(_for)** · area* (8) · namespace* (9) · section_ref(_edge/_total) · file_parent_dir · file_prefix · handle_file · parent_dir_* · prefix_pair_candidate · same_concern_pair · top_pair · pipeline_stall · max_pipeline_* · next_pipeline_status · forward_dependency_to_next_status |
+| **obligations** | **obligation · discharged · undischarged · discharge_count** · undischarged_obligation · multiple_discharge |
+| **topic** *(coming)* | reconcile the `area*` family out of structure into its own axis |
+
+## B — the COMPOSITION layer (the ranker) — and the best evidence the axes are real
+`ranked_anchor`/`recent_frontier` are **not axes** — they are weighted sums *over*
+the axes, and they say so explicitly: `anchor_currency_score`,
+`anchor_recent_score`, `anchor_inbound_score`, `anchor_status_score`,
+`anchor_curated_score` → `anchor_total` (+ `anchor_primary_why`, `anchor_signal`,
+`anchor_eligible`, `anchor_subject`; `recent_active_boost`/`_inbound_boost`/
+`_curated_penalty`). **The ranker already decomposes into per-axis scores.** That
+is strong evidence the dimensional model is *correct* — the system is already
+thinking in axes, just not declaring them. Establishing the axes = formalizing
+what `anchor_*_score` already does implicitly, and letting the composition be a
+clean weighted sum the disposition gate can reason about.
+
+## C — DIAGNOSTICS (the `check` surface — cross-cutting, disposition-typed)
+broken_reference · implausible_ref · stale_reference · spec_code_drift ·
+orphan(ed_handle) · missing_frontmatter_file · pipeline_stall · multiple_discharge
+· status_broken · diagnostic · incident · stub · confidence_gap — plus the
+**S-named duplicates** `s001_orphaned` · `s003_pipeline_stall` ·
+`s004_abandoned_namespace` · `s005_pair_count`/`s005_top_pair`. Each diagnostic
+references an axis (broken_reference→structure, drift→coherence, orphan→structure,
+abandoned→lifecycle); the disposition (GATE/REPORT/TREND) is the per-diagnostic
+contract.
+
+## D — INFRASTRUCTURE (config · introspection · profile — not dimensions)
+config plumbing: configured_active/terminal/lifecycle/pipeline_status ·
+configured_asserts_code* · used_lifecycle_status · lifecycle_config_gap ·
+potential_weight_override · overridden_potential_weight_source. introspection/
+output: **describe · schema · predicates · verbs · examples · source_of · sources
+· read · read_full · token_estimate**. corpus profile: profile_code/doc/issue_corpus.
+
+## The tangles (what to fix)
+1. **recency** (the named target) — `freshness`(authored) vs `changed_within` +
+   `git_mtime`(change) vs `flux` + `snapshot`(history); `recent_*` are ranking
+   boosts, not recency. One predicate per sub-notion; git_mtime retired as age.
+2. **S-check wrapper pattern** (evidence-checked) — `s001_orphaned` wraps `orphan`
+   (graph.dl); `s003_pipeline_stall` sits beside `pipeline_stall` (checks.dl); same
+   for s004/s005. It's a *check-id wrapper + underlying predicate* pattern, **not**
+   pure duplication — so the question is whether the double-naming earns its keep
+   (can a diagnostic reference the plain predicate directly?), not a blind collapse.
+3. **config-status sprawl** — `configured_*_status` + `used_lifecycle_status` +
+   `lifecycle_status_candidate` + `lifecycle_config_gap`: a lot of plumbing for
+   "what status values count." Likely one configured-status mechanism.
+4. **potential_weight family** (4) — `potential_weight` · `_override` ·
+   `overridden_*_source` · `effective_potential_weight`: weight-config sprawl.
+5. **currency/lifecycle residue** — `re_opened`, `orientation_retired_status`
+   straddle; confirm they sit on one axis.
+6. **the `*_pair`/concern family** — `prefix_pair_candidate`, `same_concern_pair`,
+   `top_pair`, `s005_*`: what surface uses these? exercise-or-cut.
+
+## Exercise-or-cut candidates (the evidence pass)
+The S-check duplicates; `profile_*`; the deep config/weight plumbing; the
+`*_pair`/`same_concern` family; `stub`, `incident`, `implausible_ref`. Each must
+show a verb/query/consumer use or be cut.
+
+## jkt4.1 verdict
+The dimensional model **holds and is already latent in the ranker** (category B is
+the proof). The work is: (1) promote per-axis scores to declared axes; (2) split
+the three categories explicitly (axes vs diagnostics vs infrastructure); (3) fix
+the six tangles, starting with recency (jkt4.2); (4) run exercise-or-cut on the
+candidates (jkt4.3). The corpus's largest reduction opportunities are the S-check
+duplicates and the config/weight plumbing — concrete, low-risk first cuts.
