@@ -271,11 +271,11 @@ impl IntrospectionBuilder {
                     "Schema discovery is interactive: unknown predicate or field errors include nearby names and allowed fields.".to_string(),
                     "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
                     "Orientation predicates:".to_string(),
-                    "  - recent_frontier(h, rank, recency) ranks recent file handles for goal-less reading.".to_string(),
+                    "  - recent_frontier(h, rank, recency) ranks goal-less reading candidates: date-backed authored age first, coarse git change-recency only for undated files.".to_string(),
                     "  - anchor(h, score, why) is the uncapped durable-spine relation.".to_string(),
                     "  - ranked_anchor(h, rank, score, why) is the rank projection used by status pointers.".to_string(),
                     "Cold-start ladder: status for aggregate vital signs, recent_frontier/ranked_anchor for goal-less reading, context GOAL for focused retrieval.".to_string(),
-                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days).".to_string(),
+                    "Recent-change recipes: join *handle.file to git_mtime(file, instant), or use changed_within(h, days); these are git-backed change signals, not authored age.".to_string(),
                     "History concepts:".to_string(),
                     "  - snapshots capture graph state over time for at(\"snapshot:last\") queries.".to_string(),
                     "  - generations mark source refresh epochs for atomic fact replacement.".to_string(),
@@ -1807,10 +1807,10 @@ fn primitive_relationship(primitive: PrimitivePredicate) -> Option<&'static str>
             "The `read` verb wraps this primitive with typed CLI arguments for handle, budget, and targeted span reads; use a search hit's span_id to read the matched section body.",
         ),
         PrimitivePredicate::ChangedWithin => Some(
-            "Session-recovery primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file.",
+            "Lower-authority change-recency primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file; use `authored_age` when you need date-backed age.",
         ),
         PrimitivePredicate::GitMtime => Some(
-            "Lower-level file timestamp primitive used by `changed_within`; compose it directly when you need exact commit times.",
+            "Raw git timestamp primitive used by `changed_within`; compose it directly when you need exact commit times. Bulk commits can make this a degraded change oracle, so it is not authored age.",
         ),
         PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
         PrimitivePredicate::Verbs => {
@@ -1918,7 +1918,7 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
         ],
         "recent_frontier" => &[
-            "authored file dates from frontmatter or filename, with git-backed changed_within only as a no-date fallback. Terminal and superseded files are excluded; statusless files remain eligible.",
+            "date-backed authored_age is the dominant clock, with git-backed changed_recently only as a coarse lower-authority no-date fallback. Terminal and superseded files are excluded; statusless files remain eligible.",
         ],
         "anchor" => &[
             "file handles plus authority, curated-name, incoming-edge, and weak recency signals. Terminal files need an explicit authoritative-style status to remain eligible.",
@@ -1960,7 +1960,7 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
             "Canonical global convergence frontier; paired with `area_frontier` for area-scoped work.",
         ),
         "recent_frontier" => Some(
-            "Goal-less orientation frontier: the recently changed files a cold agent should inspect first. Unlike `frontier`, this is about reading orientation, not potential work energy.",
+            "Goal-less orientation frontier: date-backed authored-recent files a cold agent should inspect first, with only coarse lower-authority git change bands for undated files. Unlike `frontier`, this is about reading orientation, not potential work energy.",
         ),
         "anchor" => Some(
             "Goal-less orientation anchors: durable read-first files such as authoritative models, living READMEs, curated indexes, and high-inbound references.",
@@ -2256,9 +2256,9 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
         ],
         "git_mtime" | "changed_within" => &[
-            "`*handle{id: h, file: file}, git_mtime(file, instant)` to add git-backed change time",
+            "`*handle{id: h, file: file}, git_mtime(file, instant)` to inspect raw git-backed change time",
             "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep the result at file granularity",
-            "`changed_within(h, 7), search{query: \"text\", handle: h}` for recent search hits",
+            "`changed_within(h, 7), search{query: \"text\", handle: h}` for lower-authority recently-edited search hits",
         ],
         "potential_weight" | "potential_weight_override" | "effective_potential_weight" => &[
             "`effective_potential_weight(source, weight), entropy(h, source)` to see which handles use each weight",
@@ -2307,7 +2307,15 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "orphan",
             "entropy_priority",
         ],
-        "recent_frontier" => &["anchor", "freshness", "changed_within", "*handle", "status"],
+        "recent_frontier" => &[
+            "anchor",
+            "authored_age",
+            "changed_recently",
+            "freshness",
+            "changed_within",
+            "*handle",
+            "status",
+        ],
         "anchor" => &[
             "recent_frontier",
             "ranked_anchor",
@@ -2536,6 +2544,8 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "flow" => Some("? flow(h, direction)."),
         "frontier" => Some("? frontier(h, energy)."),
         "recent_frontier" => Some("? recent_frontier(h, rank, recency)."),
+        "authored_age" => Some("? authored_age(h, days)."),
+        "changed_recently" => Some("? changed_recently(h, band)."),
         "anchor" => Some("? anchor(h, score, why)."),
         "ranked_anchor" => Some("? ranked_anchor(h, rank, score, why)."),
         "ranked_work" => Some("? ranked_work(h, energy, rank)."),

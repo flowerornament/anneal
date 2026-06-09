@@ -2499,7 +2499,7 @@ impl GraphIndex {
             PrimitivePredicate::Freshness => self.freshness_tuples(constraints),
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
             PrimitivePredicate::GitMtime => self.git_mtime_tuples(constraints),
-            PrimitivePredicate::ChangedWithin => self.recent_tuples(constraints),
+            PrimitivePredicate::ChangedWithin => self.changed_within_tuples(constraints),
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
@@ -2855,7 +2855,7 @@ impl GraphIndex {
         }
     }
 
-    fn recent_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+    fn changed_within_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
         let handle = string_constraint(constraints, 0);
         let days = match i64_constraint(constraints, 1) {
             ArgConstraint::Exact(days) if days >= 0 => days,
@@ -2870,20 +2870,20 @@ impl GraphIndex {
         match handle {
             ArgConstraint::Impossible => Vec::new(),
             ArgConstraint::Exact(handle) => self
-                .recent_tuple_for(handle, days, cutoff)
+                .changed_within_tuple_for(handle, days, cutoff)
                 .into_iter()
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
             ArgConstraint::Any => self
                 .handles
                 .keys()
-                .filter_map(|handle| self.recent_tuple_for(handle, days, cutoff))
+                .filter_map(|handle| self.changed_within_tuple_for(handle, days, cutoff))
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
     }
 
-    fn recent_tuple_for(&self, handle: &str, days: i64, cutoff: i64) -> Option<Tuple> {
+    fn changed_within_tuple_for(&self, handle: &str, days: i64, cutoff: i64) -> Option<Tuple> {
         let state = self.handles.get(handle)?;
         let instant = self.git_mtimes.get(&state.file)?;
         let mtime_day = snapshot_days_since_epoch(instant)?;

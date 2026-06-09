@@ -25,7 +25,7 @@ features on it correct and simple.** Currency was tangled with lifecycle until w
 separated them — and the separation *caught two soundness bugs* and shrank the
 design. The open bd queue is the same disease unaddressed: `dqfq` (field-name
 inconsistency), `bmq` (file-local vs corpus-level), the recency family, the
-139-predicate long tail of uneven evidence. These are **symptoms of unclean
+143-predicate long tail of uneven evidence. These are **symptoms of unclean
 axes**, not independent chores. Treating the cause (the axes) dissolves the
 symptoms *and* clears the ground for the clustering keystone (a clean 9th axis,
 not a tangled add-on). This is **anneal annealing its own vocabulary** — pointing
@@ -66,7 +66,7 @@ predicate placed, tangles named.
 ### 2. Evidence — exercise or cut
 A predicate earns its place only if **a verb, a real query, or a consumer need
 exercises it**; otherwise it is a cut candidate. The reduction is an *evidence
-pass*: the 139 derived predicates have uneven evidence, and we don't currently
+pass*: the 143 derived predicates have uneven evidence, and we don't currently
 know which are load-bearing. Default verdict, per the surface-evolution ethos:
 **CUT**. Removal is the primary act; additions must justify against the goal.
 
@@ -125,7 +125,7 @@ ongoing code simplification — not a re-architecture.
 
 # The axis map — first pass (jkt4.1)
 
-Assigning all 183 relations (12 stored · 32 primitive · 139 derived) against the
+Assigning all 187 relations (12 stored · 32 primitive · 143 derived) against the
 live `schema`. **First finding: the vocabulary is three categories, not one flat
 axis set.** Only one category is "the dimensions"; the other two are diagnostics
 and infrastructure that *cut across* them.

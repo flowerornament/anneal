@@ -129,30 +129,58 @@ orientation_historical_file(h) :=
   orientation_file(h, file),
   file contains "/history/".
 
-recent_recency(h, days) :=
+@doc(
+  name: "authored_age",
+  doc: "Return date-backed authored age in days. Unlike freshness, undated or unparseable handles emit no row; use this when a ranking needs the clean authored-age oracle."
+).
+@predicate(
+  name: "authored_age",
+  args: ["h", "days"]
+).
+authored_age(h, days) :=
   *handle{id: h, date: date},
   date != null,
-  freshness(h, days),
+  freshness(h, days).
+
+recent_frontier_authored_age(h, days) :=
+  authored_age(h, days),
   days <= 365.
 
-recent_recency(h, 45) :=
+@doc(
+  name: "changed_recently",
+  doc: "Return coarse git-backed change-recency bands for undated file handles. This is a lower-authority fallback over changed_within, not authored age."
+).
+@predicate(
+  name: "changed_recently",
+  args: ["h", "band"]
+).
+changed_recently(h, "7d") :=
   *handle{id: h, date: null},
   changed_within(h, 7).
 
-recent_recency(h, 90) :=
+changed_recently(h, "30d") :=
   *handle{id: h, date: null},
   changed_within(h, 30),
   not changed_within(h, 7).
 
-recent_recency(h, 180) :=
+changed_recently(h, "90d") :=
   *handle{id: h, date: null},
   changed_within(h, 90),
   not changed_within(h, 30).
 
-recent_recency(h, 365) :=
+changed_recently(h, "365d") :=
   *handle{id: h, date: null},
   changed_within(h, 365),
   not changed_within(h, 90).
+
+change_recency_frontier_score("7d", 45).
+change_recency_frontier_score("30d", 90).
+change_recency_frontier_score("90d", 180).
+change_recency_frontier_score("365d", 365).
+
+recent_frontier_change_score(h, score) :=
+  changed_recently(h, band),
+  change_recency_frontier_score(band, score).
 
 recent_active_boost(h, 200) :=
   orientation_file(h, file),
@@ -190,7 +218,16 @@ recent_curated_penalty(h, 0) :=
 
 recent_frontier_candidate(h, recency, active_boost, inbound_boost, curated_penalty) :=
   orientation_file(h, file),
-  recent_recency(h, recency),
+  recent_frontier_authored_age(h, recency),
+  recent_active_boost(h, active_boost),
+  recent_inbound_boost(h, inbound_boost),
+  recent_curated_penalty(h, curated_penalty),
+  not terminal(h),
+  not orientation_replaced(h).
+
+recent_frontier_candidate(h, recency, active_boost, inbound_boost, curated_penalty) :=
+  orientation_file(h, file),
+  recent_frontier_change_score(h, recency),
   recent_active_boost(h, active_boost),
   recent_inbound_boost(h, inbound_boost),
   recent_curated_penalty(h, curated_penalty),
@@ -205,7 +242,7 @@ recent_frontier_ranked(h, rank, recency) :=
 
 @doc(
   name: "recent_frontier",
-  doc: "Return recently changed file handles ranked for goal-less orientation; recency dominates, statusless files are included, and terminal or superseded files are excluded."
+  doc: "Return file handles ranked for goal-less orientation. Date-backed authored_age dominates; undated files may enter through lower-authority coarse changed_recently bands. Terminal and superseded files are excluded."
 ).
 @predicate(
   name: "recent_frontier",
