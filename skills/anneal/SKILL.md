@@ -114,6 +114,20 @@ Use `describe convergence`, `describe potential`, `describe entropy`,
 joins. `check` is a hidden CI gate alias for the error-only diagnostic view and
 exits 1 when error-severity diagnostics exist.
 
+## Ask By Axis
+
+When vocabulary feels blurry, ask the axis first:
+
+```bash
+anneal -e '? axis(name, question, oracle, disposition).' --format=text
+anneal -e '? axis_of(predicate, "currency").' --format=text
+anneal describe currency --format=text
+```
+
+Axes: relevance, currency, lifecycle, recency, importance, convergence,
+structure, obligations. Use `describe <axis>` for the question, oracle,
+disposition, entry predicates, and common joins.
+
 ## Configuration
 
 `anneal.dl` can add discovery facts, project rules, and project `@verb`s.

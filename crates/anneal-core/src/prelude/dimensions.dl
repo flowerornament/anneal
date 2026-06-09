@@ -1,0 +1,203 @@
+# Source-backed dimensional-axis map for the convergence standard library.
+
+@doc(
+  name: "currency",
+  doc: "Currency asks whether a file handle has been displaced by a Supersedes edge; its disposition is REPORT, not filter."
+).
+
+@doc(
+  name: "lifecycle",
+  doc: "Lifecycle asks whether a handle is draft, operative, or retired according to source status and the configured lattice."
+).
+
+@doc(
+  name: "recency",
+  doc: "Recency asks when a handle was authored, changed, or observed, keeping date, git, and snapshot clocks separate."
+).
+
+@doc(
+  name: "relevance",
+  doc: "Relevance asks whether a handle or span matches the current query."
+).
+
+@doc(
+  name: "importance",
+  doc: "Importance asks how central a handle is in the graph."
+).
+
+@doc(
+  name: "structure",
+  doc: "Structure asks how corpus handles are organized and connected."
+).
+
+@doc(
+  name: "obligations",
+  doc: "Obligations ask what has been promised and whether it is discharged."
+).
+
+@doc(
+  name: "axis",
+  doc: "Return each declared dimensional axis with its question, oracle, and disposition."
+).
+@predicate(
+  name: "axis",
+  args: ["name", "question", "oracle", "disposition"]
+).
+axis("relevance", "matches my query?", "text x query ranker", "REPORT").
+axis("currency", "displaced?", "old-to-new file Supersedes edges", "REPORT; marked oracle is gate-able, surface down-ranks and annotates").
+axis("lifecycle", "draft, operative, or retired?", "source status against configured lifecycle lattice", "REPORT / PRE-FLIGHT").
+axis("recency", "authored, changed, or observed when?", "date for authored age, git mtime for lower-authority change recency, snapshots for history", "REPORT; flux is TREND").
+axis("importance", "how central?", "degree, citations, impact, neighborhood", "REPORT").
+axis("convergence", "settling?", "snapshot deltas and unsettled-work evidence", "TREND").
+axis("structure", "organized or connected?", "edge kinds, areas, namespaces, sections, pipeline structure", "REPORT").
+axis("obligations", "owed?", "obligation and discharge facts", "GATE-able through E002").
+
+@doc(
+  name: "axis_of",
+  doc: "Return the dimensional placement for a derived predicate. Placement values are axis names, plus composition, diagnostic, and infrastructure for cross-axis support relations."
+).
+@predicate(
+  name: "axis_of",
+  args: ["predicate", "axis"]
+).
+
+axis_of("abandoned_namespace", "diagnostic").
+axis_of("abandoned_stale_count", "diagnostic").
+axis_of("abandoned_stale_member", "diagnostic").
+axis_of("abandoned_terminal_count", "diagnostic").
+axis_of("abandoned_terminal_member", "diagnostic").
+axis_of("active_namespace", "structure").
+axis_of("active_namespace_member", "structure").
+axis_of("active_namespace_representative_file", "structure").
+axis_of("active_namespace_size", "structure").
+axis_of("advancing", "convergence").
+axis_of("anchor", "composition").
+axis_of("anchor_curated_score", "composition").
+axis_of("anchor_currency_score", "composition").
+axis_of("anchor_eligible", "composition").
+axis_of("anchor_inbound_score", "composition").
+axis_of("anchor_primary_why", "composition").
+axis_of("anchor_recent_score", "composition").
+axis_of("anchor_signal", "composition").
+axis_of("anchor_status_score", "composition").
+axis_of("anchor_subject", "composition").
+axis_of("anchor_total", "composition").
+axis_of("area", "structure").
+axis_of("area_cross_edges", "structure").
+axis_of("area_error_count", "structure").
+axis_of("area_error_location_count", "structure").
+axis_of("area_file_count", "structure").
+axis_of("area_frontier", "structure").
+axis_of("area_health", "structure").
+axis_of("area_of", "structure").
+axis_of("aspirational_code_status", "lifecycle").
+axis_of("asserts_code", "lifecycle").
+axis_of("authored_age", "recency").
+axis_of("axis", "infrastructure").
+axis_of("axis_of", "infrastructure").
+axis_of("blocked", "convergence").
+axis_of("blocker", "convergence").
+axis_of("broken_reference", "diagnostic").
+axis_of("change_recency_frontier_score", "composition").
+axis_of("changed_recently", "recency").
+axis_of("confidence_gap", "convergence").
+axis_of("configured_active_status", "infrastructure").
+axis_of("configured_asserts_code_present", "infrastructure").
+axis_of("configured_asserts_code_status", "infrastructure").
+axis_of("configured_lifecycle_status", "infrastructure").
+axis_of("configured_pipeline_status", "infrastructure").
+axis_of("configured_terminal_status", "infrastructure").
+axis_of("currency_current", "currency").
+axis_of("currency_current_head", "currency").
+axis_of("currency_disposition", "currency").
+axis_of("currency_successor", "currency").
+axis_of("currency_superseded", "currency").
+axis_of("diagnostic", "diagnostic").
+axis_of("drifting", "convergence").
+axis_of("entropy", "convergence").
+axis_of("entropy_priority", "convergence").
+axis_of("file_parent_dir", "structure").
+axis_of("file_prefix", "structure").
+axis_of("flow", "convergence").
+axis_of("forward_dependency_to_next_status", "structure").
+axis_of("frontier", "convergence").
+axis_of("frontmatter_adoption_high", "lifecycle").
+axis_of("handle_file", "structure").
+axis_of("hit_currency_disposition", "currency").
+axis_of("hit_currency_disposition_known", "currency").
+axis_of("holding", "convergence").
+axis_of("hub", "importance").
+axis_of("implausible_ref", "diagnostic").
+axis_of("incident", "structure").
+axis_of("incoming_edge", "importance").
+axis_of("lifecycle_config_gap", "diagnostic").
+axis_of("lifecycle_status_candidate", "lifecycle").
+axis_of("max_pipeline_level", "structure").
+axis_of("max_pipeline_status", "structure").
+axis_of("missing_frontmatter_file", "diagnostic").
+axis_of("multiple_discharge", "obligations").
+axis_of("namespace_label", "structure").
+axis_of("namespace_label_count", "structure").
+axis_of("namespace_of", "structure").
+axis_of("namespace_present", "structure").
+axis_of("next_pipeline_status", "structure").
+axis_of("operative", "lifecycle").
+axis_of("orientation_curated_hub", "structure").
+axis_of("orientation_file", "structure").
+axis_of("orientation_historical_file", "lifecycle").
+axis_of("orientation_inbound_count", "importance").
+axis_of("orientation_replaced", "currency").
+axis_of("orientation_retired_status", "lifecycle").
+axis_of("orphan", "structure").
+axis_of("orphaned_handle", "diagnostic").
+axis_of("outgoing_edge", "importance").
+axis_of("parent_dir_file_count", "structure").
+axis_of("parent_dir_frontmatter_count", "structure").
+axis_of("parent_dir_present", "structure").
+axis_of("pipeline_stall", "diagnostic").
+axis_of("potential", "convergence").
+axis_of("potential_subject", "convergence").
+axis_of("potential_weight", "convergence").
+axis_of("prefix_pair_candidate", "structure").
+axis_of("previous_status_population", "convergence").
+axis_of("primary_entropy", "convergence").
+axis_of("profile_code_corpus", "infrastructure").
+axis_of("profile_doc_corpus", "infrastructure").
+axis_of("profile_issue_corpus", "infrastructure").
+axis_of("ranked_anchor", "composition").
+axis_of("ranked_work", "convergence").
+axis_of("re_opened", "convergence").
+axis_of("recent_active_boost", "composition").
+axis_of("recent_curated_penalty", "composition").
+axis_of("recent_frontier", "composition").
+axis_of("recent_frontier_authored_age", "composition").
+axis_of("recent_frontier_candidate", "composition").
+axis_of("recent_frontier_change_score", "composition").
+axis_of("recent_frontier_ranked", "composition").
+axis_of("recent_inbound_boost", "composition").
+axis_of("recently_advanced", "convergence").
+axis_of("regressed", "convergence").
+axis_of("rejected_namespace", "structure").
+axis_of("s003_pipeline_stall", "diagnostic").
+axis_of("s004_abandoned_namespace", "diagnostic").
+axis_of("s005_pair_count", "diagnostic").
+axis_of("s005_top_pair", "diagnostic").
+axis_of("same_concern_pair", "structure").
+axis_of("section_ref", "structure").
+axis_of("section_ref_edge", "structure").
+axis_of("section_ref_total", "structure").
+axis_of("snapshot_history_exists", "recency").
+axis_of("snapshot_history_present", "recency").
+axis_of("spec_code_drift", "diagnostic").
+axis_of("stale_reference", "diagnostic").
+axis_of("status_broken", "diagnostic").
+axis_of("status_drifting_reason", "convergence").
+axis_of("status_flow", "convergence").
+axis_of("status_handle_count", "convergence").
+axis_of("status_item", "convergence").
+axis_of("status_of", "lifecycle").
+axis_of("status_population", "convergence").
+axis_of("stub", "diagnostic").
+axis_of("top_pair", "structure").
+axis_of("undischarged_obligation", "obligations").
+axis_of("used_lifecycle_status", "infrastructure").

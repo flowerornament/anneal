@@ -23,12 +23,14 @@ pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/con
 pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
 pub const RANKING_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/ranking.dl";
 pub const ORIENTATION_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/orientation.dl";
+pub const DIMENSIONS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/dimensions.dl";
 pub const VIEWS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/views.dl";
 pub const GRAPH_PRELUDE: &str = include_str!("../prelude/graph.dl");
 pub const CONVERGENCE_PRELUDE: &str = include_str!("../prelude/convergence.dl");
 pub const CHECKS_PRELUDE: &str = include_str!("../prelude/checks.dl");
 pub const RANKING_PRELUDE: &str = include_str!("../prelude/ranking.dl");
 pub const ORIENTATION_PRELUDE: &str = include_str!("../prelude/orientation.dl");
+pub const DIMENSIONS_PRELUDE: &str = include_str!("../prelude/dimensions.dl");
 pub const VIEWS_PRELUDE: &str = include_str!("../prelude/views.dl");
 static CONTEXT_QUERY_TEMPLATE: LazyLock<String> = LazyLock::new(|| {
     let program = parse_prelude_program(VIEWS_PRELUDE_SOURCE, VIEWS_PRELUDE)
@@ -71,6 +73,10 @@ pub const STANDARD_PRELUDE_FILES: &[EmbeddedPreludeFile] = &[
     EmbeddedPreludeFile {
         source_name: ORIENTATION_PRELUDE_SOURCE,
         contents: ORIENTATION_PRELUDE,
+    },
+    EmbeddedPreludeFile {
+        source_name: DIMENSIONS_PRELUDE_SOURCE,
+        contents: DIMENSIONS_PRELUDE,
     },
     EmbeddedPreludeFile {
         source_name: VIEWS_PRELUDE_SOURCE,
@@ -662,6 +668,7 @@ mod tests {
                 CHECKS_PRELUDE_SOURCE,
                 RANKING_PRELUDE_SOURCE,
                 ORIENTATION_PRELUDE_SOURCE,
+                DIMENSIONS_PRELUDE_SOURCE,
                 VIEWS_PRELUDE_SOURCE,
             ]
         );
@@ -1239,6 +1246,13 @@ mod tests {
             ("convergence", CONVERGENCE_PRELUDE_SOURCE),
             ("checks", CHECKS_PRELUDE_SOURCE),
             ("ranking", RANKING_PRELUDE_SOURCE),
+            ("currency", DIMENSIONS_PRELUDE_SOURCE),
+            ("lifecycle", DIMENSIONS_PRELUDE_SOURCE),
+            ("recency", DIMENSIONS_PRELUDE_SOURCE),
+            ("relevance", DIMENSIONS_PRELUDE_SOURCE),
+            ("importance", DIMENSIONS_PRELUDE_SOURCE),
+            ("structure", DIMENSIONS_PRELUDE_SOURCE),
+            ("obligations", DIMENSIONS_PRELUDE_SOURCE),
             ("views", VIEWS_PRELUDE_SOURCE),
         ];
         let mut program = standard_prelude_program().expect("prelude parses");
@@ -1284,6 +1298,63 @@ mod tests {
                 "source_of({topic}) should have concrete lines"
             );
         }
+    }
+
+    #[test]
+    fn standard_prelude_places_every_derived_predicate_on_axis_map() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "derived",
+                    r#"? schema(name, kind, signature, determinism, provenance), kind = "derived"."#,
+                ),
+                ("placed", "? axis_of(predicate, axis)."),
+                ("axes", "? axis(name, question, oracle, disposition)."),
+            ],
+            Database::from_store(&FactStore::default()),
+        );
+        let derived = output(&outputs, "derived")
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("name") {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let placed = output(&outputs, "placed")
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("predicate") {
+                Some(Value::String(predicate)) => Some(predicate.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let axes = output(&outputs, "axes")
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("name") {
+                Some(Value::String(axis)) => Some(axis.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            derived, placed,
+            "axis_of must place every derived predicate"
+        );
+        assert_eq!(
+            axes,
+            BTreeSet::from([
+                "convergence".to_string(),
+                "currency".to_string(),
+                "importance".to_string(),
+                "lifecycle".to_string(),
+                "obligations".to_string(),
+                "recency".to_string(),
+                "relevance".to_string(),
+                "structure".to_string(),
+            ])
+        );
     }
 
     #[test]

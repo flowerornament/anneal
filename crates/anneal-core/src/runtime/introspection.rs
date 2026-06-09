@@ -740,15 +740,17 @@ impl IntrospectionBuilder {
             if predicate_names.contains(name) {
                 continue;
             }
-            let doc = if name == "convergence" {
-                convergence_topic_card()
-            } else {
-                describe_card(DescribeCard {
-                    summary: &info.doc,
-                    kind: Some(DescribeKind::RuntimeTopic),
-                    ..DescribeCard::default()
-                })
-            };
+            let doc = axis_topic_card(name).unwrap_or_else(|| {
+                if name == "convergence" {
+                    convergence_topic_card()
+                } else {
+                    describe_card(DescribeCard {
+                        summary: &info.doc,
+                        kind: Some(DescribeKind::RuntimeTopic),
+                        ..DescribeCard::default()
+                    })
+                }
+            });
             self.describe
                 .insert(describe_entry(name, DescribeKind::RuntimeTopic, &doc));
             for (file, line_text) in info.source_lines.iter_line_text() {
@@ -1249,6 +1251,177 @@ struct DiagnosticCodeCard {
     common_joins: &'static [&'static str],
     example: &'static str,
     see_also: &'static [&'static str],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AxisTopicCard {
+    name: &'static str,
+    summary: &'static str,
+    question: &'static str,
+    oracle: &'static str,
+    disposition: &'static str,
+    member_predicates: &'static str,
+    common_joins: &'static [&'static str],
+    examples: &'static [&'static str],
+    see_also: &'static [&'static str],
+}
+
+const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
+    AxisTopicCard {
+        name: "currency",
+        summary: "Currency asks whether a file handle has been displaced by a marked Supersedes edge.",
+        question: "displaced?",
+        oracle: "old-to-new file Supersedes edges; status strings such as superseded stay on the lifecycle axis.",
+        disposition: "REPORT: down-rank and annotate; never hide superseded material.",
+        member_predicates: "currency_current, currency_current_head, currency_successor, currency_superseded, currency_disposition, hit_currency_disposition, orientation_replaced.",
+        common_joins: &[
+            "`currency_disposition(h, disposition), *handle{id: h, file: file, status: status}` to read displacement beside lifecycle status",
+            "`currency_current_head(h), operative(h), *handle{id: h, file: file}` for boosted current heads",
+            "`currency_superseded(h), *edge{from: h, to: newer, kind: \"Supersedes\"}` to inspect the replacement edge",
+        ],
+        examples: &[
+            "? currency_disposition(h, disposition), *handle{id: h, file: file, status: status}.",
+            "? currency_current_head(h), operative(h), *handle{id: h, file: file}.",
+            "? axis_of(\"currency_current_head\", axis).",
+        ],
+        see_also: &["lifecycle", "structure", "ranked_anchor"],
+    },
+    AxisTopicCard {
+        name: "lifecycle",
+        summary: "Lifecycle asks where a handle sits in the corpus status band: draft, operative, retired, or project-specific equivalents.",
+        question: "draft, operative, or retired?",
+        oracle: "source status values interpreted through project convergence config and lifecycle helpers.",
+        disposition: "REPORT / PRE-FLIGHT: report observed status; declare missing config or missing status before relying on lifecycle-sensitive claims.",
+        member_predicates: "status_of, operative, lifecycle_status_candidate, orientation_retired_status, asserts_code, aspirational_code_status, frontmatter_adoption_high.",
+        common_joins: &[
+            "`status_of(h, status), *handle{id: h, file: file}` to inspect source-provided status",
+            "`operative(h), *handle{id: h, file: file}` for handles eligible for current-head ranking boosts",
+            "`lifecycle_config_gap(status, count, variant), diagnostic(\"W005\", severity, status, file, line, evidence)` for config evidence",
+        ],
+        examples: &[
+            "? status_of(h, status), *handle{id: h, file: file}.",
+            "? operative(h), *handle{id: h, file: file}.",
+            "? axis_of(\"operative\", axis).",
+        ],
+        see_also: &["currency", "convergence", "diagnostic"],
+    },
+    AxisTopicCard {
+        name: "recency",
+        summary: "Recency asks when a handle was authored, changed, or observed, while keeping the three clocks separate.",
+        question: "authored, changed, or observed when?",
+        oracle: "date-backed authored_age for authored age, git mtime for lower-authority change recency, snapshots for observed history.",
+        disposition: "REPORT; flux and snapshot comparisons are TREND because they need a baseline.",
+        member_predicates: "authored_age, changed_recently, snapshot_history_exists, snapshot_history_present; primitives include freshness, changed_within, git_mtime, flux.",
+        common_joins: &[
+            "`authored_age(h, days), *handle{id: h, file: file}` for date-backed age",
+            "`changed_recently(h, band), *handle{id: h, file: file}` for coarse git-backed change recency",
+            "`at(\"snapshot:last\") { *handle{id: h, status: old} }, *handle{id: h, status: now}, old != now` for observed status movement",
+        ],
+        examples: &[
+            "? authored_age(h, days), *handle{id: h, file: file}.",
+            "? changed_recently(h, band), *handle{id: h, file: file}.",
+            "? axis_of(\"authored_age\", axis).",
+        ],
+        see_also: &["recent_frontier", "convergence", "runtime"],
+    },
+    AxisTopicCard {
+        name: "relevance",
+        summary: "Relevance asks whether a handle or span matches the current query.",
+        question: "matches my query?",
+        oracle: "text and query scored by the ranker/search provider.",
+        disposition: "REPORT: relevance scores inform retrieval, not corpus validity.",
+        member_predicates: "search and match are primitives; verb-local search/context rows project this axis into product surfaces.",
+        common_joins: &[
+            "`search(query, h, span_id, score, reason, field, low_confidence), *handle{id: h, file: file}` for raw hit evidence",
+            "`search{query: \"TERM\", handle: h, score: score}, *span{handle: h, id: span_id, summary: summary}` for span summaries",
+            "`axis_of(p, \"composition\")` to inspect rankers that combine relevance with other axes",
+        ],
+        examples: &[
+            "? search{query: \"convergence\", handle: h, score: score}.",
+            "? axis(\"relevance\", question, oracle, disposition).",
+        ],
+        see_also: &["search", "context", "importance"],
+    },
+    AxisTopicCard {
+        name: "importance",
+        summary: "Importance asks how central a handle is in the graph.",
+        question: "how central?",
+        oracle: "degree, citations, impact, and neighborhood graph primitives over current edges.",
+        disposition: "REPORT: centrality changes ranking and navigation, not validity.",
+        member_predicates: "hub, incoming_edge, outgoing_edge, incident, orientation_inbound_count; primitives include cite_count, in_degree, out_degree, impact, neighborhood, upstream, downstream.",
+        common_joins: &[
+            "`incoming_edge(h, from, kind), *handle{id: h, file: file}` for inbound evidence",
+            "`out_degree(h, degree), *handle{id: h, file: file}` for broad hubs",
+            "`hub(h, degree), *handle{id: h, file: file}` to spot maps or over-broad index handles",
+        ],
+        examples: &[
+            "? hub(h, degree), *handle{id: h, file: file}.",
+            "? incoming_edge(h, from, kind), *handle{id: h, file: file}.",
+            "? axis_of(\"hub\", axis).",
+        ],
+        see_also: &["structure", "relevance", "context"],
+    },
+    AxisTopicCard {
+        name: "structure",
+        summary: "Structure asks how corpus handles are organized and connected.",
+        question: "organized or connected?",
+        oracle: "stored edges plus adapter-provided areas, namespaces, sections, and pipeline structure.",
+        disposition: "REPORT: structure orients navigation; diagnostics decide when a structural fact becomes a gate.",
+        member_predicates: "area_of, namespace_of, handle_file, section_ref, area_health, area_frontier, parent_dir_* and namespace_* helpers, top_pair, orphan, stub.",
+        common_joins: &[
+            "`area_of(h, area), *handle{id: h, file: file}` to group handles by source area",
+            "`namespace_of(h, namespace), *handle{id: h, kind: kind}` to inspect label families",
+            "`section_ref_edge(edge_id), *edge{id: edge_id, from: src, to: dst, kind: kind}` for markdown section-reference evidence",
+        ],
+        examples: &[
+            "? area_health(area, grade, files, errors, cross_edges).",
+            "? namespace_of(h, namespace), *handle{id: h, kind: kind}.",
+            "? axis_of(\"area_of\", axis).",
+        ],
+        see_also: &["importance", "diagnostic", "area_health"],
+    },
+    AxisTopicCard {
+        name: "obligations",
+        summary: "Obligations ask what has been promised and whether the corpus records a discharge.",
+        question: "owed?",
+        oracle: "obligation and discharge facts over handles.",
+        disposition: "GATE-able through E002: undischarged obligations are allowed to block release or review gates.",
+        member_predicates: "undischarged_obligation, multiple_discharge; primitives include obligation, discharged, undischarged, discharge_count.",
+        common_joins: &[
+            "`undischarged(h), obligation(h), *handle{id: h, file: file, status: status}` for owed work",
+            "`multiple_discharge(h, count), diagnostic(\"W003\", severity, h, file, line, evidence)` for duplicate discharge evidence",
+            "`axis_of(\"undischarged_obligation\", axis)` to inspect obligation-axis placement",
+        ],
+        examples: &[
+            "? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.",
+            "? multiple_discharge(h, count).",
+            "? axis_of(\"undischarged_obligation\", axis).",
+        ],
+        see_also: &["convergence", "diagnostic", "check"],
+    },
+];
+
+fn axis_topic_card(name: &str) -> Option<String> {
+    let card = AXIS_TOPIC_CARDS.iter().find(|card| card.name == name)?;
+    Some(describe_card(DescribeCard {
+        summary: card.summary,
+        kind: Some(DescribeKind::RuntimeTopic),
+        relationship: Some(
+            "Axis card from CR-D104: use `axis` for the machine question/oracle/disposition row and `axis_of` to place predicates.",
+        ),
+        common_joins: card.common_joins,
+        examples: card.examples.to_vec(),
+        see_also: card.see_also,
+        extra_lines: vec![
+            format!("Question: {}", card.question),
+            format!("Oracle: {}", card.oracle),
+            format!("Disposition: {}", card.disposition),
+            format!("Member predicates: {}", card.member_predicates),
+            "Placement categories outside axes: composition, diagnostic, infrastructure."
+                .to_string(),
+        ],
+        ..DescribeCard::default()
+    }))
 }
 
 fn convergence_topic_card() -> String {
