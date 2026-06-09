@@ -173,7 +173,7 @@ live `schema`):
 
 # Part IV — The conceptual language (the heart)
 
-The 143 prelude predicates are not a flat bag — they are **projections along a
+The 143 derived predicates in the live schema are not a flat bag — they are **projections along a
 small set of orthogonal dimensions.** Naming these axes *is* the design language,
 and the discipline is: **keep them orthogonal, name each precisely, present each
 with an honest disposition.** (Conflating two axes is the canonical bug — see §
@@ -186,7 +186,7 @@ currency below.)
 | **relevance** | does it match my query? | search · match · hit · anchor · ranked | per-query |
 | **currency** | has it been displaced? | currency · supersession | **no** (non-monotone) |
 | **lifecycle** | draft / operative / retired? | status · active · abandoned · terminal · settled | ~yes |
-| **recency** | when authored / changed / observed? | freshness(authored) · changed_within · flux · recent · snapshot · ~~git_mtime~~ | yes |
+| **recency** | when authored / changed / observed? | authored_age(freshness) · changed_recently/changed_within · flux · snapshot · git_mtime (raw timestamp; rejected as age/currency oracle) | yes |
 | **importance** | how central? | in/out_degree · cite_count · impact · neighborhood | yes |
 | **convergence** | is it settling? | potential · entropy · advancing/holding/drifting | trend |
 | **structure** | how organized/connected? | edge · parent · **area** · namespace · section · pipeline · trail | yes |
@@ -261,18 +261,19 @@ Five moves carry us there:
 ### 1. Make the dimensional map first-class
 The ~8 axes are real but *implicit* — discovered, not declared. Name them in the
 substrate; assign every predicate-family to one; and **surface the tangles**.
-Currency/lifecycle was one untangle (and it caught two bugs); the **recency
-family** is the next suspect (`freshness` vs `changed_within` vs `flux` vs
-`recent` vs the already-rejected `git_mtime` — overlapping notions of "when").
-*Clarifying an axis is what makes the features on it correct and simple* — the
-single most reliable lesson of this arc.
+Currency/lifecycle was one untangle (and it caught two bugs); **recency** was the
+second (`2026-06-09-recency-axis.md`: authored-age vs change-recency vs
+history-movement, with `git_mtime` rejected as an age/currency oracle after the
+murail simulation showed it degraded — 87% of files sharing one bulk-commit
+timestamp). *Clarifying an axis is what makes the features on it correct and
+simple* — the single most reliable lesson of this arc, now proven twice.
 
 ### 2. Disposition-type the whole surface
 The trust invariant is enforced on currency and `check`, but most of the 143
 predicates predate it. Every projection should carry its disposition, so no
 surface ever presents more than its oracle earns. This is `xy45` applied
-uniformly — fold it into the master spec as a CR-D and make it the gate for every
-new predicate.
+uniformly — folded into the master spec as **CR-D103**, the gate for every new
+predicate; the remaining work is typing the existing 143.
 
 ### 3. Reduce the vocabulary (find the language)
 187 callable relations over a handful of deliberate verbs is more than the value

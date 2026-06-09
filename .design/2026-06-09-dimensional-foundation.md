@@ -173,34 +173,52 @@ potential_weight_override · overridden_potential_weight_source. introspection/
 output: **describe · schema · predicates · verbs · examples · source_of · sources
 · read · read_full · token_estimate**. corpus profile: profile_code/doc/issue_corpus.
 
-## The tangles (what to fix)
-1. **recency** (the named target) — `freshness`(authored) vs `changed_within` +
-   `git_mtime`(change) vs `flux` + `snapshot`(history); `recent_*` are ranking
-   boosts, not recency. One predicate per sub-notion; git_mtime retired as age.
-2. **S-check wrapper pattern** (evidence-checked) — `s001_orphaned` wraps `orphan`
-   (graph.dl); `s003_pipeline_stall` sits beside `pipeline_stall` (checks.dl); same
-   for s004/s005. It's a *check-id wrapper + underlying predicate* pattern, **not**
-   pure duplication — so the question is whether the double-naming earns its keep
-   (can a diagnostic reference the plain predicate directly?), not a blind collapse.
-3. **config-status sprawl** — `configured_*_status` + `used_lifecycle_status` +
-   `lifecycle_status_candidate` + `lifecycle_config_gap`: a lot of plumbing for
-   "what status values count." Likely one configured-status mechanism.
-4. **potential_weight family** (4) — `potential_weight` · `_override` ·
-   `overridden_*_source` · `effective_potential_weight`: weight-config sprawl.
-5. **currency/lifecycle residue** — `re_opened`, `orientation_retired_status`
-   straddle; confirm they sit on one axis.
-6. **the `*_pair`/concern family** — `prefix_pair_candidate`, `same_concern_pair`,
-   `top_pair`, `s005_*`: what surface uses these? exercise-or-cut.
+## The tangles — all six resolved (evidence-backed, 2026-06-09)
+1. **recency** — **RESOLVED (jkt4.2 shipped).** Authored-age (`authored_age`
+   wrapper over `freshness`) vs change-recency (`changed_recently`, lower
+   authority) vs history-movement (`flux`); `git_mtime` rejected as an age/currency
+   oracle after the murail simulation showed it degraded (87% of files share one
+   bulk-commit timestamp). See `2026-06-09-recency-axis.md`.
+2. **S-check wrapper pattern** — **RESOLVED: it earns its keep.** Each wrapper is
+   the diagnostic's *named evidence chain* (drillable: `? s003_pipeline_stall(…)`),
+   consumed by its `diagnostic(...)` row — deliberate pattern, declared in
+   CR-D104. One exception: `s001_orphaned` was an *inverted* deprecation
+   (canonical `orphaned_handle` delegated to the deprecated name, "through v0.13"
+   at v0.19) — fixed in jkt4.3.
+3. **config-status sprawl** — **RESOLVED: exercised.** The chain
+   `configured_*_status → used_lifecycle_status → lifecycle_status_candidate →
+   lifecycle_config_gap` terminates in the W005 diagnostic — same named-evidence
+   pattern. Keep.
+4. **potential_weight family** — **RESOLVED: override plumbing cut (jkt4.3).**
+   `potential_weight_override` / `overridden_potential_weight_source` /
+   `effective_potential_weight` + the `potential_weight.override` config key had
+   zero real-corpus usage; CR-D21/CR-D22 shadowing is the retune path. Base
+   `potential_weight` stays (load-bearing).
+5. **currency/lifecycle residue** — **RESOLVED: both place cleanly.** `re_opened`
+   is a snapshot-backed *transition* → **convergence** (TREND), feeding
+   `drifting`. `orientation_retired_status` is status-string membership →
+   **lifecycle**. The honest subtlety is now CR-D104 rule 3: `status: superseded`
+   (declared, lifecycle) and a `Supersedes` edge (structural, currency) are two
+   oracles on two axes, allowed to disagree.
+6. **`*_pair`/concern family** — **RESOLVED: exercised.** The chain feeds the
+   spec-mandated S005 (CR-D50); `top_pair` is its queryable evidence name. Keep.
 
-## Exercise-or-cut candidates (the evidence pass)
-The S-check duplicates; `profile_*`; the deep config/weight plumbing; the
-`*_pair`/`same_concern` family; `stub`, `incident`, `implausible_ref`. Each must
-show a verb/query/consumer use or be cut.
+## Exercise-or-cut — the evidence pass (jkt4.3, executed)
+**CUT:** `work_candidate` (deprecated through v0.14, zero consumers anywhere) ·
+`s001_orphaned` (inverted deprecation, above) · the potential_weight override
+plumbing ×3 + config key. **KEEP (exercised or spec-mandated):** the S005 pair
+chain (CR-D50) · s003/s004 wrappers (their diagnostics) · the config-status chain
+(W005) · `stub` (CR-D47) · `profile_*` (CR-D58) · `implausible_ref` (W004).
+**Correction:** `incident` was mislabeled diagnostics in the first-pass map — it
+is the *incidence* predicate (structure), feeding `hub`.
 
-## jkt4.1 verdict
-The dimensional model **holds and is already latent in the ranker** (category B is
-the proof). The work is: (1) promote per-axis scores to declared axes; (2) split
-the three categories explicitly (axes vs diagnostics vs infrastructure); (3) fix
-the six tangles, starting with recency (jkt4.2); (4) run exercise-or-cut on the
-candidates (jkt4.3). The corpus's largest reduction opportunities are the S-check
-duplicates and the config/weight plumbing — concrete, low-risk first cuts.
+## jkt4.1 verdict — capstone landed
+The dimensional model **holds and was already latent in the ranker** (category B
+is the proof). The capstone is **CR-D104 (§27.4 of the master spec)**: the nine
+axes declared (question / oracle / disposition / monotonicity), the four
+categories (axis / composition / diagnostic / infrastructure), and three rules —
+one-predicate-one-axis (else tangle-or-cut), compositions-decompose (the
+`anchor_*_score` shape), and two-oracles-may-disagree (axes stay separate). With
+CR-D103 (authority) + CR-D104 (placement), every new predicate answers *which
+axis, what oracle, what disposition* before it ships. The per-predicate
+assignment above is the living map; the spec carries the durable law.

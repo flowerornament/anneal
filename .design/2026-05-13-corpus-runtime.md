@@ -1905,6 +1905,68 @@ Rationale: "area" is useful enough to keep, but it belongs in the
 runtime language as explainable relations rather than as a path-shaped
 legacy command.
 
+### §27.4 The dimensional axis map [CR-D104]
+
+**Definition CR-D104 (Dimensional axis map).** The derived vocabulary
+is organized along a small set of **orthogonal axes**, and every
+derived predicate is placed in exactly one of four categories:
+
+| category | what it is | examples |
+|---|---|---|
+| **axis predicate** | a projection along exactly one axis | `currency_current`, `authored_age`, `potential` |
+| **composition** | a weighted combination *over* axes (a ranker) | `ranked_anchor`, `recent_frontier`, `anchor_*_score` |
+| **diagnostic** | a `check`-surface rule, disposition-typed per CR-D103, referencing the axis it witnesses | `diagnostic("E001", …)`, `lifecycle_config_gap` |
+| **infrastructure** | config plumbing, introspection, profiles — not a dimension | `configured_*_status`, `describe`, `profile_*` |
+
+An **axis** is defined by four properties: the **question** it answers,
+its **oracle** (what makes its answer earned), its **disposition**
+(per CR-D103), and its **monotonicity**. The declared axes:
+
+| axis | question | oracle | disposition |
+|---|---|---|---|
+| **relevance** | matches my query? | text × query (Ranker) | REPORT |
+| **currency** | displaced? | `Supersedes` edges | REPORT (marked oracle GATE-able); non-monotone |
+| **lifecycle** | draft / operative / retired? | `status` against the configured lattice | REPORT / PRE-FLIGHT |
+| **recency** | authored / changed / observed *when*? | `date` (authored-age, clean) · git mtime (change-recency, lower authority) · snapshots (history) | REPORT; `flux` TREND |
+| **importance** | how central? | degree / citations | REPORT |
+| **convergence** | settling? | snapshot deltas | TREND |
+| **structure** | organized / connected? | `*edge` + kinds, areas, namespaces | REPORT |
+| **obligations** | owed? | obligation/discharge facts | GATE-able (E002) |
+| **topic** *(reserved)* | same subject? | community structure over `Cites` (future clustering substrate) | REPORT, never an asserted edge |
+
+Three rules follow:
+
+1. **One predicate, one axis.** A derived predicate that cannot be
+   placed on a single axis is a tangle to resolve or a cut (default
+   verdict CUT, per CR-D102). Conflating two axes in one predicate is
+   the canonical vocabulary bug — the currency/lifecycle and recency
+   untangles each shipped because the conflation had made features on
+   those axes wrong or complicated.
+2. **Compositions decompose.** A ranker combines axes only through
+   named per-axis score predicates (the `anchor_*_score` shape) with
+   explicit weights, so each contribution carries its own axis's
+   disposition and the combination is inspectable. A ranker must not
+   read an axis's raw oracle directly past its axis predicates.
+3. **Two oracles may disagree; the axes stay separate.** When the same
+   word has a declared signal on one axis and a structural signal on
+   another (a `status: superseded` string is *lifecycle*; a
+   `Supersedes` edge is *currency*), both are presented on their own
+   axis with their own authority — neither silently overrides the
+   other.
+
+Diagnostics are deliberately built as **named evidence chains**: the
+predicate(s) carrying a diagnostic's evidence (`s003_pipeline_stall`,
+the S005 pair chain, `lifecycle_config_gap`) stay queryable so an agent
+can drill from a `diagnostic(...)` row to its evidence with the same
+vocabulary. This double-naming is the pattern, not duplication.
+
+Rationale: the axes were discovered, not invented — the shipped ranker
+already decomposed into per-axis scores before the axes were declared.
+Declaring them makes the placement rule enforceable at design time:
+every new predicate names its axis (or category) and its disposition
+before it ships, which is what keeps a 100+-predicate vocabulary a
+language rather than an accretion.
+
 ### §28 Check rules [CR-D23]
 
 **Definition CR-D23 (Check rule).** A rule whose head is
@@ -3587,6 +3649,7 @@ config key.
 - CR-D101: Direct project verb authoring (§17)
 - CR-D102: Surface evolution framework (§35)
 - CR-D103: Trust invariant — disposition-earned authority (§3)
+- CR-D104: Dimensional axis map (§27.4)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
