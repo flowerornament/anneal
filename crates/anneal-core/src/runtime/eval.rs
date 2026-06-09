@@ -5494,14 +5494,13 @@ mod tests {
         entropy("b.md", "missing_meta").
         potential_weight("broken_ref", 4).
         potential_weight("missing_meta", 1).
-        effective_potential_weight(source, weight) := potential_weight(source, weight).
         entropy_priority("broken_ref", 0).
         entropy_priority("missing_meta", 6).
         primary_entropy(h, source) :=
           (h, source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
             (h, source, weight, priority) :
               entropy(h, source),
-              effective_potential_weight(source, weight),
+              potential_weight(source, weight),
               entropy_priority(source, priority)
           }.
         "#;
@@ -5529,14 +5528,13 @@ mod tests {
         entropy("b.md", "missing_meta").
         potential_weight("broken_ref", 4).
         potential_weight("missing_meta", 1).
-        effective_potential_weight(source, weight) := potential_weight(source, weight).
         entropy_priority("broken_ref", 0).
         entropy_priority("missing_meta", 6).
         primary_entropy(h, source) :=
           (h, source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
             (h, source, weight, priority) :
               entropy(h, source),
-              effective_potential_weight(source, weight),
+              potential_weight(source, weight),
               entropy_priority(source, priority)
           }.
         ? primary_entropy(h, source).
@@ -8562,10 +8560,9 @@ release_blocker(code) := issue(code, "error").
             top_work(h, energy) :=
               (h, energy) = TopK{ k: 2, key: energy :
                 (h, energy) :
-                work_candidate(h, energy)
+                potential(h, energy)
               }.
 
-            work_candidate(h, energy) := potential(h, energy).
             potential("low", 1).
             potential("mid", 5).
             potential("high", 9).

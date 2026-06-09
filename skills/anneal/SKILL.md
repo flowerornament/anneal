@@ -128,7 +128,7 @@ source md { scan_root("."). scan_exclude("node_modules"). }
 linear(["CR", "REQ"])
 rejected(["TODO", "NOTE"])
 force(["ADR"])
-config potential_weight { freshness_decay(0). }
+potential_weight("freshness_decay", 0).
 config search_boost { status("authoritative", 0.08). hub(0.01). }
 config code_path_root { root(["web"]). }
 ```

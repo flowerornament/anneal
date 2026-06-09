@@ -426,11 +426,6 @@ config search_boost {
   hub(0.01).
 }
 
-config potential_weight {
-  freshness_decay(0).
-  undischarged(8).
-}
-
 config state {
   history_mode("xdg").  # xdg | repo | off
 }

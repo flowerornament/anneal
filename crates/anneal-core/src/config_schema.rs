@@ -60,7 +60,6 @@ pub enum RuntimeConfigKey {
     CodePathRoot,
     SearchBoostStatus,
     SearchBoostHub,
-    PotentialWeightOverride,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,11 +188,6 @@ impl RuntimeConfigDeclaration {
                 let [boost]: [String; 1] = expect_exact_tuple(self, values, "exactly one boost")?;
                 Ok(vec![ConfigEntry::scalar(SEARCH_BOOST_HUB_KEY, boost)])
             }
-            RuntimeConfigKey::PotentialWeightOverride => {
-                Err(RuntimeConfigEntryError::MissingLowering {
-                    key: self.config_key(),
-                })
-            }
             _ => match self.mode {
                 RuntimeConfigValueMode::Scalar => {
                     let [value]: [String; 1] =
@@ -225,30 +219,10 @@ impl RuntimeConfigDeclaration {
 
     pub fn entries_for_name(
         self,
-        declared_name: &str,
+        _declared_name: &str,
         values: Vec<String>,
     ) -> Result<Vec<ConfigEntry>, RuntimeConfigEntryError> {
-        match self.key {
-            RuntimeConfigKey::PotentialWeightOverride => {
-                self.validate_values(&values)?;
-                let [weight]: [String; 1] =
-                    expect_exact_tuple(self, values, "exactly one non-negative integer weight")?;
-                let ordinal =
-                    weight
-                        .parse::<u32>()
-                        .map_err(|_| RuntimeConfigEntryError::InvalidArity {
-                            key: format!("{}.{}", self.section, declared_name),
-                            expected: "exactly one non-negative integer weight",
-                            actual: 1,
-                        })?;
-                Ok(vec![ConfigEntry::ordered(
-                    POTENTIAL_WEIGHT_OVERRIDE_KEY,
-                    declared_name.to_string(),
-                    ordinal,
-                )])
-            }
-            _ => self.entries(values),
-        }
+        self.entries(values)
     }
 }
 
@@ -270,13 +244,6 @@ pub enum RuntimeConfigEntryError {
 
 pub const SEARCH_BOOST_STATUS_ENTRY_PREFIX: &str = "search_boost.status.";
 pub const SEARCH_BOOST_HUB_KEY: &str = "search_boost.hub";
-pub const POTENTIAL_WEIGHT_OVERRIDE_KEY: &str = "potential_weight.override";
-
-#[must_use]
-pub fn parse_potential_weight_value(value: &str) -> Option<u32> {
-    value.parse::<u32>().ok()
-}
-
 #[must_use]
 pub fn parse_search_boost_value(value: &str) -> Option<f32> {
     let boost = value.parse::<f32>().ok()?;
@@ -541,12 +508,6 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         "hub",
         RuntimeConfigValueMode::Scalar,
     ),
-    runtime_config_declaration(
-        RuntimeConfigKey::PotentialWeightOverride,
-        "potential_weight",
-        "*",
-        RuntimeConfigValueMode::Scalar,
-    ),
 ];
 
 #[must_use]
@@ -676,17 +637,9 @@ mod tests {
             vec![ConfigEntry::scalar("search_boost.hub", "0.01")]
         );
 
-        let potential_weight =
-            runtime_config_declaration_for("potential_weight", "freshness_decay").expect("schema");
-        assert_eq!(
-            potential_weight
-                .entries_for_name("freshness_decay", vec!["0".to_string()])
-                .expect("entries"),
-            vec![ConfigEntry::ordered(
-                "potential_weight.override",
-                "freshness_decay",
-                0
-            )]
+        assert!(
+            runtime_config_declaration_for("potential_weight", "freshness_decay").is_none(),
+            "potential_weight overrides are retired; retune by shadowing potential_weight rules"
         );
     }
 

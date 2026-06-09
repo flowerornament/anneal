@@ -1219,7 +1219,7 @@ mod tests {
                 if doc.contains("anneal's physics")
                     && doc.contains("The Act:")
                     && doc.contains("Vocabulary:")
-                    && doc.contains("Tuning syntax:")
+                    && doc.contains("shadow `potential_weight")
                     && !doc.contains("Topic source:")
         ));
         assert_eq!(
@@ -1316,8 +1316,8 @@ mod tests {
                 ("area_frontier", r"? area_frontier(area, h, score, why)."),
                 ("potential", r#"? potential("ticket-1", energy)."#),
                 (
-                    "effective_potential_weight",
-                    r#"? effective_potential_weight("freshness_decay", weight)."#,
+                    "potential_weight",
+                    r#"? potential_weight("freshness_decay", weight)."#,
                 ),
                 ("blocked", r#"? blocked("ticket-1")."#),
                 ("blocker", r#"? blocker("ticket-1", energy, source)."#),
@@ -1447,7 +1447,7 @@ mod tests {
             &[("energy", int(7))]
         ));
         assert!(has_row(
-            output(&outputs, "effective_potential_weight"),
+            output(&outputs, "potential_weight"),
             &[("weight", int(1))]
         ));
         assert_eq!(

@@ -14,32 +14,6 @@ potential_weight("freshness_decay", 1).
 potential_weight("missing_meta", 1).
 potential_weight("orphan_label", 1).
 
-@doc(
-  name: "potential_weight_override",
-  doc: "Return project-configured overrides for unsettled-work signal weights from config potential_weight."
-).
-potential_weight_override(source, weight) :=
-  *config{key: "potential_weight.override", value: source, ordinal: weight},
-  weight != null.
-
-overridden_potential_weight_source(source) :=
-  potential_weight_override(source, weight).
-
-@doc(
-  name: "effective_potential_weight",
-  doc: "Return the score weight actually used for potential, preferring project overrides over defaults."
-).
-@predicate(
-  name: "effective_potential_weight",
-  args: ["source", "weight"]
-).
-effective_potential_weight(source, weight) :=
-  potential_weight_override(source, weight).
-
-effective_potential_weight(source, weight) :=
-  potential_weight(source, weight),
-  not overridden_potential_weight_source(source).
-
 entropy_priority("broken_ref", 0).
 entropy_priority("undischarged", 1).
 entropy_priority("stale_dep", 2).
@@ -51,7 +25,7 @@ entropy_priority("orphan_label", 7).
 
 @doc(
   name: "potential_weight",
-  doc: "Return the default score weight for each kind of unsettled-work signal; effective_potential_weight applies project overrides before potential is computed."
+  doc: "Return the score weight for each kind of unsettled-work signal consumed by potential."
 ).
 
 @doc(
@@ -115,7 +89,7 @@ potential_subject(h) := entropy(h, source).
 ).
 potential(h, energy) :=
   potential_subject(h),
-  energy = Sum{ w : entropy(h, source), effective_potential_weight(source, w) }.
+  energy = Sum{ w : entropy(h, source), potential_weight(source, w) }.
 
 @doc(
   name: "primary_entropy",
@@ -126,7 +100,7 @@ primary_entropy(h, source) :=
   (source, weight, priority) = TopK{ k: 1, key: weight * 100 - priority :
     (source, weight, priority) :
       entropy(h, source),
-      effective_potential_weight(source, weight),
+      potential_weight(source, weight),
       entropy_priority(source, priority)
   }.
 

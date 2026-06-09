@@ -6,13 +6,6 @@
 ).
 
 @doc(
-  name: "work_candidate",
-  doc: "Deprecated alias for potential(h, energy); retained through v0.14 while agents migrate to potential."
-).
-work_candidate(h, energy) :=
-  potential(h, energy).
-
-@doc(
   name: "frontier",
   doc: "Return the highest-potential work handles, capped to the default status list size."
 ).

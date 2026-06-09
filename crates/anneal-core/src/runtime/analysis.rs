@@ -1009,6 +1009,12 @@ fn retired_predicate_recovery(name: &str) -> Option<&'static str> {
         "recent" => Some(
             "`anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\", file: file}.'`",
         ),
+        "work_candidate" => Some(
+            "`anneal -e '? potential(h, energy), *handle{id: h, file: file, summary: summary}.'`",
+        ),
+        "s001_orphaned" => {
+            Some("`anneal -e '? orphaned_handle(h), *handle{id: h, namespace: namespace}.'`")
+        }
         _ => None,
     }
 }
@@ -2019,16 +2025,23 @@ mod tests {
 
     #[test]
     fn unknown_predicate_teaches_retired_alias_replacement() {
-        let input = r"? recent(h, 7).";
-        let err = analyze_err("inline", input);
-
-        assert!(
-            err.to_string()
-                .contains(
-                    "Predicate 'recent' was retired; use `anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\", file: file}.'`"
-                ),
-            "{err}"
-        );
+        for (input, expected) in [
+            (
+                r"? recent(h, 7).",
+                "Predicate 'recent' was retired; use `anneal -e '? changed_within(h, 7), *handle{id: h, kind: \"file\", file: file}.'`",
+            ),
+            (
+                r"? work_candidate(h, energy).",
+                "Predicate 'work_candidate' was retired; use `anneal -e '? potential(h, energy), *handle{id: h, file: file, summary: summary}.'`",
+            ),
+            (
+                r"? s001_orphaned(h).",
+                "Predicate 's001_orphaned' was retired; use `anneal -e '? orphaned_handle(h), *handle{id: h, namespace: namespace}.'`",
+            ),
+        ] {
+            let err = analyze_err("inline", input);
+            assert!(err.to_string().contains(expected), "{err}");
+        }
     }
 
     #[test]

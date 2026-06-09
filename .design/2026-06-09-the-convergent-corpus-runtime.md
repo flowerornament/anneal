@@ -145,7 +145,7 @@ live `schema`):
    upstream/downstream · freshness · changed_within · flux · active · settled ·    SearchIndex /
    terminal · obligation · discharged · token_estimate · source_of · schema …     Introspection)
         ▼
- PRELUDE DERIVATIONS (143) the convergence vocabulary, as Datalog rules
+ PRELUDE DERIVATIONS (138) the convergence vocabulary, as Datalog rules
    currency · anchor · recent · orientation · status · abandoned · potential ·
    entropy · area · namespace · trail · lifecycle · pipeline · parent · …
         ▼  plan() → planned executor (vm/execute,fixpoint) → project
@@ -173,7 +173,7 @@ live `schema`):
 
 # Part IV — The conceptual language (the heart)
 
-The 143 derived predicates in the live schema are not a flat bag — they are **projections along a
+The 138 derived predicates in the live schema are not a flat bag — they are **projections along a
 small set of orthogonal dimensions.** Naming these axes *is* the design language,
 and the discipline is: **keep them orthogonal, name each precisely, present each
 with an honest disposition.** (Conflating two axes is the canonical bug — see §
@@ -269,14 +269,14 @@ timestamp). *Clarifying an axis is what makes the features on it correct and
 simple* — the single most reliable lesson of this arc, now proven twice.
 
 ### 2. Disposition-type the whole surface
-The trust invariant is enforced on currency and `check`, but most of the 143
+The trust invariant is enforced on currency and `check`, but most of the 138
 predicates predate it. Every projection should carry its disposition, so no
 surface ever presents more than its oracle earns. This is `xy45` applied
 uniformly — folded into the master spec as **CR-D103**, the gate for every new
-predicate; the remaining work is typing the existing 143.
+predicate; the remaining work is typing the existing 138.
 
 ### 3. Reduce the vocabulary (find the language)
-187 callable relations over a handful of deliberate verbs is more than the value
+182 callable relations over a handful of deliberate verbs is more than the value
 requires. Point
 anneal's *own* discipline at its prelude: which predicates are terminal/abandoned
 (unexercised), which axes overlap, which verbs are the deliberate surface vs

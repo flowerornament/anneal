@@ -288,24 +288,17 @@ diagnostic("W003", "warning", h, file, null, null) :=
   missing_frontmatter_file(h, dir, file).
 
 @doc(
-  name: "s001_orphaned",
-  doc: "Deprecated diagnostic-rule name for orphaned_handle(h); retained through v0.13 for compatibility."
-).
-s001_orphaned(h) :=
-  *handle{id: h, kind: "label"},
-  in_degree(h, 0).
-
-s001_orphaned(h) :=
-  *handle{id: h, kind: "version"},
-  in_degree(h, 0),
-  *edge{from: h, kind: "Supersedes"}.
-
-@doc(
   name: "orphaned_handle",
   doc: "Return label and version handles that have no incoming references and may be cleanup candidates."
 ).
 orphaned_handle(h) :=
-  s001_orphaned(h).
+  *handle{id: h, kind: "label"},
+  in_degree(h, 0).
+
+orphaned_handle(h) :=
+  *handle{id: h, kind: "version"},
+  in_degree(h, 0),
+  *edge{from: h, kind: "Supersedes"}.
 
 diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", h)) :=
   orphaned_handle(h),

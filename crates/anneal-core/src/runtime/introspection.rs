@@ -927,13 +927,11 @@ fn documented_parameter_names(predicate_name: &str) -> Option<&'static [&'static
     match predicate_name {
         "diagnostic" => Some(&["code", "severity", "subject", "file", "line", "evidence"]),
         "entropy" | "primary_entropy" => Some(&["h", "source"]),
-        "potential_weight" | "potential_weight_override" | "effective_potential_weight" => {
-            Some(&["source", "weight"])
-        }
+        "potential_weight" => Some(&["source", "weight"]),
         "potential_subject" | "advancing" | "holding" | "regressed" | "re_opened" | "drifting" => {
             Some(&["h"])
         }
-        "potential" | "frontier" | "work_candidate" => Some(&["h", "energy"]),
+        "potential" | "frontier" => Some(&["h", "energy"]),
         "blocker" => Some(&["h", "energy", "source"]),
         "ranked_work" => Some(&["h", "energy", "rank"]),
         "flow" => Some(&["h", "direction"]),
@@ -1268,8 +1266,7 @@ fn convergence_topic_card() -> String {
             "The Act: agents dissipate potential by editing corpus facts, then rerun status/check to verify energy moved.".to_string(),
             "Vocabulary: entropy is an unsettled signal; potential is weighted energy; frontier is the highest-energy projection; blocker is stalled energy; flow is advancing, holding, or drifting.".to_string(),
             "Flow: settled handles are outside flow by design; regressed(h) and re_opened(h) explain drifting(h) leaves.".to_string(),
-            "Tuning: `effective_potential_weight` shows the weights actually used after project overrides.".to_string(),
-            "Tuning syntax: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
+            "Tuning: project rules can shadow `potential_weight(source, weight)` to retune convergence energy.".to_string(),
         ],
         requires: &["snapshot history for flow predicates that compare at(\"snapshot:last\") with the current graph."],
         see_also: &[
@@ -1279,7 +1276,6 @@ fn convergence_topic_card() -> String {
             "blocker",
             "flow",
             "potential_weight",
-            "effective_potential_weight",
         ],
         examples: vec![
             "? frontier(h, energy), primary_entropy(h, source).",
@@ -1855,16 +1851,13 @@ fn primitive_see_also(primitive: PrimitivePredicate) -> &'static [&'static str] 
 
 fn predicate_requires(name: &str) -> &'static [&'static str] {
     match name {
-        "entropy" | "primary_entropy" | "potential_subject" | "potential" | "work_candidate"
-        | "frontier" | "ranked_work" => &[
+        "entropy" | "primary_entropy" | "potential_subject" | "potential" | "frontier"
+        | "ranked_work" => &[
             "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
         ],
-        "potential_weight_override" | "effective_potential_weight" => &[
-            "default `potential_weight` rows; `config potential_weight { signal(weight). }` rows override matching sources.",
-        ],
-        "entropy_priority" => &[
-            "`effective_potential_weight` rows for the same source; lower priority values win ties.",
-        ],
+        "entropy_priority" => {
+            &["`potential_weight` rows for the same source; lower priority values win ties."]
+        }
         "area"
         | "area_file_count"
         | "area_error_location_count"
@@ -1895,9 +1888,7 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "missing_frontmatter_file" => &[
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
         ],
-        "orphaned_handle" | "s001_orphaned" => {
-            &["label or version handles plus graph in-degree counts."]
-        }
+        "orphaned_handle" => &["label or version handles plus graph in-degree counts."],
         "pipeline_stall" | "s003_pipeline_stall" => &[
             "configured lifecycle ordering, current status population, and automatic snapshot history.",
         ],
@@ -1941,20 +1932,11 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "diagnostic" => Some(
             "Shared diagnostic stream used by `status`, `check`, and eval diagnostics; individual rules contribute rows by diagnostic code.",
         ),
-        "work_candidate" => Some(
-            "Deprecated alias for `potential(h, energy)`; retained through v0.14 while agents migrate to the canonical name.",
-        ),
         "potential" => Some(
             "Canonical raw-energy predicate for handles an agent could improve; use `frontier` for the capped top projection.",
         ),
         "potential_weight" => Some(
-            "Default calibration table. Project `config potential_weight` entries override these through `effective_potential_weight`.",
-        ),
-        "potential_weight_override" => {
-            Some("Runtime projection of project-specific weight overrides from anneal.dl.")
-        }
-        "effective_potential_weight" => Some(
-            "The weight table consumed by `potential`; this is the place to verify tuning after overrides.",
+            "Default calibration table. Project rules may shadow this predicate by name and arity to retune convergence energy.",
         ),
         "frontier" => Some(
             "Canonical global convergence frontier; paired with `area_frontier` for area-scoped work.",
@@ -2038,15 +2020,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
     match name {
         "potential_weight" => vec![
             "Default weights in v0.15: undischarged=5, broken_ref=4, stale_dep=3, spec_code_drift=3, confidence_gap=3, freshness_decay=1, missing_meta=1, orphan_label=1.".to_string(),
-            "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
-            "Verify active tuning with `effective_potential_weight(source, weight)`; potential uses effective weights, not raw defaults.".to_string(),
-        ],
-        "effective_potential_weight" => vec![
-            "This is the calibration relation consumed by `potential`; project overrides replace matching default sources instead of adding duplicate weights.".to_string(),
-            "Override syntax in project anneal.dl: config potential_weight { freshness_decay(0). undischarged(8). }".to_string(),
-        ],
-        "work_candidate" => vec![
-            "Deprecated alias: use `potential(h, energy)`. This alias is retained through v0.14 and scheduled for retirement in v0.15.".to_string(),
+            "Retune by declaring a project predicate with the same name and arity, for example `potential_weight(\"freshness_decay\", 0).`.".to_string(),
         ],
         "diagnostic" => vec![
             "Hidden CI gate: `anneal check` is retained for pre-commit/release gates and exits 1 when error rows exist.".to_string(),
@@ -2163,10 +2137,6 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`potential(h, energy), primary_entropy(h, source)` to keep one strongest reason per handle",
             "`potential(h, energy), frontier(h, energy)` to keep only the global frontier",
         ],
-        "work_candidate" => &[
-            "`work_candidate(h, energy), potential(h, energy)` to migrate the deprecated alias",
-            "`potential(h, energy), primary_entropy(h, source)` to explain raw energy with the canonical name",
-        ],
         "frontier" => &[
             "`frontier(h, energy), diagnostic{subject: h}` to see what blocks the frontier",
             "`frontier(h, energy), area_of{h: h, area: \"X\"}` for area-scoped frontier work",
@@ -2230,7 +2200,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`lifecycle_config_gap(status, count, variant), diagnostic{code: \"W005\", subject: status}` to inspect lifecycle config warnings",
             "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
         ],
-        "orphaned_handle" | "s001_orphaned" => &[
+        "orphaned_handle" => &[
             "`orphaned_handle(h), diagnostic{code: \"S001\", subject: h}` to inspect orphaned-handle suggestions",
             "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
         ],
@@ -2260,9 +2230,9 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep the result at file granularity",
             "`changed_within(h, 7), search{query: \"text\", handle: h}` for lower-authority recently-edited search hits",
         ],
-        "potential_weight" | "potential_weight_override" | "effective_potential_weight" => &[
-            "`effective_potential_weight(source, weight), entropy(h, source)` to see which handles use each weight",
-            "`potential_weight(source, default_weight), effective_potential_weight(source, active_weight)` to compare defaults with overrides",
+        "potential_weight" => &[
+            "`potential_weight(source, weight), entropy(h, source)` to see which handles use each weight",
+            "`potential(h, energy), primary_entropy(h, source)` to inspect the weighted result",
         ],
         "advancing" | "holding" | "regressed" | "re_opened" | "drifting" | "flow" => &[
             "`flow(h, direction), *handle{id: h, status: status}` to add current lifecycle state",
@@ -2285,21 +2255,12 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "E002",
             "broken_reference",
             "undischarged_obligation",
-            "s001_orphaned",
             "pipeline_stall",
             "abandoned_namespace",
             "top_pair",
         ],
-        "entropy"
-        | "primary_entropy"
-        | "potential"
-        | "potential_subject"
-        | "potential_weight"
-        | "potential_weight_override"
-        | "effective_potential_weight"
-        | "work_candidate"
-        | "frontier"
-        | "ranked_work" => &[
+        "entropy" | "primary_entropy" | "potential" | "potential_subject" | "potential_weight"
+        | "frontier" | "ranked_work" => &[
             "diagnostic",
             "obligation",
             "freshness",
@@ -2358,7 +2319,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "configured_pipeline_status",
             "pipeline_stall",
         ],
-        "orphaned_handle" | "s001_orphaned" => &["S001", "diagnostic", "in_degree"],
+        "orphaned_handle" => &["S001", "diagnostic", "in_degree"],
         "pipeline_stall" | "s003_pipeline_stall" => &[
             "S003",
             "diagnostic",
@@ -2516,12 +2477,6 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
         "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
         "potential_weight" => Some(r#"? potential_weight("freshness_decay", weight)."#),
-        "potential_weight_override" => {
-            Some(r#"? potential_weight_override("freshness_decay", weight)."#)
-        }
-        "effective_potential_weight" => {
-            Some(r#"? effective_potential_weight("freshness_decay", weight)."#)
-        }
         "primary_entropy" => Some(r#"? primary_entropy("formal-model/v17.md", source)."#),
         "area" => Some("? area(area)."),
         "area_file_count" => Some("? area_file_count(area, files)."),
@@ -2533,7 +2488,6 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "area_health" => Some("? area_health{area: area, grade: grade}."),
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
-        "work_candidate" => Some(r#"? work_candidate("formal-model/v17.md", energy)."#),
         "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
         "blocker" => Some(r#"? blocker("formal-model/v17.md", energy, source)."#),
         "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
@@ -2564,7 +2518,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "missing_frontmatter_file" => Some("? missing_frontmatter_file(h, dir, file)."),
         "implausible_ref" => Some("? implausible_ref(h, file, value)."),
         "lifecycle_config_gap" => Some("? lifecycle_config_gap(status, count, variant)."),
-        "orphaned_handle" | "s001_orphaned" => Some("? orphaned_handle(h)."),
+        "orphaned_handle" => Some("? orphaned_handle(h)."),
         "pipeline_stall" | "s003_pipeline_stall" => {
             Some("? pipeline_stall(status, count, next_status, based_on_history).")
         }

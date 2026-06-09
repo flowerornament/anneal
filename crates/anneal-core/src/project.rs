@@ -6,8 +6,8 @@ use std::path::Path;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::config_schema::{
-    RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle,
-    parse_potential_weight_value, parse_search_boost_value, runtime_config_declaration_for,
+    RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle, parse_search_boost_value,
+    runtime_config_declaration_for,
 };
 use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
@@ -403,22 +403,10 @@ fn config_block_entries(
 
 fn validate_runtime_config_values(
     key: RuntimeConfigKey,
-    name: &str,
+    _name: &str,
     values: &[String],
     location: &SourceLocation,
 ) -> Result<(), ProjectLoadError> {
-    if key == RuntimeConfigKey::PotentialWeightOverride {
-        let weight = values.first().cloned().unwrap_or_default();
-        if parse_potential_weight_value(&weight).is_some() {
-            return Ok(());
-        }
-        return Err(ProjectLoadError::InvalidPotentialWeight {
-            signal: name.to_string(),
-            weight,
-            location: location.clone(),
-        });
-    }
-
     let boost = match key {
         RuntimeConfigKey::SearchBoostStatus => values.get(1),
         RuntimeConfigKey::SearchBoostHub => values.first(),
@@ -660,14 +648,6 @@ pub enum ProjectLoadError {
         key: String,
         expected: &'static str,
         actual: usize,
-    },
-    #[error(
-        "{location}: config potential_weight {{ {signal}(...) }} expects a non-negative integer weight; got '{weight}'"
-    )]
-    InvalidPotentialWeight {
-        signal: String,
-        weight: String,
-        location: crate::runtime::ast::SourceLocation,
     },
     #[error(
         "{location}: config search_boost {{ {name}(...) }} expects a numeric boost from 0.0 to 1.0; got '{boost}'"
@@ -992,11 +972,6 @@ mod tests {
               asserts_code(["draft"]).
             }
 
-            config potential_weight {
-              freshness_decay(0).
-              undischarged(8).
-            }
-
             config search_boost {
               status("authoritative", 0.08).
               status("draft", 0).
@@ -1036,8 +1011,6 @@ mod tests {
                 ConfigEntry::scalar("convergence.active", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
                 ConfigEntry::scalar("convergence.asserts_code", "draft"),
-                ConfigEntry::ordered("potential_weight.override", "freshness_decay", 0),
-                ConfigEntry::ordered("potential_weight.override", "undischarged", 8),
                 ConfigEntry::scalar("search_boost.status.authoritative", "0.08"),
                 ConfigEntry::scalar("search_boost.status.draft", "0"),
                 ConfigEntry::scalar("search_boost.hub", "0.01"),
@@ -1167,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn project_potential_weight_config_rejects_non_integer_weights() {
+    fn project_potential_weight_config_is_retired() {
         let root = tempdir().expect("tempdir");
         write_project(
             root.path(),
@@ -1179,11 +1152,11 @@ mod tests {
         );
 
         let err = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
-            .expect_err("invalid weight rejected");
+            .expect_err("retired config section rejected");
 
         assert!(matches!(
             err,
-            ProjectLoadError::InvalidPotentialWeight { .. }
+            ProjectLoadError::UnknownConfigDeclaration { .. }
         ));
     }
 

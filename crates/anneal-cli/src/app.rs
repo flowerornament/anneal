@@ -1424,7 +1424,6 @@ fn query_demands_code_target_history(query: &str) -> bool {
         "primary_entropy",
         "potential",
         "potential_subject",
-        "work_candidate",
         "frontier",
         "ranked_work",
         "area_frontier",
@@ -5615,7 +5614,7 @@ mod tests {
     }
 
     #[test]
-    fn potential_weight_project_config_changes_effective_energy() {
+    fn project_potential_weight_rule_changes_energy() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
         fs::create_dir(&root).expect("create corpus root");
@@ -5626,9 +5625,7 @@ mod tests {
               field("depends-on", "DependsOn", "forward").
             }
 
-            config potential_weight {
-              broken_ref(1).
-            }
+            potential_weight("broken_ref", 1).
             "#,
         )
         .expect("write project rules");
@@ -5641,7 +5638,7 @@ mod tests {
         let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
             .run(RuntimeCommand::Eval {
-                query: r#"? effective_potential_weight("broken_ref", weight), potential("a.md", energy)."#
+                query: r#"? potential_weight("broken_ref", weight), potential("a.md", energy)."#
                     .to_string(),
                 explain: ExplainOptions::disabled(),
                 limit: None,
