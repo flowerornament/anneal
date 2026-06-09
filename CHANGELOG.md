@@ -2,6 +2,36 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+Navigation is curated around the graph paths agents actually use.
+
+`handle --lineage` follows file-level `Supersedes` chains to show what a
+document replaced, what replaced it, and the current head or heads of a
+branched lineage. `context` keeps the existing neighborhood surface but ranks
+neighbors by currency, lifecycle status, relevance, and hub shape, so current
+anchors stay visible while inventory hubs and superseded history collapse into
+lower-priority groups.
+
+Retrieval performance is back on the fast path. A planned-output projection
+regression made `search` and `context` clone the corpus interner for each
+projected row; projection now reuses the query's shared evaluation environment.
+
+### Added
+
+- `anneal handle <HANDLE> --lineage` renders the file supersession DAG for a
+  handle, including older predecessors, newer successors, and current heads.
+- Context neighborhoods group related handles by current, in-flight,
+  superseded, and hidden-hub disposition while keeping hidden and superseded
+  material reachable.
+
+### Fixed
+
+- `search` and `context` no longer clone the corpus interner per projected
+  result row. On the large reference corpus used for regression testing,
+  `search "program space parametric performance" --limit 5` returns in about
+  1.6s instead of about 30s, and `context` is usable again at corpus scale.
+
 ## v0.18.0 - 2026-06-08
 
 Retrieval follows the corpus's currency signal.

@@ -1030,8 +1030,7 @@ impl RuntimeSession {
                     .include_low_confidence(include_low_confidence)
                     .read_spans(read_spans);
                 let output = self.eval(command.datalog().as_str(), ExplainOptions::disabled())?;
-                let mut output = command.group_rows(&output.rows)?;
-                self.annotate_context_hits(&mut output);
+                let output = command.group_rows(&output.rows)?;
                 Ok(CommandOutput::Context(output))
             }
             RuntimeCommand::Search {
@@ -1258,25 +1257,6 @@ impl RuntimeSession {
         ))
     }
 
-    fn annotate_context_hits(&self, output: &mut ContextOutput) {
-        let handles = output
-            .hits
-            .iter()
-            .map(|hit| hit.handle.clone())
-            .collect::<BTreeSet<_>>();
-        let annotations = self.currency_hit_annotations(&handles);
-        for hit in &mut output.hits {
-            let Some(annotation) = annotations.get(hit.handle.as_str()) else {
-                continue;
-            };
-            if hit.status.is_none() {
-                hit.status = annotation.status.clone();
-            }
-            hit.age_days = annotation.age_days;
-            hit.disposition = annotation.disposition.clone();
-        }
-    }
-
     fn annotate_search_rows(&self, rows: &mut [Row]) {
         let handles = rows
             .iter()
@@ -1318,20 +1298,19 @@ impl RuntimeSession {
         handles: &BTreeSet<String>,
     ) -> BTreeMap<&str, CurrencyHitAnnotation> {
         let today = Utc::now().date_naive();
-        let superseded = self
-            .store
-            .edges()
-            .iter()
-            .filter(|edge| edge.kind == "Supersedes" && handles.contains(edge.from.as_str()))
-            .map(|edge| edge.from.as_str())
-            .collect::<BTreeSet<_>>();
-        let successors = self
-            .store
-            .edges()
-            .iter()
-            .filter(|edge| edge.kind == "Supersedes" && handles.contains(edge.to.as_str()))
-            .map(|edge| edge.to.as_str())
-            .collect::<BTreeSet<_>>();
+        let mut superseded = BTreeSet::new();
+        let mut successors = BTreeSet::new();
+        for edge in self.store.edges() {
+            if edge.kind != "Supersedes" {
+                continue;
+            }
+            if handles.contains(edge.from.as_str()) {
+                superseded.insert(edge.from.as_str());
+            }
+            if handles.contains(edge.to.as_str()) {
+                successors.insert(edge.to.as_str());
+            }
+        }
         self.store
             .handles()
             .iter()

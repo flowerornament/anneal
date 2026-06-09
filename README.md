@@ -297,6 +297,7 @@ anneal read formal-model/v17.md --budget 4000
 anneal read formal-model/v17.md --span-id 'formal-model/v17.md#h/protocol'
 anneal handle formal-model/v17.md
 anneal handle formal-model/v17.md --impact
+anneal handle formal-model/v17.md --lineage
 ```
 
 `search` ranks content and metadata hits and includes `heading_path` for
@@ -309,7 +310,8 @@ stale-but-relevant history.
 search hit already identified the section you need.
 `handle` shows incoming and outgoing edges grouped by kind and separates
 in-repo code references; `--impact` adds direct and indirect reverse
-dependencies before an edit.
+dependencies before an edit, and `--lineage` follows file-level Supersedes
+chains to show older predecessors, newer successors, and current heads.
 
 Use `anneal context "X"` when the task is "find the section that defines X";
 it returns ranked section hits, span metadata, `heading_path`, and graph
@@ -529,7 +531,8 @@ running the retired commands. Use the language-first ladder above:
 `status` plus its `recent_frontier`/`ranked_anchor` queries to arrive,
 `context GOAL` when the goal is known, `schema`/`describe` to discover,
 `search`/`read`/`handle` to retrieve, `handle --impact` for reverse
-dependencies, and `anneal -e` for precise composite questions.
+dependencies, `handle --lineage` for Supersedes history, and `anneal -e` for
+precise composite questions.
 
 Common replacements:
 
@@ -542,6 +545,7 @@ Common replacements:
 - `garden`: `anneal status` plus `anneal -e '? frontier(h, energy), entropy(h, source).'`
 - `orient`: `anneal status`, then the printed `recent_frontier`/`ranked_anchor` queries; use `anneal context "GOAL"` once you have a goal
 - `impact H`: `anneal handle H --impact`
+- `lineage H`: `anneal handle H --lineage`
 - `work`: `anneal status` or `anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'`
 - `blocked H`: `anneal handle H` or `anneal -e '? blocker(h, energy, source), h = "H".'`
 - `diagnostics`: `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`

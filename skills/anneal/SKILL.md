@@ -51,6 +51,7 @@ anneal read <handle> --budget 4000 --format=text
 anneal read <handle> --span-id <span-id> --format=text
 anneal handle <handle> --format=text
 anneal handle <handle> --impact --format=text
+anneal handle <handle> --lineage --format=text
 ```
 
 Use `search` for content retrieval. Span hits include `heading_path`, and
@@ -58,8 +59,9 @@ search/context hits annotate disposition (`current`, `current_head`,
 `superseded`), lifecycle status, and age. Pass the hit's `span_id` to `read`
 for the matched heading span. Use `handle` when
 relationships matter; add `--impact` before edits that need reverse
-dependencies. Empty NDJSON streams emit `(0 rows)` on stderr while keeping
-stdout empty for pipes.
+dependencies or `--lineage` when Supersedes history and current heads matter.
+Empty NDJSON streams emit `(0 rows)` on stderr while keeping stdout empty for
+pipes.
 
 Tool choice:
 
