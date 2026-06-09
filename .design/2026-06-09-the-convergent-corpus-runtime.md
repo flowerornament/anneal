@@ -31,12 +31,14 @@ memory — orient in it and push it toward settledness. This document is the
 synthesis: one idea, the history that arrived at it, the architecture and
 conceptual language as built, and the shape we are heading toward.
 
-**The one idea.** A corpus is an **append-only log of typed, provenance-linked
-claims**, and *everything you read* — relevance, currency, importance,
-convergence, a navigation trail — is a **projection** over that log, computed by
-a Datalog runtime and presented with **only as much authority as its oracle
-earns.** Settledness is not metadata bolted onto files; it is a *derived property
-of a queryable system.*
+**The one idea.** Model a corpus as a **log of typed, provenance-linked claims**,
+and *everything you read* — relevance, currency, importance, convergence, a
+navigation trail — is a **projection** over it, computed by a Datalog runtime and
+presented with **only as much authority as its oracle earns.** (As-built today
+the store is *generationed current-state with historical snapshot/trail
+projections* — an approximation of the fully append-only ideal, which is the TMS
+horizon in Part VI; the projection model holds either way.) Settledness is not
+metadata bolted onto files; it is a *derived property of a queryable system.*
 
 ---
 
@@ -66,8 +68,32 @@ may claim more authority than its oracle earns.
 anneal is a **substrate** (a Datalog runtime + a convergence standard library)
 decoupled from **sources** (markdown today; code, hosts later) via a `Source`
 trait, exposed through **surfaces** (CLI, MCP) that project the same contracts.
-The corpus becomes a Fact log; the convergence vocabulary becomes projections
-over it; the agent reads the projections.
+The corpus becomes a **fact store**; the convergence vocabulary becomes **derived
+relations** over it; the agent reads those.
+
+## 3. A note on vocabulary (and the Herald kinship)
+
+Precision, since this doc consciously shares a lens with Herald's *convergent
+substrate* — anneal is, in effect, a **prototype / proving-ground** for that
+substrate at the corpus altitude. What is genuinely anneal's, and what is borrowed:
+
+- **`Fact` / fact store — genuinely anneal's.** `facts.rs` defines `HandleFact`,
+  `EdgeFact`, `SpanFact`, `ContentFact`, `MetaFact`, `SnapshotFact`, `FactBatch`,
+  `FactStore`. Not bleed-over.
+- **"projection" — the borrowed lens.** In *this doc* "projection" means a
+  *derived relation over the fact store* — anneal's `kind: derived` prelude
+  predicates. Note anneal's code already uses "projection" for a *different*
+  thing (query-output columns), and Herald uses `Projection` as a materialized
+  read-view primitive; the conceptual sense (a derived view over facts) is shared
+  and apt, but anneal's native word for these is **derived predicate / prelude rule**.
+- **"append-only log" — Herald's, not yet anneal's.** anneal's `FactStore` is a
+  *generationed current-state* store (`FullSnapshot` replaces, `Delta` upserts +
+  retracts), with `snapshot`/`trail` relations giving historical projections. The
+  fully append-only event log (and the TMS over it) is the *target* (Part VI),
+  which anneal approximates today.
+
+The blur is deliberate — proving anneal's substrate is how we find out where
+Herald's is still soft — but the differences above are real and load-bearing.
 
 ---
 
@@ -83,7 +109,7 @@ vocabulary, to a substrate, to a compiled plan, to a trustworthy live view.
 | **3 · Surface / calibration / retrieval** | 05-16→05-30 | `surface-evolution-framework` (current); v0.14 calibration + v0.15 retrieval (converged); `code-as-corpus-spike` (current) | evidence-based "what earns a place"; sections→spans; *API stability IS a convergence lattice* | the cut audit trio |
 | **4 · Compiler / performance** | 06-01→06-05 | `perf-architecture-arc` (draft); `allocation-study` (complete); `pass-contracts` + `plan-ir-reconciliation` (locked); `datalog-compiler-reference-map` | **anneal is a compiler; build it like one** — a real Plan/IR middle-end; ~2.1× faster, byte-identical | interpreted eval |
 | **5 · Decomposition** | 06-04→06-07 | `runtime-architecture` (superseded) → **`core-decomposition-plan` (current)** | split the 12k `eval.rs` into a `vm/` backend along locked seams; §12 boundary → a machine gate | the pre-kftp as-built |
-| **6 · Trust / currency / navigate** | 06-06→06-09 | `disposition-typed-witnesses` (draft); **`trust-invariant` (current)**; **`currency`** + **`navigate`** | convergence becomes *retrieval-facing*; oracle-honest authority; currency + lineage + ranked neighbors | — |
+| **6 · Trust / currency / navigate** | 06-06→06-09 | `disposition-typed-witnesses` (draft); **`trust-invariant` + `currency` (current)**; `navigate` (draft, first cut shipped) | convergence becomes *retrieval-facing*; oracle-honest authority; currency + lineage + ranked neighbors | — |
 
 **The throughline.** A corpus began as *a typed handle graph whose convergence
 states form a graded-type lattice* → became *a programmable Datalog runtime with
@@ -96,40 +122,50 @@ machine-checked property** — and each arc pushed that property one layer deepe
 **Live authoritative set today:** the master (`corpus-runtime`); the engine-gate
 evidence (`engine-spike*`); the locked compiler contracts (`pass-contracts`,
 `plan-ir-reconciliation`, `ordered-query-output`); the decomposition plan; and
-the trust/currency/navigate set. 13 specs are already `superseded` — the corpus
+`trust-invariant` + `currency` (current; `navigate` still draft though its first
+cut shipped). 13 specs are already `superseded` — the corpus
 self-prunes, which is the thesis dogfooding itself.
 
 ---
 
 # Part III — The architecture, as built
 
-Everything is a projection over the Fact log, in four layers:
+Everything is a projection over the fact store, in four layers (counts from the
+live `schema`):
 
 ```
- STORED FACTS  (12)        the append-only corpus
-   handle · edge · span · meta · status · snapshot · source · …
-        │  Source::extract → FactBatch → FactStore → TupleDb (interned, Copy ≤16B)
+ STORED FACTS  (12)        the generationed fact store (+ snapshot/trail history)
+   handle · edge · span · content · meta · concern · config ·
+   snapshot · generation · trail · trail_generation · trail_ref
+        │  Source::extract → FactBatch → FactStore (current-state, generation swaps)
+        │                              → TupleDb (interned, Copy ≤16B)
         ▼
- ENGINE PRIMITIVES (32)    engine-computed building blocks (Ascent-backed, fixed)
-   search · match · read · neighborhood · impact · in/out_degree · cite_count ·
-   upstream/downstream · freshness · changed_within · flux · active · settled ·
-   terminal · obligation · discharged · token_estimate · source_of · schema …
+ ENGINE PRIMITIVES (32)    fixed backend-computed relations (Rust-native indexes:
+   search · match · read · neighborhood · impact · in/out_degree · cite_count ·   GraphIndex /
+   upstream/downstream · freshness · changed_within · flux · active · settled ·    SearchIndex /
+   terminal · obligation · discharged · token_estimate · source_of · schema …     Introspection)
         ▼
- PRELUDE DERIVATIONS (133) the convergence vocabulary, as Datalog rules
+ PRELUDE DERIVATIONS (139) the convergence vocabulary, as Datalog rules
    currency · anchor · recent · orientation · status · abandoned · potential ·
    entropy · area · namespace · trail · lifecycle · pipeline · parent · …
         ▼  plan() → planned executor (vm/execute,fixpoint) → project
- VERBS  (~7)               the deliberate, agent-facing surface
-   status · context · search · read · handle · check · lineage
+ SURFACE                   the deliberate, agent-facing verbs (see Part V)
+   status · context · search · read · handle · schema · describe · eval · init
 ```
 
 - **The substrate is a real compiler.** One planned, certificate-driven Datalog
   executor (interpreted engine retired); `ir/` (ids, schema, plan) + `vm/`
-  (value, store, frame, provenance, view, execute, fixpoint); analysis-aware
-  coordinator in `runtime/`. eval.rs went 12.2k → ~9.5k this arc.
+  (value, store, frame, provenance, view, execute, fixpoint); the analysis-aware
+  coordinator lives in `runtime/evaluator.rs`, with the public/runtime types in
+  `runtime/eval.rs`. eval.rs went 12.2k → ~9.5k this arc.
+- **Primitives are Rust-native, not Ascent.** The 32 fixed primitives dispatch to
+  `GraphIndex` / `SearchIndex` (ranking.rs) / introspection — *not* an Ascent
+  runtime. (Ascent was engine-spike evidence + an accepted bounded-dependency
+  risk, never the shipped primitive backend; see the engine-spike specs.) Engine
+  choice stays internal to the backend.
 - **Boundaries are machine facts.** `check-arch` (in `just check`) enforces the
   crate-DAG and "vm imports no analysis/AST"; `anneal check` keeps the corpus
-  honest. Engine choice (Ascent / dynamic IR) is internal to the backend.
+  honest.
 - **One substrate, many sources.** markdown today via the `Source` trait;
   `code-as-corpus` proved rustdoc JSON works (stability attrs = a lattice).
 
@@ -137,7 +173,7 @@ Everything is a projection over the Fact log, in four layers:
 
 # Part IV — The conceptual language (the heart)
 
-The 133 prelude predicates are not a flat bag — they are **projections along a
+The 139 prelude predicates are not a flat bag — they are **projections along a
 small set of orthogonal dimensions.** Naming these axes *is* the design language,
 and the discipline is: **keep them orthogonal, name each precisely, present each
 with an honest disposition.** (Conflating two axes is the canonical bug — see §
@@ -150,7 +186,7 @@ currency below.)
 | **relevance** | does it match my query? | search · match · hit · anchor · ranked | per-query |
 | **currency** | has it been displaced? | currency · supersession | **no** (non-monotone) |
 | **lifecycle** | draft / operative / retired? | status · active · abandoned · terminal · settled | ~yes |
-| **recency** | when authored? | freshness · changed_within · flux · recent · snapshot · ~~git_mtime~~ | yes |
+| **recency** | when authored / changed / observed? | freshness(authored) · changed_within · flux · recent · snapshot · ~~git_mtime~~ | yes |
 | **importance** | how central? | in/out_degree · cite_count · impact · neighborhood | yes |
 | **convergence** | is it settling? | potential · entropy · advancing/holding/drifting | trend |
 | **structure** | how organized/connected? | edge · parent · **area** · namespace · section · pipeline · trail | yes |
@@ -174,29 +210,37 @@ authority its oracle earns:*
 | **TREND** | tracks | slope over snapshots | declare "no baseline" |
 | **PRE-FLIGHT** | grounds | current-artifact premise | declare the missing premise |
 
-This is `anneal-xy45`, and currency is its first instance (marked supersession =
-GATE; unmarked = REPORT hint, never an asserted edge; no history = `unknown`,
-signalled). It is *also anneal's product pitch*: a machine-checked corpus
-invariant beats a prose convention.
+This is `anneal-xy45`. **`check` is the true GATE exemplar** (a broken reference
+blocks). **Currency is the first *retrieval-facing* disposition instance:** marked
+`Supersedes` is a strong displacement oracle, but its surface behaviour is
+*down-rank / annotate / lineage*, **not block** — superseded material stays
+reachable by design; unmarked supersession is a REPORT hint, never an asserted
+edge; no history is `unknown`, signalled. It is *also anneal's product pitch*: a
+machine-checked corpus invariant beats a prose convention.
 
 ---
 
 # Part V — The current feature-set, situated
 
-| verb | dimensions it composes | what it answers |
+The **orientation / retrieval / trust surface** (the deliberate verbs; `schema` ·
+`describe` · `eval` · `init` are infrastructure, `check` · `prime` are support):
+
+| surface | dimensions it composes | what it answers |
 |---|---|---|
 | `status` | convergence × lifecycle | is the corpus advancing / holding / drifting? |
 | `context` | relevance × currency × lifecycle × structure | orient me to a goal — the live hits + their current neighborhood |
-| `search` | relevance (× currency) | find evidence for X, current-aware |
+| `search` | relevance × currency | find evidence for X, current-aware |
 | `read` | — | the bytes, budget-bounded |
-| `handle` | structure (`--impact` = DependsOn; `--lineage` = Supersedes×currency) | what is this, what does it touch, how did it evolve |
-| `check` | the diagnostic dispositions | is it consistent (broken refs = GATE; drift = REPORT/TREND) |
-| `lineage` | currency × structure | the supersession trail to the current head |
+| `handle` | structure (`--impact` = DependsOn; `--lineage` = Supersedes × currency) | what is this, what does it touch, how did it evolve |
+| `check` *(support)* | the diagnostic dispositions | is it consistent (broken refs = GATE; drift = REPORT/TREND) |
 
-The recent arc (currency, lineage, currency-ranked neighbors) **completed the
-provenance + navigation surfaces** the thesis says matter most — and a 20×
-retrieval regression from the compiler arc was caught and fixed, so they are
-usable at scale. The general "walk edges of kind K" remains a *query-local
+(`lineage` is the `handle --lineage` mode — the `Supersedes` × currency walk to
+the current head, sibling of `--impact`, not a standalone verb.)
+
+The recent arc (currency, `--lineage`, currency-ranked neighbors) **landed the
+first cuts of the provenance + navigation surfaces** the thesis says matter most
+(topical navigation is still deferred — Part VI) — and a 20× retrieval regression
+from the compiler arc was caught and fixed, so they are usable at scale. The general "walk edges of kind K" remains a *query-local
 recursive rule in the language* (not a verb) — curated verbs exist only where a
 walk is both structurally sound and semantically distinct (`--impact`,
 `--lineage`).
@@ -224,14 +268,15 @@ family** is the next suspect (`freshness` vs `changed_within` vs `flux` vs
 single most reliable lesson of this arc.
 
 ### 2. Disposition-type the whole surface
-The trust invariant is enforced on currency and `check`, but most of the 133
+The trust invariant is enforced on currency and `check`, but most of the 139
 predicates predate it. Every projection should carry its disposition, so no
 surface ever presents more than its oracle earns. This is `xy45` applied
 uniformly — fold it into the master spec as a CR-D and make it the gate for every
 new predicate.
 
 ### 3. Reduce the vocabulary (find the language)
-177 predicates over a 7-verb surface is more than the value requires. Point
+183 callable relations over a handful of deliberate verbs is more than the value
+requires. Point
 anneal's *own* discipline at its prelude: which predicates are terminal/abandoned
 (unexercised), which axes overlap, which verbs are the deliberate surface vs
 speculative accretion. *Default verdict: CUT.* The prelude is itself a
@@ -242,10 +287,10 @@ The corpus edge graph is ~95% `Cites` + index hubs, so *topical* navigation can'
 be walked. The missing primitive is **topic/community structure** over the graph
 — and it unlocks **two** deferred features at once: *unmarked supersession*
 (currency's `suspect`: "a newer sibling on the same topic") and *topical
-navigate* (`root → intent` trails). Crucially, `area` (the largest structure
-family, 8 predicates) is **proto-clustering already** — so this lands as a
-*reconciliation of `area`*, a deliberate ninth dimension done right, not another
-accretion.
+navigate* (`root → intent` trails). Crucially, the `area` family (8 predicates:
+`area_of`, `area_frontier`, `area_health`, `area_cross_edges`, …) is **explicit
+proto-clustering already** — so this lands as a *reconciliation of `area`*, a
+deliberate ninth dimension done right, not another accretion.
 
 ### 5. Toward a truth-maintenance corpus
 The far end: proofs/gates as first-class vertices and **retraction propagation** —
