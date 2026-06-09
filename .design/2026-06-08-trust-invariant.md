@@ -12,8 +12,9 @@ relates:
 # CR-D: the trust invariant — no confident answer over degenerate input — 2026-06-08
 
 This crystallises the principle that currency (`anneal-z4x3`) just proved into a
-standing **design gate**. It should be folded into the master spec as a numbered
-`CR-D`; recorded here so it can be cited and applied immediately.
+standing **design gate**. **Folded into the master spec as `CR-D103` (§3, beside
+the `CR-R12` degenerate-input rule); registered in Part XV.** Retained here as the
+working record of how it was derived.
 
 ## The decision
 

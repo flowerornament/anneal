@@ -113,6 +113,52 @@ be reachable; CR-R12 requires that the *absence* of one be unmistakable.
 uniform/maximal result must declare how it signals the degenerate case
 before it ships.
 
+**Definition CR-D103 (Trust invariant — disposition-earned authority).**
+CR-R12 says the absence of an answer must be unmistakable; CR-D103 fixes
+*how much authority* any answer may claim. A surface may present a result
+with only as much authority as its oracle earns: it presents as a **GATE**
+only where it has a clean pass/fail oracle on non-degenerate input. For a
+tool whose mission is letting amnesiac agents *trust* a shared knowledge
+state, a confident wrong-or-empty answer is the worst failure class — it is
+silent, plausible, and upstream of the consumer's reasoning, so no
+downstream capability recovers from it. anneal is itself run as a gate by
+its consumers (e.g. murail's `check-design`), so a false-confident anneal
+result false-fails a downstream gate.
+
+Every surface therefore carries exactly one **disposition**, and the
+disposition *is* the contract (generalizing
+[2026-06-06-disposition-typed-witnesses.md]):
+
+| disposition | oracle | may it block? |
+|---|---|---|
+| **GATE** | clean pass/fail on non-degenerate input | yes |
+| **REPORT** | graded / human-judged | no — informs only |
+| **TREND** | slope over snapshots | needs a baseline |
+| **PRE-FLIGHT** | witnesses a premise before building on it | no — declares the premise |
+
+The design-time question for any new predicate or verb is one: *what is
+this surface's disposition, does it have a clean oracle on non-degenerate
+input, and what does it do when the input is degenerate?* If it cannot
+answer cleanly it must **signal**, not succeed. The degenerate cases and
+their honest responses:
+
+| degenerate input | the lie if answered confidently | honest response |
+|---|---|---|
+| empty / tiny corpus | "here is the state" | declare the premise (empty) |
+| unclassified status everywhere | "this is current/terminal" | report "no status signal" |
+| no snapshot history | "advancing / holding / drifting" | PRE-FLIGHT: declare no baseline |
+| wrong / unresolved root | results for the wrong corpus | error on the premise, not the query |
+| score-saturated ties | "the top hit" | signal the tie, don't pick |
+| no clean oracle (e.g. unmarked supersession) | "superseded" / "current" as fact | REPORT hint, never an asserted edge |
+
+**Currency (§ retrieval) is the first concrete instance:** marked
+supersession has a clean oracle → GATE-able (`superseded` / `current_head`);
+unmarked supersession has no clean oracle → REPORT hint only, never an
+asserted edge; no history or no siblings → `unknown`, signalled not faked.
+Every later surface — `navigate`, hub-ness, the eventual TMS — is designed
+against this gate. This is what makes anneal's authority *earned* rather
+than asserted.
+
 ---
 
 ## Part II: Architecture [CR-A]
@@ -3540,6 +3586,7 @@ config key.
 - CR-D100: Cookbook cluster retired (§17)
 - CR-D101: Direct project verb authoring (§17)
 - CR-D102: Surface evolution framework (§35)
+- CR-D103: Trust invariant — disposition-earned authority (§3)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
