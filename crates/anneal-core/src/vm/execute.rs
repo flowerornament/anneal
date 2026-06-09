@@ -219,7 +219,7 @@ fn eval_planned_rule_group_inner(
     bindings
         .iter()
         .map(|binding| {
-            let tuple = project_planned_head(&planned.head_terms, binding, &env)?;
+            let tuple = project_planned_head(&planned.head_terms, binding, &mut env)?;
             let derivation = if options.explain().is_enabled() {
                 let provenance = planned
                     .provenance
@@ -300,7 +300,7 @@ fn eval_planned_query(
         ensure_no_reserved_planned_explain_fields(&query.plan.output)?;
     }
     sort_planned_bindings_for_query(&query.plan.output.ordering, &mut bindings, &mut env)?;
-    let rows = planned_bindings_to_rows(&query.plan.output, bindings, &env, options.explain())?;
+    let rows = planned_bindings_to_rows(&query.plan.output, bindings, &mut env, options.explain())?;
     Ok(QueryOutput {
         rows,
         warnings: std::mem::take(warnings),
@@ -1294,21 +1294,14 @@ fn query_output_predicate() -> PredicateRef {
 fn planned_bindings_to_rows(
     output: &OutputPlan,
     bindings: Vec<PlannedFrame>,
-    env: &PlannedValueEnv,
+    env: &mut PlannedValueEnv,
     options: &ExplainOptions,
 ) -> Result<Vec<Row>, EvalError> {
-    let mut env = env.clone();
     bindings
         .into_iter()
         .enumerate()
         .map(|(index, binding)| {
-            planned_binding_to_row(
-                output,
-                &binding,
-                &mut env,
-                options,
-                options.explains_row(index),
-            )
+            planned_binding_to_row(output, &binding, env, options, options.explains_row(index))
         })
         .collect()
 }
@@ -1348,7 +1341,7 @@ fn planned_projected_fields(
 fn project_planned_head(
     terms: &[TermPlan],
     binding: &PlannedFrame,
-    env: &PlannedValueEnv,
+    env: &mut PlannedValueEnv,
 ) -> Result<Tuple, EvalError> {
     terms
         .iter()
@@ -1360,10 +1353,7 @@ fn project_planned_head(
                     variable: Ident::new_unchecked(format!("slot{}", slot.index())),
                 })
                 .and_then(|value| env.logical(value)),
-            TermPlan::Expr(expr) => {
-                let mut env = env.clone();
-                eval_planned_expr_logical(expr, binding, &mut env)
-            }
+            TermPlan::Expr(expr) => eval_planned_expr_logical(expr, binding, env),
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Tuple)
