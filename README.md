@@ -255,7 +255,7 @@ the broader `anchor` relation. Both close with `order by rank asc` so the list
 arrives in reading order — rank 1 first — because `order by <expr> [asc|desc]`
 sorts a query's result at the projection boundary, and `order by … --limit N`
 is a true top-N. `context`
-composes ranked heading-span search, compact span metadata, and graph
+composes ranked summary-bearing span search, compact span metadata, and graph
 neighborhood once you have a goal. Add `--read-spans` when you want matched
 span bodies inline.
 `help agent` prints the bundled agent skill briefing from the installed binary.
@@ -300,8 +300,8 @@ anneal handle formal-model/v17.md --impact
 anneal handle formal-model/v17.md --lineage
 ```
 
-`search` ranks content and metadata hits and includes `heading_path` for
-heading-span matches. Scores combine lexical strength with lifecycle status,
+`search` ranks content and metadata hits and includes `summary` for
+matched spans. Scores combine lexical strength with lifecycle status,
 hub degree, and currency: current operative successors outrank superseded
 predecessors, while superseded material stays reachable. Search and context
 hits include disposition, status, and age so you can tell current framing from
@@ -314,7 +314,7 @@ dependencies before an edit, and `--lineage` follows file-level Supersedes
 chains to show older predecessors, newer successors, and current heads.
 
 Use `anneal context "X"` when the task is "find the section that defines X";
-it returns ranked section hits, span metadata, `heading_path`, and graph
+it returns ranked section hits, span metadata, `summary`, and graph
 neighborhood. Add `--read-spans` only when inline matched bodies are worth the
 extra output. Use `grep -rn "X"` when you need every literal occurrence with
 line numbers. Use `anneal -e '? ...'` when the question is structural, such as

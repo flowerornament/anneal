@@ -113,17 +113,17 @@ impl SearchCommand {
         let confidence_filter = low_confidence_filter(self.include_low_confidence);
         format!(
             "\
-search_heading_path(h, span_id, heading_path) :=
-    *span{{handle: h, id: span_id, summary: heading_path}}.
+search_summary(h, span_id, summary) :=
+    *span{{handle: h, id: span_id, summary: summary}}.
 
-search_heading_path(h, null, null) :=
+search_summary(h, null, null) :=
     *handle{{id: h}}.
 
-? (h, span_id, score, reason, field, low_confidence, heading_path, status, disposition, age_days) = TopK{{ k: {limit}, key: score :
-    (h, span_id, score, reason, field, low_confidence, heading_path, status, \"unknown\", null) :
+? (h, span_id, score, reason, field, low_confidence, summary, status, disposition, age_days) = TopK{{ k: {limit}, key: score :
+    (h, span_id, score, reason, field, low_confidence, summary, status, \"unknown\", null) :
         search({query}, h, span_id, score, reason, field, low_confidence){confidence_filter},
         *handle{{id: h, status: status}},
-        search_heading_path(h, span_id, heading_path)
+        search_summary(h, span_id, summary)
 }}.",
             limit = self.limit,
         )
@@ -232,7 +232,7 @@ mod tests {
 
         assert!(query.contains("TopK{ k: 3"));
         assert!(query.contains("low_confidence = false"));
-        assert!(query.contains("heading_path"));
+        assert!(query.contains("summary"));
         analyze(parse_program("search", &query).expect("query parses")).expect("query analyzes");
     }
 

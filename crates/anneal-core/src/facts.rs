@@ -238,7 +238,7 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
             "end_line",
             "summary",
         ],
-        doc: "Stored source spans with line ranges and summaries.",
+        doc: "Stored source spans with line ranges and adapter-provided summaries. The markdown adapter populates summary with the heading hierarchy; code adapters can use signatures or other source-native span summaries.",
         provenance: "source",
         example: r"? *span{id: span, handle: h, start_line: start, end_line: end}.",
     },

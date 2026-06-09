@@ -435,8 +435,8 @@ Output: human summary at a terminal or with --format=text; NDJSON rows when pipe
                 "\
 Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
 
-Cold-agent orientation in one response. Composes heading-span search, bounded
-span metadata, and graph neighborhood. Use --read-spans to include matched
+Cold-agent orientation in one response. Composes summary-bearing span search,
+bounded span metadata, and graph neighborhood. Use --read-spans to include matched
 span bodies.
 
 Arguments:
@@ -637,7 +637,7 @@ Discover before guessing:
 Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
-  anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: heading_path}.' --limit 20
+  anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: summary}.' --limit 20
   anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
   anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12
   anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12
@@ -2826,12 +2826,12 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             .span_id
             .as_deref()
             .map_or(String::new(), |span| format!(" span={span}"));
-        let heading = hit
-            .heading_path
+        let summary = hit
+            .summary
             .as_deref()
-            .filter(|heading| !heading.is_empty())
-            .map_or(String::new(), |heading| {
-                format!(" heading={}", display_string_value(heading))
+            .filter(|summary| !summary.is_empty())
+            .map_or(String::new(), |summary| {
+                format!(" summary={}", display_string_value(summary))
             });
         let status = hit
             .status
@@ -2852,7 +2852,7 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             status,
             age,
             span,
-            heading
+            summary
         )?;
     }
 
@@ -2947,7 +2947,7 @@ enum ContextEvent<'a> {
         score: f64,
         reason: &'a str,
         field: &'a str,
-        heading_path: Option<&'a str>,
+        summary: Option<&'a str>,
         status: Option<&'a str>,
         disposition: &'a str,
         age_days: Option<i64>,
@@ -2984,7 +2984,7 @@ fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<(
         score: hit.score,
         reason: hit.reason.as_str(),
         field: hit.field.as_str(),
-        heading_path: hit.heading_path.as_deref(),
+        summary: hit.summary.as_deref(),
         status: hit.status.as_deref(),
         disposition: hit.disposition.as_str(),
         age_days: hit.age_days,
@@ -5294,7 +5294,7 @@ mod tests {
                 score: 0.9,
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
-                heading_path: Some("Release".to_string()),
+                summary: Some("Release".to_string()),
                 status: Some("active".to_string()),
                 disposition: "current_head".to_string(),
                 age_days: Some(12),
@@ -5327,7 +5327,7 @@ mod tests {
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
         assert!(rendered.contains("disposition=current_head status=active age_days=12"));
-        assert!(rendered.contains("heading=Release"));
+        assert!(rendered.contains("summary=Release"));
         assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
         assert!(rendered.contains("Neighborhood\nplan.md:\n  current: dep.md disposition=current status=active age_days=3 degree=4"));
     }
@@ -5342,7 +5342,7 @@ mod tests {
                 score: 0.9,
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
-                heading_path: Some("Release".to_string()),
+                summary: Some("Release".to_string()),
                 status: Some("active".to_string()),
                 disposition: "current_head".to_string(),
                 age_days: Some(12),

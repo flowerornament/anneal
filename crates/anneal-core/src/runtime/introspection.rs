@@ -2103,7 +2103,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`*snapshot{snapshot: snapshot, id: h, key: \"status\", value: status}` to inspect raw status history rows",
         ],
         "search" => &[
-            "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: heading_path}` to add heading context",
+            "`search{query: \"text\", handle: h, span_id: span_id, score: score}, *span{handle: h, id: span_id, summary: summary}` to add span summary",
             "`search{query: \"text\", handle: h, score: score}, *handle{id: h, status: status}` to inspect status-aware ranking",
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read matched spans",
         ],
@@ -2114,7 +2114,7 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         ],
         "read" => &[
             "`search{query: \"text\", handle: h, span_id: span_id}, read(h, 4000, span_id, text, start, end, tokens)` to read the matched heading span",
-            "`*span{handle: h, id: span_id, summary: heading_path}, read(h, 4000, span_id, text, start, end, tokens)` to read by heading hierarchy",
+            "`*span{handle: h, id: span_id, summary: summary}, read(h, 4000, span_id, text, start, end, tokens)` to read by heading hierarchy",
         ],
         "context" => &[
             "`context` composes ranked section search, compact span metadata, and graph neighborhood rows for cold-agent orientation",
@@ -2362,7 +2362,7 @@ fn verb_relationship(name: &str) -> &'static str {
             "Saved query over `primary_entropy`, non-blocked `potential` rows, `flow`, and `diagnostic`; human rendering summarizes convergence counts and sorts rows for arrival."
         }
         "search" => {
-            "Saved query over the `search` primitive; applies TopK by calibrated score, filters `low_confidence = false`, and adds heading_path for span hits."
+            "Saved query over the `search` primitive; applies TopK by calibrated score, filters `low_confidence = false`, and adds summary for span hits."
         }
         "context" => {
             "Saved query that composes boosted span-granular `search`, span metadata, `neighborhood`, TopK, and TakeUntil into one orientation bundle. The CLI `--read-spans` flag expands matched span bodies."

@@ -13,8 +13,8 @@ use crate::hash::Fnv1a64;
 pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
 pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
-pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked heading-span hits, span metadata, and nearby handles in one call. Use the CLI --read-spans flag to include matched span bodies.";
-pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","heading_path":"String|null","status":"String|null","disposition":"String","age_days":"Number|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","degree":"Number","group":"String"}]}"#;
+pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked summary-bearing span hits, span metadata, and nearby handles in one call. Use the CLI --read-spans flag to include matched span bodies.";
+pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","summary":"String|null","status":"String|null","disposition":"String","age_days":"Number|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","degree":"Number","group":"String"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
 pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
@@ -882,7 +882,7 @@ mod tests {
                     &[
                         "field",
                         "h",
-                        "heading_path",
+                        "summary",
                         "hit_span_id",
                         "status",
                         "disposition",

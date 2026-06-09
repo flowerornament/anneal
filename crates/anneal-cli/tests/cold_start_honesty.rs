@@ -358,7 +358,7 @@ fn tie_saturated_context_still_surfaces_canonical_section() {
         .collect::<Vec<_>>();
     assert!(
         hits.iter().any(|row| row["handle"] == "canonical.md"
-            && row["heading_path"] == "Error Model and Load Shedding"),
+            && row["summary"] == "Error Model and Load Shedding"),
         "{hits:#?}"
     );
     assert_eq!(hits.first().expect("first hit")["handle"], "canonical.md");

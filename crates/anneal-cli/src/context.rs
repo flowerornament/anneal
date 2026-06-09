@@ -136,7 +136,7 @@ impl ContextOutput {
                             score: number_field(row, "score")?,
                             reason: string_field(row, "reason")?,
                             field: string_field(row, "field")?,
-                            heading_path: optional_string_field(row, "heading_path")?,
+                            summary: optional_string_field(row, "summary")?,
                             status: optional_string_field(row, "status")?,
                             disposition: string_field(row, "disposition")?,
                             age_days: optional_int_field(row, "age_days")?,
@@ -313,7 +313,7 @@ pub struct ContextHit {
     pub score: f64,
     pub reason: String,
     pub field: String,
-    pub heading_path: Option<String>,
+    pub summary: Option<String>,
     pub status: Option<String>,
     pub disposition: String,
     pub age_days: Option<i64>,
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(schema["goal"], "String");
         assert_eq!(schema["hits"][0]["handle"], "HandleId");
         assert_eq!(schema["hits"][0]["span_id"], "String|null");
-        assert_eq!(schema["hits"][0]["heading_path"], "String|null");
+        assert_eq!(schema["hits"][0]["summary"], "String|null");
         assert_eq!(schema["hits"][0]["status"], "String|null");
         assert_eq!(schema["hits"][0]["disposition"], "String");
         assert_eq!(schema["hits"][0]["age_days"], "Number|null");
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(output.goal, "urgent blocker");
         assert_eq!(output.hits.len(), 1);
         assert_eq!(output.hits[0].handle, "audit/v17.md");
-        assert_eq!(output.hits[0].heading_path.as_deref(), Some("Intro"));
+        assert_eq!(output.hits[0].summary.as_deref(), Some("Intro"));
         assert_eq!(
             output.spans,
             vec![ContextSpan {
@@ -720,9 +720,7 @@ mod tests {
         file_hit
             .fields
             .insert("reason".to_string(), s("identifier-substring"));
-        file_hit
-            .fields
-            .insert("heading_path".to_string(), Value::Null);
+        file_hit.fields.insert("summary".to_string(), Value::Null);
 
         let rows = vec![
             file_hit,
@@ -1177,7 +1175,7 @@ mod tests {
                 ("score".to_string(), f(score)),
                 ("reason".to_string(), s("body-substring")),
                 ("field".to_string(), s("body")),
-                ("heading_path".to_string(), s("Intro")),
+                ("summary".to_string(), s("Intro")),
                 ("status".to_string(), s("current")),
                 ("disposition".to_string(), s("unknown")),
                 ("age_days".to_string(), Value::Null),
