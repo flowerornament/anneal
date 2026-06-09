@@ -2,7 +2,7 @@
 
 All notable changes to `anneal` are documented in this file.
 
-## Unreleased
+## v0.19.0 - 2026-06-09
 
 Navigation is curated around the graph paths agents actually use.
 
