@@ -53,11 +53,11 @@ be placed on one axis is a tangle to resolve or a cut.
 | **relevance** | matches my query? | text × query | REPORT | clean |
 | **currency** | displaced? | `Supersedes` edges | REPORT (marked GATE-able) | **just cleaned** |
 | **lifecycle** | draft / operative / retired? | `status` field | REPORT / PRE-FLIGHT | clean (just split from currency) |
-| **recency** | authored / changed / observed *when*? | dates · mtime · snapshots | REPORT / TREND | **TANGLED — next untangle** |
+| **recency** | authored / changed / observed *when*? | dates · mtime · snapshots | REPORT / TREND | clean (untangled jkt4.2: authored_age / changed_recently / flux) |
 | **importance** | central? | degree / cites | REPORT | clean |
 | **convergence** | settling? | snapshot deltas | TREND | clean-ish |
 | **structure** | organized / connected? | `edge` + kinds | REPORT | broad; `area` is proto-cluster |
-| **obligations** | owed? | obligation/discharge facts | GATE? (verify) | under-exercised |
+| **obligations** | owed? | obligation/discharge facts | GATE-able (E002) | clean |
 | **topic** *(coming)* | same subject? | labels + community detection | REPORT (never asserted edge) | the clustering keystone |
 
 The deliverable is this table made *true and enforced*: each axis precise, each
