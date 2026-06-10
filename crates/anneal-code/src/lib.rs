@@ -1,18 +1,19 @@
 //! Rust code adapter for anneal.
 //!
 //! This crate ingests pre-built `rustdoc --output-format json` artifacts.
-//! It does not build rustdoc artifacts, scan source bodies, or inspect git.
+//! It does not build rustdoc artifacts or ingest source bodies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::BufReader;
+use std::process::Command;
 
 use anneal_core::{
-    ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
-    HandleFact, MetaFact, NativeId, OriginUri, Pattern, Revision, Source, SourceCapabilities,
-    SourceContext, SourceError, SourceInfo, SourceName, SpanFact, default_lexical_search_info,
-    fnv1a_64, normalize_path_inside_root, normalize_relative_path,
+    ConcernFact, ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode,
+    FactIdentity, HandleFact, MetaFact, NativeId, OriginUri, Pattern, Revision, Source,
+    SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact,
+    default_lexical_search_info, fnv1a_64, normalize_path_inside_root, normalize_relative_path,
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use rustdoc_types::{
@@ -59,6 +60,10 @@ mod meta_key {
     pub(super) const MEMBER_DOC_BYTES: &str = "code.content.member_doc_bytes";
     pub(super) const STRUCTURAL_DOC_BYTES: &str = "code.content.structural_doc_bytes";
     pub(super) const SIGNATURE_BYTES: &str = "code.content.signature_bytes";
+    pub(super) const CLASS: &str = "code.class";
+    pub(super) const OBLIGATION: &str = "code.obligation";
+    pub(super) const OBLIGATION_COUNT: &str = "code.obligation.count";
+    pub(super) const VERSION_TAG: &str = "code.version_tag";
 }
 
 mod relation_value {
@@ -67,6 +72,10 @@ mod relation_value {
     pub(super) const BUDGET_TRUNCATED: &str = "truncated";
     pub(super) const FIRST_PARAGRAPH: &str = "first_paragraph";
     pub(super) const PER_ITEM_CAP: &str = "per_item_cap";
+    pub(super) const CLASS_GENERATED: &str = "generated";
+    pub(super) const CLASS_PRIVATE: &str = "private";
+    pub(super) const CLASS_PUBLIC_API: &str = "public-api";
+    pub(super) const CLASS_TEST: &str = "test";
 }
 
 mod edge_kind {
@@ -74,6 +83,11 @@ mod edge_kind {
     pub(super) const CITES: &str = "Cites";
     pub(super) const IMPLEMENTS: &str = "Implements";
     pub(super) const USES_TYPE: &str = "UsesType";
+}
+
+mod concern_name {
+    pub(super) const CODE_FIXME: &str = "code.fixme";
+    pub(super) const CODE_TODO: &str = "code.todo";
 }
 
 /// Rustdoc JSON `Source` implementation.
@@ -131,10 +145,24 @@ impl Source for CodeSource {
                 .as_ref()
                 .map(|path| read_manifest(root, path))
                 .transpose()?;
+            let manifest_revision = manifest
+                .as_ref()
+                .and_then(ArtifactManifest::source_revision);
+            let classification_revision = config
+                .artifact_revision
+                .as_deref()
+                .or(manifest_revision.as_deref());
+            let classification = SourceTreeClassification::scan(root, &config.source_root);
             for artifact in &config.artifacts {
                 let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
                 combined.append(batch);
             }
+            classification.project(
+                &mut combined,
+                root,
+                &config.source_root,
+                classification_revision,
+            );
         }
         Ok(combined)
     }
@@ -294,6 +322,238 @@ impl ArtifactManifest {
             }
             value.as_str().map(ToOwned::to_owned)
         })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SourceTreeClassification {
+    files: BTreeMap<String, SourceFileClass>,
+    tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SourceFileClass {
+    generated: bool,
+    obligations: Vec<CodeObligation>,
+    test: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CodeObligation {
+    kind: &'static str,
+    line: u32,
+    text: String,
+}
+
+impl SourceTreeClassification {
+    fn scan(root: &Utf8Path, source_root: &Utf8Path) -> Self {
+        let source_abs = root.join(source_root);
+        let mut out = Self {
+            files: BTreeMap::new(),
+            tags: git_version_tags(&source_abs),
+        };
+        scan_source_dir(root, source_root, &source_abs, &mut out);
+        out
+    }
+
+    fn project(
+        &self,
+        batch: &mut FactBatch,
+        root: &Utf8Path,
+        source_root: &Utf8Path,
+        revision: Option<&str>,
+    ) {
+        let revision = Revision::from(
+            revision
+                .filter(|value| !value.is_empty())
+                .unwrap_or(relation_value::ARTIFACT_REVISION_UNKNOWN)
+                .to_string(),
+        );
+        let package_handle = package_root_file(root, source_root);
+        self.ensure_source_file_handles(batch, root, &revision);
+
+        let visibility_by_handle = meta_values(batch, meta_key::VISIBILITY);
+        let mut public_files = BTreeSet::new();
+        for handle in &batch.handles {
+            if handle.kind == "section"
+                && visibility_by_handle
+                    .get(&handle.id)
+                    .is_some_and(|visibility| visibility == "public")
+            {
+                public_files.insert(handle.file.clone());
+            }
+        }
+
+        let handles = batch.handles.clone();
+        for handle in handles {
+            if handle.kind != "file" && handle.kind != "section" {
+                continue;
+            }
+            let class = self.class_for_handle(
+                &handle,
+                &package_handle,
+                &public_files,
+                &visibility_by_handle,
+            );
+            push_code_meta(
+                batch,
+                root,
+                &revision,
+                &handle.id,
+                &handle.file,
+                meta_key::CLASS,
+                class,
+            );
+        }
+
+        self.emit_obligations(batch, root, &revision);
+        self.emit_version_tags(batch, root, &revision, &package_handle);
+    }
+
+    fn ensure_source_file_handles(
+        &self,
+        batch: &mut FactBatch,
+        root: &Utf8Path,
+        revision: &Revision,
+    ) {
+        let existing = batch
+            .handles
+            .iter()
+            .map(|handle| handle.id.clone())
+            .collect::<BTreeSet<_>>();
+        for file in self.files.keys() {
+            if existing.contains(file) {
+                continue;
+            }
+            batch.handles.push(HandleFact {
+                identity: code_identity(batch, root, revision, file, file),
+                id: file.clone(),
+                kind: "file".to_string(),
+                status: None,
+                namespace: String::new(),
+                file: file.clone(),
+                line: 1,
+                date: None,
+                area: area_for(file),
+                summary: file.clone(),
+            });
+        }
+    }
+
+    fn class_for_handle(
+        &self,
+        handle: &HandleFact,
+        package_handle: &str,
+        public_files: &BTreeSet<String>,
+        visibility_by_handle: &BTreeMap<String, String>,
+    ) -> &'static str {
+        if let Some(file) = self.files.get(&handle.file) {
+            if file.generated {
+                return relation_value::CLASS_GENERATED;
+            }
+            if file.test {
+                return relation_value::CLASS_TEST;
+            }
+        }
+        if handle.kind == "file" {
+            if handle.id == package_handle || public_files.contains(&handle.id) {
+                relation_value::CLASS_PUBLIC_API
+            } else {
+                relation_value::CLASS_PRIVATE
+            }
+        } else if visibility_by_handle
+            .get(&handle.id)
+            .is_some_and(|visibility| visibility == "public")
+        {
+            relation_value::CLASS_PUBLIC_API
+        } else {
+            relation_value::CLASS_PRIVATE
+        }
+    }
+
+    fn emit_obligations(&self, batch: &mut FactBatch, root: &Utf8Path, revision: &Revision) {
+        for (file, scan) in &self.files {
+            if scan.obligations.is_empty() {
+                continue;
+            }
+            push_code_meta(
+                batch,
+                root,
+                revision,
+                file,
+                file,
+                meta_key::OBLIGATION_COUNT,
+                &scan.obligations.len().to_string(),
+            );
+            for (idx, obligation) in scan.obligations.iter().enumerate() {
+                let native_id = format!("{file}::code-obligation::{idx}");
+                let identity = code_identity(batch, root, revision, &native_id, file);
+                let concern = if obligation.kind == "TODO" {
+                    concern_name::CODE_TODO
+                } else {
+                    concern_name::CODE_FIXME
+                };
+                batch.concerns.push(ConcernFact {
+                    identity: identity.clone(),
+                    name: concern.to_string(),
+                    member: file.clone(),
+                });
+                batch.meta.push(MetaFact {
+                    identity,
+                    handle: file.clone(),
+                    key: meta_key::OBLIGATION.to_string(),
+                    value: format!(
+                        "{}:{}:{}",
+                        obligation.kind, obligation.line, obligation.text
+                    ),
+                });
+            }
+        }
+    }
+
+    fn emit_version_tags(
+        &self,
+        batch: &mut FactBatch,
+        root: &Utf8Path,
+        revision: &Revision,
+        package_handle: &str,
+    ) {
+        for (idx, tag) in self.tags.iter().enumerate() {
+            if !batch.handles.iter().any(|handle| handle.id == *tag) {
+                batch.handles.push(HandleFact {
+                    identity: code_identity(batch, root, revision, tag, package_handle),
+                    id: tag.clone(),
+                    kind: "version".to_string(),
+                    status: None,
+                    namespace: SOURCE_NAME.to_string(),
+                    file: package_handle.to_string(),
+                    line: 1,
+                    date: None,
+                    area: area_for(package_handle),
+                    summary: format!("code version tag {tag}"),
+                });
+            }
+            push_code_meta(
+                batch,
+                root,
+                revision,
+                package_handle,
+                package_handle,
+                meta_key::VERSION_TAG,
+                tag,
+            );
+            let native_id = format!("{package_handle}::edge::version::{idx}::{tag}");
+            batch.edges.push(EdgeFact {
+                identity: code_identity(batch, root, revision, &native_id, package_handle),
+                from: package_handle.to_string(),
+                to: tag.clone(),
+                kind: edge_kind::CONTAINS.to_string(),
+                file: package_handle.to_string(),
+                line: 1,
+                assertion_date: None,
+                assertion_revision: None,
+            });
+        }
     }
 }
 
@@ -995,6 +1255,188 @@ fn package_root_file(root: &Utf8Path, source_root: &Utf8Path) -> String {
     "Cargo.toml".to_string()
 }
 
+fn scan_source_dir(
+    root: &Utf8Path,
+    source_root: &Utf8Path,
+    dir: &Utf8Path,
+    out: &mut SourceTreeClassification,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    for path in paths {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        if should_skip_source_dir(name) {
+            continue;
+        }
+        if path.is_dir() {
+            scan_source_dir(root, source_root, &path, out);
+            continue;
+        }
+        if path.extension() != Some("rs") {
+            continue;
+        }
+        let Some(relative) = normalize_path_inside_root(root, &path) else {
+            continue;
+        };
+        let relative = normalize_relative_path(
+            relative.as_str(),
+            anneal_core::RelativePathPolicy::STRICT_NON_EMPTY,
+        )
+        .map_or_else(|| relative.to_string(), |path| path.to_string());
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let test_path = is_test_path(source_root, &relative);
+        out.files
+            .insert(relative, classify_source_file(&text, test_path));
+    }
+}
+
+fn should_skip_source_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".hg" | ".jj" | ".svn" | "target" | "node_modules" | ".direnv"
+    )
+}
+
+fn is_test_path(source_root: &Utf8Path, relative: &str) -> bool {
+    let path = if source_root == Utf8Path::new(".") {
+        Utf8PathBuf::from(relative)
+    } else {
+        Utf8Path::new(relative)
+            .strip_prefix(source_root)
+            .map_or_else(|_| Utf8PathBuf::from(relative), Utf8Path::to_path_buf)
+    };
+    path.components()
+        .any(|component| matches!(component.as_str(), "test" | "tests"))
+        || path
+            .file_stem()
+            .is_some_and(|stem| stem.ends_with("_test") || stem.ends_with("_tests"))
+}
+
+fn classify_source_file(text: &str, test_path: bool) -> SourceFileClass {
+    SourceFileClass {
+        generated: has_generated_marker(text),
+        obligations: code_obligations(text),
+        test: test_path || has_test_marker(text),
+    }
+}
+
+fn has_generated_marker(text: &str) -> bool {
+    text.lines().take(80).any(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        line.contains("@generated")
+            || line.contains("automatically generated")
+            || line.contains("auto-generated")
+            || line.contains("do not edit")
+            || line.contains("generated by")
+    })
+}
+
+fn has_test_marker(text: &str) -> bool {
+    text.contains("#[cfg(test)]") || text.contains("#[test]") || text.contains("mod tests")
+}
+
+fn code_obligations(text: &str) -> Vec<CodeObligation> {
+    let mut obligations = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let Some(kind) = obligation_kind(line) else {
+            continue;
+        };
+        obligations.push(CodeObligation {
+            kind,
+            line: u32::try_from(idx + 1).unwrap_or(u32::MAX),
+            text: truncate_at_char_boundary(line.trim(), 180).to_string(),
+        });
+    }
+    obligations
+}
+
+fn obligation_kind(line: &str) -> Option<&'static str> {
+    if line.contains("FIXME") {
+        Some("FIXME")
+    } else if line.contains("TODO") {
+        Some("TODO")
+    } else {
+        None
+    }
+}
+
+fn git_version_tags(source_abs: &Utf8Path) -> Vec<String> {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(source_abs)
+        .args(["tag", "--points-at", "HEAD", "--sort=refname"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn meta_values(batch: &FactBatch, key: &str) -> BTreeMap<String, String> {
+    batch
+        .meta
+        .iter()
+        .filter(|meta| meta.key == key)
+        .map(|meta| (meta.handle.clone(), meta.value.clone()))
+        .collect()
+}
+
+fn push_code_meta(
+    batch: &mut FactBatch,
+    root: &Utf8Path,
+    revision: &Revision,
+    handle: &str,
+    file: &str,
+    key: &str,
+    value: &str,
+) {
+    batch.meta.push(MetaFact {
+        identity: code_identity(batch, root, revision, handle, file),
+        handle: handle.to_string(),
+        key: key.to_string(),
+        value: value.to_string(),
+    });
+}
+
+fn code_identity(
+    batch: &FactBatch,
+    root: &Utf8Path,
+    revision: &Revision,
+    native_id: &str,
+    file: &str,
+) -> FactIdentity {
+    let origin_uri = if file.is_empty() {
+        format!("rustdoc://{native_id}")
+    } else {
+        format!("file://{}", root.join(file))
+    };
+    FactIdentity::new(
+        batch.corpus.clone(),
+        batch.source.clone(),
+        NativeId::from(native_id.to_string()),
+        OriginUri::from(origin_uri),
+        revision.clone(),
+        batch.generation,
+    )
+}
+
 fn normalize_span_filename(
     root: &Utf8Path,
     source_root: &Utf8Path,
@@ -1408,12 +1850,28 @@ mod tests {
 
     fn write_fixture(root: &Utf8Path) {
         fs::create_dir_all(root.join("src")).expect("create src");
+        fs::create_dir_all(root.join("tests")).expect("create tests");
         fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
         fs::write(
             root.join("src/lib.rs"),
             "pub struct Widget;\npub trait Other {}\npub fn make() -> Widget { Widget }\n",
         )
         .expect("write lib");
+        fs::write(
+            root.join("src/private.rs"),
+            "fn helper() {}\n// TODO: tighten private helper\n",
+        )
+        .expect("write private");
+        fs::write(
+            root.join("src/generated.rs"),
+            "// @generated by fixture\n// DO NOT EDIT\npub fn generated() {}\n",
+        )
+        .expect("write generated");
+        fs::write(
+            root.join("tests/integration.rs"),
+            "#[test]\nfn smoke() {}\n",
+        )
+        .expect("write integration test");
         let rustdoc = json!({
             "root": 0,
             "crate_version": "0.1.0",
@@ -1507,6 +1965,23 @@ mod tests {
         .expect("write rustdoc");
     }
 
+    fn code_meta<'a>(batch: &'a FactBatch, handle: &str, key: &str) -> Vec<&'a str> {
+        batch
+            .meta
+            .iter()
+            .filter(|meta| meta.handle == handle && meta.key == key)
+            .map(|meta| meta.value.as_str())
+            .collect()
+    }
+
+    fn handle_class(batch: &FactBatch, handle: &str) -> Option<String> {
+        batch
+            .meta
+            .iter()
+            .find(|meta| meta.handle == handle && meta.key == meta_key::CLASS)
+            .map(|meta| meta.value.clone())
+    }
+
     #[test]
     fn rustdoc_source_projects_code_facts_without_raw_ids() {
         let dir = tempdir().expect("tempdir");
@@ -1588,6 +2063,118 @@ mod tests {
             meta.handle.contains("demo::make")
                 && meta.key == meta_key::CONTENT_BUDGET_DISPOSITION
                 && meta.value == relation_value::PER_ITEM_CAP
+        }));
+    }
+
+    #[test]
+    fn rustdoc_source_classifies_source_tree_files_and_obligations() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir_all(root.join("target/doc")).expect("create target doc");
+        write_fixture(&root);
+        let config = ConfigFacts::try_from_entries(vec![
+            ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+            ConfigEntry::scalar(config_key::ARTIFACT_REVISION, "abc123"),
+        ])
+        .expect("config facts");
+
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("code extraction");
+        let widget = batch
+            .handles
+            .iter()
+            .find(|handle| {
+                handle.kind == "section" && handle.id.starts_with("src/lib.rs#demo::Widget@")
+            })
+            .expect("widget handle");
+
+        assert_eq!(
+            handle_class(&batch, "src/lib.rs").as_deref(),
+            Some(relation_value::CLASS_PUBLIC_API)
+        );
+        assert_eq!(
+            handle_class(&batch, &widget.id).as_deref(),
+            Some(relation_value::CLASS_PUBLIC_API)
+        );
+        assert_eq!(
+            handle_class(&batch, "src/private.rs").as_deref(),
+            Some(relation_value::CLASS_PRIVATE)
+        );
+        assert_eq!(
+            handle_class(&batch, "tests/integration.rs").as_deref(),
+            Some(relation_value::CLASS_TEST)
+        );
+        assert_eq!(
+            handle_class(&batch, "src/generated.rs").as_deref(),
+            Some(relation_value::CLASS_GENERATED)
+        );
+        assert!(batch.handles.iter().any(|handle| {
+            handle.kind == "file"
+                && handle.id == "src/private.rs"
+                && handle.summary == "src/private.rs"
+        }));
+        assert_eq!(
+            code_meta(&batch, "src/private.rs", meta_key::OBLIGATION_COUNT),
+            vec!["1"]
+        );
+        assert!(
+            code_meta(&batch, "src/private.rs", meta_key::OBLIGATION)
+                .iter()
+                .any(|value| value.starts_with("TODO:2:"))
+        );
+        assert!(batch.concerns.iter().any(|concern| {
+            concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
+        }));
+    }
+
+    #[test]
+    fn rustdoc_source_projects_git_version_tags_as_package_metadata() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir_all(root.join("target/doc")).expect("create target doc");
+        write_fixture(&root);
+        for args in [
+            &["init"][..],
+            &["config", "user.email", "anneal@example.test"],
+            &["config", "user.name", "Anneal Test"],
+            &["add", "."],
+            &["commit", "-m", "fixture"],
+            &["tag", "demo-0.1.0"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("run git fixture command");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}{}",
+                args,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let config = ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(
+            config_key::RUSTDOC_JSON,
+            "target/doc/demo.json",
+        )])
+        .expect("config facts");
+
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("code extraction");
+
+        assert!(batch.handles.iter().any(|handle| {
+            handle.id == "demo-0.1.0" && handle.kind == "version" && handle.namespace == SOURCE_NAME
+        }));
+        assert_eq!(
+            code_meta(&batch, "Cargo.toml", meta_key::VERSION_TAG),
+            vec!["demo-0.1.0"]
+        );
+        assert!(batch.edges.iter().any(|edge| {
+            edge.from == "Cargo.toml" && edge.to == "demo-0.1.0" && edge.kind == edge_kind::CONTAINS
         }));
     }
 }
