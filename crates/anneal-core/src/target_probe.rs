@@ -122,10 +122,15 @@ impl CodeDriftEvidenceCache {
             enclosing_project_root(corpus_root).unwrap_or_else(|| corpus_root.to_path_buf());
         let cache_path = repo_root.join(DRIFT_CACHE_RELATIVE_PATH);
         let head = git_head(&repo_root);
+        let mut changed = false;
         let entries = if matches!(mode, CodeDriftEvidenceMode::Disabled) {
             BTreeMap::new()
         } else {
-            read_drift_cache(&cache_path, head.as_deref(), &repo_root)
+            let loaded = read_drift_cache(&cache_path, head.as_deref(), &repo_root);
+            match head.as_deref() {
+                Some(head) => migrate_entries_to_head(&repo_root, head, loaded, &mut changed),
+                None => loaded,
+            }
         };
         Self {
             mode,
@@ -133,7 +138,7 @@ impl CodeDriftEvidenceCache {
             cache_path,
             head,
             entries,
-            changed: false,
+            changed,
         }
     }
 
@@ -308,24 +313,115 @@ fn read_drift_cache(
     {
         return BTreeMap::new();
     }
+    let _ = head;
     file.entries
         .into_iter()
         .filter(|(_, entry)| {
-            entry.head == head
-                && entry.repo_root == repo_root.as_str()
+            entry.repo_root == repo_root.as_str()
                 && revision_exists(repo_root, &entry.head)
                 && assertion_revision_valid(repo_root, &entry.assertion_premise)
         })
         .collect()
 }
 
+/// Precise invalidation on HEAD movement: an entry computed at an older HEAD
+/// stays exact under the current HEAD when none of the paths its answer
+/// references were touched in between — identical history, identical answer.
+/// Untouched entries are re-keyed to the current HEAD; touched ones drop and
+/// recompute at the next refresh. Persistence remains refresh-only.
+fn migrate_entries_to_head(
+    repo_root: &Utf8Path,
+    head: &str,
+    loaded: BTreeMap<String, CachedCodeDriftEvidence>,
+    changed: &mut bool,
+) -> BTreeMap<String, CachedCodeDriftEvidence> {
+    let mut out = BTreeMap::new();
+    let mut touched_by_old_head: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    for (key, mut entry) in loaded {
+        if entry.head == head {
+            out.insert(key, entry);
+            continue;
+        }
+        let touched = touched_by_old_head
+            .entry(entry.head.clone())
+            .or_insert_with(|| git_changed_paths(repo_root, &entry.head, head));
+        let Some(touched) = touched.as_ref() else {
+            // Cannot establish the delta (e.g. unrelated history): drop.
+            *changed = true;
+            continue;
+        };
+        let references_touched_path = touched.contains(&entry.target_path)
+            || entry
+                .moved_to
+                .as_deref()
+                .is_some_and(|path| touched.contains(path))
+            || entry
+                .move_candidates
+                .iter()
+                .any(|path| touched.contains(path));
+        if references_touched_path {
+            *changed = true;
+            continue;
+        }
+        entry.head = head.to_string();
+        let key = drift_cache_key_from_parts(
+            repo_root,
+            head,
+            &entry.ref_handle,
+            &entry.target_path,
+            &entry.assertion_premise,
+        );
+        out.insert(key, entry);
+        *changed = true;
+    }
+    out
+}
+
+/// Paths touched between two revisions, including both sides of renames.
+/// `None` when the delta cannot be computed.
+fn git_changed_paths(repo_root: &Utf8Path, from: &str, to: &str) -> Option<BTreeSet<String>> {
+    let output = git_output(
+        repo_root,
+        &["diff", "--name-status", "-M", &format!("{from}..{to}")],
+    )?;
+    let mut paths = BTreeSet::new();
+    for line in output.lines() {
+        let mut columns = line.split('\t');
+        let Some(_status) = columns.next() else {
+            continue;
+        };
+        for path in columns {
+            if !path.is_empty() {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+    Some(paths)
+}
+
 fn drift_cache_key(repo_root: &Utf8Path, head: &str, request: &CodeDriftEvidenceRequest) -> String {
+    drift_cache_key_from_parts(
+        repo_root,
+        head,
+        &request.ref_handle,
+        &request.target_path,
+        &assertion_premise(request),
+    )
+}
+
+fn drift_cache_key_from_parts(
+    repo_root: &Utf8Path,
+    head: &str,
+    ref_handle: &str,
+    target_path: &str,
+    premise: &str,
+) -> String {
     [
         repo_root.as_str(),
         head,
-        request.ref_handle.as_str(),
-        request.target_path.as_str(),
-        assertion_premise(request).as_str(),
+        ref_handle,
+        target_path,
+        premise,
         "schema=1",
         "path_policy=1",
     ]
@@ -893,6 +989,61 @@ mod tests {
         assert_eq!(
             probe_code_target(&root, "/tmp/outside.rs").exists,
             TargetExistence::Unknown
+        );
+    }
+
+    #[test]
+    fn head_move_migrates_untouched_entries_and_drops_touched_ones() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        run_git(&repo, &["init"]);
+        fs::write(repo.join("src/stable.rs"), "pub fn stable() {}\n").expect("write stable");
+        fs::write(repo.join("src/churn.rs"), "pub fn churn() {}\n").expect("write churn");
+        fs::write(corpus.join("spec.md"), "# Spec\n").expect("write spec");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let assertion_revision = git_stdout(&repo, &["rev-parse", "HEAD"]);
+
+        let request_for = |target: &str| CodeDriftEvidenceRequest {
+            ref_handle: format!("external:code:spec.md:1:{target}"),
+            target_path: target.to_string(),
+            edge_file: ".design/spec.md".to_string(),
+            assertion_date: None,
+            assertion_revision: Some(assertion_revision.clone()),
+        };
+
+        let mut refresh = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let stable = refresh
+            .evidence_for(&request_for("src/stable.rs"))
+            .expect("stable evidence");
+        let churn = refresh
+            .evidence_for(&request_for("src/churn.rs"))
+            .expect("churn evidence");
+        assert_eq!(stable.disposition, "referent-intact");
+        assert_eq!(churn.disposition, "referent-intact");
+        refresh.save().expect("save cache");
+        let old_head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+
+        // A commit that touches only churn.rs moves HEAD.
+        fs::write(repo.join("src/churn.rs"), "pub fn churn_v2() {}\n").expect("rewrite churn");
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-m", "touch churn"]);
+        let new_head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+        assert_ne!(old_head, new_head);
+
+        // ReadCache mode never recomputes: a served answer proves migration.
+        let mut read = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::ReadCache);
+        let migrated = read
+            .evidence_for(&request_for("src/stable.rs"))
+            .expect("untouched entry survives the HEAD move");
+        assert_eq!(migrated.disposition, "referent-intact");
+        assert_eq!(migrated.evidence_head, new_head);
+        assert!(
+            read.evidence_for(&request_for("src/churn.rs")).is_none(),
+            "touched entry is dropped, not served stale"
         );
     }
 
