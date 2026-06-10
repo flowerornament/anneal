@@ -2659,6 +2659,40 @@ annual magic-word inventories check that vocabulary remains deliberate.
 The numeric thresholds in the framework are calibration triggers, not
 timeless laws.
 
+**Definition CR-D105 (Verb-surface rung).** Agents reach for the
+curated verbs — `status`, `context`, `search`, `read`, `handle`,
+`check` — and rarely compose Datalog, because a wrong query costs a
+turn while a verb is guaranteed-shaped, and the cold-agent test itself
+optimizes for ≤2 tool calls. The division of labor is therefore
+deliberate: **verbs are the agent surface; the language is the
+substrate, the verb-author's tool, and the explainable underneath.**
+Designers and projects write the Datalog once (prelude rules, `@verb`
+declarations); agents call it as verbs many times.
+
+The rule that follows: **a capability ships with its verb-surface
+rung, or it does not ship.** A new capability lands as one or more of:
+
+1. an **annotation** on an existing verb's output (the currency
+   dispositions on `search`/`context` hits are the model), presented
+   aggregate-first when the honest answer is voluminous;
+2. a **mode** on an existing verb (`handle --impact`, `--lineage`) —
+   a curated walk or view that earns its flag;
+3. a **diagnostic** on the `check` surface, disposition-typed per
+   CR-D103;
+4. a **line on the arrival surface** (`status`) when the capability
+   changes what a cold agent should know first.
+
+A new top-level verb requires the full CR-D102 justification. A
+predicate family reachable only through `-e` is substrate, not
+product — acceptable for substrate slices, but the feature is not
+*done* until its rung exists. Every annotation **teaches its follow-up
+query** (the rendered hint names the eval an agent would run to dig
+deeper), so the language stays discoverable from the surface without
+being required by it. Rationale: observed agent behavior, and every
+retrieval-trust incident to date — failures present as "the default
+surface did not steer," and the fixes that work land on the verbs
+agents already call.
+
 ### §36 I/O contract [CR-D25]
 
 **Definition CR-D25 (I/O contract).**
@@ -3667,6 +3701,7 @@ config key.
 - CR-D102: Surface evolution framework (§35)
 - CR-D103: Trust invariant — disposition-earned authority (§3)
 - CR-D104: Dimensional axis map (§27.4)
+- CR-D105: Verb-surface rung (§35)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
