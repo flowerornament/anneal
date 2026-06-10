@@ -41,7 +41,12 @@ it was written.
   qualified external handles that never collide with code handle ids.
 - A code source root may sit above the corpus root (a `.design` corpus
   pointing at the repository beside it), bounded by the enclosing project
-  root.
+  root. Repeated `code.source_extension` values widen the file-level scan
+  beyond the default `rs`/`ex`/`exs` set.
+- Drift evidence survives commits: entries whose referenced paths were not
+  touched between HEADs migrate to the new HEAD instead of discarding, so a
+  commit colds only the citations it actually affects. `status` shows the
+  warm drift profile with the cold residue appended.
 
 ### Changed
 

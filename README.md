@@ -391,7 +391,8 @@ source code {
 
 That single line is the language-agnostic file-level mode: file handles for
 every source file, test/generated/private classification, TODO/FIXME
-obligations, and version tags. Add a pre-built artifact for item-level
+obligations, and version tags. Repeated `source_extension("py")` values widen
+the scan beyond the default `rs`/`ex`/`exs` set. Add a pre-built artifact for item-level
 handles — `rustdoc_json("target/doc/crate.json")` for Rust public APIs, or
 `eep48_beam_dir("_build/dev/lib/app/ebin")` for Elixir docs chunks.
 
