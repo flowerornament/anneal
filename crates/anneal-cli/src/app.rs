@@ -113,6 +113,11 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
         output.write(stdout.lock(), mode)?;
         return Ok(());
     }
+    if let Some(root) = invocation.root.implicit_unmarked_root() {
+        bail!(
+            "no marked corpus root found above {root}; refusing implicit scan. Run `anneal init --dry-run` to inspect a project file, `anneal init` to mark this corpus, or pass `--root <path>` to scan that directory explicitly."
+        );
+    }
     let stdin_explain = match &invocation.command {
         RuntimeCommand::Eval {
             query,
@@ -210,9 +215,20 @@ impl RootSelection {
         }
     }
 
+    fn implicit_unmarked_root(&self) -> Option<&Utf8Path> {
+        match self {
+            Self::Inferred(InferredCorpusRoot::Unmarked(root)) => Some(root),
+            Self::Explicit(_)
+            | Self::Inferred(InferredCorpusRoot::Marked(_))
+            | Self::Undiscovered => None,
+        }
+    }
+
     fn diagnostic(&self, mode: OutputMode, output_has_content: bool) -> Option<String> {
         match self {
-            Self::Explicit(_) | Self::Undiscovered => None,
+            Self::Explicit(_)
+            | Self::Inferred(InferredCorpusRoot::Unmarked(_))
+            | Self::Undiscovered => None,
             Self::Inferred(InferredCorpusRoot::Marked(root)) => {
                 if matches!(mode, OutputMode::Json | OutputMode::JsonExplicit)
                     || !output_has_content
@@ -222,9 +238,6 @@ impl RootSelection {
                     None
                 }
             }
-            Self::Inferred(InferredCorpusRoot::Unmarked(root)) => Some(format!(
-                "no marked corpus root found above {root}; scanning current directory"
-            )),
         }
     }
 }
@@ -436,6 +449,10 @@ Program:
 More help:
   anneal help agent
   anneal help <command>
+
+Root premise:
+  Run from a marked corpus (.design, docs, or anneal.dl), pass --root PATH,
+  or use anneal init --dry-run to preview a project file.
 "
             }
             Self::Agent => unreachable!("agent help returns before static help rendering"),
@@ -451,6 +468,9 @@ Options:
       --force                    Replace anneal.dl or migrate anneal.toml
 
 Output: readable config preview at a terminal or with --format=text; JSON object when piped or with --json.
+
+Use init when a directory is not yet marked. Runtime commands require either a
+marked inferred root or an explicit --root PATH.
 "
             }
             Self::Status => {
@@ -494,7 +514,7 @@ Output: human summary at a terminal or with --format=text; NDJSON event rows whe
 Usage: anneal [OPTIONS] search [OPTIONS] <TEXT>
 
 Ranked content search over handles and heading spans. Span hits include
-heading-path metadata.
+summary metadata.
 
 Arguments:
   <TEXT>                         Search query
@@ -4394,25 +4414,18 @@ mod tests {
     }
 
     #[test]
-    fn unmarked_root_reports_fallback_scan() {
+    fn unmarked_root_is_rejected_before_runtime_output() {
         let root = Utf8PathBuf::from("/tmp/stray");
+        let selection = RootSelection::Inferred(InferredCorpusRoot::Unmarked(root.clone()));
 
         assert_eq!(
-            RootSelection::Inferred(InferredCorpusRoot::Unmarked(root.clone()))
-                .diagnostic(OutputMode::Human, true),
-            Some(
-                "no marked corpus root found above /tmp/stray; scanning current directory"
-                    .to_string()
-            )
+            selection.implicit_unmarked_root(),
+            Some(Utf8Path::new("/tmp/stray"))
         );
-        assert_eq!(
-            RootSelection::Inferred(InferredCorpusRoot::Unmarked(root))
-                .diagnostic(OutputMode::Json, true),
-            Some(
-                "no marked corpus root found above /tmp/stray; scanning current directory"
-                    .to_string()
-            )
-        );
+        assert_eq!(selection.diagnostic(OutputMode::Human, true), None);
+
+        let explicit = RootSelection::Explicit(root);
+        assert_eq!(explicit.implicit_unmarked_root(), None);
     }
 
     #[test]

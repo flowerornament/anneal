@@ -202,6 +202,10 @@ anneal -e '? diagnostic{severity: "error", subject: h}.'
 Runtime commands render readable text at a terminal and JSON/NDJSON when piped.
 Use `--format=text` in pipe-only harnesses when an agent needs prose-like
 output. Use `--json` or `--format=json` when you want stable machine output.
+Run commands from a marked corpus (`.design`, `docs`, or `anneal.dl`) or pass
+`--root <path>` for an explicit ad-hoc scan. If an unmarked directory should
+become a corpus, run `anneal init --dry-run` to inspect the project file before
+writing it with `anneal init`.
 
 ## Core Concepts
 

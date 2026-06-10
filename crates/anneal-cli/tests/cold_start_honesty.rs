@@ -160,7 +160,7 @@ fn empty_corpus_status_explains_zero_rows() {
 }
 
 #[test]
-fn no_marker_directory_with_markdown_signals_fallback_scan() {
+fn no_marker_directory_with_markdown_signals_errors_before_stdout_report() {
     let dir = tempdir();
     write_markdown(
         dir.path(),
@@ -171,14 +171,54 @@ fn no_marker_directory_with_markdown_signals_fallback_scan() {
 
     let output = run_in(dir.path(), &["status", "--format=text"]);
 
-    assert_success(&output);
+    assert!(
+        !output.status.success(),
+        "unmarked implicit roots should fail\nstdout:\n{}\nstderr:\n{}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "wrong-root failures must not emit a plausible report\nstdout:\n{}",
+        text(&output.stdout)
+    );
     let stderr = text(&output.stderr);
     assert!(
         stderr.contains("no marked corpus root found above"),
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("scanning current directory"),
+        stderr.contains("refusing implicit scan"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("anneal init --dry-run"),
+        "stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("--root <path>"), "stderr:\n{stderr}");
+}
+
+#[test]
+fn init_dry_run_still_recovers_unmarked_roots() {
+    let dir = tempdir();
+    write_markdown(
+        dir.path(),
+        "stray.md",
+        "draft",
+        "# Stray\n\naccidental corpus\n",
+    );
+
+    let output = run_in(dir.path(), &["init", "--dry-run", "--format=text"]);
+
+    assert_success(&output);
+    let stdout = text(&output.stdout);
+    assert!(
+        stdout.contains("source md") && stdout.contains("scan_root"),
+        "stdout:\n{stdout}"
+    );
+    let stderr = text(&output.stderr);
+    assert!(
+        !stderr.contains("refusing implicit scan"),
         "stderr:\n{stderr}"
     );
 }

@@ -184,6 +184,9 @@ writing config.
 
 - Start with `anneal status`; run its `recent_frontier` and `ranked_anchor` queries
   when you do not yet have a goal.
+- Run from a marked corpus (`.design`, `docs`, or `anneal.dl`) or pass
+  `--root <path>` for an explicit ad-hoc scan; use `anneal init --dry-run`
+  when a directory should become a corpus.
 - Use `anneal context "<goal>"` once you can name the goal.
 - Use `search` then `read` when you need tighter retrieval control.
 - Use `schema` and `describe NAME` before querying unfamiliar vocabulary.

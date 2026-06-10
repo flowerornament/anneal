@@ -29,6 +29,9 @@ remaining stale compatibility names are retired from the public surface.
 
 ### Breaking
 
+- Runtime commands no longer infer a corpus from an unmarked current directory.
+  Mark the corpus with `anneal init`, preview the scaffold with
+  `anneal init --dry-run`, or pass `--root <path>` for an explicit ad-hoc scan.
 - Search and context machine output use `summary` for span summaries. The
   markdown-specific `heading_path` output name is retired from generic views.
 - The `potential_weight.override` config key is retired. Retune convergence by
