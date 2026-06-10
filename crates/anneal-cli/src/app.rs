@@ -1027,6 +1027,7 @@ impl RuntimeSession {
             roots: roots.as_slice(),
             config_facts: &config_facts,
             probe_code_target_history: command.demands_code_target_history(),
+            probe_edge_assertions: command.demands_edge_assertions(),
             time_ref: None,
             previous_generation: Some(Generation::new(0)),
             actor: actor.clone(),
@@ -1474,6 +1475,30 @@ impl RuntimeCommand {
             | Self::Help { .. } => false,
         }
     }
+
+    fn demands_edge_assertions(&self) -> bool {
+        match self {
+            Self::Eval { query, .. } => query_demands_edge_assertions(query),
+            Self::Describe { name } => {
+                matches!(
+                    name.as_str(),
+                    "edge" | "*edge" | "assertion_date" | "assertion_revision"
+                )
+            }
+            Self::Status
+            | Self::Verb { .. }
+            | Self::Check
+            | Self::Version
+            | Self::Init { .. }
+            | Self::Prime
+            | Self::Search { .. }
+            | Self::Context { .. }
+            | Self::Read { .. }
+            | Self::Handle { .. }
+            | Self::Schema
+            | Self::Help { .. } => false,
+        }
+    }
 }
 
 fn query_demands_code_target_history(query: &str) -> bool {
@@ -1500,6 +1525,12 @@ fn query_demands_code_target_history(query: &str) -> bool {
     ]
     .iter()
     .any(|needle| query_contains_identifier(query, needle))
+}
+
+fn query_demands_edge_assertions(query: &str) -> bool {
+    ["assertion_date", "assertion_revision"]
+        .iter()
+        .any(|needle| query_contains_identifier(query, needle))
 }
 
 fn query_contains_identifier(query: &str, needle: &str) -> bool {
@@ -4165,6 +4196,8 @@ mod tests {
             kind: kind.to_string(),
             file: from.to_string(),
             line: 1,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 
@@ -6038,6 +6071,22 @@ mod tests {
         assert!(!query_demands_code_target_history("? *handle{id: h}."));
         assert!(!query_demands_code_target_history(
             "? recent_frontier(h, rank, recency), *handle{id: h}."
+        ));
+    }
+
+    #[test]
+    fn edge_assertion_queries_demand_edge_assertion_probe_only_when_explicit() {
+        assert!(query_demands_edge_assertions(
+            "? *edge{from: a, to: b, assertion_date: date}."
+        ));
+        assert!(query_demands_edge_assertions(
+            "? *edge{from: a, to: b, assertion_revision: rev}."
+        ));
+        assert!(!query_demands_edge_assertions(
+            "? *edge{from: a, to: b, file: file, line: line}."
+        ));
+        assert!(!query_demands_edge_assertions(
+            "? recent_frontier(h, rank, recency)."
         ));
     }
 

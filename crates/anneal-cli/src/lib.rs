@@ -588,6 +588,8 @@ mod tests {
             kind: kind.to_string(),
             file: format!("{from}.md"),
             line,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 

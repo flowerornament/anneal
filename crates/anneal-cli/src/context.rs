@@ -1311,6 +1311,8 @@ mod tests {
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 

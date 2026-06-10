@@ -2733,6 +2733,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             kind: kind.to_string(),
             file,
             line,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 

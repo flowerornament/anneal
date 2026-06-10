@@ -62,6 +62,10 @@ pub struct EdgeFact {
     pub kind: String,
     pub file: String,
     pub line: u32,
+    #[serde(default)]
+    pub assertion_date: Option<String>,
+    #[serde(default)]
+    pub assertion_revision: Option<String>,
 }
 
 /// Stored `*meta` row.
@@ -182,8 +186,10 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
             "kind",
             "file",
             "line",
+            "assertion_date",
+            "assertion_revision",
         ],
-        doc: "Stored typed edges between corpus handles.",
+        doc: "Stored typed edges between corpus handles, with optional assertion-time provenance for the citing line.",
         provenance: "source",
         example: r#"? *edge{from: src, to: dst, kind: "DependsOn"}."#,
     },

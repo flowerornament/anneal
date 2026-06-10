@@ -533,6 +533,8 @@ mod tests {
             kind: "DependsOn".to_string(),
             file: from.to_string(),
             line: 1,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 

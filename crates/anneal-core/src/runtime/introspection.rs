@@ -1208,6 +1208,10 @@ fn call_signature(name: &str, parameters: &[impl AsRef<str>]) -> String {
 
 fn stored_relation_extra_lines(name: &str) -> Vec<String> {
     match name {
+        "edge" => vec![
+            "assertion_date and assertion_revision describe the cited line that asserted the edge; revision describes the source fact identity.".to_string(),
+            "Adapters leave assertion_* null when assertion-time evidence is not verified.".to_string(),
+        ],
         "meta" => vec![
             "Open metadata extension on handles. Three kinds of keys:".to_string(),
             "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_history_status, target_probe_base, target_resolved_path.".to_string(),
@@ -1226,6 +1230,7 @@ fn stored_relation_extra_lines(name: &str) -> Vec<String> {
 
 fn stored_relation_see_also(name: &str) -> &'static [&'static str] {
     match name {
+        "edge" => &["*handle", "currency", "target_history_status"],
         "meta" => &["external_class", "target_path", "*handle", "schema"],
         "snapshot" => &["*handle", "diagnostic", "runtime"],
         _ => &[],

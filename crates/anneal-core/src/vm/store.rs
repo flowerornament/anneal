@@ -403,7 +403,20 @@ impl TupleDb {
         let kind = self.string_value(&fact.kind);
         let file = self.string_value(&fact.file);
         let line = physical_int_value(i64::from(fact.line));
-        self.source_values(&fact.identity, [from, to, kind, file, line])
+        let assertion_date = self.opt_string(fact.assertion_date.as_ref());
+        let assertion_revision = self.opt_string(fact.assertion_revision.as_ref());
+        self.source_values(
+            &fact.identity,
+            [
+                from,
+                to,
+                kind,
+                file,
+                line,
+                assertion_date,
+                assertion_revision,
+            ],
+        )
     }
 
     fn meta_values(&mut self, fact: &MetaFact) -> Vec<PhysicalValue> {
@@ -828,6 +841,8 @@ mod tests {
             kind: "DependsOn".to_string(),
             file: "public.md".to_string(),
             line: 1,
+            assertion_date: None,
+            assertion_revision: None,
         });
         batch.set_visibility(NativeId::from("private.md"), FactVisibility::Private);
         store.merge(batch).expect("batch merges");

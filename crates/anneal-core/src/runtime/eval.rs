@@ -3895,6 +3895,11 @@ fn edge_row(fact: &EdgeFact) -> NamedRow {
                 "line",
                 Value::Number(NumberValue::Int(i64::from(fact.line))),
             ),
+            ("assertion_date", opt_string(fact.assertion_date.as_ref())),
+            (
+                "assertion_revision",
+                opt_string(fact.assertion_revision.as_ref()),
+            ),
         ],
     )
 }
@@ -4114,6 +4119,8 @@ mod tests {
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 
@@ -5048,6 +5055,8 @@ mod tests {
             kind: kind.to_string(),
             file: file.to_string(),
             line,
+            assertion_date: None,
+            assertion_revision: None,
         }
     }
 
@@ -5468,6 +5477,8 @@ mod tests {
             kind: "Pending".to_string(),
             file: "a.md".to_string(),
             line: 7,
+            assertion_date: None,
+            assertion_revision: None,
         }];
         let mut store = FactStore::default();
         store.merge(batch).expect("fixture merges");

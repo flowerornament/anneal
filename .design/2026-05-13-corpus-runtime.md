@@ -501,7 +501,16 @@ populates and every rule may join on.
   generation    // monotonic; latest generation wins on conflict
 }
 
-*edge{from, to, kind, file, line, corpus, source, generation}
+*edge{
+  from,                 // source handle id
+  to,                   // target handle id or unresolved target string (CR-R6)
+  kind,                 // typed relationship name
+  file,                 // file/locator containing the assertion, if any
+  line,                 // line containing the assertion; 0 if not applicable
+  assertion_date,       // verified ISO date for the asserting line; may be null
+  assertion_revision,   // verified revision for the asserting line; may be null
+  corpus, source, native_id, origin_uri, revision, generation
+}
 
 *meta{handle, key, value, corpus, source, generation}
 
@@ -524,7 +533,7 @@ populates and every rule may join on.
 | Relation | Purpose |
 |---|---|
 | `*handle` | Identity: every thing the corpus knows about |
-| `*edge` | Typed binary relationships |
+| `*edge` | Typed binary relationships, plus optional assertion-time evidence for the citing line |
 | `*meta` | Open key/value extension on handles |
 | `*content` | Bounded text spans of a handle; the read-substrate |
 | `*span` | Citable region with line range and engine-generated summary |
@@ -533,6 +542,14 @@ populates and every rule may join on.
 | `*snapshot` | Historical handle state from snapshot history |
 | `*trail` | Session paths (§13) |
 | `*generation` | Per-source generation tracker (§7); supports retraction |
+
+For `*edge`, `revision` remains the source fact identity revision: it
+answers "which adapter source revision emitted this edge row?"
+`assertion_date` and `assertion_revision` answer the separate CR-D8
+question "when was the line that asserted this relationship last
+verified?" Adapters populate assertion fields only from direct
+assertion-time evidence such as VCS blame for the cited line. They stay
+null rather than falling back to handle dates or generation timestamps.
 
 Every source-derived stored relation is **adapter-populated and
 generation-tracked**. `*config` is runtime-populated but still

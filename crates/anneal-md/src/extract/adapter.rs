@@ -1,6 +1,7 @@
 //! Adapter entry points that lower markdown extraction into core facts.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::process::Command;
 
 use anneal_core::runtime::prelude::datalog_string_literal;
 use anneal_core::{
@@ -24,6 +25,7 @@ pub struct MarkdownExtractionOptions {
     pub exclude: Vec<String>,
     pub linear_namespaces: Vec<String>,
     pub probe_code_target_history: bool,
+    pub probe_edge_assertions: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +200,7 @@ fn extract_markdown_facts_from_anneal_config(
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
+    let mut edge_assertions = EdgeAssertionCache::new(root, options.probe_edge_assertions);
 
     for (node_id, handle) in result.graph.nodes() {
         let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
@@ -213,7 +216,12 @@ fn extract_markdown_facts_from_anneal_config(
         node_index: &node_index,
         cascade_results: &cascade_results,
     };
-    emit_ordered_edges(&mut batch, &mut revisions, &edge_order_context);
+    emit_ordered_edges(
+        &mut batch,
+        &mut revisions,
+        &mut edge_assertions,
+        &edge_order_context,
+    );
 
     for extraction in &result.extractions {
         emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
@@ -764,6 +772,106 @@ impl<'a> RevisionCache<'a> {
     }
 }
 
+#[derive(Clone)]
+struct EdgeAssertion {
+    date: String,
+    revision: String,
+}
+
+struct EdgeAssertionCache<'a> {
+    root: &'a Utf8Path,
+    repo_root: Option<Utf8PathBuf>,
+    enabled: bool,
+    assertions: HashMap<(String, u32), Option<EdgeAssertion>>,
+}
+
+impl<'a> EdgeAssertionCache<'a> {
+    fn new(root: &'a Utf8Path, enabled: bool) -> Self {
+        let repo_root = enabled.then(|| git_root_for(root)).flatten();
+        Self {
+            root,
+            repo_root,
+            enabled,
+            assertions: HashMap::new(),
+        }
+    }
+
+    fn assertion_for(&mut self, file: &str, line: u32) -> Option<EdgeAssertion> {
+        if !self.enabled || file.is_empty() || line == 0 {
+            return None;
+        }
+        let key = (file.to_string(), line);
+        if let Some(assertion) = self.assertions.get(&key) {
+            return assertion.clone();
+        }
+        let assertion = self.blame_line(file, line);
+        self.assertions.insert(key, assertion.clone());
+        assertion
+    }
+
+    fn blame_line(&self, file: &str, line: u32) -> Option<EdgeAssertion> {
+        let repo_root = self.repo_root.as_ref()?;
+        let file_path = std::fs::canonicalize(self.root.join(file).as_std_path()).ok()?;
+        let file_path = Utf8PathBuf::from_path_buf(file_path).ok()?;
+        let rel_path = file_path.strip_prefix(repo_root).ok()?;
+        let line_arg = format!("{line},{line}");
+        let blame = git_command(repo_root)
+            .args(["blame", "-w", "-M", "-C", "-L", line_arg.as_str(), "--"])
+            .arg(rel_path.as_str())
+            .output()
+            .ok()?;
+        if !blame.status.success() || blame.stdout.is_empty() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&blame.stdout);
+        let revision = stdout.split_whitespace().next()?.trim_start_matches('^');
+        if revision.is_empty() {
+            return None;
+        }
+        let date = git_command(repo_root)
+            .args(["show", "-s", "--format=%cI", revision])
+            .output()
+            .ok()?;
+        if !date.status.success() || date.stdout.is_empty() {
+            return None;
+        }
+        let date = String::from_utf8_lossy(&date.stdout);
+        let date = date.trim().get(..10)?;
+        Some(EdgeAssertion {
+            date: date.to_string(),
+            revision: revision.to_string(),
+        })
+    }
+}
+
+fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
+    let output = git_command(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout);
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let path = std::fs::canonicalize(path).ok()?;
+    Utf8PathBuf::from_path_buf(path).ok()
+}
+
+fn git_command(root: &Utf8Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .arg("-C")
+        .arg(root.as_str());
+    command
+}
+
 fn handle_fact(
     batch: &FactBatch,
     revisions: &mut RevisionCache<'_>,
@@ -826,27 +934,41 @@ fn declaration_line(_result: &parse::BuildResult, _node_id: NodeId, handle: &Han
     u32::from(matches!(handle.kind, HandleKind::File(_)))
 }
 
+struct EdgeFactInput<'a> {
+    to: String,
+    kind: &'a str,
+    line: u32,
+    ordinal: usize,
+}
+
 fn edge_fact(
     batch: &FactBatch,
     revisions: &mut RevisionCache<'_>,
+    assertions: &mut EdgeAssertionCache<'_>,
     source_handle: &Handle,
-    to: String,
-    kind: &str,
-    line: u32,
-    ordinal: usize,
+    input: EdgeFactInput<'_>,
 ) -> EdgeFact {
     let file = source_handle
         .file_path
         .as_ref()
         .map_or_else(String::new, ToString::to_string);
-    let native_id = native_id_for_edge(source_handle, kind, &to, line, ordinal);
+    let native_id = native_id_for_edge(
+        source_handle,
+        input.kind,
+        &input.to,
+        input.line,
+        input.ordinal,
+    );
+    let assertion = assertions.assertion_for(&file, input.line);
     EdgeFact {
         identity: identity_for(batch, revisions, &native_id, &file),
         from: source_handle.id.clone(),
-        to,
-        kind: kind.to_string(),
+        to: input.to,
+        kind: input.kind.to_string(),
         file,
-        line,
+        line: input.line,
+        assertion_date: assertion.as_ref().map(|value| value.date.clone()),
+        assertion_revision: assertion.map(|value| value.revision),
     }
 }
 
@@ -949,6 +1071,7 @@ struct EdgeOrderContext<'a> {
 fn emit_ordered_edges(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
+    assertions: &mut EdgeAssertionCache<'_>,
     context: &EdgeOrderContext<'_>,
 ) {
     let mut remaining = OrderedEdges::new(graph_edges(&context.result.graph));
@@ -985,11 +1108,14 @@ fn emit_ordered_edges(
         batch.edges.push(edge_fact(
             batch,
             revisions,
+            assertions,
             source_handle,
-            target_handle.id.clone(),
-            edge.kind.as_str(),
-            edge.line,
-            ordinal,
+            EdgeFactInput {
+                to: target_handle.id.clone(),
+                kind: edge.kind.as_str(),
+                line: edge.line,
+                ordinal,
+            },
         ));
     }
 
@@ -1007,11 +1133,14 @@ fn emit_ordered_edges(
         batch.edges.push(edge_fact(
             batch,
             revisions,
+            assertions,
             source_handle,
-            edge.target_identity.clone(),
-            edge.kind.as_str(),
-            edge.line.unwrap_or(0),
-            ordered_count + idx,
+            EdgeFactInput {
+                to: edge.target_identity.clone(),
+                kind: edge.kind.as_str(),
+                line: edge.line.unwrap_or(0),
+                ordinal: ordered_count + idx,
+            },
         ));
     }
 }
@@ -1786,6 +1915,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn edge_assertion_probe_is_verified_or_null() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
+        std::fs::create_dir_all(root.join("src")).expect("create src");
+        std::fs::write(root.join("src/lib.rs"), "pub fn target() {}\n").expect("write code");
+        std::fs::write(root.join("doc.md"), "# Doc\n\nSee `src/lib.rs:1`.\n").expect("write doc");
+        run_git(&root, &["init"]);
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "add cited doc"]);
+
+        let without_assertions = extract_markdown_facts_with_options(
+            root.as_path(),
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions::default(),
+        )
+        .expect("extract without assertions");
+        let edge = cited_edge(&without_assertions, "doc.md", "src/lib.rs:1");
+        assert_eq!(edge.assertion_date, None);
+        assert_eq!(edge.assertion_revision, None);
+
+        let with_assertions = extract_markdown_facts_with_options(
+            root.as_path(),
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                probe_edge_assertions: true,
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract with assertions");
+        let edge = cited_edge(&with_assertions, "doc.md", "src/lib.rs:1");
+        assert!(
+            edge.assertion_date
+                .as_deref()
+                .is_some_and(|date| { date.len() == 10 && date.chars().nth(4) == Some('-') })
+        );
+        assert!(
+            edge.assertion_revision
+                .as_deref()
+                .is_some_and(|revision| revision.len() >= 7)
+        );
+    }
+
     fn assert_code_ref_meta(batch: &anneal_core::FactBatch, target: &str, key: &str, value: &str) {
         assert!(
             batch
@@ -1795,6 +1971,18 @@ mod tests {
             "missing {key}={value} for {target} in {:?}",
             batch.meta
         );
+    }
+
+    fn cited_edge<'a>(
+        batch: &'a anneal_core::FactBatch,
+        from: &str,
+        to: &str,
+    ) -> &'a anneal_core::EdgeFact {
+        batch
+            .edges
+            .iter()
+            .find(|edge| edge.from == from && edge.to == to && edge.kind == "Cites")
+            .unwrap_or_else(|| panic!("missing {from} -> {to} Cites edge in {:?}", batch.edges))
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) {
