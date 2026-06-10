@@ -2930,13 +2930,15 @@ fn write_status_text<W: Write>(
     )?;
     let drift_cold = metric_count(&metrics, "drift", "cold");
     if has_metric_category(&metrics, "drift") {
-        if drift_cold > 0 {
-            writeln!(
-                writer,
-                "Code refs    drift evidence not built for {drift_cold} refs; run `anneal check --refresh-drift`"
-            )?;
-        } else {
-            writeln!(
+        let warm = metric_count(&metrics, "drift", "intact")
+            + metric_count(&metrics, "drift", "drifted")
+            + metric_count(&metrics, "drift", "moved")
+            + metric_count(&metrics, "drift", "moved_ambiguous")
+            + metric_count(&metrics, "drift", "gone")
+            + metric_count(&metrics, "drift", "unknown")
+            + metric_count(&metrics, "drift", "dirty");
+        if warm > 0 {
+            write!(
                 writer,
                 "Code refs    {} intact · {} drifted · {} moved · {} moved? · {} gone · {} unknown · {} dirty",
                 metric_count(&metrics, "drift", "intact"),
@@ -2946,6 +2948,18 @@ fn write_status_text<W: Write>(
                 metric_count(&metrics, "drift", "gone"),
                 metric_count(&metrics, "drift", "unknown"),
                 metric_count(&metrics, "drift", "dirty")
+            )?;
+            if drift_cold > 0 {
+                write!(
+                    writer,
+                    " · {drift_cold} cold (run `anneal check --refresh-drift`)"
+                )?;
+            }
+            writeln!(writer)?;
+        } else if drift_cold > 0 {
+            writeln!(
+                writer,
+                "Code refs    drift evidence not built for {drift_cold} refs; run `anneal check --refresh-drift`"
             )?;
         }
     }
