@@ -1052,7 +1052,7 @@ impl RuntimeSession {
         store
             .merge(markdown_batch)
             .context("failed to merge markdown facts")?;
-        if config_facts.values("code.rustdoc_json").next().is_some() {
+        if CodeSource::is_configured(&config_facts) {
             let code_batch = code_source
                 .extract(&context)
                 .map_err(|err| anyhow!("code extraction failed: {err}"))?;
