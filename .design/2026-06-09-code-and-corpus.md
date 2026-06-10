@@ -2,7 +2,7 @@
 status: current
 date: 2026-06-09
 authors: [claude, morgan]
-reviewed-by: codex (adversarial, 2026-06-09 — REVISE-THEN-LOCK, 8 findings folded; final open-leash review requested post-rewrite)
+reviewed-by: codex (adversarial REVISE-THEN-LOCK + final open-leash review, 2026-06-09 — verdict "I buy the rewritten arc"; P0 vocabulary discipline + evidence boundary + canary folded)
 relates:
   - 2026-06-09-the-convergent-corpus-runtime.md   # Part VI/VII — this is the arc after the foundation
   - 2026-06-09-dimensional-foundation.md           # the axes this arc stress-tests
@@ -93,7 +93,12 @@ time*." The assertion time is modeled, not assumed:
 - **Fallback ladder** when the edge date is null: the citing handle's `date`
   (weaker — frontmatter dates can be editorial, copied, or absent), else an
   explicit **`assertion_date_unknown`** disposition. "A date exists
-  somewhere" never silently becomes "this assertion is dated."
+  somewhere" never silently becomes "this assertion is dated." The
+  **`date_source` (blame / handle / unknown) stays visible** — blame means
+  "last textual touch of the line," not "last semantic revalidation";
+  mechanical sweeps over-date and semantic revisions can under-date, so the
+  lie rate is *measured* (§6) before any surface hides the source behind a
+  single assertion date.
 - **Within-corpus payoff**: a dated `Supersedes` tells lineage *when*
   displacement was declared; dated `Cites` gives true citation age. The
   amendment is not cross-corpus-specific.
@@ -117,21 +122,50 @@ resolver is the same pattern across the boundary:
   joins happen.
 - **Non-resolution is information, not failure**: an unresolvable path feeds
   the drift dispositions (gone/moved/never-existed) rather than erroring.
+- **The join key space is more than a path string**: in multi-root /
+  federated corpora, the resolver keys on `(corpus, source root /
+  origin_uri, normalized path)` — bare path-string joins break the moment a
+  second root exists, even though the first sim is single-repo.
 - **Granularity**: file-level first — it is what specs actually cite
-  (verified on murail). Item-level resolution arrives with item handles,
-  mirroring markdown's existing file/section pattern (CR-D41 identity
-  qualifies across corpora).
+  (verified on murail) — and **file handles remain first-class after item
+  handles arrive**: a citation to `path.rs` is not a citation to every item
+  in it; the file referent keeps a stable identity of its own. Item-level
+  resolution is a later refinement, mirroring markdown's file/section
+  pattern (CR-D41 identity qualifies across corpora).
 
-### 3c. The drift oracle is the currency axis, with git as the oracle
+### 3c. The drift oracle is the currency axis — as a SECOND oracle family
 
 The question "has the referent changed since the assertion?" is not a new
 axis — it is **currency applied to the referent**, with git history as a
-machine oracle instead of author-declared `Supersedes`:
+machine oracle:
 
-- a rename **is** supersession of the path identity, machine-verified;
+- a rename **is** displacement of the path identity, machine-verified;
 - routing through a confident rename chain to the current path **is**
-  lineage head-routing;
-- commits-since-assertion is the displacement evidence.
+  lineage-style head-routing;
+- commits-since-assertion is displacement *evidence* (never proof of
+  semantic drift).
+
+**Vocabulary discipline (lock-blocking):** same axis, **different oracle,
+different authority, different namespace.** Author-declared `Supersedes`
+says *this claim displaces that claim*; a git rename says *this path
+identity appears to have moved*; a split says *the referent fanned out*;
+an edit says *the referent changed after assertion*. These are all
+currency-axis facts, but they live in their own predicate family —
+`referent_currency_*` / `assertion_drift_*`, placed via
+`axis_of(…, "currency")` — and product language says **"referent drifted /
+referent moved," never "superseded" or "successor,"** unless the edge is
+actually author-declared. The two families *compose* (a current doc can
+cite a moved path; a superseded doc can cite an intact one; a renamed path
+can preserve semantic identity) but never collapse. No `Supersedes` edge is
+ever asserted from a rename.
+
+**Evidence boundary (architecture rule):** git/blame/history **materialize
+evidence into stored facts or audit artifacts; the runtime consumes those
+facts.** Evaluation never shells out to git — that would make the graph
+nondeterministic, slow, and source-coupled. For the audit this is
+out-of-band by construction; for the product it lands as a source
+capability / history provider (§5 seam), never a primitive hidden inside
+query evaluation.
 
 The disposition vocabulary (the oracle's only public surface — move-detection
 mechanics stay behind it):
@@ -190,17 +224,30 @@ implement → gate; the coordinator verifies the landed feature against the
 *simulation's* expectations.
 
 1. **The oracle audit (`anneal-903i`) — first, before anything.** Runs on
-   existing metadata + git only (the external handles and their citations
-   exist today). For every spec→code citation on anneal + murail: citing
-   handle/date/status · target path · current existence · commits since
-   assertion on the exact path · rename/move evidence · history status ·
-   final disposition bucket. Plus, riding along: **blame-derived assertion
-   dates** (coverage %, divergence from handle dates, per-file cost — the
-   evidence for the §3a schema amendment), **resolver-join hit-rate**
-   (path normalization against the filesystem), and a cheap **reverse-edge
-   scan** (CR-D labels in code comments/attrs) to measure the reverse shape.
-   **Stop-rule: if moves cannot be classified honestly, the arc halts here
-   and the oracle is redesigned before `anneal-code` grows the graph.**
+   existing metadata + git only — out-of-band by construction (the evidence
+   boundary, §3c). The corpus is the self-corpus (85 code-citation rows
+   live today) plus the external-corpus sample (441 rows). One row per
+   citation:
+
+   `citation_id · source_handle · source_status · source_date · edge_file ·
+   edge_line · edge_date · edge_revision · date_source · target_path ·
+   target_exists_now · target_history_status · commits_since_assertion ·
+   rename_candidates · split_fanout · resolved_head · resolver_hit ·
+   final_disposition · cost_ms`
+
+   Measured alongside: **the blame lie rate** (coverage %, handle-date
+   fallback rate, blame-vs-handle divergence, suspicious bulk-date
+   clusters, per-edge cost, and how many dispositions *change* if handle
+   date is used instead — the evidence for the §3a amendment),
+   **resolver-join hit-rate**, and a cheap **reverse-edge scan** (CR-D
+   labels in code comments/attrs).
+
+   **Two stop-rules:** (a) if moves cannot be classified honestly, the arc
+   halts and the oracle is redesigned before `anneal-code` grows the graph;
+   (b) **the split canary**: the self-corpus cites `src/cli.rs`, which
+   commit `328408b` split into many `src/cli/*.rs` — the oracle must
+   classify that `referent-moved-ambiguous` (fanout, candidates, no
+   head-routing). If it reports a clean move, stop.
 2. **The extraction sim (`anneal-bqqc`) — second.** rustdoc-JSON over a real
    external crate: what handles/edges/lattice actually come out; per-axis
    verdicts against §5; **scale as a hard output** — handle/edge/content-byte
