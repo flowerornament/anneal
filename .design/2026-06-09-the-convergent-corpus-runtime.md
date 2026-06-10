@@ -145,7 +145,7 @@ live `schema`):
    upstream/downstream · freshness · changed_within · flux · active · settled ·    SearchIndex /
    terminal · obligation · discharged · token_estimate · source_of · schema …     Introspection)
         ▼
- PRELUDE DERIVATIONS (140) the convergence vocabulary, as Datalog rules
+ PRELUDE DERIVATIONS (148) the convergence vocabulary, as Datalog rules
    currency · anchor · recent · orientation · status · abandoned · potential ·
    entropy · area · namespace · trail · lifecycle · pipeline · parent · …
         ▼  plan() → planned executor (vm/execute,fixpoint) → project
@@ -173,7 +173,7 @@ live `schema`):
 
 # Part IV — The conceptual language (the heart)
 
-The 140 derived predicates in the live schema are not a flat bag — they are **projections along a
+The 148 derived predicates in the live schema are not a flat bag — they are **projections along a
 small set of orthogonal dimensions.** Naming these axes *is* the design language,
 and the discipline is: **keep them orthogonal, name each precisely, present each
 with an honest disposition.** (Conflating two axes is the canonical bug — see §
@@ -269,14 +269,14 @@ timestamp). *Clarifying an axis is what makes the features on it correct and
 simple* — the single most reliable lesson of this arc, now proven twice.
 
 ### 2. Disposition-type the whole surface
-The trust invariant is enforced on currency and `check`, but most of the 140
+The trust invariant is enforced on currency and `check`, but most of the 148
 predicates predate it. Every projection should carry its disposition, so no
 surface ever presents more than its oracle earns. This is `xy45` applied
 uniformly — folded into the master spec as **CR-D103**, the gate for every new
-predicate; the remaining work is typing the existing 140.
+predicate; the remaining work is typing the existing 148.
 
 ### 3. Reduce the vocabulary (find the language)
-184 callable relations over a handful of deliberate verbs is more than the value
+192 callable relations over a handful of deliberate verbs is more than the value
 requires. Point
 anneal's *own* discipline at its prelude: which predicates are terminal/abandoned
 (unexercised), which axes overlap, which verbs are the deliberate surface vs
@@ -285,7 +285,7 @@ cross-linked corpus that must converge — **anneal annealing its own language.*
 
 ### 4. The clustering substrate — the keystone
 The corpus edge graph is ~95% `Cites` + index hubs, so *topical* navigation can't
-be walked. The missing primitive is **topic/community structure** over the graph
+be walked. The missing primitive is **pairwise topic structure** over the graph
 — and it unlocks **two** deferred features at once: *unmarked supersession*
 (currency's `suspect`: "a newer sibling on the same topic") and *topical
 navigate* (`root → intent` trails). Crucially, the `area` family (8 predicates:

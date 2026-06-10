@@ -1932,7 +1932,7 @@ its **oracle** (what makes its answer earned), its **disposition**
 | **convergence** | settling? | snapshot deltas | TREND |
 | **structure** | organized / connected? | `*edge` + kinds, areas, namespaces | REPORT |
 | **obligations** | owed? | obligation/discharge facts | GATE-able (E002) |
-| **topic** *(reserved)* | same subject? | community structure over `Cites` (future clustering substrate) | REPORT, never an asserted edge |
+| **topic** | same subject? | shared citation targets over hub-excluded `Cites` pairs | REPORT, never an asserted edge |
 
 Three rules follow:
 

@@ -1,0 +1,94 @@
+# Source-backed topic documentation for pairwise subject-sibling helpers.
+
+@doc(
+  name: "topic",
+  doc: "Topic helpers answer whether two files are likely on the same subject by counting shared citation targets after excluding broad inventory and mega-target handles. Topic is a report-level hint, never an asserted edge."
+).
+
+@doc(
+  name: "topic_citation_target",
+  doc: "Return file or label citation targets reached from at least one file handle. This is the target universe for pairwise topic coupling."
+).
+topic_citation_target(t) :=
+  *edge{from: f, to: t, kind: "Cites"},
+  *handle{id: f, kind: "file"},
+  *handle{id: t, kind: "file"}.
+
+topic_citation_target(t) :=
+  *edge{from: f, to: t, kind: "Cites"},
+  *handle{id: f, kind: "file"},
+  *handle{id: t, kind: "label"}.
+
+@doc(
+  name: "topic_target_citation_count",
+  doc: "Return how many distinct file handles cite a target, used to identify citation targets too broad to discriminate topic."
+).
+topic_target_citation_count(t, n) :=
+  topic_citation_target(t),
+  n = Count{ f :
+    *edge{from: f, to: t, kind: "Cites"},
+    *handle{id: f, kind: "file"}
+  }.
+
+@doc(
+  name: "topic_mega_target_cap",
+  doc: "Return the shipped default citation-count cap for treating a target as nondiscriminative."
+).
+topic_mega_target_cap(40).
+
+@doc(
+  name: "topic_nondiscriminative_target",
+  doc: "Return citation targets that should not create topic coupling because they are curated inventory files or are cited by too many files."
+).
+topic_nondiscriminative_target(t) :=
+  orientation_curated_hub(t).
+
+topic_nondiscriminative_target(t) :=
+  topic_target_citation_count(t, n),
+  topic_mega_target_cap(k),
+  n > k.
+
+@doc(
+  name: "topic_shared_target",
+  doc: "Return canonical file pairs that share one discriminative citation target. Pairs are ordered with left < right to avoid symmetric duplicates."
+).
+topic_shared_target(left, right, t) :=
+  *edge{from: left, to: t, kind: "Cites"},
+  *edge{from: right, to: t, kind: "Cites"},
+  *handle{id: left, kind: "file"},
+  *handle{id: right, kind: "file"},
+  topic_citation_target(t),
+  left < right,
+  not topic_nondiscriminative_target(t).
+
+@doc(
+  name: "topic_pair",
+  doc: "Return canonical file pairs with at least two shared discriminative citation targets."
+).
+topic_pair(left, right, shared) :=
+  topic_shared_target(left, right, anchor),
+  shared = Count{ t : topic_shared_target(left, right, t) },
+  shared >= 2.
+
+@doc(
+  name: "topic_sibling",
+  doc: "Return a symmetric report-level topic-sibling view over topic_pair."
+).
+topic_sibling(a, b, shared) :=
+  topic_pair(a, b, shared).
+
+topic_sibling(a, b, shared) :=
+  topic_pair(b, a, shared).
+
+@doc(
+  name: "currency_suspect",
+  doc: "Return unmarked newer topical siblings for a stale file. This is a report-level hint for possible unmarked displacement; it never asserts Supersedes."
+).
+currency_suspect(stale, newer) :=
+  topic_sibling(stale, newer, shared),
+  authored_age(stale, stale_age),
+  authored_age(newer, newer_age),
+  newer_age < stale_age,
+  operative(newer),
+  not currency_superseded(newer),
+  not currency_superseded(stale).

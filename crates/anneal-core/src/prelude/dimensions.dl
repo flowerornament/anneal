@@ -51,6 +51,7 @@ axis("importance", "how central?", "degree, citations, impact, neighborhood", "R
 axis("convergence", "settling?", "snapshot deltas and unsettled-work evidence", "TREND").
 axis("structure", "organized or connected?", "edge kinds, areas, namespaces, sections, pipeline structure", "REPORT").
 axis("obligations", "owed?", "obligation and discharge facts", "GATE-able through E002").
+axis("topic", "same subject?", "shared citation targets over hub-excluded Cites pairs", "REPORT; never an asserted edge").
 
 @doc(
   name: "axis_of",
@@ -110,6 +111,7 @@ axis_of("configured_terminal_status", "infrastructure").
 axis_of("currency_current", "currency").
 axis_of("currency_current_head", "currency").
 axis_of("currency_disposition", "currency").
+axis_of("currency_suspect", "composition").
 axis_of("currency_successor", "currency").
 axis_of("currency_superseded", "currency").
 axis_of("diagnostic", "diagnostic").
@@ -199,5 +201,12 @@ axis_of("status_of", "lifecycle").
 axis_of("status_population", "convergence").
 axis_of("stub", "diagnostic").
 axis_of("top_pair", "structure").
+axis_of("topic_citation_target", "topic").
+axis_of("topic_mega_target_cap", "topic").
+axis_of("topic_nondiscriminative_target", "topic").
+axis_of("topic_pair", "topic").
+axis_of("topic_shared_target", "topic").
+axis_of("topic_sibling", "topic").
+axis_of("topic_target_citation_count", "topic").
 axis_of("undischarged_obligation", "obligations").
 axis_of("used_lifecycle_status", "infrastructure").

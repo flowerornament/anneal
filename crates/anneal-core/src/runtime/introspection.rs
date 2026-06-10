@@ -1399,6 +1399,25 @@ const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
         ],
         see_also: &["convergence", "diagnostic", "check"],
     },
+    AxisTopicCard {
+        name: "topic",
+        summary: "Topic asks whether two files are likely on the same subject through shared discriminative citation targets.",
+        question: "same subject?",
+        oracle: "pairwise shared Cites targets after excluding curated inventory handles and mega-targets.",
+        disposition: "REPORT: annotate possible topical relation; never assert an edge or hidden supersession.",
+        member_predicates: "topic_citation_target, topic_target_citation_count, topic_mega_target_cap, topic_nondiscriminative_target, topic_shared_target, topic_pair, topic_sibling.",
+        common_joins: &[
+            "`topic_sibling(a, b, shared), *handle{id: a, file: left}, *handle{id: b, file: right}` to inspect same-subject file pairs",
+            "`topic_nondiscriminative_target(t), topic_target_citation_count(t, n)` to see why broad targets are excluded",
+            "`topic_pair(left, right, shared)` when you need canonical pair rows without symmetric duplicates",
+        ],
+        examples: &[
+            "? topic_sibling(a, b, shared), shared >= 2.",
+            "? topic_nondiscriminative_target(t), topic_target_citation_count(t, n).",
+            "? axis_of(\"topic_sibling\", axis).",
+        ],
+        see_also: &["currency", "importance", "structure", "context"],
+    },
 ];
 
 fn axis_topic_card(name: &str) -> Option<String> {

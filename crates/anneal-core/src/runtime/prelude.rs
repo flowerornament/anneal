@@ -14,7 +14,7 @@ pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
 pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
 pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked summary-bearing span hits, span metadata, and nearby handles in one call. Use the CLI --read-spans flag to include matched span bodies.";
-pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","summary":"String|null","status":"String|null","disposition":"String","age_days":"Number|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","degree":"Number","group":"String"}]}"#;
+pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","summary":"String|null","status":"String|null","disposition":"String","age_days":"Number|null","topic_signal":"String","newer_topic_sibling_count":"Number","top_newer_topic_sibling":"HandleId|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","degree":"Number","group":"String"}]}"#;
 pub const CONTEXT_DEFAULT_ARGS: &[&str] = &["goal", "budget", "depth", "hits"];
 pub const CONTEXT_CAPABILITIES: &[&str] = &["read"];
 pub const VIEWS_PRELUDE_DOC: &str = "Saved verb declarations and lifecycle profile examples for the runtime surface. Verbs are project-extensible templates over the same Datalog runtime as the prelude.";
@@ -23,6 +23,7 @@ pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/con
 pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
 pub const RANKING_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/ranking.dl";
 pub const ORIENTATION_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/orientation.dl";
+pub const TOPIC_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/topic.dl";
 pub const DIMENSIONS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/dimensions.dl";
 pub const VIEWS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/views.dl";
 pub const GRAPH_PRELUDE: &str = include_str!("../prelude/graph.dl");
@@ -30,6 +31,7 @@ pub const CONVERGENCE_PRELUDE: &str = include_str!("../prelude/convergence.dl");
 pub const CHECKS_PRELUDE: &str = include_str!("../prelude/checks.dl");
 pub const RANKING_PRELUDE: &str = include_str!("../prelude/ranking.dl");
 pub const ORIENTATION_PRELUDE: &str = include_str!("../prelude/orientation.dl");
+pub const TOPIC_PRELUDE: &str = include_str!("../prelude/topic.dl");
 pub const DIMENSIONS_PRELUDE: &str = include_str!("../prelude/dimensions.dl");
 pub const VIEWS_PRELUDE: &str = include_str!("../prelude/views.dl");
 static CONTEXT_QUERY_TEMPLATE: LazyLock<String> = LazyLock::new(|| {
@@ -73,6 +75,10 @@ pub const STANDARD_PRELUDE_FILES: &[EmbeddedPreludeFile] = &[
     EmbeddedPreludeFile {
         source_name: ORIENTATION_PRELUDE_SOURCE,
         contents: ORIENTATION_PRELUDE,
+    },
+    EmbeddedPreludeFile {
+        source_name: TOPIC_PRELUDE_SOURCE,
+        contents: TOPIC_PRELUDE,
     },
     EmbeddedPreludeFile {
         source_name: DIMENSIONS_PRELUDE_SOURCE,
@@ -668,6 +674,7 @@ mod tests {
                 CHECKS_PRELUDE_SOURCE,
                 RANKING_PRELUDE_SOURCE,
                 ORIENTATION_PRELUDE_SOURCE,
+                TOPIC_PRELUDE_SOURCE,
                 DIMENSIONS_PRELUDE_SOURCE,
                 VIEWS_PRELUDE_SOURCE,
             ]
@@ -900,6 +907,7 @@ mod tests {
                         "neighbor_disposition",
                         "neighbor_group",
                         "neighbor_status",
+                        "newer_topic_sibling_count",
                         "reason",
                         "score",
                         "section",
@@ -907,7 +915,9 @@ mod tests {
                         "start_line",
                         "end_line",
                         "text",
+                        "top_newer_topic_sibling",
                         "tokens",
+                        "topic_signal",
                     ],
                 );
             } else {
@@ -1253,6 +1263,7 @@ mod tests {
             ("importance", DIMENSIONS_PRELUDE_SOURCE),
             ("structure", DIMENSIONS_PRELUDE_SOURCE),
             ("obligations", DIMENSIONS_PRELUDE_SOURCE),
+            ("topic", TOPIC_PRELUDE_SOURCE),
             ("views", VIEWS_PRELUDE_SOURCE),
         ];
         let mut program = standard_prelude_program().expect("prelude parses");
@@ -1353,6 +1364,7 @@ mod tests {
                 "recency".to_string(),
                 "relevance".to_string(),
                 "structure".to_string(),
+                "topic".to_string(),
             ])
         );
     }
@@ -1733,6 +1745,175 @@ mod tests {
             0,
             "a draft successor is displacement-current but not operative enough to boost"
         );
+    }
+
+    #[test]
+    fn standard_prelude_derives_topic_pairs_and_currency_suspects() {
+        let corpus = CorpusId::from("test");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+
+        let mut old = handle(&scope, "topic/old.md", "file", Some("active"), "", "topic");
+        old.date = Some("2026-05-30".to_string());
+        let mut new = handle(&scope, "topic/new.md", "file", Some("active"), "", "topic");
+        new.date = Some("2026-05-31".to_string());
+        let mut marked_old = handle(
+            &scope,
+            "topic/marked-old.md",
+            "file",
+            Some("active"),
+            "",
+            "topic",
+        );
+        marked_old.date = Some("2026-05-29".to_string());
+        let mut marked_new = handle(
+            &scope,
+            "topic/marked-new.md",
+            "file",
+            Some("active"),
+            "",
+            "topic",
+        );
+        marked_new.date = Some("2026-05-31".to_string());
+
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            old,
+            new,
+            marked_old,
+            marked_new,
+            handle(&scope, "LABELS.md", "file", Some("active"), "", "topic"),
+            handle(
+                &scope,
+                "target/a",
+                "label",
+                Some("active"),
+                "target",
+                "topic",
+            ),
+            handle(
+                &scope,
+                "target/b",
+                "label",
+                Some("active"),
+                "target",
+                "topic",
+            ),
+            handle(
+                &scope,
+                "target/mega",
+                "label",
+                Some("active"),
+                "target",
+                "topic",
+            ),
+        ];
+        for index in 0..41 {
+            batch.handles.push(handle(
+                &scope,
+                &format!("topic/mega-citer-{index}.md"),
+                "file",
+                Some("active"),
+                "",
+                "topic",
+            ));
+        }
+
+        batch.edges = vec![
+            edge(&scope, "topic/old.md", "target/a", "Cites", 1),
+            edge(&scope, "topic/new.md", "target/a", "Cites", 1),
+            edge(&scope, "topic/old.md", "target/b", "Cites", 2),
+            edge(&scope, "topic/new.md", "target/b", "Cites", 2),
+            edge(&scope, "topic/old.md", "LABELS.md", "Cites", 3),
+            edge(&scope, "topic/new.md", "LABELS.md", "Cites", 3),
+            edge(&scope, "topic/old.md", "target/mega", "Cites", 4),
+            edge(&scope, "topic/new.md", "target/mega", "Cites", 4),
+            edge(&scope, "topic/marked-old.md", "target/a", "Cites", 1),
+            edge(&scope, "topic/marked-new.md", "target/a", "Cites", 1),
+            edge(&scope, "topic/marked-old.md", "target/b", "Cites", 2),
+            edge(&scope, "topic/marked-new.md", "target/b", "Cites", 2),
+            edge(
+                &scope,
+                "topic/marked-old.md",
+                "topic/marked-new.md",
+                "Supersedes",
+                5,
+            ),
+        ];
+        for index in 0..41 {
+            batch.edges.push(edge(
+                &scope,
+                &format!("topic/mega-citer-{index}.md"),
+                "target/mega",
+                "Cites",
+                10 + index,
+            ));
+        }
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge topic fixture");
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "topic-pair",
+                    r#"? topic_pair("topic/new.md", "topic/old.md", shared)."#,
+                ),
+                (
+                    "topic-pair-reverse",
+                    r#"? topic_pair("topic/old.md", "topic/new.md", shared)."#,
+                ),
+                (
+                    "topic-sibling",
+                    r#"? topic_sibling("topic/new.md", "topic/old.md", shared)."#,
+                ),
+                (
+                    "labels-excluded",
+                    r#"? topic_shared_target("topic/new.md", "topic/old.md", "LABELS.md")."#,
+                ),
+                (
+                    "mega-excluded",
+                    r#"? topic_shared_target("topic/new.md", "topic/old.md", "target/mega")."#,
+                ),
+                (
+                    "currency-suspect",
+                    r#"? currency_suspect("topic/old.md", newer)."#,
+                ),
+                (
+                    "marked-suppressed",
+                    r#"? currency_suspect("topic/marked-old.md", newer)."#,
+                ),
+            ],
+            Database::from_store(&store).with_evaluation_day(
+                crate::time::snapshot_days_since_epoch("2026-06-01").expect("fixture date parses"),
+            ),
+        );
+
+        assert!(has_row(
+            output(&outputs, "topic-pair"),
+            &[("shared", int(2))]
+        ));
+        assert_eq!(output(&outputs, "topic-pair-reverse").rows.len(), 0);
+        assert!(has_row(
+            output(&outputs, "topic-sibling"),
+            &[("shared", int(2))]
+        ));
+        assert_eq!(output(&outputs, "labels-excluded").rows.len(), 0);
+        assert_eq!(output(&outputs, "mega-excluded").rows.len(), 0);
+        assert!(has_row(
+            output(&outputs, "currency-suspect"),
+            &[("newer", string("topic/new.md"))]
+        ));
+        assert_eq!(output(&outputs, "marked-suppressed").rows.len(), 0);
     }
 
     #[test]

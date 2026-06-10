@@ -35,7 +35,8 @@ pairwise question.
    one of **183/251 nodes (73%)**. A "topic" containing most of the corpus
    answers nothing. (The acid pair did co-cluster — inside the useless giant.)
 3. **Pairwise bibliographic coupling works and subsumes both oracles.** Two
-   files sharing ≥2 citation targets (files *and* labels, hub-excluded):
+   files sharing ≥2 citation targets (files *and* labels, hub-excluded;
+   section targets are intentionally excluded):
    - the acid pair couples (3 shared targets, cosine 0.37);
    - coupling coverage (41%) strictly contains label-only coverage (27%) —
      label citations are just citation targets, so **one mechanism carries the
@@ -68,7 +69,14 @@ lock-blocking, not style:
 
 ```
 topic_citation_target(t) :=
-  *edge{from: f, to: t, kind: "Cites"}, *handle{id: f, kind: "file"}.
+  *edge{from: f, to: t, kind: "Cites"},
+  *handle{id: f, kind: "file"},
+  *handle{id: t, kind: "file"}.
+
+topic_citation_target(t) :=
+  *edge{from: f, to: t, kind: "Cites"},
+  *handle{id: f, kind: "file"},
+  *handle{id: t, kind: "label"}.
 
 topic_target_citation_count(t, n) :=
   topic_citation_target(t),
@@ -85,6 +93,7 @@ topic_shared_target(a, b, t) :=
   *edge{from: a, to: t, kind: "Cites"},
   *edge{from: b, to: t, kind: "Cites"},
   *handle{id: a, kind: "file"}, *handle{id: b, kind: "file"},
+  topic_citation_target(t),
   a < b,
   not topic_nondiscriminative_target(t).
 
@@ -169,11 +178,12 @@ not pure topic.
 - `topic_sibling` on murail: the acid pair (05-30 × 05-31) couples with
   shared ≥ 2; the index-class and mega-target exclusions hold (LABELS.md and
   >K-cited targets contribute nothing).
-- `currency_suspect(05-30, x)`: a small set (order ~6 on today's murail) that
-  includes 05-31; zero rows for docs that are already marked-superseded.
+- `currency_suspect(stale, 05-31)`: a small set (order ~6 on today's murail)
+  for unmarked stale topical siblings; the already-marked 05-30 row is zero by
+  design (`not currency_superseded(stale)`).
 - All existing surfaces **byte-identical** on murail + `.design` (this slice
   adds relations + an annotation surface; ranking unchanged). Schema diff =
-  exactly the new predicates, enumerated. The context/search annotation diff
+  exactly the new predicates, enumerated. The context annotation diff is
   enumerated.
 - **Perf-gated explicitly**: the pairwise aggregation is the risk (the eygi
   lesson); measure context/search/status before/after on murail; the

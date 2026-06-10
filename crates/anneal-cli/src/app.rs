@@ -2840,9 +2840,21 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
         let age = hit
             .age_days
             .map_or(String::new(), |days| format!(" age_days={days}"));
+        let topic = if hit.newer_topic_sibling_count > 0 {
+            hit.top_newer_topic_sibling
+                .as_deref()
+                .map_or_else(String::new, |top| {
+                    format!(
+                        " topic=\"{} unmarked newer topical siblings (top: {})\"",
+                        hit.newer_topic_sibling_count, top
+                    )
+                })
+        } else {
+            String::new()
+        };
         writeln!(
             writer,
-            "{:>2}. {}  score={:.3}  field={}  reason={} disposition={}{}{}{}{}",
+            "{:>2}. {}  score={:.3}  field={}  reason={} disposition={}{}{}{}{}{}",
             index + 1,
             hit.handle,
             hit.score,
@@ -2851,6 +2863,7 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             hit.disposition,
             status,
             age,
+            topic,
             span,
             summary
         )?;
@@ -2951,6 +2964,9 @@ enum ContextEvent<'a> {
         status: Option<&'a str>,
         disposition: &'a str,
         age_days: Option<i64>,
+        topic_signal: &'a str,
+        newer_topic_sibling_count: i64,
+        top_newer_topic_sibling: Option<&'a str>,
     },
     #[serde(rename = "span")]
     Span {
@@ -2988,6 +3004,9 @@ fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<(
         status: hit.status.as_deref(),
         disposition: hit.disposition.as_str(),
         age_days: hit.age_days,
+        topic_signal: hit.topic_signal.as_str(),
+        newer_topic_sibling_count: hit.newer_topic_sibling_count,
+        top_newer_topic_sibling: hit.top_newer_topic_sibling.as_deref(),
     }))
     .chain(output.spans.iter().map(|span| ContextEvent::Span {
         handle: span.handle.as_str(),
@@ -5298,6 +5317,9 @@ mod tests {
                 status: Some("active".to_string()),
                 disposition: "current_head".to_string(),
                 age_days: Some(12),
+                topic_signal: "siblings".to_string(),
+                newer_topic_sibling_count: 2,
+                top_newer_topic_sibling: Some("next.md".to_string()),
             }],
             spans: vec![crate::ContextSpan {
                 handle: "plan.md".to_string(),
@@ -5327,6 +5349,7 @@ mod tests {
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
         assert!(rendered.contains("disposition=current_head status=active age_days=12"));
+        assert!(rendered.contains("2 unmarked newer topical siblings (top: next.md)"));
         assert!(rendered.contains("summary=Release"));
         assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
         assert!(rendered.contains("Neighborhood\nplan.md:\n  current: dep.md disposition=current status=active age_days=3 degree=4"));
@@ -5346,6 +5369,9 @@ mod tests {
                 status: Some("active".to_string()),
                 disposition: "current_head".to_string(),
                 age_days: Some(12),
+                topic_signal: "siblings".to_string(),
+                newer_topic_sibling_count: 2,
+                top_newer_topic_sibling: Some("next.md".to_string()),
             }],
             spans: vec![crate::ContextSpan {
                 handle: "plan.md".to_string(),
@@ -5384,6 +5410,9 @@ mod tests {
         assert_eq!(rows[1]["disposition"], "current_head");
         assert_eq!(rows[1]["status"], "active");
         assert_eq!(rows[1]["age_days"], 12);
+        assert_eq!(rows[1]["topic_signal"], "siblings");
+        assert_eq!(rows[1]["newer_topic_sibling_count"], 2);
+        assert_eq!(rows[1]["top_newer_topic_sibling"], "next.md");
         assert_eq!(rows[2]["section"], "span");
         assert_eq!(rows[2]["span_id"], "body");
         assert!(rows[2].get("text").is_none());

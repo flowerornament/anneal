@@ -140,6 +140,12 @@ impl ContextOutput {
                             status: optional_string_field(row, "status")?,
                             disposition: string_field(row, "disposition")?,
                             age_days: optional_int_field(row, "age_days")?,
+                            topic_signal: string_field(row, "topic_signal")?,
+                            newer_topic_sibling_count: int_field(row, "newer_topic_sibling_count")?,
+                            top_newer_topic_sibling: optional_string_field(
+                                row,
+                                "top_newer_topic_sibling",
+                            )?,
                         },
                     };
                     hits.push(hit);
@@ -317,6 +323,9 @@ pub struct ContextHit {
     pub status: Option<String>,
     pub disposition: String,
     pub age_days: Option<i64>,
+    pub topic_signal: String,
+    pub newer_topic_sibling_count: i64,
+    pub top_newer_topic_sibling: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -457,7 +466,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
-    use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
+    use anneal_core::runtime::prelude::{CONTEXT_OUTPUT_SCHEMA, standard_prelude_program};
     use anneal_core::runtime::{Database, EvalOptions, Evaluator, analyze, parse_program};
     use anneal_core::{
         ActorContext, CancellationToken, ConfigFacts, ContentFact, EdgeFact, FactBatch,
@@ -485,7 +494,7 @@ mod tests {
         assert!(query.contains("context_neighbor_seed(h, h) := context_hit_handle"));
         assert!(query.contains("TopK{ k: 16, key: group_score + disposition_score"));
         assert!(query.contains(r#"context_output("hit""#));
-        analyze(parse_program("context", &query).expect("query parses")).expect("query analyzes");
+        analyze_context_query(&query);
     }
 
     #[test]
@@ -500,6 +509,12 @@ mod tests {
         assert_eq!(schema["hits"][0]["status"], "String|null");
         assert_eq!(schema["hits"][0]["disposition"], "String");
         assert_eq!(schema["hits"][0]["age_days"], "Number|null");
+        assert_eq!(schema["hits"][0]["topic_signal"], "String");
+        assert_eq!(schema["hits"][0]["newer_topic_sibling_count"], "Number");
+        assert_eq!(
+            schema["hits"][0]["top_newer_topic_sibling"],
+            "HandleId|null"
+        );
         assert_eq!(schema["spans"][0]["handle"], "HandleId");
         assert_eq!(
             schema["spans"][0]["text"],
@@ -522,7 +537,7 @@ mod tests {
             .datalog();
 
         assert!(!query.contains("low_confidence = false"));
-        analyze(parse_program("context", &query).expect("query parses")).expect("query analyzes");
+        analyze_context_query(&query);
     }
 
     #[test]
@@ -640,6 +655,9 @@ mod tests {
         assert_eq!(output.hits[0].status.as_deref(), Some("current"));
         assert_eq!(output.hits[0].disposition, "unknown");
         assert_eq!(output.hits[0].age_days, None);
+        assert_eq!(output.hits[0].topic_signal, "none");
+        assert_eq!(output.hits[0].newer_topic_sibling_count, 0);
+        assert_eq!(output.hits[0].top_newer_topic_sibling, None);
         assert_eq!(output.spans.len(), 1);
         assert_eq!(
             output.neighborhood,
@@ -939,12 +957,27 @@ mod tests {
         database: Database,
         options: EvalOptions,
     ) -> Vec<Row> {
-        let program = parse_program(source_name, input).expect("program parses");
+        let mut program = standard_prelude_program().expect("prelude parses");
+        program.statements.extend(
+            parse_program(source_name, input)
+                .expect("program parses")
+                .statements,
+        );
         let analyzed = analyze(program).expect("context analyzes");
         let query = analyzed.queries().next().cloned().expect("query present");
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator.run_fixpoint().expect("fixpoint evaluates");
         evaluator.eval_query(&query).expect("query evaluates").rows
+    }
+
+    fn analyze_context_query(query: &str) {
+        let mut program = standard_prelude_program().expect("prelude parses");
+        program.statements.extend(
+            parse_program("context", query)
+                .expect("query parses")
+                .statements,
+        );
+        analyze(program).expect("query analyzes");
     }
 
     fn context_database() -> Database {
@@ -1179,6 +1212,9 @@ mod tests {
                 ("status".to_string(), s("current")),
                 ("disposition".to_string(), s("unknown")),
                 ("age_days".to_string(), Value::Null),
+                ("topic_signal".to_string(), s("none")),
+                ("newer_topic_sibling_count".to_string(), n(0)),
+                ("top_newer_topic_sibling".to_string(), Value::Null),
             ]),
             derivation: None,
         }
