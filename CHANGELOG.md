@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.20.0 - 2026-06-09
+
 The runtime vocabulary is organized around queryable dimensions, and the
 remaining stale compatibility names are retired from the public surface.
 
