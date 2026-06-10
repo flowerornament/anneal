@@ -1,7 +1,9 @@
 ---
-status: draft
+status: current
+locked: 2026-06-10
 date: 2026-06-10
 authors: [claude]
+reviewed-by: codex (adversarial, 2026-06-10 — REVISE-THEN-LOCK; P0 identity fix + all findings folded)
 bd: anneal-3gk4
 relates:
   - 2026-06-09-code-and-corpus.md            # §3c the oracle family · the evidence boundary
@@ -38,11 +40,16 @@ same extraction phase:
   mutation, no second ingestion path. (CR-Fw6's future `*evidence` relation
   is the eventual typed home; `*meta` is the v1 contract, exactly as W006
   established.)
-- Suggested keys (final names at implementation, vocabulary discipline
-  applies): `code.referent_disposition`, `code.referent_commits_since`,
-  `code.referent_moved_to`, `code.referent_move_candidates`,
-  `code.referent_evidence_head` (the repo HEAD the evidence was computed
-  at — the premise fact).
+- Keys (final names at implementation, vocabulary discipline applies):
+  `code.referent_disposition`, `code.referent_commits_since`,
+  `code.referent_moved_to`, `code.referent_evidence_head` (the premise
+  fact), and **one `code.referent_move_candidate` row per candidate plus a
+  count** — never a JSON blob. **The meta-channel constraint (written down
+  so it cannot quietly erode):** `*meta` carries scalar and repeated-scalar
+  evidence only. The moment candidate tuples need queryable structure
+  (confidence, reason, ranking), that is CR-Fw6's typed `*evidence`
+  relation earning its existence — promoted deliberately, not smuggled
+  through strings.
 
 **The refresh is therefore not a new runtime mechanism at all** — it is the
 existing extraction, with a cost policy (§2). The "SourceDriver-adjacent
@@ -58,11 +65,25 @@ what 4a adds is the evidence depth and the cache that makes depth affordable.
   Cheap, keeps W006 behavior identical.
 - **Tier 1 (drift evidence) is cached and incremental:** a persistent
   evidence cache at **`.anneal/drift-evidence.json`** (§44 precedent:
-  `history.jsonl`), keyed by `(target_path, assertion_revision-or-date,
-  repo HEAD)`. A cache hit is **exact** — HEAD pins history, so cached
-  rows never go stale silently; a HEAD move invalidates precisely the
-  entries whose answers could change. Amortized cost: one incremental pass
-  per repo commit, near-zero on unchanged repos.
+  `history.jsonl`). The key carries the full premise: `(repo identity/root,
+  HEAD, target_path, assertion identity, assertion premise, oracle schema
+  version, path-normalization policy version)`. **Assertion premise is a
+  typed precedence ladder, preserved in keys and dispositions:**
+  `assertion_revision` if present, else `assertion_date`, else an explicit
+  `assertion_date_unknown` marker — unknown-date assertions never share a
+  cache premise with dated ones, and a handle-date fallback can never
+  silently shift bucket distributions.
+  **A cache hit is exact only for clean, committed history.** HEAD pins
+  git history, not the filesystem: if the target or citing path is dirty
+  or untracked, the entry is bypassed and filesystem-dependent fields
+  recomputed — or the row carries an explicit `evidence_dirty_worktree`
+  degraded premise. Dirty evidence is never called exact. Referenced
+  revisions are validated (`git cat-file -e`-class) and degrade honestly
+  if GC removed them; detached HEAD is fine; force-push/rebase is fine
+  (HEAD changes). Amortized cost: one incremental pass per repo commit,
+  near-zero on unchanged repos. GC: entries bounded per HEAD/schema
+  version; stale-HEAD entries pruned; a missing cache is simply the cold
+  premise.
 - **Cold-cache honesty (CR-D103):** with no cache and tier 1 not yet built,
   surfaces show a PRE-FLIGHT premise — "drift evidence not built; run
   `anneal check --refresh-drift`" (flag name final at review) — never a
@@ -104,19 +125,39 @@ therefore joins across *sources*, not corpora; §53 multi-corpus federation
 stays deferred, untouched. The arc spec's "cross-corpus" framing
 generalizes later without rework (the key space already carries corpus).
 
+**The identity fix (review P0 — the id-collision smell confirmed real):**
+markdown's external code-ref handles today use the raw citation path as
+their id, which would collide with code-source file handles for the same
+path in the same corpus — a CR-D41 violation the moment both sources load.
+The fix: **external code-ref ids are markdown-qualified**
+(`external:code:<stable citation identity>`), with the target path/line in
+`*meta` (`external_class: "code"`, `target_path`, `target_line`). The
+resolver joins **through the edge and the meta, never by treating a handle
+id as a resolvable path**:
+
 ```
-code_ref(spec, path, code_handle, disposition) :=
-  *edge{from: spec, to: path, kind: "Cites", source: "markdown"},
-  *handle{id: path, kind: "external"},
+code_ref(spec, ref, path, code_handle, disposition) :=
+  *edge{from: spec, to: ref, kind: "Cites", source: "markdown"},
+  *handle{id: ref, kind: "external", source: "markdown"},
+  *meta{handle: ref, key: "external_class", value: "code"},
+  *meta{handle: ref, key: "target_path", value: path},
   *handle{id: code_handle, kind: "file", source: "code", file: f},
-  path_resolves(path, f).
+  path_resolves(path, f),
+  referent_disposition(ref, disposition).
 ```
+
+This preserves CR-R6 (unresolved edges stored) and CR-D41 (no id ever
+doubles as another source's resolvable path). **Owned consequence: this is
+an enumerated-intentional surface diff** — existing external handle ids
+(visible today in W006 output and any query touching code-ref handles)
+change shape; corpora without code refs stay byte-identical. The diff is
+enumerated at the 4b gate, per the no-backward-compat stance.
 
 - `path_resolves` = normalization only: line-suffix stripping
   (`foo.rs:63` → `foo.rs`), `./`, the corpus-root/repo-root offset (the
   probe's enclosing-repo logic is the precedent). File-level only, per the
   locked design; nearest-item hints are post-4b.
-- Non-resolution is not failure — the unresolved path's drift meta carries
+- Non-resolution is not failure — the unresolved ref's drift meta carries
   the story (gone/moved/unknown).
 
 ## 5. The drift surface (the CR-D105 rungs — what 4b is judged on)
@@ -128,16 +169,26 @@ Three rungs, no new verb, no new mode (subtractive: `handle` annotations +
    `design→code refs: 76 intact · 74 drifted · 13 moved? · 6 gone` —
    aggregate-first per the arc spec; cold cache renders the PRE-FLIGHT
    premise line instead.
-2. **`check` diagnostics**, disposition-typed: a new W-code for
-   `referent-gone` / `referent-moved-ambiguous` cited by an *operative*
-   spec (REPORT-severity; drift counts are information, never E-class —
-   a drifted referent is normal life, a gone referent on a live spec is
-   a warning). Corpus-scoped aggregate row per CR-D69 where appropriate.
+2. **`check` diagnostics**, disposition-typed with the severity split
+   stated: `referent-gone` and `referent-moved-ambiguous` cited by an
+   *operative* spec are **warnings**; plain `drifted(n)` is **currency
+   evidence, not a correctness warning** — it lives in the status profile
+   and handle annotations, entering diagnostics only via an explicit
+   policy threshold. Never E-class (CR-D103: report drift, do not gate on
+   ambiguous staleness). Corpus-scoped aggregate rows per CR-D69.
 3. **`handle <spec>` citation annotations**, in place:
    `Cites crates/…/ids.rs  [intact · asserted 2026-06-06]` /
    `Cites src/cli.rs  [moved-ambiguous → 11 candidates]` — each teaching
    its follow-up query (`? assertion_drift("…", t, n).`), the v0.20
-   pattern.
+   pattern. **Cold cache gets a rung here too**: a spec page with code
+   citations shows "drift evidence not built; run …" in the citation
+   section — never silently unannotated (CR-D105 connects at every
+   surface, not just aggregates).
+
+**Refresh is explicit everywhere**: ordinary `status`/`check`/`handle`
+*read* warm evidence and *report* cold evidence as a premise; **only the
+explicit refresh path writes the cache**. No surface triggers hidden
+extraction-time drift work because it wanted the data.
 
 `context`/`search` annotations: deliberately deferred until post-4b
 consumer evidence — the three rungs above are where the spec↔code questions
@@ -162,18 +213,20 @@ actually get asked first.
 - `axis_of` placement test green; describe cards for the new predicates;
   `anneal check` clean on `.design`.
 
-## Open questions for review
-1. `*meta` keys vs promoting CR-Fw6's `*evidence` relation now — is the
-   meta channel's string-typing acceptable for one more arc, or does the
-   seven-bucket + candidates payload justify the typed relation early?
-2. The cache file: JSON-lines vs the history.jsonl envelope; GC policy
-   (HEAD-keyed entries from dead HEADs); does it belong in trails instead?
-3. The refresh trigger surface: extraction flag (`--refresh-drift`) vs a
-   config default (`source code { drift_evidence(on). }`) vs riding
-   `check` — which is the honest CR-D105 placement for the *explicit
-   first build*?
-4. The new W-code's exact scope: gone-on-operative only, or also
-   moved-ambiguous-on-operative? Where does drifted(n>threshold) sit —
-   diagnostic or status-line-only?
-5. Does the evidence-HEAD premise belong in `*meta` per target (proposed)
-   or once per corpus (a `*config`-like premise row)?
+## Open questions — resolved at review
+1. **Meta vs `*evidence`** → `*meta` for 4b, scalar/repeated-scalar only
+   (one row per move candidate + count); the typed relation is earned the
+   moment candidate tuples need queryable structure — the constraint is in
+   §1 so the channel cannot erode.
+2. **Cache format/GC** → history.jsonl-class envelope; entries bounded per
+   HEAD/schema version; stale HEADs pruned; missing cache = cold premise.
+   Not trails (evidence is corpus state, not session path).
+3. **Refresh trigger** → explicit refresh path only writes the cache
+   (`check --refresh-drift`-shaped; final flag at implementation); every
+   consumer reads-or-reports, none triggers hidden work.
+4. **W-code scope** → gone + moved-ambiguous on operative = warning;
+   drifted(n) = currency evidence (status/handle), threshold-gated into
+   diagnostics only by explicit policy.
+5. **Evidence-HEAD premise** → per-target meta as proposed, plus the
+   cache-level premise in the cache key; a corpus-level premise row can be
+   derived, not stored twice.
