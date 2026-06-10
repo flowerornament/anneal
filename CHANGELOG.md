@@ -4,6 +4,52 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+The corpus crosses the design–code boundary. A corpus can now ingest its
+own source tree beside its markdown, resolve spec citations to live code
+handles, and qualify every cross-reference with machine-verified drift
+evidence — how much the cited code has changed since the sentence citing
+it was written.
+
+### Added
+
+- `anneal-code`, a code source adapter with three tiers: a language-agnostic
+  file-level mode (`source code { source_root("...") }` alone — file handles,
+  test/generated/private classification, TODO/FIXME obligations, version
+  tags from any source tree), a rustdoc JSON reader for Rust public-API item
+  handles, and an EEP-48 reader for Elixir/BEAM docs chunks. Artifact
+  ingestion is pre-built-only with manifest provenance; a missing manifest
+  is a declared `artifact_revision_unknown` premise, never inferred from
+  mtime.
+- Edge assertion provenance: `*edge` carries nullable `assertion_date` and
+  `assertion_revision`, populated verified-or-null from git blame on the
+  citing line. Dated `Supersedes` edges let lineage show *when* displacement
+  was declared.
+- The referent drift oracle: spec→code citations classify into seven
+  dispositions (`referent-intact`, `referent-drifted(n)`, `referent-moved`,
+  `referent-moved-ambiguous`, `referent-gone`, `referent-unknown`,
+  `evidence_dirty_worktree`) from move-aware git history since the
+  assertion. Evidence is built by an explicit `anneal check --refresh-drift`
+  into a HEAD-keyed cache; a cold cache is a declared premise on every
+  surface, never a silent stall. Renames route to confident heads; splits
+  stay honestly ambiguous.
+- Drift on the verbs: `status` carries the corpus drift profile line,
+  `check` raises warnings for gone or ambiguously-moved referents cited by
+  operative specs, and `handle` annotates each code citation in place with
+  its disposition and a follow-up query hint.
+- `code_ref` resolves markdown citations to code-source file handles inside
+  one corpus (markdown and code as two sources, no federation), through
+  qualified external handles that never collide with code handle ids.
+- A code source root may sit above the corpus root (a `.design` corpus
+  pointing at the repository beside it), bounded by the enclosing project
+  root.
+
+### Changed
+
+- External code-reference handles are qualified
+  (`external:code:<citing>:<line>:<path>`), with the target path carried in
+  metadata. Corpora citing code paths see new external handle ids; corpora
+  without code citations are unchanged.
+
 ## v0.20.0 - 2026-06-09
 
 The runtime vocabulary is organized around queryable dimensions, and the

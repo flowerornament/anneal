@@ -378,6 +378,41 @@ prelude, project `anneal.dl`, and inline query-local rules. `anneal -e -`
 reads a query from stdin, so agents can keep larger questions in scratch files.
 Use `--limit N` while exploring broad predicates.
 
+### Cross The Design–Code Boundary
+
+A corpus can ingest the source tree beside it, so design documents and the
+code they describe live in one graph:
+
+```dl
+source code {
+  source_root("..").
+}
+```
+
+That single line is the language-agnostic file-level mode: file handles for
+every source file, test/generated/private classification, TODO/FIXME
+obligations, and version tags. Add a pre-built artifact for item-level
+handles — `rustdoc_json("target/doc/crate.json")` for Rust public APIs, or
+`eep48_beam_dir("_build/dev/lib/app/ebin")` for Elixir docs chunks.
+
+Spec citations then resolve to live code handles, and every cross-reference
+carries machine-verified drift evidence — how much the cited code changed
+since the citing line was written:
+
+```bash
+anneal check --refresh-drift      # build drift evidence (explicit, cached)
+anneal status                     # Code refs  2 intact · 75 drifted · 8 moved · ...
+anneal handle SPEC.md             # Cites src/cli.rs  [referent-moved-ambiguous · 11 candidates]
+anneal -e '? code_ref(spec, ref, path, code_handle, disposition).'
+anneal -e '? assertion_drift("SPEC.md", target, commits).'
+```
+
+Dispositions are earned, never asserted: an intact referent means zero
+commits since the assertion; a renamed file routes to its confident head; a
+split stays `referent-moved-ambiguous`; a dirty worktree or unknown
+assertion date is declared, not papered over. Cold evidence shows as a
+premise line, and only the explicit refresh builds the cache.
+
 ## Configuration Ladder
 
 New corpora work without configuration. `anneal` loads the built-in prelude,

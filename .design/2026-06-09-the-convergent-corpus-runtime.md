@@ -66,7 +66,8 @@ may claim more authority than its oracle earns.
 ## 2. The shape of the answer
 
 anneal is a **substrate** (a Datalog runtime + a convergence standard library)
-decoupled from **sources** (markdown today; code, hosts later) via a `Source`
+decoupled from **sources** (markdown and code today — any source tree at file
+level, rustdoc/EEP-48 artifacts at item level; hosts later) via a `Source`
 trait, exposed through **surfaces** (CLI, MCP) that project the same contracts.
 The corpus becomes a **fact store**; the convergence vocabulary becomes **derived
 relations** over it; the agent reads those.
@@ -237,6 +238,18 @@ The **orientation / retrieval / trust surface** (the deliberate verbs; `schema` 
 (`lineage` is the `handle --lineage` mode — the `Supersedes` × currency walk to
 the current head, sibling of `--impact`, not a standalone verb.)
 
+The same verbs now cross the design–code boundary: a corpus that ingests its
+source tree (the `anneal-code` adapter — file-level for any language, rustdoc/
+EEP-48 for item-level) resolves spec citations to live code handles
+(`code_ref`) and qualifies every cross-reference with **referent drift** —
+seven dispositions from move-aware git history since the blame-dated
+assertion, surfaced as the `status` drift profile, `check` warnings, and
+per-line `handle` citation annotations. Drift is the currency axis's second
+oracle family: machine-verified path displacement, never asserted
+supersession. The self-corpus runs this joint graph by default; the herald
+measurement (only ~22% of design→code assertions intact, renames the leading
+drift class) is the mass-staleness thesis, confirmed.
+
 The recent arc (currency, `--lineage`, currency-ranked neighbors) **landed the
 first cuts of the provenance + navigation surfaces** the thesis says matter most
 (topical navigation is still deferred — Part VI) — and a 20× retrieval regression
@@ -314,22 +327,24 @@ manual practice*, or it doesn't ship.
 # Part VII — Roadmap
 
 ```
-NOW  ── substrate clean & gated · currency + navigate shipped (v0.19) · perf recovered
+NOW ── the foundation shipped (v0.20: axes as law and product) · the joint
+  │    design+code graph live (assertion provenance · drift oracle · anneal-code
+  │    rustdoc/EEP-48/file-level · the self-corpus dogfoods it by default)
   │
-  ├─ (cheap, framing) xy45 → CR-D in master spec; the dimensional map written down
-  ├─ (reduction)      vocabulary/disposition audit — anneal on its own prelude; CUT
-  ├─ (keystone)       clustering substrate (reconcile `area`) ──┐
-  │                                                              ├─ unmarked currency (suspect)
-  │                                                              └─ topical navigate (root→intent)
-  ├─ (perf lever)     eygi env redesign (status/context 2.5s→~1.5s)
-  ├─ (decomposition)  plan.rs split · Value/DbView relocation · public façade · ir/analyzed re-key
-  └─ (horizon)        TMS — proofs/gates as vertices, retraction propagation
+  ├─ (usage)         daily consumers judge the surfaces — herald item-level,
+  │                   the dogfood report, drift in real workflows (CR-D105)
+  ├─ (ergonomics)    precise drift-cache invalidation on HEAD move · anneal-code
+  │                   module decomposition · universal-mode extension knob
+  ├─ (perf lever)    eygi env redesign (status/context ~2.5s→~1.5s)
+  ├─ (deferred)      topical navigate (root→intent) — topic axis exists; waits
+  │                   for consumer pull · SCIP if body-level edges earn demand
+  └─ (horizon)       TMS — proofs/gates as vertices, retraction propagation;
+                      drift facts and dated supersession are its first inputs
 ```
 
-Order by leverage, not by size: **name the axes and reduce first** (cheap, makes
-everything after it simpler), **then the clustering keystone** (unlocks the two
-biggest deferred features), with perf/decomposition as parallel hygiene and TMS
-as the horizon.
+The construction phase is over; the leverage now is **usage** — the verbs get
+judged by agents reaching for them, and the evidence accumulates from daily
+work rather than from arcs.
 
 ---
 
