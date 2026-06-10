@@ -275,6 +275,9 @@ Useful `context` flags:
 anneal schema
 anneal describe search
 anneal describe runtime
+anneal describe currency
+anneal -e '? axis(name, question, oracle, disposition).'
+anneal -e '? axis_of(predicate, "recency").'
 anneal -e '? search("conformance", h, span, score, reason, field, low).'
 anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file", summary: summary}.'
 anneal -e '? sources(name, recognizes, capabilities, doc).'
@@ -282,12 +285,16 @@ anneal -e '? sources(name, recognizes, capabilities, doc).'
 
 Use `schema` to see queryable relations and signatures. Use `describe` for one
 primitive, predicate, or verb. Use `describe runtime` for the compact map and
-copyable examples. Corpus-local vocabulary is queryable directly through
-relations such as `*handle{status: status}`, `*edge{kind: kind}`,
-`*handle{namespace: ns}`, and `*meta{key: key}`. Adapter information is
-queryable through `sources(name, recognizes, capabilities, doc)`. Use `-e`
-when you need to compose a question directly. When a working query should
-become a named project move, edit `anneal.dl` and add an `@verb` declaration.
+copyable examples. Use `describe <axis>` when the vocabulary is still blurry:
+`axis` lists the runtime dimensions, and `axis_of` places predicates on axes
+such as relevance, currency, lifecycle, recency, importance, convergence,
+structure, obligations, and topic. Corpus-local vocabulary is queryable
+directly through relations such as `*handle{status: status}`,
+`*edge{kind: kind}`, `*handle{namespace: ns}`, and `*meta{key: key}`. Adapter
+information is queryable through `sources(name, recognizes, capabilities,
+doc)`. Use `-e` when you need to compose a question directly. When a working
+query should become a named project move, edit `anneal.dl` and add an `@verb`
+declaration.
 
 ### Retrieve Evidence
 
@@ -328,16 +335,21 @@ anneal -e '? area_health(area, grade, files, errors, cross_edges).'
 anneal -e '? diagnostic{code: code, severity: "error", subject: h, file: file, line: line}.'
 anneal -e '? blocker(h, energy, source), h = "HANDLE".'
 anneal -e '? *handle{id: h, file: f}, git_mtime(f, t).'
+anneal -e '? authored_age(h, days), *handle{id: h, file: file}.'
+anneal -e '? changed_recently(h, band), *handle{id: h, file: file}.'
 ```
 
 `potential` exposes raw unsettled-work energy; `frontier` projects the
 highest-energy candidates. `area_health` grades per-area convergence.
 `diagnostic{severity: "error", ...}` filters to blockers. `blocker` explains why one
 handle is stalled. `flow` classifies active movement as advancing, holding, or
-drifting; settled handles are outside flow by design. `changed_within` and
-`git_mtime` let agents ask what changed without a separate `--since` surface.
+drifting; settled handles are outside flow by design. `authored_age` is the
+date-backed authored-age oracle used by recency ranking. `changed_recently`,
+`changed_within`, and `git_mtime` are lower-authority git-backed change
+signals for "what changed?" questions.
 The convergence vocabulary lives in the prelude — use `describe convergence`,
 `describe potential`, `describe entropy`, `describe blocker`,
+`describe recency`, `describe authored_age`, `describe changed_recently`,
 `describe changed_within`, or `describe git_mtime` to learn the
 joins, then compose with `-e`. The `check` command remains as a hidden CI gate
 alias for `diagnostic{code: code, severity: "error", subject: h, file: file, line: line}`.
@@ -352,6 +364,7 @@ anneal -e '? frontier(h, energy), *handle{id: h, file: file, summary: summary}.'
 anneal -e '? source_of("frontier", file, lines).'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
 anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file"}, search{query: "conformance", handle: h}.'
+anneal -e '? currency_suspect("HANDLE", newer), topic_sibling("HANDLE", newer, shared).'
 ```
 
 The query language is Datalog-shaped. Stored relations use `*` prefixes, for
@@ -608,9 +621,12 @@ crates/
 
 `anneal-core` has no markdown-specific code. Adapters implement `Source` and
 emit `FactBatch` values. Retrieval providers, trail recording, policy checks,
-verb projection, and source orchestration are separate runtime seams so future
-adapters can target code, host runtimes, issue trackers, and federated corpora
-without changing the query language.
+verb projection, axis introspection, and source orchestration are separate
+runtime seams so future adapters can target code, host runtimes, issue
+trackers, and federated corpora without changing the query language. The
+prelude exposes the dimensional map through `axis` and `axis_of`; command
+surfaces are projections over those runtime predicates rather than a separate
+documentation layer.
 
 `anneal-lang` is a private crate (`publish = false`) until a second consumer
 proves the syntax boundary. `anneal-mcp` ships as a crate/library surface, not

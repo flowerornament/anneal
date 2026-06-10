@@ -2,6 +2,41 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+The runtime vocabulary is organized around queryable dimensions, and the
+remaining stale compatibility names are retired from the public surface.
+
+### Added
+
+- Runtime axes are surfaced as first-class vocabulary. `axis(name, question,
+  oracle, disposition)` lists the dimensions, `axis_of(predicate, axis)` places
+  predicates on the map, and `describe <axis>` teaches the question, oracle,
+  disposition, entry predicates, and common joins for each axis.
+- The topic axis uses pairwise bibliographic coupling over citation targets.
+  `topic_sibling` reports shared topical context, and `currency_suspect`
+  reports newer unmarked topical siblings as report-level hints in `context`.
+- Top-level `anneal --help` and `anneal -h` print the cold-agent ladder with
+  pointers to `help agent`, `help eval`, `describe runtime`, and axis cards.
+
+### Changed
+
+- `describe runtime` links the discovery chain from the command ladder to
+  `axis`, `axis_of`, `describe <axis>`, and predicate/source introspection.
+- Recency vocabulary separates authored age from change recency:
+  `authored_age` is date-backed, while `changed_recently`, `changed_within`,
+  and `git_mtime` remain git-backed change signals.
+
+### Breaking
+
+- Search and context machine output use `summary` for span summaries. The
+  markdown-specific `heading_path` output name is retired from generic views.
+- The `potential_weight.override` config key is retired. Retune convergence by
+  shadowing the `potential_weight(source, weight)` predicate in project rules.
+- Deprecated derived predicates `work_candidate`, `s001_orphaned`, and the
+  potential-weight override plumbing are retired. `frontier`, `area_frontier`,
+  `orphaned_handle`, and `potential_weight` are the live vocabulary.
+
 ## v0.19.0 - 2026-06-09
 
 Navigation is curated around the graph paths agents actually use.

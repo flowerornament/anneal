@@ -29,6 +29,8 @@ anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} orde
 anneal context "<goal>" --hits 5 --budget 8000 --format=text
 anneal schema --format=text
 anneal describe runtime --format=text
+anneal describe currency --format=text
+anneal -e '? axis_of(predicate, "recency").' --format=text
 ```
 
 Use `status` as the arrival surface: aggregate corpus vital signs plus
@@ -41,7 +43,9 @@ Use `context` only once you can name a goal: ranked span hits, compact span
 metadata, and graph neighborhood in one call. Add `--read-spans` only when
 inline matched bodies are worth the extra output. Use `schema` and
 `describe NAME` before inventing predicate or field names; `describe` includes
-signatures, examples, common joins, and output columns.
+signatures, examples, common joins, and output columns. Use `describe <axis>`
+and `axis_of(predicate, axis)` when you need the runtime's dimensional map
+before choosing predicates.
 
 ## Retrieval
 
@@ -60,6 +64,8 @@ search/context hits annotate disposition (`current`, `current_head`,
 for the matched heading span. Use `handle` when
 relationships matter; add `--impact` before edits that need reverse
 dependencies or `--lineage` when Supersedes history and current heads matter.
+If a context hit reports unmarked newer topical siblings, inspect it with
+`anneal -e '? currency_suspect("HANDLE", newer), topic_sibling("HANDLE", newer, shared).' --format=text`.
 Empty NDJSON streams emit `(0 rows)` on stderr while keeping stdout empty for
 pipes.
 
@@ -91,6 +97,8 @@ Common predicate families:
 - graph: `upstream`, `downstream`, `impact`, `neighborhood`
 - retrieval: `search`, `read`, `top_k` helpers
 - orientation: `recent_frontier`, `anchor`, `ranked_anchor`
+- axes: `axis`, `axis_of`, `authored_age`, `changed_recently`,
+  `currency_suspect`, `topic_sibling`
 - convergence: `entropy`, `potential`, `frontier`, `blocker`, `flow`
 - change history: `changed_within`, `git_mtime`, `at("snapshot:last")`
 - checks: `diagnostic`
@@ -122,10 +130,11 @@ When vocabulary feels blurry, ask the axis first:
 anneal -e '? axis(name, question, oracle, disposition).' --format=text
 anneal -e '? axis_of(predicate, "currency").' --format=text
 anneal describe currency --format=text
+anneal describe topic --format=text
 ```
 
 Axes: relevance, currency, lifecycle, recency, importance, convergence,
-structure, obligations. Use `describe <axis>` for the question, oracle,
+structure, obligations, topic. Use `describe <axis>` for the question, oracle,
 disposition, entry predicates, and common joins.
 
 ## Configuration
@@ -178,6 +187,8 @@ writing config.
 - Use `anneal context "<goal>"` once you can name the goal.
 - Use `search` then `read` when you need tighter retrieval control.
 - Use `schema` and `describe NAME` before querying unfamiliar vocabulary.
+- Use `describe <axis>` or `axis_of(predicate, axis)` when you need the
+  dimensional map behind a predicate family.
 - Use `anneal -e` for composite questions; project only fields you need.
 - Add `--limit N`, smaller `--budget`, or stricter pattern filters when broad
   predicates return too much.

@@ -52,6 +52,9 @@ pub fn should_handle_args(args: &[OsString]) -> bool {
         let Some(arg) = arg.to_str() else {
             return true;
         };
+        if matches!(arg, "-h" | "--help") {
+            return true;
+        }
         if arg == "--version" {
             return true;
         }
@@ -365,6 +368,7 @@ enum RuntimeCommand {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HelpTopic {
+    Top,
     Agent,
     Init,
     Status,
@@ -381,6 +385,7 @@ enum HelpTopic {
 impl HelpTopic {
     fn parse(command: &str) -> Option<Self> {
         Some(match command {
+            "top" | "runtime" => Self::Top,
             "agent" => Self::Agent,
             "init" => Self::Init,
             "status" => Self::Status,
@@ -402,6 +407,37 @@ impl HelpTopic {
         }
 
         let body = match self {
+            Self::Top => {
+                "\
+Usage: anneal [OPTIONS] [COMMAND]
+
+Arrive, discover the vocabulary, retrieve evidence, then ask precise Datalog
+questions against a corpus.
+
+First moves:
+  anneal status
+  anneal context \"goal\"
+
+Discover:
+  anneal schema
+  anneal describe runtime
+  anneal describe <axis>
+  anneal describe <predicate>
+
+Retrieve:
+  anneal search \"text\" --limit 5
+  anneal read <handle> --budget 4000
+  anneal handle <handle> [--impact|--lineage]
+
+Program:
+  anneal -e '? predicate(args).'
+  anneal help eval
+
+More help:
+  anneal help agent
+  anneal help <command>
+"
+            }
             Self::Agent => unreachable!("agent help returns before static help rendering"),
             Self::Init => {
                 "\
@@ -680,10 +716,18 @@ impl RuntimeCommand {
         let Some((command, rest)) = args.split_first() else {
             bail!("missing runtime command");
         };
+        if matches!(command.as_str(), "-h" | "--help") {
+            ensure_no_args(rest, command)?;
+            return Ok(Self::Help {
+                topic: HelpTopic::Top,
+            });
+        }
         if command == "help" {
-            let topic = rest
-                .first()
-                .context("help requires a runtime command or topic; use `anneal help agent` for the agent briefing")?;
+            let Some(topic) = rest.first() else {
+                return Ok(Self::Help {
+                    topic: HelpTopic::Top,
+                });
+            };
             ensure!(
                 rest.len() == 1,
                 "help accepts one runtime command, topic, or verb name; use `anneal help agent` for the agent briefing"
@@ -2844,9 +2888,10 @@ fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result
             hit.top_newer_topic_sibling
                 .as_deref()
                 .map_or_else(String::new, |top| {
+                    let handle = datalog_string_literal(&hit.handle);
                     format!(
-                        " topic=\"{} unmarked newer topical siblings (top: {})\"",
-                        hit.newer_topic_sibling_count, top
+                        " topic=\"{} unmarked newer topical siblings (top: {}; follow-up: anneal -e '? currency_suspect({}, newer).')\"",
+                        hit.newer_topic_sibling_count, top, handle
                     )
                 })
         } else {
@@ -4191,6 +4236,8 @@ mod tests {
     #[test]
     fn routes_only_runtime_commands() {
         assert!(should_handle_args(&os(&["anneal"])));
+        assert!(should_handle_args(&os(&["anneal", "--help"])));
+        assert!(should_handle_args(&os(&["anneal", "-h"])));
         assert!(should_handle_args(&os(&["anneal", "--root", ".design"])));
         assert!(should_handle_args(&os(&[
             "anneal", "--root", ".design", "context", "goal"
@@ -4271,7 +4318,7 @@ mod tests {
         assert!(should_handle_args(&os(&["anneal", "prime"])));
         assert!(should_handle_args(&os(&["anneal", "help", "check"])));
         assert!(should_handle_args(&os(&["anneal", "--version"])));
-        assert!(!should_handle_args(&os(&["anneal", "--help"])));
+        assert!(should_handle_args(&os(&["anneal", "--help"])));
         assert!(should_handle_args(&os(&["anneal", "check", "--json"])));
         assert!(!should_handle_args(&os(&["anneal", "--mcp"])));
     }
@@ -4567,6 +4614,36 @@ mod tests {
                 && !HelpTopic::Status.render().contains("0.10 and earlier"),
             "status help should teach the current arrival surface"
         );
+    }
+
+    #[test]
+    fn parses_top_level_help_without_loading_corpus() {
+        for help_flag in ["--help", "-h"] {
+            let parsed =
+                Invocation::parse(os(&["anneal", "--root=.design", help_flag])).expect("parse");
+
+            assert_eq!(
+                parsed.command,
+                RuntimeCommand::Help {
+                    topic: HelpTopic::Top
+                }
+            );
+        }
+
+        let parsed = Invocation::parse(os(&["anneal", "help"])).expect("parse help");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Help {
+                topic: HelpTopic::Top
+            }
+        );
+
+        let rendered = HelpTopic::Top.render();
+        assert!(rendered.contains("Usage: anneal [OPTIONS] [COMMAND]"));
+        assert!(rendered.contains("anneal describe runtime"));
+        assert!(rendered.contains("anneal describe <axis>"));
+        assert!(rendered.contains("anneal help agent"));
+        assert!(rendered.contains("anneal help eval"));
     }
 
     #[test]
@@ -5349,7 +5426,7 @@ mod tests {
         assert!(rendered.contains("Context\nGoal: find release blockers"));
         assert!(rendered.contains("Hits\n 1. plan.md"));
         assert!(rendered.contains("disposition=current_head status=active age_days=12"));
-        assert!(rendered.contains("2 unmarked newer topical siblings (top: next.md)"));
+        assert!(rendered.contains("2 unmarked newer topical siblings (top: next.md; follow-up: anneal -e '? currency_suspect(\"plan.md\", newer).')"));
         assert!(rendered.contains("summary=Release"));
         assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
         assert!(rendered.contains("Neighborhood\nplan.md:\n  current: dep.md disposition=current status=active age_days=3 degree=4"));
@@ -6081,6 +6158,8 @@ mod tests {
                     doc.contains("Visible commands: status, context, search, read, handle, schema, describe, eval, init")
                         && doc.contains("Hidden support commands: check, prime.")
                         && !doc.contains("Hidden support commands: work")
+                        && doc.contains("Dimensional map: axis(name, question, oracle, disposition)")
+                        && doc.contains("? axis_of(\"currency_suspect\", axis). -> Output: axis")
                         && doc.contains("Observed vocabulary recipes")
                         && doc.contains("? *handle{id: h, file: file}, git_mtime(file, instant). -> Output: h, file, instant")
                         && doc.contains("? changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}. -> Output: h, summary")
