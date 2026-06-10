@@ -733,15 +733,15 @@ pub(crate) fn build_graph_scoped(
         }
         all_label_candidates.extend(scan_result.label_candidates);
         for code_ref in std::mem::take(&mut scan_result.code_refs) {
-            let target = code_ref.target.clone();
-            if !external_nodes.contains_key(&target) {
+            let handle_id = code_ref.handle_id.clone();
+            if !external_nodes.contains_key(&handle_id) {
                 let node_id =
-                    graph.add_node(Handle::external(target.clone(), Some(relative.clone())));
-                external_nodes.insert(target.clone(), node_id);
+                    graph.add_node(Handle::external(handle_id.clone(), Some(relative.clone())));
+                external_nodes.insert(handle_id.clone(), node_id);
             }
             pending_edges.push(PendingEdge {
                 source: file_node,
-                target_identity: target,
+                target_identity: handle_id,
                 kind: EdgeKind::Cites,
                 inverse: false,
                 line: Some(code_ref.source_line),

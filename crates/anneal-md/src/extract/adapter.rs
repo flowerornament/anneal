@@ -1392,19 +1392,19 @@ fn emit_code_ref_meta(
     let mut seen = HashSet::new();
     let mut probe_cache = CodeTargetProbeCache::new();
     for reference in &result.code_refs {
-        if !seen.insert(reference.target.clone()) {
+        if !seen.insert(reference.handle_id.clone()) {
             continue;
         }
-        let identity = identity_for(batch, revisions, &reference.target, &reference.file);
+        let identity = identity_for(batch, revisions, &reference.handle_id, &reference.file);
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.target.clone(),
+            handle: reference.handle_id.clone(),
             key: CodeTargetMeta::EXTERNAL_CLASS.to_string(),
             value: CodeTargetMeta::CLASS_CODE.to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.target.clone(),
+            handle: reference.handle_id.clone(),
             key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
         });
@@ -1415,20 +1415,20 @@ fn emit_code_ref_meta(
         };
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.target.clone(),
+            handle: reference.handle_id.clone(),
             key: CodeTargetMeta::TARGET_EXISTS.to_string(),
             value: probe.exists.as_str().to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.target.clone(),
+            handle: reference.handle_id.clone(),
             key: CodeTargetMeta::TARGET_HISTORY_STATUS.to_string(),
             value: probe.history_status.as_str().to_string(),
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.target.clone(),
+                handle: reference.handle_id.clone(),
                 key: CodeTargetMeta::TARGET_PROBE_BASE.to_string(),
                 value: base.to_string(),
             });
@@ -1436,7 +1436,7 @@ fn emit_code_ref_meta(
         if let Some(path) = probe.resolved_path {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.target.clone(),
+                handle: reference.handle_id.clone(),
                 key: CodeTargetMeta::TARGET_RESOLVED_PATH.to_string(),
                 value: path.to_string(),
             });
@@ -1444,7 +1444,7 @@ fn emit_code_ref_meta(
         if let Some(start_line) = reference.start_line {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.target.clone(),
+                handle: reference.handle_id.clone(),
                 key: CodeTargetMeta::TARGET_START_LINE.to_string(),
                 value: start_line.to_string(),
             });
@@ -1452,7 +1452,7 @@ fn emit_code_ref_meta(
         if let Some(end_line) = reference.end_line {
             batch.meta.push(MetaFact {
                 identity,
-                handle: reference.target.clone(),
+                handle: reference.handle_id.clone(),
                 key: CodeTargetMeta::TARGET_END_LINE.to_string(),
                 value: end_line.to_string(),
             });
@@ -1787,18 +1787,21 @@ mod tests {
         )
         .expect("extract facts");
 
-        let target = "lib/example/admission.rs:142-167";
+        let handle_id = "external:code:doc.md:3:lib/example/admission.rs:142-167";
         assert!(
             batch
                 .handles
                 .iter()
-                .any(|handle| handle.id == target && handle.kind == "external"),
+                .any(|handle| handle.id == handle_id && handle.kind == "external"),
             "expected external code handle in {:?}",
             batch.handles
         );
         assert!(
             batch.edges.iter().any(|edge| {
-                edge.from == "doc.md" && edge.to == target && edge.kind == "Cites" && edge.line == 3
+                edge.from == "doc.md"
+                    && edge.to == handle_id
+                    && edge.kind == "Cites"
+                    && edge.line == 3
             }),
             "expected code Cites edge with source line in {:?}",
             batch.edges
@@ -1815,19 +1818,19 @@ mod tests {
                 batch
                     .meta
                     .iter()
-                    .any(|meta| meta.handle == target && meta.key == key && meta.value == value),
+                    .any(|meta| meta.handle == handle_id && meta.key == key && meta.value == value),
                 "missing {key}={value} metadata in {:?}",
                 batch.meta
             );
         }
         assert!(batch.meta.iter().any(|meta| {
-            meta.handle == target
+            meta.handle == handle_id
                 && meta.key == CodeTargetMeta::TARGET_PROBE_BASE
                 && meta.value == root.as_str()
         }));
         let resolved_path = root.join("lib/example/admission.rs");
         assert!(batch.meta.iter().any(|meta| {
-            meta.handle == target
+            meta.handle == handle_id
                 && meta.key == CodeTargetMeta::TARGET_RESOLVED_PATH
                 && meta.value == resolved_path.as_str()
         }));
@@ -1879,13 +1882,13 @@ mod tests {
         .expect("extract without history");
         assert_code_ref_meta(
             &without_history,
-            "lib/old.rs",
+            "external:code:doc.md:3:lib/old.rs",
             CodeTargetMeta::TARGET_EXISTS,
             "unknown",
         );
         assert_code_ref_meta(
             &without_history,
-            "lib/old.rs",
+            "external:code:doc.md:3:lib/old.rs",
             CodeTargetMeta::TARGET_HISTORY_STATUS,
             "unavailable",
         );
@@ -1903,13 +1906,13 @@ mod tests {
         .expect("extract with history");
         assert_code_ref_meta(
             &with_history,
-            "lib/old.rs",
+            "external:code:doc.md:3:lib/old.rs",
             CodeTargetMeta::TARGET_EXISTS,
             "false",
         );
         assert_code_ref_meta(
             &with_history,
-            "lib/old.rs",
+            "external:code:doc.md:3:lib/old.rs",
             CodeTargetMeta::TARGET_HISTORY_STATUS,
             "present",
         );
@@ -1934,7 +1937,11 @@ mod tests {
             &MarkdownExtractionOptions::default(),
         )
         .expect("extract without assertions");
-        let edge = cited_edge(&without_assertions, "doc.md", "src/lib.rs:1");
+        let edge = cited_edge(
+            &without_assertions,
+            "doc.md",
+            "external:code:doc.md:3:src/lib.rs:1",
+        );
         assert_eq!(edge.assertion_date, None);
         assert_eq!(edge.assertion_revision, None);
 
@@ -1949,7 +1956,11 @@ mod tests {
             },
         )
         .expect("extract with assertions");
-        let edge = cited_edge(&with_assertions, "doc.md", "src/lib.rs:1");
+        let edge = cited_edge(
+            &with_assertions,
+            "doc.md",
+            "external:code:doc.md:3:src/lib.rs:1",
+        );
         assert!(
             edge.assertion_date
                 .as_deref()

@@ -571,14 +571,17 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
         "--root",
         design.to_str().expect("utf8 design root"),
         "-e",
-        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}, *meta{handle: h, key: "target_history_status", value: history}."#,
+        r#"? *meta{handle: h, key: "target_exists", value: exists}, *meta{handle: h, key: "target_probe_base", value: base}, *meta{handle: h, key: "target_history_status", value: history}, *meta{handle: h, key: "target_path", value: path}."#,
         "--format=json",
     ]);
     let meta_rows = json_rows(&meta);
     let repo = repo.to_string_lossy().into_owned();
     assert!(
         meta_rows.iter().any(|row| {
-            row["h"] == "lib/live.rs"
+            row["h"]
+                .as_str()
+                .is_some_and(|h| h.starts_with("external:code:"))
+                && row["path"] == "lib/live.rs"
                 && row["exists"] == "true"
                 && row["history"] == "present"
                 && row["base"] == repo
@@ -587,7 +590,10 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     );
     assert!(
         meta_rows.iter().any(|row| {
-            row["h"] == "lib/missing.rs"
+            row["h"]
+                .as_str()
+                .is_some_and(|h| h.starts_with("external:code:"))
+                && row["path"] == "lib/missing.rs"
                 && row["exists"] == "false"
                 && row["history"] == "present"
                 && row["base"] == repo
@@ -596,7 +602,10 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     );
     assert!(
         meta_rows.iter().any(|row| {
-            row["h"] == "lib/never.rs"
+            row["h"]
+                .as_str()
+                .is_some_and(|h| h.starts_with("external:code:"))
+                && row["path"] == "lib/never.rs"
                 && row["exists"] == "unknown"
                 && row["history"] == "absent"
                 && row["base"] == repo

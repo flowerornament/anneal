@@ -89,6 +89,7 @@ pub(crate) struct HeadingSpan {
 /// An in-repo code path reference discovered from markdown body text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CodePathRef {
+    pub(crate) handle_id: String,
     pub(crate) file: String,
     pub(crate) target: String,
     pub(crate) path: String,
@@ -989,7 +990,9 @@ fn record_normalized_code_path_ref(
         (_, end) => end,
     };
     let target = code_ref_target(path, start_line, end_line);
+    let handle_id = code_ref_handle_id(file_path_str, source_line, &target);
     result.code_refs.push(CodePathRef {
+        handle_id: handle_id.clone(),
         file: file_path_str.to_string(),
         target: target.clone(),
         path: path.to_string(),
@@ -998,7 +1001,7 @@ fn record_normalized_code_path_ref(
         source_line,
     });
     discovered_refs.push(DiscoveredRef {
-        raw: target,
+        raw: handle_id,
         hint: RefHint::External,
         source: RefSource::Body,
         edge_kind: EdgeKind::Cites,
@@ -1008,6 +1011,10 @@ fn record_normalized_code_path_ref(
             line: source_line,
         }),
     });
+}
+
+fn code_ref_handle_id(file_path: &str, source_line: u32, target: &str) -> String {
+    format!("external:code:{file_path}:{source_line}:{target}")
 }
 
 fn code_ref_target(path: &str, start_line: Option<u32>, end_line: Option<u32>) -> String {
