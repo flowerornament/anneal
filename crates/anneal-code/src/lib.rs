@@ -24,6 +24,7 @@ use rustdoc_types::{
 use serde_json::Value as JsonValue;
 
 const SOURCE_NAME: &str = "code";
+const DEFAULT_SOURCE_EXTENSIONS: &[&str] = &["rs", "ex", "exs"];
 const DEFAULT_CONTENT_BUDGET_BYTES: usize = 1024 * 1024;
 const DEFAULT_MEMBER_DOC_BUDGET_BYTES: usize = 16 * 1024;
 
@@ -33,6 +34,7 @@ mod config_key {
     pub(super) const EEP48_DOC_CHUNK: &str = "code.eep48_doc_chunk";
     pub(super) const RUSTDOC_JSON: &str = "code.rustdoc_json";
     pub(super) const SOURCE_ROOT: &str = "code.source_root";
+    pub(super) const SOURCE_EXTENSION: &str = "code.source_extension";
     pub(super) const PACKAGE: &str = "code.package";
     pub(super) const ARTIFACT_MANIFEST: &str = "code.artifact_manifest";
     pub(super) const ARTIFACT_REVISION: &str = "code.artifact_revision";
@@ -133,6 +135,7 @@ impl Source for CodeSource {
                 ConfigKey::optional_exact(config_key::EEP48_DOC_CHUNK, 1),
                 ConfigKey::optional_exact(config_key::RUSTDOC_JSON, 1),
                 ConfigKey::optional_exact(config_key::SOURCE_ROOT, 1),
+                ConfigKey::optional(config_key::SOURCE_EXTENSION),
                 ConfigKey::optional_exact(config_key::PACKAGE, 1),
                 ConfigKey::optional_exact(config_key::ARTIFACT_MANIFEST, 1),
                 ConfigKey::optional_exact(config_key::ARTIFACT_REVISION, 1),
@@ -195,7 +198,11 @@ impl Source for CodeSource {
             {
                 ensure_source_root_within_project(root, &config.source_root)?;
             }
-            let classification = SourceTreeClassification::scan(root, &config.source_root)?;
+            let classification = SourceTreeClassification::scan(
+                root,
+                &config.source_root,
+                &config.source_extensions,
+            )?;
             for artifact in &config.artifacts {
                 let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
                 root_batch.append(batch);
@@ -226,6 +233,7 @@ struct CodeDiscoveryConfig {
     eep48_beam_dirs: Vec<Utf8PathBuf>,
     eep48_doc_chunks: Vec<Utf8PathBuf>,
     source_root: Utf8PathBuf,
+    source_extensions: Vec<String>,
     package: Option<String>,
     manifest: Option<Utf8PathBuf>,
     artifact_revision: Option<String>,
@@ -256,6 +264,17 @@ impl CodeDiscoveryConfig {
             .map(valid_source_root)
             .transpose()?
             .unwrap_or_else(|| Utf8PathBuf::from("."));
+        let mut source_extensions = facts
+            .values(config_key::SOURCE_EXTENSION)
+            .map(|value| value.trim().trim_start_matches('.').to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if source_extensions.is_empty() {
+            source_extensions = DEFAULT_SOURCE_EXTENSIONS
+                .iter()
+                .map(|ext| (*ext).to_string())
+                .collect();
+        }
         let manifest = facts
             .first(config_key::ARTIFACT_MANIFEST)
             .map(valid_relative_path)
@@ -283,6 +302,7 @@ impl CodeDiscoveryConfig {
             eep48_beam_dirs,
             eep48_doc_chunks,
             source_root,
+            source_extensions,
             package,
             manifest,
             artifact_revision,
@@ -946,7 +966,11 @@ struct ProtocolImpl {
 }
 
 impl SourceTreeClassification {
-    fn scan(root: &Utf8Path, source_root: &Utf8Path) -> Result<Self, SourceError> {
+    fn scan(
+        root: &Utf8Path,
+        source_root: &Utf8Path,
+        extensions: &[String],
+    ) -> Result<Self, SourceError> {
         let joined = root.join(source_root);
         // Canonicalize so a climbing source root ("..") yields a stable base;
         // handle ids are relative to this base — the path space citations use.
@@ -956,7 +980,7 @@ impl SourceTreeClassification {
             protocol_impls: Vec::new(),
             tags: git_version_tags(&source_abs),
         };
-        scan_source_dir(&source_abs, &source_abs, &mut out)?;
+        scan_source_dir(&source_abs, &source_abs, extensions, &mut out)?;
         Ok(out)
     }
 
@@ -2519,6 +2543,7 @@ fn package_root_file(root: &Utf8Path, source_root: &Utf8Path) -> String {
 fn scan_source_dir(
     base: &Utf8Path,
     dir: &Utf8Path,
+    extensions: &[String],
     out: &mut SourceTreeClassification,
 ) -> Result<(), SourceError> {
     let entries = fs::read_dir(dir).map_err(|source| SourceError::io(dir, source))?;
@@ -2544,10 +2569,13 @@ fn scan_source_dir(
             continue;
         }
         if path.is_dir() {
-            scan_source_dir(base, &path, out)?;
+            scan_source_dir(base, &path, extensions, out)?;
             continue;
         }
-        if !matches!(path.extension(), Some("rs" | "ex" | "exs")) {
+        if !path
+            .extension()
+            .is_some_and(|ext| extensions.iter().any(|allowed| allowed == ext))
+        {
             continue;
         }
         let Some(relative) = normalize_path_inside_root(base, &path) else {
@@ -3725,6 +3753,38 @@ mod tests {
         assert!(batch.concerns.iter().any(|concern| {
             concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
         }));
+    }
+
+    #[test]
+    fn source_extension_config_widens_the_file_level_scan() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir_all(root.join("scripts")).expect("create scripts");
+        fs::write(root.join("scripts/tool.py"), "# TODO: port me\n").expect("write py");
+        fs::write(root.join("scripts/build.rs"), "fn main() {}\n").expect("write rs");
+        let config = ConfigFacts::try_from_entries(vec![
+            ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+            ConfigEntry::scalar(config_key::SOURCE_EXTENSION, "py"),
+        ])
+        .expect("config facts");
+
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("code extraction");
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|handle| handle.id == "scripts/tool.py"),
+            "configured extension is scanned"
+        );
+        assert!(
+            !batch
+                .handles
+                .iter()
+                .any(|handle| handle.id == "scripts/build.rs"),
+            "explicit extension config replaces the default set"
+        );
     }
 
     #[test]
