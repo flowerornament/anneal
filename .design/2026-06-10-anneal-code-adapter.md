@@ -262,22 +262,45 @@ rules the Elixir data bends.** herald is also the second
 self-corpus-style milestone: its `.design` is the named mass-staleness
 case, so the joint graph lands there with the drift profile leading.
 
-Implementation slicing (gated by the sim):
+Implementation slicing (gated by the sim), with the **structural
+containments** built in — each slice names the spaghetti vector it owns and
+the rule that contains it. **No slice exempts itself from the loop** (design
+→ review → lock → implement → gate → coordinator-verifies-against-the-sim),
+including slices that feel mechanical — momentum is the process risk.
 
-0. **`ji1s` EEP-48 sim** — the contract gate (above).
+0. **`ji1s` EEP-48 sim** — the contract gate (above). ✅ PASSED 2026-06-10
+   (contract survives Elixir unmodified; operational findings recorded on
+   the epic).
 1. **CR-D8 `assertion_date`/`assertion_revision`** (schema + store +
-   markdown blame population, incremental) — independently valuable,
-   smallest, unblocks drift facts; the blast-radius slice, gated hard (§5).
+   markdown blame population, incremental) — the blast-radius slice, gated
+   hard (§5). **Containment: blame population is ONE SEAM** — a decoration
+   step inside the markdown batch with a single clear interface; caching/
+   incremental tracking lives behind that seam, never sprinkled through the
+   adapter. Horizontal schema tendrils are the named vector; nullable-and-
+   invisible is verified, not assumed.
 2. **anneal-code layer 1, Rust** (rustdoc-types ingestion → FactBatch; the
    crate skeleton implements `Source` against the sim-proven §2 contract).
+   **Containment: the layers stay pure functions to FactBatch** — layer 1
+   and layer 2 may not call each other; the composite is assembled in one
+   place. Plus the content-volume budget question (ji1s: herald member docs
+   are 5.8MB) is answered at this slice's design, not discovered at slice 5.
 3. **Layer 2 classification** (+ lattice profile, obligations, version tags)
-   — built tree-sitter/ast-grep-portable from the start.
-4. **The resolver + drift refresh step** (joint-graph federation over the
-   anneal self-corpus; surfaces lead with the aggregate drift profile;
-   `describe code` teaches that code handles are API/documentation handles
-   — `read` returns signature + docs, bodies live at `origin_uri`).
+   — built tree-sitter/ast-grep-portable from the start; same purity rule.
+4a. **The refresh-mechanism + federation-minimum DESIGN PASS — blocking,
+   its own loop.** The drift refresh step is the arc's only genuinely novel
+   runtime mechanism (a transaction producing facts from git evidence); if
+   it is not designed as one first-class mechanism it becomes a second
+   ingestion path — the worst spaghetti this arc can grow. Likewise the
+   federation minimum (two roots, one query space) is a design question
+   answered against §53's schema, never an ad-hoc CLI hack. **No 4b code
+   before 4a locks.**
+4b. **The resolver + drift refresh implementation** (joint-graph federation
+   over the anneal self-corpus; surfaces lead with the aggregate drift
+   profile; `describe code` teaches that code handles are API/documentation
+   handles — `read` returns signature + docs, bodies live at `origin_uri`).
 5. **anneal-code layer 1, Elixir** (EEP-48 ingestion behind the same
-   contract) + the herald joint-graph milestone — the proof the contract
+   contract; the doc-text `Cites` parser per ji1s; hidden-volume handling
+   deliberate) + the herald joint-graph milestone — the proof the contract
    held.
 
 ## Open questions — resolved at review
