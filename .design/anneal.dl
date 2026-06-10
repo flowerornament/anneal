@@ -16,3 +16,7 @@ config suppress {
   args: ["area:String"],
   capabilities: ["read"]
 ).
+
+source code {
+  source_root("..").
+}
