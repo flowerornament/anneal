@@ -344,6 +344,17 @@ impl FactBatch {
             self.visibility.insert(native_id, visibility);
         }
     }
+
+    pub fn append(&mut self, other: Self) {
+        self.visibility.extend(other.visibility);
+        self.handles.extend(other.handles);
+        self.edges.extend(other.edges);
+        self.content.extend(other.content);
+        self.spans.extend(other.spans);
+        self.meta.extend(other.meta);
+        self.concerns.extend(other.concerns);
+        self.retractions.extend(other.retractions);
+    }
 }
 
 #[cfg(test)]

@@ -1040,16 +1040,18 @@ impl RuntimeSession {
         let markdown_batch = markdown_source
             .extract(&context)
             .map_err(|err| anyhow!("markdown extraction failed: {err}"))?;
-        let code_batch = code_source
-            .extract(&context)
-            .map_err(|err| anyhow!("code extraction failed: {err}"))?;
         let mut store = FactStore::default();
         store
             .merge(markdown_batch)
             .context("failed to merge markdown facts")?;
-        store
-            .merge(code_batch)
-            .context("failed to merge code facts")?;
+        if config_facts.values("code.rustdoc_json").next().is_some() {
+            let code_batch = code_source
+                .extract(&context)
+                .map_err(|err| anyhow!("code extraction failed: {err}"))?;
+            store
+                .merge(code_batch)
+                .context("failed to merge code facts")?;
+        }
         let configs = runtime_config_facts(project.as_ref(), &corpus);
         if !configs.is_empty() {
             store

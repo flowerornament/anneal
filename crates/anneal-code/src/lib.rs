@@ -5,13 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 
 use anneal_core::{
     ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
     HandleFact, MetaFact, NativeId, OriginUri, Pattern, Revision, Source, SourceCapabilities,
     SourceContext, SourceError, SourceInfo, SourceName, SpanFact, default_lexical_search_info,
-    fnv1a_64, normalize_relative_path,
+    fnv1a_64, normalize_path_inside_root, normalize_relative_path,
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use rustdoc_types::{
@@ -22,6 +23,58 @@ use serde_json::Value as JsonValue;
 const SOURCE_NAME: &str = "code";
 const DEFAULT_CONTENT_BUDGET_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MEMBER_DOC_BUDGET_BYTES: usize = 16 * 1024;
+
+mod config_key {
+    pub(super) const RUSTDOC_JSON: &str = "code.rustdoc_json";
+    pub(super) const SOURCE_ROOT: &str = "code.source_root";
+    pub(super) const PACKAGE: &str = "code.package";
+    pub(super) const ARTIFACT_MANIFEST: &str = "code.artifact_manifest";
+    pub(super) const ARTIFACT_REVISION: &str = "code.artifact_revision";
+    pub(super) const CONTENT_BUDGET_BYTES: &str = "code.content_budget_bytes";
+    pub(super) const MEMBER_DOC_BUDGET_BYTES: &str = "code.member_doc_budget_bytes";
+}
+
+mod meta_key {
+    pub(super) const QUALIFIED_NAME: &str = "code.qualified_name";
+    pub(super) const KIND: &str = "code.kind";
+    pub(super) const VISIBILITY: &str = "code.visibility";
+    pub(super) const DEPRECATED_NOTE: &str = "code.deprecated.note";
+    pub(super) const DEPRECATED_SINCE: &str = "code.deprecated.since";
+    pub(super) const PACKAGE: &str = "code.package";
+    pub(super) const ARTIFACT_PATH: &str = "code.artifact.path";
+    pub(super) const ARTIFACT_FORMAT: &str = "code.artifact.format";
+    pub(super) const ARTIFACT_FORMAT_VERSION: &str = "code.artifact.format_version";
+    pub(super) const ARTIFACT_REVISION: &str = "code.artifact.revision";
+    pub(super) const ARTIFACT_REVISION_STATE: &str = "code.artifact.revision_state";
+    pub(super) const PACKAGE_VERSION: &str = "code.package.version";
+    pub(super) const IMPLEMENTS_KIND: &str = "code.implements.kind";
+    pub(super) const IMPLEMENTS_SIGNATURE: &str = "code.implements.signature";
+    pub(super) const CONTENT_TRUNCATED: &str = "code.content_truncated";
+    pub(super) const CONTENT_BUDGET_DISPOSITION: &str = "code.content_budget_disposition";
+    pub(super) const EXTERNAL_CLASS: &str = "code.external_class";
+    pub(super) const CONTENT_BUDGET_ROOT_DISPOSITION: &str = "code.content_budget.disposition";
+    pub(super) const CONTENT_BUDGET_BYTES: &str = "code.content_budget.bytes";
+    pub(super) const MEMBER_DOC_ITEM_BYTES: &str = "code.content_budget.member_doc_item_bytes";
+    pub(super) const DOC_BYTES: &str = "code.content.doc_bytes";
+    pub(super) const MEMBER_DOC_BYTES: &str = "code.content.member_doc_bytes";
+    pub(super) const STRUCTURAL_DOC_BYTES: &str = "code.content.structural_doc_bytes";
+    pub(super) const SIGNATURE_BYTES: &str = "code.content.signature_bytes";
+}
+
+mod relation_value {
+    pub(super) const ARTIFACT_REVISION_UNKNOWN: &str = "artifact_revision_unknown";
+    pub(super) const BUDGET_COMPLETE: &str = "complete";
+    pub(super) const BUDGET_TRUNCATED: &str = "truncated";
+    pub(super) const FIRST_PARAGRAPH: &str = "first_paragraph";
+    pub(super) const PER_ITEM_CAP: &str = "per_item_cap";
+}
+
+mod edge_kind {
+    pub(super) const CONTAINS: &str = "Contains";
+    pub(super) const CITES: &str = "Cites";
+    pub(super) const IMPLEMENTS: &str = "Implements";
+    pub(super) const USES_TYPE: &str = "UsesType";
+}
 
 /// Rustdoc JSON `Source` implementation.
 #[derive(Clone, Debug, Default)]
@@ -34,13 +87,13 @@ impl Source for CodeSource {
             recognizes: vec![Pattern::new("**/*.json")],
             doc: "Extracts pre-built rustdoc JSON artifacts into code graph facts.",
             config_keys: vec![
-                ConfigKey::optional_exact("code.rustdoc_json", 1),
-                ConfigKey::optional_exact("code.source_root", 1),
-                ConfigKey::optional_exact("code.package", 1),
-                ConfigKey::optional_exact("code.artifact_manifest", 1),
-                ConfigKey::optional_exact("code.artifact_revision", 1),
-                ConfigKey::optional_exact("code.content_budget_bytes", 1),
-                ConfigKey::optional_exact("code.member_doc_budget_bytes", 1),
+                ConfigKey::optional_exact(config_key::RUSTDOC_JSON, 1),
+                ConfigKey::optional_exact(config_key::SOURCE_ROOT, 1),
+                ConfigKey::optional_exact(config_key::PACKAGE, 1),
+                ConfigKey::optional_exact(config_key::ARTIFACT_MANIFEST, 1),
+                ConfigKey::optional_exact(config_key::ARTIFACT_REVISION, 1),
+                ConfigKey::optional_exact(config_key::CONTENT_BUDGET_BYTES, 1),
+                ConfigKey::optional_exact(config_key::MEMBER_DOC_BUDGET_BYTES, 1),
             ],
             capabilities: SourceCapabilities {
                 supports_git_ref: false,
@@ -73,16 +126,14 @@ impl Source for CodeSource {
 
         for root in cx.roots {
             cx.cancellation.check()?;
+            let manifest = config
+                .manifest
+                .as_ref()
+                .map(|path| read_manifest(root, path))
+                .transpose()?;
             for artifact in &config.artifacts {
-                let batch = extract_rustdoc(root, cx, &config, artifact)?;
-                combined.visibility.extend(batch.visibility);
-                combined.handles.extend(batch.handles);
-                combined.edges.extend(batch.edges);
-                combined.content.extend(batch.content);
-                combined.spans.extend(batch.spans);
-                combined.meta.extend(batch.meta);
-                combined.concerns.extend(batch.concerns);
-                combined.retractions.extend(batch.retractions);
+                let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
+                combined.append(batch);
             }
         }
         Ok(combined)
@@ -103,31 +154,31 @@ struct CodeDiscoveryConfig {
 impl CodeDiscoveryConfig {
     fn from_facts(facts: &ConfigFacts) -> Result<Self, SourceError> {
         let artifacts = facts
-            .values("code.rustdoc_json")
+            .values(config_key::RUSTDOC_JSON)
             .map(valid_relative_path)
             .collect::<Result<Vec<_>, _>>()?;
         let source_root = facts
-            .first("code.source_root")
+            .first(config_key::SOURCE_ROOT)
             .map(valid_relative_path)
             .transpose()?
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         let manifest = facts
-            .first("code.artifact_manifest")
+            .first(config_key::ARTIFACT_MANIFEST)
             .map(valid_relative_path)
             .transpose()?;
-        let package = facts.first("code.package").map(ToOwned::to_owned);
+        let package = facts.first(config_key::PACKAGE).map(ToOwned::to_owned);
         let artifact_revision = facts
-            .first("code.artifact_revision")
+            .first(config_key::ARTIFACT_REVISION)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
         let content_budget_bytes = facts
-            .first("code.content_budget_bytes")
+            .first(config_key::CONTENT_BUDGET_BYTES)
             .map(parse_usize_config)
             .transpose()?
             .unwrap_or(DEFAULT_CONTENT_BUDGET_BYTES);
         let member_doc_budget_bytes = facts
-            .first("code.member_doc_budget_bytes")
+            .first(config_key::MEMBER_DOC_BUDGET_BYTES)
             .map(parse_usize_config)
             .transpose()?
             .unwrap_or(DEFAULT_MEMBER_DOC_BUDGET_BYTES);
@@ -162,32 +213,24 @@ fn extract_rustdoc(
     root: &Utf8Path,
     cx: &SourceContext<'_>,
     config: &CodeDiscoveryConfig,
+    manifest: Option<&ArtifactManifest>,
     artifact: &Utf8Path,
 ) -> Result<FactBatch, SourceError> {
     let artifact_path = root.join(artifact);
-    let artifact_text = fs::read_to_string(&artifact_path)
-        .map_err(|source| SourceError::io(&artifact_path, source))?;
-    let rustdoc: RustdocCrate = serde_json::from_str(&artifact_text)
+    let artifact_file =
+        File::open(&artifact_path).map_err(|source| SourceError::io(&artifact_path, source))?;
+    let rustdoc: RustdocCrate = serde_json::from_reader(BufReader::new(artifact_file))
         .map_err(|source| SourceError::Other(format!("{artifact_path}: {source}")))?;
 
-    let manifest = config
-        .manifest
-        .as_ref()
-        .map(|path| read_manifest(root, path))
-        .transpose()?;
     let source_revision = config
         .artifact_revision
         .clone()
-        .or_else(|| {
-            manifest
-                .as_ref()
-                .and_then(ArtifactManifest::source_revision)
-        })
-        .unwrap_or_else(|| "artifact_revision_unknown".to_string());
+        .or_else(|| manifest.and_then(ArtifactManifest::source_revision))
+        .unwrap_or_else(|| relation_value::ARTIFACT_REVISION_UNKNOWN.to_string());
     let package = config
         .package
         .clone()
-        .or_else(|| manifest.as_ref().and_then(ArtifactManifest::package_name))
+        .or_else(|| manifest.and_then(ArtifactManifest::package_name))
         .or_else(|| crate_name_from_root(&rustdoc))
         .unwrap_or_else(|| "rustdoc".to_string());
 
@@ -405,44 +448,44 @@ impl<'a> RustdocProjector<'a> {
             batch,
             &identity,
             &self.package_handle,
-            "code.package",
+            meta_key::PACKAGE,
             &self.package,
         );
         Self::push_meta(
             batch,
             &identity,
             &self.package_handle,
-            "code.artifact.path",
+            meta_key::ARTIFACT_PATH,
             self.artifact.as_str(),
         );
         Self::push_meta(
             batch,
             &identity,
             &self.package_handle,
-            "code.artifact.format",
+            meta_key::ARTIFACT_FORMAT,
             "rustdoc-json",
         );
         Self::push_meta(
             batch,
             &identity,
             &self.package_handle,
-            "code.artifact.format_version",
+            meta_key::ARTIFACT_FORMAT_VERSION,
             &self.rustdoc.format_version.to_string(),
         );
         Self::push_meta(
             batch,
             &identity,
             &self.package_handle,
-            "code.artifact.revision",
+            meta_key::ARTIFACT_REVISION,
             &self.revision_text,
         );
-        if self.revision_text == "artifact_revision_unknown" {
+        if self.revision_text == relation_value::ARTIFACT_REVISION_UNKNOWN {
             Self::push_meta(
                 batch,
                 &identity,
                 &self.package_handle,
-                "code.artifact.revision_state",
-                "artifact_revision_unknown",
+                meta_key::ARTIFACT_REVISION_STATE,
+                relation_value::ARTIFACT_REVISION_UNKNOWN,
             );
         }
         if let Some(version) = &self.rustdoc.crate_version {
@@ -450,7 +493,7 @@ impl<'a> RustdocProjector<'a> {
                 batch,
                 &identity,
                 &self.package_handle,
-                "code.package.version",
+                meta_key::PACKAGE_VERSION,
                 version,
             );
         }
@@ -489,21 +532,27 @@ impl<'a> RustdocProjector<'a> {
             });
 
             let identity = self.identity_for(batch, handle, &file);
-            Self::push_meta(batch, &identity, handle, "code.qualified_name", &qualified);
-            Self::push_meta(batch, &identity, handle, "code.kind", kind);
             Self::push_meta(
                 batch,
                 &identity,
                 handle,
-                "code.visibility",
+                meta_key::QUALIFIED_NAME,
+                &qualified,
+            );
+            Self::push_meta(batch, &identity, handle, meta_key::KIND, kind);
+            Self::push_meta(
+                batch,
+                &identity,
+                handle,
+                meta_key::VISIBILITY,
                 visibility_name(&item.visibility),
             );
             if let Some(deprecation) = &item.deprecation {
                 if let Some(note) = &deprecation.note {
-                    Self::push_meta(batch, &identity, handle, "code.deprecated.note", note);
+                    Self::push_meta(batch, &identity, handle, meta_key::DEPRECATED_NOTE, note);
                 }
                 if let Some(since) = &deprecation.since {
-                    Self::push_meta(batch, &identity, handle, "code.deprecated.since", since);
+                    Self::push_meta(batch, &identity, handle, meta_key::DEPRECATED_SINCE, since);
                 }
             }
         }
@@ -517,7 +566,7 @@ impl<'a> RustdocProjector<'a> {
             };
             for child_id in direct_children(&item.inner) {
                 if let Some(child) = self.local_handles.get(&child_id) {
-                    self.push_edge(batch, parent, child, "Contains", item, ordinal);
+                    self.push_edge(batch, parent, child, edge_kind::CONTAINS, item, ordinal);
                     ordinal += 1;
                 }
             }
@@ -543,7 +592,7 @@ impl<'a> RustdocProjector<'a> {
                     continue;
                 }
                 let target = self.handle_for_target(batch, target_id);
-                self.push_edge(batch, &from, &target, "UsesType", item, ordinal);
+                self.push_edge(batch, &from, &target, edge_kind::USES_TYPE, item, ordinal);
                 ordinal += 1;
             }
         }
@@ -564,7 +613,7 @@ impl<'a> RustdocProjector<'a> {
                 .expect("indexed local item exists");
             for target_id in item.links.values().copied() {
                 let target = self.handle_for_target(batch, target_id);
-                self.push_edge(batch, &from, &target, "Cites", item, ordinal);
+                self.push_edge(batch, &from, &target, edge_kind::CITES, item, ordinal);
                 ordinal += 1;
             }
         }
@@ -587,21 +636,21 @@ impl<'a> RustdocProjector<'a> {
             };
             let from = self.handle_for_impl_type(batch, &impl_.for_);
             let to = self.handle_for_target(batch, trait_.id);
-            let edge = self.push_edge(batch, &from, &to, "Implements", &item, ordinal);
+            let edge = self.push_edge(batch, &from, &to, edge_kind::IMPLEMENTS, &item, ordinal);
             let file = self.item_file(&item).unwrap_or_default();
             let identity = self.identity_for(batch, &edge, &file);
             Self::push_meta(
                 batch,
                 &identity,
                 &edge,
-                "code.implements.kind",
+                meta_key::IMPLEMENTS_KIND,
                 impl_kind(&impl_),
             );
             Self::push_meta(
                 batch,
                 &identity,
                 &edge,
-                "code.implements.signature",
+                meta_key::IMPLEMENTS_SIGNATURE,
                 &impl_signature(&impl_),
             );
             ordinal += 1;
@@ -669,12 +718,18 @@ impl<'a> RustdocProjector<'a> {
             });
             if let Some(disposition) = disposition {
                 let identity = self.identity_for(batch, &handle, &file);
-                Self::push_meta(batch, &identity, &handle, "code.content_truncated", "true");
                 Self::push_meta(
                     batch,
                     &identity,
                     &handle,
-                    "code.content_budget_disposition",
+                    meta_key::CONTENT_TRUNCATED,
+                    "true",
+                );
+                Self::push_meta(
+                    batch,
+                    &identity,
+                    &handle,
+                    meta_key::CONTENT_BUDGET_DISPOSITION,
                     disposition,
                 );
             }
@@ -682,7 +737,7 @@ impl<'a> RustdocProjector<'a> {
     }
 
     fn budgeted_docs<'b>(&self, item: &Item, docs: &'b str) -> (&'b str, Option<&'static str>) {
-        if docs.is_empty() || self.budget.disposition == "complete" {
+        if docs.is_empty() || self.budget.disposition == relation_value::BUDGET_COMPLETE {
             return (docs, None);
         }
         if !is_member_item(item.inner.item_kind()) {
@@ -693,11 +748,11 @@ impl<'a> RustdocProjector<'a> {
         }
         let paragraph = first_paragraph(docs);
         if !paragraph.is_empty() && paragraph.len() <= self.member_doc_budget_bytes {
-            return (paragraph, Some("first_paragraph"));
+            return (paragraph, Some(relation_value::FIRST_PARAGRAPH));
         }
         (
             truncate_at_char_boundary(docs, self.member_doc_budget_bytes),
-            Some("per_item_cap"),
+            Some(relation_value::PER_ITEM_CAP),
         )
     }
 
@@ -726,9 +781,9 @@ impl<'a> RustdocProjector<'a> {
         }
         report.disposition =
             if report.doc_bytes + report.signature_bytes > self.content_budget_bytes {
-                "truncated".to_string()
+                relation_value::BUDGET_TRUNCATED.to_string()
             } else {
-                "complete".to_string()
+                relation_value::BUDGET_COMPLETE.to_string()
             };
         report
     }
@@ -737,28 +792,28 @@ impl<'a> RustdocProjector<'a> {
         let identity = self.identity_for(batch, &self.package_handle, &self.package_handle);
         let values = [
             (
-                "code.content_budget.disposition",
+                meta_key::CONTENT_BUDGET_ROOT_DISPOSITION,
                 self.budget.disposition.as_str(),
             ),
             (
-                "code.content_budget.bytes",
+                meta_key::CONTENT_BUDGET_BYTES,
                 &self.budget.content_budget_bytes.to_string(),
             ),
             (
-                "code.content_budget.member_doc_item_bytes",
+                meta_key::MEMBER_DOC_ITEM_BYTES,
                 &self.budget.member_doc_budget_bytes.to_string(),
             ),
-            ("code.content.doc_bytes", &self.budget.doc_bytes.to_string()),
+            (meta_key::DOC_BYTES, &self.budget.doc_bytes.to_string()),
             (
-                "code.content.member_doc_bytes",
+                meta_key::MEMBER_DOC_BYTES,
                 &self.budget.member_doc_bytes.to_string(),
             ),
             (
-                "code.content.structural_doc_bytes",
+                meta_key::STRUCTURAL_DOC_BYTES,
                 &self.budget.structural_doc_bytes.to_string(),
             ),
             (
-                "code.content.signature_bytes",
+                meta_key::SIGNATURE_BYTES,
                 &self.budget.signature_bytes.to_string(),
             ),
         ];
@@ -818,8 +873,20 @@ impl<'a> RustdocProjector<'a> {
             area: String::new(),
             summary: qualified.to_string(),
         });
-        Self::push_meta(batch, &identity, handle, "code.qualified_name", qualified);
-        Self::push_meta(batch, &identity, handle, "code.external_class", "code");
+        Self::push_meta(
+            batch,
+            &identity,
+            handle,
+            meta_key::QUALIFIED_NAME,
+            qualified,
+        );
+        Self::push_meta(
+            batch,
+            &identity,
+            handle,
+            meta_key::EXTERNAL_CLASS,
+            SOURCE_NAME,
+        );
     }
 
     fn push_edge(
@@ -897,7 +964,7 @@ struct ContentBudgetReport {
 impl Default for ContentBudgetReport {
     fn default() -> Self {
         Self {
-            disposition: "complete".to_string(),
+            disposition: relation_value::BUDGET_COMPLETE.to_string(),
             content_budget_bytes: DEFAULT_CONTENT_BUDGET_BYTES,
             member_doc_budget_bytes: DEFAULT_MEMBER_DOC_BUDGET_BYTES,
             doc_bytes: 0,
@@ -934,12 +1001,8 @@ fn normalize_span_filename(
     filename: &std::path::Path,
 ) -> Option<String> {
     let path = Utf8PathBuf::from_path_buf(filename.to_path_buf()).ok()?;
-    let source_abs = root.join(source_root);
     let relative = if path.is_absolute() {
-        path.strip_prefix(&source_abs)
-            .ok()
-            .map(|stripped| source_root.join(stripped))
-            .or_else(|| path.strip_prefix(root).ok().map(ToOwned::to_owned))?
+        normalize_path_inside_root(root, &path)?
     } else if path.starts_with(source_root) {
         path
     } else {
@@ -1451,10 +1514,10 @@ mod tests {
         fs::create_dir_all(root.join("target/doc")).expect("create target doc");
         write_fixture(&root);
         let config = ConfigFacts::try_from_entries(vec![
-            ConfigEntry::scalar("code.rustdoc_json", "target/doc/demo.json"),
-            ConfigEntry::scalar("code.source_root", "."),
-            ConfigEntry::scalar("code.package", "demo"),
-            ConfigEntry::scalar("code.artifact_revision", "abc123"),
+            ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+            ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+            ConfigEntry::scalar(config_key::PACKAGE, "demo"),
+            ConfigEntry::scalar(config_key::ARTIFACT_REVISION, "abc123"),
         ])
         .expect("config facts");
 
@@ -1476,22 +1539,26 @@ mod tests {
         );
         assert!(batch.meta.iter().any(|meta| {
             meta.handle == widget.id
-                && meta.key == "code.qualified_name"
+                && meta.key == meta_key::QUALIFIED_NAME
                 && meta.value == "demo::Widget"
         }));
         assert!(batch.edges.iter().any(|edge| {
-            edge.from == widget.id && edge.kind == "Cites" && edge.to.contains("demo::Other")
+            edge.from == widget.id
+                && edge.kind == edge_kind::CITES
+                && edge.to.contains("demo::Other")
         }));
         assert!(batch.edges.iter().any(|edge| {
-            edge.kind == "UsesType" && edge.from.contains("demo::make") && edge.to == widget.id
+            edge.kind == edge_kind::USES_TYPE
+                && edge.from.contains("demo::make")
+                && edge.to == widget.id
         }));
         assert!(batch.content.iter().any(|content| {
             content.handle == widget.id && content.text.contains("Widget docs")
         }));
         assert!(batch.meta.iter().any(|meta| {
             meta.handle == "Cargo.toml"
-                && meta.key == "code.content_budget.disposition"
-                && meta.value == "complete"
+                && meta.key == meta_key::CONTENT_BUDGET_ROOT_DISPOSITION
+                && meta.value == relation_value::BUDGET_COMPLETE
         }));
     }
 
@@ -1502,9 +1569,9 @@ mod tests {
         fs::create_dir_all(root.join("target/doc")).expect("create target doc");
         write_fixture(&root);
         let config = ConfigFacts::try_from_entries(vec![
-            ConfigEntry::scalar("code.rustdoc_json", "target/doc/demo.json"),
-            ConfigEntry::scalar("code.content_budget_bytes", "1"),
-            ConfigEntry::scalar("code.member_doc_budget_bytes", "8"),
+            ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+            ConfigEntry::scalar(config_key::CONTENT_BUDGET_BYTES, "1"),
+            ConfigEntry::scalar(config_key::MEMBER_DOC_BUDGET_BYTES, "8"),
         ])
         .expect("config facts");
 
@@ -1514,13 +1581,13 @@ mod tests {
 
         assert!(batch.meta.iter().any(|meta| {
             meta.handle == "Cargo.toml"
-                && meta.key == "code.content_budget.disposition"
-                && meta.value == "truncated"
+                && meta.key == meta_key::CONTENT_BUDGET_ROOT_DISPOSITION
+                && meta.value == relation_value::BUDGET_TRUNCATED
         }));
         assert!(batch.meta.iter().any(|meta| {
             meta.handle.contains("demo::make")
-                && meta.key == "code.content_budget_disposition"
-                && meta.value == "per_item_cap"
+                && meta.key == meta_key::CONTENT_BUDGET_DISPOSITION
+                && meta.value == relation_value::PER_ITEM_CAP
         }));
     }
 }

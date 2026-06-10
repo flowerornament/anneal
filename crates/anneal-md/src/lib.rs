@@ -130,14 +130,7 @@ impl Source for MarkdownSource {
                 )
             }
             .map_err(|err| SourceError::Other(err.to_string()))?;
-            combined.visibility.extend(batch.visibility);
-            combined.handles.extend(batch.handles);
-            combined.edges.extend(batch.edges);
-            combined.content.extend(batch.content);
-            combined.spans.extend(batch.spans);
-            combined.meta.extend(batch.meta);
-            combined.concerns.extend(batch.concerns);
-            combined.retractions.extend(batch.retractions);
+            combined.append(batch);
         }
         Ok(combined)
     }
