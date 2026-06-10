@@ -50,7 +50,7 @@ topic_nondiscriminative_target(t) :=
 
 @doc(
   name: "topic_shared_target",
-  doc: "Return canonical file pairs that share one discriminative citation target. Pairs are ordered with left < right to avoid symmetric duplicates."
+  doc: "Return canonical non-hub file pairs that share one discriminative citation target. Pairs are ordered with left < right to avoid symmetric duplicates."
 ).
 topic_shared_target(left, right, t) :=
   *edge{from: left, to: t, kind: "Cites"},
@@ -59,6 +59,8 @@ topic_shared_target(left, right, t) :=
   *handle{id: right, kind: "file"},
   topic_citation_target(t),
   left < right,
+  not orientation_curated_hub(left),
+  not orientation_curated_hub(right),
   not topic_nondiscriminative_target(t).
 
 @doc(

@@ -1836,6 +1836,8 @@ mod tests {
             edge(&scope, "topic/new.md", "target/b", "Cites", 2),
             edge(&scope, "topic/old.md", "LABELS.md", "Cites", 3),
             edge(&scope, "topic/new.md", "LABELS.md", "Cites", 3),
+            edge(&scope, "LABELS.md", "target/a", "Cites", 1),
+            edge(&scope, "LABELS.md", "target/b", "Cites", 2),
             edge(&scope, "topic/old.md", "target/mega", "Cites", 4),
             edge(&scope, "topic/new.md", "target/mega", "Cites", 4),
             edge(&scope, "topic/marked-old.md", "target/a", "Cites", 1),
@@ -1881,6 +1883,10 @@ mod tests {
                     r#"? topic_shared_target("topic/new.md", "topic/old.md", "LABELS.md")."#,
                 ),
                 (
+                    "labels-member-excluded",
+                    r#"? topic_pair("LABELS.md", "topic/new.md", shared)."#,
+                ),
+                (
                     "mega-excluded",
                     r#"? topic_shared_target("topic/new.md", "topic/old.md", "target/mega")."#,
                 ),
@@ -1908,6 +1914,7 @@ mod tests {
             &[("shared", int(2))]
         ));
         assert_eq!(output(&outputs, "labels-excluded").rows.len(), 0);
+        assert_eq!(output(&outputs, "labels-member-excluded").rows.len(), 0);
         assert_eq!(output(&outputs, "mega-excluded").rows.len(), 0);
         assert!(has_row(
             output(&outputs, "currency-suspect"),
