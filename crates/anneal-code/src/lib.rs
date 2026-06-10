@@ -140,6 +140,12 @@ impl Source for CodeSource {
 
         for root in cx.roots {
             cx.cancellation.check()?;
+            let mut root_batch = FactBatch::new(
+                cx.corpus.clone(),
+                SourceName::from(SOURCE_NAME),
+                FactBatchMode::FullSnapshot,
+                generation,
+            );
             let manifest = config
                 .manifest
                 .as_ref()
@@ -152,17 +158,18 @@ impl Source for CodeSource {
                 .artifact_revision
                 .as_deref()
                 .or(manifest_revision.as_deref());
-            let classification = SourceTreeClassification::scan(root, &config.source_root);
+            let classification = SourceTreeClassification::scan(root, &config.source_root)?;
             for artifact in &config.artifacts {
                 let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
-                combined.append(batch);
+                root_batch.append(batch);
             }
             classification.project(
-                &mut combined,
+                &mut root_batch,
                 root,
                 &config.source_root,
                 classification_revision,
             );
+            combined.append(root_batch);
         }
         Ok(combined)
     }
@@ -346,14 +353,14 @@ struct CodeObligation {
 }
 
 impl SourceTreeClassification {
-    fn scan(root: &Utf8Path, source_root: &Utf8Path) -> Self {
+    fn scan(root: &Utf8Path, source_root: &Utf8Path) -> Result<Self, SourceError> {
         let source_abs = root.join(source_root);
         let mut out = Self {
             files: BTreeMap::new(),
             tags: git_version_tags(&source_abs),
         };
-        scan_source_dir(root, source_root, &source_abs, &mut out);
-        out
+        scan_source_dir(root, source_root, &source_abs, &mut out)?;
+        Ok(out)
     }
 
     fn project(
@@ -498,15 +505,16 @@ impl SourceTreeClassification {
                     name: concern.to_string(),
                     member: file.clone(),
                 });
-                batch.meta.push(MetaFact {
-                    identity,
-                    handle: file.clone(),
-                    key: meta_key::OBLIGATION.to_string(),
-                    value: format!(
+                push_meta_fact(
+                    batch,
+                    &identity,
+                    file,
+                    meta_key::OBLIGATION,
+                    &format!(
                         "{}:{}:{}",
                         obligation.kind, obligation.line, obligation.text
                     ),
-                });
+                );
             }
         }
     }
@@ -519,10 +527,11 @@ impl SourceTreeClassification {
         package_handle: &str,
     ) {
         for (idx, tag) in self.tags.iter().enumerate() {
-            if !batch.handles.iter().any(|handle| handle.id == *tag) {
+            let tag_handle = version_handle_id(tag);
+            if !batch.handles.iter().any(|handle| handle.id == tag_handle) {
                 batch.handles.push(HandleFact {
-                    identity: code_identity(batch, root, revision, tag, package_handle),
-                    id: tag.clone(),
+                    identity: code_identity(batch, root, revision, &tag_handle, package_handle),
+                    id: tag_handle.clone(),
                     kind: "version".to_string(),
                     status: None,
                     namespace: SOURCE_NAME.to_string(),
@@ -546,7 +555,7 @@ impl SourceTreeClassification {
             batch.edges.push(EdgeFact {
                 identity: code_identity(batch, root, revision, &native_id, package_handle),
                 from: package_handle.to_string(),
-                to: tag.clone(),
+                to: tag_handle,
                 kind: edge_kind::CONTAINS.to_string(),
                 file: package_handle.to_string(),
                 line: 1,
@@ -1185,28 +1194,11 @@ impl<'a> RustdocProjector<'a> {
         key: &str,
         value: &str,
     ) {
-        batch.meta.push(MetaFact {
-            identity: identity.clone(),
-            handle: handle.to_string(),
-            key: key.to_string(),
-            value: value.to_string(),
-        });
+        push_meta_fact(batch, identity, handle, key, value);
     }
 
     fn identity_for(&self, batch: &FactBatch, native_id: &str, file: &str) -> FactIdentity {
-        let origin_uri = if file.is_empty() {
-            format!("rustdoc://{native_id}")
-        } else {
-            format!("file://{}", self.root.join(file))
-        };
-        FactIdentity::new(
-            batch.corpus.clone(),
-            batch.source.clone(),
-            NativeId::from(native_id.to_string()),
-            OriginUri::from(origin_uri),
-            self.revision.clone(),
-            batch.generation,
-        )
+        code_identity(batch, self.root, &self.revision, native_id, file)
     }
 }
 
@@ -1260,14 +1252,20 @@ fn scan_source_dir(
     source_root: &Utf8Path,
     dir: &Utf8Path,
     out: &mut SourceTreeClassification,
-) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
+) -> Result<(), SourceError> {
+    let entries = fs::read_dir(dir).map_err(|source| SourceError::io(dir, source))?;
     let mut paths = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
-        .collect::<Vec<_>>();
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|source| SourceError::io(dir, source))
+                .and_then(|path| {
+                    Utf8PathBuf::from_path_buf(path).map_err(|path| {
+                        SourceError::Other(format!("source path is not UTF-8: {}", path.display()))
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     paths.sort();
 
     for path in paths {
@@ -1278,7 +1276,7 @@ fn scan_source_dir(
             continue;
         }
         if path.is_dir() {
-            scan_source_dir(root, source_root, &path, out);
+            scan_source_dir(root, source_root, &path, out)?;
             continue;
         }
         if path.extension() != Some("rs") {
@@ -1292,11 +1290,12 @@ fn scan_source_dir(
             anneal_core::RelativePathPolicy::STRICT_NON_EMPTY,
         )
         .map_or_else(|| relative.to_string(), |path| path.to_string());
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = fs::read_to_string(&path).map_err(|source| SourceError::io(&path, source))?;
         let test_path = is_test_path(source_root, &relative);
         out.files
             .insert(relative, classify_source_file(&text, test_path));
     }
+    Ok(())
 }
 
 fn should_skip_source_dir(name: &str) -> bool {
@@ -1389,6 +1388,10 @@ fn git_version_tags(source_abs: &Utf8Path) -> Vec<String> {
         .collect()
 }
 
+fn version_handle_id(tag: &str) -> String {
+    format!("code-version:{tag}")
+}
+
 fn meta_values(batch: &FactBatch, key: &str) -> BTreeMap<String, String> {
     batch
         .meta
@@ -1407,8 +1410,19 @@ fn push_code_meta(
     key: &str,
     value: &str,
 ) {
+    let identity = code_identity(batch, root, revision, handle, file);
+    push_meta_fact(batch, &identity, handle, key, value);
+}
+
+fn push_meta_fact(
+    batch: &mut FactBatch,
+    identity: &FactIdentity,
+    handle: &str,
+    key: &str,
+    value: &str,
+) {
     batch.meta.push(MetaFact {
-        identity: code_identity(batch, root, revision, handle, file),
+        identity: identity.clone(),
         handle: handle.to_string(),
         key: key.to_string(),
         value: value.to_string(),
@@ -1832,9 +1846,16 @@ mod tests {
     use super::*;
 
     fn context<'a>(root: &'a Utf8PathBuf, config: &'a ConfigFacts) -> SourceContext<'a> {
+        context_for_roots(std::slice::from_ref(root), config)
+    }
+
+    fn context_for_roots<'a>(
+        roots: &'a [Utf8PathBuf],
+        config: &'a ConfigFacts,
+    ) -> SourceContext<'a> {
         SourceContext {
             corpus: CorpusId::from("test"),
-            roots: std::slice::from_ref(root),
+            roots,
             config_facts: config,
             probe_code_target_history: false,
             probe_edge_assertions: false,
@@ -2167,14 +2188,60 @@ mod tests {
             .expect("code extraction");
 
         assert!(batch.handles.iter().any(|handle| {
-            handle.id == "demo-0.1.0" && handle.kind == "version" && handle.namespace == SOURCE_NAME
+            handle.id == "code-version:demo-0.1.0"
+                && handle.kind == "version"
+                && handle.namespace == SOURCE_NAME
         }));
         assert_eq!(
             code_meta(&batch, "Cargo.toml", meta_key::VERSION_TAG),
             vec!["demo-0.1.0"]
         );
         assert!(batch.edges.iter().any(|edge| {
-            edge.from == "Cargo.toml" && edge.to == "demo-0.1.0" && edge.kind == edge_kind::CONTAINS
+            edge.from == "Cargo.toml"
+                && edge.to == "code-version:demo-0.1.0"
+                && edge.kind == edge_kind::CONTAINS
         }));
+    }
+
+    #[test]
+    fn rustdoc_source_projects_each_root_independently() {
+        let dir = tempdir().expect("tempdir");
+        let root_a = Utf8PathBuf::from_path_buf(dir.path().join("a")).expect("utf8 tempdir");
+        let root_b = Utf8PathBuf::from_path_buf(dir.path().join("b")).expect("utf8 tempdir");
+        for root in [&root_a, &root_b] {
+            fs::create_dir_all(root.join("target/doc")).expect("create target doc");
+            write_fixture(root);
+        }
+        let roots = vec![root_a, root_b];
+        let config = ConfigFacts::try_from_entries(vec![
+            ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+            ConfigEntry::scalar(config_key::ARTIFACT_REVISION, "abc123"),
+        ])
+        .expect("config facts");
+
+        let batch = CodeSource
+            .extract(&context_for_roots(&roots, &config))
+            .expect("code extraction");
+
+        assert_eq!(
+            batch
+                .handles
+                .iter()
+                .filter(|handle| handle.kind == "file" && handle.id == "src/private.rs")
+                .count(),
+            2
+        );
+        assert_eq!(
+            batch
+                .meta
+                .iter()
+                .filter(|meta| {
+                    meta.handle == "src/private.rs"
+                        && meta.key == meta_key::CLASS
+                        && meta.value == relation_value::CLASS_PRIVATE
+                })
+                .count(),
+            2
+        );
     }
 }
