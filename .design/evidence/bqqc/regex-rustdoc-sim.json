@@ -1,0 +1,227 @@
+{
+  "convergence": {
+    "latest_version_tag": "1.12.4",
+    "release_cadence_signal": "tag-history-present",
+    "version_tag_count": 30,
+    "version_tags": [
+      "1.7.2",
+      "1.7.3",
+      "1.8.0",
+      "1.8.1",
+      "1.8.2",
+      "1.8.3",
+      "1.8.4",
+      "1.9.0",
+      "1.9.1",
+      "1.9.2",
+      "1.9.3",
+      "1.9.4",
+      "1.9.5",
+      "1.9.6",
+      "1.10.0",
+      "1.10.1",
+      "1.10.2",
+      "1.10.3",
+      "1.10.4",
+      "1.10.5",
+      "1.10.6",
+      "1.11.0",
+      "1.11.1",
+      "1.11.2",
+      "1.11.3",
+      "1.12.0",
+      "1.12.1",
+      "1.12.2",
+      "1.12.3",
+      "1.12.4"
+    ]
+  },
+  "crate": "regex",
+  "crate_version": "1.12.4",
+  "currency": {
+    "deprecated_items": 0,
+    "deprecated_notes_resolvable_by_name": 0,
+    "deprecated_notes_unresolved": 0
+  },
+  "includes_private": false,
+  "items": {
+    "by_kind": {
+      "assoc_type": 40,
+      "enum": 1,
+      "function": 340,
+      "impl": 756,
+      "module": 8,
+      "struct": 37,
+      "struct_field": 4,
+      "trait": 2,
+      "use": 7,
+      "variant": 2
+    },
+    "by_visibility": {
+      "crate": 6,
+      "default": 979,
+      "public": 212
+    },
+    "span_files": 9
+  },
+  "lifecycle": {
+    "deprecated_items": 0,
+    "deprecation_notes": 0,
+    "deprecation_since_values": 0,
+    "generated_markers": 42,
+    "public_only_rustdoc": true,
+    "source_pub_crate_mentions": 584,
+    "test_files": 73
+  },
+  "obligations": {
+    "todo_fixme_count": 22,
+    "todo_fixme_files": 16
+  },
+  "recency": {
+    "first_commit_date": "2014-12-11",
+    "git_available": true,
+    "latest_commit_date": "2026-06-09",
+    "since_coverage": 0,
+    "since_values": []
+  },
+  "relevance": {
+    "doc_content_bytes": 282783,
+    "items_with_docs": 232,
+    "named_items": 434,
+    "signature_items": 380
+  },
+  "rustdoc_format_version": 57,
+  "scale": {
+    "containment_edges": 1629,
+    "doc_content_bytes": 282783,
+    "doc_link_edges": 189,
+    "edges_projected": 3011,
+    "handles_projected": 1197,
+    "public_handles_projected": 1191,
+    "source_bytes": 5507081,
+    "type_reference_edges": 1193
+  },
+  "source": {
+    "generated_markers": 42,
+    "pub_crate_mentions": 584,
+    "rust_source_files": 225,
+    "source_bytes": 5507081,
+    "test_files": 73,
+    "todo_fixme_count": 22,
+    "todo_fixme_files": 16
+  },
+  "structure_importance": {
+    "body_call_edges_available": false,
+    "containment_edges": 1629,
+    "impl_items": 756,
+    "max_containment_depth": 4,
+    "trait_items": 2,
+    "type_refs_available": true
+  },
+  "topic": {
+    "mega_targets_40": {
+      "CaptureLocations": 46,
+      "CaptureNames": 48,
+      "Captures": 66,
+      "Error": 45,
+      "Match": 80,
+      "NoExpand": 40,
+      "Option": 81,
+      "Regex": 64,
+      "RegexBuilder": 66,
+      "RegexSet": 48,
+      "RegexSetBuilder": 66,
+      "SetMatches": 48,
+      "SetMatchesIntoIter": 40,
+      "SetMatchesIter": 50,
+      "SubCaptureMatches": 48
+    },
+    "option_count": 81,
+    "result_count": 16,
+    "top_type_targets": [
+      [
+        "Option",
+        81
+      ],
+      [
+        "Match",
+        80
+      ],
+      [
+        "Captures",
+        66
+      ],
+      [
+        "RegexSetBuilder",
+        66
+      ],
+      [
+        "RegexBuilder",
+        66
+      ],
+      [
+        "Regex",
+        64
+      ],
+      [
+        "SetMatchesIter",
+        50
+      ],
+      [
+        "RegexSet",
+        48
+      ],
+      [
+        "CaptureNames",
+        48
+      ],
+      [
+        "SubCaptureMatches",
+        48
+      ],
+      [
+        "SetMatches",
+        48
+      ],
+      [
+        "CaptureLocations",
+        46
+      ],
+      [
+        "Error",
+        45
+      ],
+      [
+        "NoExpand",
+        40
+      ],
+      [
+        "SetMatchesIntoIter",
+        40
+      ],
+      [
+        "Matches",
+        38
+      ],
+      [
+        "CaptureMatches",
+        38
+      ],
+      [
+        "SplitN",
+        38
+      ],
+      [
+        "Split",
+        38
+      ],
+      [
+        "ReplacerRef",
+        34
+      ]
+    ],
+    "type_reference_edges": 1193,
+    "unique_type_targets": 37,
+    "vec_count": 12
+  }
+}
