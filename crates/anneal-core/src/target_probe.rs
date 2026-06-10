@@ -775,7 +775,10 @@ fn read_head_history_paths(base: &Utf8Path) -> Option<BTreeSet<String>> {
     )
 }
 
-fn enclosing_project_root(corpus_root: &Utf8Path) -> Option<Utf8PathBuf> {
+/// The nearest ancestor of `corpus_root` that looks like a project root
+/// (git repository or recognized workspace/package manifest). This is the
+/// boundary code-source roots and target probes may reach, never beyond.
+pub fn enclosing_project_root(corpus_root: &Utf8Path) -> Option<Utf8PathBuf> {
     let mut current = Some(corpus_root);
     while let Some(path) = current {
         if is_project_root(path) {

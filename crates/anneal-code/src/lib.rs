@@ -117,6 +117,7 @@ impl CodeSource {
             || config.values(config_key::EEP48_BEAM).next().is_some()
             || config.values(config_key::EEP48_BEAM_DIR).next().is_some()
             || config.values(config_key::EEP48_DOC_CHUNK).next().is_some()
+            || config.first(config_key::SOURCE_ROOT).is_some()
     }
 }
 
@@ -125,7 +126,7 @@ impl Source for CodeSource {
         SourceInfo {
             name: SOURCE_NAME,
             recognizes: vec![Pattern::new("**/*.json")],
-            doc: "Extracts pre-built rustdoc JSON and EEP-48 artifacts into code graph facts.",
+            doc: "Extracts code graph facts from pre-built rustdoc JSON and EEP-48 artifacts, or from a bare source tree (source_root alone) as a language-agnostic file-level corpus.",
             config_keys: vec![
                 ConfigKey::optional_exact(config_key::EEP48_BEAM, 1),
                 ConfigKey::optional_exact(config_key::EEP48_BEAM_DIR, 1),
@@ -187,6 +188,13 @@ impl Source for CodeSource {
                 .artifact_revision
                 .as_deref()
                 .or(manifest_revision.as_deref());
+            if config
+                .source_root
+                .components()
+                .any(|component| component.as_str() == "..")
+            {
+                ensure_source_root_within_project(root, &config.source_root)?;
+            }
             let classification = SourceTreeClassification::scan(root, &config.source_root)?;
             for artifact in &config.artifacts {
                 let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
@@ -245,7 +253,7 @@ impl CodeDiscoveryConfig {
             .collect::<Result<Vec<_>, _>>()?;
         let source_root = facts
             .first(config_key::SOURCE_ROOT)
-            .map(valid_relative_path)
+            .map(valid_source_root)
             .transpose()?
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         let manifest = facts
@@ -296,6 +304,48 @@ fn valid_relative_path(value: &str) -> Result<Utf8PathBuf, SourceError> {
             "code paths must be relative paths inside the corpus root; got {value:?}"
         ))
     })
+}
+
+/// `code.source_root` may climb above the corpus root (a `.design` corpus
+/// pointing at the code beside it), but never escapes the enclosing project
+/// root — the same boundary the drift probe honors. Containment is enforced
+/// against the resolved path at extraction time.
+fn valid_source_root(value: &str) -> Result<Utf8PathBuf, SourceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Utf8PathBuf::from("."));
+    }
+    let path = Utf8PathBuf::from(trimmed);
+    if path.is_absolute() {
+        return Err(SourceError::InvalidConfig(format!(
+            "code.source_root must be a relative path; got {value:?}"
+        )));
+    }
+    Ok(path)
+}
+
+fn ensure_source_root_within_project(
+    root: &Utf8Path,
+    source_root: &Utf8Path,
+) -> Result<(), SourceError> {
+    let resolved = root.join(source_root);
+    let canonical = resolved
+        .canonicalize_utf8()
+        .map_err(|source| SourceError::io(&resolved, source))?;
+    let boundary = anneal_core::enclosing_project_root(root).ok_or_else(|| {
+        SourceError::InvalidConfig(format!(
+            "code.source_root {source_root:?} climbs above the corpus root, but no enclosing project root (git repo or workspace manifest) was found to bound it"
+        ))
+    })?;
+    let boundary = boundary
+        .canonicalize_utf8()
+        .map_err(|source| SourceError::io(&boundary, source))?;
+    if !canonical.starts_with(&boundary) {
+        return Err(SourceError::InvalidConfig(format!(
+            "code.source_root {source_root:?} resolves outside the enclosing project root {boundary}"
+        )));
+    }
+    Ok(())
 }
 
 fn extract_rustdoc(
@@ -897,13 +947,16 @@ struct ProtocolImpl {
 
 impl SourceTreeClassification {
     fn scan(root: &Utf8Path, source_root: &Utf8Path) -> Result<Self, SourceError> {
-        let source_abs = root.join(source_root);
+        let joined = root.join(source_root);
+        // Canonicalize so a climbing source root ("..") yields a stable base;
+        // handle ids are relative to this base — the path space citations use.
+        let source_abs = joined.canonicalize_utf8().unwrap_or(joined);
         let mut out = Self {
             files: BTreeMap::new(),
             protocol_impls: Vec::new(),
             tags: git_version_tags(&source_abs),
         };
-        scan_source_dir(root, source_root, &source_abs, &mut out)?;
+        scan_source_dir(&source_abs, &source_abs, &mut out)?;
         Ok(out)
     }
 
@@ -2464,8 +2517,7 @@ fn package_root_file(root: &Utf8Path, source_root: &Utf8Path) -> String {
 }
 
 fn scan_source_dir(
-    root: &Utf8Path,
-    source_root: &Utf8Path,
+    base: &Utf8Path,
     dir: &Utf8Path,
     out: &mut SourceTreeClassification,
 ) -> Result<(), SourceError> {
@@ -2492,13 +2544,13 @@ fn scan_source_dir(
             continue;
         }
         if path.is_dir() {
-            scan_source_dir(root, source_root, &path, out)?;
+            scan_source_dir(base, &path, out)?;
             continue;
         }
         if !matches!(path.extension(), Some("rs" | "ex" | "exs")) {
             continue;
         }
-        let Some(relative) = normalize_path_inside_root(root, &path) else {
+        let Some(relative) = normalize_path_inside_root(base, &path) else {
             continue;
         };
         let relative = normalize_relative_path(
@@ -2507,7 +2559,7 @@ fn scan_source_dir(
         )
         .map_or_else(|| relative.to_string(), |path| path.to_string());
         let text = fs::read_to_string(&path).map_err(|source| SourceError::io(&path, source))?;
-        let test_path = is_test_path(source_root, &relative);
+        let test_path = is_test_path(Utf8Path::new("."), &relative);
         out.protocol_impls.extend(protocol_impls(&relative, &text));
         out.files
             .insert(relative, classify_source_file(&text, test_path));
@@ -3631,6 +3683,44 @@ mod tests {
             code_meta(&batch, "src/private.rs", meta_key::OBLIGATION)
                 .iter()
                 .any(|value| value.starts_with("TODO:2:"))
+        );
+        assert!(batch.concerns.iter().any(|concern| {
+            concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
+        }));
+    }
+
+    #[test]
+    fn source_root_alone_activates_file_level_extraction() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir_all(root.join("target/doc")).expect("create target doc");
+        write_fixture(&root);
+        let config =
+            ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+                .expect("config facts");
+        assert!(CodeSource::is_configured(&config));
+
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("code extraction");
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|handle| handle.kind == "file" && handle.id == "src/lib.rs"),
+            "standalone mode emits file handles from the source tree"
+        );
+        assert!(
+            !batch.handles.iter().any(|handle| handle.kind == "section"),
+            "no artifact means no item handles"
+        );
+        assert_eq!(
+            handle_class(&batch, "src/private.rs").as_deref(),
+            Some(relation_value::CLASS_PRIVATE)
+        );
+        assert_eq!(
+            handle_class(&batch, "tests/integration.rs").as_deref(),
+            Some(relation_value::CLASS_TEST)
         );
         assert!(batch.concerns.iter().any(|concern| {
             concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
