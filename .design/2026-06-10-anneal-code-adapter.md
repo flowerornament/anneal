@@ -1,7 +1,9 @@
 ---
-status: draft
+status: current
+locked: 2026-06-10
 date: 2026-06-10
 authors: [claude]
+reviewed-by: codex (adversarial, 2026-06-10 — REVISE-THEN-LOCK; all 10 findings folded; EEP-48 sim gates the contract before any adapter code)
 bd: anneal-d36e
 relates:
   - 2026-06-09-code-and-corpus.md            # the arc spec this realizes (§3 data model, §6 proof plan step 3)
@@ -49,10 +51,22 @@ is **two layers behind one `Source` impl**:
 shells out to `cargo rustdoc` (nightly-only, slow, nondeterministic at
 extraction): the project declares the artifact path —
 `source code { rustdoc_json("target/doc/regex.json"). }` — and CI/the user
-produces it. Honest premise handling (CR-D103/PRE-FLIGHT): the artifact's
-mtime/format_version are extracted as facts; a stale or missing artifact is
-a *declared premise state*, not a silent gap. This is the evidence boundary
-from the arc spec applied to rustdoc exactly as it was applied to git.
+produces it.
+
+**Artifact provenance is a manifest, not an mtime.** mtime is not an honest
+freshness oracle (CI restores artifacts, checkouts rewrite mtimes, an
+artifact can be built from a different tree). The honest premise contract:
+an **artifact manifest** alongside the artifact — tool + language version,
+artifact format version, source root, **source revision**, package
+identity/version, build command/profile, generated-at. Manifest present →
+the premise is a verifiable PRE-FLIGHT fact (artifact revision vs corpus
+revision is itself a drift check). Manifest absent → the premise degrades
+to **`artifact_revision_unknown`**, declared, never inferred from mtime.
+EEP-48 has its own degraded states, stated honestly: docs may live in the
+`.beam` `Docs` chunk *or* external `doc/chunks`, and may be **stripped** —
+"docs artifact unavailable/stripped" is a declared premise, not an error or
+a silent gap. This is the 903i lesson (verified provenance or explicit
+unknown) applied to the artifact itself.
 
 **Layer 2 runs at extraction over the source tree** — cheap, deterministic,
 language-portable (tree-sitter/ast-grep-class patterns; plain scans where
@@ -86,7 +100,16 @@ bilingual check):
 
 - **Item identifiers are adapter-local opaque strings** after the `path#`
   prefix — Rust uses type/fn names, Elixir uses `Module` and `fun/arity`.
-  The substrate never parses them.
+  The substrate never parses them. Never raw rustdoc numeric ids (unstable
+  across builds).
+- **Identity is two-keyed.** The handle id (`path#…`) is the corpus
+  identity, deliberately *path-currency-sensitive*: a file move changes
+  handle identity, and drift/lineage routes it — that is the design, stated.
+  The **stable name rides as metadata**: `*meta{key: "code.qualified_name"}`
+  (`regex::Match`, `Herald.Agent.run/2`) for cross-file movement, re-export
+  reasoning, and name-based joins. Re-exports do **not** mint duplicate
+  canonical handles — one definition handle plus `Reexports`
+  edges/metadata.
 - **Granularity is adapter policy, not contract.** Rust policy: impl blocks
   collapse into the implementing type (bqqc: 756/1,197 projected handles are
   impl ceremony; trait impls become `Implements` edges). Elixir policy:
@@ -107,6 +130,16 @@ coverage-graded — a sparse edge family is REPORT-weak, not absent-and-faked):
 | `Implements` | unit → trait/protocol/behaviour | trait impls | `defimpl`, `@behaviour` |
 | `DependsOn` | package → package | Cargo.toml | mix.exs |
 
+**`Implements` carries evidence, not just endpoints** (the impl-collapse is
+safe only because of this): implementer, target (or external), file/line,
+an implementation **kind** (`trait_impl` / `blanket_impl` / `protocol_impl`
+/ `behaviour`), and a display constraint/signature string where available —
+`impl<T> Trait for T where …` is not the same fact as
+`impl Trait for Concrete` and must not flatten into it. Mechanism (extra
+`*edge` fields vs `*meta` keyed by edge `native_id` vs derived helpers) is
+decided at the slice design — `*edge` today carries no per-edge attribute
+surface beyond identity, so this is a named decision, not an assumption.
+
 Content policy (the scale lever, decided): **v1 content = docs + signatures
 only** (~283KB-class — bqqc). Source *bodies* are not ingested; `read` on a
 code handle returns signature + docs, and the handle's `file`/`origin_uri`
@@ -115,24 +148,24 @@ separately-gated choice.
 
 ## 3. Lifecycle and the lattice (per-ecosystem config, per CR-D36)
 
-```
-config convergence {                      # Rust profile         # Elixir profile
-  ordering(["unstable", "stable"]).      # compiler attrs        # @doc since / releases
-  active(["unstable"]).
-  terminal(["deprecated"]).              # #[deprecated]         # @deprecated (EEP-48)
-}
-```
+The v1 lifecycle claim is deliberately modest — bqqc measured `since`
+coverage at **zero** on a mature crate, so ordinary crates do *not* yield a
+stable/unstable lattice from rustdoc:
 
-- `status` from the artifact's deprecation/stability metadata where present
-  (rustdoc attrs; EEP-48 `:deprecated` / `:since` / `hidden`). **Oracle
-  strength differs by ecosystem and the dispositions say so** — Rust's
-  lattice is compiler-enforced; Elixir's is convention-carried metadata;
-  both are declared oracles, graded by coverage (the arc spec's principle:
-  weaker oracle → weaker disposition, never papered).
+- **v1 Rust lifecycle = `deprecated` as terminal where present** +
+  `code.class` as authority metadata + release tags as package-level
+  evidence. Stability attrs participate only when the artifact actually
+  carries trustworthy ones (std-class crates). Elixir likewise: EEP-48
+  `:deprecated`/`:since`/`hidden` exist as a standard, but coverage is
+  empirical — measured by the EEP-48 sim, never assumed.
 - **Code class is metadata, not status**: `*meta{key: "code.class",
   value: "test"|"generated"|"private"|"public-api"}` (layer 2) — class
   qualifies lifecycle *authority* (bqqc: attrs cover the public API only;
   Elixir: `@moduledoc false` marks hidden), it does not occupy the lattice.
+  And **`code.class` is not `FactVisibility`**: the runtime's
+  Public/Team/Private envelope is actor access control; `code.class:
+  "private"` is a *classification fact* visible to ordinary eval. Same
+  dangerous word, different axes — named here so it never blurs.
 - Deprecation-note successor resolution: REPORT-only hint unless the note
   names a resolvable item (bqqc currency re-grade; and 903i already made
   referent-drift the load-bearing currency oracle, so this is bonus signal).
@@ -154,31 +187,48 @@ code_ref(spec, path, code_handle, disposition) :=
   key space designed for federation now.
 - Non-resolution feeds the drift dispositions (903i's seven buckets), never
   errors.
-- Drift dispositions are **materialized facts from the out-of-band oracle**
-  (the audit machinery productized as a `SourceDriver`-adjacent step or
-  check-time provider — never eval-time git), surfaced under the
-  `referent_currency_*` / `assertion_drift_*` namespace per the arc's
-  vocabulary discipline.
+- **Line citations resolve to the file, full stop** (`foo.rs:1078` → the
+  file handle + at most a nearest-item REPORT hint). Item-level upgrade
+  waits for an item span index and an ambiguity policy.
+- **Drift dispositions are stored facts from a `SourceDriver`-adjacent
+  refresh step** — decided (was open Q3): a check-time provider would make
+  query results depend on ambient git at evaluation and bypass the planned
+  executor/store contract. A refresh verb may *trigger* the step; the
+  output lands as facts through a proper extraction transaction. The named
+  hard part: blame decoration of markdown edges must happen **inside the
+  markdown batch before merge** (or via an explicit source-owned decoration
+  transaction) — a second source never mutates another source's `*edge`
+  rows after the fact. Surfaced under `referent_currency_*` /
+  `assertion_drift_*` per the arc's vocabulary discipline.
 
-## 5. The CR-D8 amendment (earned by 903i; rides this slice)
+## 5. The CR-D8 amendment (earned by 903i; its own hard-gated slice)
 
-`*edge` gains nullable `date` + `revision`:
+`*edge` gains nullable **`assertion_date`** + **`assertion_revision`** —
+named to avoid the live collision: every stored relation already exposes
+`revision` through `FactIdentity` (source-fact revision, `facts.rs`), which
+is a *different fact* than when an assertion was authored. The names carry
+the distinction.
 
 ```
-*edge{from, to, kind, file, line, date, revision, corpus, source, generation}
+*edge{from, to, kind, file, line, assertion_date, assertion_revision,
+      corpus, source, generation}        # identity still carries revision
 ```
 
 - Populated **verified-or-null**. The markdown adapter populates from the
-  out-of-band blame pass (903i: 100% coverage, ~28ms median, out-of-band);
-  population mode (eager / generation-incremental) is an extraction option,
-  default incremental.
-- `date_source` stays distinguishable: a blame-populated edge date differs
-  from handle-date fallback by *presence* (edge.date set vs null + handle
-  fallback at derivation time) — no extra column.
+  out-of-band blame pass (903i: 100% coverage, ~28ms median); population
+  mode (eager / generation-incremental) is an extraction option, default
+  incremental; decoration happens inside the markdown batch (§4).
+- Fallback stays distinguishable by *presence* (assertion_date set vs null
+  + handle-date fallback at derivation time) — no extra column.
 - Within-corpus payoff ships with it: dated `Supersedes` → lineage shows
   *when*.
-- Spec edit: CR-D8 stored-relation block + a sentence in §10's table;
-  registered as a CR-D in Part XV.
+- Spec edit: CR-D8 stored-relation block + §10 table; registered in Part XV.
+- **Blast radius is real and owned as its own slice**: `EdgeFact`,
+  `STORED_RELATION_DESCRIPTORS`, `TupleDb::edge_values`, named-row
+  projection, stored-field validation/PlanCatalog schemas, introspection/
+  describe, every EdgeFact test constructor, the markdown adapter, CLI +
+  snapshot/time-scope tests, release docs — gated byte-identical (null
+  fields) + perf.
 
 ## 6. Acceptance (the gates for the implementation slices)
 
@@ -199,43 +249,52 @@ code_ref(spec, path, code_handle, disposition) :=
 
 ## 7. The third sim, then slicing
 
-**Before the contract locks: the EEP-48 extraction sim (the Elixir twin of
-bqqc), run against herald.** Out-of-band, same discipline: read the `Docs`
-chunks from herald's compiled `.beam` files, project handles/edges per §2,
-and report: item-kind counts, deprecation/`since`/hidden coverage, typespec
-coverage (the `UsesType` sparsity expectation, measured), doc-link shape,
-scale, and **a contract verdict — which §2 rules the Elixir data bends.**
-herald is also the second self-corpus-style milestone: its `.design` is the
-named mass-staleness case, so the joint graph lands there with the drift
-profile leading (arc spec §2).
+**The EEP-48 extraction sim (`anneal-ji1s`) is a BLOCKING pre-slice gate —
+it runs before the §2 contract text is final and before any Rust layer-1
+code lands.** Otherwise Rust code freezes the contract and Elixir gets
+forced into adapter exceptions later. Out-of-band, same discipline: read
+the `Docs` chunks from herald's compiled `.beam` files (including the
+degraded cases: stripped chunks, external `doc/chunks` fallback), project
+handles/edges per §2, and report: item-kind counts, deprecation/`since`/
+hidden coverage, typespec coverage (the `UsesType` sparsity expectation,
+measured), doc-link shape, scale, and **a contract verdict — which §2
+rules the Elixir data bends.** herald is also the second
+self-corpus-style milestone: its `.design` is the named mass-staleness
+case, so the joint graph lands there with the drift profile leading.
 
-Implementation slicing (proposed; codex re-slices at review):
+Implementation slicing (gated by the sim):
 
-1. **CR-D8 edge date/revision** (schema + store + markdown blame population,
-   incremental) — independently valuable, smallest, unblocks drift facts.
+0. **`ji1s` EEP-48 sim** — the contract gate (above).
+1. **CR-D8 `assertion_date`/`assertion_revision`** (schema + store +
+   markdown blame population, incremental) — independently valuable,
+   smallest, unblocks drift facts; the blast-radius slice, gated hard (§5).
 2. **anneal-code layer 1, Rust** (rustdoc-types ingestion → FactBatch; the
-   crate skeleton implements `Source` against the §2 contract).
+   crate skeleton implements `Source` against the sim-proven §2 contract).
 3. **Layer 2 classification** (+ lattice profile, obligations, version tags)
    — built tree-sitter/ast-grep-portable from the start.
-4. **The resolver + drift materialization** (joint-graph federation over the
-   anneal self-corpus; surfaces lead with the aggregate drift profile).
+4. **The resolver + drift refresh step** (joint-graph federation over the
+   anneal self-corpus; surfaces lead with the aggregate drift profile;
+   `describe code` teaches that code handles are API/documentation handles
+   — `read` returns signature + docs, bodies live at `origin_uri`).
 5. **anneal-code layer 1, Elixir** (EEP-48 ingestion behind the same
    contract) + the herald joint-graph milestone — the proof the contract
    held.
 
-## Open questions for review
-1. The Rust impl-collapse policy: right call, or does it lose load-bearing
-   structure (trait-impl docs, blanket impls)? What does `Implements` need
-   to carry in both languages?
-2. Item-handle id scheme: `path#<adapter-local id>` (resolver-friendly;
-   collision risk on Rust re-exports? Elixir multi-module files?) vs
-   fully-qualified names (stable, but breaks the file-keyed join) — and
-   does the Elixir 1-module-per-file convention paper over a contract gap?
-3. Drift-fact materialization: `SourceDriver` step vs check-time provider vs
-   a dedicated refresh verb — where does the out-of-band oracle live in the
-   product (it cannot be eval-time)?
-4. Federation surface: §53 defers multi-root UX — what is the *minimum*
-   federation needed for the self-corpus milestone (two roots, one query
-   space), and does it stay behind a flag?
-5. Slicing order: is CR-D8-first right, and where exactly should the EEP-48
-   sim land — before slice 2 (contract gate) or parallel to it?
+## Open questions — resolved at review
+1. **Impl-collapse** → safe, with the `Implements` evidence vocabulary (§2):
+   kind-discriminated (`trait_impl`/`blanket_impl`/`protocol_impl`/
+   `behaviour`) + constraint string; the attribute-mechanism choice (edge
+   fields vs `*meta` by edge `native_id` vs derived) is the named decision
+   of slice 2's design.
+2. **Item ids** → two-keyed: `path#<opaque adapter-local id>` as corpus
+   identity (path-currency-sensitive by design; drift/lineage routes moves)
+   + `code.qualified_name` metadata for stability; re-exports never mint
+   duplicate canonical handles; raw rustdoc numeric ids never used.
+3. **Drift materialization** → SourceDriver-adjacent refresh step producing
+   stored facts in a proper transaction; refresh verb may trigger; never a
+   check-time provider; blame decoration happens inside the owning source's
+   batch.
+4. **Federation minimum** → still open, deliberately: the smallest two-root
+   query space for the self-corpus milestone is slice 4's design question.
+5. **Slicing order** → CR-D8-first confirmed, with the EEP-48 sim promoted
+   to slice 0 — a blocking contract gate before any adapter code.
