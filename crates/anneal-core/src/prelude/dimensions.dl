@@ -156,6 +156,7 @@ axis_of("outgoing_edge", "importance").
 axis_of("parent_dir_file_count", "structure").
 axis_of("parent_dir_frontmatter_count", "structure").
 axis_of("parent_dir_present", "structure").
+axis_of("path_resolves", "infrastructure").
 axis_of("pipeline_stall", "diagnostic").
 axis_of("potential", "convergence").
 axis_of("potential_subject", "convergence").
@@ -169,6 +170,8 @@ axis_of("profile_issue_corpus", "infrastructure").
 axis_of("ranked_anchor", "composition").
 axis_of("ranked_work", "convergence").
 axis_of("re_opened", "convergence").
+axis_of("referent_disposition", "currency").
+axis_of("referent_moved_head", "currency").
 axis_of("recent_active_boost", "composition").
 axis_of("recent_curated_penalty", "composition").
 axis_of("recent_frontier", "composition").
@@ -191,6 +194,14 @@ axis_of("section_ref_total", "structure").
 axis_of("snapshot_history_exists", "recency").
 axis_of("snapshot_history_present", "recency").
 axis_of("spec_code_drift", "diagnostic").
+axis_of("assertion_drift", "currency").
+axis_of("code_ref", "composition").
+axis_of("drift_profile", "currency").
+axis_of("path_resolves", "infrastructure").
+axis_of("referent_drift_evidence_present", "infrastructure").
+axis_of("referent_disposition", "currency").
+axis_of("referent_moved_head", "currency").
+axis_of("referent_warning_disposition", "diagnostic").
 axis_of("stale_reference", "diagnostic").
 axis_of("status_broken", "diagnostic").
 axis_of("status_drifting_reason", "convergence").

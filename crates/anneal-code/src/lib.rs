@@ -1858,6 +1858,8 @@ mod tests {
             roots,
             config_facts: config,
             probe_code_target_history: false,
+            read_code_drift_evidence: false,
+            refresh_code_drift_evidence: false,
             probe_edge_assertions: false,
             time_ref: None,
             previous_generation: Some(Generation::new(0)),

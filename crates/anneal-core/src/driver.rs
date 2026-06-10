@@ -114,6 +114,8 @@ impl<'a> SourceRefreshRequest<'a> {
             roots: self.roots,
             config_facts: self.config_facts,
             probe_code_target_history: false,
+            read_code_drift_evidence: false,
+            refresh_code_drift_evidence: false,
             probe_edge_assertions: false,
             time_ref: self.time_ref.clone(),
             previous_generation,

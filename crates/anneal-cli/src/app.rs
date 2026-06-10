@@ -365,7 +365,9 @@ enum RuntimeCommand {
         impact: bool,
         lineage: bool,
     },
-    Check,
+    Check {
+        refresh_drift: bool,
+    },
     Describe {
         name: String,
     },
@@ -565,11 +567,14 @@ Options:
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
-            Self::Check => {
+            Self::Check { .. } => {
                 "\
 Usage: anneal [OPTIONS] check
 
 Hidden CI gate for error-severity diagnostics.
+
+Options:
+      --refresh-drift            Refresh design-code drift evidence before checking
 
 For filtered diagnostic questions, use eval:
   anneal -e '? diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}.'
@@ -712,7 +717,7 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
 "
             }
         };
-        if matches!(self, Self::Eval | Self::Check) {
+        if matches!(self, Self::Eval | Self::Check { .. }) {
             format!("{body}{RUNTIME_HELP_OPTIONS}")
         } else {
             format!("{body}{RUNTIME_PROVENANCE_OPTIONS}{RUNTIME_HELP_OPTIONS}")
@@ -1031,7 +1036,10 @@ impl RuntimeSession {
             roots: roots.as_slice(),
             config_facts: &config_facts,
             probe_code_target_history: command.demands_code_target_history(),
-            probe_edge_assertions: command.demands_edge_assertions(),
+            read_code_drift_evidence: command.demands_code_drift_evidence(),
+            refresh_code_drift_evidence: command.refreshes_code_drift_evidence(),
+            probe_edge_assertions: command.demands_edge_assertions()
+                || command.refreshes_code_drift_evidence(),
             time_ref: None,
             previous_generation: Some(Generation::new(0)),
             actor: actor.clone(),
@@ -1144,7 +1152,7 @@ impl RuntimeSession {
                 impact,
                 lineage,
             } => self.run_handle(handle, impact, lineage),
-            RuntimeCommand::Check => self.run_check_gate(),
+            RuntimeCommand::Check { .. } => self.run_check_gate(),
             RuntimeCommand::Describe { name } => {
                 let query = DescribeCommand::new(&name).datalog();
                 let output = self.eval(&query, ExplainOptions::disabled())?;
@@ -1464,7 +1472,7 @@ impl RuntimeSession {
 impl RuntimeCommand {
     fn demands_code_target_history(&self) -> bool {
         match self {
-            Self::Status | Self::Verb { .. } => true,
+            Self::Status | Self::Verb { .. } | Self::Check { .. } | Self::Handle { .. } => true,
             Self::Eval { query, .. } => query_demands_code_target_history(query),
             Self::Describe { name } => matches!(
                 name.as_str(),
@@ -1475,17 +1483,47 @@ impl RuntimeCommand {
                     | "target_probe_base"
                     | "target_resolved_path"
             ),
-            Self::Check
-            | Self::Version
+            Self::Version
             | Self::Init { .. }
             | Self::Prime
             | Self::Search { .. }
             | Self::Context { .. }
             | Self::Read { .. }
-            | Self::Handle { .. }
             | Self::Schema
             | Self::Help { .. } => false,
         }
+    }
+
+    fn demands_code_drift_evidence(&self) -> bool {
+        match self {
+            Self::Status | Self::Check { .. } | Self::Handle { .. } => true,
+            Self::Eval { query, .. } => query_demands_code_drift_evidence(query),
+            Self::Describe { name } => matches!(
+                name.as_str(),
+                "referent_disposition"
+                    | "assertion_drift"
+                    | "referent_moved_head"
+                    | "drift_profile"
+            ),
+            Self::Version
+            | Self::Init { .. }
+            | Self::Prime
+            | Self::Search { .. }
+            | Self::Context { .. }
+            | Self::Read { .. }
+            | Self::Schema
+            | Self::Verb { .. }
+            | Self::Help { .. } => false,
+        }
+    }
+
+    const fn refreshes_code_drift_evidence(&self) -> bool {
+        matches!(
+            self,
+            Self::Check {
+                refresh_drift: true
+            }
+        )
     }
 
     fn demands_edge_assertions(&self) -> bool {
@@ -1499,7 +1537,7 @@ impl RuntimeCommand {
             }
             Self::Status
             | Self::Verb { .. }
-            | Self::Check
+            | Self::Check { .. }
             | Self::Version
             | Self::Init { .. }
             | Self::Prime
@@ -1534,6 +1572,22 @@ fn query_demands_code_target_history(query: &str) -> bool {
         "flow",
         "status_item",
         "status_metric",
+    ]
+    .iter()
+    .any(|needle| query_contains_identifier(query, needle))
+}
+
+fn query_demands_code_drift_evidence(query: &str) -> bool {
+    [
+        "referent_disposition",
+        "assertion_drift",
+        "referent_moved_head",
+        "drift_profile",
+        "code_ref",
+        "code.referent_disposition",
+        "code.referent_commits_since",
+        "code.referent_moved_to",
+        "code.referent_move_candidate",
     ]
     .iter()
     .any(|needle| query_contains_identifier(query, needle))
@@ -2874,6 +2928,27 @@ fn write_status_text<W: Write>(
         metric_count(&metrics, "health", "blockers"),
         metric_count(&metrics, "health", "spec_code_drift")
     )?;
+    let drift_cold = metric_count(&metrics, "drift", "cold");
+    if has_metric_category(&metrics, "drift") {
+        if drift_cold > 0 {
+            writeln!(
+                writer,
+                "Code refs    drift evidence not built for {drift_cold} refs; run `anneal check --refresh-drift`"
+            )?;
+        } else {
+            writeln!(
+                writer,
+                "Code refs    {} intact · {} drifted · {} moved · {} moved? · {} gone · {} unknown · {} dirty",
+                metric_count(&metrics, "drift", "intact"),
+                metric_count(&metrics, "drift", "drifted"),
+                metric_count(&metrics, "drift", "moved"),
+                metric_count(&metrics, "drift", "moved_ambiguous"),
+                metric_count(&metrics, "drift", "gone"),
+                metric_count(&metrics, "drift", "unknown"),
+                metric_count(&metrics, "drift", "dirty")
+            )?;
+        }
+    }
     writeln!(writer)?;
     writeln!(writer, "Read first")?;
     writeln!(
@@ -2905,6 +2980,12 @@ fn metric_count(
         .get(&(category, name))
         .and_then(|metric| number_to_i64(metric.count))
         .unwrap_or(0)
+}
+
+fn has_metric_category(metrics: &BTreeMap<(&str, &str), StatusMetric<'_>>, category: &str) -> bool {
+    metrics
+        .keys()
+        .any(|(metric_category, _)| *metric_category == category)
 }
 
 fn percentage(numerator: i64, denominator: i64) -> i64 {
@@ -3364,7 +3445,7 @@ fn write_handle_text<W: Write>(
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
     }
     write_handle_edges(&mut writer, "Outgoing", "->", &outgoing)?;
-    write_handle_code_refs(&mut writer, &code_refs)?;
+    write_handle_code_refs(&mut writer, handle, &code_refs)?;
     write_handle_edges(&mut writer, "Incoming", "<-", &incoming)?;
     if include_impact {
         write_handle_impact(&mut writer, &direct_impact, &indirect_impact)?;
@@ -3416,7 +3497,7 @@ fn write_handle_edges<W: Write>(
     Ok(())
 }
 
-fn write_handle_code_refs<W: Write>(writer: &mut W, rows: &[&Row]) -> Result<()> {
+fn write_handle_code_refs<W: Write>(writer: &mut W, handle: &str, rows: &[&Row]) -> Result<()> {
     const MAX_CODE_REFERENCES: usize = 24;
 
     if rows.is_empty() {
@@ -3425,14 +3506,33 @@ fn write_handle_code_refs<W: Write>(writer: &mut W, rows: &[&Row]) -> Result<()>
     writeln!(writer)?;
     writeln!(writer, "Code references ({})", rows.len())?;
     for (index, row) in rows.iter().take(MAX_CODE_REFERENCES).enumerate() {
-        let target = required_string(row, "other")?;
+        let target = optional_string(row, "summary")?
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or(required_string(row, "other")?);
+        let annotation = code_ref_annotation(row)?;
         let file = required_string(row, "file")?;
         let line = required_number(row, "line")?;
         writeln!(
             writer,
-            "{:>2}. {target}  at={file}:{}",
+            "{:>2}. {target}{annotation}  at={file}:{}",
             index + 1,
             display_number(line)
+        )?;
+    }
+    if rows
+        .iter()
+        .any(|row| matches!(optional_string(row, "disposition"), Ok(None)))
+    {
+        writeln!(
+            writer,
+            "    drift evidence not built; run `anneal check --refresh-drift`"
+        )?;
+    }
+    if !rows.is_empty() {
+        let handle_literal = datalog_string_literal(handle);
+        writeln!(
+            writer,
+            "    follow-up: anneal -e '? assertion_drift({handle_literal}, target, commits).'"
         )?;
     }
     let omitted = rows.len().saturating_sub(MAX_CODE_REFERENCES);
@@ -3440,6 +3540,24 @@ fn write_handle_code_refs<W: Write>(writer: &mut W, rows: &[&Row]) -> Result<()>
         writeln!(writer, "    ... {omitted} more")?;
     }
     Ok(())
+}
+
+fn code_ref_annotation(row: &Row) -> Result<String> {
+    let Some(disposition) = optional_string(row, "disposition")? else {
+        return Ok(String::new());
+    };
+    let mut parts = vec![disposition.to_string()];
+    if let Some(commits) = optional_string(row, "candidate_count")?
+        && disposition == "referent-moved-ambiguous"
+    {
+        parts.push(format!("{commits} candidates"));
+    }
+    if let Some(target) = optional_string(row, "moved_to")?
+        && disposition == "referent-moved"
+    {
+        parts.push(format!("moved to {target}"));
+    }
+    Ok(format!("  [{}]", parts.join(" · ")))
 }
 
 fn write_handle_impact<W: Write>(writer: &mut W, direct: &[&Row], indirect: &[&Row]) -> Result<()> {
@@ -3860,15 +3978,20 @@ fn parse_handle(args: &[String]) -> Result<RuntimeCommand> {
 }
 
 fn parse_check(args: &[String]) -> Result<RuntimeCommand> {
-    if args.is_empty() {
-        return Ok(RuntimeCommand::Check);
+    let mut refresh_drift = false;
+    for arg in args {
+        match arg.as_str() {
+            "--refresh-drift" => refresh_drift = true,
+            flag if flag.starts_with('-') => {
+                reject_runtime_compatibility_flag("check", flag)?;
+                bail!("unknown check option {flag:?}");
+            }
+            _ => bail!(
+                "check is a hidden CI gate for error-severity diagnostics and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
+            ),
+        }
     }
-    if let Some(flag) = args.first().filter(|arg| arg.starts_with('-')) {
-        reject_runtime_compatibility_flag("check", flag)?;
-    }
-    bail!(
-        "check is a hidden CI gate for error-severity diagnostics and accepts no filters; use `anneal -e '? diagnostic{{...}}.'` for filtered checks"
-    )
+    Ok(RuntimeCommand::Check { refresh_drift })
 }
 
 fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
@@ -4049,7 +4172,7 @@ fn is_routing_only_flag(arg: &str) -> bool {
 }
 
 fn is_compatibility_filter_flag(arg: &str) -> bool {
-    matches!(arg, "--area" | "--recent" | "--since")
+    matches!(arg, "--active-only" | "--area" | "--recent" | "--since")
         || arg.starts_with("--area=")
         || arg.starts_with("--since=")
 }
@@ -4112,29 +4235,65 @@ fn handle_query(handle: &str) -> String {
     let external_class = CodeTargetMeta::EXTERNAL_CLASS;
     let class_code = CodeTargetMeta::CLASS_CODE;
     let target_path = CodeTargetMeta::TARGET_PATH;
+    let referent_disposition = CodeTargetMeta::REFERENT_DISPOSITION;
+    let move_candidate_count = CodeTargetMeta::REFERENT_MOVE_CANDIDATE_COUNT;
+    let moved_to = CodeTargetMeta::REFERENT_MOVED_TO;
     format!(
         r#"
 handle_focus({handle}).
 
-handle_row({handle}, "self", {handle}, kind, status, file, line, summary) :=
+handle_row({handle}, "self", {handle}, kind, status, file, line, summary, null, null, null) :=
   *handle{{id: {handle}, kind: kind, status: status, file: file, line: line, summary: summary}}.
 
-handle_row({handle}, "out", other, kind, null, file, line, "") :=
+handle_row({handle}, "out", other, kind, null, file, line, "", null, null, null) :=
   *edge{{from: {handle}, to: other, kind: kind, file: file, line: line}},
   not code_reference(other).
 
-handle_row({handle}, "code_ref", other, "Cites", null, file, line, target_path) :=
+handle_row({handle}, "code_ref", other, "Cites", null, file, line, target_path, disposition, candidate_count, moved_to) :=
   *edge{{from: {handle}, to: other, kind: "Cites", file: file, line: line}},
   *meta{{handle: other, key: "{external_class}", value: "{class_code}"}},
-  *meta{{handle: other, key: "{target_path}", value: target_path}}.
+  *meta{{handle: other, key: "{target_path}", value: target_path}},
+  code_ref_disposition(other, disposition),
+  code_ref_candidate_count(other, candidate_count),
+  code_ref_moved_to(other, moved_to).
 
-handle_row({handle}, "in", other, kind, null, file, line, "") :=
+handle_row({handle}, "in", other, kind, null, file, line, "", null, null, null) :=
   *edge{{to: {handle}, from: other, kind: kind, file: file, line: line}}.
 
 code_reference(h) :=
   *meta{{handle: h, key: "{external_class}", value: "{class_code}"}}.
 
-? handle_row(h, relation, other, kind, status, file, line, summary).
+code_ref_disposition(h, disposition) :=
+  *meta{{handle: h, key: "{referent_disposition}", value: disposition}}.
+
+code_ref_disposition(h, null) :=
+  code_reference(h),
+  not code_ref_disposition_present(h).
+
+code_ref_disposition_present(h) :=
+  *meta{{handle: h, key: "{referent_disposition}", value: disposition}}.
+
+code_ref_candidate_count(h, count) :=
+  *meta{{handle: h, key: "{move_candidate_count}", value: count}}.
+
+code_ref_candidate_count(h, null) :=
+  code_reference(h),
+  not code_ref_candidate_count_present(h).
+
+code_ref_candidate_count_present(h) :=
+  *meta{{handle: h, key: "{move_candidate_count}", value: count}}.
+
+code_ref_moved_to(h, target) :=
+  *meta{{handle: h, key: "{moved_to}", value: target}}.
+
+code_ref_moved_to(h, null) :=
+  code_reference(h),
+  not code_ref_moved_to_present(h).
+
+code_ref_moved_to_present(h) :=
+  *meta{{handle: h, key: "{moved_to}", value: target}}.
+
+? handle_row(h, relation, other, kind, status, file, line, summary, disposition, candidate_count, moved_to).
 "#
     )
 }
@@ -4545,16 +4704,35 @@ mod tests {
     #[test]
     fn parses_check_gate_alias() {
         let parsed = Invocation::parse(os(&["anneal", "check"])).expect("parse check");
-        assert_eq!(parsed.command, RuntimeCommand::Check);
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Check {
+                refresh_drift: false
+            }
+        );
 
         let parsed = Invocation::parse(os(&["anneal", "check", "--json"])).expect("parse check");
-        assert_eq!(parsed.command, RuntimeCommand::Check);
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Check {
+                refresh_drift: false
+            }
+        );
         assert_eq!(parsed.output, OutputPreference::Json);
+
+        let parsed =
+            Invocation::parse(os(&["anneal", "check", "--refresh-drift"])).expect("parse check");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Check {
+                refresh_drift: true
+            }
+        );
 
         let err = Invocation::parse(os(&["anneal", "check", "--active-only"]))
             .expect_err("check no longer accepts compatibility filters");
         assert!(
-            err.to_string().contains("check is a hidden CI gate"),
+            err.to_string().contains("retired compatibility filter"),
             "{err}"
         );
 
@@ -5101,6 +5279,7 @@ mod tests {
             status_metric("health", "errors", 1),
             status_metric("health", "blockers", 2),
             status_metric("health", "spec_code_drift", 1),
+            status_metric("drift", "cold", 3),
         ]);
         let mut rendered = Vec::new();
 
@@ -5118,6 +5297,9 @@ mod tests {
             "Convergence  broken=1  blocked=2  open=3  advancing=4  holding=5  drifting=6"
         ));
         assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
+        assert!(rendered.contains(
+            "Code refs    drift evidence not built for 3 refs; run `anneal check --refresh-drift`"
+        ));
         assert!(rendered.contains("Read first"));
         assert!(rendered.contains("recent_frontier(h, rank, recency)"));
         assert!(rendered.contains(
@@ -5661,7 +5843,57 @@ mod tests {
         assert!(rendered.contains("Outgoing\nDependsOn (1)"));
         assert!(rendered.contains(" 1. -> plan.md  at=doc.md:4"));
         assert!(rendered.contains("Code references (1)"));
-        assert!(rendered.contains(" 1. lib/example/admission.rs:142-167  at=doc.md:8"));
+        assert!(rendered.contains(" 1. lib/example/admission.rs  at=doc.md:8"));
+        assert!(rendered.contains("drift evidence not built; run `anneal check --refresh-drift`"));
+        assert!(
+            rendered
+                .contains("follow-up: anneal -e '? assertion_drift(\"doc.md\", target, commits).'")
+        );
+    }
+
+    #[test]
+    fn handle_human_render_annotates_code_ref_drift() {
+        let rows = vec![
+            row(&[
+                ("h", Value::String("doc.md".to_string())),
+                ("relation", Value::String("self".to_string())),
+                ("other", Value::String("doc.md".to_string())),
+                ("kind", Value::String("file".to_string())),
+                ("status", Value::String("draft".to_string())),
+                ("file", Value::String("doc.md".to_string())),
+                ("line", Value::Number(NumberValue::Int(1))),
+                ("summary", Value::String(String::new())),
+            ]),
+            row(&[
+                ("h", Value::String("doc.md".to_string())),
+                ("relation", Value::String("code_ref".to_string())),
+                (
+                    "other",
+                    Value::String("external:code:doc.md:8:src/cli.rs".to_string()),
+                ),
+                ("kind", Value::String("Cites".to_string())),
+                ("status", Value::Null),
+                ("file", Value::String("doc.md".to_string())),
+                ("line", Value::Number(NumberValue::Int(8))),
+                ("summary", Value::String("src/cli.rs".to_string())),
+                (
+                    "disposition",
+                    Value::String("referent-moved-ambiguous".to_string()),
+                ),
+                ("candidate_count", Value::String("11".to_string())),
+                ("moved_to", Value::Null),
+            ]),
+        ];
+        let mut rendered = Vec::new();
+
+        write_handle_text(&mut rendered, "doc.md", false, false, &rows).expect("render handle");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(
+            rendered
+                .contains("src/cli.rs  [referent-moved-ambiguous · 11 candidates]  at=doc.md:8")
+        );
+        assert!(!rendered.contains("drift evidence not built"));
     }
 
     #[test]
@@ -6130,6 +6362,17 @@ mod tests {
         assert!(!query_demands_edge_assertions(
             "? recent_frontier(h, rank, recency)."
         ));
+    }
+
+    #[test]
+    fn code_reference_queries_demand_drift_evidence() {
+        assert!(query_demands_code_drift_evidence(
+            "? code_ref(spec, ref, path, code_handle, disposition)."
+        ));
+        assert!(query_demands_code_drift_evidence(
+            "? drift_profile(bucket, count)."
+        ));
+        assert!(!query_demands_code_drift_evidence("? *handle{id: h}."));
     }
 
     #[test]

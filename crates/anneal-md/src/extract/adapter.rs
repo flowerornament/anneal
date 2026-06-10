@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
 
 use anneal_core::runtime::prelude::datalog_string_literal;
+use anneal_core::target_probe::{
+    CodeDriftEvidence, CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest,
+};
 use anneal_core::{
     CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch,
     FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision,
@@ -25,6 +28,8 @@ pub struct MarkdownExtractionOptions {
     pub exclude: Vec<String>,
     pub linear_namespaces: Vec<String>,
     pub probe_code_target_history: bool,
+    pub read_code_drift_evidence: bool,
+    pub refresh_code_drift_evidence: bool,
     pub probe_edge_assertions: bool,
 }
 
@@ -231,10 +236,11 @@ fn extract_markdown_facts_from_anneal_config(
     emit_code_ref_meta(
         &mut batch,
         &mut revisions,
+        &mut edge_assertions,
         root,
         &result,
-        options.probe_code_target_history,
-    );
+        options,
+    )?;
     let file_payloads = std::mem::take(&mut result.file_payloads);
     let heading_spans = std::mem::take(&mut result.heading_spans);
     emit_content_spans(
@@ -1385,12 +1391,22 @@ fn emit_implausible_ref_meta(
 fn emit_code_ref_meta(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
+    assertions: &mut EdgeAssertionCache<'_>,
     root: &Utf8Path,
     result: &parse::BuildResult,
-    probe_history: bool,
-) {
+    options: &MarkdownExtractionOptions,
+) -> Result<()> {
     let mut seen = HashSet::new();
     let mut probe_cache = CodeTargetProbeCache::new();
+    let drift_mode = match (
+        options.read_code_drift_evidence,
+        options.refresh_code_drift_evidence,
+    ) {
+        (_, true) => CodeDriftEvidenceMode::Refresh,
+        (true, false) => CodeDriftEvidenceMode::ReadCache,
+        (false, false) => CodeDriftEvidenceMode::Disabled,
+    };
+    let mut drift_cache = CodeDriftEvidenceCache::open(root, drift_mode);
     for reference in &result.code_refs {
         if !seen.insert(reference.handle_id.clone()) {
             continue;
@@ -1408,7 +1424,7 @@ fn emit_code_ref_meta(
             key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
         });
-        let probe = if probe_history {
+        let probe = if options.probe_code_target_history {
             probe_cache.probe(root, &reference.path)
         } else {
             probe_cache.probe_without_history(root, &reference.path)
@@ -1451,12 +1467,81 @@ fn emit_code_ref_meta(
         }
         if let Some(end_line) = reference.end_line {
             batch.meta.push(MetaFact {
-                identity,
+                identity: identity.clone(),
                 handle: reference.handle_id.clone(),
                 key: CodeTargetMeta::TARGET_END_LINE.to_string(),
                 value: end_line.to_string(),
             });
         }
+        let assertion = assertions.assertion_for(&reference.file, reference.source_line);
+        if let Some(evidence) = drift_cache.evidence_for(&CodeDriftEvidenceRequest {
+            ref_handle: reference.handle_id.clone(),
+            target_path: reference.path.clone(),
+            edge_file: reference.file.clone(),
+            assertion_date: assertion.as_ref().map(|value| value.date.clone()),
+            assertion_revision: assertion.map(|value| value.revision),
+        }) {
+            emit_code_drift_evidence_meta(batch, &identity, &reference.handle_id, &evidence);
+        }
+    }
+    drift_cache
+        .save()
+        .context("failed to write drift evidence cache")
+}
+
+fn emit_code_drift_evidence_meta(
+    batch: &mut FactBatch,
+    identity: &FactIdentity,
+    handle: &str,
+    evidence: &CodeDriftEvidence,
+) {
+    batch.meta.push(MetaFact {
+        identity: identity.clone(),
+        handle: handle.to_string(),
+        key: CodeTargetMeta::REFERENT_DISPOSITION.to_string(),
+        value: evidence.disposition.clone(),
+    });
+    batch.meta.push(MetaFact {
+        identity: identity.clone(),
+        handle: handle.to_string(),
+        key: CodeTargetMeta::REFERENT_EVIDENCE_HEAD.to_string(),
+        value: evidence.evidence_head.clone(),
+    });
+    batch.meta.push(MetaFact {
+        identity: identity.clone(),
+        handle: handle.to_string(),
+        key: CodeTargetMeta::REFERENT_ASSERTION_PREMISE.to_string(),
+        value: evidence.assertion_premise.clone(),
+    });
+    if let Some(commits) = evidence.commits_since_assertion {
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: handle.to_string(),
+            key: CodeTargetMeta::REFERENT_COMMITS_SINCE.to_string(),
+            value: commits.to_string(),
+        });
+    }
+    if let Some(moved_to) = &evidence.moved_to {
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: handle.to_string(),
+            key: CodeTargetMeta::REFERENT_MOVED_TO.to_string(),
+            value: moved_to.clone(),
+        });
+    }
+    batch.meta.push(MetaFact {
+        identity: identity.clone(),
+        handle: handle.to_string(),
+        key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE_COUNT.to_string(),
+        value: evidence.move_candidates.len().to_string(),
+    });
+    for candidate in &evidence.move_candidates {
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: handle.to_string(),
+            key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE.to_string(),
+            value: candidate.clone(),
+        });
     }
 }
 

@@ -95,10 +95,101 @@ spec_code_drift(src, target_path, file, line, source_status) :=
   *handle{id: ref, kind: "external"},
   *meta{handle: ref, key: "external_class", value: "code"},
   *meta{handle: ref, key: "target_exists", value: "false"},
-  *meta{handle: ref, key: "target_path", value: target_path}.
+  *meta{handle: ref, key: "target_path", value: target_path},
+  not referent_drift_evidence_present(ref).
+
+referent_drift_evidence_present(ref) := referent_disposition(ref, disposition).
+
+referent_warning_disposition("referent-gone").
+referent_warning_disposition("referent-moved-ambiguous").
+
+spec_code_drift(src, target_path, file, line, source_status) :=
+  *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
+  *handle{id: src, kind: "file", status: source_status},
+  asserts_code(source_status),
+  *handle{id: ref, kind: "external"},
+  *meta{handle: ref, key: "external_class", value: "code"},
+  *meta{handle: ref, key: "target_path", value: target_path},
+  referent_disposition(ref, disposition),
+  referent_warning_disposition(disposition).
 
 diagnostic("W006", "warning", src, file, line, ("spec_code_drift", target_path, source_status)) :=
   spec_code_drift(src, target_path, file, line, source_status).
+
+@doc(
+  name: "referent_disposition",
+  doc: "Return drift disposition evidence for an external code referent. Rows are extraction-time git evidence, or absent when drift evidence has not been refreshed."
+).
+@predicate(
+  name: "referent_disposition",
+  args: ["target", "disposition"]
+).
+referent_disposition(target, disposition) :=
+  *meta{handle: target, key: "code.referent_disposition", value: disposition}.
+
+@doc(
+  name: "assertion_drift",
+  doc: "Return commit-count drift evidence for a design-to-code citation when the referent exists and the assertion-time oracle was available."
+).
+@predicate(
+  name: "assertion_drift",
+  args: ["spec", "target", "commits"]
+).
+assertion_drift(spec, target, commits) :=
+  *edge{from: spec, to: target, kind: "Cites"},
+  *meta{handle: target, key: "code.referent_commits_since", value: commits}.
+
+@doc(
+  name: "referent_moved_head",
+  doc: "Return confident single-head move evidence for an external code referent. Ambiguous fanout remains in referent_disposition plus move-candidate metadata."
+).
+@predicate(
+  name: "referent_moved_head",
+  args: ["target", "new_path"]
+).
+referent_moved_head(target, new_path) :=
+  *meta{handle: target, key: "code.referent_moved_to", value: new_path}.
+
+@doc(
+  name: "drift_profile",
+  doc: "Aggregate design-to-code referent drift dispositions for arrival/status surfaces."
+).
+@predicate(
+  name: "drift_profile",
+  args: ["bucket", "count"]
+).
+drift_profile(bucket, count) :=
+  referent_disposition(sample, bucket),
+  count = Count{ target : referent_disposition(target, bucket) }.
+
+@doc(
+  name: "code_ref",
+  doc: "Resolve markdown code citations to code-source file handles when both sources are loaded. The citation edge points to a qualified external handle; target_path metadata carries the resolvable path."
+).
+@predicate(
+  name: "code_ref",
+  args: ["spec", "ref", "path", "code_handle", "disposition"]
+).
+code_ref(spec, ref, path, code_handle, disposition) :=
+  *edge{from: spec, to: ref, kind: "Cites", source: "markdown"},
+  *handle{id: ref, kind: "external", source: "markdown"},
+  *meta{handle: ref, key: "external_class", value: "code"},
+  *meta{handle: ref, key: "target_path", value: path},
+  *handle{id: code_handle, kind: "file", source: "code", file: file},
+  path_resolves(ref, path, file),
+  referent_disposition(ref, disposition).
+
+path_resolves(ref, path, file) :=
+  *meta{handle: ref, key: "external_class", value: "code"},
+  *meta{handle: ref, key: "target_path", value: path},
+  *handle{kind: "file", source: "code", file: file},
+  path = file.
+
+path_resolves(ref, path, file) :=
+  *meta{handle: ref, key: "target_path", value: path},
+  *meta{handle: ref, key: "target_resolved_path", value: resolved_path},
+  *handle{kind: "file", source: "code", file: file},
+  resolved_path ends_with file.
 
 configured_pipeline_status(status, level) :=
   *config{key: "convergence.ordering", value: status, ordinal: level},

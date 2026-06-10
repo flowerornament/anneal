@@ -33,6 +33,8 @@ pub struct SourceContext<'a> {
     pub roots: &'a [camino::Utf8PathBuf],
     pub config_facts: &'a ConfigFacts,
     pub probe_code_target_history: bool,
+    pub read_code_drift_evidence: bool,
+    pub refresh_code_drift_evidence: bool,
     pub probe_edge_assertions: bool,
     pub time_ref: Option<TimeRef>,
     pub previous_generation: Option<Generation>,

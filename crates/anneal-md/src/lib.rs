@@ -103,6 +103,8 @@ impl Source for MarkdownSource {
         let mut discovery = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
         discovery.options.probe_code_target_history = cx.probe_code_target_history;
         discovery.options.probe_edge_assertions = cx.probe_edge_assertions;
+        discovery.options.read_code_drift_evidence = cx.read_code_drift_evidence;
+        discovery.options.refresh_code_drift_evidence = cx.refresh_code_drift_evidence;
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -168,6 +170,8 @@ impl MarkdownDiscoveryConfig {
                     .map(str::to_string)
                     .collect(),
                 probe_code_target_history: false,
+                read_code_drift_evidence: false,
+                refresh_code_drift_evidence: false,
                 probe_edge_assertions: false,
             },
         })
@@ -226,6 +230,8 @@ mod tests {
             roots: std::slice::from_ref(root),
             config_facts: config,
             probe_code_target_history: false,
+            read_code_drift_evidence: false,
+            refresh_code_drift_evidence: false,
             probe_edge_assertions: false,
             time_ref: None,
             previous_generation,

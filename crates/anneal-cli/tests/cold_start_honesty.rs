@@ -614,6 +614,91 @@ fn live_spec_code_refs_warn_only_for_confident_missing_targets() {
     );
 }
 
+#[test]
+fn refresh_drift_builds_cache_and_handle_reads_annotations() {
+    let dir = tempdir();
+    let repo = dir.path().join("repo");
+    let design = repo.join(".design");
+    std::fs::create_dir_all(repo.join("src")).expect("create src");
+    std::fs::create_dir_all(&design).expect("create design root");
+    run_git(&repo, &["init"]);
+    write_file(&repo, "src/cli.rs", "pub fn run() {}\n");
+    write_config(
+        &design,
+        &lifecycle_config(&["active"], &["archived"], &["active", "archived"]),
+    );
+    write_markdown(
+        &design,
+        "spec.md",
+        "active",
+        "# Spec\n\nThe CLI lived in `src/cli.rs`.\n",
+    );
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "add cli and spec"]);
+    std::fs::remove_file(repo.join("src/cli.rs")).expect("remove cli");
+    write_file(&repo, "src/cli/main.rs", "pub fn main() {}\n");
+    write_file(&repo, "src/cli/app.rs", "pub fn app() {}\n");
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-m", "split cli"]);
+
+    let cold = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "handle",
+        "spec.md",
+        "--format=text",
+    ]);
+    assert_success(&cold);
+    let cold_stdout = text(&cold.stdout);
+    assert!(
+        cold_stdout.contains("drift evidence not built; run `anneal check --refresh-drift`"),
+        "stdout:\n{cold_stdout}"
+    );
+
+    let refresh = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "check",
+        "--refresh-drift",
+        "--format=text",
+    ]);
+    assert_success(&refresh);
+    assert!(
+        repo.join(".anneal/drift-evidence.json").exists(),
+        "refresh writes the evidence cache"
+    );
+
+    let warm = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "handle",
+        "spec.md",
+        "--format=text",
+    ]);
+    assert_success(&warm);
+    let warm_stdout = text(&warm.stdout);
+    assert!(
+        warm_stdout.contains("src/cli.rs  [referent-moved-ambiguous · 2 candidates]"),
+        "stdout:\n{warm_stdout}"
+    );
+    assert!(
+        !warm_stdout.contains("drift evidence not built"),
+        "stdout:\n{warm_stdout}"
+    );
+
+    let warning = run(&[
+        "--root",
+        design.to_str().expect("utf8 design root"),
+        "-e",
+        r#"? diagnostic(code, severity, subject, file, line, evidence), code = "W006"."#,
+        "--format=json",
+    ]);
+    let rows = json_rows(&warning);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["subject"], "spec.md");
+    assert_eq!(rows[0]["severity"], "warning");
+}
+
 fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .env_remove("GIT_DIR")
