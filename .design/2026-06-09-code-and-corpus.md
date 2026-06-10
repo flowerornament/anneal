@@ -1,7 +1,8 @@
 ---
-status: draft
+status: current
 date: 2026-06-09
 authors: [claude, morgan]
+reviewed-by: codex (adversarial, 2026-06-09 — REVISE-THEN-LOCK; all 8 findings folded. Locked: goal=joint graph; dated assertions; currency-qualified-or-no-presentation; simulate-first; the authority ladder. Revised: oracle, identity, asymmetry, sim scopes, axis grades, flagship sequencing.)
 relates:
   - 2026-06-09-the-convergent-corpus-runtime.md   # Part VI/VII — this is the next arc after the foundation
   - 2026-06-09-dimensional-foundation.md           # the axes this arc stress-tests
@@ -44,33 +45,52 @@ relative to the code*. Murail's and Herald's `.design` are the named cases —
 dozens of specs that were true when written and have not tracked the code
 since. This is not corpus neglect; it is the **structural asymmetry**:
 
-> **Code at HEAD is current by construction — it is what runs. A spec is
+> **Code at HEAD is the current *artifact* — it is what runs. A spec is
 > current only by maintenance, which is the exception. The default state of a
 > design assertion about code is "true as of its authoring," not "true."**
 
-Consequences (design principles, pre-locked by CR-D103):
+Reviewed precision (codex P1): "HEAD is current" is a **PRE-FLIGHT artifact
+premise, not a lifecycle/currency claim.** Counterclasses are real:
+dead/unreachable code, feature-gated, generated/vendored, tests/fixtures,
+unreleased work on master, deprecated-but-present APIs, and code
+*intentionally lagging* a newly updated spec (the asymmetry can locally
+invert). Code lifecycle still requires source-derived disposition
+(exported / reachable / deprecated / test / generated / private); the
+asymmetry governs the *default*, not every handle.
+
+Consequences (design principles, gated by CR-D103):
 
 1. **Cross-edges are dated assertions, not standing facts.** A spec→code edge
-   means "this spec referred to this code *as of the spec's date / the
-   revision then current*." Presenting it as a live relationship is the lie.
-   The schema already carries what's needed: `*handle.date` on the spec side,
-   `revision` (git sha) on the code side, and git history between them.
-2. **Cross-currency has a real, computable oracle** — and it is *referent
-   drift*, not absolute age: *has the cited code changed since the assertion
-   was authored?* `git log <path> --since=<spec date>` is a clean oracle:
-   zero commits → the assertion's ground is intact (whatever its age); N
-   commits / moved / deleted → the assertion is suspect *in proportion to
-   evidence*. This is content-age **relative to the referent** — the honest
-   version of the recency/currency composition, and it sidesteps the
-   degraded-git-mtime trap (we ask about the *referent's* history, not the
-   citing file's mtime).
+   means "this spec referred to this code *as of an assertion time*."
+   Presenting it as a live relationship is the lie. **The assertion time is
+   itself modeled, not assumed** (codex P0): CR-D8 gives `*edge` no
+   date/revision field, and frontmatter dates can be editorial, copied, or
+   absent — so assertion as-of = the citing handle's `date` (fallback), plus
+   the citing handle's source `revision` where available, plus an explicit
+   **`assertion_date_unknown` disposition** when neither exists. "Date exists
+   on the handle" must never silently become "all cross-edges are dated."
+2. **Cross-currency has a real but NOT clean oracle** — referent drift:
+   *has the cited code changed since the assertion was authored?* The naive
+   form (`git log <path> --since=<date>`) is **move-blind** — exactly the
+   `3nw5`/W006 class, where moved paths read as gone — and the current probe
+   (`target_probe.rs`) only does HEAD-history set membership, far weaker than
+   the drift question. So the oracle is **move-aware and degraded-input-typed
+   from day one**, with seven output buckets:
+   `exact-path-intact` · `exact-path-drifted(n)` · `deleted` ·
+   `moved-confident` · `moved-ambiguous` · `history-unavailable` ·
+   `no-assertion-date`. **Only the first two are clean**; moved is strong
+   only when the move chain is confident; every degraded bucket presents as
+   UNKNOWN/REPORT — never as `intact`, never GATE. (Still the right shape:
+   it asks about the *referent's* history, not the citing file's mtime —
+   the degraded-git-mtime lesson holds.)
 3. **The joint graph amplifies trust failures if currency is flat.** A stale
    spec linked to live code *gains* false authority from the link. So the
    cross-relation surface ships currency-qualified or it does not ship:
-   every cross-edge presentation carries its drift disposition
-   (`intact` / `drifted(n)` / `referent-moved` / `referent-gone`), and
-   navigation across the boundary routes through current heads, exactly as
-   `--lineage` does within a corpus.
+   every cross-edge presentation carries its drift disposition (the bucket
+   vocabulary above), and navigation across the boundary routes through
+   current heads, exactly as `--lineage` does within a corpus. The
+   move-detection machinery stays *behind* the disposition contract —
+   mechanics are accidental complexity, the disposition is the product.
 4. **Mass-staleness is the normal input, not the degenerate case.** On murail
    today the honest report is likely "most design→code assertions have
    drifted." The surfaces must be designed for that answer — aggregate first
@@ -78,6 +98,13 @@ Consequences (design principles, pre-locked by CR-D103):
    rather than a wall of red. A tool that makes a real corpus look 90% broken
    on day one is honest but dead; disposition + grouping + head-routing is
    how honesty stays consumable.
+5. **Cross-corpus identity is the central implementation problem, not a
+   solved one** (codex P0): CR-D41 gives *within-corpus* id uniqueness and
+   §53 defers the federation surface; neither resolves a markdown
+   path-string citation to a code *item* handle. The bridge needs a designed
+   resolver — keyed by `(corpus, origin_uri / native_id / path+range,
+   revision)` or a dedicated cross-edge relation. This is a first-class
+   design item of the arc, not plumbing.
 
 ## The disposition ladder, stretched across the boundary
 
@@ -94,25 +121,30 @@ mode); partial coverage, honestly signalled:
 ## What the arc proves (in order)
 
 1. **Source-agnosticism** (the stepping stone): the nine axes survive a
-   second source. Per-axis honesty about the hypotheses — lifecycle and
-   currency near-certain (the compiler enforces them: unstable/stable/
-   deprecated, `#[deprecated(note)]` is a declared supersession edge); topic-
-   as-coupling strong; **recency and convergence are open hypotheses**
-   (`since="1.45"` is a stabilization date, not authoring; "settling" may be
-   release-cadence, not snapshot drift). The simulation answers these, not
-   the spec.
+   second source. Per-axis hypotheses, as re-graded at review:
+   - **lifecycle — plausible, not near-certain**: compiler attrs cover some
+     *public API*, not private modules/tests/generated code; reachability/
+     export class must supply the rest.
+   - **currency — useful but weaker than `Supersedes`**: deprecation is not
+     always displacement; `#[deprecated(note)]` parsing is REPORT unless the
+     note names a *resolvable* successor.
+   - **topic — strong**, but the nondiscriminative-target policy is needed
+     from day one (`Vec`/`Option` are the LABELS.md of code).
+   - **importance / structure — stronger than first graded**: call/use/
+     containment are natural code axes.
+   - **recency / convergence — open** (`since="1.45"` is stabilization, not
+     authoring; "settling" may be release-cadence, not snapshot drift).
+   - **obligations — weak** unless TODO/FIXME/tracking-issues are in scope.
+   The simulation answers these, not the spec.
 2. **Cross-relation** (the goal): the joint graph with drift-qualified
    cross-edges, proven on a corpus that *has both sides*.
 
-Which fixes the flagship choice: rust-stdlib proves (1) at scale but has no
-design corpus, so it cannot prove (2). The corpora that can are the ones in
-hand — **anneal itself** (`.design/` + `crates/`, where CR-D labels are
-already cited from code and commits) and **murail** (`.design` + the crates
-its specs cite, with the mass-staleness reality built in). Likely shape:
-simulate extraction on a real external crate for (1); aim the product
-milestone at the self-corpus for (2) — *anneal annealing itself, one layer
-deeper* — with murail as the adversarial second corpus precisely because its
-design layer has drifted.
+Flagship, with the reviewed sequencing: **first lock on the self-corpus
+(anneal `.design/` + `crates/`, where CR-D labels already cross the boundary)
+plus one external Rust crate** (source-agnostic extraction). **murail/herald
+join only after the move-aware oracle is honest** — otherwise the first
+review drowns in false moved/gone classifications; they are the *hostile
+validation* corpora, not the first target.
 
 ## Method (the loop, unchanged)
 
@@ -120,15 +152,24 @@ Simulate → design → adversarial review → lock → implement → gate; coor
 verifies the landed feature against the *simulation's* expectations. First
 moves, before any adapter code:
 
-1. **Extraction sim**: rustdoc-JSON over a real crate — what handles/edges/
-   lattice actually come out; where the axis hypotheses bend.
-2. **Cross-currency sim**: on murail/anneal *today* — for every spec→code
-   citation, compute referent drift (commits since spec date; moved; gone).
-   Measures the mass-staleness reality (principle 4) and validates the drift
-   oracle (principle 2) on real data **before** designing surfaces over it.
-3. Then the adapter design (against `Source` §5) and the cross-edge identity
-   question (how a spec's path-string resolves to a code handle across
-   corpora — CR-D41 federation identity does the heavy lifting).
+1. **Cross-currency sim FIRST, as an oracle audit** (not a product sim): for
+   every existing spec→code citation (W006 already emits the refs and probe
+   metadata), output citing handle/date/status, target path, current
+   existence, commits-since-date on the exact path, rename/move evidence,
+   history status, and the final bucket disposition. **Stop-rule: if this
+   report cannot classify moves honestly, stop and fix the oracle design
+   before anneal-code grows the graph.** Scope note: this runs on existing
+   metadata + git only — it answers path-citation drift; "which code realizes
+   this CR-D" needs the code side and waits. A cheap *reverse-edge scan*
+   (CR-D labels in code comments/attrs) rides along to measure the reverse
+   shape before surfaces are designed.
+2. **Extraction sim**: rustdoc-JSON over a real crate — what handles/edges/
+   lattice actually come out; where the axis hypotheses bend; **and scale as
+   a hard output, not an open question**: handle/edge/content-byte counts,
+   load time, fixpoint time, measured *before* any adapter design is blessed
+   (the correctness-gates-miss-perf lesson, applied prospectively).
+3. Then the adapter design (against `Source` §5) and the **cross-corpus
+   resolver design** (principle 5 — the central problem, not plumbing).
 
 ## Open questions (seed — the sims will grow this list)
 - Recursion (`kh6p` #1): transitive deps may be the first real demand for
