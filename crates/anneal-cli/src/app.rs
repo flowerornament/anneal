@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::Command;
 
+use anneal_code::CodeSource;
 use anneal_core::runtime::ast::DerivedAtom;
 use anneal_core::runtime::eval::{ExplainOptions, NumberValue, QueryWarning};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
@@ -43,6 +44,10 @@ const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
 const SUPERSEDES_EDGE_KIND: &str = "Supersedes";
+
+fn available_source_info() -> Vec<SourceInfo> {
+    vec![MarkdownSource::default().describe(), CodeSource.describe()]
+}
 const RESOLVED_FILE_META_KEY: &str = "md.resolved_file";
 const SKILL_MARKDOWN: &str = include_str!("../../../skills/anneal/SKILL.md");
 
@@ -949,8 +954,7 @@ struct RuntimeRegistry {
 impl RuntimeRegistry {
     fn load(root: &camino::Utf8Path) -> Result<Self> {
         let actor = ActorContext::trusted_cli();
-        let source_info = MarkdownSource::default().describe();
-        let sources = vec![source_info];
+        let sources = available_source_info();
         let loaded_prelude = LoadedPrelude::load_active().map_err(prelude_error)?;
         if root.join("anneal.toml").is_file() {
             bail!(
@@ -981,8 +985,7 @@ impl RuntimeSession {
     fn load(root: &camino::Utf8Path, command: &RuntimeCommand) -> Result<Self> {
         let actor = ActorContext::trusted_cli();
         let corpus = CorpusId::from(DEFAULT_CORPUS);
-        let source_info = MarkdownSource::default().describe();
-        let sources = vec![source_info];
+        let sources = available_source_info();
         let loaded_prelude = LoadedPrelude::load_active().map_err(prelude_error)?;
         let mut program = loaded_prelude.program().clone();
         let mut discovery = default_markdown_config();
@@ -1019,8 +1022,9 @@ impl RuntimeSession {
                 project.runtime_config().clone()
             });
         let config_facts = ConfigFacts::from_entries(discovery);
-        let source = MarkdownSource::with_runtime_config(&runtime_config)
+        let markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
+        let code_source = CodeSource;
         let roots = vec![root.to_path_buf()];
         let context = SourceContext {
             corpus: corpus.clone(),
@@ -1033,13 +1037,19 @@ impl RuntimeSession {
             actor: actor.clone(),
             cancellation: CancellationToken::new(),
         };
-        let batch = source
+        let markdown_batch = markdown_source
             .extract(&context)
             .map_err(|err| anyhow!("markdown extraction failed: {err}"))?;
+        let code_batch = code_source
+            .extract(&context)
+            .map_err(|err| anyhow!("code extraction failed: {err}"))?;
         let mut store = FactStore::default();
         store
-            .merge(batch)
+            .merge(markdown_batch)
             .context("failed to merge markdown facts")?;
+        store
+            .merge(code_batch)
+            .context("failed to merge code facts")?;
         let configs = runtime_config_facts(project.as_ref(), &corpus);
         if !configs.is_empty() {
             store
@@ -1646,14 +1656,22 @@ fn negated_atom_filters_retired_section_kind(atom: &NegatedAtom) -> bool {
 }
 
 fn stored_filters_retired_section_kind(stored: &StoredAtom) -> bool {
-    stored.relation.as_str() == "handle"
-        && stored.fields.iter().any(|field| {
-            field.field.as_str() == "kind"
-                && matches!(
-                    field.term.expr(),
-                    Some(Expr::Literal(Literal::String(value))) if value == "section"
-                )
-        })
+    if stored.relation.as_str() != "handle" {
+        return false;
+    }
+    if stored_literal_field(stored, "source").is_some_and(|source| source != "markdown") {
+        return false;
+    }
+    stored_literal_field(stored, "kind").is_some_and(|kind| kind == "section")
+}
+
+fn stored_literal_field<'a>(stored: &'a StoredAtom, name: &str) -> Option<&'a str> {
+    stored.fields.iter().find_map(|field| {
+        (field.field.as_str() == name).then(|| match field.term.expr() {
+            Some(Expr::Literal(Literal::String(value))) => Some(value.as_str()),
+            _ => None,
+        })?
+    })
 }
 
 fn empty_binding_example_for_stored(stored: &StoredAtom) -> Option<String> {
@@ -5262,6 +5280,28 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("section handle kind was retired in v0.14"));
         assert!(warnings[0].contains("*span"));
+    }
+
+    #[test]
+    fn eval_does_not_warn_for_code_section_handles() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? *handle{source: "code", id: h, kind: "section"}."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows { warnings, .. } = output else {
+            panic!("eval should emit rows");
+        };
+
+        assert!(warnings.is_empty());
     }
 
     #[test]

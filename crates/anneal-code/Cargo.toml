@@ -1,9 +1,9 @@
 [package]
-name = "anneal-cli"
+name = "anneal-code"
 version = "0.20.0"
 edition = "2024"
 license = "MIT"
-description = "CLI surface crate for anneal"
+description = "Code source adapter for anneal"
 
 [lints.rust]
 unsafe_code = "deny"
@@ -26,14 +26,10 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-code = { version = "0.20.0", path = "../anneal-code" }
-anneal-core = { path = "../anneal-core" }
-anneal-md = { path = "../anneal-md" }
-anyhow = "1.0.102"
+anneal-core = { version = "0.20.0", path = "../anneal-core" }
 camino = "1.2.2"
-chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+rustdoc-types = "0.57.3"
+serde_json = "1.0.150"
 
 [dev-dependencies]
 tempfile = "3.27.0"

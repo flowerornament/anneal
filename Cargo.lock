@@ -47,12 +47,24 @@ dependencies = [
 name = "anneal-cli"
 version = "0.20.0"
 dependencies = [
+ "anneal-code",
  "anneal-core",
  "anneal-md",
  "anyhow",
  "camino",
  "chrono",
  "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "anneal-code"
+version = "0.20.0"
+dependencies = [
+ "anneal-core",
+ "camino",
+ "rustdoc-types",
  "serde_json",
  "tempfile",
 ]
@@ -577,6 +589,16 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustdoc-types"
+version = "0.57.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e6919c49bdd9cca072b3b502d16c073d0a4d3b7283ff6e0c86a5f6e6b07bbfe"
+dependencies = [
+ "serde",
+ "serde_derive",
+]
 
 [[package]]
 name = "rustix"

@@ -8,6 +8,7 @@ description = "Convergence assistant for knowledge corpora"
 
 [workspace]
 members = [
+    "crates/anneal-code",
     "crates/anneal-lang",
     "crates/anneal-core",
     "crates/anneal-md",
@@ -16,6 +17,7 @@ members = [
 ]
 default-members = [
     ".",
+    "crates/anneal-code",
     "crates/anneal-lang",
     "crates/anneal-core",
     "crates/anneal-md",

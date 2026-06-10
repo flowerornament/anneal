@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 ANNEAL_MANIFESTS = [
     ROOT / "Cargo.toml",
+    ROOT / "crates/anneal-code/Cargo.toml",
     ROOT / "crates/anneal-cli/Cargo.toml",
     ROOT / "crates/anneal-core/Cargo.toml",
     ROOT / "crates/anneal-lang/Cargo.toml",

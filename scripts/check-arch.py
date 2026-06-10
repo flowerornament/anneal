@@ -15,10 +15,11 @@ VM_DIR = ROOT / "crates" / "anneal-core" / "src" / "vm"
 
 ALLOWED_WORKSPACE_DEPS = {
     "anneal": {"anneal-cli"},
+    "anneal-code": {"anneal-core"},
     "anneal-lang": set(),
     "anneal-core": {"anneal-lang"},
     "anneal-md": {"anneal-core"},
-    "anneal-cli": {"anneal-core", "anneal-md"},
+    "anneal-cli": {"anneal-code", "anneal-core", "anneal-md"},
     "anneal-mcp": {"anneal-core"},
 }
 
