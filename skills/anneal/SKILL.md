@@ -86,7 +86,7 @@ anneal -e '? *handle{id: h, kind: "file", status: s}.' --limit 20
 anneal -e '? *edge{from: src, to: dst, kind: kind}.' --limit 20
 anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'
 anneal -e '? search("conformance", h, span, score, reason, field, low).' --limit 20
-anneal -e '? read("formal-model/v17.md", 4000, span, text, start, end, tokens).'
+anneal -e '? read("docs/runtime-overview.md", 4000, span, text, start, end, tokens).'
 ```
 
 Common stored relations: `*handle`, `*edge`, `*meta`, `*content`, `*span`,

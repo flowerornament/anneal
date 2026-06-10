@@ -6,11 +6,11 @@ depends-on: formal-model/v17.md
 references: implementation/2026-04-28-v17-import-plan.md
 ---
 
-# REV-17 Formal Model v17 Conformance Audit
+# REV-17 Harbor Ledger Conformance Audit
 
-This v17 conformance audit checks whether the field evidence model can support
-offline station reports, crate transfers, and reviewer signoff without relying
-on network order.
+This Harbor Ledger conformance audit checks whether the field evidence model can
+support offline station reports, crate transfers, and reviewer signoff without
+relying on network order.
 
 ## Summary
 

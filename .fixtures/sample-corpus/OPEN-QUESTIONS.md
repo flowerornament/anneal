@@ -11,7 +11,7 @@ references: operations/field-rollout-plan.md
 
 When a boat team submits a delayed water-station report, the ledger should
 merge the report by observation time, not by upload time. This depends on
-formal-model/v17.md and is tested in reviews/2026-04-28-formal-model-v17-conformance-audit.md.
+formal-model/v17.md and is tested in reviews/2026-04-28-harbor-ledger-conformance-audit.md.
 
 ## OQ-18 Crate Transfer Evidence
 

@@ -2596,10 +2596,10 @@ fn verb_see_also(name: &str) -> &'static [&'static str] {
 fn verb_example(name: &str) -> Option<&'static str> {
     match name {
         "status" => Some("anneal status"),
-        "context" => Some(r#"anneal context "v17 conformance audit" --hits 3"#),
-        "search" => Some(r#"anneal search "v17 conformance audit" --limit 5"#),
-        "read" => Some("anneal read formal-model/v17.md --budget 4000"),
-        "handle" => Some("anneal handle formal-model/v17.md --impact"),
+        "context" => Some(r#"anneal context "runtime overview" --hits 3"#),
+        "search" => Some(r#"anneal search "runtime overview" --limit 5"#),
+        "read" => Some("anneal read docs/runtime-overview.md --budget 4000"),
+        "handle" => Some("anneal handle docs/runtime-overview.md --impact"),
         "describe" => Some("anneal describe search"),
         "schema" => Some("anneal schema"),
         _ => None,
@@ -2612,19 +2612,23 @@ fn primitive_example(primitive: PrimitivePredicate) -> Option<&'static str> {
         PrimitivePredicate::Discharged => Some("? discharged(h)."),
         PrimitivePredicate::Undischarged => Some("? undischarged(h)."),
         PrimitivePredicate::DischargeCount => Some("? discharge_count(h, n)."),
-        PrimitivePredicate::Upstream => Some(r#"? upstream("formal-model/v17.md", ancestor)."#),
+        PrimitivePredicate::Upstream => {
+            Some(r#"? upstream("docs/runtime-overview.md", ancestor)."#)
+        }
         PrimitivePredicate::Downstream => {
-            Some(r#"? downstream("formal-model/v17.md", dependent)."#)
+            Some(r#"? downstream("docs/runtime-overview.md", dependent)."#)
         }
         PrimitivePredicate::Neighborhood => {
-            Some(r#"? neighborhood("formal-model/v17.md", 1, member)."#)
+            Some(r#"? neighborhood("docs/runtime-overview.md", 1, member)."#)
         }
-        PrimitivePredicate::Impact => Some(r#"? impact("formal-model/v17.md", affected, depth)."#),
+        PrimitivePredicate::Impact => {
+            Some(r#"? impact("docs/runtime-overview.md", affected, depth)."#)
+        }
         PrimitivePredicate::Search => {
-            Some(r#"? search("v17 conformance audit", h, span_id, score, reason, field, low)."#)
+            Some(r#"? search("runtime overview", h, span_id, score, reason, field, low)."#)
         }
         PrimitivePredicate::Read => {
-            Some(r#"? read("formal-model/v17.md", 4000, span, text, start, end, tokens)."#)
+            Some(r#"? read("docs/runtime-overview.md", 4000, span, text, start, end, tokens)."#)
         }
         PrimitivePredicate::Schema => {
             Some("? schema(name, kind, signature, determinism, provenance).")
@@ -2670,10 +2674,10 @@ fn fallback_stored_relation_example(name: &str, fields: &[impl AsRef<str>]) -> S
 
 fn predicate_example(name: &str) -> Option<&'static str> {
     match name {
-        "entropy" => Some(r#"? entropy("formal-model/v17.md", source)."#),
+        "entropy" => Some(r#"? entropy("docs/runtime-overview.md", source)."#),
         "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
         "potential_weight" => Some(r#"? potential_weight("freshness_decay", weight)."#),
-        "primary_entropy" => Some(r#"? primary_entropy("formal-model/v17.md", source)."#),
+        "primary_entropy" => Some(r#"? primary_entropy("docs/runtime-overview.md", source)."#),
         "area" => Some("? area(area)."),
         "area_file_count" => Some("? area_file_count(area, files)."),
         "area_error_location_count" => {
@@ -2683,14 +2687,14 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "area_cross_edges" => Some("? area_cross_edges(area, cross_edges)."),
         "area_health" => Some("? area_health{area: area, grade: grade}."),
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
-        "potential" => Some(r#"? potential("formal-model/v17.md", energy)."#),
-        "blocked" => Some(r#"? blocked("formal-model/v17.md")."#),
-        "blocker" => Some(r#"? blocker("formal-model/v17.md", energy, source)."#),
-        "advancing" => Some(r#"? advancing("formal-model/v17.md")."#),
-        "holding" => Some(r#"? holding("formal-model/v17.md")."#),
-        "regressed" => Some(r#"? regressed("formal-model/v17.md")."#),
-        "re_opened" => Some(r#"? re_opened("formal-model/v17.md")."#),
-        "drifting" => Some(r#"? drifting("formal-model/v17.md")."#),
+        "potential" => Some(r#"? potential("docs/runtime-overview.md", energy)."#),
+        "blocked" => Some(r#"? blocked("docs/runtime-overview.md")."#),
+        "blocker" => Some(r#"? blocker("docs/runtime-overview.md", energy, source)."#),
+        "advancing" => Some(r#"? advancing("docs/runtime-overview.md")."#),
+        "holding" => Some(r#"? holding("docs/runtime-overview.md")."#),
+        "regressed" => Some(r#"? regressed("docs/runtime-overview.md")."#),
+        "re_opened" => Some(r#"? re_opened("docs/runtime-overview.md")."#),
+        "drifting" => Some(r#"? drifting("docs/runtime-overview.md")."#),
         "flow" => Some("? flow(h, direction)."),
         "frontier" => Some("? frontier(h, energy)."),
         "recent_frontier" => Some("? recent_frontier(h, rank, recency)."),
@@ -2724,9 +2728,9 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "top_pair" | "s005_top_pair" => Some("? top_pair(left_prefix, right_prefix, count)."),
         "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
         "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
-        "area_of" => Some(r#"? area_of{h: "formal-model/v17.md", area: area}."#),
+        "area_of" => Some(r#"? area_of{h: "docs/runtime-overview.md", area: area}."#),
         "namespace_of" => Some(r#"? namespace_of("OQ-1", namespace)."#),
-        "status_of" => Some(r#"? status_of("formal-model/v17.md", status)."#),
+        "status_of" => Some(r#"? status_of("docs/runtime-overview.md", status)."#),
         "hub" => Some("? hub(h, degree)."),
         "orphan" => Some("? orphan(h)."),
         "stub" => Some("? stub(h)."),

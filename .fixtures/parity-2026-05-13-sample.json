@@ -28,8 +28,8 @@
       "right_stderr": "[]"
     },
     {
-      "command": "anneal search \"v17 conformance audit\" --limit=3",
-      "detail": "top-3 includes reviews/2026-04-28-formal-model-v17-conformance-audit.md",
+      "command": "anneal search \"harbor ledger conformance audit\" --limit=3",
+      "detail": "top-3 includes reviews/2026-04-28-harbor-ledger-conformance-audit.md",
       "id": "PD-4",
       "label": "search",
       "left_stderr": "",
@@ -37,7 +37,7 @@
       "right_stderr": ""
     },
     {
-      "command": "anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget=4000",
+      "command": "anneal read reviews/2026-04-28-harbor-ledger-conformance-audit.md --budget=4000",
       "detail": "first span includes Method or Summary",
       "id": "PD-5",
       "label": "read",
@@ -59,7 +59,7 @@
     "formal-model/v17.md",
     "implementation/2026-04-28-v17-import-plan.md",
     "operations/field-rollout-plan.md",
-    "reviews/2026-04-28-formal-model-v17-conformance-audit.md",
+    "reviews/2026-04-28-harbor-ledger-conformance-audit.md",
     "reviews/2026-05-02-field-readiness-review.md",
     "research-log/2026-04-20-offline-reconciliation.md"
   ],

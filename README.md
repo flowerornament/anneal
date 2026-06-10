@@ -177,18 +177,18 @@ built-in verbs are too broad.
 anneal status --format=text
 anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
 anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12 --format=text
-anneal context "find the most urgent thing blocking v17 conformance" --format=text
+anneal context "find the runtime overview and its current blockers" --format=text
 
 # Discover the language before guessing
 anneal describe convergence --format=text
 anneal schema --format=text
 
 # Read enough to act
-anneal search "v17 conformance audit" --limit 3 --format=text
-anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --budget 4000 --format=text
-anneal read reviews/2026-04-28-formal-model-v17-conformance-audit.md --span-id 'reviews/2026-04-28-formal-model-v17-conformance-audit.md#h/summary' --format=text
-anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --format=text
-anneal handle reviews/2026-04-28-formal-model-v17-conformance-audit.md --impact --format=text
+anneal search "runtime overview" --limit 3 --format=text
+anneal read docs/runtime-overview.md --budget 4000 --format=text
+anneal read docs/runtime-overview.md --span-id 'docs/runtime-overview.md#h/summary' --format=text
+anneal handle docs/runtime-overview.md --format=text
+anneal handle docs/runtime-overview.md --impact --format=text
 
 # Ask a precise corpus question
 anneal -e '? *handle{id: h, kind: "file", status: s}.'
@@ -303,12 +303,12 @@ declaration.
 ### Retrieve Evidence
 
 ```bash
-anneal search "conformance audit" --limit 5
-anneal read formal-model/v17.md --budget 4000
-anneal read formal-model/v17.md --span-id 'formal-model/v17.md#h/protocol'
-anneal handle formal-model/v17.md
-anneal handle formal-model/v17.md --impact
-anneal handle formal-model/v17.md --lineage
+anneal search "runtime overview" --limit 5
+anneal read docs/runtime-overview.md --budget 4000
+anneal read docs/runtime-overview.md --span-id 'docs/runtime-overview.md#h/protocol'
+anneal handle docs/runtime-overview.md
+anneal handle docs/runtime-overview.md --impact
+anneal handle docs/runtime-overview.md --lineage
 ```
 
 `search` ranks content and metadata hits and includes `summary` for

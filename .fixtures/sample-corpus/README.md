@@ -17,5 +17,5 @@ open decisions OQ-17, OQ-18, and OQ-19 keep the fixture active.
 ## Reading Path
 
 - Start with formal-model/v17.md for the current model.
-- Read reviews/2026-04-28-formal-model-v17-conformance-audit.md for the audit.
+- Read reviews/2026-04-28-harbor-ledger-conformance-audit.md for the audit.
 - Use operations/field-rollout-plan.md for field adoption dependencies.

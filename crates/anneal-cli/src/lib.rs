@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn search_template_filters_low_confidence_by_default() {
-        let query = SearchCommand::new("v17 conformance audit")
+        let query = SearchCommand::new("harbor ledger conformance audit")
             .with_limit(3)
             .datalog();
 
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn search_template_can_include_low_confidence() {
-        let query = SearchCommand::new("v17 conformance audit")
+        let query = SearchCommand::new("harbor ledger conformance audit")
             .include_low_confidence(true)
             .datalog();
 

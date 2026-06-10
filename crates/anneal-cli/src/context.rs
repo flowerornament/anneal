@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn context_template_is_executable_datalog() {
-        let query = ContextCommand::new("v17 conformance audit")
+        let query = ContextCommand::new("harbor ledger conformance audit")
             .with_hits(3)
             .with_budget(4_000)
             .datalog();
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn context_template_can_include_low_confidence() {
-        let query = ContextCommand::new("v17 conformance audit")
+        let query = ContextCommand::new("harbor ledger conformance audit")
             .include_low_confidence(true)
             .datalog();
 
@@ -612,7 +612,7 @@ mod tests {
         );
         assert_eq!(
             expanded.spans[0].text.as_deref(),
-            Some("v17 conformance audit urgent blocker")
+            Some("harbor ledger conformance audit urgent blocker")
         );
     }
 
@@ -645,12 +645,13 @@ mod tests {
             context_hit_row("audit/v17.md", "details", 0.8),
             context_span_row("audit/v17.md", "intro"),
             context_neighbor_row("audit/v17.md", "audit/v17.md"),
-            context_neighbor_row("audit/v17.md", "formal-model/v17.md"),
+            context_neighbor_row("audit/v17.md", "docs/runtime-overview.md"),
         ];
 
-        let output = ContextOutput::from_rows("v17 conformance audit", &rows).expect("rows group");
+        let output =
+            ContextOutput::from_rows("harbor ledger conformance audit", &rows).expect("rows group");
 
-        assert_eq!(output.goal, "v17 conformance audit");
+        assert_eq!(output.goal, "harbor ledger conformance audit");
         assert_eq!(output.hits.len(), 2);
         assert_eq!(output.hits[0].status.as_deref(), Some("current"));
         assert_eq!(output.hits[0].disposition, "unknown");
@@ -673,7 +674,7 @@ mod tests {
                 },
                 ContextNeighbor {
                     handle: "audit/v17.md".to_string(),
-                    neighbor: "formal-model/v17.md".to_string(),
+                    neighbor: "docs/runtime-overview.md".to_string(),
                     status: Some("current".to_string()),
                     disposition: "current".to_string(),
                     age_days: None,
@@ -767,8 +768,8 @@ mod tests {
             fields: BTreeMap::from([("section".to_string(), s("mystery"))]),
             derivation: None,
         };
-        let err =
-            ContextOutput::from_rows("v17 conformance audit", &[row]).expect_err("bad section");
+        let err = ContextOutput::from_rows("harbor ledger conformance audit", &[row])
+            .expect_err("bad section");
 
         assert_eq!(
             err,
@@ -790,14 +791,14 @@ mod tests {
     }
 
     #[test]
-    fn context_sample_v17_fixture_gate() {
-        const AUDIT_HANDLE: &str = "reviews/2026-04-28-formal-model-v17-conformance-audit.md";
+    fn context_sample_audit_fixture_gate() {
+        const AUDIT_HANDLE: &str = "reviews/2026-04-28-harbor-ledger-conformance-audit.md";
 
         let mut tool_calls = 0;
         let output = {
             tool_calls += 1;
             evaluate_context(
-                &ContextCommand::new("v17 conformance audit")
+                &ContextCommand::new("harbor ledger conformance audit")
                     .with_hits(3)
                     .with_budget(4_000),
                 frozen_sample_database(),
@@ -805,7 +806,7 @@ mod tests {
             )
         };
 
-        assert_eq!(output.goal, "v17 conformance audit");
+        assert_eq!(output.goal, "harbor ledger conformance audit");
         assert!(
             tool_calls <= 2,
             "CR-R5 cold-agent gate allows at most two tool calls"
@@ -818,7 +819,7 @@ mod tests {
         );
         assert!(
             output.hits.iter().any(|hit| hit.handle == AUDIT_HANDLE),
-            "CR-R5 context gate should include the v17 conformance audit: {:?}",
+            "CR-R5 context gate should include the harbor ledger conformance audit: {:?}",
             output.hits
         );
         assert!(
@@ -988,14 +989,14 @@ mod tests {
             Generation::initial(),
         );
         batch.handles = vec![
-            handle("audit/v17.md", "V17 conformance audit"),
+            handle("audit/v17.md", "Harbor Ledger conformance audit"),
             handle("notes/other.md", "Other notes"),
         ];
         batch.content = vec![
             content(
                 "audit/v17.md",
                 "intro",
-                "v17 conformance audit urgent blocker",
+                "harbor ledger conformance audit urgent blocker",
                 4,
             ),
             content(

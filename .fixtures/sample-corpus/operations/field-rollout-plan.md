@@ -2,7 +2,7 @@
 status: current
 updated: 2026-04-30
 depends-on: implementation/2026-04-28-v17-import-plan.md
-references: reviews/2026-04-28-formal-model-v17-conformance-audit.md
+references: reviews/2026-04-28-harbor-ledger-conformance-audit.md
 ---
 
 # Field Rollout Plan

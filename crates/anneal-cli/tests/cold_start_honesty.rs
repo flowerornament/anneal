@@ -411,7 +411,7 @@ fn context_default_is_compact_and_read_spans_expands_bodies() {
         "--root",
         root.to_str().expect("utf8 fixture root"),
         "context",
-        "v17 conformance audit",
+        "harbor ledger conformance audit",
         "--hits=3",
         "--format=json",
     ]);
@@ -425,7 +425,7 @@ fn context_default_is_compact_and_read_spans_expands_bodies() {
         "--root",
         root.to_str().expect("utf8 fixture root"),
         "context",
-        "v17 conformance audit",
+        "harbor ledger conformance audit",
         "--hits=3",
         "--read-spans",
         "--format=json",

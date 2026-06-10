@@ -1584,33 +1584,33 @@ mod tests {
         );
         insert_handle(
             &mut index,
-            "docs/codebase-review.md#formal-model-v17-conformance-audit",
+            "docs/codebase-review.md#runtime-overview",
             "docs/codebase-review.md",
-            "Formal model v17 conformance audit",
+            "Runtime overview",
         );
         insert_handle(
             &mut index,
-            "docs/codebase-review.md#formal-model-v17-conformance-audit-followup",
+            "docs/codebase-review.md#runtime-overview-followup",
             "docs/codebase-review.md",
-            "Formal model v17 conformance audit followup",
+            "Runtime overview followup",
         );
         insert_handle(
             &mut index,
-            "docs/formal-model-v17-conformance-audit.md",
-            "docs/formal-model-v17-conformance-audit.md",
-            "Formal model v17 conformance audit",
+            "docs/runtime-overview.md",
+            "docs/runtime-overview.md",
+            "Runtime overview",
         );
 
-        let query = SearchQuery::parse("formal model v17 conformance audit").expect("query parses");
+        let query = SearchQuery::parse("runtime overview").expect("query parses");
         let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
         let ranked = rank_search_hits(
             hits,
-            &RankingContext::new("formal model v17 conformance audit", 0.5),
+            &RankingContext::new("runtime overview", 0.5),
             &DefaultRanker,
         );
 
         let first = ranked.first().expect("ranked hit").hit();
-        assert_eq!(first.handle(), "docs/formal-model-v17-conformance-audit.md");
+        assert_eq!(first.handle(), "docs/runtime-overview.md");
         assert_eq!(first.reason(), REASON_IDENTIFIER_SUBSTRING);
     }
 

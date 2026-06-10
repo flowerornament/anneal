@@ -694,7 +694,7 @@ Examples:
   anneal -e '? *handle{id: h, kind: \"file\", status: s}.' --limit 20
   anneal -e '? *edge{from: src, to: dst, kind: \"DependsOn\"}.'
   anneal -e '? search{query: \"conformance\", handle: h, span_id: span, score: score}, *span{handle: h, id: span, summary: summary}.' --limit 20
-  anneal -e '? read{handle: \"formal-model/v17.md\", budget: 4000, text: text}.'
+  anneal -e '? read{handle: \"docs/runtime-overview.md\", budget: 4000, text: text}.'
   anneal -e '? recent_frontier(h, rank, recency), *handle{id: h, file: file} order by rank asc.' --limit 12
   anneal -e '? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc.' --limit 12
   anneal -e '? diagnostic{severity: \"error\", subject: h, file: file}.'
@@ -4204,19 +4204,19 @@ mod tests {
                 "implementation/2026-05-31-program-space.md",
             ),
             test_handle(
-                "formal-model/history/murail-formal-model-v14.md",
+                "formal-model/history/sample-formal-model-v14.md",
                 "file",
                 Some("superseded"),
-                "formal-model/history/murail-formal-model-v14.md",
+                "formal-model/history/sample-formal-model-v14.md",
             ),
             test_handle(
-                "formal-model/murail-formal-model-v17.md",
+                "formal-model/sample-formal-model-v17.md",
                 "file",
                 Some("authoritative"),
-                "formal-model/murail-formal-model-v17.md",
+                "formal-model/sample-formal-model-v17.md",
             ),
-            test_handle("murail-formal-model-v14", "version", None, ""),
-            test_handle("murail-formal-model-v17", "version", None, ""),
+            test_handle("sample-formal-model-v14", "version", None, ""),
+            test_handle("sample-formal-model-v17", "version", None, ""),
             test_handle("raw-v14", "version", None, ""),
             test_handle("raw-v17", "version", None, ""),
         ]);
@@ -4232,21 +4232,21 @@ mod tests {
                 SUPERSEDES_EDGE_KIND,
             ),
             test_edge(
-                "formal-model/history/murail-formal-model-v14.md",
-                "formal-model/murail-formal-model-v17.md",
+                "formal-model/history/sample-formal-model-v14.md",
+                "formal-model/sample-formal-model-v17.md",
                 SUPERSEDES_EDGE_KIND,
             ),
             test_edge(
-                "murail-formal-model-v17",
-                "murail-formal-model-v14",
+                "sample-formal-model-v17",
+                "sample-formal-model-v14",
                 SUPERSEDES_EDGE_KIND,
             ),
             test_edge("raw-v17", "raw-v14", SUPERSEDES_EDGE_KIND),
         ]);
         batch.meta.push(test_meta(
-            "murail-formal-model-v14",
+            "sample-formal-model-v14",
             RESOLVED_FILE_META_KEY,
-            "formal-model/history/murail-formal-model-v14.md",
+            "formal-model/history/sample-formal-model-v14.md",
         ));
         let mut store = FactStore::default();
         store.merge(batch).expect("merge lineage batch");
@@ -5592,7 +5592,7 @@ mod tests {
     #[test]
     fn lineage_normalizes_short_handles_before_walking_file_edges() {
         let store = lineage_store();
-        let rows = handle_lineage_rows(&store, "murail-formal-model-v14");
+        let rows = handle_lineage_rows(&store, "sample-formal-model-v14");
         let lineage = rows
             .iter()
             .filter(|row| required_string(row, "relation").is_ok_and(|value| value == "lineage"))
@@ -5600,11 +5600,11 @@ mod tests {
 
         assert!(lineage.iter().all(|row| {
             required_string(row, "normalized_root")
-                .is_ok_and(|root| root == "formal-model/history/murail-formal-model-v14.md")
+                .is_ok_and(|root| root == "formal-model/history/sample-formal-model-v14.md")
         }));
         assert!(lineage.iter().any(|row| {
             required_string(row, "other")
-                .is_ok_and(|other| other == "formal-model/murail-formal-model-v17.md")
+                .is_ok_and(|other| other == "formal-model/sample-formal-model-v17.md")
                 && required_string(row, "role").is_ok_and(|role| role == "successor")
                 && required_string(row, "disposition")
                     .is_ok_and(|disposition| disposition == "current_head")
