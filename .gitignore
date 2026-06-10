@@ -13,4 +13,5 @@ scorecard.png
 .dolt/
 *.db
 .beads-credential-key
+.beads/last_pull
 result
