@@ -83,3 +83,35 @@ and "usable daily" is entirely performance:
   path-set) is the concrete next lever, alongside a progress signal.
 
 Next arc is now evidence-backed: **perf, not new features.**
+
+## Finding 5 — the perf frontier, PROFILED and FIXED (the arc's first win)
+
+Opened the perf arc the disciplined way — measured before designing — and it
+paid off twice by correcting the assumption:
+
+1. **Extraction is cheap; eval is the cost.** Trivial-eval on the joint corpus
+   = 0.9s vs status = 34s. The code-as-corpus scan I worried about adds 0.33s.
+   The frontier is *eval*, not the adapter.
+2. **But the real hotspot wasn't eval either — it was git-spawn.** `sample` on
+   herald status showed `__wait4`/`__posix_spawn` dominating:
+   `CodeDriftEvidenceCache::open` validated each of 1,565 cached entries with
+   its own `git cat-file -e` (~3,130 spawns per warm status). NOT the assumed
+   `eygi` DB-clone lever — that's a real but smaller murail-scale concern.
+3. **Fix (shipped):** validate each *distinct* revision once via a memo
+   (herald: ~3,130 spawns → a handful). **herald status 34–53s → 5.9s
+   (~6–9×)**; posix_spawn profile samples 1,888 → 13. Byte-identical by
+   construction.
+
+Lesson, again: measure first. The two most confident pre-profiling guesses
+(the code scan; the eygi eval lever) were both wrong about the herald
+bottleneck; a five-minute profile named the actual line.
+
+## Net: one dogfood session, three shipped fixes
+
+- git-tracked scan (>120s → 34s at extraction) — c0672f1
+- revision-dedup drift-cache load (34–53s → 5.9s at status) — 1dc1899
+- and the validation that the joint graph *works* on a real corpus.
+
+Remaining perf: the cold `--refresh-drift` (5:21, move detection — anneal-vs33)
+and general eval scaling (eygi, smaller now). But the daily warm loop — status,
+handle — is now ~6s on a real large corpus, from ~40s.
