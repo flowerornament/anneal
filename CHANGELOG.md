@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.21.0 - 2026-07-05
+
 The corpus crosses the design–code boundary. A corpus can now ingest its
 own source tree beside its markdown, resolve spec citations to live code
 handles, and qualify every cross-reference with machine-verified drift
