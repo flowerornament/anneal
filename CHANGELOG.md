@@ -4,6 +4,20 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.21.1 - 2026-07-05
+
+### Fixed
+
+- The code file-level scan reads git-tracked files instead of walking the
+  whole source tree, so a corpus pointed at a real repository no longer
+  descends into gitignored assets and build output. On a repository with
+  large ignored directories this takes extraction from unusable to seconds.
+- Drift evidence loads in seconds on large code-citing corpora. The cache
+  previously validated every cached entry's revision with its own `git`
+  invocation; it now validates each distinct revision once, cutting warm
+  `status` and `handle` from tens of seconds to a few on corpora with
+  thousands of citations.
+
 ## v0.21.0 - 2026-07-05
 
 The corpus crosses the design–code boundary. A corpus can now ingest its
