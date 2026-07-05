@@ -314,13 +314,37 @@ fn read_drift_cache(
         return BTreeMap::new();
     }
     let _ = head;
+    // Validate each DISTINCT revision once. A large corpus has thousands of
+    // cached entries but only a handful of distinct revisions (one HEAD, a
+    // few hundred spec-authoring commits) — validating per-entry spawns one
+    // `git cat-file -e` each (herald: ~3130 spawns, dominating status). Dedup
+    // collapses that to one spawn per revision.
+    let mut revisions: BTreeSet<&str> = BTreeSet::new();
+    for entry in file.entries.values() {
+        if entry.repo_root != repo_root.as_str() {
+            continue;
+        }
+        revisions.insert(entry.head.as_str());
+        if let Some(rev) = entry.assertion_premise.strip_prefix("assertion_revision:") {
+            revisions.insert(rev);
+        }
+    }
+    let exists: BTreeMap<&str, bool> = revisions
+        .iter()
+        .map(|rev| (*rev, revision_exists(repo_root, rev)))
+        .collect();
+    let revision_ok = |rev: &str| exists.get(rev).copied().unwrap_or(false);
     file.entries
-        .into_iter()
+        .iter()
         .filter(|(_, entry)| {
             entry.repo_root == repo_root.as_str()
-                && revision_exists(repo_root, &entry.head)
-                && assertion_revision_valid(repo_root, &entry.assertion_premise)
+                && revision_ok(&entry.head)
+                && entry
+                    .assertion_premise
+                    .strip_prefix("assertion_revision:")
+                    .is_none_or(revision_ok)
         })
+        .map(|(key, entry)| (key.clone(), entry.clone()))
         .collect()
 }
 
@@ -444,13 +468,6 @@ fn assertion_premise(request: &CodeDriftEvidenceRequest) -> String {
         return format!("assertion_date:{date}");
     }
     "assertion_date_unknown".to_string()
-}
-
-fn assertion_revision_valid(repo_root: &Utf8Path, assertion_premise: &str) -> bool {
-    let Some(revision) = assertion_premise.strip_prefix("assertion_revision:") else {
-        return true;
-    };
-    revision_exists(repo_root, revision)
 }
 
 fn compute_drift_evidence(
