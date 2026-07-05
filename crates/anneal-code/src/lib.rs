@@ -980,7 +980,19 @@ impl SourceTreeClassification {
             protocol_impls: Vec::new(),
             tags: git_version_tags(&source_abs),
         };
-        scan_source_dir(&source_abs, &source_abs, extensions, &mut out)?;
+        // Prefer git-tracked files: on a real repo the working tree can carry
+        // gigabytes of ignored assets/build output (herald's priv/ is 7.9G),
+        // and a raw recursive walk drowns in it. Tracked files ARE the source,
+        // and drift already reasons over git history, so this is the honest
+        // boundary. Fall back to a filesystem walk when git can't answer.
+        match git_tracked_files(&source_abs, extensions) {
+            Some(files) => {
+                for relative in files {
+                    classify_source_path(&source_abs, &relative, &mut out)?;
+                }
+            }
+            None => scan_source_dir(&source_abs, &source_abs, extensions, &mut out)?,
+        }
         Ok(out)
     }
 
@@ -2581,18 +2593,56 @@ fn scan_source_dir(
         let Some(relative) = normalize_path_inside_root(base, &path) else {
             continue;
         };
-        let relative = normalize_relative_path(
-            relative.as_str(),
-            anneal_core::RelativePathPolicy::STRICT_NON_EMPTY,
-        )
-        .map_or_else(|| relative.to_string(), |path| path.to_string());
-        let text = fs::read_to_string(&path).map_err(|source| SourceError::io(&path, source))?;
-        let test_path = is_test_path(Utf8Path::new("."), &relative);
-        out.protocol_impls.extend(protocol_impls(&relative, &text));
-        out.files
-            .insert(relative, classify_source_file(&text, test_path));
+        classify_source_path(base, relative.as_str(), out)?;
     }
     Ok(())
+}
+
+/// Read, classify, and record one source file. The base-relative path is the
+/// handle id — the path space citations resolve against.
+fn classify_source_path(
+    base: &Utf8Path,
+    relative: &str,
+    out: &mut SourceTreeClassification,
+) -> Result<(), SourceError> {
+    let relative =
+        normalize_relative_path(relative, anneal_core::RelativePathPolicy::STRICT_NON_EMPTY)
+            .map_or_else(|| relative.to_string(), |path| path.to_string());
+    let path = base.join(&relative);
+    let text = fs::read_to_string(&path).map_err(|source| SourceError::io(&path, source))?;
+    let test_path = is_test_path(Utf8Path::new("."), &relative);
+    out.protocol_impls.extend(protocol_impls(&relative, &text));
+    out.files
+        .insert(relative, classify_source_file(&text, test_path));
+    Ok(())
+}
+
+/// Git-tracked source files under `base`, filtered to the configured
+/// extensions and sorted. `None` when `base` is not a git working tree (or
+/// git is unavailable) — the caller falls back to a filesystem walk.
+fn git_tracked_files(base: &Utf8Path, extensions: &[String]) -> Option<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(base)
+        .args(["ls-files", "-z", "--cached", "--exclude-standard"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            Utf8Path::new(entry)
+                .extension()
+                .is_some_and(|ext| extensions.iter().any(|allowed| allowed == ext))
+        })
+        .map(ToOwned::to_owned)
+        .collect();
+    files.sort();
+    files.dedup();
+    Some(files)
 }
 
 fn should_skip_source_dir(name: &str) -> bool {
@@ -3753,6 +3803,58 @@ mod tests {
         assert!(batch.concerns.iter().any(|concern| {
             concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
         }));
+    }
+
+    #[test]
+    fn git_tracked_scan_excludes_ignored_and_untracked_files() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir_all(root.join("lib")).expect("create lib");
+        fs::create_dir_all(root.join("priv")).expect("create priv");
+        fs::write(root.join(".gitignore"), "priv/\n").expect("write gitignore");
+        fs::write(root.join("lib/tracked.ex"), "defmodule Tracked do\nend\n")
+            .expect("write tracked");
+        fs::write(root.join("priv/blob.ex"), "defmodule Ignored do\nend\n").expect("write ignored");
+        fs::write(
+            root.join("lib/untracked.ex"),
+            "defmodule Untracked do\nend\n",
+        )
+        .expect("write untracked");
+        for args in [
+            &["init"][..],
+            &["config", "user.email", "t@t.test"],
+            &["config", "user.name", "t"],
+            &["add", "lib/tracked.ex", ".gitignore"],
+            &["commit", "-m", "init"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?} failed");
+        }
+
+        let config = ConfigFacts::try_from_entries(vec![
+            ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+            ConfigEntry::scalar(config_key::SOURCE_EXTENSION, "ex"),
+        ])
+        .expect("config facts");
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("code extraction");
+
+        let ids: Vec<&str> = batch.handles.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.contains(&"lib/tracked.ex"), "tracked source is scanned");
+        assert!(
+            !ids.iter().any(|id| id.contains("priv/")),
+            "gitignored priv/ is never walked"
+        );
+        assert!(
+            !ids.contains(&"lib/untracked.ex"),
+            "untracked file is excluded in git mode"
+        );
     }
 
     #[test]
