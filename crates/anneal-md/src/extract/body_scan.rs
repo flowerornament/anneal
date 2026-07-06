@@ -49,8 +49,9 @@ static CODE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
 const DEFAULT_CODE_PATH_ROOTS: &[&str] = &["crates", "lib", "src", "app", "test", "priv", "native"];
 const EXCLUDED_CODE_PATH_ROOTS: &[&str] = &["_build", "target", "node_modules"];
 const SOURCE_FILE_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "cs", "css", "ex", "exs", "go", "h", "hpp", "hs", "java", "js", "jsx", "kt",
-    "lua", "m", "mm", "php", "py", "rb", "rs", "scala", "sh", "sql", "swift", "ts", "tsx",
+    "agda", "c", "cc", "cpp", "cs", "css", "ex", "exs", "go", "h", "hpp", "hs", "java", "js",
+    "jsx", "kt", "lean", "lua", "m", "mm", "php", "py", "rb", "rs", "scala", "sh", "sql", "swift",
+    "ts", "tsx",
 ];
 
 /// A label match found during content scanning, not yet resolved to a namespace.
@@ -96,6 +97,30 @@ pub(crate) struct CodePathRef {
     pub(crate) start_line: Option<u32>,
     pub(crate) end_line: Option<u32>,
     pub(crate) source_line: u32,
+}
+
+impl CodePathRef {
+    /// Construct a code-path reference cited from a frontmatter source field.
+    ///
+    /// Frontmatter source lists carry no line range and cite from the document
+    /// head, so `source_line` is 1. Routing a frontmatter code path through the
+    /// same minting path as body code refs lets the filesystem probe decide
+    /// existence: a present target resolves cleanly, and a genuinely-missing one
+    /// surfaces as W006 spec_code_drift rather than a false E001 broken_reference.
+    pub(crate) fn from_frontmatter_field(file_path: &str, path: &str) -> Self {
+        let source_line = 1;
+        let target = code_ref_target(path, None, None);
+        let handle_id = code_ref_handle_id(file_path, source_line, &target);
+        Self {
+            handle_id,
+            file: file_path.to_string(),
+            target,
+            path: path.to_string(),
+            start_line: None,
+            end_line: None,
+            source_line,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,7 +243,10 @@ impl BodyRefRecorder<'_> {
                     .push((section_num.to_string(), self.line));
                 EdgeKind::Cites
             }
-            RefHint::External | RefHint::Implausible { .. } => return,
+            // Body code paths flow through the dedicated code-ref pipeline
+            // (`scan_code_path_refs`), never this recorder; a CodePath hint here
+            // has no body-text edge to record.
+            RefHint::External | RefHint::Implausible { .. } | RefHint::CodePath => return,
         };
 
         self.discovered_refs.push(DiscoveredRef {
@@ -1100,7 +1128,7 @@ fn is_recognized_code_path(path: &str, code_path_roots: &[String]) -> bool {
             .any(|configured| configured == root)
 }
 
-fn is_source_file_path(path: &str) -> bool {
+pub(crate) fn is_source_file_path(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())

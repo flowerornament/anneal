@@ -1922,6 +1922,122 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_code_path_mints_external_code_handle_and_avoids_broken_ref() {
+        // A frontmatter reference field citing an existing in-repo non-.md
+        // source file must route through the code-ref pipeline: an external:code
+        // handle with target_exists=true, and a Cites edge whose target resolves
+        // to that handle (so E001 broken_ref cannot fire).
+        let temp = tempdir().expect("tempdir");
+        let corpus = temp.path().join("corpus");
+        std::fs::create_dir_all(corpus.join("formal-model/proofs")).expect("create corpus");
+        std::fs::write(
+            corpus.join("formal-model/proofs/Space.agda"),
+            "module Space where\n",
+        )
+        .expect("write agda");
+        std::fs::write(
+            corpus.join("doc.md"),
+            "---\ndepends-on: formal-model/proofs/Space.agda\n---\n# Doc\n\nBody.\n",
+        )
+        .expect("write doc");
+        let root = Utf8Path::from_path(&corpus).expect("utf8 tempdir");
+
+        let batch = extract_markdown_facts(
+            root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract facts");
+
+        let handle_id = "external:code:doc.md:1:formal-model/proofs/Space.agda";
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|handle| handle.id == handle_id && handle.kind == "external"),
+            "expected external code handle for frontmatter code path in {:?}",
+            batch.handles
+        );
+        assert!(
+            batch.edges.iter().any(|edge| {
+                edge.from == "doc.md" && edge.to == handle_id && edge.kind == "Cites"
+            }),
+            "expected code Cites edge for frontmatter code path in {:?}",
+            batch.edges
+        );
+        assert_code_ref_meta(&batch, handle_id, CodeTargetMeta::TARGET_EXISTS, "true");
+        assert_code_ref_meta(
+            &batch,
+            handle_id,
+            CodeTargetMeta::TARGET_PATH,
+            "formal-model/proofs/Space.agda",
+        );
+        // The frontmatter path must NOT leak a plain corpus-gated edge whose
+        // target has no handle — that is exactly the E001 broken_ref shape.
+        assert!(
+            !batch.edges.iter().any(|edge| {
+                edge.from == "doc.md" && edge.to == "formal-model/proofs/Space.agda"
+            }),
+            "frontmatter code path must not emit a raw corpus-gated edge: {:?}",
+            batch.edges
+        );
+    }
+
+    #[test]
+    fn frontmatter_code_path_missing_target_flags_drift_not_broken_ref() {
+        // A frontmatter code path whose target is gone from disk resolves to
+        // target_exists=false (the W006 spec_code_drift condition), while still
+        // minting an external:code handle so E001 broken_ref cannot fire.
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
+        std::fs::create_dir_all(root.join("lib")).expect("create lib");
+        std::fs::write(root.join("lib/old.rs"), "pub fn old() {}\n").expect("write old code");
+        run_git(&root, &["init"]);
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "add old code"]);
+        std::fs::remove_file(root.join("lib/old.rs")).expect("remove old code");
+        std::fs::write(
+            root.join("doc.md"),
+            "---\ndepends-on: lib/old.rs\n---\n# Doc\n\nBody.\n",
+        )
+        .expect("write doc");
+
+        let batch = extract_markdown_facts_with_options(
+            root.as_path(),
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                probe_code_target_history: true,
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract with history");
+
+        let handle_id = "external:code:doc.md:1:lib/old.rs";
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|handle| handle.id == handle_id && handle.kind == "external"),
+            "expected external code handle so broken_ref cannot fire: {:?}",
+            batch.handles
+        );
+        // W006 spec_code_drift keys on target_exists=false; E001 is avoided
+        // because the Cites edge target resolves to the minted handle above.
+        assert_code_ref_meta(&batch, handle_id, CodeTargetMeta::TARGET_EXISTS, "false");
+        assert!(
+            !batch
+                .edges
+                .iter()
+                .any(|edge| edge.from == "doc.md" && edge.to == "lib/old.rs"),
+            "missing frontmatter code path must not emit a raw corpus-gated edge: {:?}",
+            batch.edges
+        );
+    }
+
+    #[test]
     fn unresolved_ambiguous_wikilinks_do_not_emit_broken_corpus_edges() {
         let temp = tempdir().expect("tempdir");
         let root = Utf8Path::from_path(temp.path()).expect("utf8 tempdir");

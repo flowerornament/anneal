@@ -675,6 +675,19 @@ pub(crate) fn build_graph_scoped(
                             line: None,
                         });
                     }
+                    RefHint::CodePath => {
+                        // Mint an external:code handle via the body code-ref
+                        // pipeline (parse.rs minting block below) so the
+                        // filesystem probe decides existence. A present target
+                        // resolves cleanly; a missing one becomes W006
+                        // spec_code_drift, never a false E001 broken_reference.
+                        scan_result
+                            .code_refs
+                            .push(CodePathRef::from_frontmatter_field(
+                                relative.as_str(),
+                                target,
+                            ));
+                    }
                     RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
                         pending_edges.push(PendingEdge {
                             source: file_node_placeholder,

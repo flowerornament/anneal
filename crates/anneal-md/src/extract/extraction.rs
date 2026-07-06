@@ -42,6 +42,11 @@ pub(crate) enum RefHint {
     Label { prefix: String, number: u32 },
     /// File path like "foo.md" or "subdir/bar.md".
     FilePath,
+    /// In-repo source/code path like "crates/foo/src/lib.rs" or
+    /// "formal-model/proofs/Space.agda". Routed through the code-ref pipeline so
+    /// a filesystem probe decides existence: a missing target surfaces as W006
+    /// spec_code_drift, never a false E001 broken_reference.
+    CodePath,
     /// Section cross-reference like "section:4.1".
     SectionRef,
     /// External URI or out-of-corpus reference.
@@ -339,7 +344,15 @@ pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
         };
     }
 
-    // 8. File path (.md extension)
+    // 8. In-repo source/code path: relative, has a directory component, and a
+    // recognized non-.md source extension. Routed through the code-ref pipeline
+    // so the filesystem probe decides existence (present -> resolves;
+    // missing -> W006 spec_code_drift, never a false E001).
+    if trimmed.contains('/') && crate::extract::body_scan::is_source_file_path(trimmed) {
+        return RefHint::CodePath;
+    }
+
+    // 9. File path (.md extension)
     if std::path::Path::new(trimmed)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
@@ -347,7 +360,7 @@ pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
         return RefHint::FilePath;
     }
 
-    // 9. Default: treat as potential handle identity
+    // 10. Default: treat as potential handle identity
     RefHint::FilePath
 }
 
