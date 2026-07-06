@@ -4,6 +4,18 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.21.2 - 2026-07-06
+
+### Fixed
+
+- Frontmatter fields that reference in-repo source paths (for example
+  `sources: formal-model/proofs/SpaceAlgebra.agda`) no longer raise a false
+  broken-reference (E001) when the file exists. They route through the
+  code-reference pipeline: a present target resolves, a missing one surfaces
+  as `spec_code_drift` (a warning), never a false error. Bare top-level cites
+  like `mix.exs` are recognized too, and `agda`/`lean` join the source
+  extensions.
+
 ## v0.21.1 - 2026-07-05
 
 ### Fixed
