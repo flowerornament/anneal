@@ -344,11 +344,13 @@ pub(crate) fn classify_frontmatter_value(value: &str) -> RefHint {
         };
     }
 
-    // 8. In-repo source/code path: relative, has a directory component, and a
-    // recognized non-.md source extension. Routed through the code-ref pipeline
-    // so the filesystem probe decides existence (present -> resolves;
-    // missing -> W006 spec_code_drift, never a false E001).
-    if trimmed.contains('/') && crate::extract::body_scan::is_source_file_path(trimmed) {
+    // 8. In-repo source/code path: relative (absolutes were rejected above) with
+    // a recognized non-.md source extension. The extension is the discriminator;
+    // a directory component is not required, so a top-level cite like
+    // `SpaceAlgebra.agda` or `mix.exs` is recognized too. Routed through the
+    // code-ref pipeline so the filesystem probe decides existence (present ->
+    // resolves; missing -> W006 spec_code_drift, never a false E001).
+    if crate::extract::body_scan::is_source_file_path(trimmed) {
         return RefHint::CodePath;
     }
 
@@ -537,6 +539,25 @@ mod tests {
     #[test]
     fn classify_fileish_colon_targets_as_corpus_refs() {
         assert_eq!(classify_frontmatter_value("foo.md:42"), RefHint::FilePath);
+    }
+
+    #[test]
+    fn classify_code_path_with_directory() {
+        assert_eq!(
+            classify_frontmatter_value("formal-model/proofs/SpaceAlgebra.agda"),
+            RefHint::CodePath
+        );
+    }
+
+    #[test]
+    fn classify_bare_code_file_without_directory() {
+        // The extension is the discriminator — a top-level cite is a code path
+        // too, and must not fall through to a false-E001 corpus ref.
+        assert_eq!(
+            classify_frontmatter_value("SpaceAlgebra.agda"),
+            RefHint::CodePath
+        );
+        assert_eq!(classify_frontmatter_value("mix.exs"), RefHint::CodePath);
     }
 
     // -- DiscoveredRef construction tests --
