@@ -12,8 +12,8 @@ use anneal_core::runtime::eval::{ExplainOptions, NumberValue, QueryWarning};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
     AnalyzedProgram, Atom, Body, CallArg, CallStyle, Database, EvalOptions, Evaluator, Expr,
-    Literal, NegatedAtom, NumberLiteral, Program, QueryOutput, Row, StoredAtom, Value, analyze,
-    parse_program, stored_relation_fields, write_ndjson,
+    Literal, NegatedAtom, NumberLiteral, Program, QueryOutput, Row, Statement, StoredAtom, Value,
+    analyze, parse_program, stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, CodeTargetMeta, ConfigEntry, ConfigFact, ConfigFacts,
@@ -28,6 +28,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use serde::Serialize;
+use serde::ser::SerializeMap;
 
 use crate::{
     ContextCommand, ContextOutput, DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT, DescribeCommand,
@@ -1173,11 +1174,18 @@ impl RuntimeSession {
                     output.rows.truncate(limit);
                 }
                 let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
-                Ok(CommandOutput::rows_with_empty_binding_hint_and_warnings(
+                let ranked_anchor = self.ranked_anchor_enrichment(&query, &output.rows)?;
+                let view = ranked_anchor.as_ref().map_or(RowView::Eval, |enrichment| {
+                    RowView::RankedAnchor {
+                        handle_field: enrichment.handle_field.clone(),
+                    }
+                });
+                Ok(CommandOutput::rows_with_ranked_anchor_enrichment(
                     output.rows,
-                    RowView::Eval,
+                    view,
                     empty_binding_hint,
                     warning_texts(&output.warnings),
+                    ranked_anchor,
                 ))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
@@ -1255,13 +1263,27 @@ impl RuntimeSession {
             output.rows.truncate(rows);
         }
         let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
-        Ok(CommandOutput::rows_with_empty_binding_hint_and_warnings(
+        let ranked_anchor = if plan.name().as_str() == "ranked_anchor" {
+            self.ranked_anchor_enrichment(&query, &output.rows)?
+        } else {
+            None
+        };
+        let view = ranked_anchor.as_ref().map_or_else(
+            || {
+                view.unwrap_or_else(|| RowView::Verb {
+                    name: plan.name().to_string(),
+                })
+            },
+            |enrichment| RowView::RankedAnchor {
+                handle_field: enrichment.handle_field.clone(),
+            },
+        );
+        Ok(CommandOutput::rows_with_ranked_anchor_enrichment(
             output.rows,
-            view.unwrap_or_else(|| RowView::Verb {
-                name: plan.name().to_string(),
-            }),
+            view,
             empty_binding_hint,
             warning_texts(&output.warnings),
+            ranked_anchor,
         ))
     }
 
@@ -1378,6 +1400,77 @@ impl RuntimeSession {
         }
     }
 
+    fn ranked_anchor_enrichment(
+        &self,
+        query: &str,
+        rows: &[Row],
+    ) -> Result<Option<RankedAnchorEnrichment>> {
+        let Some(handle_field) = ranked_anchor_handle_field(query) else {
+            return Ok(None);
+        };
+        let handles = rows
+            .iter()
+            .filter_map(|row| match row.fields.get(handle_field.as_str()) {
+                Some(Value::String(handle)) => Some(handle.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let signals_by_handle = self.anchor_signals_for_handles(&handles)?;
+        Ok(Some(RankedAnchorEnrichment {
+            handle_field,
+            signals_by_handle,
+        }))
+    }
+
+    fn anchor_signals_for_handles(
+        &self,
+        handles: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Vec<RankedAnchorSignal>>> {
+        if handles.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let output = self.eval(
+            "? anchor_signal(h, score, priority, why).",
+            ExplainOptions::disabled(),
+        )?;
+        let mut by_handle = BTreeMap::<String, Vec<RankedAnchorSignal>>::new();
+        for row in output.rows {
+            let Some(Value::String(handle)) = row.fields.get("h") else {
+                continue;
+            };
+            if !handles.contains(handle) {
+                continue;
+            }
+            let Some(Value::Number(score)) = row.fields.get("score") else {
+                continue;
+            };
+            let Some(Value::Number(NumberValue::Int(priority))) = row.fields.get("priority") else {
+                continue;
+            };
+            let Some(Value::String(why)) = row.fields.get("why") else {
+                continue;
+            };
+            by_handle
+                .entry(handle.clone())
+                .or_default()
+                .push(RankedAnchorSignal {
+                    why: why.clone(),
+                    score: *score,
+                    priority: *priority,
+                });
+        }
+        for signals in by_handle.values_mut() {
+            signals.sort_by(|left, right| {
+                left.priority
+                    .cmp(&right.priority)
+                    .then_with(|| right.score.cmp(&left.score))
+                    .then_with(|| left.why.cmp(&right.why))
+            });
+        }
+        Ok(by_handle)
+    }
+
     fn currency_hit_annotations(
         &self,
         handles: &BTreeSet<String>,
@@ -1467,6 +1560,49 @@ impl RuntimeSession {
         let query = analyzed.queries().next()?.query();
         empty_binding_example(&analyzed, &query.body)
     }
+}
+
+fn ranked_anchor_handle_field(query_source: &str) -> Option<String> {
+    let program = parse_program("ranked-anchor-detect", query_source).ok()?;
+    let query = program
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            Statement::Query(query) => Some(query),
+            _ => None,
+        })?;
+    let mut handle_fields = query
+        .body
+        .atoms
+        .iter()
+        .filter_map(ranked_anchor_atom_handle_field)
+        .collect::<BTreeSet<_>>();
+    if handle_fields.len() != 1 {
+        return None;
+    }
+    let handle_field = handle_fields.pop_first()?;
+    if handle_field == "signals" {
+        return None;
+    }
+    Some(handle_field)
+}
+
+fn ranked_anchor_atom_handle_field(atom: &Atom) -> Option<String> {
+    let Atom::Derived(derived) = atom else {
+        return None;
+    };
+    if derived.predicate.module.is_some() || derived.predicate.name.as_str() != "ranked_anchor" {
+        return None;
+    }
+    let first_arg = derived.args.first()?;
+    let expr = match first_arg {
+        CallArg::Positional { expr, .. } | CallArg::Named { expr, .. } => expr,
+        CallArg::Wildcard { .. } => return None,
+    };
+    let Expr::Var(variable) = expr else {
+        return None;
+    };
+    Some(variable.as_str().to_string())
 }
 
 impl RuntimeCommand {
@@ -2272,6 +2408,7 @@ enum CommandOutput {
         gate_failed: bool,
         empty_binding_hint: Option<String>,
         warnings: Vec<String>,
+        ranked_anchor: Option<RankedAnchorEnrichment>,
     },
     Status(StatusOutput),
     Context(ContextOutput),
@@ -2296,6 +2433,20 @@ struct StatusOutput {
     flow_baseline_ready: bool,
 }
 
+#[derive(Clone, Debug)]
+struct RankedAnchorEnrichment {
+    handle_field: String,
+    signals_by_handle: BTreeMap<String, Vec<RankedAnchorSignal>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RankedAnchorSignal {
+    why: String,
+    score: NumberValue,
+    #[serde(skip)]
+    priority: i64,
+}
+
 impl CommandOutput {
     const fn rows(rows: Vec<Row>, view: RowView) -> Self {
         Self::Rows {
@@ -2304,6 +2455,7 @@ impl CommandOutput {
             gate_failed: false,
             empty_binding_hint: None,
             warnings: Vec::new(),
+            ranked_anchor: None,
         }
     }
 
@@ -2314,6 +2466,7 @@ impl CommandOutput {
             gate_failed: false,
             empty_binding_hint: None,
             warnings,
+            ranked_anchor: None,
         }
     }
 
@@ -2323,14 +2476,15 @@ impl CommandOutput {
         view: RowView,
         empty_binding_hint: Option<String>,
     ) -> Self {
-        Self::rows_with_empty_binding_hint_and_warnings(rows, view, empty_binding_hint, Vec::new())
+        Self::rows_with_ranked_anchor_enrichment(rows, view, empty_binding_hint, Vec::new(), None)
     }
 
-    fn rows_with_empty_binding_hint_and_warnings(
+    fn rows_with_ranked_anchor_enrichment(
         rows: Vec<Row>,
         view: RowView,
         empty_binding_hint: Option<String>,
         warnings: Vec<String>,
+        ranked_anchor: Option<RankedAnchorEnrichment>,
     ) -> Self {
         Self::Rows {
             rows,
@@ -2338,6 +2492,7 @@ impl CommandOutput {
             gate_failed: false,
             empty_binding_hint,
             warnings,
+            ranked_anchor,
         }
     }
 
@@ -2348,6 +2503,7 @@ impl CommandOutput {
                 view,
                 empty_binding_hint,
                 warnings,
+                ranked_anchor,
                 ..
             } => Self::Rows {
                 rows,
@@ -2355,6 +2511,7 @@ impl CommandOutput {
                 gate_failed,
                 empty_binding_hint,
                 warnings,
+                ranked_anchor,
             },
             other => other,
         }
@@ -2451,6 +2608,23 @@ impl CommandOutput {
                 },
             ) => write_describe_text(writer, &rows)?,
             (_, Self::Status(output)) => write_ndjson(writer, output.rows)?,
+            (
+                _,
+                Self::Rows {
+                    rows,
+                    view: RowView::Search,
+                    ..
+                },
+            ) => write_ndjson(writer, rows.into_iter().map(round_search_row_score))?,
+            (
+                _,
+                Self::Rows {
+                    rows,
+                    view: RowView::RankedAnchor { handle_field },
+                    ranked_anchor: Some(enrichment),
+                    ..
+                },
+            ) => write_ranked_anchor_ndjson(writer, &rows, &handle_field, &enrichment)?,
             (_, Self::Rows { rows, .. }) => write_ndjson(writer, rows)?,
             (_, Self::Context(output)) => write_context_ndjson(writer, &output)?,
             (_, Self::Text(text)) => write_text(writer, &text)?,
@@ -2474,6 +2648,9 @@ fn empty_binding_hint_text(row_count: usize, example: &str) -> String {
 enum RowView {
     Search,
     Read,
+    RankedAnchor {
+        handle_field: String,
+    },
     Handle {
         handle: String,
         impact: bool,
@@ -2497,7 +2674,7 @@ impl RowView {
             Self::Broken => format!("Broken ({count})"),
             Self::Describe => return None,
             Self::Schema => format!("Schema ({count})"),
-            Self::Eval => format!("Results ({count})"),
+            Self::RankedAnchor { .. } | Self::Eval => format!("Results ({count})"),
             Self::Verb { name } => format!("{name} ({count})"),
         };
         Some(heading)
@@ -2973,6 +3150,10 @@ fn write_status_text<W: Write>(
         writer,
         "  anneal -e '? ranked_anchor(h, rank, score, why), *handle{{id: h, file: file}} order by rank asc.' --limit 12"
     )?;
+    writeln!(
+        writer,
+        "  follow-up: anneal -e '? anchor_signal(h, s, prio, why).'"
+    )?;
     writeln!(writer, "Work")?;
     writeln!(
         writer,
@@ -3168,6 +3349,7 @@ enum ContextEvent<'a> {
     Hit {
         handle: &'a str,
         span_id: Option<&'a str>,
+        #[serde(serialize_with = "crate::serialize_json_score")]
         score: f64,
         reason: &'a str,
         field: &'a str,
@@ -3245,6 +3427,67 @@ fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) -> Result<(
     Ok(())
 }
 
+fn round_search_row_score(mut row: Row) -> Row {
+    if let Some(Value::Number(NumberValue::Float(score))) = row.fields.get_mut("score") {
+        *score = crate::round_json_score(*score);
+    }
+    row
+}
+
+fn write_ranked_anchor_ndjson<W: Write>(
+    writer: W,
+    rows: &[Row],
+    handle_field: &str,
+    enrichment: &RankedAnchorEnrichment,
+) -> Result<()> {
+    let rows = rows.iter().map(|row| RankedAnchorJsonRow {
+        row,
+        handle_field,
+        signals_by_handle: &enrichment.signals_by_handle,
+    });
+    write_ndjson(writer, rows)?;
+    Ok(())
+}
+
+struct RankedAnchorJsonRow<'a> {
+    row: &'a Row,
+    handle_field: &'a str,
+    signals_by_handle: &'a BTreeMap<String, Vec<RankedAnchorSignal>>,
+}
+
+impl Serialize for RankedAnchorJsonRow<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let derivation_replaces_field =
+            self.row.derivation.is_some() && self.row.fields.contains_key("_derivation");
+        let signals_replaces_field = self.row.fields.contains_key("signals");
+        let len = self.row.fields.len() + 1 + usize::from(self.row.derivation.is_some())
+            - usize::from(derivation_replaces_field)
+            - usize::from(signals_replaces_field);
+        let mut map = serializer.serialize_map(Some(len))?;
+        for (key, value) in &self.row.fields {
+            if (derivation_replaces_field && key == "_derivation") || key == "signals" {
+                continue;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        if let Some(derivation) = &self.row.derivation {
+            map.serialize_entry("_derivation", derivation)?;
+        }
+        let signals = match self.row.fields.get(self.handle_field) {
+            Some(Value::String(handle)) => self
+                .signals_by_handle
+                .get(handle)
+                .map_or(&[] as &[RankedAnchorSignal], Vec::as_slice),
+            _ => &[],
+        };
+        map.serialize_entry("signals", signals)?;
+        map.end()
+    }
+}
+
 fn write_rows_text<W: Write>(
     mut writer: W,
     rows: &[Row],
@@ -3288,6 +3531,13 @@ fn write_rows_text<W: Write>(
     {
         writeln!(writer)?;
         writeln!(writer, "{}", empty_binding_hint_text(rows.len(), example))?;
+    }
+    if matches!(view, RowView::RankedAnchor { .. }) {
+        writeln!(writer)?;
+        writeln!(
+            writer,
+            "Follow-up: anneal -e '? anchor_signal(h, s, prio, why).'"
+        )?;
     }
     Ok(())
 }
@@ -5323,6 +5573,7 @@ mod tests {
         assert!(rendered.contains(
             "? ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc."
         ));
+        assert!(rendered.contains("follow-up: anneal -e '? anchor_signal(h, s, prio, why).'"));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("diagnostic{code: code, severity: severity"));
         assert!(!rendered.contains("bad.md"));
@@ -5649,6 +5900,142 @@ mod tests {
     }
 
     #[test]
+    fn search_json_rounds_score_precision() {
+        let output = CommandOutput::rows(
+            vec![row(&[
+                ("h", Value::String("plan.md".to_string())),
+                (
+                    "score",
+                    Value::Number(NumberValue::Float(0.989_999_949_932_098_4)),
+                ),
+            ])],
+            RowView::Search,
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::JsonExplicit)
+            .expect("render search json");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(rendered, "{\"h\":\"plan.md\",\"score\":0.99}\n");
+    }
+
+    #[test]
+    fn eval_json_preserves_non_search_score_precision() {
+        let output = CommandOutput::rows(
+            vec![row(&[(
+                "score",
+                Value::Number(NumberValue::Float(0.989_999_949_932_098_4)),
+            )])],
+            RowView::Eval,
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::JsonExplicit)
+            .expect("render eval json");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert_eq!(rendered, "{\"score\":0.9899999499320984}\n");
+    }
+
+    #[test]
+    fn ranked_anchor_detector_uses_predicate_identity() {
+        assert_eq!(
+            ranked_anchor_handle_field("? ranked_anchor(handle, r, s, w).").as_deref(),
+            Some("handle")
+        );
+        assert_eq!(
+            ranked_anchor_handle_field(
+                "? ranked_anchor(handle, r, s, w), *handle{id: handle, file: file}."
+            )
+            .as_deref(),
+            Some("handle")
+        );
+        assert_eq!(
+            ranked_anchor_handle_field("? *handle{id: handle, kind: r, status: s, file: w}."),
+            None
+        );
+    }
+
+    #[test]
+    fn ranked_anchor_json_adds_ordered_signal_set() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("README.md"),
+            "---\nstatus: current\n---\n# Project\n\nDurable overview.\n",
+        )
+        .expect("write readme");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: "? ranked_anchor(handle, r, s, w).".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("ranked_anchor eval runs");
+
+        let mut rendered = Vec::new();
+        output
+            .write(&mut rendered, OutputMode::JsonExplicit)
+            .expect("render ranked_anchor json");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+        let rows = rendered
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json row"))
+            .collect::<Vec<_>>();
+        let readme = rows
+            .iter()
+            .find(|row| row["handle"] == "README.md")
+            .expect("README anchor row");
+
+        assert_eq!(readme["r"], 1);
+        assert_eq!(readme["s"], 215);
+        assert_eq!(readme["w"], "authoritative_status");
+        assert_eq!(
+            readme["signals"],
+            serde_json::json!([
+                {"why": "authoritative_status", "score": 150},
+                {"why": "curated_name", "score": 65}
+            ])
+        );
+    }
+
+    #[test]
+    fn ranked_anchor_text_teaches_signal_drill_down() {
+        let output = CommandOutput::rows_with_ranked_anchor_enrichment(
+            vec![row(&[
+                ("handle", Value::String("README.md".to_string())),
+                ("r", Value::Number(NumberValue::Int(1))),
+                ("s", Value::Number(NumberValue::Int(215))),
+                ("w", Value::String("authoritative_status".to_string())),
+            ])],
+            RowView::RankedAnchor {
+                handle_field: "handle".to_string(),
+            },
+            None,
+            Vec::new(),
+            Some(RankedAnchorEnrichment {
+                handle_field: "handle".to_string(),
+                signals_by_handle: BTreeMap::new(),
+            }),
+        );
+        let mut rendered = Vec::new();
+
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render ranked_anchor text");
+        let rendered = String::from_utf8(rendered).expect("utf8");
+
+        assert!(rendered.contains("handle=README.md r=1 s=215 w=authoritative_status"));
+        assert!(rendered.contains("Follow-up: anneal -e '? anchor_signal(h, s, prio, why).'"));
+    }
+
+    #[test]
     fn status_human_render_rejects_schema_drift() {
         let output = status_output(vec![row(&[
             ("section", Value::String("work".to_string())),
@@ -5671,7 +6058,7 @@ mod tests {
             hits: vec![crate::ContextHit {
                 handle: "plan.md".to_string(),
                 span_id: Some("body".to_string()),
-                score: 0.9,
+                score: 0.989_999_949_932_098_4,
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
                 summary: Some("Release".to_string()),
@@ -5723,7 +6110,7 @@ mod tests {
             hits: vec![crate::ContextHit {
                 handle: "plan.md".to_string(),
                 span_id: Some("body".to_string()),
-                score: 0.9,
+                score: 0.989_999_949_932_098_4,
                 reason: "body:release".to_string(),
                 field: "body".to_string(),
                 summary: Some("Release".to_string()),
@@ -5768,6 +6155,7 @@ mod tests {
         assert_eq!(rows[0]["goal"], "find release blockers");
         assert_eq!(rows[1]["section"], "hit");
         assert_eq!(rows[1]["handle"], "plan.md");
+        assert_eq!(rows[1]["score"].to_string(), "0.99");
         assert_eq!(rows[1]["disposition"], "current_head");
         assert_eq!(rows[1]["status"], "active");
         assert_eq!(rows[1]["age_days"], 12);

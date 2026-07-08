@@ -783,6 +783,15 @@ impl IntrospectionBuilder {
                 "deterministic",
                 &info.provenance(),
             ));
+            if name == "ranked_anchor" {
+                self.schema.insert(schema_tuple(
+                    "ranked_anchor.signals",
+                    "rendering",
+                    "signals: [{why, score}]",
+                    "deterministic",
+                    "CLI JSON enrichment sourced from anchor_signal(h, score, priority, why)",
+                ));
+            }
             for (file, line_text) in info.source_lines.iter_line_text() {
                 self.predicates.insert(Tuple(vec![
                     string_value(&name),
@@ -2116,7 +2125,7 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
             "file handles plus authority, curated-name, incoming-edge, and weak recency signals. Terminal files need an explicit authoritative-style status to remain eligible.",
         ],
         "ranked_anchor" => &[
-            "the uncapped anchor(h, score, why) relation. Use rank filters for score tiers and --limit for display budgets.",
+            "the uncapped anchor(h, score, why) relation plus anchor_signal(h, score, priority, why) for per-signal provenance. Explicit CLI JSON adds signals:[{why, score}] when the query directly projects ranked_anchor.",
         ],
         "configured_pipeline_status"
         | "next_pipeline_status"
@@ -2149,7 +2158,7 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
             "Goal-less orientation anchors: durable read-first files such as authoritative models, living READMEs, curated indexes, and high-inbound references.",
         ),
         "ranked_anchor" => Some(
-            "Dense-ranked projection of `anchor`; useful when you want the top few durable read-first files.",
+            "Dense-ranked projection of `anchor`; useful when you want the top few durable read-first files. The `why` column is the dominant summary; inspect `anchor_signal` for the contribution set.",
         ),
         "blocked" => Some("Used by `blocker` and the blocked section of `status`."),
         "blocker" => Some(
@@ -2263,6 +2272,12 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
         ],
         "ranked_anchor" => vec![
             "Add `order by rank asc --limit N` when you need a budgeted top-N anchor list.".to_string(),
+            "Explicit JSON keeps h/rank/score/why and additively emits `signals: [{why, score}]` from `anchor_signal(h, score, priority, why)`.".to_string(),
+            "Text stays compact; use `anneal -e '? anchor_signal(h, s, prio, why).'` to drill into the contribution set.".to_string(),
+        ],
+        "status_item" => vec![
+            "The `why` column is currently a lossless prioritized status reason on the self-corpus; no JSON signal set is emitted.".to_string(),
+            "Inspect leaf predicates such as blocker, entropy, primary_entropy, regressed, and re_opened when a status row needs explanation.".to_string(),
         ],
         "asserts_code" => vec![
             "Config syntax: config convergence { asserts_code([stable, current, authoritative, active, draft]). }".to_string(),
@@ -2355,6 +2370,12 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         "ranked_anchor" => &[
             "`ranked_anchor(h, rank, score, why), *handle{id: h, file: file} order by rank asc` with eval `--limit 12` for a budgeted anchor list",
             "`ranked_anchor(h, rank, score, why), h = \"HANDLE\"` to inspect one anchor's rank",
+            "`anchor_signal(h, score, priority, why), h = \"HANDLE\" order by priority asc` to inspect the contribution set",
+        ],
+        "status_item" => &[
+            "`status_item(section, h, score, why), blocker(h, score, why)` to inspect blocked rows",
+            "`status_item(\"drifting\", h, score, why), regressed(h)` or `re_opened(h)` to inspect drifting leaves",
+            "`status_item(section, h, score, why), primary_entropy(h, why)` to compare prioritized convergence reasons",
         ],
         "blocked" | "blocker" => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
@@ -2488,6 +2509,7 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         ],
         "ranked_anchor" => &[
             "anchor",
+            "anchor_signal",
             "recent_frontier",
             "incoming_edge",
             "hub",

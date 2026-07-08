@@ -316,6 +316,7 @@ struct RankedContextHit {
 pub struct ContextHit {
     pub handle: String,
     pub span_id: Option<String>,
+    #[serde(serialize_with = "crate::serialize_json_score")]
     pub score: f64,
     pub reason: String,
     pub field: String,

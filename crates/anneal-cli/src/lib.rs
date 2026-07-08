@@ -19,6 +19,23 @@ pub const SURFACE_NAME: &str = "anneal-cli";
 
 pub const DEFAULT_SEARCH_LIMIT: usize = 25;
 pub const DEFAULT_READ_BUDGET: i64 = 4_000;
+const JSON_SCORE_SCALE: f64 = 1_000.0;
+
+pub(crate) fn round_json_score(score: f64) -> f64 {
+    if score.is_finite() {
+        (score * JSON_SCORE_SCALE).round() / JSON_SCORE_SCALE
+    } else {
+        score
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+pub(crate) fn serialize_json_score<S>(score: &f64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_f64(round_json_score(*score))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CliVerb {
