@@ -1,6 +1,6 @@
 [package]
 name = "anneal-md"
-version = "0.21.2"
+version = "0.21.3"
 edition = "2024"
 license = "MIT"
 description = "Markdown source adapter for anneal"

@@ -4,6 +4,21 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.21.3 - 2026-07-07
+
+### Changed
+
+- `ranked_anchor` exposes its full contribution set instead of a single reason.
+  The orientation score is a weighted sum over several axes (authoritative
+  status, current-head currency, inbound degree, recency); JSON output now
+  carries a nested `signals` list alongside the dominant `why`, so an anchor
+  that scores on four axes reads as all four rather than one label. Text output
+  stays compact and teaches the `anchor_signal` drill-down, and `status`
+  surfaces the same follow-up. Compact fields are unchanged.
+- Search and context JSON scores round to three decimals — the previous
+  16-digit float read as precision the ranker does not have. Text output and
+  generic eval floats are unchanged.
+
 ## v0.21.2 - 2026-07-06
 
 ### Fixed
