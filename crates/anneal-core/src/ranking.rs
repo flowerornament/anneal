@@ -14,6 +14,47 @@ use crate::config_schema::{
 use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
+// Benchmark ablations are test-only so the shipped ranker has no runtime knobs.
+#[cfg(test)]
+mod benchmark_ablation {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) enum Ablation {
+        #[default]
+        Baseline,
+        Stemming,
+        Specificity,
+        FieldWeights,
+        PhraseNgrams,
+        BaseMatchFloor,
+        AbbreviationExpansion,
+    }
+
+    thread_local! {
+        static ACTIVE: Cell<Ablation> = const { Cell::new(Ablation::Baseline) };
+    }
+
+    pub(super) fn is_active(ablation: Ablation) -> bool {
+        ACTIVE.get() == ablation
+    }
+
+    pub(super) fn with<T>(ablation: Ablation, run: impl FnOnce() -> T) -> T {
+        struct Restore(Ablation);
+
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE.set(self.0);
+            }
+        }
+
+        let restore = Restore(ACTIVE.replace(ablation));
+        let result = run();
+        drop(restore);
+        result
+    }
+}
+
 pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f32 = 0.5;
 const PARENT_CLUSTER_RAW_SCORE_BOOST: f32 = 0.15;
 const PARENT_CLUSTER_MIN_CHILD_RAW_SCORE: f32 = 0.70;
@@ -242,6 +283,10 @@ fn handle_fragment_priority(handle: &str) -> u8 {
 }
 
 fn field_weight(field: &str) -> f32 {
+    #[cfg(test)]
+    if benchmark_ablation::is_active(benchmark_ablation::Ablation::FieldWeights) {
+        return 1.0;
+    }
     match field {
         FIELD_IDENTIFIER => 1.0,
         FIELD_TITLE => 0.95,
@@ -805,6 +850,10 @@ impl SearchIndex {
     }
 
     fn term_specificity(&self, query: &SearchQuery) -> TermSpecificity {
+        #[cfg(test)]
+        if benchmark_ablation::is_active(benchmark_ablation::Ablation::Specificity) {
+            return TermSpecificity::uniform(query);
+        }
         let field_count = self
             .documents
             .values()
@@ -1081,8 +1130,14 @@ impl SearchQuery {
             .filter(|term| term_matches(normalized_text, term))
             .map(|term| specificity.weight_for(term))
             .sum::<f32>();
-        (matched_weight > 0.0)
-            .then(|| 0.35 + (0.55 * (matched_weight / specificity.total_weight).min(1.0)))
+        (matched_weight > 0.0).then(|| {
+            let matched_ratio = (matched_weight / specificity.total_weight).min(1.0);
+            #[cfg(test)]
+            if benchmark_ablation::is_active(benchmark_ablation::Ablation::BaseMatchFloor) {
+                return matched_ratio;
+            }
+            0.35 + (0.55 * matched_ratio)
+        })
     }
 }
 
@@ -1145,6 +1200,10 @@ fn canonical_search_token(token: &str) -> String {
 }
 
 fn canonicalize_search_token(stem: &mut String) {
+    #[cfg(test)]
+    if benchmark_ablation::is_active(benchmark_ablation::Ablation::Stemming) {
+        return;
+    }
     if stem.len() > 6 && stem.ends_with("ation") {
         stem.truncate(stem.len() - "ation".len());
     } else if stem.len() > 5 && stem.ends_with("ing") {
@@ -1179,28 +1238,44 @@ fn trim_doubled_final_consonant(value: &mut String) {
 
 fn expanded_query_terms(original_terms: &[String]) -> Vec<QueryTerm> {
     let mut weights = BTreeMap::<String, f32>::new();
+    #[cfg(test)]
+    let abbreviations_enabled =
+        !benchmark_ablation::is_active(benchmark_ablation::Ablation::AbbreviationExpansion);
+    #[cfg(not(test))]
+    let abbreviations_enabled = true;
     for term in original_terms {
         insert_term_weight(&mut weights, term, 1.0);
-        for (expanded, weight) in abbreviation_expansions(term) {
-            insert_term_weight(&mut weights, expanded, *weight);
+        if abbreviations_enabled {
+            for (expanded, weight) in abbreviation_expansions(term) {
+                insert_term_weight(&mut weights, expanded, *weight);
+            }
         }
     }
-    for window in original_terms.windows(2) {
-        insert_term_weight(&mut weights, &window.join(" "), 2.0);
-    }
-    for window in original_terms.windows(3) {
-        insert_term_weight(&mut weights, &window.join(" "), 3.0);
-    }
-    for window in original_terms.windows(2) {
-        if window[0] == "open" && window[1] == "question" {
-            insert_term_weight(&mut weights, "oq", 2.0);
+    #[cfg(test)]
+    let phrase_ngrams_enabled =
+        !benchmark_ablation::is_active(benchmark_ablation::Ablation::PhraseNgrams);
+    #[cfg(not(test))]
+    let phrase_ngrams_enabled = true;
+    if phrase_ngrams_enabled {
+        for window in original_terms.windows(2) {
+            insert_term_weight(&mut weights, &window.join(" "), 2.0);
+        }
+        for window in original_terms.windows(3) {
+            insert_term_weight(&mut weights, &window.join(" "), 3.0);
         }
     }
-    for window in original_terms.windows(3) {
-        if window[0] == "architecture" && window[1] == "decision" && window[2] == "record" {
-            insert_term_weight(&mut weights, "adr", 3.0);
-        } else if window[0] == "request" && window[1] == "for" && window[2] == "comment" {
-            insert_term_weight(&mut weights, "rfc", 3.0);
+    if abbreviations_enabled {
+        for window in original_terms.windows(2) {
+            if window[0] == "open" && window[1] == "question" {
+                insert_term_weight(&mut weights, "oq", 2.0);
+            }
+        }
+        for window in original_terms.windows(3) {
+            if window[0] == "architecture" && window[1] == "decision" && window[2] == "record" {
+                insert_term_weight(&mut weights, "adr", 3.0);
+            } else if window[0] == "request" && window[1] == "for" && window[2] == "comment" {
+                insert_term_weight(&mut weights, "rfc", 3.0);
+            }
         }
     }
     weights
@@ -1280,6 +1355,10 @@ fn compare_ranked_search_hits(
         .total_cmp(&left.score.get())
         .then_with(|| ranker.tie_break(&left.hit, &right.hit))
 }
+
+#[cfg(test)]
+#[path = "ranking_benchmark.rs"]
+mod benchmark;
 
 #[cfg(test)]
 mod tests {
