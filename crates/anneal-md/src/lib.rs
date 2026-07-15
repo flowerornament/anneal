@@ -1,9 +1,9 @@
 //! Markdown adapter for anneal.
 
 use anneal_core::{
-    ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern, RelativePathPolicy, Source,
-    SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName,
-    default_lexical_search_info, normalize_relative_path,
+    CodeDriftRefreshProgressSink, ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern,
+    RelativePathPolicy, Source, SourceCapabilities, SourceContext, SourceError, SourceInfo,
+    SourceName, default_lexical_search_info, normalize_relative_path,
 };
 use camino::Utf8PathBuf;
 use serde::Serialize;
@@ -54,6 +54,7 @@ pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownSource {
     config: Option<extract::adapter::MarkdownConfig>,
+    drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
 }
 
 impl MarkdownSource {
@@ -62,7 +63,14 @@ impl MarkdownSource {
             .map_err(|err| SourceError::Other(err.to_string()))?;
         Ok(Self {
             config: Some(config),
+            drift_refresh_progress: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_drift_refresh_progress(mut self, sink: CodeDriftRefreshProgressSink) -> Self {
+        self.drift_refresh_progress = Some(sink);
+        self
     }
 }
 
@@ -105,6 +113,10 @@ impl Source for MarkdownSource {
         discovery.options.probe_edge_assertions = cx.probe_edge_assertions;
         discovery.options.read_code_drift_evidence = cx.read_code_drift_evidence;
         discovery.options.refresh_code_drift_evidence = cx.refresh_code_drift_evidence;
+        discovery
+            .options
+            .drift_refresh_progress
+            .clone_from(&self.drift_refresh_progress);
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -172,6 +184,7 @@ impl MarkdownDiscoveryConfig {
                 probe_code_target_history: false,
                 read_code_drift_evidence: false,
                 refresh_code_drift_evidence: false,
+                drift_refresh_progress: None,
                 probe_edge_assertions: false,
             },
         })

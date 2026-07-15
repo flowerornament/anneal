@@ -5,6 +5,8 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anneal_code::CodeSource;
 use anneal_core::runtime::ast::DerivedAtom;
@@ -16,12 +18,12 @@ use anneal_core::runtime::{
     analyze, parse_program, stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
-    ActorContext, CancellationToken, CodeTargetMeta, ConfigEntry, ConfigFact, ConfigFacts,
-    CorpusId, EdgeFact, FactStore, Generation, InferredCorpusRoot, ProjectExtension,
-    SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo,
-    VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry, VerbLayer, VerbRegistry,
-    append_snapshot_entry_capped, infer_corpus_root, load_project_extension, merge_program_layers,
-    read_snapshot_history, render_verb_arg_facts,
+    ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
+    ConfigFact, ConfigFacts, CorpusId, EdgeFact, FactStore, Generation, InferredCorpusRoot,
+    ProjectExtension, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact, Source,
+    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry,
+    VerbLayer, VerbRegistry, append_snapshot_entry_capped, infer_corpus_root,
+    load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::MarkdownSource;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -45,6 +47,46 @@ const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
 const SUPERSEDES_EDGE_KIND: &str = "Supersedes";
+
+fn drift_refresh_progress_sink() -> CodeDriftRefreshProgressSink {
+    let last_reported = Mutex::new(Duration::ZERO);
+    CodeDriftRefreshProgressSink::new(move |progress| {
+        let mut last_reported = last_reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.completed == 0 {
+            if progress.total == 0 {
+                eprintln!("Drift refresh: cache is current (0 cold probes)");
+            } else {
+                eprintln!("Drift refresh: 0/{} cold probes", progress.total);
+            }
+            return;
+        }
+        if progress.completed == progress.total
+            || progress.elapsed.saturating_sub(*last_reported) >= Duration::from_secs(1)
+        {
+            eprintln!(
+                "Drift refresh: {}/{} cold probes ({:.1}s)",
+                progress.completed,
+                progress.total,
+                progress.elapsed.as_secs_f64()
+            );
+            *last_reported = progress.elapsed;
+        }
+    })
+}
+
+fn drift_refresh_progress_for(command: &RuntimeCommand) -> Option<CodeDriftRefreshProgressSink> {
+    command
+        .refreshes_code_drift_evidence()
+        .then(drift_refresh_progress_sink)
+}
+
+fn drift_refresh_announcement(command: &RuntimeCommand) -> Option<&'static str> {
+    command
+        .refreshes_code_drift_evidence()
+        .then_some("Drift refresh: collecting assertion provenance (this can take minutes)")
+}
 
 fn available_source_info() -> Vec<SourceInfo> {
     vec![MarkdownSource::default().describe(), CodeSource.describe()]
@@ -159,6 +201,9 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             Err(error) => return Err(error.into()),
         };
         return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
+    }
+    if let Some(message) = drift_refresh_announcement(&invocation.command) {
+        eprintln!("{message}");
     }
     let session = RuntimeSession::load(invocation.root.path(), &invocation.command)?;
     let output = session.run(invocation.command)?;
@@ -1028,8 +1073,11 @@ impl RuntimeSession {
                 project.runtime_config().clone()
             });
         let config_facts = ConfigFacts::from_entries(discovery);
-        let markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
+        let mut markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
+        if let Some(progress) = drift_refresh_progress_for(command) {
+            markdown_source = markdown_source.with_drift_refresh_progress(progress);
+        }
         let code_source = CodeSource;
         let roots = vec![root.to_path_buf()];
         let context = SourceContext {
@@ -4991,6 +5039,22 @@ mod tests {
             RuntimeCommand::Check {
                 refresh_drift: true
             }
+        );
+        assert!(drift_refresh_progress_for(&parsed.command).is_some());
+        assert!(drift_refresh_announcement(&parsed.command).is_some());
+        assert!(drift_refresh_progress_for(&RuntimeCommand::Status).is_none());
+        assert!(drift_refresh_announcement(&RuntimeCommand::Status).is_none());
+        assert!(
+            drift_refresh_progress_for(&RuntimeCommand::Check {
+                refresh_drift: false
+            })
+            .is_none()
+        );
+        assert!(
+            drift_refresh_announcement(&RuntimeCommand::Check {
+                refresh_drift: false
+            })
+            .is_none()
         );
 
         let err = Invocation::parse(os(&["anneal", "check", "--active-only"]))

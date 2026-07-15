@@ -1,10 +1,13 @@
 //! Code-target existence and history probes for source references.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::process::Command;
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
@@ -12,6 +15,7 @@ use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
 const DRIFT_CACHE_SCHEMA_VERSION: u32 = 1;
 const PATH_POLICY_VERSION: u32 = 1;
 const DRIFT_CACHE_RELATIVE_PATH: &str = ".anneal/drift-evidence.json";
+const MAX_DRIFT_PROBE_WORKERS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetExistence {
@@ -75,6 +79,36 @@ pub struct CodeDriftEvidence {
     pub evidence_head: String,
     pub assertion_premise: String,
     pub cost_ms: u128,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodeDriftRefreshProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub elapsed: Duration,
+}
+
+#[derive(Clone)]
+pub struct CodeDriftRefreshProgressSink {
+    callback: Arc<dyn Fn(CodeDriftRefreshProgress) + Send + Sync>,
+}
+
+impl CodeDriftRefreshProgressSink {
+    pub fn new(callback: impl Fn(CodeDriftRefreshProgress) + Send + Sync + 'static) -> Self {
+        Self {
+            callback: Arc::new(callback),
+        }
+    }
+
+    fn report(&self, progress: CodeDriftRefreshProgress) {
+        (self.callback)(progress);
+    }
+}
+
+impl fmt::Debug for CodeDriftRefreshProgressSink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CodeDriftRefreshProgressSink(..)")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,44 +185,98 @@ impl CodeDriftEvidenceCache {
         &mut self,
         request: &CodeDriftEvidenceRequest,
     ) -> Option<CodeDriftEvidence> {
+        self.evidence_for_batch(std::slice::from_ref(request), None)
+            .pop()
+            .flatten()
+    }
+
+    pub fn evidence_for_batch(
+        &mut self,
+        requests: &[CodeDriftEvidenceRequest],
+        progress: Option<&CodeDriftRefreshProgressSink>,
+    ) -> Vec<Option<CodeDriftEvidence>> {
+        let progress = matches!(self.mode, CodeDriftEvidenceMode::Refresh)
+            .then_some(progress)
+            .flatten();
+        let mut results = vec![None; requests.len()];
         if !self.is_enabled() {
-            return None;
+            return results;
         }
         let Some(head) = self.head.clone() else {
-            return Some(CodeDriftEvidence {
-                disposition: "referent-unknown".to_string(),
-                commits_since_assertion: None,
-                moved_to: None,
-                move_candidates: Vec::new(),
-                evidence_head: "unknown".to_string(),
-                assertion_premise: assertion_premise(request),
-                cost_ms: 0,
-            });
+            for (result, request) in results.iter_mut().zip(requests) {
+                *result = Some(CodeDriftEvidence {
+                    disposition: "referent-unknown".to_string(),
+                    commits_since_assertion: None,
+                    moved_to: None,
+                    move_candidates: Vec::new(),
+                    evidence_head: "unknown".to_string(),
+                    assertion_premise: assertion_premise(request),
+                    cost_ms: 0,
+                });
+            }
+            return results;
         };
-        let key = drift_cache_key(&self.repo_root, &head, request);
-        if let Some(entry) = self.entries.get(&key) {
-            return Some(entry.to_evidence());
+
+        let mut pending = Vec::<PendingDriftProbe>::new();
+        let mut pending_by_key = BTreeMap::<String, usize>::new();
+        for (index, request) in requests.iter().enumerate() {
+            let key = drift_cache_key(&self.repo_root, &head, request);
+            if let Some(entry) = self.entries.get(&key) {
+                results[index] = Some(entry.to_evidence());
+                continue;
+            }
+            if matches!(self.mode, CodeDriftEvidenceMode::ReadCache)
+                && assertion_premise(request) == "assertion_date_unknown"
+                && let Some(entry) = self.entries.values().find(|entry| {
+                    entry.head == head
+                        && entry.ref_handle == request.ref_handle
+                        && entry.target_path == request.target_path
+                })
+            {
+                results[index] = Some(entry.to_evidence());
+                continue;
+            }
+            if !matches!(self.mode, CodeDriftEvidenceMode::Refresh) {
+                continue;
+            }
+            if let Some(pending_index) = pending_by_key.get(&key).copied() {
+                pending[pending_index].result_indices.push(index);
+            } else {
+                pending_by_key.insert(key.clone(), pending.len());
+                pending.push(PendingDriftProbe {
+                    key,
+                    request: request.clone(),
+                    result_indices: vec![index],
+                });
+            }
         }
-        if matches!(self.mode, CodeDriftEvidenceMode::ReadCache)
-            && assertion_premise(request) == "assertion_date_unknown"
-            && let Some(entry) = self.entries.values().find(|entry| {
-                entry.head == head
-                    && entry.ref_handle == request.ref_handle
-                    && entry.target_path == request.target_path
-            })
-        {
-            return Some(entry.to_evidence());
+
+        let started = Instant::now();
+        if let Some(progress) = progress {
+            progress.report(CodeDriftRefreshProgress {
+                completed: 0,
+                total: pending.len(),
+                elapsed: Duration::ZERO,
+            });
         }
-        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh) {
-            return None;
+        let reporter = BatchProgress::new(progress, pending.len(), started);
+        let show_memo = MoveShowMemo::new(&self.repo_root);
+        let evidence =
+            compute_pending_drift_probes(&self.repo_root, &head, &pending, &show_memo, &reporter);
+
+        for (probe, evidence) in pending.into_iter().zip(evidence) {
+            self.entries.insert(
+                probe.key,
+                CachedCodeDriftEvidence::from_evidence(&self.repo_root, &probe.request, &evidence),
+            );
+            for index in probe.result_indices {
+                results[index] = Some(evidence.clone());
+            }
         }
-        let evidence = compute_drift_evidence(&self.repo_root, &head, request);
-        self.entries.insert(
-            key,
-            CachedCodeDriftEvidence::from_evidence(&self.repo_root, request, &evidence),
-        );
-        self.changed = true;
-        Some(evidence)
+        if !pending_by_key.is_empty() {
+            self.changed = true;
+        }
+        results
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -206,6 +294,155 @@ impl CodeDriftEvidenceCache {
         let body = serde_json::to_string_pretty(&file)?;
         std::fs::write(self.cache_path.as_std_path(), body)
     }
+}
+
+struct PendingDriftProbe {
+    key: String,
+    request: CodeDriftEvidenceRequest,
+    result_indices: Vec<usize>,
+}
+
+struct BatchProgress<'a> {
+    sink: Option<&'a CodeDriftRefreshProgressSink>,
+    completed: Mutex<usize>,
+    total: usize,
+    started: Instant,
+}
+
+impl<'a> BatchProgress<'a> {
+    const fn new(
+        sink: Option<&'a CodeDriftRefreshProgressSink>,
+        total: usize,
+        started: Instant,
+    ) -> Self {
+        Self {
+            sink,
+            completed: Mutex::new(0),
+            total,
+            started,
+        }
+    }
+
+    fn advance(&self) {
+        let Some(sink) = self.sink else {
+            return;
+        };
+        let mut completed = self
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *completed += 1;
+        sink.report(CodeDriftRefreshProgress {
+            completed: *completed,
+            total: self.total,
+            elapsed: self.started.elapsed(),
+        });
+    }
+}
+
+type MoveShowSlot = Arc<OnceLock<Option<Arc<str>>>>;
+
+struct MoveShowMemo<'a> {
+    repo_root: &'a Utf8Path,
+    entries: Mutex<BTreeMap<String, MoveShowSlot>>,
+    #[cfg(test)]
+    show_invocations: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a> MoveShowMemo<'a> {
+    fn new(repo_root: &'a Utf8Path) -> Self {
+        Self {
+            repo_root,
+            entries: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            show_invocations: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn show(&self, commit: &str) -> Option<Arc<str>> {
+        let slot = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries
+                .entry(commit.to_string())
+                .or_insert_with(|| Arc::new(OnceLock::new()))
+                .clone()
+        };
+        slot.get_or_init(|| {
+            #[cfg(test)]
+            self.show_invocations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            git_output(
+                self.repo_root,
+                &[
+                    "show",
+                    "--name-status",
+                    "--find-renames",
+                    "--find-copies",
+                    "--format=",
+                    commit,
+                ],
+            )
+            .map(Arc::<str>::from)
+        })
+        .clone()
+    }
+
+    #[cfg(test)]
+    fn show_invocations(&self) -> usize {
+        self.show_invocations
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+fn compute_pending_drift_probes(
+    repo_root: &Utf8Path,
+    head: &str,
+    pending: &[PendingDriftProbe],
+    show_memo: &MoveShowMemo<'_>,
+    progress: &BatchProgress<'_>,
+) -> Vec<CodeDriftEvidence> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(MAX_DRIFT_PROBE_WORKERS)
+        .min(pending.len());
+    if workers <= 1 {
+        return pending
+            .iter()
+            .map(|probe| {
+                let evidence = compute_drift_evidence(repo_root, head, &probe.request, show_memo);
+                progress.advance();
+                evidence
+            })
+            .collect();
+    }
+
+    let Ok(pool) = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|index| format!("anneal-drift-{index}"))
+        .build()
+    else {
+        return pending
+            .iter()
+            .map(|probe| {
+                let evidence = compute_drift_evidence(repo_root, head, &probe.request, show_memo);
+                progress.advance();
+                evidence
+            })
+            .collect();
+    };
+    pool.install(|| {
+        pending
+            .par_iter()
+            .map(|probe| {
+                let evidence = compute_drift_evidence(repo_root, head, &probe.request, show_memo);
+                progress.advance();
+                evidence
+            })
+            .collect()
+    })
 }
 
 impl CodeTargetProbe {
@@ -474,6 +711,7 @@ fn compute_drift_evidence(
     repo_root: &Utf8Path,
     head: &str,
     request: &CodeDriftEvidenceRequest,
+    show_memo: &MoveShowMemo<'_>,
 ) -> CodeDriftEvidence {
     let started = Instant::now();
     let assertion_premise = assertion_premise(request);
@@ -512,7 +750,7 @@ fn compute_drift_evidence(
             Some(count) => format!("referent-drifted({count})"),
         }
     } else if history_status == TargetHistoryStatus::Present {
-        move_candidates = find_move_candidates(repo_root, &target);
+        move_candidates = find_move_candidates(repo_root, &target, show_memo);
         match move_candidates.as_slice() {
             [candidate] => {
                 moved_to = Some(candidate.clone());
@@ -641,7 +879,11 @@ fn relevant_worktree_dirty(repo_root: &Utf8Path, target: &Utf8Path, edge_file: &
     git_output(repo_root, &args).is_some_and(|output| !output.trim().is_empty())
 }
 
-fn find_move_candidates(repo_root: &Utf8Path, target: &Utf8Path) -> Vec<String> {
+fn find_move_candidates(
+    repo_root: &Utf8Path,
+    target: &Utf8Path,
+    show_memo: &MoveShowMemo<'_>,
+) -> Vec<String> {
     let Some(deleting_commits) = git_output(
         repo_root,
         &[
@@ -661,17 +903,7 @@ fn find_move_candidates(repo_root: &Utf8Path, target: &Utf8Path) -> Vec<String> 
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
-        let Some(show) = git_output(
-            repo_root,
-            &[
-                "show",
-                "--name-status",
-                "--find-renames",
-                "--find-copies",
-                "--format=",
-                commit,
-            ],
-        ) else {
+        let Some(show) = show_memo.show(commit) else {
             continue;
         };
         let mut deleted_in_commit = false;
@@ -721,6 +953,7 @@ fn looks_like_split_candidate(old_path: &str, new_path: &str) -> bool {
 
 fn git_output(repo_root: &Utf8Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(repo_root.as_std_path())
         .args(args)
@@ -1010,6 +1243,170 @@ mod tests {
     }
 
     #[test]
+    fn drift_batch_matches_serial_order_and_writes_stable_cache_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join("src/stable.rs"), "pub fn stable() {}\n").expect("write stable");
+        fs::write(repo.join("src/churn.rs"), "pub fn churn() {}\n").expect("write churn");
+        fs::write(corpus.join("spec.md"), "# Spec\n").expect("write spec");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let assertion_revision = git_stdout(&repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("src/churn.rs"), "pub fn churn_v2() {}\n").expect("rewrite churn");
+        run_git(&repo, &["add", "src/churn.rs"]);
+        run_git(&repo, &["commit", "-m", "touch churn"]);
+
+        let request_for = |target: &str| CodeDriftEvidenceRequest {
+            ref_handle: format!("external:code:spec.md:1:{target}"),
+            target_path: target.to_string(),
+            edge_file: ".design/spec.md".to_string(),
+            assertion_date: None,
+            assertion_revision: Some(assertion_revision.clone()),
+        };
+        let requests = vec![request_for("src/churn.rs"), request_for("src/stable.rs")];
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress = CodeDriftRefreshProgressSink::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        });
+        let mut batch_cache = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let batch = batch_cache.evidence_for_batch(&requests, Some(&progress));
+
+        let mut serial_cache =
+            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let serial = requests
+            .iter()
+            .map(|request| serial_cache.evidence_for(request))
+            .collect::<Vec<_>>();
+        assert_eq!(without_cost(batch.clone()), without_cost(serial));
+        assert_eq!(
+            batch[0].as_ref().map(|value| value.disposition.as_str()),
+            Some("referent-drifted(1)")
+        );
+        assert_eq!(
+            batch[1].as_ref().map(|value| value.disposition.as_str()),
+            Some("referent-intact")
+        );
+
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.completed)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(events.iter().all(|event| event.total == 2));
+        drop(events);
+
+        batch_cache.save().expect("save batch cache");
+        let first = fs::read(batch_cache.cache_path.as_std_path()).expect("read first cache");
+        batch_cache.save().expect("save batch cache again");
+        let second = fs::read(batch_cache.cache_path.as_std_path()).expect("read second cache");
+        assert_eq!(first, second);
+
+        let read_events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&read_events);
+        let read_progress = CodeDriftRefreshProgressSink::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        });
+        let mut read_cache =
+            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::ReadCache);
+        let _ = read_cache.evidence_for_batch(&requests, Some(&read_progress));
+        assert!(
+            read_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "non-refresh modes never report refresh progress"
+        );
+    }
+
+    #[test]
+    fn drift_probe_detects_staged_target_and_untracked_edge_with_optional_locks_disabled() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").expect("write lib");
+        fs::write(corpus.join("spec.md"), "# Spec\n").expect("write spec");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        let assertion_revision = git_stdout(&repo, &["rev-parse", "HEAD"]);
+
+        let request = |edge_file: &str| CodeDriftEvidenceRequest {
+            ref_handle: format!("external:code:{edge_file}:1:src/lib.rs"),
+            target_path: "src/lib.rs".to_string(),
+            edge_file: edge_file.to_string(),
+            assertion_date: None,
+            assertion_revision: Some(assertion_revision.clone()),
+        };
+        fs::write(repo.join("src/lib.rs"), "pub fn value() -> u8 { 2 }\n").expect("rewrite lib");
+        run_git(&repo, &["add", "src/lib.rs"]);
+        let mut staged_cache =
+            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let staged = staged_cache
+            .evidence_for(&request(".design/spec.md"))
+            .expect("staged evidence");
+        assert_eq!(staged.disposition, "evidence_dirty_worktree");
+
+        run_git(&repo, &["commit", "-m", "stage target"]);
+        fs::write(corpus.join("untracked.md"), "# Untracked\n").expect("write untracked edge");
+        let mut untracked_cache =
+            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let untracked = untracked_cache
+            .evidence_for(&request(".design/untracked.md"))
+            .expect("untracked evidence");
+        assert_eq!(untracked.disposition, "evidence_dirty_worktree");
+    }
+
+    #[test]
+    fn move_show_memo_is_single_flight_across_parallel_targets() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        fs::create_dir_all(repo.join("src")).expect("create src");
+        run_git(&repo, &["init"]);
+        fs::write(repo.join("src/old_a.rs"), "pub fn old_a() {}\n").expect("write old a");
+        fs::write(repo.join("src/old_b.rs"), "pub fn old_b() {}\n").expect("write old b");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add old paths"]);
+        fs::rename(repo.join("src/old_a.rs"), repo.join("src/new_a.rs")).expect("rename a");
+        fs::rename(repo.join("src/old_b.rs"), repo.join("src/new_b.rs")).expect("rename b");
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-m", "move paths together"]);
+
+        let memo = MoveShowMemo::new(&repo);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("build test pool");
+        let (a, b) = pool.install(|| {
+            rayon::join(
+                || find_move_candidates(&repo, Utf8Path::new("src/old_a.rs"), &memo),
+                || find_move_candidates(&repo, Utf8Path::new("src/old_b.rs"), &memo),
+            )
+        });
+
+        assert_eq!(a, vec!["src/new_a.rs".to_string()]);
+        assert_eq!(b, vec!["src/new_b.rs".to_string()]);
+        assert_eq!(memo.show_invocations(), 1);
+    }
+
+    #[test]
     fn head_move_migrates_untouched_entries_and_drops_touched_ones() {
         let dir = tempdir().expect("tempdir");
         let repo = utf8(dir.path().join("repo"));
@@ -1117,6 +1514,18 @@ mod tests {
             .evidence_for(&read_request)
             .expect("read cache evidence without re-blaming assertions");
         assert_eq!(cached, evidence);
+    }
+
+    fn without_cost(evidence: Vec<Option<CodeDriftEvidence>>) -> Vec<Option<CodeDriftEvidence>> {
+        evidence
+            .into_iter()
+            .map(|evidence| {
+                evidence.map(|mut evidence| {
+                    evidence.cost_ms = 0;
+                    evidence
+                })
+            })
+            .collect()
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) {

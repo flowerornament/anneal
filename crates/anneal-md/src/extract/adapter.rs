@@ -8,9 +8,9 @@ use anneal_core::target_probe::{
     CodeDriftEvidence, CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest,
 };
 use anneal_core::{
-    CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact, EdgeFact, FactBatch,
-    FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId, OriginUri, Revision,
-    RuntimeConfigKey, SourceName, SpanFact, runtime_config_declaration_by_key,
+    CodeDriftRefreshProgressSink, CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact,
+    EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId,
+    OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact, runtime_config_declaration_by_key,
 };
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -30,6 +30,7 @@ pub struct MarkdownExtractionOptions {
     pub probe_code_target_history: bool,
     pub read_code_drift_evidence: bool,
     pub refresh_code_drift_evidence: bool,
+    pub drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
     pub probe_edge_assertions: bool,
 }
 
@@ -1407,6 +1408,8 @@ fn emit_code_ref_meta(
         (false, false) => CodeDriftEvidenceMode::Disabled,
     };
     let mut drift_cache = CodeDriftEvidenceCache::open(root, drift_mode);
+    let mut drift_targets = Vec::<(FactIdentity, String)>::new();
+    let mut drift_requests = Vec::<CodeDriftEvidenceRequest>::new();
     for reference in &result.code_refs {
         if !seen.insert(reference.handle_id.clone()) {
             continue;
@@ -1474,14 +1477,20 @@ fn emit_code_ref_meta(
             });
         }
         let assertion = assertions.assertion_for(&reference.file, reference.source_line);
-        if let Some(evidence) = drift_cache.evidence_for(&CodeDriftEvidenceRequest {
+        drift_targets.push((identity, reference.handle_id.clone()));
+        drift_requests.push(CodeDriftEvidenceRequest {
             ref_handle: reference.handle_id.clone(),
             target_path: reference.path.clone(),
             edge_file: reference.file.clone(),
             assertion_date: assertion.as_ref().map(|value| value.date.clone()),
             assertion_revision: assertion.map(|value| value.revision),
-        }) {
-            emit_code_drift_evidence_meta(batch, &identity, &reference.handle_id, &evidence);
+        });
+    }
+    let drift_evidence =
+        drift_cache.evidence_for_batch(&drift_requests, options.drift_refresh_progress.as_ref());
+    for ((identity, handle), evidence) in drift_targets.into_iter().zip(drift_evidence) {
+        if let Some(evidence) = evidence {
+            emit_code_drift_evidence_meta(batch, &identity, &handle, &evidence);
         }
     }
     drift_cache
