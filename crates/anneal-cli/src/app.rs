@@ -380,7 +380,7 @@ impl Invocation {
             } else if arg == "--format" {
                 output = parse_output_format(
                     iter.next()
-                        .context("--format requires json or text")?
+                        .context("--format requires json, ndjson, or text")?
                         .to_str()
                         .context("--format value is not valid UTF-8")?,
                 )?;
@@ -819,7 +819,7 @@ const RUNTIME_HELP_OPTIONS: &str = "\
 Global options:
       --root <PATH>              Corpus root (default: nearest .design, docs, or anneal.dl upward)
       --json                     Force JSON/NDJSON output
-      --format <text|json>       Force readable text or JSON/NDJSON output
+      --format <text|json|ndjson> Force readable text or JSON/NDJSON output
 ";
 
 impl RuntimeCommand {
@@ -1228,11 +1228,22 @@ impl RuntimeSession {
                 budget,
                 span_id,
             } => {
-                let query = ReadCommand::new(handle)
+                let query = ReadCommand::new(&handle)
                     .with_budget(budget)
                     .with_span_id(span_id)
                     .datalog();
-                self.run_query(&query, ExplainOptions::disabled(), RowView::Read)
+                let output = self.eval(&query, ExplainOptions::disabled())?;
+                let missing_handle =
+                    if output.rows.is_empty() && !self.visible_handle_exists(&handle)? {
+                        Some(handle)
+                    } else {
+                        None
+                    };
+                Ok(CommandOutput::rows_with_warnings(
+                    output.rows,
+                    RowView::Read { missing_handle },
+                    warning_texts(&output.warnings),
+                ))
             }
             RuntimeCommand::Handle {
                 handle,
@@ -1300,14 +1311,24 @@ impl RuntimeSession {
                 .rows
                 .extend(handle_lineage_rows(&self.store, &handle));
         }
+        let missing = output.rows.is_empty();
         Ok(CommandOutput::rows(
             output.rows,
             RowView::Handle {
                 handle,
                 impact,
                 lineage,
+                missing,
             },
         ))
+    }
+
+    fn visible_handle_exists(&self, handle: &str) -> Result<bool> {
+        let output = self.eval(&handle_query(handle), ExplainOptions::disabled())?;
+        Ok(output
+            .rows
+            .iter()
+            .any(|row| required_string(row, "relation").is_ok_and(|relation| relation == "self")))
     }
 
     fn handle_impact_rows(&self, handle: &str) -> Vec<Row> {
@@ -2649,6 +2670,13 @@ impl CommandOutput {
         if let Self::Rows { warnings, .. } = self {
             messages.extend(warnings.iter().cloned());
         }
+        if !matches!(mode, OutputMode::Human)
+            && let Self::Rows { rows, view, .. } = self
+            && rows.is_empty()
+            && let Some(handle) = view.missing_handle()
+        {
+            messages.push(missing_handle_hint(handle));
+        }
         if let Some(message) = self.empty_rows_diagnostic(mode) {
             messages.push(message.to_string());
         }
@@ -2730,10 +2758,16 @@ fn empty_binding_hint_text(row_count: usize, example: &str) -> String {
     )
 }
 
+fn missing_handle_hint(handle: &str) -> String {
+    format!("hint: handle {handle:?} not found; try `anneal search {handle:?}` or `anneal status`")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum RowView {
     Search,
-    Read,
+    Read {
+        missing_handle: Option<String>,
+    },
     RankedAnchor {
         handle_field: String,
     },
@@ -2741,6 +2775,7 @@ enum RowView {
         handle: String,
         impact: bool,
         lineage: bool,
+        missing: bool,
     },
     Broken,
     Describe,
@@ -2755,7 +2790,7 @@ impl RowView {
     fn heading(&self, count: usize) -> Option<String> {
         let heading = match self {
             Self::Search => format!("Search ({count})"),
-            Self::Read => format!("Read ({count})"),
+            Self::Read { .. } => format!("Read ({count})"),
             Self::Handle { handle, .. } => format!("Handle {handle} ({count} edges)"),
             Self::Broken => format!("Broken ({count})"),
             Self::Describe => return None,
@@ -2764,6 +2799,20 @@ impl RowView {
             Self::Verb { name } => format!("{name} ({count})"),
         };
         Some(heading)
+    }
+
+    fn missing_handle(&self) -> Option<&str> {
+        match self {
+            Self::Read {
+                missing_handle: Some(handle),
+            }
+            | Self::Handle {
+                handle,
+                missing: true,
+                ..
+            } => Some(handle),
+            _ => None,
+        }
     }
 }
 
@@ -2839,7 +2888,7 @@ Query:
 Global options:
       --root <PATH>              Corpus root (default: nearest .design, docs, or anneal.dl upward)
       --json                     Force JSON/NDJSON output
-      --format <text|json>       Force readable text or JSON/NDJSON output
+      --format <text|json|ndjson> Force readable text or JSON/NDJSON output
 ",
         doc = entry.doc(),
         source = entry.source().location().source_name,
@@ -3584,17 +3633,18 @@ fn write_rows_text<W: Write>(
         handle,
         impact,
         lineage,
+        missing,
     } = view
     {
-        return write_handle_text(writer, handle, *impact, *lineage, rows);
+        return write_handle_text(writer, handle, *impact, *lineage, *missing, rows);
     }
 
     if *view == RowView::Describe {
         return write_describe_text(writer, rows);
     }
 
-    if *view == RowView::Read {
-        return write_read_text(writer, rows);
+    if let RowView::Read { missing_handle } = view {
+        return write_read_text(writer, rows, missing_handle.as_deref());
     }
 
     if let Some(heading) = view.heading(rows.len()) {
@@ -3628,12 +3678,19 @@ fn write_rows_text<W: Write>(
     Ok(())
 }
 
-fn write_read_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+fn write_read_text<W: Write>(
+    mut writer: W,
+    rows: &[Row],
+    missing_handle: Option<&str>,
+) -> Result<()> {
     const MAX_TEXT_LINES_PER_SPAN: usize = 80;
 
     writeln!(writer, "Read ({})", rows.len())?;
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        if let Some(handle) = missing_handle {
+            writeln!(writer, "{}", missing_handle_hint(handle))?;
+        }
         return Ok(());
     }
 
@@ -3730,6 +3787,7 @@ fn write_handle_text<W: Write>(
     handle: &str,
     include_impact: bool,
     include_lineage: bool,
+    missing: bool,
     rows: &[Row],
 ) -> Result<()> {
     let edge_count = rows
@@ -3745,6 +3803,9 @@ fn write_handle_text<W: Write>(
     writeln!(writer, "Handle {handle} ({edge_count} edges)")?;
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        if missing {
+            writeln!(writer, "{}", missing_handle_hint(handle))?;
+        }
         return Ok(());
     }
 
@@ -4161,9 +4222,9 @@ fn display_string_value(value: &str) -> String {
 
 fn parse_output_format(value: &str) -> Result<OutputPreference> {
     match value {
-        "json" => Ok(OutputPreference::Json),
+        "json" | "ndjson" => Ok(OutputPreference::Json),
         "text" => Ok(OutputPreference::Human),
-        _ => bail!("--format accepts json or text; got {value:?}"),
+        _ => bail!("--format accepts json, ndjson, or text; got {value:?}"),
     }
 }
 
@@ -4249,10 +4310,12 @@ fn parse_search(args: &[String]) -> Result<RuntimeCommand> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--limit" => limit = parse_usize(next_value(&mut iter, "--limit")?, "--limit")?,
+            "--limit" => {
+                limit = parse_positive_usize(next_value(&mut iter, "--limit")?, "--limit")?;
+            }
             "--include-low-confidence" => include_low_confidence = true,
             value if value.starts_with("--limit=") => {
-                limit = parse_usize(value_after_equals(value), "--limit")?;
+                limit = parse_positive_usize(value_after_equals(value), "--limit")?;
             }
             value if value.starts_with('-') => {
                 reject_runtime_compatibility_flag("search", value)?;
@@ -4352,10 +4415,13 @@ fn parse_eval(args: &[String]) -> Result<RuntimeCommand> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--limit" => {
-                limit = Some(parse_usize(next_value(&mut iter, "--limit")?, "--limit")?);
+                limit = Some(parse_positive_usize(
+                    next_value(&mut iter, "--limit")?,
+                    "--limit",
+                )?);
             }
             value if value.starts_with("--limit=") => {
-                limit = Some(parse_usize(value_after_equals(value), "--limit")?);
+                limit = Some(parse_positive_usize(value_after_equals(value), "--limit")?);
             }
             "--explain" => explain = explain.with_first_rows(3),
             "--explain-depth" => {
@@ -5348,6 +5414,32 @@ mod tests {
     }
 
     #[test]
+    fn fixed_search_and_eval_reject_zero_limits() {
+        for args in [
+            &["anneal", "search", "runtime", "--limit", "0"][..],
+            &["anneal", "search", "runtime", "--limit=0"][..],
+            &["anneal", "-e", "? *handle{id: h}.", "--limit", "0"][..],
+            &["anneal", "-e", "? *handle{id: h}.", "--limit=0"][..],
+        ] {
+            let error = Invocation::parse(os(args)).expect_err("zero limit should fail");
+            assert_eq!(
+                error.to_string(),
+                "--limit value \"0\" must be greater than zero"
+            );
+        }
+
+        let parsed = Invocation::parse(os(&["anneal", "custom-verb", "--limit", "0"]))
+            .expect("dynamic verb owns its limit semantics");
+        assert_eq!(
+            parsed.command,
+            RuntimeCommand::Verb {
+                name: "custom-verb".to_string(),
+                args: vec!["--limit".to_string(), "0".to_string()],
+            }
+        );
+    }
+
+    #[test]
     fn parses_dynamic_verb_projection_options() {
         let parsed = Invocation::parse(os(&[
             "anneal",
@@ -5445,6 +5537,20 @@ mod tests {
 
         assert_eq!(parsed.command, RuntimeCommand::Schema);
         assert_eq!(parsed.output, OutputPreference::Json);
+    }
+
+    #[test]
+    fn parses_ndjson_as_the_json_output_alias() {
+        for args in [
+            &["anneal", "--format=ndjson", "status"][..],
+            &["anneal", "status", "--format", "ndjson"][..],
+        ] {
+            let parsed = Invocation::parse(os(args)).expect("parse ndjson output");
+            assert_eq!(parsed.command, RuntimeCommand::Status);
+            assert_eq!(parsed.output, OutputPreference::Json);
+        }
+
+        assert!(HelpTopic::Top.render().contains("<text|json|ndjson>"));
     }
 
     #[test]
@@ -5581,6 +5687,7 @@ mod tests {
                     handle: "missing.md".to_string(),
                     impact: false,
                     lineage: false,
+                    missing: true,
                 },
             )
             .empty_rows_diagnostic(OutputMode::Human),
@@ -5885,6 +5992,79 @@ mod tests {
     }
 
     #[test]
+    fn missing_handle_surfaces_teach_recovery_without_mislabeling_empty_reads() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n\nBody.\n").expect("write doc");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let hint = "hint: handle \"missing.md\" not found; try `anneal search \"missing.md\"` or `anneal status`";
+
+        let output = session
+            .run(RuntimeCommand::Handle {
+                handle: "missing.md".to_string(),
+                impact: false,
+                lineage: false,
+            })
+            .expect("missing handle remains guidance, not failure");
+        assert_eq!(output.stderr_diagnostic(OutputMode::Human), None);
+        assert_eq!(
+            output.stderr_diagnostic(OutputMode::Json).as_deref(),
+            Some(format!("{hint}\n{EMPTY_ROWS_DIAGNOSTIC}").as_str())
+        );
+        let mut rendered = Vec::new();
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render missing handle");
+        assert_eq!(
+            String::from_utf8(rendered).expect("utf8"),
+            format!("Handle missing.md (0 edges)\n{EMPTY_ROWS_DIAGNOSTIC}\n{hint}\n")
+        );
+
+        let output = session
+            .run(RuntimeCommand::Read {
+                handle: "missing.md".to_string(),
+                budget: DEFAULT_READ_BUDGET,
+                span_id: None,
+            })
+            .expect("missing read remains guidance, not failure");
+        assert_eq!(output.stderr_diagnostic(OutputMode::Human), None);
+        assert_eq!(
+            output.stderr_diagnostic(OutputMode::Json).as_deref(),
+            Some(format!("{hint}\n{EMPTY_ROWS_DIAGNOSTIC}").as_str())
+        );
+        let mut rendered = Vec::new();
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render missing read");
+        assert_eq!(
+            String::from_utf8(rendered).expect("utf8"),
+            format!("Read (0)\n{EMPTY_ROWS_DIAGNOSTIC}\n{hint}\n")
+        );
+
+        let output = session
+            .run(RuntimeCommand::Read {
+                handle: "a.md".to_string(),
+                budget: 0,
+                span_id: None,
+            })
+            .expect("known handle with empty read runs");
+        assert_eq!(
+            output.stderr_diagnostic(OutputMode::Json),
+            Some(EMPTY_ROWS_DIAGNOSTIC.to_string())
+        );
+        let mut rendered = Vec::new();
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render known empty read");
+        assert_eq!(
+            String::from_utf8(rendered).expect("utf8"),
+            format!("Read (0)\n{EMPTY_ROWS_DIAGNOSTIC}\n")
+        );
+    }
+
+    #[test]
     fn read_human_render_shows_content_blocks() {
         let output = CommandOutput::rows(
             vec![row(&[
@@ -5897,7 +6077,9 @@ mod tests {
                     Value::String("Release blocker details.\nNext line.".to_string()),
                 ),
             ])],
-            RowView::Read,
+            RowView::Read {
+                missing_handle: None,
+            },
         );
         let mut rendered = Vec::new();
 
@@ -5925,7 +6107,9 @@ mod tests {
                     Value::String("Release blocker details.".to_string()),
                 ),
             ])],
-            RowView::Read,
+            RowView::Read {
+                missing_handle: None,
+            },
         );
         let mut rendered = Vec::new();
 
@@ -6349,7 +6533,8 @@ mod tests {
         ];
         let mut rendered = Vec::new();
 
-        write_handle_text(&mut rendered, "doc.md", false, false, &rows).expect("render handle");
+        write_handle_text(&mut rendered, "doc.md", false, false, false, &rows)
+            .expect("render handle");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(rendered.contains("Outgoing\nDependsOn (1)"));
@@ -6398,7 +6583,8 @@ mod tests {
         ];
         let mut rendered = Vec::new();
 
-        write_handle_text(&mut rendered, "doc.md", false, false, &rows).expect("render handle");
+        write_handle_text(&mut rendered, "doc.md", false, false, false, &rows)
+            .expect("render handle");
         let rendered = String::from_utf8(rendered).expect("utf8");
 
         assert!(
@@ -6446,6 +6632,7 @@ mod tests {
                 handle: "implementation/2026-05-31-program-space.md".to_string(),
                 impact: false,
                 lineage: true,
+                missing: false,
             },
         )
         .write(&mut rendered, OutputMode::Human)
@@ -6684,6 +6871,7 @@ mod tests {
                 handle: "b.md".to_string(),
                 impact: true,
                 lineage: false,
+                missing: false,
             }
         );
 
@@ -6734,6 +6922,7 @@ mod tests {
                 handle: "b.md".to_string(),
                 impact: true,
                 lineage: false,
+                missing: false,
             },
         )
         .write(&mut rendered, OutputMode::Human)

@@ -2587,7 +2587,7 @@ commands while that boundary exists.
 |---|---|---|
 | `--root=PATH` | operate on a different corpus | runtime global |
 | `--json` | force machine output | runtime global |
-| `--format=text|json` | force human or machine output | runtime global |
+| `--format=text|json|ndjson` | force human or machine output | runtime global |
 | `--rows=N` | cap rows after dynamic verb evaluation | dynamic verbs |
 | `--limit=N` | cap rows or samples only where a fixed verb explicitly declares that unit | fixed verb-specific |
 | `--hits=N` | number of context search winners | `context` |
@@ -2699,10 +2699,10 @@ agents already call.
 
 - **machine stdout: pure NDJSON.** Bare record stream; `--meta` adds
   one envelope record at the top. Machine mode is selected when stdout
-  is piped or when `--json` / `--format=json` is passed. Human mode is
-  governed by CR-D87. Runtime verbs do not accept `--pretty`; callers
-  that want readable output use `--format=text`, and callers that want
-  machine output use NDJSON.
+  is piped or when `--json`, `--format=json`, or `--format=ndjson` is
+  passed. Human mode is governed by CR-D87. Runtime verbs do not accept
+  `--pretty`; callers that want readable output use `--format=text`, and
+  callers that want machine output use NDJSON.
 - **stderr: human text.** Verb-banner echo, progress, warnings,
   parse errors. Never NDJSON.
 - **stdin: `-` means stdin.** `anneal -e -` reads a query
