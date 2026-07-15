@@ -897,47 +897,104 @@ fn positive_dependency_components(
     predicates: &BTreeSet<PredicateRef>,
     dependencies: &BTreeMap<PredicateRef, BTreeSet<PredicateRef>>,
 ) -> Vec<BTreeSet<PredicateRef>> {
-    let mut remaining = predicates.clone();
-    let mut components = Vec::new();
-    while let Some(seed) = remaining.iter().next().cloned() {
-        let from_seed = reachable_positive_predicates(&seed, dependencies, predicates);
-        let component = remaining
-            .iter()
-            .filter(|predicate| {
-                from_seed.contains(*predicate)
-                    && reachable_positive_predicates(predicate, dependencies, predicates)
-                        .contains(&seed)
-            })
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        for predicate in &component {
-            remaining.remove(predicate);
+    let mut search = PositiveDependencyComponents {
+        dependencies,
+        scope: predicates,
+        next_index: 0,
+        indexes: BTreeMap::new(),
+        lowlinks: BTreeMap::new(),
+        stack: Vec::new(),
+        on_stack: BTreeSet::new(),
+        components: Vec::new(),
+    };
+    for predicate in predicates {
+        if !search.indexes.contains_key(predicate) {
+            search.connect(predicate);
         }
-        components.push(component);
     }
-    components
+    search
+        .components
+        .sort_by(|left, right| left.iter().next().cmp(&right.iter().next()));
+    search.components
 }
 
-fn reachable_positive_predicates(
-    start: &PredicateRef,
-    dependencies: &BTreeMap<PredicateRef, BTreeSet<PredicateRef>>,
-    scope: &BTreeSet<PredicateRef>,
-) -> BTreeSet<PredicateRef> {
-    let mut seen = BTreeSet::new();
-    let mut stack = vec![start.clone()];
-    while let Some(predicate) = stack.pop() {
-        if !seen.insert(predicate.clone()) {
-            continue;
-        }
-        if let Some(deps) = dependencies.get(&predicate) {
-            for dep in deps {
-                if scope.contains(dep) {
-                    stack.push(dep.clone());
-                }
+struct PositiveDependencyComponents<'a> {
+    dependencies: &'a BTreeMap<PredicateRef, BTreeSet<PredicateRef>>,
+    scope: &'a BTreeSet<PredicateRef>,
+    next_index: usize,
+    indexes: BTreeMap<PredicateRef, usize>,
+    lowlinks: BTreeMap<PredicateRef, usize>,
+    stack: Vec<PredicateRef>,
+    on_stack: BTreeSet<PredicateRef>,
+    components: Vec<BTreeSet<PredicateRef>>,
+}
+
+impl PositiveDependencyComponents<'_> {
+    fn connect(&mut self, predicate: &PredicateRef) {
+        let index = self.next_index;
+        self.next_index += 1;
+        self.indexes.insert(predicate.clone(), index);
+        self.lowlinks.insert(predicate.clone(), index);
+        self.stack.push(predicate.clone());
+        self.on_stack.insert(predicate.clone());
+
+        let dependencies = self
+            .dependencies
+            .get(predicate)
+            .into_iter()
+            .flatten()
+            .filter(|dependency| self.scope.contains(*dependency))
+            .cloned()
+            .collect::<Vec<_>>();
+        for dependency in dependencies {
+            if !self.indexes.contains_key(&dependency) {
+                self.connect(&dependency);
+                let dependency_lowlink = self
+                    .lowlinks
+                    .get(&dependency)
+                    .copied()
+                    .expect("connected dependency has a lowlink");
+                let lowlink = self
+                    .lowlinks
+                    .get_mut(predicate)
+                    .expect("connected predicate has a lowlink");
+                *lowlink = (*lowlink).min(dependency_lowlink);
+            } else if self.on_stack.contains(&dependency) {
+                let dependency_index = self
+                    .indexes
+                    .get(&dependency)
+                    .copied()
+                    .expect("visited dependency has an index");
+                let lowlink = self
+                    .lowlinks
+                    .get_mut(predicate)
+                    .expect("connected predicate has a lowlink");
+                *lowlink = (*lowlink).min(dependency_index);
             }
         }
+
+        if self
+            .lowlinks
+            .get(predicate)
+            .copied()
+            .expect("connected predicate has a lowlink")
+            == index
+        {
+            let mut component = BTreeSet::new();
+            loop {
+                let member = self
+                    .stack
+                    .pop()
+                    .expect("Tarjan root has a matching stack entry");
+                self.on_stack.remove(&member);
+                component.insert(member.clone());
+                if member == *predicate {
+                    break;
+                }
+            }
+            self.components.push(component);
+        }
     }
-    seen
 }
 
 fn component_dependencies(
@@ -2239,6 +2296,113 @@ mod tests {
 
         assert!(source_stage < diagnostic_stage);
         assert!(diagnostic_stage < entropy_stage);
+    }
+
+    #[test]
+    fn positive_dependency_components_preserve_deterministic_scc_order() {
+        let predicate = |name| PredicateRef::parse(name).expect("predicate parses");
+        let alpha = predicate("a");
+        let beta = predicate("b");
+        let gamma = predicate("c");
+        let delta = predicate("d");
+        let epsilon = predicate("e");
+        let predicates = [
+            alpha.clone(),
+            beta.clone(),
+            gamma.clone(),
+            delta.clone(),
+            epsilon.clone(),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let dependencies = BTreeMap::from([
+            (alpha.clone(), BTreeSet::from([beta.clone()])),
+            (beta.clone(), BTreeSet::from([alpha.clone(), gamma.clone()])),
+            (gamma.clone(), BTreeSet::from([gamma.clone()])),
+            (
+                delta.clone(),
+                BTreeSet::from([gamma.clone(), epsilon.clone()]),
+            ),
+            (epsilon.clone(), BTreeSet::from([delta.clone()])),
+        ]);
+
+        assert_eq!(
+            positive_dependency_components(&predicates, &dependencies),
+            vec![
+                BTreeSet::from([alpha, beta]),
+                BTreeSet::from([gamma]),
+                BTreeSet::from([delta, epsilon]),
+            ]
+        );
+    }
+
+    #[test]
+    fn positive_dependency_components_match_mutual_reachability() {
+        let predicates = ["a", "b", "c"]
+            .map(|name| PredicateRef::parse(name).expect("predicate parses"))
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let predicate_list = predicates.iter().cloned().collect::<Vec<_>>();
+
+        for edge_mask in 0_u16..(1 << 9) {
+            let mut dependencies = BTreeMap::<_, BTreeSet<_>>::new();
+            for (edge, (source, target)) in predicate_list
+                .iter()
+                .flat_map(|source| predicate_list.iter().map(move |target| (source, target)))
+                .enumerate()
+            {
+                if edge_mask & (1 << edge) != 0 {
+                    dependencies
+                        .entry(source.clone())
+                        .or_default()
+                        .insert(target.clone());
+                }
+            }
+
+            assert_eq!(
+                positive_dependency_components(&predicates, &dependencies),
+                mutual_reachability_components(&predicates, &dependencies),
+                "edge mask {edge_mask:#011b}"
+            );
+        }
+    }
+
+    fn mutual_reachability_components(
+        predicates: &BTreeSet<PredicateRef>,
+        dependencies: &BTreeMap<PredicateRef, BTreeSet<PredicateRef>>,
+    ) -> Vec<BTreeSet<PredicateRef>> {
+        let reachable = |start: &PredicateRef| {
+            let mut seen = BTreeSet::new();
+            let mut pending = vec![start.clone()];
+            while let Some(predicate) = pending.pop() {
+                if seen.insert(predicate.clone())
+                    && let Some(next) = dependencies.get(&predicate)
+                {
+                    pending.extend(
+                        next.iter()
+                            .filter(|candidate| predicates.contains(*candidate))
+                            .cloned(),
+                    );
+                }
+            }
+            seen
+        };
+
+        let mut remaining = predicates.clone();
+        let mut components = Vec::new();
+        while let Some(seed) = remaining.iter().next().cloned() {
+            let from_seed = reachable(&seed);
+            let component = remaining
+                .iter()
+                .filter(|predicate| {
+                    from_seed.contains(*predicate) && reachable(predicate).contains(&seed)
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            remaining.retain(|predicate| !component.contains(predicate));
+            components.push(component);
+        }
+        components
     }
 
     #[test]
