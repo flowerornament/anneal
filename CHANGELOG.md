@@ -2,6 +2,26 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.21.4 - 2026-07-15
+
+### Changed
+
+- `check --refresh-drift` builds drift evidence in parallel and shares repeated
+  git work, so the first cold refresh on a large, mass-stale corpus completes
+  in a fraction of the time — on a real corpus of ~1,600 code references it
+  falls from about 5m21s to roughly 30s. The two dominant costs are addressed:
+  assertion provenance (git blame plus commit-date lookup per cited line) and
+  move detection for gone or moved referents both run across a bounded worker
+  pool, and repeated `git show` calls for a shared revision or deleting commit
+  resolve once. Drift dispositions, assertion dates, and revisions are
+  byte-identical to the serial computation. The refresh remains opt-in and
+  incremental after the first run.
+- The explicit `check --refresh-drift` reports progress on stderr while it
+  works — assertion provenance then drift evidence, with a running
+  completed/total and elapsed time — because a cold refresh on a large corpus
+  can take tens of seconds. Ordinary `status` and non-refresh `check` stay
+  silent.
+
 ## Unreleased
 
 ## v0.21.3 - 2026-07-07
