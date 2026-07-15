@@ -1227,6 +1227,35 @@ mod tests {
     }
 
     #[test]
+    fn probe_retains_history_for_paths_moved_across_crates() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        let old_path = "crates/compiler/src/desugar.rs";
+        let new_path = "crates/surface/src/desugar.rs";
+        fs::create_dir_all(repo.join("crates/compiler/src")).expect("create old crate");
+        fs::create_dir_all(repo.join("crates/surface/src")).expect("create new crate");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join(old_path), "pub fn desugar() {}\n").expect("write old target");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add compiler target"]);
+        run_git(&repo, &["mv", old_path, new_path]);
+        run_git(&repo, &["commit", "-m", "move target across crates"]);
+
+        let probe = probe_code_target(&corpus, old_path);
+
+        assert_eq!(probe.exists, TargetExistence::False);
+        assert_eq!(
+            probe.history_status,
+            TargetHistoryStatus::Present,
+            "the full-HEAD history scan is load-bearing for cross-crate move recall"
+        );
+        assert_eq!(probe.probe_base.as_deref(), Some(repo.as_path()));
+        assert_eq!(probe.resolved_path, None);
+    }
+
+    #[test]
     fn probe_returns_unknown_for_escaping_or_absolute_targets() {
         let dir = tempdir().expect("tempdir");
         let root = utf8(dir.path().join("corpus"));
