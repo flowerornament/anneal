@@ -335,7 +335,7 @@ status_broken(h) :=
 
 status_flow(h) := advancing(h).
 status_flow(h) := holding(h).
-status_flow(h) := drifting(h).
+status_flow(h) := status_drifting_reason(h, why).
 
 status_drifting_reason(h, "re_opened") :=
   re_opened(h).
@@ -343,6 +343,11 @@ status_drifting_reason(h, "re_opened") :=
 status_drifting_reason(h, "regressed") :=
   regressed(h),
   not re_opened(h).
+
+status_drifting_reason(h, "spec_code_drift") :=
+  entropy(h, "spec_code_drift"),
+  not re_opened(h),
+  not regressed(h).
 
 status_item("work", h, energy, "potential") :=
   potential(h, energy),
@@ -354,7 +359,8 @@ status_item("blocked", h, energy, source) :=
   blocked(h),
   potential(h, energy),
   primary_entropy(h, source),
-  not status_broken(h).
+  not status_broken(h),
+  not entropy(h, "spec_code_drift").
 
 status_item("advancing", h, 0, "recently_advanced") :=
   advancing(h),
@@ -371,6 +377,11 @@ status_item("drifting", h, 0, why) :=
   status_drifting_reason(h, why),
   not status_broken(h),
   not blocked(h).
+
+status_item("drifting", h, 0, why) :=
+  status_drifting_reason(h, why),
+  entropy(h, "spec_code_drift"),
+  not status_broken(h).
 
 status_item("broken", h, 100, code) :=
   diagnostic(code, "error", h, file, line, evidence).

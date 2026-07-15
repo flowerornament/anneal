@@ -973,9 +973,15 @@ mod tests {
             regressed("drift").
             re_opened("drift").
             drifting("drift").
+            entropy("drift", "spec_code_drift").
             advancing("__none__").
 
             potential("open", 1).
+
+            blocked("code-drift").
+            potential("code-drift", 3).
+            primary_entropy("code-drift", "spec_code_drift").
+            entropy("code-drift", "spec_code_drift").
 
             ? status_item(section, h, score, why).
             "#;
@@ -989,6 +995,7 @@ mod tests {
         assert_status_sections(&output, "blocked", &["blocked"]);
         assert_status_sections(&output, "holding", &["holding"]);
         assert_status_sections(&output, "drift", &["drifting"]);
+        assert_status_sections(&output, "code-drift", &["drifting"]);
         assert_status_sections(&output, "open", &["work"]);
         assert!(
             has_row(
@@ -1000,6 +1007,19 @@ mod tests {
                 ]
             ),
             "re_opened is the specific drifting reason when both leaves fire: {:?}",
+            output.rows
+        );
+        assert!(
+            has_row(
+                &output,
+                &[
+                    ("section", string("drifting")),
+                    ("h", string("code-drift")),
+                    ("score", int(0)),
+                    ("why", string("spec_code_drift"))
+                ]
+            ),
+            "spec code drift is a drifting reason, not a blocker: {:?}",
             output.rows
         );
     }
