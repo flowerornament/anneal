@@ -1,5 +1,9 @@
 //! Markdown adapter for anneal.
 
+use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anneal_core::{
     CodeDriftRefreshProgressSink, ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern,
     RelativePathPolicy, Source, SourceCapabilities, SourceContext, SourceError, SourceInfo,
@@ -11,6 +15,36 @@ use serde::Serialize;
 mod extract;
 
 const SOURCE_NAME: &str = "markdown";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeAssertionRefreshProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub elapsed: Duration,
+}
+
+#[derive(Clone)]
+pub struct EdgeAssertionRefreshProgressSink {
+    callback: Arc<dyn Fn(EdgeAssertionRefreshProgress) + Send + Sync>,
+}
+
+impl EdgeAssertionRefreshProgressSink {
+    pub fn new(callback: impl Fn(EdgeAssertionRefreshProgress) + Send + Sync + 'static) -> Self {
+        Self {
+            callback: Arc::new(callback),
+        }
+    }
+
+    pub(crate) fn report(&self, progress: EdgeAssertionRefreshProgress) {
+        (self.callback)(progress);
+    }
+}
+
+impl fmt::Debug for EdgeAssertionRefreshProgressSink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EdgeAssertionRefreshProgressSink(..)")
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum InitMode {
@@ -55,6 +89,7 @@ pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::
 pub struct MarkdownSource {
     config: Option<extract::adapter::MarkdownConfig>,
     drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
+    edge_assertion_refresh_progress: Option<EdgeAssertionRefreshProgressSink>,
 }
 
 impl MarkdownSource {
@@ -64,12 +99,22 @@ impl MarkdownSource {
         Ok(Self {
             config: Some(config),
             drift_refresh_progress: None,
+            edge_assertion_refresh_progress: None,
         })
     }
 
     #[must_use]
     pub fn with_drift_refresh_progress(mut self, sink: CodeDriftRefreshProgressSink) -> Self {
         self.drift_refresh_progress = Some(sink);
+        self
+    }
+
+    #[must_use]
+    pub fn with_edge_assertion_refresh_progress(
+        mut self,
+        sink: EdgeAssertionRefreshProgressSink,
+    ) -> Self {
+        self.edge_assertion_refresh_progress = Some(sink);
         self
     }
 }
@@ -117,6 +162,10 @@ impl Source for MarkdownSource {
             .options
             .drift_refresh_progress
             .clone_from(&self.drift_refresh_progress);
+        discovery
+            .options
+            .edge_assertion_refresh_progress
+            .clone_from(&self.edge_assertion_refresh_progress);
         let mut combined = FactBatch::new(
             cx.corpus.clone(),
             SourceName::from(SOURCE_NAME),
@@ -185,6 +234,7 @@ impl MarkdownDiscoveryConfig {
                 read_code_drift_evidence: false,
                 refresh_code_drift_evidence: false,
                 drift_refresh_progress: None,
+                edge_assertion_refresh_progress: None,
                 probe_edge_assertions: false,
             },
         })

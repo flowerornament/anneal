@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anneal_core::runtime::prelude::datalog_string_literal;
 use anneal_core::target_probe::{
@@ -14,6 +16,8 @@ use anneal_core::{
 };
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::extract::config;
@@ -21,6 +25,7 @@ use crate::extract::extraction::UnresolvedRefDisposition;
 use crate::extract::graph::{DiGraph, EdgeKind};
 use crate::extract::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::extract::parse::{self, PendingEdge};
+use crate::{EdgeAssertionRefreshProgress, EdgeAssertionRefreshProgressSink};
 
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
@@ -31,6 +36,7 @@ pub struct MarkdownExtractionOptions {
     pub read_code_drift_evidence: bool,
     pub refresh_code_drift_evidence: bool,
     pub drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
+    pub edge_assertion_refresh_progress: Option<EdgeAssertionRefreshProgressSink>,
     pub probe_edge_assertions: bool,
 }
 
@@ -222,11 +228,20 @@ fn extract_markdown_facts_from_anneal_config(
         node_index: &node_index,
         cascade_results: &cascade_results,
     };
+    let planned_edges = plan_ordered_edges(&edge_order_context);
+    if options.probe_edge_assertions {
+        let assertion_requests = edge_assertion_requests(&result, &planned_edges);
+        edge_assertions.prewarm_batch(
+            &assertion_requests,
+            options.edge_assertion_refresh_progress.as_ref(),
+        );
+    }
     emit_ordered_edges(
         &mut batch,
         &mut revisions,
         &mut edge_assertions,
         &edge_order_context,
+        planned_edges,
     );
 
     for extraction in &result.extractions {
@@ -779,10 +794,67 @@ impl<'a> RevisionCache<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct EdgeAssertion {
     date: String,
     revision: String,
+}
+
+type EdgeAssertionShowSlot = Arc<OnceLock<Option<Arc<str>>>>;
+
+struct EdgeAssertionShowMemo {
+    repo_root: Option<Utf8PathBuf>,
+    entries: Mutex<HashMap<String, EdgeAssertionShowSlot>>,
+    #[cfg(test)]
+    show_invocations: std::sync::atomic::AtomicUsize,
+}
+
+impl EdgeAssertionShowMemo {
+    fn new(repo_root: Option<Utf8PathBuf>) -> Self {
+        Self {
+            repo_root,
+            entries: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            show_invocations: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn date_for(&self, revision: &str) -> Option<String> {
+        let repo_root = self.repo_root.as_ref()?;
+        let slot = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(
+                entries
+                    .entry(revision.to_string())
+                    .or_insert_with(|| Arc::new(OnceLock::new())),
+            )
+        };
+        slot.get_or_init(|| {
+            #[cfg(test)]
+            self.show_invocations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let output = git_command(repo_root)
+                .args(["show", "-s", "--format=%cI", revision])
+                .output()
+                .ok()?;
+            if !output.status.success() || output.stdout.is_empty() {
+                return None;
+            }
+            let date = String::from_utf8_lossy(&output.stdout);
+            Some(Arc::<str>::from(date.trim().get(..10)?))
+        })
+        .as_deref()
+        .map(str::to_string)
+    }
+
+    #[cfg(test)]
+    fn show_invocations(&self) -> usize {
+        self.show_invocations
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 struct EdgeAssertionCache<'a> {
@@ -790,17 +862,72 @@ struct EdgeAssertionCache<'a> {
     repo_root: Option<Utf8PathBuf>,
     enabled: bool,
     assertions: HashMap<(String, u32), Option<EdgeAssertion>>,
+    show_memo: EdgeAssertionShowMemo,
 }
 
 impl<'a> EdgeAssertionCache<'a> {
     fn new(root: &'a Utf8Path, enabled: bool) -> Self {
         let repo_root = enabled.then(|| git_root_for(root)).flatten();
+        let show_memo = EdgeAssertionShowMemo::new(repo_root.clone());
         Self {
             root,
             repo_root,
             enabled,
             assertions: HashMap::new(),
+            show_memo,
         }
+    }
+
+    fn prewarm_batch(
+        &mut self,
+        requests: &[(String, u32)],
+        progress: Option<&EdgeAssertionRefreshProgressSink>,
+    ) -> Vec<Option<EdgeAssertion>> {
+        let mut results = vec![None; requests.len()];
+        if !self.enabled {
+            return results;
+        }
+
+        let mut pending = Vec::<PendingEdgeAssertion>::new();
+        let mut pending_by_key = HashMap::<(String, u32), usize>::new();
+        for (index, (file, line)) in requests.iter().enumerate() {
+            if file.is_empty() || *line == 0 {
+                continue;
+            }
+            let key = (file.clone(), *line);
+            if let Some(assertion) = self.assertions.get(&key) {
+                results[index].clone_from(assertion);
+                continue;
+            }
+            if let Some(pending_index) = pending_by_key.get(&key).copied() {
+                pending[pending_index].result_indices.push(index);
+            } else {
+                pending_by_key.insert(key.clone(), pending.len());
+                pending.push(PendingEdgeAssertion {
+                    key,
+                    result_indices: vec![index],
+                });
+            }
+        }
+
+        let started = Instant::now();
+        if let Some(progress) = progress {
+            progress.report(EdgeAssertionRefreshProgress {
+                completed: 0,
+                total: pending.len(),
+                elapsed: Duration::ZERO,
+            });
+        }
+        let reporter = EdgeAssertionBatchProgress::new(progress, pending.len(), started);
+        let assertions = self.compute_pending(&pending, &reporter);
+        for (request, assertion) in pending.into_iter().zip(assertions) {
+            self.assertions
+                .insert(request.key.clone(), assertion.clone());
+            for index in request.result_indices {
+                results[index].clone_from(&assertion);
+            }
+        }
+        results
     }
 
     fn assertion_for(&mut self, file: &str, line: u32) -> Option<EdgeAssertion> {
@@ -814,6 +941,38 @@ impl<'a> EdgeAssertionCache<'a> {
         let assertion = self.blame_line(file, line);
         self.assertions.insert(key, assertion.clone());
         assertion
+    }
+
+    fn compute_pending(
+        &self,
+        pending: &[PendingEdgeAssertion],
+        progress: &EdgeAssertionBatchProgress<'_>,
+    ) -> Vec<Option<EdgeAssertion>> {
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let available = std::thread::available_parallelism().map_or(1, usize::from);
+        let workers = available.min(8).min(pending.len());
+        let Ok(pool) = ThreadPoolBuilder::new().num_threads(workers).build() else {
+            return pending
+                .iter()
+                .map(|request| {
+                    let assertion = self.blame_line(&request.key.0, request.key.1);
+                    progress.advance();
+                    assertion
+                })
+                .collect();
+        };
+        pool.install(|| {
+            pending
+                .par_iter()
+                .map(|request| {
+                    let assertion = self.blame_line(&request.key.0, request.key.1);
+                    progress.advance();
+                    assertion
+                })
+                .collect()
+        })
     }
 
     fn blame_line(&self, file: &str, line: u32) -> Option<EdgeAssertion> {
@@ -835,19 +994,54 @@ impl<'a> EdgeAssertionCache<'a> {
         if revision.is_empty() {
             return None;
         }
-        let date = git_command(repo_root)
-            .args(["show", "-s", "--format=%cI", revision])
-            .output()
-            .ok()?;
-        if !date.status.success() || date.stdout.is_empty() {
-            return None;
-        }
-        let date = String::from_utf8_lossy(&date.stdout);
-        let date = date.trim().get(..10)?;
+        let date = self.show_memo.date_for(revision)?;
         Some(EdgeAssertion {
-            date: date.to_string(),
+            date,
             revision: revision.to_string(),
         })
+    }
+}
+
+struct PendingEdgeAssertion {
+    key: (String, u32),
+    result_indices: Vec<usize>,
+}
+
+struct EdgeAssertionBatchProgress<'a> {
+    sink: Option<&'a EdgeAssertionRefreshProgressSink>,
+    completed: Mutex<usize>,
+    total: usize,
+    started: Instant,
+}
+
+impl<'a> EdgeAssertionBatchProgress<'a> {
+    const fn new(
+        sink: Option<&'a EdgeAssertionRefreshProgressSink>,
+        total: usize,
+        started: Instant,
+    ) -> Self {
+        Self {
+            sink,
+            completed: Mutex::new(0),
+            total,
+            started,
+        }
+    }
+
+    fn advance(&self) {
+        let Some(sink) = self.sink else {
+            return;
+        };
+        let mut completed = self
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *completed += 1;
+        sink.report(EdgeAssertionRefreshProgress {
+            completed: *completed,
+            total: self.total,
+            elapsed: self.started.elapsed(),
+        });
     }
 }
 
@@ -871,6 +1065,7 @@ fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
 fn git_command(root: &Utf8Path) -> Command {
     let mut command = Command::new("git");
     command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
@@ -1075,12 +1270,15 @@ struct EdgeOrderContext<'a> {
     cascade_results: &'a [crate::extract::resolve::CascadeResult],
 }
 
-fn emit_ordered_edges(
-    batch: &mut FactBatch,
-    revisions: &mut RevisionCache<'_>,
-    assertions: &mut EdgeAssertionCache<'_>,
-    context: &EdgeOrderContext<'_>,
-) {
+struct PlannedEdge {
+    source: NodeId,
+    to: String,
+    kind: EdgeKind,
+    line: u32,
+    ordinal: usize,
+}
+
+fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
     let mut remaining = OrderedEdges::new(graph_edges(&context.result.graph));
     let mut ordered = Vec::new();
 
@@ -1109,24 +1307,19 @@ fn emit_ordered_edges(
     take_parse_time_external_edges(&context.result.graph, &mut remaining, &mut ordered);
     remaining.append_remaining(&mut ordered);
 
+    let mut planned = Vec::with_capacity(ordered.len() + context.result.pending_edges.len());
     for (ordinal, edge) in ordered.into_iter().enumerate() {
-        let source_handle = context.result.graph.node(edge.source);
         let target_handle = context.result.graph.node(edge.target);
-        batch.edges.push(edge_fact(
-            batch,
-            revisions,
-            assertions,
-            source_handle,
-            EdgeFactInput {
-                to: target_handle.id.clone(),
-                kind: edge.kind.as_str(),
-                line: edge.line,
-                ordinal,
-            },
-        ));
+        planned.push(PlannedEdge {
+            source: edge.source,
+            to: target_handle.id.clone(),
+            kind: edge.kind,
+            line: edge.line,
+            ordinal,
+        });
     }
 
-    let ordered_count = batch.edges.len();
+    let ordered_count = planned.len();
     for (idx, edge) in context.result.pending_edges.iter().enumerate() {
         if context.node_index.contains_key(&edge.target_identity) {
             continue;
@@ -1134,19 +1327,68 @@ fn emit_ordered_edges(
         if edge.unresolved_disposition == UnresolvedRefDisposition::AmbiguousExternalOk {
             continue;
         }
-        let source_handle = context.result.graph.node(edge.source);
         // CR-R6: unresolved reference attempts remain stored edge facts so
         // fact-backed diagnostics can reproduce v1 existence checks.
+        planned.push(PlannedEdge {
+            source: edge.source,
+            to: edge.target_identity.clone(),
+            kind: edge.kind.clone(),
+            line: edge.line.unwrap_or(0),
+            ordinal: ordered_count + idx,
+        });
+    }
+    planned
+}
+
+fn edge_assertion_requests(
+    result: &parse::BuildResult,
+    planned_edges: &[PlannedEdge],
+) -> Vec<(String, u32)> {
+    let mut requests = Vec::new();
+    let mut seen = HashSet::new();
+    for edge in planned_edges {
+        let source = result.graph.node(edge.source);
+        let file = source
+            .file_path
+            .as_ref()
+            .map_or_else(String::new, ToString::to_string);
+        let request = (file, edge.line);
+        if seen.insert(request.clone()) {
+            requests.push(request);
+        }
+    }
+    let mut seen_code_handles = HashSet::new();
+    for reference in &result.code_refs {
+        if !seen_code_handles.insert(&reference.handle_id) {
+            continue;
+        }
+        let request = (reference.file.clone(), reference.source_line);
+        if seen.insert(request.clone()) {
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+fn emit_ordered_edges(
+    batch: &mut FactBatch,
+    revisions: &mut RevisionCache<'_>,
+    assertions: &mut EdgeAssertionCache<'_>,
+    context: &EdgeOrderContext<'_>,
+    planned_edges: Vec<PlannedEdge>,
+) {
+    for edge in planned_edges {
+        let source_handle = context.result.graph.node(edge.source);
         batch.edges.push(edge_fact(
             batch,
             revisions,
             assertions,
             source_handle,
             EdgeFactInput {
-                to: edge.target_identity.clone(),
+                to: edge.to,
                 kind: edge.kind.as_str(),
-                line: edge.line.unwrap_or(0),
-                ordinal: ordered_count + idx,
+                line: edge.line,
+                ordinal: edge.ordinal,
             },
         ));
     }
@@ -1824,15 +2066,19 @@ fn token_count(text: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::process::Command;
+    use std::sync::{Arc, Mutex};
 
     use anneal_core::{CodeTargetMeta, CorpusId, Generation, SourceName};
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
     use super::{
-        InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts, render_or_write_init,
+        EdgeAssertionCache, InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts,
+        git_command, render_or_write_init,
     };
+    use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
 
     #[test]
@@ -2171,16 +2417,84 @@ mod tests {
             "doc.md",
             "external:code:doc.md:3:src/lib.rs:1",
         );
-        assert!(
-            edge.assertion_date
-                .as_deref()
-                .is_some_and(|date| { date.len() == 10 && date.chars().nth(4) == Some('-') })
+        let blame = git_stdout(
+            &root,
+            &["blame", "-w", "-M", "-C", "-L", "3,3", "--", "doc.md"],
         );
-        assert!(
-            edge.assertion_revision
-                .as_deref()
-                .is_some_and(|revision| revision.len() >= 7)
+        let revision = blame
+            .split_whitespace()
+            .next()
+            .expect("blame revision")
+            .trim_start_matches('^');
+        let date = git_stdout(&root, &["show", "-s", "--format=%cI", revision]);
+        assert_eq!(edge.assertion_date.as_deref(), date.get(..10));
+        assert_eq!(edge.assertion_revision.as_deref(), Some(revision));
+    }
+
+    #[test]
+    fn edge_assertion_batch_matches_serial_and_single_flights_show() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::write(root.join("doc.md"), "# Doc\nIntro.\nBody.\n").expect("write doc");
+        run_git(&root, &["init"]);
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "add doc"]);
+        std::fs::write(root.join("doc.md"), "# Doc\nIntro.\nChanged body.\n").expect("rewrite doc");
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "change body"]);
+
+        let requests = vec![
+            ("doc.md".to_string(), 1),
+            ("doc.md".to_string(), 2),
+            ("doc.md".to_string(), 3),
+            ("doc.md".to_string(), 1),
+        ];
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress = EdgeAssertionRefreshProgressSink::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        });
+        let mut batch_cache = EdgeAssertionCache::new(&root, true);
+        let batch = batch_cache.prewarm_batch(&requests, Some(&progress));
+
+        let mut serial_cache = EdgeAssertionCache::new(&root, true);
+        let serial = requests
+            .iter()
+            .map(|(file, line)| serial_cache.assertion_for(file, *line))
+            .collect::<Vec<_>>();
+        assert_eq!(batch, serial);
+        assert_eq!(batch[0], batch[3], "duplicate requests must realign");
+        assert_eq!(batch_cache.show_memo.show_invocations(), 2);
+
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.completed)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
         );
+        assert!(events.iter().all(|event| event.total == 3));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].elapsed <= pair[1].elapsed)
+        );
+    }
+
+    #[test]
+    fn markdown_git_commands_disable_optional_locks() {
+        let root = Utf8Path::new(".");
+        let command = git_command(root);
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("GIT_OPTIONAL_LOCKS") && value == Some(OsStr::new("0"))
+        }));
     }
 
     fn assert_code_ref_meta(batch: &anneal_core::FactBatch, target: &str, key: &str, value: &str) {
@@ -2223,5 +2537,24 @@ mod tests {
             .status()
             .expect("git runs");
         assert!(status.success(), "git {args:?} failed: {status}");
+    }
+
+    fn git_stdout(root: &Utf8Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env("GIT_CONFIG_GLOBAL", root.join(".anneal-test-gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {args:?} failed: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("git output is utf8")
+            .trim()
+            .to_string()
     }
 }

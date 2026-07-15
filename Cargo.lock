@@ -118,6 +118,7 @@ dependencies = [
  "chrono",
  "globset",
  "pulldown-cmark",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

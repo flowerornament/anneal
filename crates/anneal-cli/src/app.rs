@@ -25,7 +25,7 @@ use anneal_core::{
     VerbLayer, VerbRegistry, append_snapshot_entry_capped, infer_corpus_root,
     load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
-use anneal_md::MarkdownSource;
+use anneal_md::{EdgeAssertionRefreshProgressSink, MarkdownSource};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
@@ -76,10 +76,45 @@ fn drift_refresh_progress_sink() -> CodeDriftRefreshProgressSink {
     })
 }
 
+fn edge_assertion_refresh_progress_sink() -> EdgeAssertionRefreshProgressSink {
+    let last_reported = Mutex::new(Duration::ZERO);
+    EdgeAssertionRefreshProgressSink::new(move |progress| {
+        let mut last_reported = last_reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.completed == 0 {
+            eprintln!(
+                "Drift refresh: assertion provenance 0/{} lines",
+                progress.total
+            );
+            return;
+        }
+        if progress.completed == progress.total
+            || progress.elapsed.saturating_sub(*last_reported) >= Duration::from_secs(1)
+        {
+            eprintln!(
+                "Drift refresh: assertion provenance {}/{} lines ({:.1}s)",
+                progress.completed,
+                progress.total,
+                progress.elapsed.as_secs_f64()
+            );
+            *last_reported = progress.elapsed;
+        }
+    })
+}
+
 fn drift_refresh_progress_for(command: &RuntimeCommand) -> Option<CodeDriftRefreshProgressSink> {
     command
         .refreshes_code_drift_evidence()
         .then(drift_refresh_progress_sink)
+}
+
+fn edge_assertion_refresh_progress_for(
+    command: &RuntimeCommand,
+) -> Option<EdgeAssertionRefreshProgressSink> {
+    command
+        .refreshes_code_drift_evidence()
+        .then(edge_assertion_refresh_progress_sink)
 }
 
 fn drift_refresh_announcement(command: &RuntimeCommand) -> Option<&'static str> {
@@ -1077,6 +1112,9 @@ impl RuntimeSession {
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
         if let Some(progress) = drift_refresh_progress_for(command) {
             markdown_source = markdown_source.with_drift_refresh_progress(progress);
+        }
+        if let Some(progress) = edge_assertion_refresh_progress_for(command) {
+            markdown_source = markdown_source.with_edge_assertion_refresh_progress(progress);
         }
         let code_source = CodeSource;
         let roots = vec![root.to_path_buf()];
@@ -5041,11 +5079,19 @@ mod tests {
             }
         );
         assert!(drift_refresh_progress_for(&parsed.command).is_some());
+        assert!(edge_assertion_refresh_progress_for(&parsed.command).is_some());
         assert!(drift_refresh_announcement(&parsed.command).is_some());
         assert!(drift_refresh_progress_for(&RuntimeCommand::Status).is_none());
+        assert!(edge_assertion_refresh_progress_for(&RuntimeCommand::Status).is_none());
         assert!(drift_refresh_announcement(&RuntimeCommand::Status).is_none());
         assert!(
             drift_refresh_progress_for(&RuntimeCommand::Check {
+                refresh_drift: false
+            })
+            .is_none()
+        );
+        assert!(
+            edge_assertion_refresh_progress_for(&RuntimeCommand::Check {
                 refresh_drift: false
             })
             .is_none()
