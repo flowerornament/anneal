@@ -613,12 +613,12 @@ impl Database {
         self.derived.get(predicate)
     }
 
-    pub(crate) fn cloned_tuple_interner(&self) -> Interner {
-        self.tuples.cloned_interner()
+    pub(crate) fn tuple_interner(&self) -> &Interner {
+        self.tuples.interner()
     }
 
-    pub(crate) fn cloned_tuple_lists(&self) -> ListArena {
-        self.tuples.cloned_lists()
+    pub(crate) fn tuple_lists(&self) -> &ListArena {
+        self.tuples.lists()
     }
 
     pub(crate) fn primitive_tuples(

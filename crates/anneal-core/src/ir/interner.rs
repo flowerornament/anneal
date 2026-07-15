@@ -32,7 +32,6 @@ impl Interner {
         self.texts.get(symbol.index()).map(AsRef::as_ref)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.texts.len()
     }

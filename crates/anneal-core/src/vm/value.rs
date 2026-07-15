@@ -120,7 +120,6 @@ impl ListArena {
         self.lists.get(id.index()).map(AsRef::as_ref)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.lists.len()
     }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use regex::Regex;
 
+use crate::ir::ids::{ListId, SymbolId};
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
     AggregateArgPlanError, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
@@ -123,41 +124,110 @@ pub(crate) fn clone_derivation_refs(steps: &[DerivationRef]) -> Vec<DerivationNo
     steps.iter().map(|step| step.as_ref().clone()).collect()
 }
 
-#[derive(Clone, Debug)]
-struct PlannedValueEnv {
-    interner: Interner,
-    lists: ListArena,
+// Local arenas model appending to a fresh clone, so their IDs are base-length offsets.
+#[derive(Debug)]
+struct PlannedValueEnv<'a> {
+    base_interner: &'a Interner,
+    local_interner: Interner,
+    base_lists: &'a ListArena,
+    local_lists: ListArena,
 }
 
-impl PlannedValueEnv {
-    fn from_database(database: &Database) -> Self {
+impl<'a> PlannedValueEnv<'a> {
+    fn from_database(database: &'a Database) -> Self {
+        Self::new(database.tuple_interner(), database.tuple_lists())
+    }
+
+    fn new(base_interner: &'a Interner, base_lists: &'a ListArena) -> Self {
         Self {
-            interner: database.cloned_tuple_interner(),
-            lists: database.cloned_tuple_lists(),
+            base_interner,
+            local_interner: Interner::default(),
+            base_lists,
+            local_lists: ListArena::default(),
         }
     }
 
     fn physical_from_logical(&mut self, value: &Value) -> PhysicalValue {
-        PhysicalValue::from_logical(value, &mut self.interner, &mut self.lists)
+        match value {
+            Value::String(value) => PhysicalValue::Sym(self.intern(value)),
+            Value::Number(value) => PhysicalValue::Number(*value),
+            Value::Bool(value) => PhysicalValue::Bool(*value),
+            Value::Null => PhysicalValue::Null,
+            Value::List(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| self.physical_from_logical(value))
+                    .collect::<Vec<_>>();
+                PhysicalValue::List(self.push_list(values))
+            }
+        }
     }
 
     fn logical(&self, value: PhysicalValue) -> Result<Value, EvalError> {
-        value
-            .to_logical(&self.interner, &self.lists)
+        self.logical_value(value)
             .ok_or(EvalError::UnsupportedExpression)
+    }
+
+    fn logical_value(&self, value: PhysicalValue) -> Option<Value> {
+        match value {
+            PhysicalValue::Sym(symbol) => self
+                .resolve(symbol)
+                .map(|text| Value::String(text.to_owned())),
+            PhysicalValue::Number(value) => Some(Value::Number(value)),
+            PhysicalValue::Bool(value) => Some(Value::Bool(value)),
+            PhysicalValue::Null => Some(Value::Null),
+            PhysicalValue::List(list) => {
+                let values = self
+                    .list(list)?
+                    .iter()
+                    .copied()
+                    .map(|value| self.logical_value(value))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Value::List(values))
+            }
+        }
+    }
+
+    fn intern(&mut self, text: &str) -> SymbolId {
+        if let Some(symbol) = self.base_interner.lookup(text) {
+            return symbol;
+        }
+        let local = self.local_interner.intern(text);
+        SymbolId::from_index(self.base_interner.len() + local.index())
+    }
+
+    fn resolve(&self, symbol: SymbolId) -> Option<&str> {
+        if symbol.index() < self.base_interner.len() {
+            return self.base_interner.resolve(symbol);
+        }
+        let local = SymbolId::from_index(symbol.index() - self.base_interner.len());
+        self.local_interner.resolve(local)
+    }
+
+    fn push_list(&mut self, values: Vec<PhysicalValue>) -> ListId {
+        let local = self.local_lists.push(values);
+        ListId::from_index(self.base_lists.len() + local.index())
+    }
+
+    fn list(&self, list: ListId) -> Option<&[PhysicalValue]> {
+        if list.index() < self.base_lists.len() {
+            return self.base_lists.get(list);
+        }
+        let local = ListId::from_index(list.index() - self.base_lists.len());
+        self.local_lists.get(local)
     }
 }
 
-struct PlannedEvalCtx<'a> {
-    catalog: &'a PlanCatalog,
-    database: &'a Database,
-    warnings: &'a mut Vec<QueryWarning>,
-    options: &'a EvalOptions,
-    env: &'a mut PlannedValueEnv,
-    delta: Option<PlannedDeltaView<'a>>,
+struct PlannedEvalCtx<'ctx, 'db> {
+    catalog: &'ctx PlanCatalog,
+    database: &'ctx Database,
+    warnings: &'ctx mut Vec<QueryWarning>,
+    options: &'ctx EvalOptions,
+    env: &'ctx mut PlannedValueEnv<'db>,
+    delta: Option<PlannedDeltaView<'ctx>>,
 }
 
-impl PlannedEvalCtx<'_> {
+impl PlannedEvalCtx<'_, '_> {
     fn with_delta_for_atom<T>(
         &mut self,
         atom_index: usize,
@@ -310,7 +380,7 @@ fn eval_planned_query(
 fn eval_planned_body(
     body: &RuleBodyPlan,
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut bindings = bindings;
     for atom_index in &body.execution_atoms {
@@ -330,7 +400,7 @@ fn eval_planned_body(
 fn eval_planned_atom(
     atom: &AtomPlan,
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     match atom {
         AtomPlan::Scan { relation, patterns } => {
@@ -372,7 +442,7 @@ fn eval_planned_scan(
     relation: crate::ir::ids::RelationId,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let relation_info = ctx
         .catalog
@@ -415,7 +485,7 @@ fn eval_planned_stored_scan(
     relation_name: &str,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let trace = ctx.options.explain().is_enabled();
@@ -465,7 +535,7 @@ fn eval_planned_time_scope(
     inner: &RuleBodyPlan,
     provenance: &crate::ir::plan::TimeScopeProvenance,
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     if let Some(unsupported) = &provenance.unsupported {
         return Err(unsupported_time_scope_error(unsupported));
@@ -558,7 +628,7 @@ fn eval_planned_derived_scan(
     relation: &DerivedRelation,
     patterns: &[ColumnPatternPlan],
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let trace = ctx.options.explain().is_enabled();
@@ -595,7 +665,7 @@ fn eval_planned_primitive(
     primitive: PrimitivePredicate,
     args: &[CallArgPlan],
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let mut regex_cache = BTreeMap::<String, Regex>::new();
@@ -635,7 +705,7 @@ fn eval_planned_primitive(
 fn eval_planned_filter(
     comparison: &ComparePlan,
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let mut out = Vec::new();
     let trace = ctx.options.explain().is_enabled();
@@ -654,7 +724,7 @@ fn eval_planned_filter(
 fn eval_planned_aggregate(
     aggregate: &AggregatePlan,
     bindings: Vec<PlannedFrame>,
-    ctx: &mut PlannedEvalCtx<'_>,
+    ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     report_planned_aggregate_arg_error(aggregate)?;
 
@@ -765,7 +835,7 @@ fn eval_planned_scalar_aggregate(
     rows: &[PlannedFrame],
     aggregate_steps: &[DerivationRef],
     trace: bool,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Option<PlannedFrame>, EvalError> {
     let values = rows
         .iter()
@@ -793,7 +863,7 @@ fn eval_planned_top_k(
     rows: &[PlannedFrame],
     aggregate_steps: &[DerivationRef],
     trace: bool,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let k = aggregate
         .args
@@ -852,7 +922,7 @@ fn eval_planned_rank(
     rows: Vec<PlannedFrame>,
     aggregate_steps: &[DerivationRef],
     trace: bool,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let key = aggregate
         .args
@@ -912,7 +982,7 @@ fn eval_planned_take_until(
     rows: &[PlannedFrame],
     aggregate_steps: &[DerivationRef],
     trace: bool,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
     let budget = aggregate
         .args
@@ -988,7 +1058,7 @@ fn aggregate_derivation_steps_planned(rows: &[PlannedFrame]) -> Vec<DerivationRe
 fn planned_column_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<(crate::ir::ids::FieldId, PhysicalValue)>, EvalError> {
     let mut constraints = Vec::new();
     for pattern in patterns {
@@ -1002,7 +1072,7 @@ fn planned_column_constraints(
 fn planned_tuple_constraints(
     patterns: &[ColumnPatternPlan],
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<(usize, Value)>, EvalError> {
     let mut constraints = Vec::new();
     for pattern in patterns {
@@ -1016,7 +1086,7 @@ fn planned_tuple_constraints(
 fn planned_call_constraints(
     args: &[CallArgPlan],
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Vec<(usize, Value)>, EvalError> {
     let mut constraints = Vec::new();
     for arg in args {
@@ -1030,7 +1100,7 @@ fn planned_call_constraints(
 fn planned_constraint_value_for_term(
     term: &TermPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Option<PhysicalValue>, EvalError> {
     match term {
         TermPlan::Wildcard => Ok(None),
@@ -1048,7 +1118,7 @@ fn unify_planned_term(
     term: &TermPlan,
     value: PhysicalValue,
     binding: &mut PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<bool, EvalError> {
     match term {
         TermPlan::Wildcard => Ok(true),
@@ -1060,7 +1130,7 @@ fn unify_planned_expr(
     expr: &ExprPlan,
     value: PhysicalValue,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Option<PlannedFrame>, EvalError> {
     let mut next = binding.clone();
     if unify_planned_expr_in_place(expr, value, &mut next, env)? {
@@ -1074,7 +1144,7 @@ fn unify_planned_expr_in_place(
     expr: &ExprPlan,
     value: PhysicalValue,
     binding: &mut PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<bool, EvalError> {
     match expr {
         ExprPlan::Slot(slot) => Ok(binding.set(*slot, value)),
@@ -1082,7 +1152,7 @@ fn unify_planned_expr_in_place(
             let PhysicalValue::List(list) = value else {
                 return Ok(false);
             };
-            let Some(values) = env.lists.get(list).map(<[PhysicalValue]>::to_vec) else {
+            let Some(values) = env.list(list).map(<[PhysicalValue]>::to_vec) else {
                 return Ok(false);
             };
             if values.len() != items.len() {
@@ -1102,7 +1172,7 @@ fn unify_planned_expr_in_place(
 fn eval_planned_expr(
     expr: &ExprPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<PhysicalValue, EvalError> {
     match expr {
         ExprPlan::Slot(slot) => binding.get(*slot).ok_or(EvalError::UnboundVariable {
@@ -1120,7 +1190,7 @@ fn eval_planned_expr(
                 .iter()
                 .map(|item| eval_planned_expr(item, binding, env))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(PhysicalValue::List(env.lists.push(values)))
+            Ok(PhysicalValue::List(env.push_list(values)))
         }
     }
 }
@@ -1128,15 +1198,15 @@ fn eval_planned_expr(
 fn eval_planned_expr_logical(
     expr: &ExprPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Value, EvalError> {
     let physical = eval_planned_expr(expr, binding, env)?;
     env.logical(physical)
 }
 
-fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv) -> PhysicalValue {
+fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv<'_>) -> PhysicalValue {
     match literal {
-        LiteralPlan::String(value) => PhysicalValue::Sym(env.interner.intern(value)),
+        LiteralPlan::String(value) => PhysicalValue::Sym(env.intern(value)),
         LiteralPlan::Number(NumberLiteral::Int(value)) => {
             PhysicalValue::Number(NumberValue::Int(*value))
         }
@@ -1150,7 +1220,7 @@ fn physical_from_literal(literal: &LiteralPlan, env: &mut PlannedValueEnv) -> Ph
                 .iter()
                 .map(|value| physical_from_literal(value, env))
                 .collect::<Vec<_>>();
-            PhysicalValue::List(env.lists.push(values))
+            PhysicalValue::List(env.push_list(values))
         }
     }
 }
@@ -1191,7 +1261,7 @@ fn planned_non_negative_int(
     argument: &'static str,
     expr: &ExprPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<i64, EvalError> {
     let Value::Number(NumberValue::Int(value)) = eval_planned_expr_logical(expr, binding, env)?
     else {
@@ -1206,7 +1276,7 @@ fn planned_non_negative_int(
 fn planned_frame_logical_cmp(
     left: &PlannedFrame,
     right: &PlannedFrame,
-    env: &PlannedValueEnv,
+    env: &PlannedValueEnv<'_>,
 ) -> Ordering {
     left.slots
         .iter()
@@ -1223,7 +1293,7 @@ fn planned_frame_logical_cmp(
 fn sort_planned_bindings_for_query(
     ordering: &[OrderKeyPlan],
     bindings: &mut Vec<PlannedFrame>,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<(), EvalError> {
     if ordering.is_empty() {
         return Ok(());
@@ -1244,7 +1314,7 @@ fn sort_planned_bindings_for_query(
 fn eval_planned_order_keys(
     ordering: &[OrderKeyPlan],
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<QueryOrderKeys, EvalError> {
     if let [key] = ordering {
         return eval_planned_expr_logical(&key.expr, binding, env).map(QueryOrderKeys::One);
@@ -1294,7 +1364,7 @@ fn query_output_predicate() -> PredicateRef {
 fn planned_bindings_to_rows(
     output: &OutputPlan,
     bindings: Vec<PlannedFrame>,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
     options: &ExplainOptions,
 ) -> Result<Vec<Row>, EvalError> {
     bindings
@@ -1309,7 +1379,7 @@ fn planned_bindings_to_rows(
 fn planned_binding_to_row(
     output: &OutputPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
     options: &ExplainOptions,
     include_derivation: bool,
 ) -> Result<Row, EvalError> {
@@ -1324,7 +1394,7 @@ fn planned_binding_to_row(
 fn planned_projected_fields(
     output: &OutputPlan,
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<BTreeMap<String, Value>, EvalError> {
     output
         .projection
@@ -1341,7 +1411,7 @@ fn planned_projected_fields(
 fn project_planned_head(
     terms: &[TermPlan],
     binding: &PlannedFrame,
-    env: &mut PlannedValueEnv,
+    env: &mut PlannedValueEnv<'_>,
 ) -> Result<Tuple, EvalError> {
     terms
         .iter()
@@ -1547,6 +1617,68 @@ mod tests {
     use crate::runtime::{Evaluator, analyze, parse_program};
     use crate::store::FactStore;
     use crate::vm::provenance::DerivationKind;
+
+    #[test]
+    fn planned_value_env_overlays_preserve_fresh_clone_ids_without_mutating_base() {
+        let mut base_interner = Interner::default();
+        let mut base_lists = ListArena::default();
+        let base_value = Value::List(vec![s("base"), Value::List(vec![s("nested-base")])]);
+        let base_physical =
+            PhysicalValue::from_logical(&base_value, &mut base_interner, &mut base_lists);
+        let base_symbol = base_interner.lookup("base").expect("base symbol exists");
+        let base_symbol_count = base_interner.len();
+        let base_list_count = base_lists.len();
+        let local_value = Value::List(vec![
+            s("base"),
+            s("local"),
+            Value::List(vec![s("nested-local"), s("base")]),
+        ]);
+
+        let first = {
+            let mut env = PlannedValueEnv::new(&base_interner, &base_lists);
+            assert_eq!(env.intern("base"), base_symbol, "base lookup wins");
+            let local_symbol = env.intern("local");
+            assert_eq!(local_symbol.index(), base_symbol_count);
+            assert_eq!(
+                env.logical(base_physical)
+                    .expect("base list resolves through the overlay"),
+                base_value.clone()
+            );
+            let physical = env.physical_from_logical(&local_value);
+            let PhysicalValue::List(outer_list) = physical else {
+                panic!("local value is a list");
+            };
+            assert_eq!(outer_list.index(), base_list_count + 1);
+            assert_eq!(
+                env.logical(physical)
+                    .expect("local nested list resolves through the overlay"),
+                local_value.clone()
+            );
+            (local_symbol, physical)
+        };
+        assert_eq!(base_interner.len(), base_symbol_count);
+        assert_eq!(base_lists.len(), base_list_count);
+
+        let second = {
+            let mut env = PlannedValueEnv::new(&base_interner, &base_lists);
+            assert_eq!(env.intern("base"), base_symbol, "base lookup wins");
+            let local_symbol = env.intern("local");
+            let physical = env.physical_from_logical(&local_value);
+            assert_eq!(
+                env.logical(physical)
+                    .expect("second local nested list resolves through the overlay"),
+                local_value
+            );
+            (local_symbol, physical)
+        };
+
+        assert_eq!(
+            second, first,
+            "fresh rule-group overlays assign identical ids"
+        );
+        assert_eq!(base_interner.len(), base_symbol_count);
+        assert_eq!(base_lists.len(), base_list_count);
+    }
 
     fn identity(native_id: &str) -> FactIdentity {
         FactIdentity::new(

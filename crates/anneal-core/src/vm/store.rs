@@ -496,12 +496,12 @@ impl TupleDb {
         self.relations.get(&relation)
     }
 
-    pub(crate) fn cloned_interner(&self) -> Interner {
-        self.interner.clone()
+    pub(crate) fn interner(&self) -> &Interner {
+        &self.interner
     }
 
-    pub(crate) fn cloned_lists(&self) -> ListArena {
-        self.lists.clone()
+    pub(crate) fn lists(&self) -> &ListArena {
+        &self.lists
     }
 
     pub(crate) fn empty_relation_store(&self, relation: &str) -> Option<RelationStore> {
