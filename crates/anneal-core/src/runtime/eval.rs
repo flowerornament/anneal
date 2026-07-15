@@ -406,7 +406,7 @@ pub enum Value {
     Number(NumberValue),
     Bool(bool),
     Null,
-    List(Vec<Value>),
+    List(Vec<Self>),
 }
 
 impl Value {
@@ -6922,11 +6922,8 @@ release_blocker(code) := issue(code, "error").
             .expect("append private trail row");
 
         let restricted = restricted_actor();
-        let restricted_options = EvalOptions::default().with_actor(
-            restricted
-                .clone()
-                .with_runtime_capability(RuntimeCapability::Eval),
-        );
+        let restricted_options = EvalOptions::default()
+            .with_actor(restricted.with_runtime_capability(RuntimeCapability::Eval));
         let public_database = Database::default()
             .with_trail_store(
                 &store,

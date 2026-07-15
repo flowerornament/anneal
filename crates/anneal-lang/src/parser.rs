@@ -191,7 +191,7 @@ impl Parser {
         let args = if self.at(&TokenKind::RParen) {
             Vec::new()
         } else {
-            self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+            self.parse_comma_list(&TokenKind::RParen, Self::parse_call_arg)?
         };
         self.expect(&TokenKind::RParen)?;
         self.expect(&TokenKind::Dot)?;
@@ -252,7 +252,7 @@ impl Parser {
         let terms = if self.at(&TokenKind::RParen) {
             Vec::new()
         } else {
-            self.parse_comma_list(&TokenKind::RParen, Parser::parse_term)?
+            self.parse_comma_list(&TokenKind::RParen, Self::parse_term)?
         };
         self.expect(&TokenKind::RParen)?;
         Ok(Head {
@@ -413,7 +413,7 @@ impl Parser {
         let fields = if self.at(&TokenKind::RBrace) {
             Vec::new()
         } else {
-            self.parse_comma_list(&TokenKind::RBrace, Parser::parse_field_pattern)?
+            self.parse_comma_list(&TokenKind::RBrace, Self::parse_field_pattern)?
         };
         self.expect(&TokenKind::RBrace)?;
         Ok(StoredAtom {
@@ -445,7 +445,7 @@ impl Parser {
             let args = if self.at(&TokenKind::RParen) {
                 Vec::new()
             } else {
-                self.parse_comma_list(&TokenKind::RParen, Parser::parse_call_arg)?
+                self.parse_comma_list(&TokenKind::RParen, Self::parse_call_arg)?
             };
             self.expect(&TokenKind::RParen)?;
             (args, CallStyle::Complete)
@@ -454,7 +454,7 @@ impl Parser {
             let args = if self.at(&TokenKind::RBrace) {
                 Vec::new()
             } else {
-                self.parse_comma_list(&TokenKind::RBrace, Parser::parse_pattern_call_arg)?
+                self.parse_comma_list(&TokenKind::RBrace, Self::parse_pattern_call_arg)?
             };
             self.expect(&TokenKind::RBrace)?;
             (args, CallStyle::Pattern)
@@ -585,7 +585,7 @@ impl Parser {
                     let args = if self.at(&TokenKind::RParen) {
                         Vec::new()
                     } else {
-                        self.parse_comma_list(&TokenKind::RParen, Parser::parse_function_call_arg)?
+                        self.parse_comma_list(&TokenKind::RParen, Self::parse_function_call_arg)?
                     };
                     self.expect(&TokenKind::RParen)?;
                     Ok(Expr::FunctionCall {
@@ -614,7 +614,7 @@ impl Parser {
                 let items = if self.at(&TokenKind::RBracket) {
                     Vec::new()
                 } else {
-                    self.parse_comma_list(&TokenKind::RBracket, Parser::parse_literal)?
+                    self.parse_comma_list(&TokenKind::RBracket, Self::parse_literal)?
                 };
                 self.expect(&TokenKind::RBracket)?;
                 Ok(Expr::Literal(Literal::List(items)))

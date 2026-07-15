@@ -280,11 +280,11 @@ pub(crate) enum ExprPlan {
     Slot(SlotId),
     Literal(LiteralPlan),
     Binary {
-        left: Box<ExprPlan>,
+        left: Box<Self>,
         op: crate::runtime::ast::ArithmeticOp,
-        right: Box<ExprPlan>,
+        right: Box<Self>,
     },
-    Tuple(Vec<ExprPlan>),
+    Tuple(Vec<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,7 +293,7 @@ pub(crate) enum LiteralPlan {
     Number(NumberLiteral),
     Bool(bool),
     Null,
-    List(Vec<LiteralPlan>),
+    List(Vec<Self>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

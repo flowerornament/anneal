@@ -128,13 +128,11 @@ fn collect_aggregate_outer_input_variables(
             continue;
         }
         let mut arg_vars = BTreeSet::new();
-        if matches!(
+        arg.expr.variables(&mut arg_vars);
+        if !matches!(
             (aggregate.function, arg.name.as_str()),
             (AggregateFunction::TopK, "k") | (AggregateFunction::TakeUntil, "budget")
         ) {
-            arg.expr.variables(&mut arg_vars);
-        } else {
-            arg.expr.variables(&mut arg_vars);
             arg_vars.retain(|var| !inner_bound.contains(var));
         }
         out.extend(arg_vars);

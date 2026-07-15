@@ -38,6 +38,10 @@ pedantic = { level = "deny", priority = -1 }
 # Restriction lints
 dbg_macro = "deny"
 
+# Stable, low-noise nursery lints
+redundant_clone = "deny"
+use_self = "deny"
+
 # Pedantic allows — noisy or inapplicable
 module_name_repetitions = "allow"
 must_use_candidate = "allow"

@@ -181,7 +181,7 @@ pub enum Statement {
     Import(ImportDirective),
     AtBlock {
         reference: String,
-        statements: Vec<Statement>,
+        statements: Vec<Self>,
     },
     Verb(VerbDecl),
     Doc(DocDecl),
@@ -834,11 +834,11 @@ pub enum Expr {
         args: Vec<CallArg>,
     },
     Binary {
-        left: Box<Expr>,
+        left: Box<Self>,
         op: ArithmeticOp,
-        right: Box<Expr>,
+        right: Box<Self>,
     },
-    Tuple(Vec<Expr>),
+    Tuple(Vec<Self>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -856,7 +856,7 @@ pub enum Literal {
     Number(NumberLiteral),
     Bool(bool),
     Null,
-    List(Vec<Literal>),
+    List(Vec<Self>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1022,7 +1022,7 @@ fn record_normalized_code_path_ref(
     result.code_refs.push(CodePathRef {
         handle_id: handle_id.clone(),
         file: file_path_str.to_string(),
-        target: target.clone(),
+        target,
         path: path.to_string(),
         start_line,
         end_line,
