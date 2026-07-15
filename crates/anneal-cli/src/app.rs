@@ -2160,7 +2160,7 @@ fn git_mtimes_for_files<'a>(
         .arg("-C")
         .arg(root.as_std_path())
         .args(["log", "--relative", "--format=%cI", "--name-only", "--"])
-        .args(files.iter().copied())
+        .arg(".")
         .output()
     else {
         return BTreeMap::new();
@@ -6973,6 +6973,18 @@ mod tests {
             .status()
             .expect("git commit runs");
         assert!(status.success(), "git commit failed: {status}");
+
+        fs::write(root.join("notes.txt"), "unrelated\n").expect("write unrelated file");
+        git(&root, &["add", "notes.txt"]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.as_std_path())
+            .args(["commit", "-m", "unrelated"])
+            .env("GIT_AUTHOR_DATE", "2026-05-21T12:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", "2026-05-21T12:00:00+00:00")
+            .status()
+            .expect("unrelated git commit runs");
+        assert!(status.success(), "unrelated git commit failed: {status}");
 
         let session = RuntimeSession::load_for_test(&root).expect("session loads");
         let output = session
