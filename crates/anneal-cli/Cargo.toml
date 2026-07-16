@@ -1,6 +1,6 @@
 [package]
 name = "anneal-cli"
-version = "0.21.4"
+version = "0.21.5"
 edition = "2024"
 license = "MIT"
 description = "CLI surface crate for anneal"
@@ -28,7 +28,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-code = { version = "0.21.4", path = "../anneal-code" }
+anneal-code = { version = "0.21.5", path = "../anneal-code" }
 anneal-core = { path = "../anneal-core" }
 anneal-md = { path = "../anneal-md" }
 anyhow = "1.0.102"

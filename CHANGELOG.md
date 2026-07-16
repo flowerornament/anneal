@@ -2,6 +2,34 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.21.5 - 2026-07-15
+
+### Changed
+
+- Orientation commands are faster on large corpora. Query evaluation borrows the
+  interned string and list bases across rule groups instead of cloning them per
+  group, and `git`-derived modification times come from a single history walk
+  rather than one pass per file. On a ~950-file corpus `status` drops from ~3.4s
+  to ~1.9s and `context` from ~3.1s to ~2.1s, and a cold corpus load is roughly
+  1.5x faster. Query results, provenance, and drift dispositions are unchanged.
+- `anneal handle X` and `anneal read X` on a name that does not resolve append a
+  one-line hint pointing at `anneal search` and `anneal status`. A handle that
+  exists but has no content is unchanged; machine output keeps empty stdout and
+  carries the hint on stderr, and the exit code stays 0 — this is orientation
+  guidance, not a command failure.
+- `--format=ndjson` is accepted as an explicit alias for the newline-delimited
+  machine output that piping already selects, alongside `--format=json`.
+
+### Fixed
+
+- A spec whose cited code has drifted is reported under `drifting`, not
+  `blocked` — code that moved does not block progress. The convergence summary
+  and `status_item` route `spec_code_drift` to the drifting section, below
+  reopened and regressed reasons, with broken precedence preserved.
+- `--limit 0` and `--limit=0` on `search` and `eval` fail fast with a clear
+  message instead of silently returning nothing or being coerced to one result.
+  Positive limits are unchanged.
+
 ## v0.21.4 - 2026-07-15
 
 ### Changed
