@@ -2,6 +2,32 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.21.6 - 2026-07-20
+
+### Added
+
+- The markdown source accepts `external_root` to mount a directory that lives
+  outside the corpus root — but inside the corpus's git repository — into the
+  same markdown graph:
+
+  ```
+  source md {
+    scan_root(".").
+    external_root("../formal").
+  }
+  ```
+
+  External files are keyed by their path relative to the shared git root (for
+  example `formal/models/prism.md`), so a spec that references
+  `formal/models/prism.md` resolves to a real Cites edge instead of a broken
+  reference — one graph across two directories. Primary `scan_root` handles are
+  unchanged; the directive is additive and takes a list for several mounts.
+  Logical handles are separated from physical paths, so origin, reads, and
+  git-blame provenance follow the real file. A mount that escapes the git
+  repository, overlaps another root, or collides with an existing logical
+  handle fails with a teaching diagnostic rather than resolving silently. The
+  directive is documented in `anneal help` and the bundled agent skill.
+
 ## v0.21.5 - 2026-07-15
 
 ### Changed

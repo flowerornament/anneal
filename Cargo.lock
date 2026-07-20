@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anneal"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-cli",
  "dhat",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-cli"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-code",
  "anneal-core",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-code"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-core",
  "beam_file",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-core"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-lang",
  "camino",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "anneal-lang"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -103,14 +103,14 @@ dependencies = [
 
 [[package]]
 name = "anneal-mcp"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-core",
 ]
 
 [[package]]
 name = "anneal-md"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anneal-core",
  "anyhow",
