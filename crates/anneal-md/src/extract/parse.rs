@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -352,6 +353,8 @@ pub(crate) struct BuildResult {
     pub(crate) extractions: Vec<FileExtraction>,
     /// Per-file markdown payload read during graph construction.
     pub(crate) file_payloads: HashMap<String, ParsedMarkdownFile>,
+    /// Physical source paths keyed by logical file handle.
+    pub(crate) file_origins: Arc<HashMap<String, Utf8PathBuf>>,
     /// Precomputed snippets for file handles, keyed by relative file path.
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
@@ -366,6 +369,26 @@ pub(crate) struct BuildResult {
     /// Count of directory entries skipped because their filename was not valid UTF-8 (§7.3).
     #[allow(dead_code)] // Consumed by status/check reporting once surfaced
     pub(crate) skipped_non_utf8: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ExternalScanRoot {
+    pub(crate) physical_root: Utf8PathBuf,
+    pub(crate) handle_prefix: Utf8PathBuf,
+    pub(crate) containment_root: Utf8PathBuf,
+}
+
+struct MarkdownFileCandidate {
+    physical_path: Utf8PathBuf,
+    logical_path: Utf8PathBuf,
+}
+
+#[derive(Clone, Copy)]
+struct MarkdownWalk<'a> {
+    physical_root: &'a Utf8Path,
+    handle_prefix: &'a Utf8Path,
+    scan_roots: Option<&'a [Utf8PathBuf]>,
+    containment_root: Option<&'a Utf8Path>,
 }
 
 /// Parsed markdown file content retained for fact emission.
@@ -502,6 +525,15 @@ pub(crate) fn build_graph_scoped(
     config: &AnnealConfig,
     scan_roots: &[Utf8PathBuf],
 ) -> Result<BuildResult> {
+    build_graph_with_external_roots(root, config, scan_roots, &[])
+}
+
+pub(crate) fn build_graph_with_external_roots(
+    root: &Utf8Path,
+    config: &AnnealConfig,
+    scan_roots: &[Utf8PathBuf],
+    external_roots: &[ExternalScanRoot],
+) -> Result<BuildResult> {
     let mut graph = DiGraph::new();
     let mut all_label_candidates = Vec::new();
     let mut pending_edges = Vec::new();
@@ -521,6 +553,7 @@ pub(crate) fn build_graph_scoped(
     let mut external_nodes: HashMap<String, NodeId> = HashMap::new();
     let mut extractions: Vec<FileExtraction> = Vec::new();
     let mut file_payloads: HashMap<String, ParsedMarkdownFile> = HashMap::new();
+    let mut file_origins: HashMap<String, Utf8PathBuf> = HashMap::new();
     let mut file_snippets: HashMap<String, String> = HashMap::new();
     let mut label_snippets: HashMap<String, String> = HashMap::new();
     let mut heading_spans: HashMap<String, Vec<HeadingSpan>> = HashMap::new();
@@ -533,56 +566,43 @@ pub(crate) fn build_graph_scoped(
 
     let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
 
-    let walker = WalkDir::new(root.as_std_path())
-        .into_iter()
-        .filter_entry(|e| {
-            let Some(name) = e.file_name().to_str() else {
-                skipped_non_utf8.set(skipped_non_utf8.get() + 1);
-                return false;
-            };
-            if e.file_type().is_dir() {
-                if DEFAULT_EXCLUSIONS.contains(&name) {
-                    return false;
-                }
-                if name.starts_with('.') && name != ".design" {
-                    return false;
-                }
-                if dir_exclusions.contains(&name) {
-                    return false;
-                }
-            }
-            // Glob-based file exclusion: match against path relative to root.
-            if let Some(ref gs) = file_glob_set
-                && let Ok(rel) = e.path().strip_prefix(root.as_std_path())
-                && gs.is_match(rel)
-            {
-                return false;
-            }
-            true
-        });
+    let mut candidates = collect_markdown_files(
+        MarkdownWalk {
+            physical_root: root,
+            handle_prefix: Utf8Path::new(""),
+            scan_roots: Some(scan_roots),
+            containment_root: None,
+        },
+        &dir_exclusions,
+        file_glob_set.as_ref(),
+        &skipped_non_utf8,
+    )?;
+    for external_root in external_roots {
+        candidates.extend(collect_markdown_files(
+            MarkdownWalk {
+                physical_root: &external_root.physical_root,
+                handle_prefix: &external_root.handle_prefix,
+                scan_roots: None,
+                containment_root: Some(&external_root.containment_root),
+            },
+            &dir_exclusions,
+            file_glob_set.as_ref(),
+            &skipped_non_utf8,
+        )?);
+    }
 
-    for entry in walker {
-        let entry = entry.context("failed to read directory entry")?;
-
-        if entry.file_type().is_dir() {
-            continue;
+    for candidate in candidates {
+        let utf8_path = candidate.physical_path;
+        let relative = candidate.logical_path;
+        if let Some(existing) = file_origins.get(relative.as_str()) {
+            anyhow::bail!(
+                "markdown handle collision for {:?}: both {} and {} map to the same logical handle",
+                relative.as_str(),
+                existing,
+                utf8_path
+            );
         }
-
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        let utf8_path = Utf8PathBuf::try_from(path.to_path_buf())
-            .with_context(|| format!("non-UTF-8 path: {}", path.display()))?;
-
-        let relative = utf8_path
-            .strip_prefix(root)
-            .unwrap_or(&utf8_path)
-            .to_path_buf();
-        if !is_inside_scan_roots(&relative, scan_roots) {
-            continue;
-        }
+        file_origins.insert(relative.to_string(), utf8_path.clone());
 
         if let Some(filename) = relative.file_name() {
             filename_index
@@ -842,6 +862,7 @@ pub(crate) fn build_graph_scoped(
         external_refs,
         extractions,
         file_payloads,
+        file_origins: Arc::new(file_origins),
         file_snippets,
         label_snippets,
         heading_spans,
@@ -849,6 +870,83 @@ pub(crate) fn build_graph_scoped(
         malformed_frontmatter,
         skipped_non_utf8: skipped_non_utf8.get(),
     })
+}
+
+fn collect_markdown_files(
+    scan: MarkdownWalk<'_>,
+    dir_exclusions: &[&str],
+    file_glob_set: Option<&GlobSet>,
+    skipped_non_utf8: &Cell<usize>,
+) -> Result<Vec<MarkdownFileCandidate>> {
+    let walker = WalkDir::new(scan.physical_root.as_std_path())
+        .into_iter()
+        .filter_entry(|entry| {
+            let Some(name) = entry.file_name().to_str() else {
+                skipped_non_utf8.set(skipped_non_utf8.get() + 1);
+                return false;
+            };
+            if entry.file_type().is_dir()
+                && (DEFAULT_EXCLUSIONS.contains(&name)
+                    || (name.starts_with('.') && name != ".design")
+                    || dir_exclusions.contains(&name))
+            {
+                return false;
+            }
+            if let Some(globs) = file_glob_set
+                && let Ok(relative) = entry.path().strip_prefix(scan.physical_root.as_std_path())
+                && globs.is_match(scan.handle_prefix.as_std_path().join(relative))
+            {
+                return false;
+            }
+            true
+        });
+
+    let mut files = Vec::new();
+    for entry in walker {
+        let entry = entry.context("failed to read directory entry")?;
+        if entry.file_type().is_dir()
+            || entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("md")
+        {
+            continue;
+        }
+        let path = Utf8PathBuf::try_from(entry.path().to_path_buf())
+            .with_context(|| format!("non-UTF-8 path: {}", entry.path().display()))?;
+        let local = path.strip_prefix(scan.physical_root).with_context(|| {
+            format!(
+                "failed to key markdown path {path} under {}",
+                scan.physical_root
+            )
+        })?;
+        let logical = scan.handle_prefix.join(local);
+        if scan
+            .scan_roots
+            .is_some_and(|roots| !is_inside_scan_roots(&logical, roots))
+        {
+            continue;
+        }
+        let physical_path = if let Some(boundary) = scan.containment_root {
+            let canonical = path
+                .canonicalize_utf8()
+                .with_context(|| format!("failed to resolve external markdown file {path}"))?;
+            if !canonical.starts_with(boundary) {
+                anyhow::bail!(
+                    "external markdown file {path} resolves outside the provenance git root {boundary}"
+                );
+            }
+            canonical
+        } else {
+            path
+        };
+        files.push(MarkdownFileCandidate {
+            physical_path,
+            logical_path: logical,
+        });
+    }
+    Ok(files)
 }
 
 fn normalize_body_file_ref(

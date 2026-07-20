@@ -147,7 +147,11 @@ name and arity.
 Useful project config examples:
 
 ```dl
-source md { scan_root("."). scan_exclude("node_modules"). }
+source md {
+  scan_root(".").
+  # external_root(["../formal"]).
+  scan_exclude("node_modules").
+}
 linear(["CR", "REQ"])
 rejected(["TODO", "NOTE"])
 force(["ADR"])

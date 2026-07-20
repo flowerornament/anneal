@@ -30,6 +30,7 @@ use crate::{EdgeAssertionRefreshProgress, EdgeAssertionRefreshProgressSink};
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
     pub scan_roots: Vec<Utf8PathBuf>,
+    pub external_roots: Vec<Utf8PathBuf>,
     pub exclude: Vec<String>,
     pub linear_namespaces: Vec<String>,
     pub probe_code_target_history: bool,
@@ -191,7 +192,9 @@ fn extract_markdown_facts_from_anneal_config(
     } else {
         options.scan_roots.clone()
     };
-    let mut result = parse::build_graph_scoped(root, config, &scan_roots)?;
+    let external_roots = resolve_external_scan_roots(root, &options.external_roots)?;
+    let mut result =
+        parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?;
     let _stats = crate::extract::resolve::resolve_all(
         &mut result.graph,
         &result.label_candidates,
@@ -212,7 +215,8 @@ fn extract_markdown_facts_from_anneal_config(
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
-    let mut edge_assertions = EdgeAssertionCache::new(root, options.probe_edge_assertions);
+    let mut edge_assertions =
+        EdgeAssertionCache::new(root, &result.file_origins, options.probe_edge_assertions);
 
     for (node_id, handle) in result.graph.nodes() {
         let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
@@ -458,6 +462,7 @@ fn render_unified_config(config: &config::AnnealConfig) -> String {
     } else {
         line_call(&mut out, "scan_root", &[config.root.as_str()]);
     }
+    out.push_str("  # external_root([\"../formal\"]).\n");
     if !config.exclude.is_empty() {
         list_call(&mut out, "scan_exclude", &config.exclude);
     }
@@ -761,6 +766,7 @@ fn runtime_config_name(key: RuntimeConfigKey) -> &'static str {
 
 struct RevisionCache<'a> {
     root: &'a Utf8Path,
+    file_origins: Arc<HashMap<String, Utf8PathBuf>>,
     parsed_revisions: HashMap<String, Revision>,
     revisions: HashMap<String, Revision>,
 }
@@ -774,6 +780,7 @@ impl<'a> RevisionCache<'a> {
             .collect();
         Self {
             root,
+            file_origins: Arc::clone(&result.file_origins),
             parsed_revisions,
             revisions: HashMap::new(),
         }
@@ -783,14 +790,21 @@ impl<'a> RevisionCache<'a> {
         if let Some(revision) = self.parsed_revisions.get(file) {
             return revision.clone();
         }
+        let path = self.physical_path(file);
         self.revisions
             .entry(file.to_string())
             .or_insert_with(|| {
-                let path = self.root.join(file);
                 let bytes = std::fs::read(path).unwrap_or_default();
                 Revision::from(format!("{:016x}", anneal_core::fnv1a_64(&bytes)))
             })
             .clone()
+    }
+
+    fn physical_path(&self, file: &str) -> Utf8PathBuf {
+        self.file_origins
+            .get(file)
+            .cloned()
+            .unwrap_or_else(|| self.root.join(file))
     }
 }
 
@@ -859,6 +873,7 @@ impl EdgeAssertionShowMemo {
 
 struct EdgeAssertionCache<'a> {
     root: &'a Utf8Path,
+    file_origins: Arc<HashMap<String, Utf8PathBuf>>,
     repo_root: Option<Utf8PathBuf>,
     enabled: bool,
     assertions: HashMap<(String, u32), Option<EdgeAssertion>>,
@@ -866,11 +881,16 @@ struct EdgeAssertionCache<'a> {
 }
 
 impl<'a> EdgeAssertionCache<'a> {
-    fn new(root: &'a Utf8Path, enabled: bool) -> Self {
+    fn new(
+        root: &'a Utf8Path,
+        file_origins: &Arc<HashMap<String, Utf8PathBuf>>,
+        enabled: bool,
+    ) -> Self {
         let repo_root = enabled.then(|| git_root_for(root)).flatten();
         let show_memo = EdgeAssertionShowMemo::new(repo_root.clone());
         Self {
             root,
+            file_origins: Arc::clone(file_origins),
             repo_root,
             enabled,
             assertions: HashMap::new(),
@@ -977,7 +997,12 @@ impl<'a> EdgeAssertionCache<'a> {
 
     fn blame_line(&self, file: &str, line: u32) -> Option<EdgeAssertion> {
         let repo_root = self.repo_root.as_ref()?;
-        let file_path = std::fs::canonicalize(self.root.join(file).as_std_path()).ok()?;
+        let path = self
+            .file_origins
+            .get(file)
+            .cloned()
+            .unwrap_or_else(|| self.root.join(file));
+        let file_path = std::fs::canonicalize(path.as_std_path()).ok()?;
         let file_path = Utf8PathBuf::from_path_buf(file_path).ok()?;
         let rel_path = file_path.strip_prefix(repo_root).ok()?;
         let line_arg = format!("{line},{line}");
@@ -1060,6 +1085,100 @@ fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
     }
     let path = std::fs::canonicalize(path).ok()?;
     Utf8PathBuf::from_path_buf(path).ok()
+}
+
+fn resolve_external_scan_roots(
+    corpus_root: &Utf8Path,
+    configured_roots: &[Utf8PathBuf],
+) -> Result<Vec<parse::ExternalScanRoot>> {
+    if configured_roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    for configured in configured_roots {
+        if configured.as_str().trim().is_empty() || configured.is_absolute() {
+            anyhow::bail!(
+                "md.external_root must be a non-empty relative path inside the corpus's git repository; got {configured:?}"
+            );
+        }
+    }
+
+    let corpus_root = corpus_root
+        .canonicalize_utf8()
+        .with_context(|| format!("failed to resolve markdown corpus root {corpus_root}"))?;
+    let project_root = anneal_core::enclosing_project_root(&corpus_root)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "md.external_root requires an enclosing project root and git repository; none was found above {corpus_root}"
+            )
+        })?
+        .canonicalize_utf8()
+        .context("failed to resolve the enclosing project root")?;
+    let git_root = git_root_for(&corpus_root).ok_or_else(|| {
+        anyhow::anyhow!(
+            "md.external_root requires the corpus and external roots to share one git repository; no git root was found for {corpus_root}"
+        )
+    })?;
+    if project_root != git_root {
+        anyhow::bail!(
+            "md.external_root cannot use enclosing project root {project_root}: provenance uses git root {git_root}; move the corpus boundary or use roots within one shared git project"
+        );
+    }
+
+    let mut mounts = Vec::<parse::ExternalScanRoot>::new();
+    for configured in configured_roots {
+        let joined = corpus_root.join(configured);
+        let physical_root = joined
+            .canonicalize_utf8()
+            .with_context(|| format!("failed to resolve md.external_root {configured:?}"))?;
+        if !physical_root.is_dir() {
+            anyhow::bail!(
+                "md.external_root {configured:?} must resolve to a directory; got {physical_root}"
+            );
+        }
+        if !physical_root.starts_with(&git_root) {
+            anyhow::bail!(
+                "md.external_root {configured:?} resolves outside the provenance git root {git_root}"
+            );
+        }
+        if paths_overlap(&physical_root, &corpus_root) {
+            anyhow::bail!(
+                "md.external_root {configured:?} overlaps the corpus root {corpus_root}; use md.scan_root for corpus-internal subtrees"
+            );
+        }
+        if let Some(existing) = mounts
+            .iter()
+            .find(|mount| paths_overlap(&mount.physical_root, &physical_root))
+        {
+            anyhow::bail!(
+                "md.external_root {configured:?} overlaps external mount {}; external mounts must be disjoint",
+                existing.physical_root
+            );
+        }
+        let handle_prefix = physical_root
+            .strip_prefix(&git_root)
+            .with_context(|| {
+                format!(
+                    "failed to key md.external_root {physical_root} relative to git root {git_root}"
+                )
+            })?
+            .to_path_buf();
+        if handle_prefix.as_str().is_empty() {
+            anyhow::bail!(
+                "md.external_root {configured:?} resolves to the project root; select a disjoint subtree instead"
+            );
+        }
+        mounts.push(parse::ExternalScanRoot {
+            physical_root,
+            handle_prefix,
+            containment_root: git_root.clone(),
+        });
+    }
+    mounts.sort_by(|left, right| left.handle_prefix.cmp(&right.handle_prefix));
+    Ok(mounts)
+}
+
+fn paths_overlap(left: &Utf8Path, right: &Utf8Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn git_command(root: &Utf8Path) -> Command {
@@ -2033,7 +2152,7 @@ fn identity_for(
     let origin_uri = if file.is_empty() {
         format!("anneal://{native_id}")
     } else {
-        format!("file://{}", revisions.root.join(file))
+        format!("file://{}", revisions.physical_path(file))
     };
     FactIdentity::new(
         batch.corpus.clone(),
@@ -2066,17 +2185,18 @@ fn token_count(text: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
-    use anneal_core::{CodeTargetMeta, CorpusId, Generation, SourceName};
+    use anneal_core::{CodeTargetMeta, CorpusId, FactBatch, Generation, SourceName};
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
     use super::{
         EdgeAssertionCache, InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts,
-        git_command, render_or_write_init,
+        git_command, render_or_write_init, resolve_external_scan_roots,
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
@@ -2090,6 +2210,285 @@ mod tests {
     }
 
     #[test]
+    fn external_root_preserves_primary_handles_and_uses_physical_provenance() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let corpus = repo.join(".design");
+        let formal = repo.join("formal/models");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(&formal).expect("create formal tree");
+        std::fs::create_dir_all(repo.join("src")).expect("create source tree");
+        std::fs::write(
+            corpus.join("anneal.dl"),
+            "config frontmatter {\n  field(\"references\", \"Cites\", \"forward\").\n}\n",
+        )
+        .expect("write config");
+        std::fs::write(
+            corpus.join("spec.md"),
+            "---\nreferences: formal/models/prism.md\n---\n# Spec\n",
+        )
+        .expect("write design spec");
+        std::fs::write(formal.join("prism.md"), "# Prism\n\nSee `src/lib.rs:1`.\n")
+            .expect("write formal model");
+        std::fs::write(repo.join("src/lib.rs"), "pub fn prism() {}\n").expect("write source");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add cross-corpus fixture"]);
+
+        let baseline = extract_markdown_facts_with_options(
+            &corpus,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions::default(),
+        )
+        .expect("extract primary corpus");
+        let combined = extract_markdown_facts_with_options(
+            &corpus,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                external_roots: vec![Utf8PathBuf::from("../formal")],
+                probe_edge_assertions: true,
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract combined corpus");
+
+        let baseline_spec = baseline
+            .handles
+            .iter()
+            .find(|handle| handle.id == "spec.md")
+            .expect("baseline spec handle");
+        let combined_spec = combined
+            .handles
+            .iter()
+            .find(|handle| handle.id == "spec.md")
+            .expect("combined spec handle");
+        assert_eq!(
+            combined_spec, baseline_spec,
+            "primary handle must not re-key"
+        );
+        let formal_handle = combined
+            .handles
+            .iter()
+            .find(|handle| handle.id == "formal/models/prism.md")
+            .expect("project-relative external handle");
+        let formal_path = formal
+            .join("prism.md")
+            .canonicalize_utf8()
+            .expect("canonical formal path");
+        assert_eq!(
+            formal_handle.identity.origin_uri.as_str(),
+            format!("file://{formal_path}")
+        );
+        assert!(combined.edges.iter().any(|edge| {
+            edge.from == "spec.md" && edge.to == "formal/models/prism.md" && edge.kind == "Cites"
+        }));
+
+        let code_edge = combined
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.from == "formal/models/prism.md"
+                    && edge.to.contains("src/lib.rs:1")
+                    && edge.kind == "Cites"
+            })
+            .expect("external file code citation");
+        let blame = git_stdout(
+            &repo,
+            &[
+                "blame",
+                "-w",
+                "-M",
+                "-C",
+                "-L",
+                "3,3",
+                "--",
+                "formal/models/prism.md",
+            ],
+        );
+        let revision = blame
+            .split_whitespace()
+            .next()
+            .expect("blame revision")
+            .trim_start_matches('^');
+        let date = git_stdout(&repo, &["show", "-s", "--format=%cI", revision]);
+        assert_eq!(code_edge.assertion_revision.as_deref(), Some(revision));
+        assert_eq!(code_edge.assertion_date.as_deref(), date.get(..10));
+    }
+
+    #[test]
+    fn external_roots_are_additive_deterministic_and_excluded_by_logical_handle() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let corpus = repo.join(".design");
+        std::fs::create_dir_all(corpus.as_std_path()).expect("create corpus");
+        std::fs::create_dir_all(repo.join("formal/private")).expect("create formal tree");
+        std::fs::create_dir_all(repo.join("research")).expect("create research tree");
+        std::fs::write(corpus.join("spec.md"), "# Spec\n").expect("write spec");
+        std::fs::write(repo.join("formal/model.md"), "# Model\n").expect("write model");
+        std::fs::write(repo.join("formal/private/hidden.md"), "# Hidden\n").expect("write hidden");
+        std::fs::write(repo.join("research/note.md"), "# Note\n").expect("write note");
+        run_git(&repo, &["init"]);
+
+        let extract = |external_roots| {
+            extract_markdown_facts_with_options(
+                &corpus,
+                CorpusId::from("test"),
+                SourceName::from("markdown"),
+                Generation::initial(),
+                &MarkdownExtractionOptions {
+                    external_roots,
+                    exclude: vec!["formal/private/**".to_string()],
+                    ..MarkdownExtractionOptions::default()
+                },
+            )
+            .expect("extract external roots")
+        };
+        let first = extract(vec![
+            Utf8PathBuf::from("../research"),
+            Utf8PathBuf::from("../formal"),
+        ]);
+        let second = extract(vec![
+            Utf8PathBuf::from("../formal"),
+            Utf8PathBuf::from("../research"),
+        ]);
+        let ids = |batch: &FactBatch| {
+            batch
+                .handles
+                .iter()
+                .filter(|handle| handle.kind == "file")
+                .map(|handle| handle.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&first), ids(&second));
+        assert_eq!(
+            ids(&first),
+            vec!["spec.md", "formal/model.md", "research/note.md"]
+        );
+    }
+
+    #[test]
+    fn external_root_rejects_overlap_escape_and_logical_collisions() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let corpus = repo.join(".design");
+        std::fs::create_dir_all(corpus.join("formal/models")).expect("create corpus tree");
+        std::fs::create_dir_all(repo.join("formal/models")).expect("create external tree");
+        std::fs::create_dir_all(temp.path().join("outside")).expect("create outside tree");
+        std::fs::write(corpus.join("formal/models/prism.md"), "# Local\n")
+            .expect("write local collision");
+        std::fs::write(repo.join("formal/models/prism.md"), "# External\n")
+            .expect("write external collision");
+        run_git(&repo, &["init"]);
+
+        let overlap = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from(".")])
+            .expect_err("corpus overlap rejects");
+        assert!(overlap.to_string().contains("use md.scan_root"));
+        let duplicate = resolve_external_scan_roots(
+            &corpus,
+            &[
+                Utf8PathBuf::from("../formal"),
+                Utf8PathBuf::from("../formal/models"),
+            ],
+        )
+        .expect_err("external overlap rejects");
+        assert!(duplicate.to_string().contains("must be disjoint"));
+        let escape = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../../outside")])
+            .expect_err("git escape rejects");
+        assert!(escape.to_string().contains("provenance git root"));
+
+        let collision = extract_markdown_facts_with_options(
+            &corpus,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                external_roots: vec![Utf8PathBuf::from("../formal")],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect_err("logical collision rejects");
+        let collision = collision.to_string();
+        assert!(collision.contains("markdown handle collision"));
+        assert!(collision.contains("formal/models/prism.md"));
+    }
+
+    #[test]
+    fn external_root_rejects_project_boundary_that_differs_from_git_root() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let workspace = repo.join("workspace");
+        let corpus = workspace.join(".design");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(workspace.join("formal")).expect("create formal");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\n",
+        )
+        .expect("write workspace marker");
+        run_git(&repo, &["init"]);
+
+        let error = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../formal")])
+            .expect_err("mismatched project and git roots reject");
+        assert!(error.to_string().contains("provenance uses git root"));
+    }
+
+    #[test]
+    fn external_root_requires_relative_path_and_git_project() {
+        let temp = tempdir().expect("tempdir");
+        let corpus = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 corpus");
+        let sibling = Utf8PathBuf::from_path_buf(temp.path().join("formal")).expect("utf8 sibling");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(&sibling).expect("create sibling");
+
+        let no_project = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../formal")])
+            .expect_err("project boundary required");
+        assert!(no_project.to_string().contains("enclosing project root"));
+
+        let absolute = resolve_external_scan_roots(&corpus, std::slice::from_ref(&sibling))
+            .expect_err("absolute root rejects");
+        assert!(absolute.to_string().contains("non-empty relative path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_root_rejects_symlinked_file_that_escapes_git_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let corpus = repo.join(".design");
+        let formal = repo.join("formal");
+        let outside =
+            Utf8PathBuf::from_path_buf(temp.path().join("outside.md")).expect("utf8 outside path");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(&formal).expect("create formal");
+        std::fs::write(&outside, "# Outside\n").expect("write outside file");
+        symlink(&outside, formal.join("escape.md")).expect("create symlink");
+        run_git(&repo, &["init"]);
+
+        let error = extract_markdown_facts_with_options(
+            &corpus,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                external_roots: vec![Utf8PathBuf::from("../formal")],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect_err("symlink escape rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("outside the provenance git root")
+        );
+    }
+
+    #[test]
     fn init_preserves_existing_unified_config_body() {
         let temp = tempdir().expect("tempdir");
         let root = Utf8Path::from_path(temp.path()).expect("utf8 tempdir");
@@ -2100,6 +2499,19 @@ mod tests {
 
         assert!(!output.written);
         assert_eq!(output.body, body);
+    }
+
+    #[test]
+    fn init_scaffold_teaches_bounded_external_roots() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(temp.path()).expect("utf8 tempdir");
+        std::fs::write(root.join("doc.md"), "# Doc\n").expect("write doc");
+
+        let output = render_or_write_init(root, InitMode::DryRun).expect("init dry run");
+
+        assert!(output.body.contains("# external_root([\"../formal\"])."));
+        std::fs::write(root.join("anneal.dl"), &output.body).expect("write scaffold");
+        crate::extract::config::load_config(root.as_std_path()).expect("scaffold parses");
     }
 
     #[test]
@@ -2458,10 +2870,11 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event);
         });
-        let mut batch_cache = EdgeAssertionCache::new(&root, true);
+        let origins = Arc::new(HashMap::new());
+        let mut batch_cache = EdgeAssertionCache::new(&root, &origins, true);
         let batch = batch_cache.prewarm_batch(&requests, Some(&progress));
 
-        let mut serial_cache = EdgeAssertionCache::new(&root, true);
+        let mut serial_cache = EdgeAssertionCache::new(&root, &origins, true);
         let serial = requests
             .iter()
             .map(|(file, line)| serial_cache.assertion_for(file, *line))

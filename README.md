@@ -443,6 +443,7 @@ only when no repo config exists.
 source md {
   file_extension(".md").
   scan_root(".").
+  # external_root(["../formal"]).
   scan_exclude(["vendor", "**/README.md"]).
 }
 

@@ -6739,6 +6739,97 @@ mod tests {
     }
 
     #[test]
+    fn markdown_external_root_and_code_source_keep_distinct_source_identities() {
+        let dir = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(dir.path().join("repo")).expect("utf8 tempdir");
+        let root = repo.join(".design");
+        fs::create_dir_all(repo.join("formal/models")).expect("create source trees");
+        fs::create_dir_all(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            source md {
+              scan_root(".").
+              external_root(["../formal"]).
+            }
+            source code { source_root(".."). }
+            config frontmatter {
+              field("references", "Cites", "forward").
+            }
+            "#,
+        )
+        .expect("write project rules");
+        fs::write(
+            root.join("spec.md"),
+            "---\nreferences: formal/models/prism.md\n---\n# Spec\n",
+        )
+        .expect("write spec");
+        fs::write(repo.join("formal/models/prism.md"), "# Prism model\n")
+            .expect("write markdown model");
+        fs::write(repo.join("formal/models/prism.rs"), "pub struct Prism;\n")
+            .expect("write code model");
+        git(&repo, &["init"]);
+        git(&repo, &["add", "."]);
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: "? *handle{id: h, source: source}.".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows { rows, .. } = output else {
+            panic!("eval should emit rows");
+        };
+        let identities = rows
+            .iter()
+            .filter(|row| {
+                required_string(row, "h")
+                    .is_ok_and(|handle| handle.starts_with("formal/models/prism."))
+            })
+            .map(|row| {
+                (
+                    required_string(row, "h").expect("handle field"),
+                    required_string(row, "source").expect("source field"),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            identities,
+            BTreeSet::from([
+                ("formal/models/prism.md", "markdown"),
+                ("formal/models/prism.rs", "code"),
+            ])
+        );
+
+        let cites = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? *edge{from: "spec.md", to: "formal/models/prism.md", kind: "Cites"}."#
+                    .to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("Cites query runs");
+        let CommandOutput::Rows { rows, .. } = cites else {
+            panic!("Cites query should emit rows");
+        };
+        assert_eq!(rows.len(), 1, "cross-corpus Cites edge must resolve once");
+
+        let broken = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? diagnostic{code: "E001", subject: h}."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("diagnostic query runs");
+        let CommandOutput::Rows { rows, .. } = broken else {
+            panic!("diagnostic query should emit rows");
+        };
+        assert!(rows.is_empty(), "resolved external root must emit no E001");
+    }
+
+    #[test]
     fn project_potential_weight_rule_changes_energy() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");

@@ -2266,6 +2266,7 @@ SourceInfo {
     config_keys: vec![
         ConfigKey::required("md.file_extension"),
         ConfigKey::required("md.scan_root"),
+        ConfigKey::optional("md.external_root"),
         ConfigKey::optional("md.scan_exclude"),
         ConfigKey::optional("md.label_pattern"),
         ConfigKey::optional("md.linear_namespace"),
@@ -3028,6 +3029,7 @@ shape:
 source md {
   file_extension(".md").
   scan_root(".").
+  external_root(["../formal"]).
   scan_exclude("node_modules").
   label_pattern("OQ",    "OQ-(\d+)",    "any").
   label_pattern("KB-D",  "KB-D(\d+)",   ".design/**").
@@ -3044,11 +3046,19 @@ isn't recognized by a linked Source; `optional` facts are skipped
 when the adapter is absent.
 
 **Definition CR-D70 (Markdown scan-root identity).** `md.scan_root`
-selects one or more corpus-relative subtrees for markdown extraction;
-it does not rewrite handle ids, `native_id`, or `origin_uri`. A file
-at `included/b.md` remains `included/b.md` even when the only scan
-root is `included`. Rationale: discovery configuration changes the
-extraction window, not the identity of already-known corpus objects.
+selects corpus-relative subtrees for markdown extraction; it does not
+rewrite handle ids, `native_id`, or `origin_uri`. A file at
+`included/b.md` remains `included/b.md` even when the only scan root is
+`included`. `md.external_root` additively mounts disjoint sibling trees
+inside the corpus's enclosing Git project. Existing corpus files remain
+corpus-relative; externally mounted files are keyed relative to the Git
+project root, so a corpus at `.design` mounting `../formal` emits
+`formal/models/prism.md`. External roots never change primary handles,
+must share the provenance Git root, and fail on overlap or logical-handle
+collision. `scan_exclude` globs match the resulting logical handles.
+Rationale: discovery configuration changes the extraction window, not
+the identity of already-known corpus objects; the stable project prefix
+prevents cross-root collisions without re-keying the primary corpus.
 
 ### §43 Introspection
 

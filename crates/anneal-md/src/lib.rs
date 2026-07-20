@@ -124,10 +124,11 @@ impl Source for MarkdownSource {
         SourceInfo {
             name: SOURCE_NAME,
             recognizes: vec![Pattern::new("**/*.md")],
-            doc: "Extracts markdown files into stored relation facts.",
+            doc: "Extracts markdown files from corpus-relative scan roots into stored relation facts; md.external_root additively mounts bounded project siblings.",
             config_keys: vec![
                 ConfigKey::required_exact("md.file_extension", 1),
                 ConfigKey::required_exact("md.scan_root", 1),
+                ConfigKey::optional_at_least("md.external_root", 1),
                 ConfigKey::optional_at_least("md.scan_exclude", 1),
                 ConfigKey::optional_exact("md.label_pattern", 3),
                 ConfigKey::optional_exact("md.linear_namespace", 1),
@@ -218,10 +219,15 @@ impl MarkdownDiscoveryConfig {
         if scan_roots.is_empty() {
             scan_roots.push(Utf8PathBuf::from("."));
         }
+        let external_roots = facts
+            .values("md.external_root")
+            .map(valid_external_root)
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
             options: extract::adapter::MarkdownExtractionOptions {
                 scan_roots,
+                external_roots,
                 exclude: facts
                     .values("md.scan_exclude")
                     .map(str::to_string)
@@ -267,6 +273,17 @@ fn valid_relative_path(value: &str) -> Result<Utf8PathBuf, SourceError> {
             "md.scan_root must be a relative path inside the corpus root; got {value:?}"
         ))
     })
+}
+
+fn valid_external_root(value: &str) -> Result<Utf8PathBuf, SourceError> {
+    let trimmed = value.trim();
+    let path = Utf8PathBuf::from(trimmed);
+    if trimmed.is_empty() || path.is_absolute() {
+        return Err(SourceError::Other(format!(
+            "md.external_root must be a non-empty relative path inside the corpus's git repository; got {value:?}"
+        )));
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -363,6 +380,23 @@ mod tests {
                 .any(|fact| fact.span_id == "a.md#h/a" && fact.text.contains("Body text")),
             "heading spans should have readable content"
         );
+    }
+
+    #[test]
+    fn markdown_source_schema_declares_additive_external_roots() {
+        let source = MarkdownSource::default().describe();
+
+        let external_root = source
+            .config_keys
+            .iter()
+            .find(|key| key.key() == "md.external_root")
+            .expect("external root config key");
+        assert_eq!(
+            external_root.shape(),
+            anneal_core::ConfigValueShape::AtLeast(1)
+        );
+        assert!(!external_root.required_flag());
+        assert!(source.doc.contains("md.external_root"));
     }
 
     #[test]
