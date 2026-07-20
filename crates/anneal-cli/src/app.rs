@@ -5338,6 +5338,9 @@ mod tests {
         assert!(rendered.contains("# Anneal"));
         assert!(rendered.contains("## First Moves"));
         assert!(rendered.contains("## Agent Rules"));
+        assert!(rendered.contains("outside the corpus root"));
+        assert!(rendered.contains("Git-project-relative handles"));
+        assert!(rendered.contains("collide on a handle fail loudly"));
         assert!(!rendered.starts_with("---"));
     }
 

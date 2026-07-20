@@ -160,6 +160,12 @@ config search_boost { status("authoritative", 0.08). hub(0.01). }
 config code_path_root { root(["web"]). }
 ```
 
+`external_root` additively mounts a sibling directory outside the corpus root
+but inside the same Git repository into the markdown graph. External files use
+Git-project-relative handles such as `formal/models/prism.md`, so references
+can resolve across directories; mounts that escape the repository, overlap, or
+collide on a handle fail loudly.
+
 When a query becomes a reusable corpus move, promote it into a project verb:
 
 ```dl
