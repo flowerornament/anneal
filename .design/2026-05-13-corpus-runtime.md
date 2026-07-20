@@ -2605,7 +2605,10 @@ commands while that boundary exists.
 **Definition CR-D82 (Help and reference projection).** CLI help is a
 projection of the same runtime self-description that backs
 `schema`, `predicates`, `verbs`, `describe`, `source_of`, `examples`,
-and `sources`. v0.11.0 ships top-level `anneal --help`, static
+and `sources`. The terminal product thesis has one canonical source: the
+`Product Thesis` section of the shipped agent skill. Root-free top help and
+the agent briefing project that exact section rather than maintaining parallel
+copies. v0.11.0 ships top-level `anneal --help`, static
 `anneal <command> --help`, `anneal help agent` for the bundled agent
 briefing, and the `schema`/`describe` CLI projections. Generated
 language-reference docs, predicate/source/example projections, and
@@ -2618,9 +2621,23 @@ commands first; configured external URLs may be appended through
 `[help].doc_url_base`. Rationale: help is not a parallel documentation
 system; it is a projection layer over the runtime vocabulary.
 
+`anneal help NAME` uses one routing ladder: static command help, retired-name
+recovery, resolved project `@verb`, then runtime `describe`. A precedence
+winner must disclose any other meaning sharing the name. Project verbs win
+over same-named axes, predicates, or topics because bare invocation executes
+the verb, but their help points to `anneal describe NAME`; command help does
+the same for command/runtime collisions. Semantic help is corpus-scoped so
+project shadowing remains truthful. `help runtime` therefore projects the
+runtime describe card; outside a corpus it teaches root-free `anneal help` and
+explicit `--root` recovery instead of failing opaquely.
+
 **Definition CR-D91 (Language-first help ladder).** Agent-facing help
 must present the rule language as the primary compositional surface.
 Default help teaches a short ladder:
+
+It opens by naming anneal as a convergence assistant for disconnected
+intelligences and restores the product vocabulary before teaching mechanics.
+The first screen stays bounded rather than becoming an encyclopedic glossary.
 
 1. arrive with `status` and `context`;
 2. program the corpus with `schema`, `describe`, and `eval` / `-e`;

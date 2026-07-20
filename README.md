@@ -264,6 +264,9 @@ composes ranked summary-bearing span search, compact span metadata, and graph
 neighborhood once you have a goal. Add `--read-spans` when you want matched
 span bodies inline.
 `help agent` prints the bundled agent skill briefing from the installed binary.
+`help <name>` resolves static commands, project `@verb`s, and runtime teaching
+cards through one route; when meanings share a name, help shows the precedence
+winner and points to the other interpretation.
 The hidden `prime` alias remains for installed skill loaders and muscle memory.
 
 Useful `context` flags:

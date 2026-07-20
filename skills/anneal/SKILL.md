@@ -5,15 +5,22 @@ description: "Orient in knowledge corpora with anneal. Use for markdown corpora,
 
 # Anneal
 
+## Product Thesis
+
+Anneal is a convergence assistant for knowledge corpora. It helps disconnected
+intelligences recover what matters, expose uncertainty, and push shared
+knowledge toward settledness.
+
 Use `anneal` as the runtime for a knowledge corpus. It turns corpus files into
 facts, loads the standard library plus project `anneal.dl`, and gives agents a
 small ladder: arrive, discover vocabulary, retrieve evidence, then ask precise
 Datalog questions.
 
-Run `anneal help <command>` for exact flags. Do not guess CLI details when a
-command matters. Runtime commands render readable text at a terminal and
-JSON/NDJSON when piped; add `--format=text` in pipe-only harnesses when you
-want to read the answer directly.
+Run `anneal help <command-or-runtime-name>` for exact flags or a runtime
+teaching card. Do not guess CLI details when a command matters. Runtime
+commands render readable text at a terminal and JSON/NDJSON when piped; add
+`--format=text` in pipe-only harnesses when you want to read the answer
+directly.
 
 If this skill is not preloaded, run `anneal help agent` to print this briefing
 from the installed binary. `anneal prime` remains a hidden compatibility alias.
@@ -119,8 +126,10 @@ anneal -e '? changed_within(h, 7), *handle{id: h, kind: "file", summary: summary
 
 Use `describe convergence`, `describe potential`, `describe entropy`,
 `describe blocker`, `describe flow`, and `describe area_health` to learn the
-joins. `check` is a hidden CI gate alias for the error-only diagnostic view and
-exits 1 when error-severity diagnostics exist.
+joins. Status keeps the live dispositions visible: advancing, holding,
+drifting, or broken on the way toward settledness. `check` is a hidden CI gate
+alias for the error-only diagnostic view and exits 1 when error-severity
+diagnostics exist.
 
 ## Ask By Axis
 

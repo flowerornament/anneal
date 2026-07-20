@@ -196,6 +196,13 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
         output.write(stdout.lock(), mode)?;
         return Ok(());
     }
+    if let RuntimeCommand::HelpName { name } = &invocation.command
+        && let Some(root) = invocation.root.implicit_unmarked_root()
+    {
+        bail!(
+            "help for runtime name {name:?} is corpus-scoped because project vocabulary can change its meaning; no marked corpus root was found above {root}. Use `anneal help` or `anneal help top` for root-free command help, run from a marked corpus, or pass `--root <path>`."
+        );
+    }
     if let Some(root) = invocation.root.implicit_unmarked_root() {
         bail!(
             "no marked corpus root found above {root}; refusing implicit scan. Run `anneal init --dry-run` to inspect a project file, `anneal init` to mark this corpus, or pass `--root <path>` to scan that directory explicitly."
@@ -220,7 +227,24 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             limit,
         };
     }
-    if let RuntimeCommand::Verb { name, args } = &invocation.command
+    if let RuntimeCommand::HelpName { name } = &invocation.command {
+        let registry = RuntimeRegistry::load(invocation.root.path())?;
+        match registry.registry.resolve_for_actor(name, &registry.actor) {
+            Ok(entry) => {
+                return write_text(
+                    io::stdout().lock(),
+                    &render_dynamic_verb_help_with_collision(
+                        entry,
+                        registry.has_described_name(name),
+                    ),
+                );
+            }
+            Err(VerbDispatchError::MissingVerb { .. }) => {
+                invocation.command = RuntimeCommand::Describe { name: name.clone() };
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else if let RuntimeCommand::Verb { name, args } = &invocation.command
         && args
             .iter()
             .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
@@ -235,7 +259,10 @@ pub fn run_args(args: Vec<OsString>) -> Result<()> {
             }
             Err(error) => return Err(error.into()),
         };
-        return write_text(io::stdout().lock(), &render_dynamic_verb_help(entry));
+        return write_text(
+            io::stdout().lock(),
+            &render_dynamic_verb_help_with_collision(entry, registry.has_described_name(name)),
+        );
     }
     if let Some(message) = drift_refresh_announcement(&invocation.command) {
         eprintln!("{message}");
@@ -465,6 +492,9 @@ enum RuntimeCommand {
     Help {
         topic: HelpTopic,
     },
+    HelpName {
+        name: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -486,7 +516,7 @@ enum HelpTopic {
 impl HelpTopic {
     fn parse(command: &str) -> Option<Self> {
         Some(match command {
-            "top" | "runtime" => Self::Top,
+            "top" => Self::Top,
             "agent" => Self::Agent,
             "init" => Self::Init,
             "status" => Self::Status,
@@ -506,43 +536,12 @@ impl HelpTopic {
         if matches!(self, Self::Agent) {
             return skill_briefing_body(SKILL_MARKDOWN).to_string();
         }
+        if matches!(self, Self::Top) {
+            return render_top_help();
+        }
 
         let body = match self {
-            Self::Top => {
-                "\
-Usage: anneal [OPTIONS] [COMMAND]
-
-Arrive, discover the vocabulary, retrieve evidence, then ask precise Datalog
-questions against a corpus.
-
-First moves:
-  anneal status
-  anneal context \"goal\"
-
-Discover:
-  anneal schema
-  anneal describe runtime
-  anneal describe <axis>
-  anneal describe <predicate>
-
-Retrieve:
-  anneal search \"text\" --limit 5
-  anneal read <handle> --budget 4000
-  anneal handle <handle> [--impact|--lineage]
-
-Program:
-  anneal -e '? predicate(args).'
-  anneal help eval
-
-More help:
-  anneal help agent
-  anneal help <command>
-
-Root premise:
-  Run from a marked corpus (.design, docs, or anneal.dl), pass --root PATH,
-  or use anneal init --dry-run to preview a project file.
-"
-            }
+            Self::Top => unreachable!("top help returns before static help rendering"),
             Self::Agent => unreachable!("agent help returns before static help rendering"),
             Self::Init => {
                 "\
@@ -559,6 +558,12 @@ Output: readable config preview at a terminal or with --format=text; JSON object
 
 Use init when a directory is not yet marked. Runtime commands require either a
 marked inferred root or an explicit --root PATH.
+
+Examples:
+  anneal init --dry-run
+  anneal init
+
+See also: `anneal help`, `anneal describe runtime`.
 "
             }
             Self::Status => {
@@ -573,6 +578,13 @@ copy-runnable orientation/work queries. For goal-less reading, run the
 once you have a specific goal.
 
 Output: human summary at a terminal or with --format=text; NDJSON rows when piped or with --json.
+
+Examples:
+  anneal status --format=text
+  anneal status --format=json
+
+See also: `anneal context`, `anneal describe convergence`, `anneal help eval`.
+Also: `anneal describe status` teaches the runtime verb with this name.
 "
             }
             Self::Context => {
@@ -595,6 +607,13 @@ Options:
       --read-spans               Include matched span bodies in the output
 
 Output: human summary at a terminal or with --format=text; NDJSON event rows when piped or with --json.
+
+Examples:
+  anneal context \"what should I read before changing releases?\"
+  anneal context \"currency model\" --hits 5 --read-spans
+
+See also: `anneal status`, `anneal search`, `anneal read`.
+Also: `anneal describe context` teaches the runtime verb with this name.
 "
             }
             Self::Search => {
@@ -612,6 +631,13 @@ Options:
       --include-low-confidence   Include low-confidence hits
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+
+Examples:
+  anneal search \"convergence frontier\" --limit 5
+  anneal search \"CR-D82\" --include-low-confidence
+
+See also: `anneal context`, `anneal read`, `anneal describe relevance`.
+Also: `anneal describe search` teaches the runtime verb and primitive with this name.
 "
             }
             Self::Read => {
@@ -628,6 +654,13 @@ Options:
       --span-id <ID>             Read one content span
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+
+Examples:
+  anneal read 2026-05-13-corpus-runtime.md --budget 4000
+  anneal read 2026-05-13-corpus-runtime.md --span-id <SPAN_ID>
+
+See also: `anneal search`, `anneal context`, `anneal handle`.
+Also: `anneal describe read` teaches the runtime verb and primitive with this name.
 "
             }
             Self::Handle => {
@@ -646,6 +679,13 @@ Options:
       --lineage                  Include file supersession DAG and current head
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+
+Examples:
+  anneal handle 2026-05-13-corpus-runtime.md --impact
+  anneal handle 2026-05-13-corpus-runtime.md --lineage
+
+See also: `anneal read`, `anneal context`, `anneal describe structure`.
+Also: `anneal describe handle` teaches the runtime verb with this name.
 "
             }
             Self::Check { .. } => {
@@ -664,6 +704,13 @@ For filtered diagnostic questions, use eval:
 Deprecation: hidden alias retained for CI muscle memory; prefer eval composition in agent-facing workflows.
 
 Output: readable error diagnostics at a terminal or with --format=text; NDJSON rows when piped or with --json. Exits 1 when any error row exists.
+
+Examples:
+  anneal check
+  anneal check --refresh-drift
+
+See also: `anneal status`, `anneal describe diagnostic`, `anneal help eval`.
+Also: `anneal describe check` teaches the hidden runtime verb with this name.
 "
             }
             Self::Describe => {
@@ -678,6 +725,13 @@ Arguments:
   [NAME]                         Object to describe
 
 Output: readable teaching cards by default, including when piped; use --json or --format=json for NDJSON rows.
+
+Examples:
+  anneal describe runtime
+  anneal describe convergence
+
+See also: `anneal schema`, `anneal help <name>`, `anneal help eval`.
+Also: `anneal describe describe` teaches the runtime verb with this name.
 "
             }
             Self::Schema => {
@@ -687,6 +741,13 @@ Usage: anneal [OPTIONS] schema
 List runtime predicates, primitives, signatures, and provenance.
 
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
+
+Examples:
+  anneal schema --format=text
+  anneal schema --format=json
+
+See also: `anneal describe runtime`, `anneal help <name>`, `anneal help eval`.
+Also: `anneal describe schema` teaches the runtime verb with this name.
 "
             }
             Self::Eval => {
@@ -794,6 +855,8 @@ Examples:
   anneal -e '? source_of(\"frontier\", file, lines).'
   anneal -e - < query.dl
 
+See also: `anneal schema`, `anneal describe runtime`, `anneal help agent`.
+
 Output: readable rows at a terminal or with --format=text; NDJSON rows when piped or with --json.
 "
             }
@@ -805,6 +868,56 @@ Output: readable rows at a terminal or with --format=text; NDJSON rows when pipe
         }
     }
 }
+
+fn render_top_help() -> String {
+    let thesis = skill_section(SKILL_MARKDOWN, "Product Thesis")
+        .expect("shipped anneal skill must define the Product Thesis section");
+    format!(
+        "\
+Usage: anneal [OPTIONS] [COMMAND]
+
+{thesis}
+
+Commands by intent:
+  Arrive
+    anneal status                 Corpus vital signs and convergence frontier
+    anneal context \"goal\"         Goal-shaped retrieval and graph neighborhood
+  Retrieve
+    anneal search \"text\"          Ranked handle and span search
+    anneal read <handle>          Budgeted evidence for one handle
+    anneal handle <handle>        Relationships, impact, and lineage
+  Discover and program
+    anneal schema                 Callable runtime vocabulary and signatures
+    anneal describe <name>        Purpose, joins, examples, and requirements
+    anneal -e '? predicate(args).' Compose a precise Datalog question
+  Configure
+    anneal init                   Preview or write an anneal.dl project file
+
+Converge:
+  anneal describe convergence
+  anneal -e '? frontier(h, energy).'
+
+More help:
+  anneal help agent
+  anneal help <command-or-runtime-name>
+
+Root premise:
+  Run from a marked corpus (.design, docs, or anneal.dl), pass --root PATH,
+  or use anneal init --dry-run to preview a project file.
+
+{RUNTIME_PROVENANCE_OPTIONS}{TOP_HELP_OPTIONS}"
+    )
+}
+
+const TOP_HELP_OPTIONS: &str = "\
+Global options:
+      --root <PATH>              Corpus root
+                                 (default: nearest .design, docs,
+                                 or anneal.dl upward)
+      --json                     Force JSON/NDJSON output
+      --format <text|json|ndjson>
+                                 Force readable text or JSON/NDJSON output
+";
 
 const RUNTIME_PROVENANCE_OPTIONS: &str = "\
 Provenance options:
@@ -849,9 +962,8 @@ impl RuntimeCommand {
             if let Some(message) = retired_command_message(topic) {
                 bail!("{message}");
             }
-            return Ok(Self::Verb {
+            return Ok(Self::HelpName {
                 name: topic.clone(),
-                args: vec!["--help".to_string()],
             });
         }
         if rest
@@ -1011,6 +1123,13 @@ fn skill_briefing_body(markdown: &str) -> &str {
     rest[end + "\n---\n".len()..].trim_start_matches('\n')
 }
 
+fn skill_section<'a>(markdown: &'a str, heading: &str) -> Option<&'a str> {
+    let body = skill_briefing_body(markdown);
+    let marker = format!("## {heading}\n");
+    let section = body.split_once(&marker)?.1;
+    Some(section.split("\n## ").next().unwrap_or(section).trim())
+}
+
 fn retired_save_message() -> &'static str {
     "anneal save has been retired; edit anneal.dl directly and add an @verb(...) declaration, then verify with `anneal describe <name>` and a direct invocation"
 }
@@ -1035,6 +1154,7 @@ struct CurrencyHitAnnotation {
 struct RuntimeRegistry {
     registry: VerbRegistry,
     actor: ActorContext,
+    described_names: BTreeSet<String>,
 }
 
 impl RuntimeRegistry {
@@ -1056,6 +1176,11 @@ impl RuntimeRegistry {
         } else {
             None
         };
+        let mut described_names = described_program_names(loaded_prelude.program());
+        described_names.extend(sources.iter().map(|source| source.name.to_string()));
+        if let Some(project) = &project {
+            described_names.extend(described_program_names(project.program()));
+        }
         let registry = match &project {
             Some(project) => VerbRegistry::from_layers(&[
                 (VerbLayer::Prelude, loaded_prelude.program()),
@@ -1063,8 +1188,49 @@ impl RuntimeRegistry {
             ])?,
             None => VerbRegistry::from_layers(&[(VerbLayer::Prelude, loaded_prelude.program())])?,
         };
-        Ok(Self { registry, actor })
+        Ok(Self {
+            registry,
+            actor,
+            described_names,
+        })
     }
+
+    fn has_described_name(&self, name: &str) -> bool {
+        self.described_names.contains(name)
+    }
+}
+
+fn described_program_names(program: &Program) -> BTreeSet<String> {
+    fn collect(statements: &[Statement], names: &mut BTreeSet<String>) {
+        for statement in statements {
+            match statement {
+                Statement::Rule(rule) => {
+                    names.insert(rule.head.predicate.display_name());
+                }
+                Statement::Doc(doc) => {
+                    names.insert(doc.name().to_string());
+                }
+                Statement::Predicate(decl) => {
+                    if let Some(Ok(predicate)) = decl.predicate_ref() {
+                        names.insert(predicate.display_name());
+                    }
+                }
+                Statement::AtBlock { statements, .. } => collect(statements, names),
+                Statement::Fact(_)
+                | Statement::OptionalFact(_)
+                | Statement::ConfigBlock(_)
+                | Statement::SourceBlock(_)
+                | Statement::Query(_)
+                | Statement::Include(_)
+                | Statement::Import(_)
+                | Statement::Verb(_) => {}
+            }
+        }
+    }
+
+    let mut names = BTreeSet::new();
+    collect(&program.statements, &mut names);
+    names
 }
 
 impl RuntimeSession {
@@ -1251,14 +1417,8 @@ impl RuntimeSession {
                 lineage,
             } => self.run_handle(handle, impact, lineage),
             RuntimeCommand::Check { .. } => self.run_check_gate(),
-            RuntimeCommand::Describe { name } => {
-                let query = DescribeCommand::new(&name).datalog();
-                let output = self.eval(&query, ExplainOptions::disabled())?;
-                ensure!(
-                    !output.rows.is_empty(),
-                    "unknown runtime name {name:?}; use `anneal schema` or `anneal describe runtime`"
-                );
-                Ok(CommandOutput::rows(output.rows, RowView::Describe))
+            RuntimeCommand::Describe { name } | RuntimeCommand::HelpName { name } => {
+                self.run_describe(&name)
             }
             RuntimeCommand::Schema => self.run_verb("schema", RowView::Schema),
             RuntimeCommand::Eval {
@@ -1296,6 +1456,16 @@ impl RuntimeSession {
     fn run_verb(&self, name: &str, view: RowView) -> Result<CommandOutput> {
         let plan = self.registry.run_plan_for_actor(name, &self.actor)?;
         self.run_query(plan.query_source(), ExplainOptions::disabled(), view)
+    }
+
+    fn run_describe(&self, name: &str) -> Result<CommandOutput> {
+        let query = DescribeCommand::new(name).datalog();
+        let output = self.eval(&query, ExplainOptions::disabled())?;
+        ensure!(
+            !output.rows.is_empty(),
+            "unknown runtime name {name:?}; use `anneal schema` or `anneal describe runtime`"
+        );
+        Ok(CommandOutput::rows(output.rows, RowView::Describe))
     }
 
     fn run_handle(&self, handle: String, impact: bool, lineage: bool) -> Result<CommandOutput> {
@@ -1733,7 +1903,8 @@ impl RuntimeCommand {
             | Self::Context { .. }
             | Self::Read { .. }
             | Self::Schema
-            | Self::Help { .. } => false,
+            | Self::Help { .. }
+            | Self::HelpName { .. } => false,
         }
     }
 
@@ -1756,7 +1927,8 @@ impl RuntimeCommand {
             | Self::Read { .. }
             | Self::Schema
             | Self::Verb { .. }
-            | Self::Help { .. } => false,
+            | Self::Help { .. }
+            | Self::HelpName { .. } => false,
         }
     }
 
@@ -1789,7 +1961,8 @@ impl RuntimeCommand {
             | Self::Read { .. }
             | Self::Handle { .. }
             | Self::Schema
-            | Self::Help { .. } => false,
+            | Self::Help { .. }
+            | Self::HelpName { .. } => false,
         }
     }
 }
@@ -2895,6 +3068,18 @@ Global options:
         line = entry.source().location().line,
         query = entry.query_source(),
     )
+}
+
+fn render_dynamic_verb_help_with_collision(entry: &VerbEntry, collision: bool) -> String {
+    let mut help = render_dynamic_verb_help(entry);
+    if collision {
+        let _ = writeln!(
+            help,
+            "Also: `anneal describe {}` teaches the additional runtime vocabulary sharing this name.",
+            entry.name()
+        );
+    }
+    help
 }
 
 #[derive(Debug, PartialEq)]
@@ -5324,10 +5509,27 @@ mod tests {
 
         let rendered = HelpTopic::Top.render();
         assert!(rendered.contains("Usage: anneal [OPTIONS] [COMMAND]"));
-        assert!(rendered.contains("anneal describe runtime"));
-        assert!(rendered.contains("anneal describe <axis>"));
+        assert!(rendered.contains("Anneal is a convergence assistant"));
+        assert!(rendered.contains("disconnected\nintelligences"));
+        assert!(rendered.contains("convergence frontier"));
+        assert!(rendered.contains("settledness"));
         assert!(rendered.contains("anneal help agent"));
-        assert!(rendered.contains("anneal help eval"));
+        assert!(rendered.contains("anneal help <command-or-runtime-name>"));
+        assert!(rendered.lines().count() <= 60);
+        assert!(rendered.lines().all(|line| line.len() <= 80));
+        for command in [
+            "anneal status",
+            "anneal context",
+            "anneal search",
+            "anneal read",
+            "anneal handle",
+            "anneal schema",
+            "anneal describe",
+            "anneal -e",
+            "anneal init",
+        ] {
+            assert!(rendered.contains(command), "top help omits {command}");
+        }
     }
 
     #[test]
@@ -5342,10 +5544,27 @@ mod tests {
         assert!(rendered.contains("Git-project-relative handles"));
         assert!(rendered.contains("collide on a handle fail loudly"));
         assert!(!rendered.starts_with("---"));
+
+        let thesis = skill_section(SKILL_MARKDOWN, "Product Thesis").expect("product thesis");
+        assert!(HelpTopic::Top.render().contains(thesis));
+        assert!(rendered.contains(thesis));
     }
 
     #[test]
-    fn unknown_help_topic_points_to_agent_briefing() {
+    fn semantic_help_names_parse_for_corpus_resolution() {
+        for name in ["runtime", "convergence", "frontier", "banana"] {
+            let parsed = Invocation::parse(os(&["anneal", "help", name])).expect("parse help");
+            assert_eq!(
+                parsed.command,
+                RuntimeCommand::HelpName {
+                    name: name.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_help_topic_points_to_runtime_discovery() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 tempdir");
         let err = run_args(vec![
@@ -5358,9 +5577,45 @@ mod tests {
         .expect_err("unknown help topic should error");
 
         assert!(
-            err.to_string().contains("anneal help agent"),
+            err.to_string().contains("anneal schema")
+                && err.to_string().contains("anneal describe runtime"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn static_command_help_has_examples_links_and_collision_disclosure() {
+        for topic in [
+            HelpTopic::Init,
+            HelpTopic::Status,
+            HelpTopic::Context,
+            HelpTopic::Search,
+            HelpTopic::Read,
+            HelpTopic::Handle,
+            HelpTopic::Check,
+            HelpTopic::Describe,
+            HelpTopic::Schema,
+            HelpTopic::Eval,
+        ] {
+            let rendered = topic.render();
+            assert!(rendered.contains("Examples:"), "{topic:?} lacks examples");
+            assert!(rendered.contains("See also:"), "{topic:?} lacks links");
+        }
+        for topic in [
+            HelpTopic::Status,
+            HelpTopic::Context,
+            HelpTopic::Search,
+            HelpTopic::Read,
+            HelpTopic::Handle,
+            HelpTopic::Check,
+            HelpTopic::Describe,
+            HelpTopic::Schema,
+        ] {
+            assert!(
+                topic.render().contains("Also: `anneal describe"),
+                "{topic:?} hides its runtime-name collision"
+            );
+        }
     }
 
     #[test]
@@ -7512,6 +7767,90 @@ mod tests {
             rows[0].fields.get("strict"),
             Some(&anneal_core::runtime::Value::Bool(true))
         );
+    }
+
+    #[test]
+    fn project_verb_help_discloses_a_same_named_runtime_topic() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            @verb(
+              name: "convergence",
+              query: "? *handle{id: h}.",
+              doc: "Project convergence view.",
+              output_schema: "{\"h\":\"String\"}",
+              args: [],
+              capabilities: ["read"]
+            ).
+            @verb(
+              name: "local_view",
+              query: "? *handle{id: h}.",
+              doc: "Project-only view.",
+              output_schema: "{\"h\":\"String\"}",
+              args: [],
+              capabilities: ["read"]
+            ).
+            "#,
+        )
+        .expect("write project rules");
+
+        let registry = RuntimeRegistry::load(&root).expect("registry loads");
+        let convergence = registry
+            .registry
+            .resolve_for_actor("convergence", &registry.actor)
+            .expect("project verb resolves");
+        assert!(registry.has_described_name("convergence"));
+        assert!(
+            render_dynamic_verb_help_with_collision(convergence, true)
+                .contains("anneal describe convergence")
+        );
+
+        let local = registry
+            .registry
+            .resolve_for_actor("local_view", &registry.actor)
+            .expect("project verb resolves");
+        assert!(!registry.has_described_name("local_view"));
+        assert_eq!(
+            render_dynamic_verb_help_with_collision(local, false),
+            render_dynamic_verb_help(local),
+            "non-colliding project help must remain byte-identical"
+        );
+    }
+
+    #[test]
+    fn semantic_help_delegates_byte_identically_to_describe() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "# A\n").expect("write doc");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        for name in ["runtime", "convergence", "frontier", "markdown"] {
+            for mode in [OutputMode::Human, OutputMode::JsonExplicit] {
+                let direct = session
+                    .run(RuntimeCommand::Describe {
+                        name: name.to_string(),
+                    })
+                    .expect("describe runs");
+                let projected = session
+                    .run(RuntimeCommand::HelpName {
+                        name: name.to_string(),
+                    })
+                    .expect("help projection runs");
+                let mut direct_bytes = Vec::new();
+                direct
+                    .write(&mut direct_bytes, mode)
+                    .expect("render describe");
+                let mut projected_bytes = Vec::new();
+                projected
+                    .write(&mut projected_bytes, mode)
+                    .expect("render help projection");
+                assert_eq!(projected_bytes, direct_bytes, "help {name} in {mode:?}");
+            }
+        }
     }
 
     #[test]
