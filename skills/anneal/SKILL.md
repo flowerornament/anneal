@@ -11,16 +11,17 @@ Anneal is a convergence assistant for knowledge corpora. It helps disconnected
 intelligences recover what matters, expose uncertainty, and push shared
 knowledge toward settledness.
 
+## Agent Briefing
+
 Use `anneal` as the runtime for a knowledge corpus. It turns corpus files into
 facts, loads the standard library plus project `anneal.dl`, and gives agents a
 small ladder: arrive, discover vocabulary, retrieve evidence, then ask precise
 Datalog questions.
 
 Run `anneal help <command-or-runtime-name>` for exact flags or a runtime
-teaching card. Do not guess CLI details when a command matters. Runtime
-commands render readable text at a terminal and JSON/NDJSON when piped; add
-`--format=text` in pipe-only harnesses when you want to read the answer
-directly.
+teaching card. Runtime commands render readable text at a terminal and
+JSON/NDJSON when piped; add `--format=text` in pipe-only harnesses when you want
+to read the answer directly.
 
 If this skill is not preloaded, run `anneal help agent` to print this briefing
 from the installed binary. `anneal prime` remains a hidden compatibility alias.

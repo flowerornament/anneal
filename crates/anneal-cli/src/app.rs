@@ -878,6 +878,8 @@ Usage: anneal [OPTIONS] [COMMAND]
 
 {thesis}
 
+Run `anneal help <name>` for command details or a runtime teaching card.
+
 Commands by intent:
   Arrive
     anneal status                 Corpus vital signs and convergence frontier
@@ -905,7 +907,7 @@ Root premise:
   Run from a marked corpus (.design, docs, or anneal.dl), pass --root PATH,
   or use anneal init --dry-run to preview a project file.
 
-{RUNTIME_PROVENANCE_OPTIONS}{TOP_HELP_OPTIONS}"
+{TOP_HELP_OPTIONS}"
     )
 }
 

@@ -60,6 +60,14 @@ fn top_and_agent_help_project_the_canonical_product_language() {
 
     assert!(top.contains(product_thesis()));
     assert!(agent.contains(product_thesis()));
+    assert!(top.contains("anneal help <name>"));
+    assert!(!top.contains("If this skill is not preloaded"));
+    assert!(!top.contains("Do not guess CLI details"));
+    assert!(!top.contains("Use `anneal` as the runtime"));
+    assert!(!top.contains("anneal prime"));
+    assert!(!top.contains("--explain"));
+    assert!(agent.contains("anneal prime"));
+    assert!(agent.contains("Use `anneal` as the runtime"));
     assert!(top.lines().count() <= 60);
     assert!(top.lines().all(|line| line.len() <= 80));
     for word in ["convergence", "frontier", "settledness"] {

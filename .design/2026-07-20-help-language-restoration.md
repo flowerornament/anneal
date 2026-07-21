@@ -64,13 +64,15 @@ nostalgia alone.
 bounded to one terminal screen. They render:
 
 1. the canonical product thesis;
-2. all nine visible commands, grouped by intent with one-line purposes;
-3. a compact convergence move (`status`, `describe convergence`, `frontier`);
-4. pointers to agent and command help;
-5. the existing root and global-option contracts.
+2. one concise pointer from `help <name>` to deeper command or runtime help;
+3. all nine visible commands, grouped by intent with one-line purposes;
+4. a compact convergence move (`status`, `describe convergence`, `frontier`);
+5. pointers to agent and command help;
+6. the existing root and global-option contracts.
 
 The rendered result is at most 60 lines at 80 columns. It does not restore the
-old encyclopedic `CORE CONCEPTS` wall.
+old encyclopedic `CORE CONCEPTS` wall. Explain/provenance flags stay on command
+and eval help rather than occupying the human first screen.
 
 ### Static Command Help
 
