@@ -1,6 +1,6 @@
 [package]
 name = "anneal-lang"
-version = "0.21.6"
+version = "0.21.7"
 edition = "2024"
 license = "MIT"
 description = "Private syntax crate for anneal's Datalog dialect"

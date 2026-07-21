@@ -2,6 +2,25 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.21.7 - 2026-07-21
+
+### Changed
+
+- `anneal help` is rebuilt around the tool's purpose. The top page opens with
+  what anneal is — a convergence assistant for knowledge corpora that helps
+  disconnected intelligences push shared knowledge toward settledness — and
+  catalogs every command grouped by intent (arrive, retrieve, discover,
+  configure) with a one-line purpose each. It stays within one screen; the
+  fuller orientation lives in `anneal help agent`.
+- `anneal help <name>` is a universal entry point. It resolves commands,
+  retired-command recovery, project verbs, and runtime teaching cards in a
+  defined order, and when a name carries more than one meaning — for example
+  `search` is both a command and a runtime predicate — it points at the other
+  meanings rather than hiding them. Conceptual names delegate to
+  `anneal describe <name>` with byte-identical output, and `anneal help runtime`
+  now shows the runtime command map instead of the top page. Command pages carry
+  two worked examples and a "See also" line.
+
 ## v0.21.6 - 2026-07-20
 
 ### Added
