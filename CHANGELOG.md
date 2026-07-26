@@ -2,6 +2,57 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.21.8 - 2026-07-26
+
+### Added
+
+- Dependency validity is its own axis, separate from convergence. A status that
+  is terminal for the frontier can mean two opposite things for a dependency:
+  `superseded` is dead, so depending on it is stale, while `authoritative` is
+  settled and correct to depend on. `config dependency { dead([...]). valid([...]). }`
+  classifies statuses per status — an explicit choice replaces that status's
+  built-in classification and leaves the rest of the defaults in place. The
+  effective classification and where it came from are queryable through
+  `dependency_status_classification(status, classification, origin)`, and
+  `anneal describe dependency-validity` teaches the axis.
+- `S006` reports terminal statuses that carry no dependency classification, one
+  aggregate row per status with a handle count, so an unclassified status is
+  visible rather than silently ignored. Only statuses actually used on terminal
+  handles are reported.
+- `anneal status` reports the diagnostic severity spread — `total`, `error`,
+  `warning`, `suggestion`, `info` — alongside the existing health line, in text
+  and as five additive metrics in machine output. The counts make the diagnostic
+  query that `status` already prints worth running.
+
+### Changed
+
+- `W001` no longer treats every terminal dependency as stale. It fires when an
+  active handle depends on a handle whose status is classified dead, so a
+  reference to a settled authority is not reported as a smell. The new condition
+  is a strict subset of the previous one: no corpus gains `W001` rows on upgrade.
+  Verified against a 575-file corpus, including a stress run that added 146
+  dependency edges to authoritative targets — 146 rows before, none after.
+- Empty results say what produced them. A `check` that finds no errors names how
+  many non-error diagnostics remain and how to read them; a `search` with no hits
+  says whether low-confidence matches were excluded; an empty query result
+  distinguishes a predicate that has no rows from a filtered or joined query,
+  which does not establish that its predicates are empty. Machine output keeps
+  stdout clean and carries the guidance on stderr, and exit codes are unchanged —
+  `check` still exits 1 only on error-severity diagnostics.
+- `S001` evidence carries the handle kind, `(orphaned_handle, kind, handle)`.
+  **Machine-shape note:** the evidence tuple gained a field, so anything reading
+  it positionally needs updating. The subject is an orphaned label or version
+  handle; the file is where it is declared, not a claim that the document is
+  orphaned, and the diagnostic's documentation now says so.
+
+### Fixed
+
+- Runtime examples in help and in every `describe` card are executed as part of
+  the test suite, so a documented command that does not parse fails the build.
+  Eight examples that taught invalid syntax are corrected, including `describe
+  anchor` recommending a `TopK` form that the grammar never accepted — the
+  bounded form is `order by rank asc` with `--limit`.
+
 ## Unreleased
 
 ### Changed
