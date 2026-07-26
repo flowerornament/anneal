@@ -143,9 +143,9 @@ anneal describe currency --format=text
 anneal describe topic --format=text
 ```
 
-Axes: relevance, currency, lifecycle, recency, importance, convergence,
-structure, obligations, topic. Use `describe <axis>` for the question, oracle,
-disposition, entry predicates, and common joins.
+Axes: relevance, currency, lifecycle, dependency-validity, recency, importance,
+convergence, structure, obligations, topic. Use `describe <axis>` for the
+question, oracle, disposition, entry predicates, and common joins.
 
 ## Configuration
 
@@ -168,7 +168,14 @@ force(["ADR"]).
 potential_weight("freshness_decay", 0).
 config search_boost { status("authoritative", 0.08). hub(0.01). }
 config code_path_root { root(["web"]). }
+config dependency { dead(["custom-retired"]). valid(["custom-current"]). }
 ```
+
+Dependency validity is separate from lifecycle convergence. W001 warns only
+when a target is both terminal and effectively classified dead. Query
+`dependency_status_classification(status, classification, origin)` to inspect
+the builtin and project rows; classify a custom terminal status under
+`config dependency` when S006 reports it as unknown.
 
 `external_root` additively mounts a sibling directory outside the corpus root
 but inside the same Git repository into the markdown graph. External files use

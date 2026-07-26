@@ -1378,6 +1378,7 @@ mod tests {
             BTreeSet::from([
                 "convergence".to_string(),
                 "currency".to_string(),
+                "dependency-validity".to_string(),
                 "importance".to_string(),
                 "lifecycle".to_string(),
                 "obligations".to_string(),
@@ -2541,6 +2542,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                     config(&corpus, "convergence.active", "open", None),
                     config(&corpus, "convergence.active", "review", None),
                     config(&corpus, "convergence.terminal", "closed", None),
+                    config(&corpus, "dependency.dead", "closed", None),
                     config(&corpus, "convergence.ordering", "open", Some(0)),
                     config(&corpus, "convergence.ordering", "review", Some(1)),
                     config(&corpus, "convergence.ordering", "closed", Some(2)),
@@ -2593,6 +2595,269 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             },
             search: Some(crate::ranking::default_lexical_search_info()),
         }
+    }
+
+    #[test]
+    fn dependency_validity_narrows_w001_and_surfaces_unknown_terminal_statuses() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "stale",
+                    "? stale_reference(src, target, file, source_status, target_status).",
+                ),
+                ("gap", "? dependency_config_gap(status, count, variant)."),
+                (
+                    "classification",
+                    "? dependency_status_classification(status, classification, origin).",
+                ),
+                ("entropy", r#"? entropy(h, "stale_dep")."#),
+                (
+                    "S006",
+                    r#"? diagnostic("S006", severity, subject, file, line, evidence)."#,
+                ),
+            ],
+            dependency_validity_database(),
+        );
+
+        let stale = output(&outputs, "stale");
+        assert!(has_row(
+            stale,
+            &[
+                ("target", string("archived.md")),
+                ("target_status", string("archived"))
+            ]
+        ));
+        assert!(has_row(
+            stale,
+            &[
+                ("target", string("complete.md")),
+                ("target_status", string("complete"))
+            ]
+        ));
+        for target in [
+            "authoritative.md",
+            "historical.md",
+            "incorporated-a.md",
+            "incorporated-b.md",
+            "deprecated.md",
+        ] {
+            assert!(
+                !has_row(stale, &[("target", string(target))]),
+                "{target} must not produce W001"
+            );
+        }
+
+        let entropy = output(&outputs, "entropy");
+        assert!(has_row(entropy, &[("h", string("src.md"))]));
+        for source in ["valid-only-src.md", "unknown-only-src.md"] {
+            assert!(
+                !has_row(entropy, &[("h", string(source))]),
+                "{source} must not carry stale-dependency entropy"
+            );
+        }
+
+        let gap = output(&outputs, "gap");
+        assert_eq!(gap.rows.len(), 1);
+        assert!(has_row(
+            gap,
+            &[
+                ("status", string("incorporated")),
+                ("count", int(2)),
+                ("variant", string("terminal_status_unclassified"))
+            ]
+        ));
+
+        let suggestion = output(&outputs, "S006");
+        assert_eq!(suggestion.rows.len(), 1);
+        assert!(has_row(
+            suggestion,
+            &[
+                ("severity", string("suggestion")),
+                ("subject", string("incorporated")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("dependency_config_gap"),
+                        string("incorporated"),
+                        int(2),
+                        string("terminal_status_unclassified")
+                    ])
+                )
+            ]
+        ));
+
+        let classification = output(&outputs, "classification");
+        assert_eq!(classification.rows.len(), 10);
+        for expected in [
+            [
+                ("status", string("archived")),
+                ("classification", string("dead")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("retired")),
+                ("classification", string("dead")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("superseded")),
+                ("classification", string("dead")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("authoritative")),
+                ("classification", string("valid")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("decided")),
+                ("classification", string("valid")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("ratified")),
+                ("classification", string("valid")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("stable")),
+                ("classification", string("valid")),
+                ("origin", string("builtin")),
+            ],
+            [
+                ("status", string("historical")),
+                ("classification", string("valid")),
+                ("origin", string("project")),
+            ],
+            [
+                ("status", string("complete")),
+                ("classification", string("dead")),
+                ("origin", string("project")),
+            ],
+            [
+                ("status", string("deprecated")),
+                ("classification", string("dead")),
+                ("origin", string("builtin")),
+            ],
+        ] {
+            assert!(has_row(classification, &expected));
+        }
+        assert!(!has_row(
+            classification,
+            &[
+                ("status", string("historical")),
+                ("classification", string("dead")),
+                ("origin", string("builtin"))
+            ]
+        ));
+        assert!(!has_row(
+            classification,
+            &[
+                ("status", string("complete")),
+                ("classification", string("valid")),
+                ("origin", string("builtin"))
+            ]
+        ));
+    }
+
+    fn dependency_validity_database() -> Database {
+        let corpus = CorpusId::from("dependency-validity");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(&scope, "src.md", "file", Some("draft"), "", ""),
+            handle(&scope, "valid-only-src.md", "file", Some("draft"), "", ""),
+            handle(&scope, "unknown-only-src.md", "file", Some("draft"), "", ""),
+            handle(&scope, "archived.md", "file", Some("archived"), "", ""),
+            handle(
+                &scope,
+                "authoritative.md",
+                "file",
+                Some("authoritative"),
+                "",
+                "",
+            ),
+            handle(
+                &scope,
+                "incorporated-a.md",
+                "file",
+                Some("incorporated"),
+                "",
+                "",
+            ),
+            handle(
+                &scope,
+                "incorporated-b.md",
+                "file",
+                Some("incorporated"),
+                "",
+                "",
+            ),
+            handle(&scope, "historical.md", "file", Some("historical"), "", ""),
+            handle(&scope, "complete.md", "file", Some("complete"), "", ""),
+            handle(&scope, "deprecated.md", "file", Some("deprecated"), "", ""),
+        ];
+        batch.edges = [
+            "archived.md",
+            "authoritative.md",
+            "incorporated-a.md",
+            "incorporated-b.md",
+            "historical.md",
+            "complete.md",
+            "deprecated.md",
+        ]
+        .into_iter()
+        .map(|target| edge(&scope, "src.md", target, "DependsOn", 1))
+        .collect();
+        batch.edges.extend([
+            edge(
+                &scope,
+                "valid-only-src.md",
+                "authoritative.md",
+                "DependsOn",
+                1,
+            ),
+            edge(
+                &scope,
+                "unknown-only-src.md",
+                "incorporated-a.md",
+                "DependsOn",
+                1,
+            ),
+        ]);
+
+        let mut store = FactStore::default();
+        store
+            .merge(batch)
+            .expect("merge dependency-validity fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.active", "draft", None),
+                    config(&corpus, "convergence.active", "deprecated", None),
+                    config(&corpus, "convergence.terminal", "archived", None),
+                    config(&corpus, "convergence.terminal", "authoritative", None),
+                    config(&corpus, "convergence.terminal", "incorporated", None),
+                    config(&corpus, "convergence.terminal", "historical", None),
+                    config(&corpus, "convergence.terminal", "complete", None),
+                    config(&corpus, "dependency.valid", "historical", None),
+                    config(&corpus, "dependency.dead", "complete", None),
+                ],
+            )
+            .expect("replace dependency-validity fixture config");
+        Database::from_store(&store)
     }
 
     fn diagnostic_catalog_database() -> Database {

@@ -268,7 +268,7 @@ impl IntrospectionBuilder {
                     "Hidden support commands: check, prime.".to_string(),
                     "Agent briefing: anneal help agent (or hidden alias anneal prime).".to_string(),
                     "Use schema for the callable catalog, describe NAME for examples and joins, and eval/-e for composition.".to_string(),
-                    "Dimensional map: axis(name, question, oracle, disposition) lists runtime axes, axis_of(predicate, axis) places vocabulary, and describe <axis> opens the teaching card for currency, lifecycle, recency, relevance, importance, convergence, structure, obligations, or topic.".to_string(),
+                    "Dimensional map: axis(name, question, oracle, disposition) lists runtime axes, axis_of(predicate, axis) places vocabulary, and describe <axis> opens the teaching card for currency, lifecycle, dependency-validity, recency, relevance, importance, convergence, structure, obligations, or topic.".to_string(),
                     "Schema discovery is interactive: unknown predicate or field errors include nearby names and allowed fields.".to_string(),
                     "Observed vocabulary recipes: query *handle.status, *edge.kind, *handle.namespace, or *meta.key directly.".to_string(),
                     "Orientation predicates:".to_string(),
@@ -1418,6 +1418,31 @@ const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
         see_also: &["convergence", "diagnostic", "check"],
     },
     AxisTopicCard {
+        name: "dependency-validity",
+        summary: "Dependency validity asks whether a terminal target is dead, remains valid to depend on, or is not yet classified.",
+        question: "still valid to depend on?",
+        oracle: "actual terminal target status against conservative builtin classifications plus per-status project overrides.",
+        disposition: "PRE-FLIGHT for classified-dead targets through W001; unknown is suggestion-only through aggregate S006.",
+        member_predicates: "dependency_dead_status, dependency_valid_status, dependency_status_classification; dependency_config_gap and stale_reference are diagnostic projections.",
+        common_joins: &[
+            "`dependency_status_classification(status, classification, origin)` to inspect the effective classification and its source",
+            "`dependency_dead_status(status), *handle{id: target, status: status}, terminal(target)` to inspect terminal targets that can trigger W001",
+            "`dependency_config_gap(status, count, variant), diagnostic{code: \"S006\", subject: status}` to inspect unknown terminal statuses",
+        ],
+        examples: &[
+            "? dependency_status_classification(status, classification, origin).",
+            "? dependency_config_gap(status, count, variant).",
+            "? axis_of(\"dependency_dead_status\", axis).",
+        ],
+        see_also: &[
+            "stale_reference",
+            "W001",
+            "dependency_config_gap",
+            "S006",
+            "lifecycle",
+        ],
+    },
+    AxisTopicCard {
         name: "topic",
         summary: "Topic asks whether two files are likely on the same subject through shared discriminative citation targets.",
         question: "same subject?",
@@ -1531,7 +1556,7 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "W001",
         severity: "warning",
-        summary: "Stale reference: an active handle depends on a terminal handle.",
+        summary: "Stale reference: an active handle depends on a terminal target whose status is classified dead.",
         rule: "stale_reference",
         evidence: r#"("stale_ref", source_status, target_status)"#,
         common_joins: &[
@@ -1713,6 +1738,25 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
         ],
         example: r#"? diagnostic{code: "S005", subject: left_prefix, evidence: evidence}."#,
         see_also: &["diagnostic", "top_pair", "*concern", "same_concern_pair"],
+    },
+    DiagnosticCodeCard {
+        code: "S006",
+        severity: "suggestion",
+        summary: "Dependency config gap: a terminal status is not classified as dead or valid for dependency checks.",
+        rule: "dependency_config_gap",
+        evidence: r#"("dependency_config_gap", status, count, "terminal_status_unclassified")"#,
+        common_joins: &[
+            "`diagnostic{code: \"S006\", subject: status}, dependency_config_gap(status, count, variant)` to inspect each unclassified terminal status",
+            "`dependency_status_classification(status, classification, origin)` to inspect effective builtin and project classifications",
+        ],
+        example: r#"? diagnostic{code: "S006", subject: status, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "dependency_config_gap",
+            "dependency_status_classification",
+            "dependency-validity",
+            "W001",
+        ],
     },
 ];
 
@@ -2083,7 +2127,10 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "broken_reference" => {
             &["stored edges and handles; section-reference placeholders are excluded."]
         }
-        "stale_reference" | "confidence_gap" => {
+        "stale_reference" => &[
+            "DependsOn edges, active/terminal lifecycle facts, and the effective dependency-validity classification of the target status.",
+        ],
+        "confidence_gap" => {
             &["DependsOn edges plus lifecycle status facts for both source and target handles."]
         }
         "undischarged_obligation" | "multiple_discharge" => {
@@ -2095,6 +2142,14 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "lifecycle_config_gap" => {
             &["handle statuses plus `config convergence` active, terminal, and ordering entries."]
         }
+        "dependency_dead_status"
+        | "dependency_valid_status"
+        | "dependency_status_classification" => &[
+            "conservative builtin status classifications plus per-status `config dependency` overrides.",
+        ],
+        "dependency_config_gap" => &[
+            "actual terminal handles whose statuses are absent from the effective dependency-validity classification.",
+        ],
         "missing_frontmatter_file" => &[
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
         ],
@@ -2185,9 +2240,9 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "undischarged_obligation" => {
             Some("Diagnostic-rule predicate behind E002 undischarged-obligation errors.")
         }
-        "stale_reference" => {
-            Some("Diagnostic-rule predicate behind W001 stale-reference warnings.")
-        }
+        "stale_reference" => Some(
+            "Diagnostic-rule predicate behind W001 stale-reference warnings. Dependency deadness narrows the terminal target gate; it never widens it.",
+        ),
         "spec_code_drift" => Some(
             "Diagnostic-rule predicate behind W006 spec-code-drift warnings. It uses asserts_code(status), not bare active(h), and target history, not bare absence, to avoid warning on examples, forward plans, or external-code studies.",
         ),
@@ -2201,6 +2256,15 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "lifecycle_config_gap" => {
             Some("Diagnostic-rule predicate behind W005 lifecycle-config-gap warnings.")
         }
+        "dependency_config_gap" => {
+            Some("Diagnostic-rule predicate behind S006 dependency-config-gap suggestions.")
+        }
+        "dependency_status_classification" => Some(
+            "Effective dependency-validity classification with origin: project entries override conservative builtins one status at a time.",
+        ),
+        "dependency_dead_status" | "dependency_valid_status" => Some(
+            "Effective unary projections of dependency_status_classification; use the three-column relation when classification provenance matters.",
+        ),
         "orphaned_handle" => {
             Some("Diagnostic-rule predicate behind S001 orphaned-handle suggestions.")
         }
@@ -2288,6 +2352,14 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "Retired obligations equivalent: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`.".to_string(),
         ],
         "lifecycle_config_gap" => lifecycle_config_gap_variant_lines(),
+        "dependency_dead_status"
+        | "dependency_valid_status"
+        | "dependency_status_classification" => vec![
+            "Builtins: dead = superseded, retired, archived, historical, deprecated; valid = authoritative, complete, decided, stable, ratified.".to_string(),
+            "Override one status with `config dependency { dead([\"custom-retired\"]). }` or `config dependency { valid([\"custom-current\"]). }`; a project entry replaces that status's builtin meaning.".to_string(),
+            "Query `dependency_status_classification(status, classification, origin)` to see the effective set and whether each row is builtin or project.".to_string(),
+        ],
+        "dependency_config_gap" => dependency_config_gap_lines(),
         _ => Vec::new(),
     }
 }
@@ -2295,6 +2367,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
 fn diagnostic_code_extra_lines(code: &str) -> Vec<String> {
     match code {
         "W005" => lifecycle_config_gap_variant_lines(),
+        "S006" => dependency_config_gap_lines(),
         _ => Vec::new(),
     }
 }
@@ -2304,6 +2377,14 @@ fn lifecycle_config_gap_variant_lines() -> Vec<String> {
         "Variants: used_status_unpartitioned = a handle uses a status outside active/terminal.".to_string(),
         "Variants: ordering_status_unpartitioned = convergence.ordering names a status outside active/terminal.".to_string(),
         "Variants: ordering_not_terminal = the final ordered status is not terminal, so the lattice cannot settle.".to_string(),
+    ]
+}
+
+fn dependency_config_gap_lines() -> Vec<String> {
+    vec![
+        "Variant: terminal_status_unclassified = actual terminal handles use a status whose dependency validity is unknown.".to_string(),
+        "Classify a dead target with `config dependency { dead([\"custom-retired\"]). }`, or a still-valid target with `config dependency { valid([\"custom-current\"]). }`.".to_string(),
+        "W001 remains silent until the status is classified dead; the aggregate suggestion preserves the unknown instead of guessing.".to_string(),
     ]
 }
 
@@ -2422,6 +2503,16 @@ fn common_joins(name: &str) -> &'static [&'static str] {
             "`lifecycle_config_gap(status, count, variant), diagnostic{code: \"W005\", subject: status}` to inspect lifecycle config warnings",
             "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
         ],
+        "dependency_config_gap" => &[
+            "`dependency_config_gap(status, count, variant), diagnostic{code: \"S006\", subject: status}` to inspect unclassified terminal statuses",
+            "`dependency_config_gap(status, count, variant), *handle{id: h, status: status}, terminal(h)` to inspect affected terminal handles",
+        ],
+        "dependency_dead_status"
+        | "dependency_valid_status"
+        | "dependency_status_classification" => &[
+            "`dependency_status_classification(status, classification, origin)` to inspect the effective set and provenance",
+            "`dependency_dead_status(status), *handle{id: target, status: status}, terminal(target)` to inspect possible W001 targets",
+        ],
         "orphaned_handle" => &[
             "`orphaned_handle(h), diagnostic{code: \"S001\", subject: h}` to inspect orphaned-handle suggestions",
             "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
@@ -2519,7 +2610,13 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
         "blocked" | "blocker" => &["potential", "primary_entropy", "entropy", "flux", "status"],
         "broken_reference" => &["E001", "diagnostic", "*edge", "*handle"],
         "undischarged_obligation" => &["E002", "diagnostic", "obligation", "discharge_count"],
-        "stale_reference" => &["W001", "diagnostic", "active", "terminal"],
+        "stale_reference" => &[
+            "W001",
+            "diagnostic",
+            "dependency_dead_status",
+            "active",
+            "terminal",
+        ],
         "spec_code_drift" => &[
             "W006",
             "diagnostic",
@@ -2541,6 +2638,22 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "diagnostic",
             "configured_pipeline_status",
             "pipeline_stall",
+        ],
+        "dependency_config_gap" => &[
+            "S006",
+            "diagnostic",
+            "dependency_status_classification",
+            "dependency-validity",
+            "W001",
+        ],
+        "dependency_dead_status"
+        | "dependency_valid_status"
+        | "dependency_status_classification" => &[
+            "dependency-validity",
+            "dependency_config_gap",
+            "stale_reference",
+            "W001",
+            "*config",
         ],
         "orphaned_handle" => &["S001", "diagnostic", "in_degree"],
         "pipeline_stall" | "s003_pipeline_stall" => &[
@@ -2745,6 +2858,12 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "missing_frontmatter_file" => Some("? missing_frontmatter_file(h, dir, file)."),
         "implausible_ref" => Some("? implausible_ref(h, file, value)."),
         "lifecycle_config_gap" => Some("? lifecycle_config_gap(status, count, variant)."),
+        "dependency_config_gap" => Some("? dependency_config_gap(status, count, variant)."),
+        "dependency_dead_status" => Some("? dependency_dead_status(status)."),
+        "dependency_valid_status" => Some("? dependency_valid_status(status)."),
+        "dependency_status_classification" => {
+            Some("? dependency_status_classification(status, classification, origin).")
+        }
         "orphaned_handle" => Some("? orphaned_handle(h)."),
         "pipeline_stall" | "s003_pipeline_stall" => {
             Some("? pipeline_stall(status, count, next_status, based_on_history).")

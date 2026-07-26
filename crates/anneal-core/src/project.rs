@@ -1,13 +1,13 @@
 //! Project-extension loading and program-layer merging.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::config_schema::{
     RuntimeConfigEntryError, RuntimeConfigKey, RuntimeConfigLifecycle, parse_search_boost_value,
-    runtime_config_declaration_for,
+    runtime_config_declaration_by_key, runtime_config_declaration_for,
 };
 use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
@@ -238,9 +238,36 @@ fn split_project_program(
 
     let discovery = ConfigFacts::try_from_entries(discovery)
         .map_err(ProjectLoadError::DuplicateDiscoveryOrdinal)?;
+    validate_dependency_classifications(&runtime_config)?;
     let runtime_config = ConfigFacts::try_from_entries(runtime_config)
         .map_err(ProjectLoadError::DuplicateRuntimeConfigOrdinal)?;
     Ok((discovery, runtime_config, Program::new(statements)))
+}
+
+fn validate_dependency_classifications(entries: &[ConfigEntry]) -> Result<(), ProjectLoadError> {
+    let dead_key = runtime_config_declaration_by_key(RuntimeConfigKey::DependencyDead)
+        .expect("dependency dead config declaration")
+        .config_key();
+    let valid_key = runtime_config_declaration_by_key(RuntimeConfigKey::DependencyValid)
+        .expect("dependency valid config declaration")
+        .config_key();
+    let dead = entries
+        .iter()
+        .filter(|entry| entry.key == dead_key)
+        .map(|entry| entry.value.as_str())
+        .collect::<BTreeSet<_>>();
+    let valid = entries
+        .iter()
+        .filter(|entry| entry.key == valid_key)
+        .map(|entry| entry.value.as_str())
+        .collect::<BTreeSet<_>>();
+
+    if let Some(status) = dead.intersection(&valid).next() {
+        return Err(ProjectLoadError::ConflictingDependencyClassification {
+            status: (*status).to_string(),
+        });
+    }
+    Ok(())
 }
 
 struct DiscoveryResolver {
@@ -657,6 +684,10 @@ pub enum ProjectLoadError {
         boost: String,
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error(
+        "config dependency classifies status '{status}' as both dead and valid; choose one classification"
+    )]
+    ConflictingDependencyClassification { status: String },
     #[error("ordered config declaration '{key}' overflowed u32 ordinals")]
     OrderedConfigIndexOverflow { key: String },
     #[error("{location}: @verb missing string field '{field}'")]
@@ -972,6 +1003,11 @@ mod tests {
               asserts_code(["draft"]).
             }
 
+            config dependency {
+              dead(["incorporated"]).
+              valid(["decision"]).
+            }
+
             config search_boost {
               status("authoritative", 0.08).
               status("draft", 0).
@@ -1011,6 +1047,8 @@ mod tests {
                 ConfigEntry::scalar("convergence.active", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
                 ConfigEntry::scalar("convergence.asserts_code", "draft"),
+                ConfigEntry::scalar("dependency.dead", "incorporated"),
+                ConfigEntry::scalar("dependency.valid", "decision"),
                 ConfigEntry::scalar("search_boost.status.authoritative", "0.08"),
                 ConfigEntry::scalar("search_boost.status.draft", "0"),
                 ConfigEntry::scalar("search_boost.hub", "0.01"),
@@ -1025,6 +1063,31 @@ mod tests {
             ]
         );
         assert!(extension.program().statements.is_empty());
+    }
+
+    #[test]
+    fn project_dependency_status_cannot_be_both_dead_and_valid() {
+        let root = tempdir().expect("tempdir");
+        write_project(
+            root.path(),
+            r#"
+            config dependency {
+              dead(["historical", "incorporated"]).
+              valid(["historical", "decision"]).
+            }
+            "#,
+        );
+
+        let error = load_project_extension(root.path(), &[], &standard_prelude_program().unwrap())
+            .expect_err("conflicting dependency classification must fail");
+
+        assert!(matches!(
+            &error,
+            ProjectLoadError::ConflictingDependencyClassification {
+                status
+            } if status == "historical"
+        ));
+        assert!(error.to_string().contains("choose one classification"));
     }
 
     #[test]

@@ -1750,8 +1750,7 @@ entropy(h, "broken_ref") :=
   diagnostic("E001", severity, h, file, line, evidence).
 
 entropy(h, "stale_dep") :=
-  *edge{from: h, to: t, kind: "DependsOn"},
-  active(h), terminal(t).
+  diagnostic("W001", severity, h, file, line, evidence).
 
 entropy(h, "confidence_gap") :=
   *edge{from: h, to: t, kind: "DependsOn"},
@@ -1961,6 +1960,7 @@ its **oracle** (what makes its answer earned), its **disposition**
 | **relevance** | matches my query? | text × query (Ranker) | REPORT |
 | **currency** | displaced? | `Supersedes` edges | REPORT (marked oracle GATE-able); non-monotone |
 | **lifecycle** | draft / operative / retired? | `status` against the configured lattice | REPORT / PRE-FLIGHT |
+| **dependency-validity** | still valid to depend on? | actual terminal target status against conservative builtins plus per-status project overrides | PRE-FLIGHT for dead; unknown is suggestion-only |
 | **recency** | authored / changed / observed *when*? | `date` (authored-age, clean) · git mtime (change-recency, lower authority) · snapshots (history) | REPORT; `flux` TREND |
 | **importance** | how central? | degree / citations | REPORT |
 | **convergence** | settling? | snapshot deltas | TREND |
@@ -1988,6 +1988,34 @@ Three rules follow:
    axis with their own authority — neither silently overrides the
    other.
 
+Dependency validity is deliberately distinct from lifecycle convergence.
+`terminal(target)` says a target is off the active frontier; it does not say
+whether depending on that target is stale. W001 therefore requires all three
+conditions: an active source, an actually terminal target, and an effective
+`dependency_dead_status(target_status)` classification. Keeping
+`terminal(target)` makes the new firing set a structural subset of the older
+terminal-only rule, so an upgrade cannot create warnings merely because a
+builtin-dead word is configured active.
+
+The effective dependency classification has three outcomes: dead, valid, and
+unknown. Conservative builtins are dead = superseded, retired, archived,
+historical, deprecated; valid = authoritative, complete, decided, stable,
+ratified. Projects override one status at a time:
+
+```dl
+config dependency {
+  dead(["custom-retired"]).
+  valid(["custom-current"]).
+}
+```
+
+An explicit project entry replaces that status's builtin meaning while other
+builtins remain. A status declared in both sets is a project-load error.
+`dependency_status_classification(status, classification, origin)` exposes the
+effective set and whether each row is builtin or project. Unknown terminal
+statuses do not earn W001 warning authority; S006 instead emits one aggregate
+`dependency_config_gap` suggestion per actually used terminal status.
+
 Diagnostics are deliberately built as **named evidence chains**: the
 predicate(s) carrying a diagnostic's evidence (`s003_pipeline_stall`,
 the S005 pair chain, `lifecycle_config_gap`) stay queryable so an agent
@@ -2007,8 +2035,8 @@ language rather than an accretion.
 `diagnostic(...)` deriving a fact representing a consistency
 violation.
 
-The v2.0 check catalog mirrors anneal v1.x — E001 (broken refs), E002
-(undischarged), W001-W004 (warnings), I001-I002 (info), S001-S005
+The v2.0 relational check catalog includes E001 (broken refs), E002
+(undischarged), W001-W006 (warnings), I001-I002 (info), and S001-S006
 (suggestions) — as Horn clauses in `checks.dl`. The substrate has no
 hard-coded check logic. E001 is the minimal executable anchor required
 by the convergence vocabulary; the remaining catalog must land before
@@ -3418,6 +3446,11 @@ config convergence {
   ordering(["raw", "draft", "current", "stable"]).
   active(["draft", "current", "stable"]).
   terminal(["archived", "superseded"]).
+}
+
+config dependency {
+  dead(["custom-retired"]).
+  valid(["custom-current"]).
 }
 
 config handles {

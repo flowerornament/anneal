@@ -36,6 +36,11 @@
 ).
 
 @doc(
+  name: "dependency-validity",
+  doc: "Dependency validity asks whether a terminal target is dead, remains valid to depend on, or is not yet classified. Its oracle is the target status against conservative builtins plus per-status project overrides."
+).
+
+@doc(
   name: "axis",
   doc: "Return each declared dimensional axis with its question, oracle, and disposition."
 ).
@@ -52,6 +57,7 @@ axis("convergence", "settling?", "snapshot deltas and unsettled-work evidence", 
 axis("structure", "organized or connected?", "edge kinds, areas, namespaces, sections, pipeline structure", "REPORT").
 axis("obligations", "owed?", "obligation and discharge facts", "GATE-able through E002").
 axis("topic", "same subject?", "shared citation targets over hub-excluded Cites pairs", "REPORT; never an asserted edge").
+axis("dependency-validity", "still valid to depend on?", "terminal target status against conservative builtin classifications plus per-status project overrides", "PRE-FLIGHT for dead; unknown is suggestion-only").
 
 @doc(
   name: "axis_of",
@@ -99,12 +105,17 @@ axis_of("axis_of", "infrastructure").
 axis_of("blocked", "convergence").
 axis_of("blocker", "convergence").
 axis_of("broken_reference", "diagnostic").
+axis_of("builtin_dependency_dead_status", "infrastructure").
+axis_of("builtin_dependency_valid_status", "infrastructure").
 axis_of("change_recency_frontier_score", "composition").
 axis_of("changed_recently", "recency").
 axis_of("confidence_gap", "convergence").
 axis_of("configured_active_status", "infrastructure").
 axis_of("configured_asserts_code_present", "infrastructure").
 axis_of("configured_asserts_code_status", "infrastructure").
+axis_of("configured_dependency_dead_status", "infrastructure").
+axis_of("configured_dependency_status", "infrastructure").
+axis_of("configured_dependency_valid_status", "infrastructure").
 axis_of("configured_lifecycle_status", "infrastructure").
 axis_of("configured_pipeline_status", "infrastructure").
 axis_of("configured_terminal_status", "infrastructure").
@@ -115,6 +126,10 @@ axis_of("currency_suspect", "composition").
 axis_of("currency_successor", "currency").
 axis_of("currency_superseded", "currency").
 axis_of("diagnostic", "diagnostic").
+axis_of("dependency_config_gap", "diagnostic").
+axis_of("dependency_dead_status", "dependency-validity").
+axis_of("dependency_status_classification", "dependency-validity").
+axis_of("dependency_valid_status", "dependency-validity").
 axis_of("drifting", "convergence").
 axis_of("entropy", "convergence").
 axis_of("entropy_priority", "convergence").
@@ -210,6 +225,8 @@ axis_of("status_handle_count", "convergence").
 axis_of("status_item", "convergence").
 axis_of("status_of", "lifecycle").
 axis_of("status_population", "convergence").
+axis_of("terminal_status_handle_count", "infrastructure").
+axis_of("terminal_status_used", "infrastructure").
 axis_of("stub", "diagnostic").
 axis_of("top_pair", "structure").
 axis_of("topic_citation_target", "topic").

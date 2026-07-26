@@ -63,7 +63,7 @@ diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
 
 @doc(
   name: "stale_reference",
-  doc: "Return active handles that depend on terminal handles, a likely stale dependency edge."
+  doc: "Return active handles that depend on terminal handles whose status is classified as dead for dependency validity."
 ).
 @predicate(
   name: "stale_reference",
@@ -75,10 +75,76 @@ stale_reference(src, target, file, source_status, target_status) :=
   *handle{id: target, status: target_status},
   source_status != null,
   active(src),
-  terminal(target).
+  terminal(target),
+  dependency_dead_status(target_status).
 
 diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
   stale_reference(src, target, file, source_status, target_status).
+
+builtin_dependency_dead_status("superseded").
+builtin_dependency_dead_status("retired").
+builtin_dependency_dead_status("archived").
+builtin_dependency_dead_status("historical").
+builtin_dependency_dead_status("deprecated").
+
+builtin_dependency_valid_status("authoritative").
+builtin_dependency_valid_status("complete").
+builtin_dependency_valid_status("decided").
+builtin_dependency_valid_status("stable").
+builtin_dependency_valid_status("ratified").
+
+configured_dependency_dead_status(status) :=
+  *config{key: "dependency.dead", value: status}.
+
+configured_dependency_valid_status(status) :=
+  *config{key: "dependency.valid", value: status}.
+
+configured_dependency_status(status) := configured_dependency_dead_status(status).
+configured_dependency_status(status) := configured_dependency_valid_status(status).
+
+@doc(
+  name: "dependency_status_classification",
+  doc: "Return each effective dependency-validity status classification and whether it came from a project override or the conservative builtin set."
+).
+@predicate(
+  name: "dependency_status_classification",
+  args: ["status", "classification", "origin"]
+).
+dependency_status_classification(status, "dead", "project") :=
+  configured_dependency_dead_status(status).
+
+dependency_status_classification(status, "valid", "project") :=
+  configured_dependency_valid_status(status).
+
+dependency_status_classification(status, "dead", "builtin") :=
+  builtin_dependency_dead_status(status),
+  not configured_dependency_status(status).
+
+dependency_status_classification(status, "valid", "builtin") :=
+  builtin_dependency_valid_status(status),
+  not configured_dependency_status(status).
+
+@doc(
+  name: "dependency_dead_status",
+  doc: "Return effective statuses whose terminal handles are dead dependency targets. Project classification overrides the builtin meaning per status."
+).
+@predicate(
+  name: "dependency_dead_status",
+  args: ["status"]
+).
+dependency_dead_status(status) :=
+  dependency_status_classification(status, "dead", origin).
+
+@doc(
+  name: "dependency_valid_status",
+  doc: "Return effective statuses whose terminal handles remain valid dependency targets. Project classification overrides the builtin meaning per status."
+).
+@predicate(
+  name: "dependency_valid_status",
+  args: ["status"]
+).
+dependency_valid_status(status) :=
+  dependency_status_classification(status, "valid", origin).
 
 @doc(
   name: "spec_code_drift",
@@ -279,6 +345,31 @@ lifecycle_config_gap(status, count, "ordering_not_terminal") :=
 
 diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
   lifecycle_config_gap(status, count, variant).
+
+terminal_status_used(status) :=
+  *handle{id: h, status: status},
+  status != null,
+  terminal(h).
+
+terminal_status_handle_count(status, count) :=
+  terminal_status_used(status),
+  count = Count{ h : *handle{id: h, status: status}, terminal(h) }.
+
+@doc(
+  name: "dependency_config_gap",
+  doc: "Return terminal statuses whose dependency validity is unknown, aggregated by status. Classify one with config dependency { dead([\"status\"]). } or valid([\"status\"]). }."
+).
+@predicate(
+  name: "dependency_config_gap",
+  args: ["status", "count", "variant"]
+).
+dependency_config_gap(status, count, "terminal_status_unclassified") :=
+  terminal_status_handle_count(status, count),
+  not dependency_dead_status(status),
+  not dependency_valid_status(status).
+
+diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant)) :=
+  dependency_config_gap(status, count, variant).
 
 handle_file(h, file) :=
   *handle{id: h, file: file},

@@ -51,9 +51,7 @@ entropy(h, "broken_ref") :=
   diagnostic("E001", severity, h, file, line, evidence).
 
 entropy(h, "stale_dep") :=
-  *edge{from: h, to: t, kind: "DependsOn"},
-  active(h),
-  terminal(t).
+  diagnostic("W001", severity, h, file, line, evidence).
 
 entropy(h, "spec_code_drift") :=
   spec_code_drift(h, target_path, file, line, source_status).

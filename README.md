@@ -295,9 +295,9 @@ Use `schema` to see queryable relations and signatures. Use `describe` for one
 primitive, predicate, or verb. Use `describe runtime` for the compact map and
 copyable examples. Use `describe <axis>` when the vocabulary is still blurry:
 `axis` lists the runtime dimensions, and `axis_of` places predicates on axes
-such as relevance, currency, lifecycle, recency, importance, convergence,
-structure, obligations, and topic. Corpus-local vocabulary is queryable
-directly through relations such as `*handle{status: status}`,
+such as relevance, currency, lifecycle, dependency-validity, recency,
+importance, convergence, structure, obligations, and topic. Corpus-local
+vocabulary is queryable directly through relations such as `*handle{status: status}`,
 `*edge{kind: kind}`, `*handle{namespace: ns}`, and `*meta{key: key}`. Adapter
 information is queryable through `sources(name, recognizes, capabilities,
 doc)`. Use `-e` when you need to compose a question directly. When a working
@@ -458,6 +458,11 @@ config convergence {
   description("draft", "Under construction; may change substantially").
   description("approved", "Settled primary artifact; changes require review").
   description("archived", "Superseded or retired; no further changes expected").
+}
+
+config dependency {
+  dead(["custom-retired"]).
+  valid(["custom-current"]).
 }
 
 config handles {
@@ -632,7 +637,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | --- | --- | --- |
 | E001 | Error | Broken reference |
 | E002 | Error | Undischarged obligation |
-| W001 | Warning | Active handle depends on terminal handle |
+| W001 | Warning | Active handle depends on a terminal target classified dead |
 | W002 | Warning | Higher lifecycle state depends on lower state |
 | W003 | Warning | Missing frontmatter |
 | W004 | Warning | Malformed or suspicious frontmatter value |
@@ -645,6 +650,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | S003 | Suggestion | Pipeline stall |
 | S004 | Suggestion | Abandoned namespace |
 | S005 | Suggestion | Concern group candidate |
+| S006 | Suggestion | Terminal status lacks a dependency-validity classification |
 
 ## Design
 

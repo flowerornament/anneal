@@ -32,6 +32,8 @@ pub enum RuntimeConfigKey {
     ConvergenceTerminal,
     ConvergenceAssertsCode,
     ConvergenceDescription,
+    DependencyDead,
+    DependencyValid,
     HandlesForce,
     HandlesRejected,
     HandlesLinear,
@@ -328,6 +330,18 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         },
     ),
     runtime_config_declaration(
+        RuntimeConfigKey::DependencyDead,
+        "dependency",
+        "dead",
+        RuntimeConfigValueMode::UnorderedSet,
+    ),
+    runtime_config_declaration(
+        RuntimeConfigKey::DependencyValid,
+        "dependency",
+        "valid",
+        RuntimeConfigValueMode::UnorderedSet,
+    ),
+    runtime_config_declaration(
         RuntimeConfigKey::HandlesForce,
         "handles",
         "force",
@@ -600,6 +614,23 @@ mod tests {
                 "convergence.description.draft",
                 "unsettled"
             )]
+        );
+
+        let dependency_dead = runtime_config_declaration_for("dependency", "dead").expect("schema");
+        assert_eq!(
+            dependency_dead
+                .entries(vec!["incorporated".to_string()])
+                .expect("entries"),
+            vec![ConfigEntry::scalar("dependency.dead", "incorporated")]
+        );
+
+        let dependency_valid =
+            runtime_config_declaration_for("dependency", "valid").expect("schema");
+        assert_eq!(
+            dependency_valid
+                .entries(vec!["decision".to_string()])
+                .expect("entries"),
+            vec![ConfigEntry::scalar("dependency.valid", "decision")]
         );
 
         let frontmatter = runtime_config_declaration_for("frontmatter", "field").expect("schema");
