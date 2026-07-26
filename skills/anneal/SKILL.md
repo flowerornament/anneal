@@ -162,9 +162,9 @@ source md {
   # external_root(["../formal"]).
   scan_exclude("node_modules").
 }
-linear(["CR", "REQ"])
-rejected(["TODO", "NOTE"])
-force(["ADR"])
+linear(["CR", "REQ"]).
+rejected(["TODO", "NOTE"]).
+force(["ADR"]).
 potential_weight("freshness_decay", 0).
 config search_boost { status("authoritative", 0.08). hub(0.01). }
 config code_path_root { root(["web"]). }
@@ -181,12 +181,7 @@ When a query becomes a reusable corpus move, promote it into a project verb:
 ```dl
 @verb(
   name: "area-diagnostics",
-  query: "area_diagnostic(h, code, file) :=
-    verb_arg(\"area\", area),
-    diagnostic{subject: h, code: code, file: file},
-    area_of{h: h, area: area}.
-
-    ? area_diagnostic(h, code, file).",
+  query: "area_diagnostic(h, code, file) :=\n    verb_arg(\"area\", area),\n    diagnostic{subject: h, code: code, file: file},\n    area_of{h: h, area: area}.\n\n? area_diagnostic(h, code, file).",
   doc: "Diagnostics in one area.",
   output_schema: "{\"h\":\"HandleId\",\"code\":\"String\",\"file\":\"String|null\"}",
   args: ["area:String"],

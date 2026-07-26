@@ -1350,7 +1350,7 @@ const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
         disposition: "REPORT: relevance scores inform retrieval, not corpus validity.",
         member_predicates: "search and match are primitives; verb-local search/context rows project this axis into product surfaces.",
         common_joins: &[
-            "`search(query, h, span_id, score, reason, field, low_confidence), *handle{id: h, file: file}` for raw hit evidence",
+            "`search(\"TERM\", h, span_id, score, reason, field, low_confidence), *handle{id: h, file: file}` for raw hit evidence",
             "`search{query: \"TERM\", handle: h, score: score}, *span{handle: h, id: span_id, summary: summary}` for span summaries",
             "`axis_of(p, \"composition\")` to inspect rankers that combine relevance with other axes",
         ],
@@ -1389,7 +1389,7 @@ const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
         common_joins: &[
             "`area_of(h, area), *handle{id: h, file: file}` to group handles by source area",
             "`namespace_of(h, namespace), *handle{id: h, kind: kind}` to inspect label families",
-            "`section_ref_edge(edge_id), *edge{id: edge_id, from: src, to: dst, kind: kind}` for markdown section-reference evidence",
+            "`section_ref_edge(edge_id), *edge{native_id: edge_id, from: src, to: dst, kind: kind}` for markdown section-reference evidence",
         ],
         examples: &[
             "? area_health(area, grade, files, errors, cross_edges).",
@@ -1407,12 +1407,12 @@ const AXIS_TOPIC_CARDS: &[AxisTopicCard] = &[
         member_predicates: "undischarged_obligation, multiple_discharge; primitives include obligation, discharged, undischarged, discharge_count.",
         common_joins: &[
             "`undischarged(h), obligation(h), *handle{id: h, file: file, status: status}` for owed work",
-            "`multiple_discharge(h, count), diagnostic(\"W003\", severity, h, file, line, evidence)` for duplicate discharge evidence",
+            "`multiple_discharge(h, file, count), diagnostic(\"I002\", severity, h, file, line, evidence)` for duplicate discharge evidence",
             "`axis_of(\"undischarged_obligation\", axis)` to inspect obligation-axis placement",
         ],
         examples: &[
             "? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.",
-            "? multiple_discharge(h, count).",
+            "? multiple_discharge(h, file, count).",
             "? axis_of(\"undischarged_obligation\", axis).",
         ],
         see_also: &["convergence", "diagnostic", "check"],
@@ -2267,7 +2267,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
         ],
         "anchor" => vec![
             "Ranking shape: explicit authoritative/living/current status outranks curated names; incoming degree and recency are bounded supporting signals.".to_string(),
-            "The predicate is intentionally uncapped; wrap it in `TopK` for a bounded read-first list.".to_string(),
+            "The predicate is intentionally uncapped; use `? ranked_anchor(h, rank, score, why) order by rank asc.` with eval `--limit N` for a bounded read-first list.".to_string(),
             "The `why` column names the strongest signal: authoritative_status, curated_name, inbound_degree, or recent.".to_string(),
         ],
         "ranked_anchor" => vec![
@@ -2712,7 +2712,7 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         }
         "area_error_count" => Some("? area_error_count(area, errors)."),
         "area_cross_edges" => Some("? area_cross_edges(area, cross_edges)."),
-        "area_health" => Some("? area_health{area: area, grade: grade}."),
+        "area_health" => Some("? area_health(area, grade, files, errors, cross_edges)."),
         "area_frontier" => Some("? area_frontier{area: area, h: h, score: score}."),
         "potential" => Some(r#"? potential("docs/runtime-overview.md", energy)."#),
         "blocked" => Some(r#"? blocked("docs/runtime-overview.md")."#),

@@ -510,12 +510,7 @@ release_blocker(h, "broken_ref") :=
 
 @verb(
   name: "release-blockers",
-  query: "release_row(h, why, milestone) :=
-    verb_arg(\"milestone\", milestone),
-    release_blocker(h, why),
-    *meta{handle: h, key: \"milestone\", value: milestone}.
-
-    ? release_row(h, why, milestone).",
+  query: "release_row(h, why, milestone) :=\n  verb_arg(\"milestone\", milestone),\n  release_blocker(h, why),\n  *meta{handle: h, key: \"milestone\", value: milestone}.\n\n? release_row(h, why, milestone).",
   doc: "Open blockers for the next release.",
   output_schema: "{\"h\":\"HandleId\",\"why\":\"String\",\"milestone\":\"String\"}",
   args: ["milestone:String"],

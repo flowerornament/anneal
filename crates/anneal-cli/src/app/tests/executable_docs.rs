@@ -1,18 +1,5 @@
 use super::*;
 
-// anneal-2bpj owns this exact temporary debt set. Any additional failure is
-// new documentation rot; removing a failure requires removing its entry here.
-const KNOWN_DOCUMENTATION_DEBT: &[&str] = &[
-    "describe anchor: `TopK` is taught as a callable runtime name",
-    "describe area_health example: `? area_health{area: area, grade: grade}.`",
-    "describe obligations common join: `? multiple_discharge(h, count), diagnostic(\"W003\", severity, h, file, line, evidence).`",
-    "describe obligations example: `? multiple_discharge(h, count).`",
-    "describe relevance common join: `? search(query, h, span_id, score, reason, field, low_confidence), *handle{id: h, file: file}.`",
-    "describe structure common join: `? section_ref_edge(edge_id), *edge{id: edge_id, from: src, to: dst, kind: kind}.`",
-    "help agent: config example 1",
-    "help agent: config example 2",
-];
-
 #[test]
 fn shipped_help_and_describe_examples_are_executable() {
     let dir = tempdir().expect("tempdir");
@@ -26,18 +13,10 @@ fn shipped_help_and_describe_examples_are_executable() {
     failures.sort();
     failures.dedup();
 
-    assert_eq!(
-        failures
-            .iter()
-            .map(|failure| {
-                failure
-                    .split_once(" does not ")
-                    .map_or(failure.as_str(), |(debt, _)| debt)
-            })
-            .collect::<Vec<_>>(),
-        KNOWN_DOCUMENTATION_DEBT,
-        "help/describe executable documentation drifted; fix the teaching text or \
-         name an intentional temporary debt explicitly.\nFull failures:\n{failures:#?}"
+    assert!(
+        failures.is_empty(),
+        "help/describe executable documentation drifted; fix every taught command, \
+         query, or config example.\nFull failures:\n{failures:#?}"
     );
 }
 
@@ -70,14 +49,22 @@ fn validate_static_help(session: &RuntimeSession) -> Vec<String> {
         }
     }
     for (index, program) in fenced_blocks(&agent, "dl").into_iter().enumerate() {
-        if let Err(error) = parse_program("help agent config example", program) {
+        let source = format!("help agent config example {}", index + 1);
+        if let Err(error) = validate_project_example(session, program) {
             failures.push(format!(
-                "help agent: config example {} does not parse: {error}",
-                index + 1
+                "{source} does not load against the runtime vocabulary: {error:#}"
             ));
         }
     }
     failures
+}
+
+fn validate_project_example(session: &RuntimeSession, program: &str) -> anyhow::Result<()> {
+    let project_file = session.root.join(anneal_core::PROJECT_RULE_FILE);
+    fs::write(&project_file, program).context("write project example")?;
+    let result = RuntimeSession::load_for_test(&session.root).map(|_| ());
+    fs::remove_file(project_file).context("remove project example")?;
+    result
 }
 
 fn validate_describe_cards(session: &RuntimeSession) -> Vec<String> {
