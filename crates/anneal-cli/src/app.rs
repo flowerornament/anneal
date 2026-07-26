@@ -1352,6 +1352,20 @@ impl RuntimeSession {
         Self::load(root, &RuntimeCommand::Schema)
     }
 
+    #[cfg(test)]
+    fn analyze_query_for_test(&self, query_source: &str) -> Result<()> {
+        let mut program = self.program.clone();
+        let query_program = parse_program("executable-doc-query", query_source)
+            .with_context(|| format!("failed to parse query {query_source:?}"))?;
+        program.statements.extend(query_program.statements);
+        let analyzed = analyze(program).context("query failed static analysis")?;
+        ensure!(
+            analyzed.queries().next().is_some(),
+            "query source did not contain a query"
+        );
+        Ok(())
+    }
+
     fn run(&self, command: RuntimeCommand) -> Result<CommandOutput> {
         match command {
             RuntimeCommand::Status => self.run_status(),
@@ -4929,6 +4943,8 @@ mod tests {
     use std::fs;
     use std::num::NonZeroUsize;
     use tempfile::tempdir;
+
+    mod executable_docs;
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
