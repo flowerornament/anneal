@@ -2005,6 +2005,12 @@ mod tests {
                     r#"? diagnostic("S001", severity, "ORPH-1", file, line, evidence)."#,
                 ),
                 (
+                    "S001-version",
+                    r#"? diagnostic("S001", severity, "VER-1", file, line, evidence)."#,
+                ),
+                ("S001-connected", r#"? orphaned_handle("OQ-2")."#),
+                ("S001-file", r#"? orphaned_handle("quiet.md")."#),
+                (
                     "S004",
                     r#"? diagnostic("S004", severity, "OLD", file, line, evidence)."#,
                 ),
@@ -2206,10 +2212,39 @@ mod tests {
                 ("severity", string("suggestion")),
                 (
                     "evidence",
-                    list(vec![string("orphaned_handle"), string("ORPH-1")])
+                    list(vec![
+                        string("orphaned_handle"),
+                        string("label"),
+                        string("ORPH-1")
+                    ])
                 )
             ]
         ));
+        assert!(has_row(
+            output(&outputs, "S001-version"),
+            &[
+                ("severity", string("suggestion")),
+                ("file", string("VER-1.md")),
+                (
+                    "evidence",
+                    list(vec![
+                        string("orphaned_handle"),
+                        string("version"),
+                        string("VER-1")
+                    ])
+                )
+            ]
+        ));
+        assert_eq!(
+            output(&outputs, "S001-connected").rows.len(),
+            0,
+            "a referenced label is not orphaned"
+        );
+        assert_eq!(
+            output(&outputs, "S001-file").rows.len(),
+            0,
+            "a file handle is never an S001 orphan"
+        );
         assert!(has_row(
             output(&outputs, "S004"),
             &[
@@ -2904,6 +2939,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             handle(&scope, "impl-1.md", "file", Some("draft"), "", ""),
             handle(&scope, "impl-2.md", "file", Some("draft"), "", ""),
             handle(&scope, "ORPH-1", "label", Some("draft"), "ORPH", ""),
+            handle(&scope, "VER-1", "version", Some("draft"), "VER", ""),
+            handle(&scope, "VER-2", "version", Some("draft"), "VER", ""),
             handle(&scope, "NEW-1", "label", Some("draft"), "NEW", ""),
             handle(&scope, "NEW-2", "label", Some("draft"), "NEW", ""),
             handle(&scope, "NEW-3", "label", Some("draft"), "NEW", ""),
@@ -2926,6 +2963,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             edge(&scope, "review-src.md", "draft-target.md", "DependsOn", 2),
             edge(&scope, "impl-1.md", "OQ-2", "Discharges", 1),
             edge(&scope, "impl-2.md", "OQ-2", "Discharges", 1),
+            edge(&scope, "VER-1", "VER-2", "Supersedes", 1),
             edge(&scope, "co1.md", "AA-1", "Cites", 1),
             edge(&scope, "co1.md", "BB-1", "Cites", 2),
             edge(&scope, "co2.md", "AA-1", "Cites", 1),

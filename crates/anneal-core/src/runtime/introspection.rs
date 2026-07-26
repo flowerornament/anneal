@@ -1684,11 +1684,11 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "S001",
         severity: "suggestion",
-        summary: "Orphaned handle: a label or version handle has no incoming references.",
+        summary: "Orphaned handle: the subject is a label or version handle with no incoming references. The file is its declaring file, not a claim that the document is orphaned.",
         rule: "orphaned_handle",
-        evidence: r#"("orphaned_handle", h)"#,
+        evidence: r#"("orphaned_handle", kind, h)"#,
         common_joins: &[
-            "`diagnostic{code: \"S001\", subject: h}, orphaned_handle(h)` to inspect orphaned handles",
+            "`diagnostic{code: \"S001\", subject: h}, *handle{id: h, kind: kind}` to inspect whether the orphaned subject is a label or version",
             "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
         ],
         example: r#"? diagnostic{code: "S001", subject: h, file: file}."#,

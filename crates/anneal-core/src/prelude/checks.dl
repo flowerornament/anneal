@@ -482,8 +482,9 @@ orphaned_handle(h) :=
   in_degree(h, 0),
   *edge{from: h, kind: "Supersedes"}.
 
-diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", h)) :=
+diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", kind, h)) :=
   orphaned_handle(h),
+  *handle{id: h, kind: kind},
   handle_file(h, file).
 
 rejected_namespace(namespace) :=

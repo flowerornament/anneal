@@ -645,7 +645,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | W006 | Warning | Code-authoritative spec cites missing code |
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on one obligation |
-| S001 | Suggestion | Orphaned handle |
+| S001 | Suggestion | Orphaned label/version handle; `file` is its declaring file, not an orphaned document |
 | S002 | Suggestion | Reserved; namespaces are inferred automatically |
 | S003 | Suggestion | Pipeline stall |
 | S004 | Suggestion | Abandoned namespace |

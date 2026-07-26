@@ -2,6 +2,16 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- S001 evidence names the orphaned handle kind:
+  `("orphaned_handle", kind, handle)`. This inserts `kind` into the previous
+  positional shape `("orphaned_handle", handle)`. The diagnostic subject is
+  the orphaned label or version handle; `file` is its declaring file, not a
+  claim that the document itself is orphaned.
+
 ## v0.21.7 - 2026-07-21
 
 ### Changed
@@ -94,8 +104,6 @@ All notable changes to `anneal` are documented in this file.
   completed/total and elapsed time — because a cold refresh on a large corpus
   can take tens of seconds. Ordinary `status` and non-refresh `check` stay
   silent.
-
-## Unreleased
 
 ## v0.21.3 - 2026-07-07
 
