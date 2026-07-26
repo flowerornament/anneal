@@ -159,6 +159,23 @@ Every later surface — `navigate`, hub-ness, the eventual TMS — is designed
 against this gate. This is what makes anneal's authority *earned* rather
 than asserted.
 
+**Definition CR-D106 (Zero-result adjacency).** Derived from CR-D103, a
+zero or clean rendered result MUST state the selection that produced it
+and name the adjacent set or recovery move. Human output carries that
+guidance inline; machine output keeps stdout structural and writes the
+same guidance to stderr. The guidance does not change exit semantics.
+For an empty bare-predicate query, the canonical wording says the
+predicate **currently** has no rows. For a composed query, it says:
+"this filtered or joined query returned 0 rows; that does not establish
+its predicates are empty." The latter refuses to claim that a filter
+removed rows without evaluating the predicate separately.
+
+This contract covers the built-in arrival, gate, search, and explicit
+eval renderers. Project `@verb` zero-row output is deliberately outside
+its automatic teaching scope: adjacent-set intent is author-defined, so
+anneal cannot infer a recovery move without claiming authority it has
+not earned.
+
 ---
 
 ## Part II: Architecture [CR-A]
@@ -2402,8 +2419,10 @@ canonical runtime predicate for the full diagnostic stream. The former
 `diagnostics` and `broken` commands are retired teaching recoveries.
 `check` is the hidden CI gate for error-severity diagnostics: it is
 callable for CI and pre-commit scripts, but does not appear as a peer
-noun in default help. Diagnostic workflows do not grow typed filter
-flags such as `--area`, `--code`, `--severity`, or `--file`; filtered
+noun in default help. Under CR-D106, a zero-error result names how many
+non-error diagnostic rows remain and points to the full stream without
+changing the CI exit contract. Diagnostic workflows do not grow typed
+filter flags such as `--area`, `--code`, `--severity`, or `--file`; filtered
 diagnostic workflows use relation pattern calls such as
 `diagnostic{file: "x.md"}` and joins such as
 `diagnostic{subject: h, code: code}, area_of{h: h, area: "language"}`.
@@ -2419,10 +2438,12 @@ counts from the full projected row set before listing rows, cap the
 visible rows per section, and sort each section by descending score and
 then by deterministic convergence-signal priority. Machine mode remains
 the same projected `status` row stream, without additional human
-formatting. The human heading for the generic `work` section SHOULD make
-clear that those rows are other work not already listed as blocked; the
-full ranked work vocabulary remains available through `frontier` eval
-composition.
+formatting. Per CR-D106, the projection includes a diagnostic severity
+histogram so a clean Health line cannot hide an adjacent warning,
+suggestion, or information set. The human heading for the generic `work`
+section SHOULD make clear that those rows are other work not already
+listed as blocked; the full ranked work vocabulary remains available
+through `frontier` eval composition.
 Rationale: the first screen should reveal convergence shape and the
 next useful action, not expose arbitrary tuple order, duplicate ties, or
 pre-capped totals.
@@ -3729,6 +3750,7 @@ config key.
 - CR-D103: Trust invariant — disposition-earned authority (§3)
 - CR-D104: Dimensional axis map (§27.4)
 - CR-D105: Verb-surface rung (§35)
+- CR-D106: Zero-result adjacency (§3)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

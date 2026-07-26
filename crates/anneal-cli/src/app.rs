@@ -14,8 +14,8 @@ use anneal_core::runtime::eval::{ExplainOptions, NumberValue, QueryWarning};
 use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
     AnalyzedProgram, Atom, Body, CallArg, CallStyle, Database, EvalOptions, Evaluator, Expr,
-    Literal, NegatedAtom, NumberLiteral, Program, QueryOutput, Row, Statement, StoredAtom, Value,
-    analyze, parse_program, stored_relation_fields, write_ndjson,
+    Literal, NegatedAtom, NumberLiteral, Program, Query, QueryOutput, Row, Statement, StoredAtom,
+    Value, analyze, parse_program, stored_relation_fields, write_ndjson,
 };
 use anneal_core::{
     ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
@@ -43,6 +43,7 @@ use anneal_core::ranking::{
 
 const DEFAULT_CORPUS: &str = "cli";
 const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
+const CHECK_DIAGNOSTIC_QUERY: &str = "? diagnostic(code, severity, subject, file, line, evidence).";
 const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
 const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
 const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
@@ -1399,11 +1400,15 @@ impl RuntimeSession {
                 let output = self.eval(&query, ExplainOptions::disabled())?;
                 let mut rows = output.rows;
                 self.annotate_search_rows(&mut rows);
+                let zero_result_hint = rows
+                    .is_empty()
+                    .then(|| search_zero_result_hint(include_low_confidence));
                 Ok(CommandOutput::rows_with_warnings(
                     rows,
                     RowView::Search,
                     warning_texts(&output.warnings),
-                ))
+                )
+                .with_zero_result_hint(zero_result_hint))
             }
             RuntimeCommand::Read {
                 handle,
@@ -1447,6 +1452,7 @@ impl RuntimeSession {
                     output.rows.truncate(limit);
                 }
                 let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
+                let zero_result_hint = zero_result_hint_for_query(&query, &output.rows);
                 let ranked_anchor = self.ranked_anchor_enrichment(&query, &output.rows)?;
                 let view = ranked_anchor.as_ref().map_or(RowView::Eval, |enrichment| {
                     RowView::RankedAnchor {
@@ -1459,7 +1465,8 @@ impl RuntimeSession {
                     empty_binding_hint,
                     warning_texts(&output.warnings),
                     ranked_anchor,
-                ))
+                )
+                .with_zero_result_hint(zero_result_hint))
             }
             RuntimeCommand::Verb { name, args } => self.run_dynamic_verb(&name, &args),
             RuntimeCommand::Help { topic } => Ok(CommandOutput::Text(topic.render())),
@@ -1525,13 +1532,22 @@ impl RuntimeSession {
     }
 
     fn run_check_gate(&self) -> Result<CommandOutput> {
-        let output = self.run_query(
-            r#"? diagnostic{severity: "error", code: code, subject: subject, file: file, line: line, evidence: evidence}."#,
-            ExplainOptions::disabled(),
-            RowView::Broken,
-        )?;
-        let gate_failed = output.has_rows();
-        Ok(output.with_gate_failed(gate_failed))
+        let output = self.eval(CHECK_DIAGNOSTIC_QUERY, ExplainOptions::disabled())?;
+        let warnings = warning_texts(&output.warnings);
+        let (error_rows, non_error_count) = partition_check_diagnostics(output.rows)?;
+        let gate_failed = !error_rows.is_empty();
+        let zero_result_hint = if gate_failed {
+            None
+        } else {
+            Some(format!(
+                "hint: check filters to error severity; {non_error_count} non-error diagnostic rows remain. Run `anneal -e '{CHECK_DIAGNOSTIC_QUERY}'`"
+            ))
+        };
+        Ok(
+            CommandOutput::rows_with_warnings(error_rows, RowView::Broken, warnings)
+                .with_gate_failed(gate_failed)
+                .with_zero_result_hint(zero_result_hint),
+        )
     }
 
     fn run_dynamic_verb(&self, name: &str, args: &[String]) -> Result<CommandOutput> {
@@ -1853,6 +1869,25 @@ impl RuntimeSession {
         let query = analyzed.queries().next()?.query();
         empty_binding_example(&analyzed, &query.body)
     }
+}
+
+fn zero_result_hint_for_query(query_source: &str, rows: &[Row]) -> Option<String> {
+    if !rows.is_empty() {
+        return None;
+    }
+    let query = parse_query_fragment(query_source)?;
+    Some(eval_zero_result_hint(&query))
+}
+
+fn parse_query_fragment(query_source: &str) -> Option<Query> {
+    parse_program("cli-query-hint", query_source)
+        .ok()?
+        .statements
+        .into_iter()
+        .find_map(|statement| match statement {
+            Statement::Query(query) => Some(query),
+            _ => None,
+        })
 }
 
 fn ranked_anchor_handle_field(query_source: &str) -> Option<String> {
@@ -2703,6 +2738,7 @@ enum CommandOutput {
         view: RowView,
         gate_failed: bool,
         empty_binding_hint: Option<String>,
+        zero_result_hint: Option<String>,
         warnings: Vec<String>,
         ranked_anchor: Option<RankedAnchorEnrichment>,
     },
@@ -2750,6 +2786,7 @@ impl CommandOutput {
             view,
             gate_failed: false,
             empty_binding_hint: None,
+            zero_result_hint: None,
             warnings: Vec::new(),
             ranked_anchor: None,
         }
@@ -2761,6 +2798,7 @@ impl CommandOutput {
             view,
             gate_failed: false,
             empty_binding_hint: None,
+            zero_result_hint: None,
             warnings,
             ranked_anchor: None,
         }
@@ -2787,38 +2825,27 @@ impl CommandOutput {
             view,
             gate_failed: false,
             empty_binding_hint,
+            zero_result_hint: None,
             warnings,
             ranked_anchor,
         }
     }
 
-    fn with_gate_failed(self, gate_failed: bool) -> Self {
-        match self {
-            Self::Rows {
-                rows,
-                view,
-                empty_binding_hint,
-                warnings,
-                ranked_anchor,
-                ..
-            } => Self::Rows {
-                rows,
-                view,
-                gate_failed,
-                empty_binding_hint,
-                warnings,
-                ranked_anchor,
-            },
-            other => other,
+    fn with_zero_result_hint(mut self, hint: Option<String>) -> Self {
+        if let Self::Rows {
+            zero_result_hint, ..
+        } = &mut self
+        {
+            *zero_result_hint = hint;
         }
+        self
     }
 
-    fn has_rows(&self) -> bool {
-        match self {
-            Self::Rows { rows, .. } => !rows.is_empty(),
-            Self::Status(output) => !output.rows.is_empty(),
-            Self::Context(_) | Self::Text(_) => false,
+    fn with_gate_failed(mut self, failed: bool) -> Self {
+        if let Self::Rows { gate_failed, .. } = &mut self {
+            *gate_failed = failed;
         }
+        self
     }
 
     fn has_displayable_content(&self) -> bool {
@@ -2860,11 +2887,20 @@ impl CommandOutput {
             messages.extend(warnings.iter().cloned());
         }
         if !matches!(mode, OutputMode::Human)
-            && let Self::Rows { rows, view, .. } = self
+            && let Self::Rows {
+                rows,
+                view,
+                zero_result_hint,
+                ..
+            } = self
             && rows.is_empty()
-            && let Some(handle) = view.missing_handle()
         {
-            messages.push(missing_handle_hint(handle));
+            if let Some(handle) = view.missing_handle() {
+                messages.push(missing_handle_hint(handle));
+            }
+            if let Some(hint) = zero_result_hint {
+                messages.push(hint.clone());
+            }
         }
         if let Some(message) = self.empty_rows_diagnostic(mode) {
             messages.push(message.to_string());
@@ -2897,10 +2933,17 @@ impl CommandOutput {
                     rows,
                     view,
                     empty_binding_hint,
+                    zero_result_hint,
                     ..
                 },
             ) => {
-                write_rows_text(writer, &rows, &view, empty_binding_hint.as_deref())?;
+                write_rows_text(
+                    writer,
+                    &rows,
+                    &view,
+                    empty_binding_hint.as_deref(),
+                    zero_result_hint.as_deref(),
+                )?;
             }
             (
                 OutputMode::Json,
@@ -2949,6 +2992,91 @@ fn empty_binding_hint_text(row_count: usize, example: &str) -> String {
 
 fn missing_handle_hint(handle: &str) -> String {
     format!("hint: handle {handle:?} not found; try `anneal search {handle:?}` or `anneal status`")
+}
+
+fn partition_check_diagnostics(rows: Vec<Row>) -> Result<(Vec<Row>, usize)> {
+    let mut error_rows = Vec::new();
+    let mut non_error_count = 0;
+    for mut row in rows {
+        if required_string(&row, "severity")? == "error" {
+            row.fields.remove("severity");
+            error_rows.push(row);
+        } else {
+            non_error_count += 1;
+        }
+    }
+    Ok((error_rows, non_error_count))
+}
+
+fn search_zero_result_hint(include_low_confidence: bool) -> String {
+    if include_low_confidence {
+        "hint: search returned 0 rows including low-confidence matches; retry with broader terms."
+            .to_string()
+    } else {
+        "hint: search returned 0 rows after excluding low-confidence matches; retry with --include-low-confidence or broader terms."
+            .to_string()
+    }
+}
+
+fn eval_zero_result_hint(query: &Query) -> String {
+    if let Some(predicate) = bare_relation_name(query) {
+        return format!(
+            "hint: {predicate} currently has no rows; run `anneal describe {predicate}` for requirements and common joins."
+        );
+    }
+    let recovery = first_relation_name(&query.body).map_or_else(
+        || "Relax one constraint at a time.".to_string(),
+        |predicate| format!("Relax one constraint at a time or run `anneal describe {predicate}`."),
+    );
+    format!(
+        "hint: this filtered or joined query returned 0 rows; that does not establish its predicates are empty. {recovery}"
+    )
+}
+
+fn bare_relation_name(query: &Query) -> Option<String> {
+    if !query.local_rules.is_empty() || query.body.atoms.len() != 1 {
+        return None;
+    }
+    match query.body.atoms.first()? {
+        Atom::Stored(stored)
+            if stored.fields.iter().all(|field| {
+                field
+                    .term
+                    .expr()
+                    .is_none_or(|expr| matches!(expr, Expr::Var(_)))
+            }) =>
+        {
+            Some(stored.relation.to_string())
+        }
+        Atom::Derived(derived)
+            if derived
+                .args
+                .iter()
+                .all(|arg| arg.expr().is_none_or(|expr| matches!(expr, Expr::Var(_)))) =>
+        {
+            Some(derived.predicate.display_name())
+        }
+        Atom::Stored(_)
+        | Atom::Derived(_)
+        | Atom::Comparison(_)
+        | Atom::Aggregation(_)
+        | Atom::Negation(_)
+        | Atom::TimeBlock(_) => None,
+    }
+}
+
+fn first_relation_name(body: &Body) -> Option<String> {
+    body.atoms.iter().find_map(|atom| match atom {
+        Atom::Stored(stored) => Some(stored.relation.to_string()),
+        Atom::Derived(derived) => Some(derived.predicate.display_name()),
+        Atom::Aggregation(aggregate) => first_relation_name(&aggregate.body),
+        Atom::TimeBlock(time_block) => first_relation_name(&time_block.body),
+        Atom::Negation(negation) => match &negation.atom {
+            NegatedAtom::Stored(stored) => Some(stored.relation.to_string()),
+            NegatedAtom::Derived(derived) => Some(derived.predicate.display_name()),
+        },
+        Atom::Comparison(_) => None,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3441,6 +3569,15 @@ fn write_status_text<W: Write>(
         metric_count(&metrics, "health", "blockers"),
         metric_count(&metrics, "health", "spec_code_drift")
     )?;
+    writeln!(
+        writer,
+        "Diagnostics  {} total · {} error · {} warning · {} suggestion · {} info",
+        metric_count(&metrics, "diagnostics", "total"),
+        metric_count(&metrics, "diagnostics", "error"),
+        metric_count(&metrics, "diagnostics", "warning"),
+        metric_count(&metrics, "diagnostics", "suggestion"),
+        metric_count(&metrics, "diagnostics", "info")
+    )?;
     let drift_cold = metric_count(&metrics, "drift", "cold");
     if has_metric_category(&metrics, "drift") {
         let warm = metric_count(&metrics, "drift", "intact")
@@ -3829,6 +3966,7 @@ fn write_rows_text<W: Write>(
     rows: &[Row],
     view: &RowView,
     empty_binding_hint: Option<&str>,
+    zero_result_hint: Option<&str>,
 ) -> Result<()> {
     if let RowView::Handle {
         handle,
@@ -3853,6 +3991,9 @@ fn write_rows_text<W: Write>(
     }
     if rows.is_empty() {
         writeln!(writer, "{EMPTY_ROWS_DIAGNOSTIC}")?;
+        if let Some(hint) = zero_result_hint {
+            writeln!(writer, "{hint}")?;
+        }
         return Ok(());
     }
 
@@ -4950,6 +5091,18 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
+    fn parsed_query(source: &str) -> Query {
+        parse_program("test-query", source)
+            .expect("query parses")
+            .statements
+            .into_iter()
+            .find_map(|statement| match statement {
+                Statement::Query(query) => Some(query),
+                _ => None,
+            })
+            .expect("query statement")
+    }
+
     fn git(root: &camino::Utf8Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -5985,6 +6138,264 @@ mod tests {
     }
 
     #[test]
+    fn zero_result_hints_preserve_query_authority() {
+        let bare = parsed_query("? diagnostic(code, severity, subject, file, line, evidence).");
+        assert_eq!(
+            eval_zero_result_hint(&bare),
+            "hint: diagnostic currently has no rows; run `anneal describe diagnostic` for requirements and common joins."
+        );
+
+        let filtered = parsed_query(
+            r#"? diagnostic(code, severity, subject, file, line, evidence), severity = "warning"."#,
+        );
+        assert_eq!(
+            eval_zero_result_hint(&filtered),
+            "hint: this filtered or joined query returned 0 rows; that does not establish its predicates are empty. Relax one constraint at a time or run `anneal describe diagnostic`."
+        );
+
+        let joined = parsed_query(
+            "? diagnostic(code, severity, subject, file, line, evidence), area_of(subject, area).",
+        );
+        assert_eq!(
+            eval_zero_result_hint(&joined),
+            eval_zero_result_hint(&filtered)
+        );
+    }
+
+    #[test]
+    fn zero_result_hints_render_inline_but_keep_machine_stdout_clean() {
+        let hint = search_zero_result_hint(false);
+        let output = CommandOutput::rows(Vec::new(), RowView::Search)
+            .with_zero_result_hint(Some(hint.clone()));
+        assert_eq!(
+            output.stderr_diagnostic(OutputMode::Json),
+            Some(format!("{hint}\n{EMPTY_ROWS_DIAGNOSTIC}"))
+        );
+
+        let output =
+            CommandOutput::rows(Vec::new(), RowView::Search).with_zero_result_hint(Some(hint));
+        let mut rendered = Vec::new();
+        output
+            .write(&mut rendered, OutputMode::Human)
+            .expect("render rows");
+        assert_eq!(
+            String::from_utf8(rendered).expect("utf8"),
+            "Search (0)\n(0 rows)\nhint: search returned 0 rows after excluding low-confidence matches; retry with --include-low-confidence or broader terms.\n"
+        );
+    }
+
+    #[test]
+    fn search_zero_result_hint_reflects_confidence_selection() {
+        assert_eq!(
+            search_zero_result_hint(false),
+            "hint: search returned 0 rows after excluding low-confidence matches; retry with --include-low-confidence or broader terms."
+        );
+        assert_eq!(
+            search_zero_result_hint(true),
+            "hint: search returned 0 rows including low-confidence matches; retry with broader terms."
+        );
+    }
+
+    #[test]
+    fn check_zero_errors_names_the_adjacent_non_error_set() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("anneal.dl"), "source md { scan_root(\".\"). }\n")
+            .expect("write project");
+        fs::write(root.join("a.md"), "---\nstatus: unpartitioned\n---\n# A\n").expect("write doc");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let expected = session
+            .eval(CHECK_DIAGNOSTIC_QUERY, ExplainOptions::disabled())
+            .expect("diagnostics run")
+            .rows
+            .iter()
+            .filter(|row| required_string(row, "severity").is_ok_and(|value| value != "error"))
+            .count();
+        assert!(expected > 0, "fixture should have a non-error diagnostic");
+        let output = session
+            .run(RuntimeCommand::Check {
+                refresh_drift: false,
+            })
+            .expect("check runs");
+        let CommandOutput::Rows {
+            rows,
+            gate_failed,
+            zero_result_hint,
+            ..
+        } = output
+        else {
+            panic!("check should emit rows");
+        };
+        assert!(rows.is_empty());
+        assert!(!gate_failed);
+        assert_eq!(
+            zero_result_hint,
+            Some(format!(
+                "hint: check filters to error severity; {expected} non-error diagnostic rows remain. Run `anneal -e '? diagnostic(code, severity, subject, file, line, evidence).'`"
+            ))
+        );
+    }
+
+    #[test]
+    fn check_clean_corpus_truthfully_names_zero_adjacent_rows() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        assert!(
+            session
+                .eval(CHECK_DIAGNOSTIC_QUERY, ExplainOptions::disabled())
+                .expect("diagnostics run")
+                .rows
+                .is_empty()
+        );
+        let output = session
+            .run(RuntimeCommand::Check {
+                refresh_drift: false,
+            })
+            .expect("check runs");
+        let CommandOutput::Rows {
+            zero_result_hint, ..
+        } = output
+        else {
+            panic!("check should emit rows");
+        };
+        assert!(
+            zero_result_hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("0 non-error diagnostic rows remain"))
+        );
+    }
+
+    #[test]
+    fn check_with_errors_keeps_gate_and_omits_zero_result_guidance() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("a.md"), "---\ndepends-on: missing.md\n---\n# A\n").expect("write doc");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Check {
+                refresh_drift: false,
+            })
+            .expect("check runs");
+        let CommandOutput::Rows {
+            rows,
+            gate_failed,
+            zero_result_hint,
+            ..
+        } = output
+        else {
+            panic!("check should emit rows");
+        };
+        assert!(!rows.is_empty());
+        assert!(gate_failed);
+        assert_eq!(zero_result_hint, None);
+    }
+
+    #[test]
+    fn status_histogram_counts_diagnostic_rows_not_distinct_codes() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("anneal.dl"), "source md { scan_root(\".\"). }\n")
+            .expect("write project");
+        fs::write(root.join("a.md"), "---\nstatus: alpha\n---\n# A\n").expect("write a");
+        fs::write(root.join("b.md"), "---\nstatus: beta\n---\n# B\n").expect("write b");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let diagnostics = session
+            .eval(CHECK_DIAGNOSTIC_QUERY, ExplainOptions::disabled())
+            .expect("diagnostics run")
+            .rows;
+        let distinct_codes = diagnostics
+            .iter()
+            .map(|row| required_string(row, "code").expect("code"))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            diagnostics.len() > distinct_codes.len(),
+            "fixture must carry repeated diagnostic codes"
+        );
+
+        let output = session.run_status().expect("status runs");
+        let CommandOutput::Status(StatusOutput { rows, .. }) = output else {
+            panic!("status should emit metrics");
+        };
+        let counts = status_metric_counts(&rows, "diagnostics");
+        let diagnostic_count = i64::try_from(diagnostics.len()).expect("fixture count fits i64");
+        assert_eq!(
+            counts.get("total"),
+            Some(&diagnostic_count),
+            "histogram total must count relation rows"
+        );
+        let severity_total = ["error", "warning", "suggestion", "info"]
+            .iter()
+            .map(|severity| counts.get(*severity).copied().unwrap_or_default())
+            .sum::<i64>();
+        assert_eq!(severity_total, diagnostic_count);
+    }
+
+    #[test]
+    fn explicit_eval_attaches_zero_result_guidance_but_project_verbs_do_not() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(
+            root.join("anneal.dl"),
+            r#"
+            @verb(
+              name: "empty_report",
+              query: "? diagnostic(\"NOPE\", severity, _, _, _, _).",
+              doc: "An intentionally empty author-defined report.",
+              output_schema: "{\"severity\":\"String\"}",
+              args: [],
+              capabilities: ["read"]
+            ).
+            "#,
+        )
+        .expect("write project verb");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let output = session
+            .run(RuntimeCommand::Eval {
+                query: "? diagnostic(code, severity, subject, file, line, evidence).".to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("eval runs");
+        let CommandOutput::Rows {
+            zero_result_hint, ..
+        } = output
+        else {
+            panic!("eval should emit rows");
+        };
+        assert_eq!(
+            zero_result_hint.as_deref(),
+            Some(
+                "hint: diagnostic currently has no rows; run `anneal describe diagnostic` for requirements and common joins."
+            )
+        );
+
+        let output = session
+            .run_dynamic_verb("empty_report", &[])
+            .expect("project verb path runs");
+        let CommandOutput::Rows {
+            rows,
+            zero_result_hint,
+            ..
+        } = output
+        else {
+            panic!("verb should emit rows");
+        };
+        assert!(rows.is_empty());
+        assert_eq!(zero_result_hint, None);
+    }
+
+    #[test]
     fn empty_binding_rows_emit_a_human_hint() {
         let output = CommandOutput::rows_with_empty_binding_hint(
             vec![row(&[]), row(&[])],
@@ -6036,6 +6447,11 @@ mod tests {
             status_metric("health", "errors", 1),
             status_metric("health", "blockers", 2),
             status_metric("health", "spec_code_drift", 1),
+            status_metric("diagnostics", "total", 20),
+            status_metric("diagnostics", "error", 1),
+            status_metric("diagnostics", "warning", 17),
+            status_metric("diagnostics", "suggestion", 1),
+            status_metric("diagnostics", "info", 1),
             status_metric("drift", "cold", 3),
         ]);
         let mut rendered = Vec::new();
@@ -6054,6 +6470,10 @@ mod tests {
             "Convergence  broken=1  blocked=2  open=3  advancing=4  holding=5  drifting=6"
         ));
         assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
+        assert!(
+            rendered
+                .contains("Diagnostics  20 total · 1 error · 17 warning · 1 suggestion · 1 info")
+        );
         assert!(rendered.contains(
             "Code refs    drift evidence not built for 3 refs; run `anneal check --refresh-drift`"
         ));
@@ -6943,11 +7363,11 @@ mod tests {
         ])
     }
 
-    fn convergence_metric_counts(rows: &[Row]) -> BTreeMap<String, i64> {
+    fn status_metric_counts(rows: &[Row], expected_category: &str) -> BTreeMap<String, i64> {
         rows.iter()
             .filter_map(|row| {
                 let category = required_string(row, "category").ok()?;
-                if category != "convergence" {
+                if category != expected_category {
                     return None;
                 }
                 let name = required_string(row, "name").ok()?.to_string();
@@ -7359,7 +7779,7 @@ mod tests {
         let CommandOutput::Status(status) = status else {
             panic!("status should emit status output");
         };
-        let metrics = convergence_metric_counts(&status.rows);
+        let metrics = status_metric_counts(&status.rows, "convergence");
 
         let item_rows = session
             .run(RuntimeCommand::Eval {
