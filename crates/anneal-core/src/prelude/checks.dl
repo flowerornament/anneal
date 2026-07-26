@@ -346,6 +346,123 @@ lifecycle_config_gap(status, count, "ordering_not_terminal") :=
 diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
   lifecycle_config_gap(status, count, variant).
 
+@doc(
+  name: "frontmatter_mapping_alias",
+  doc: "Return the finite exact frontmatter alias vocabulary behind W007 and the conventional field, edge kind, and direction each alias suggests."
+).
+@predicate(
+  name: "frontmatter_mapping_alias",
+  args: ["key", "suggested_field", "edge_kind", "direction"]
+).
+frontmatter_mapping_alias("references", "references", "Cites", "forward").
+frontmatter_mapping_alias("refs", "references", "Cites", "forward").
+frontmatter_mapping_alias("relates", "references", "Cites", "forward").
+frontmatter_mapping_alias("related", "references", "Cites", "forward").
+frontmatter_mapping_alias("related-to", "references", "Cites", "forward").
+frontmatter_mapping_alias("related_to", "references", "Cites", "forward").
+frontmatter_mapping_alias("pins", "references", "Cites", "forward").
+frontmatter_mapping_alias("companion-to", "references", "Cites", "forward").
+frontmatter_mapping_alias("companion_to", "references", "Cites", "forward").
+frontmatter_mapping_alias("see-also", "references", "Cites", "forward").
+frontmatter_mapping_alias("see_also", "references", "Cites", "forward").
+frontmatter_mapping_alias("tracked-by", "references", "Cites", "forward").
+frontmatter_mapping_alias("tracked_by", "references", "Cites", "forward").
+frontmatter_mapping_alias("cites", "references", "Cites", "forward").
+
+frontmatter_mapping_alias("builds-on", "depends-on", "DependsOn", "forward").
+frontmatter_mapping_alias("builds_on", "depends-on", "DependsOn", "forward").
+frontmatter_mapping_alias("extends", "depends-on", "DependsOn", "forward").
+frontmatter_mapping_alias("requires", "depends-on", "DependsOn", "forward").
+frontmatter_mapping_alias("dependencies", "depends-on", "DependsOn", "forward").
+frontmatter_mapping_alias("depends_on", "depends-on", "DependsOn", "forward").
+
+frontmatter_mapping_alias("superseded_by", "superseded-by", "Supersedes", "forward").
+frontmatter_mapping_alias("replaced-by", "superseded-by", "Supersedes", "forward").
+frontmatter_mapping_alias("replaced_by", "superseded-by", "Supersedes", "forward").
+frontmatter_mapping_alias("replaces", "supersedes", "Supersedes", "inverse").
+frontmatter_mapping_alias("obsoletes", "supersedes", "Supersedes", "inverse").
+
+@doc(
+  name: "configured_frontmatter_alias",
+  doc: "Return W007 aliases that have an explicit project frontmatter edge mapping and are therefore suppressed."
+).
+@predicate(
+  name: "configured_frontmatter_alias",
+  args: ["key"]
+).
+configured_frontmatter_alias("references") :=
+  *config{key: "frontmatter.field.references.edge_kind", value: kind}.
+configured_frontmatter_alias("refs") :=
+  *config{key: "frontmatter.field.refs.edge_kind", value: kind}.
+configured_frontmatter_alias("relates") :=
+  *config{key: "frontmatter.field.relates.edge_kind", value: kind}.
+configured_frontmatter_alias("related") :=
+  *config{key: "frontmatter.field.related.edge_kind", value: kind}.
+configured_frontmatter_alias("related-to") :=
+  *config{key: "frontmatter.field.related-to.edge_kind", value: kind}.
+configured_frontmatter_alias("related_to") :=
+  *config{key: "frontmatter.field.related_to.edge_kind", value: kind}.
+configured_frontmatter_alias("pins") :=
+  *config{key: "frontmatter.field.pins.edge_kind", value: kind}.
+configured_frontmatter_alias("companion-to") :=
+  *config{key: "frontmatter.field.companion-to.edge_kind", value: kind}.
+configured_frontmatter_alias("companion_to") :=
+  *config{key: "frontmatter.field.companion_to.edge_kind", value: kind}.
+configured_frontmatter_alias("see-also") :=
+  *config{key: "frontmatter.field.see-also.edge_kind", value: kind}.
+configured_frontmatter_alias("see_also") :=
+  *config{key: "frontmatter.field.see_also.edge_kind", value: kind}.
+configured_frontmatter_alias("tracked-by") :=
+  *config{key: "frontmatter.field.tracked-by.edge_kind", value: kind}.
+configured_frontmatter_alias("tracked_by") :=
+  *config{key: "frontmatter.field.tracked_by.edge_kind", value: kind}.
+configured_frontmatter_alias("cites") :=
+  *config{key: "frontmatter.field.cites.edge_kind", value: kind}.
+configured_frontmatter_alias("builds-on") :=
+  *config{key: "frontmatter.field.builds-on.edge_kind", value: kind}.
+configured_frontmatter_alias("builds_on") :=
+  *config{key: "frontmatter.field.builds_on.edge_kind", value: kind}.
+configured_frontmatter_alias("extends") :=
+  *config{key: "frontmatter.field.extends.edge_kind", value: kind}.
+configured_frontmatter_alias("requires") :=
+  *config{key: "frontmatter.field.requires.edge_kind", value: kind}.
+configured_frontmatter_alias("dependencies") :=
+  *config{key: "frontmatter.field.dependencies.edge_kind", value: kind}.
+configured_frontmatter_alias("depends_on") :=
+  *config{key: "frontmatter.field.depends_on.edge_kind", value: kind}.
+configured_frontmatter_alias("superseded_by") :=
+  *config{key: "frontmatter.field.superseded_by.edge_kind", value: kind}.
+configured_frontmatter_alias("replaced-by") :=
+  *config{key: "frontmatter.field.replaced-by.edge_kind", value: kind}.
+configured_frontmatter_alias("replaced_by") :=
+  *config{key: "frontmatter.field.replaced_by.edge_kind", value: kind}.
+configured_frontmatter_alias("replaces") :=
+  *config{key: "frontmatter.field.replaces.edge_kind", value: kind}.
+configured_frontmatter_alias("obsoletes") :=
+  *config{key: "frontmatter.field.obsoletes.edge_kind", value: kind}.
+
+frontmatter_unmapped_alias_use(key, h) :=
+  frontmatter_mapping_alias(key, suggested_field, edge_kind, direction),
+  *meta{handle: h, key: key, value: value},
+  *meta{handle: h, key: "md.parent_dir", value: parent_dir},
+  not configured_frontmatter_alias(key).
+
+@doc(
+  name: "frontmatter_mapping_gap",
+  doc: "Return exact reference-like markdown frontmatter aliases that have no configured edge mapping, aggregated by distinct file handle, with the conventional field, edge kind, and direction to configure."
+).
+@predicate(
+  name: "frontmatter_mapping_gap",
+  args: ["key", "distinct_handle_count", "suggested_field", "edge_kind", "direction"]
+).
+frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction) :=
+  frontmatter_mapping_alias(key, suggested_field, edge_kind, direction),
+  frontmatter_unmapped_alias_use(key, sample),
+  distinct_handle_count = Count{ h : frontmatter_unmapped_alias_use(key, h) }.
+
+diagnostic("W007", "warning", key, null, null, ("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)) :=
+  frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction).
+
 terminal_status_used(status) :=
   *handle{id: h, status: status},
   status != null,

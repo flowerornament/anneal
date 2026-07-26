@@ -643,6 +643,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | W004 | Warning | Malformed or suspicious frontmatter value |
 | W005 | Warning | Lifecycle config gap |
 | W006 | Warning | Code-authoritative spec cites missing code |
+| W007 | Warning | Reference-like frontmatter key has no configured edge mapping |
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on one obligation |
 | S001 | Suggestion | Orphaned label/version handle; `file` is its declaring file, not an orphaned document |

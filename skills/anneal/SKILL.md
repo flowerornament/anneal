@@ -177,6 +177,11 @@ when a target is both terminal and effectively classified dead. Query
 the builtin and project rows; classify a custom terminal status under
 `config dependency` when S006 reports it as unknown.
 
+W007 reports exact reference-like frontmatter keys that have no edge mapping,
+including in corpora with no `config frontmatter` block. Run
+`anneal describe W007` for the distinct-handle count, the supported mapping,
+and the `*meta` drill-down to the handles carrying that key.
+
 `external_root` additively mounts a sibling directory outside the corpus root
 but inside the same Git repository into the markdown graph. External files use
 Git-project-relative handles such as `formal/models/prism.md`, so references

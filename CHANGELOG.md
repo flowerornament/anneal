@@ -55,6 +55,15 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `W007` reports exact reference-like markdown frontmatter keys that have no
+  configured edge mapping, one row per key with a distinct-handle count and the
+  conventional field, edge kind, and direction to configure. The finite alias
+  vocabulary works without a `config frontmatter` block, project mappings
+  suppress the warning per key, and `anneal describe W007` teaches the raw
+  metadata drill-down.
+
 ### Changed
 
 - S001 evidence names the orphaned handle kind:

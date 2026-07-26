@@ -1651,6 +1651,27 @@ const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
         ],
     },
     DiagnosticCodeCard {
+        code: "W007",
+        severity: "warning",
+        summary: "Frontmatter mapping gap: an exact reference-like markdown key appears on one or more handles but has no configured edge mapping.",
+        rule: "frontmatter_mapping_gap",
+        evidence: r#"("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)"#,
+        common_joins: &[
+            "`diagnostic{code: \"W007\", subject: key}, frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction)` to inspect the supported recovery mapping",
+            "`frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}` to list the markdown handles carrying that unmapped key",
+        ],
+        example: r#"? diagnostic{code: "W007", subject: key, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "frontmatter_mapping_gap",
+            "frontmatter_mapping_alias",
+            "*meta",
+            "*config",
+            "W003",
+            "W004",
+        ],
+    },
+    DiagnosticCodeCard {
         code: "I001",
         severity: "info",
         summary: "Section references present: section-reference placeholders exist and are counted separately from broken handles.",
@@ -2150,6 +2171,15 @@ fn predicate_requires(name: &str) -> &'static [&'static str] {
         "dependency_config_gap" => &[
             "actual terminal handles whose statuses are absent from the effective dependency-validity classification.",
         ],
+        "frontmatter_mapping_alias" => &[
+            "the standard prelude's finite exact alias table; it does not inspect corpus values or perform fuzzy matching.",
+        ],
+        "configured_frontmatter_alias" => &[
+            "explicit `config frontmatter` edge-kind entries for keys in the finite W007 alias vocabulary.",
+        ],
+        "frontmatter_mapping_gap" => &[
+            "raw markdown frontmatter metadata, markdown parent-directory metadata, and the absence of a project mapping for an exact built-in alias.",
+        ],
         "missing_frontmatter_file" => &[
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
         ],
@@ -2259,6 +2289,9 @@ fn predicate_relationship(name: &str) -> Option<&'static str> {
         "dependency_config_gap" => {
             Some("Diagnostic-rule predicate behind S006 dependency-config-gap suggestions.")
         }
+        "frontmatter_mapping_gap" => Some(
+            "Diagnostic-rule predicate behind W007 frontmatter-mapping-gap warnings. It recognizes a finite exact alias vocabulary and never infers edges from fuzzy key similarity.",
+        ),
         "dependency_status_classification" => Some(
             "Effective dependency-validity classification with origin: project entries override conservative builtins one status at a time.",
         ),
@@ -2360,6 +2393,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
             "Query `dependency_status_classification(status, classification, origin)` to see the effective set and whether each row is builtin or project.".to_string(),
         ],
         "dependency_config_gap" => dependency_config_gap_lines(),
+        "frontmatter_mapping_gap" => frontmatter_mapping_gap_lines(),
         _ => Vec::new(),
     }
 }
@@ -2367,6 +2401,7 @@ fn predicate_extra_lines(name: &str) -> Vec<String> {
 fn diagnostic_code_extra_lines(code: &str) -> Vec<String> {
     match code {
         "W005" => lifecycle_config_gap_variant_lines(),
+        "W007" => frontmatter_mapping_gap_lines(),
         "S006" => dependency_config_gap_lines(),
         _ => Vec::new(),
     }
@@ -2385,6 +2420,15 @@ fn dependency_config_gap_lines() -> Vec<String> {
         "Variant: terminal_status_unclassified = actual terminal handles use a status whose dependency validity is unknown.".to_string(),
         "Classify a dead target with `config dependency { dead([\"custom-retired\"]). }`, or a still-valid target with `config dependency { valid([\"custom-current\"]). }`.".to_string(),
         "W001 remains silent until the status is classified dead; the aggregate suggestion preserves the unknown instead of guessing.".to_string(),
+    ]
+}
+
+fn frontmatter_mapping_gap_lines() -> Vec<String> {
+    vec![
+        "The count is distinct markdown file handles, not scalar values.".to_string(),
+        "Drill down with `? frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}.`.".to_string(),
+        "Configure the reported mapping with `config frontmatter { field(\"KEY\", \"EDGE_KIND\", \"DIRECTION\"). }`; a project mapping suppresses W007 for that key.".to_string(),
+        "The finite alias vocabulary is active even when the corpus has no `config frontmatter` block. Generic source/sources remain unclassified pending a deliberate built-in mapping policy.".to_string(),
     ]
 }
 
@@ -2506,6 +2550,10 @@ fn common_joins(name: &str) -> &'static [&'static str] {
         "dependency_config_gap" => &[
             "`dependency_config_gap(status, count, variant), diagnostic{code: \"S006\", subject: status}` to inspect unclassified terminal statuses",
             "`dependency_config_gap(status, count, variant), *handle{id: h, status: status}, terminal(h)` to inspect affected terminal handles",
+        ],
+        "frontmatter_mapping_gap" => &[
+            "`frontmatter_mapping_gap(key, count, field, kind, direction), diagnostic{code: \"W007\", subject: key}` to inspect the supported recovery mapping",
+            "`frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}` to list the markdown handles carrying that unmapped key",
         ],
         "dependency_dead_status"
         | "dependency_valid_status"
@@ -2645,6 +2693,16 @@ fn predicate_see_also(name: &str) -> &'static [&'static str] {
             "dependency_status_classification",
             "dependency-validity",
             "W001",
+        ],
+        "frontmatter_mapping_alias" | "configured_frontmatter_alias" => {
+            &["frontmatter_mapping_gap", "W007", "*config"]
+        }
+        "frontmatter_mapping_gap" => &[
+            "W007",
+            "diagnostic",
+            "frontmatter_mapping_alias",
+            "*meta",
+            "*config",
         ],
         "dependency_dead_status"
         | "dependency_valid_status"
@@ -2859,6 +2917,13 @@ fn predicate_example(name: &str) -> Option<&'static str> {
         "implausible_ref" => Some("? implausible_ref(h, file, value)."),
         "lifecycle_config_gap" => Some("? lifecycle_config_gap(status, count, variant)."),
         "dependency_config_gap" => Some("? dependency_config_gap(status, count, variant)."),
+        "frontmatter_mapping_gap" => Some(
+            "? frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction).",
+        ),
+        "frontmatter_mapping_alias" => {
+            Some("? frontmatter_mapping_alias(key, suggested_field, edge_kind, direction).")
+        }
+        "configured_frontmatter_alias" => Some("? configured_frontmatter_alias(key)."),
         "dependency_dead_status" => Some("? dependency_dead_status(status)."),
         "dependency_valid_status" => Some("? dependency_valid_status(status)."),
         "dependency_status_classification" => {

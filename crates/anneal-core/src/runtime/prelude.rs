@@ -1997,6 +1997,10 @@ mod tests {
                     r#"? diagnostic("W006", severity, "plan-code-spec.md", file, line, evidence)."#,
                 ),
                 (
+                    "W007",
+                    r#"? diagnostic("W007", severity, subject, file, line, evidence)."#,
+                ),
+                (
                     "missing_frontmatter_file",
                     r"? missing_frontmatter_file(h, dir, file).",
                 ),
@@ -2206,6 +2210,56 @@ mod tests {
             0,
             "default asserts_code should suppress aspirational plan specs"
         );
+        let w007 = output(&outputs, "W007");
+        assert_eq!(w007.rows.len(), 4, "W007 rows: {:?}", w007.rows);
+        for evidence in [
+            list(vec![
+                string("frontmatter_mapping_gap"),
+                string("references"),
+                int(2),
+                string("references"),
+                string("Cites"),
+                string("forward"),
+            ]),
+            list(vec![
+                string("frontmatter_mapping_gap"),
+                string("builds_on"),
+                int(1),
+                string("depends-on"),
+                string("DependsOn"),
+                string("forward"),
+            ]),
+            list(vec![
+                string("frontmatter_mapping_gap"),
+                string("replaced_by"),
+                int(1),
+                string("superseded-by"),
+                string("Supersedes"),
+                string("forward"),
+            ]),
+            list(vec![
+                string("frontmatter_mapping_gap"),
+                string("replaces"),
+                int(1),
+                string("supersedes"),
+                string("Supersedes"),
+                string("inverse"),
+            ]),
+        ] {
+            assert!(
+                has_row(
+                    w007,
+                    &[
+                        ("severity", string("warning")),
+                        ("file", Value::Null),
+                        ("line", Value::Null),
+                        ("evidence", evidence),
+                    ]
+                ),
+                "missing W007 evidence in {:?}",
+                w007.rows
+            );
+        }
         assert!(has_row(
             output(&outputs, "S001"),
             &[
@@ -2276,6 +2330,60 @@ mod tests {
                 )
             ]
         ));
+    }
+
+    #[test]
+    fn frontmatter_mapping_gap_suppresses_configured_aliases() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[(
+                "W007",
+                r#"? diagnostic("W007", severity, subject, file, line, evidence)."#,
+            )],
+            diagnostic_catalog_database_with_frontmatter_config(Some("references")),
+        );
+        let rows = output(&outputs, "W007");
+
+        assert_eq!(rows.rows.len(), 3, "configured W007 rows: {:?}", rows.rows);
+        assert!(
+            !has_row(rows, &[("subject", string("references"))]),
+            "a project mapping must suppress its alias"
+        );
+        for subject in ["builds_on", "replaced_by", "replaces"] {
+            assert!(
+                has_row(rows, &[("subject", string(subject))]),
+                "unconfigured alias {subject} should remain visible"
+            );
+        }
+    }
+
+    #[test]
+    fn every_frontmatter_mapping_alias_has_config_suppression() {
+        let aliases = evaluate_standard_prelude_queries(
+            "? frontmatter_mapping_alias(key, suggested_field, edge_kind, direction).",
+            diagnostic_catalog_database(),
+        );
+        let keys = aliases[0]
+            .rows
+            .iter()
+            .filter_map(|row| match row.fields.get("key") {
+                Some(Value::String(key)) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 25, "exact W007 alias vocabulary changed");
+
+        for key in keys {
+            let query = format!(r#"? configured_frontmatter_alias("{key}")."#);
+            let outputs = evaluate_standard_prelude_cases(
+                &[("configured", query.as_str())],
+                diagnostic_catalog_database_with_frontmatter_config(Some(key.as_str())),
+            );
+            assert_eq!(
+                output(&outputs, "configured").rows.len(),
+                1,
+                "frontmatter alias {key:?} has no matching config suppression clause"
+            );
+        }
     }
 
     #[test]
@@ -2896,6 +3004,12 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     }
 
     fn diagnostic_catalog_database() -> Database {
+        diagnostic_catalog_database_with_frontmatter_config(None)
+    }
+
+    fn diagnostic_catalog_database_with_frontmatter_config(
+        configured_alias: Option<&str>,
+    ) -> Database {
         let corpus = CorpusId::from("diagnostics");
         let source = SourceName::from("host");
         let generation = Generation::initial();
@@ -2983,6 +3097,15 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             meta(&scope, "team/with-a.md", "md.parent_dir", "team"),
             meta(&scope, "team/with-b.md", "md.parent_dir", "team"),
             meta(&scope, "team/missing.md", "md.parent_dir", "team"),
+            meta(&scope, "team/with-a.md", "references", "first.md"),
+            meta(&scope, "team/with-a.md", "references", "second.md"),
+            meta(&scope, "team/with-b.md", "references", "first.md"),
+            meta(&scope, "team/with-a.md", "builds_on", "base.md"),
+            meta(&scope, "team/with-a.md", "replaced_by", "new.md"),
+            meta(&scope, "team/with-a.md", "replaces", "old.md"),
+            meta(&scope, "team/with-a.md", "sources", "source.md"),
+            meta(&scope, "team/with-a.md", "authors", "person"),
+            meta(&scope, "src/old.rs", "related", "design.md"),
             meta(&scope, "scratch/with.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-a.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-b.md", "md.parent_dir", "scratch"),
@@ -2993,27 +3116,29 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
 
         let mut store = FactStore::default();
         store.merge(batch).expect("merge diagnostic fixture");
+        let mut configs = vec![
+            config(&corpus, "convergence.active", "draft", None),
+            config(&corpus, "convergence.active", "stable", None),
+            config(&corpus, "convergence.active", "review", None),
+            config(&corpus, "convergence.active", "plan", None),
+            config(&corpus, "convergence.terminal", "archived", None),
+            config(&corpus, "convergence.ordering", "draft", Some(0)),
+            config(&corpus, "convergence.ordering", "stable", Some(1)),
+            config(&corpus, "convergence.ordering", "review", Some(2)),
+            config(&corpus, "convergence.ordering", "archived", Some(3)),
+            // Exercise W005: ordered but neither active nor terminal, and the non-terminal tail.
+            config(&corpus, "convergence.ordering", "blocked", Some(4)),
+            config(&corpus, "handles.linear", "OQ", None),
+            config(&corpus, "handles.force", "OLD", None),
+            config(&corpus, "handles.force", "AA", None),
+            config(&corpus, "handles.force", "BB", None),
+        ];
+        if let Some(alias) = configured_alias {
+            let config_key = format!("frontmatter.field.{alias}.edge_kind");
+            configs.push(config(&corpus, &config_key, "Cites", None));
+        }
         store
-            .replace_configs(
-                &corpus,
-                vec![
-                    config(&corpus, "convergence.active", "draft", None),
-                    config(&corpus, "convergence.active", "stable", None),
-                    config(&corpus, "convergence.active", "review", None),
-                    config(&corpus, "convergence.active", "plan", None),
-                    config(&corpus, "convergence.terminal", "archived", None),
-                    config(&corpus, "convergence.ordering", "draft", Some(0)),
-                    config(&corpus, "convergence.ordering", "stable", Some(1)),
-                    config(&corpus, "convergence.ordering", "review", Some(2)),
-                    config(&corpus, "convergence.ordering", "archived", Some(3)),
-                    // Exercise W005: ordered but neither active nor terminal, and the non-terminal tail.
-                    config(&corpus, "convergence.ordering", "blocked", Some(4)),
-                    config(&corpus, "handles.linear", "OQ", None),
-                    config(&corpus, "handles.force", "OLD", None),
-                    config(&corpus, "handles.force", "AA", None),
-                    config(&corpus, "handles.force", "BB", None),
-                ],
-            )
+            .replace_configs(&corpus, configs)
             .expect("replace diagnostic fixture config");
         Database::from_store(&store)
     }

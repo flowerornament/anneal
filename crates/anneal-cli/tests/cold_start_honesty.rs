@@ -287,6 +287,101 @@ fn unclassified_status_emits_lifecycle_config_gap() {
 }
 
 #[test]
+fn frontmatter_mapping_gap_works_without_config_and_mapping_closes_it() {
+    let dir = tempdir();
+    let lifecycle = format!(
+        "{}\n\nconfig dependency {{ valid([\"done\"]). }}",
+        lifecycle_config(&["draft"], &["done"], &["draft", "done"])
+    );
+    write_config(dir.path(), &lifecycle);
+    write_file(
+        dir.path(),
+        "a.md",
+        "---\nstatus: draft\nreferences:\n  - target.md\n  - second.md\n---\n# A\n",
+    );
+    write_file(
+        dir.path(),
+        "b.md",
+        "---\nstatus: draft\nreferences: target.md\n---\n# B\n",
+    );
+    write_markdown(dir.path(), "target.md", "done", "# Target\n");
+    write_markdown(dir.path(), "second.md", "done", "# Second\n");
+
+    let root = dir.path().to_str().expect("utf8 tempdir");
+    let gap = run(&[
+        "--root",
+        root,
+        "-e",
+        r"? frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction).",
+        "--format=json",
+    ]);
+    let rows = json_rows(&gap);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["key"], "references");
+    assert_eq!(rows[0]["distinct_handle_count"], 2);
+    assert_eq!(rows[0]["suggested_field"], "references");
+    assert_eq!(rows[0]["edge_kind"], "Cites");
+    assert_eq!(rows[0]["direction"], "forward");
+
+    let check = run(&["--root", root, "check", "--format=json"]);
+    assert_success(&check);
+    assert!(
+        check.stdout.is_empty(),
+        "warning-only check must keep machine stdout clean: {}",
+        text(&check.stdout)
+    );
+    assert!(
+        text(&check.stderr).contains("1 non-error diagnostic rows remain"),
+        "warning count should motivate the diagnostic drill-down: {}",
+        text(&check.stderr)
+    );
+
+    let edges_before = json_rows(&run(&[
+        "--root",
+        root,
+        "-e",
+        r#"? *edge{from: src, to: target, kind: "Cites"}."#,
+        "--format=json",
+    ]));
+    assert!(
+        edges_before.is_empty(),
+        "unmapped frontmatter must not manufacture edges: {edges_before:#?}"
+    );
+
+    write_config(
+        dir.path(),
+        &format!(
+            r#"config frontmatter {{
+  field("references", "Cites", "forward").
+}}
+
+{lifecycle}"#
+        ),
+    );
+
+    let gaps_after = json_rows(&run(&[
+        "--root",
+        root,
+        "-e",
+        "? frontmatter_mapping_gap(key, count, field, kind, direction).",
+        "--format=json",
+    ]));
+    assert!(
+        gaps_after.is_empty(),
+        "configured aliases must leave the gap relation: {gaps_after:#?}"
+    );
+
+    let edges_after = json_rows(&run(&[
+        "--root",
+        root,
+        "-e",
+        r#"? *edge{from: src, to: target, kind: "Cites"}."#,
+        "--format=json",
+    ]));
+    assert_eq!(edges_after.len(), 3, "{edges_after:#?}");
+}
+
+#[test]
 fn non_terminating_ordering_lattice_emits_lifecycle_config_gap() {
     let dir = tempdir();
     write_config(

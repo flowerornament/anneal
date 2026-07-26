@@ -116,6 +116,7 @@ axis_of("configured_asserts_code_status", "infrastructure").
 axis_of("configured_dependency_dead_status", "infrastructure").
 axis_of("configured_dependency_status", "infrastructure").
 axis_of("configured_dependency_valid_status", "infrastructure").
+axis_of("configured_frontmatter_alias", "infrastructure").
 axis_of("configured_lifecycle_status", "infrastructure").
 axis_of("configured_pipeline_status", "infrastructure").
 axis_of("configured_terminal_status", "infrastructure").
@@ -139,6 +140,9 @@ axis_of("flow", "convergence").
 axis_of("forward_dependency_to_next_status", "structure").
 axis_of("frontier", "convergence").
 axis_of("frontmatter_adoption_high", "lifecycle").
+axis_of("frontmatter_mapping_alias", "infrastructure").
+axis_of("frontmatter_mapping_gap", "diagnostic").
+axis_of("frontmatter_unmapped_alias_use", "diagnostic").
 axis_of("handle_file", "structure").
 axis_of("hit_currency_disposition", "currency").
 axis_of("hit_currency_disposition_known", "currency").

@@ -8032,7 +8032,9 @@ mod tests {
             "check",
             "E001",
             "W005",
+            "W007",
             "lifecycle_config_gap",
+            "frontmatter_mapping_gap",
             "*meta",
             "external_class",
             "target_path",
@@ -8090,6 +8092,25 @@ mod tests {
                 })
             }),
             "describe E001 should route to the diagnostic catalog and rule predicate"
+        );
+
+        let frontmatter_gap = session
+            .run(RuntimeCommand::Describe {
+                name: "W007".to_string(),
+            })
+            .expect("describe W007 runs");
+        let CommandOutput::Rows { rows, .. } = frontmatter_gap else {
+            panic!("describe W007 should emit rows");
+        };
+        assert!(
+            rows.iter().any(|row| {
+                required_string(row, "doc").is_ok_and(|doc| {
+                    doc.contains("distinct markdown file handles")
+                        && doc.contains("*meta{handle: h, key: key}")
+                        && doc.contains("field(\"KEY\", \"EDGE_KIND\", \"DIRECTION\")")
+                })
+            }),
+            "describe W007 should teach the aggregate unit and handle drill-down"
         );
 
         let handle = session

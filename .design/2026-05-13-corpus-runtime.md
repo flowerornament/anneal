@@ -2014,7 +2014,13 @@ builtins remain. A status declared in both sets is a project-load error.
 `dependency_status_classification(status, classification, origin)` exposes the
 effective set and whether each row is builtin or project. Unknown terminal
 statuses do not earn W001 warning authority; S006 instead emits one aggregate
-`dependency_config_gap` suggestion per actually used terminal status.
+`dependency_config_gap` suggestion per actually used terminal status. Exact
+reference-like markdown frontmatter aliases with no effective edge mapping
+produce one W007 `frontmatter_mapping_gap` warning per key, counted by distinct
+file handle. The warning carries the conventional field, edge kind, and
+direction and teaches a `*meta` drill-down; its finite alias vocabulary remains
+active when no `config frontmatter` block exists. Generic `source`/`sources`
+remain deliberately unclassified pending a coherent built-in mapping policy.
 
 Diagnostics are deliberately built as **named evidence chains**: the
 predicate(s) carrying a diagnostic's evidence (`s003_pipeline_stall`,
@@ -2036,7 +2042,7 @@ language rather than an accretion.
 violation.
 
 The v2.0 relational check catalog includes E001 (broken refs), E002
-(undischarged), W001-W006 (warnings), I001-I002 (info), and S001-S006
+(undischarged), W001-W007 (warnings), I001-I002 (info), and S001-S006
 (suggestions) — as Horn clauses in `checks.dl`. The substrate has no
 hard-coded check logic. E001 is the minimal executable anchor required
 by the convergence vocabulary; the remaining catalog must land before
