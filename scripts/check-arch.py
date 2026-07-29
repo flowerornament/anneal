@@ -21,6 +21,7 @@ ALLOWED_WORKSPACE_DEPS = {
     "anneal-md": {"anneal-core"},
     "anneal-cli": {"anneal-code", "anneal-core", "anneal-md"},
     "anneal-mcp": {"anneal-core"},
+    "xtask": set(),
 }
 
 RAW_AST_TYPES = {"Rule", "Atom", "Body"}

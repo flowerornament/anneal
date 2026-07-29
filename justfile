@@ -84,6 +84,11 @@ test:
 test-home-manager-module:
     bash scripts/test-home-manager-module.sh
 
+# Derived whole-system Rust name and module map.
+[group('check')]
+atlas *ARGS:
+    cargo xtask atlas {{ARGS}}
+
 # Release build
 [group('build')]
 build:

@@ -14,6 +14,7 @@ members = [
     "crates/anneal-md",
     "crates/anneal-cli",
     "crates/anneal-mcp",
+    "xtask",
 ]
 default-members = [
     ".",
@@ -23,6 +24,7 @@ default-members = [
     "crates/anneal-md",
     "crates/anneal-cli",
     "crates/anneal-mcp",
+    "xtask",
 ]
 resolver = "3"
 
