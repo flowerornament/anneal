@@ -115,8 +115,11 @@ pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutpu
         .nodes()
         .filter_map(|(_, handle)| handle.status.clone())
         .collect::<HashSet<_>>();
-    let (active, terminal) =
-        infer_lifecycle_partition(&observed_statuses, &config, &result.terminal_by_directory);
+    let (active, terminal) = infer_lifecycle_partition(
+        &observed_statuses,
+        &config,
+        &result.init.terminal_by_directory,
+    );
     config.convergence.active = active;
     config.convergence.terminal = terminal;
     if config.convergence.active.is_empty()
@@ -136,7 +139,7 @@ pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutpu
             "stable".to_string(),
         ];
     }
-    config.frontmatter.fields = inferred_frontmatter_fields(&result.observed_frontmatter_keys);
+    config.frontmatter.fields = inferred_frontmatter_fields(&result.init.observed_frontmatter_keys);
     render_or_write_init_from_config(root, config, mode)
 }
 
@@ -195,19 +198,19 @@ fn extract_markdown_facts_from_anneal_config(
     let external_roots = resolve_external_scan_roots(root, &options.external_roots)?;
     let mut result =
         parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?;
-    let _stats = crate::extract::resolve::resolve_all(
+    crate::extract::resolve::resolve_all(
         &mut result.graph,
-        &result.label_candidates,
-        &result.pending_edges,
+        &result.resolution.label_candidates,
+        &result.resolution.pending_edges,
         config,
         root,
-        &result.filename_index,
+        &result.resolution.filename_index,
     );
     let pre_cascade_index = crate::extract::resolve::build_node_index(&result.graph);
     let root_str = root.to_string();
     let cascade_results = crate::extract::resolve::cascade_unresolved(
         &mut result.graph,
-        &result.pending_edges,
+        &result.resolution.pending_edges,
         &pre_cascade_index,
         &root_str,
     );
@@ -215,8 +218,11 @@ fn extract_markdown_facts_from_anneal_config(
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
-    let mut edge_assertions =
-        EdgeAssertionCache::new(root, &result.file_origins, options.probe_edge_assertions);
+    let mut edge_assertions = EdgeAssertionCache::new(
+        root,
+        &result.files.file_origins,
+        options.probe_edge_assertions,
+    );
 
     for (node_id, handle) in result.graph.nodes() {
         let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
@@ -248,7 +254,7 @@ fn extract_markdown_facts_from_anneal_config(
         planned_edges,
     );
 
-    for extraction in &result.extractions {
+    for extraction in &result.files.extractions {
         emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
         emit_frontmatter_meta(&mut batch, &mut revisions, &result, &extraction.file);
     }
@@ -261,8 +267,8 @@ fn extract_markdown_facts_from_anneal_config(
         &result,
         options,
     )?;
-    let file_payloads = std::mem::take(&mut result.file_payloads);
-    let heading_spans = std::mem::take(&mut result.heading_spans);
+    let file_payloads = std::mem::take(&mut result.files.file_payloads);
+    let heading_spans = std::mem::take(&mut result.files.heading_spans);
     emit_content_spans(
         &mut batch,
         &mut revisions,
@@ -774,13 +780,14 @@ struct RevisionCache<'a> {
 impl<'a> RevisionCache<'a> {
     fn new(root: &'a Utf8Path, result: &parse::BuildResult) -> Self {
         let parsed_revisions = result
+            .files
             .file_payloads
             .iter()
             .map(|(file, payload)| (file.clone(), Revision::from(payload.revision.clone())))
             .collect();
         Self {
             root,
-            file_origins: Arc::clone(&result.file_origins),
+            file_origins: Arc::clone(&result.files.file_origins),
             parsed_revisions,
             revisions: HashMap::new(),
         }
@@ -1211,8 +1218,16 @@ fn handle_fact(
         _ => String::new(),
     };
     let snippet = match &handle.kind {
-        HandleKind::File(path) => result.file_snippets.get(path.as_str()).map(String::as_str),
-        HandleKind::Label { .. } => result.label_snippets.get(&handle.id).map(String::as_str),
+        HandleKind::File(path) => result
+            .files
+            .file_snippets
+            .get(path.as_str())
+            .map(String::as_str),
+        HandleKind::Label { .. } => result
+            .files
+            .label_snippets
+            .get(&handle.id)
+            .map(String::as_str),
         _ => None,
     };
 
@@ -1426,7 +1441,8 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
     take_parse_time_external_edges(&context.result.graph, &mut remaining, &mut ordered);
     remaining.append_remaining(&mut ordered);
 
-    let mut planned = Vec::with_capacity(ordered.len() + context.result.pending_edges.len());
+    let mut planned =
+        Vec::with_capacity(ordered.len() + context.result.resolution.pending_edges.len());
     for (ordinal, edge) in ordered.into_iter().enumerate() {
         let target_handle = context.result.graph.node(edge.target);
         planned.push(PlannedEdge {
@@ -1439,7 +1455,7 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
     }
 
     let ordered_count = planned.len();
-    for (idx, edge) in context.result.pending_edges.iter().enumerate() {
+    for (idx, edge) in context.result.resolution.pending_edges.iter().enumerate() {
         if context.node_index.contains_key(&edge.target_identity) {
             continue;
         }
@@ -1477,7 +1493,7 @@ fn edge_assertion_requests(
         }
     }
     let mut seen_code_handles = HashSet::new();
-    for reference in &result.code_refs {
+    for reference in &result.files.code_refs {
         if !seen_code_handles.insert(&reference.handle_id) {
             continue;
         }
@@ -1543,13 +1559,16 @@ fn take_label_edges(
     remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
-    let namespaces = crate::extract::resolve::infer_namespaces(&result.label_candidates, config);
+    let namespaces =
+        crate::extract::resolve::infer_namespaces(&result.resolution.label_candidates, config);
     let heading_first = result
+        .resolution
         .label_candidates
         .iter()
         .filter(|candidate| candidate.is_heading)
         .chain(
             result
+                .resolution
                 .label_candidates
                 .iter()
                 .filter(|candidate| !candidate.is_heading),
@@ -1594,7 +1613,7 @@ fn take_pending_edges(
     remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
 ) {
-    for edge in &result.pending_edges {
+    for edge in &result.resolution.pending_edges {
         let Some(target) = resolve_pending_target(root, result, pre_cascade_index, edge) else {
             continue;
         };
@@ -1622,7 +1641,7 @@ fn take_cascade_edges(
     ordered: &mut Vec<OrderedEdge>,
 ) {
     for cascade in cascade_results {
-        let Some(edge) = result.pending_edges.get(cascade.edge_index) else {
+        let Some(edge) = result.resolution.pending_edges.get(cascade.edge_index) else {
             continue;
         };
         for candidate in &cascade.candidates {
@@ -1687,6 +1706,7 @@ fn resolve_pending_target(
         )
         .or_else(|| {
             result
+                .resolution
                 .filename_index
                 .get(&edge.target_identity)
                 .filter(|paths| paths.len() == 1)
@@ -1713,7 +1733,7 @@ fn emit_frontmatter_meta(
     result: &parse::BuildResult,
     file: &str,
 ) {
-    let Some(payload) = result.file_payloads.get(file) else {
+    let Some(payload) = result.files.file_payloads.get(file) else {
         return;
     };
     let identity = identity_for(batch, revisions, file, file);
@@ -1732,7 +1752,7 @@ fn emit_implausible_ref_meta(
     revisions: &mut RevisionCache<'_>,
     result: &parse::BuildResult,
 ) -> Result<()> {
-    for reference in &result.implausible_refs {
+    for reference in &result.files.implausible_refs {
         // CR-D31: adapter-qualified diagnostic evidence lives in stored facts
         // even when it is not a graph relationship.
         let value = serde_json::json!({
@@ -1771,7 +1791,7 @@ fn emit_code_ref_meta(
     let mut drift_cache = CodeDriftEvidenceCache::open(root, drift_mode);
     let mut drift_targets = Vec::<(FactIdentity, String)>::new();
     let mut drift_requests = Vec::<CodeDriftEvidenceRequest>::new();
-    for reference in &result.code_refs {
+    for reference in &result.files.code_refs {
         if !seen.insert(reference.handle_id.clone()) {
             continue;
         }
@@ -2000,6 +2020,7 @@ fn emit_content_spans(
                     start_line,
                     end_line: start_line.saturating_add(line_count.saturating_sub(1)),
                     summary: result
+                        .files
                         .file_snippets
                         .get(&path_str)
                         .cloned()
@@ -2012,7 +2033,7 @@ fn emit_content_spans(
             }
             ContentTask::Label(node_id) => {
                 let handle = result.graph.node(node_id);
-                let Some(summary) = result.label_snippets.get(&handle.id) else {
+                let Some(summary) = result.files.label_snippets.get(&handle.id) else {
                     continue;
                 };
                 let file = handle.file_path.as_deref().map_or("", Utf8Path::as_str);

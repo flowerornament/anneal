@@ -42,29 +42,6 @@ static VERSION_FILENAME_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 // ---------------------------------------------------------------------------
-// Resolve result types
-// ---------------------------------------------------------------------------
-
-struct ResolveResult {
-    labels_resolved: usize,
-    labels_skipped: usize,
-}
-
-/// Overall statistics from the full resolution pipeline.
-///
-/// Native extraction currently runs resolution for its graph side effects; tests
-/// inspect selected counters, while the production adapter ignores the summary.
-#[allow(dead_code)]
-pub(crate) struct ResolveStats {
-    pub(crate) namespaces: HashSet<String>,
-    pub(crate) labels_resolved: usize,
-    pub(crate) labels_skipped: usize,
-    pub(crate) versions_resolved: usize,
-    pub(crate) pending_edges_resolved: usize,
-    pub(crate) pending_edges_unresolved: usize,
-}
-
-// ---------------------------------------------------------------------------
 // Namespace inference (HANDLE-05, KB-D4)
 // ---------------------------------------------------------------------------
 
@@ -154,10 +131,7 @@ fn resolve_labels(
     candidates: &[LabelCandidate],
     namespaces: &HashSet<String>,
     node_index: &mut HashMap<String, NodeId>,
-) -> ResolveResult {
-    let mut labels_resolved: usize = 0;
-    let mut labels_skipped: usize = 0;
-
+) {
     // Two passes: heading candidates first (definitions), then non-heading (references).
     // This ensures heading-defined labels always own the file_path.
     let heading_first = candidates
@@ -167,7 +141,6 @@ fn resolve_labels(
 
     for candidate in heading_first {
         if !namespaces.contains(&candidate.prefix) {
-            labels_skipped += 1;
             continue;
         }
 
@@ -182,7 +155,6 @@ fn resolve_labels(
                 Some(candidate.file_path.clone()),
             ));
             node_index.insert(label_id, node);
-            labels_resolved += 1;
             node
         };
 
@@ -190,11 +162,6 @@ fn resolve_labels(
         if let Some(&source_node) = node_index.get(&file_id) {
             graph.add_edge(source_node, label_node, candidate.edge_kind.clone());
         }
-    }
-
-    ResolveResult {
-        labels_resolved,
-        labels_skipped,
     }
 }
 
@@ -209,11 +176,7 @@ fn resolve_labels(
 /// 2. Create a Version handle node
 /// 3. Add Supersedes edges forming a supersession chain (v3 -> v2 -> v1)
 ///
-/// Returns the count of version handles created.
-pub(crate) fn resolve_versions(
-    graph: &mut DiGraph,
-    node_index: &mut HashMap<String, NodeId>,
-) -> usize {
+pub(crate) fn resolve_versions(graph: &mut DiGraph, node_index: &mut HashMap<String, NodeId>) {
     // Collect versioned files from existing File handles
     // Group by base name: base -> Vec<(version, file_node_id)>
     let mut versioned: HashMap<String, Vec<(u32, NodeId)>> = HashMap::new();
@@ -231,8 +194,6 @@ pub(crate) fn resolve_versions(
         }
     }
 
-    let mut count: usize = 0;
-
     for (base, mut versions) in versioned {
         // Sort by version number ascending
         versions.sort_by_key(|(v, _)| *v);
@@ -249,7 +210,6 @@ pub(crate) fn resolve_versions(
             let version_node =
                 graph.add_node(Handle::version(*file_node, *version, &base, file_status));
             node_index.insert(version_id, version_node);
-            count += 1;
 
             // Add Supersedes edge: this version supersedes the previous one
             if let Some(prev) = prev_version_node {
@@ -259,8 +219,6 @@ pub(crate) fn resolve_versions(
             prev_version_node = Some(version_node);
         }
     }
-
-    count
 }
 
 // ---------------------------------------------------------------------------
@@ -275,16 +233,13 @@ pub(crate) fn resolve_versions(
 /// `resolve_file_path` (D-02), then falls back to the corpus-wide filename
 /// index for unambiguous matches.
 ///
-/// Returns the count of edges resolved.
 pub(crate) fn resolve_pending_edges(
     graph: &mut DiGraph,
     pending: &[PendingEdge],
     node_index: &HashMap<String, NodeId>,
     root: &Utf8Path,
     filename_index: &HashMap<String, Vec<Utf8PathBuf>>,
-) -> usize {
-    let mut resolved: usize = 0;
-
+) {
     for edge in pending {
         let resolved_target = node_index.get(&edge.target_identity).copied().or_else(|| {
             // D-02: Bare filename resolution
@@ -319,11 +274,8 @@ pub(crate) fn resolve_pending_edges(
             } else {
                 graph.add_edge(edge.source, target_id, edge.kind.clone());
             }
-            resolved += 1;
         }
     }
-
-    resolved
 }
 
 // ---------------------------------------------------------------------------
@@ -402,25 +354,15 @@ pub(crate) fn resolve_all(
     config: &AnnealConfig,
     root: &Utf8Path,
     filename_index: &HashMap<String, Vec<Utf8PathBuf>>,
-) -> ResolveStats {
+) {
     let namespaces = infer_namespaces(candidates, config);
     let mut node_index = build_node_index(graph);
 
-    let label_result = resolve_labels(graph, candidates, &namespaces, &mut node_index);
-    let versions_resolved = resolve_versions(graph, &mut node_index);
+    resolve_labels(graph, candidates, &namespaces, &mut node_index);
+    resolve_versions(graph, &mut node_index);
 
     // node_index already contains label and version nodes (mutated in-place above)
-    let pending_resolved = resolve_pending_edges(graph, pending, &node_index, root, filename_index);
-    let pending_unresolved = pending.len() - pending_resolved;
-
-    ResolveStats {
-        namespaces,
-        labels_resolved: label_result.labels_resolved,
-        labels_skipped: label_result.labels_skipped,
-        versions_resolved,
-        pending_edges_resolved: pending_resolved,
-        pending_edges_unresolved: pending_unresolved,
-    }
+    resolve_pending_edges(graph, pending, &node_index, root, filename_index);
 }
 
 // ---------------------------------------------------------------------------

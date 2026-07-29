@@ -65,6 +65,7 @@ pub(crate) struct LabelCandidate {
 }
 
 /// Result of scanning a single file's body content.
+#[derive(Default)]
 pub(crate) struct ScanResult {
     pub(crate) label_candidates: Vec<LabelCandidate>,
     /// Heading spans discovered in document order.
@@ -119,6 +120,20 @@ impl CodePathRef {
             start_line: None,
             end_line: None,
             source_line,
+        }
+    }
+
+    fn discovered_ref(&self) -> DiscoveredRef {
+        DiscoveredRef {
+            raw: self.handle_id.clone(),
+            hint: RefHint::External,
+            source: RefSource::Body,
+            edge_kind: EdgeKind::Cites,
+            inverse: false,
+            span: Some(SourceSpan {
+                file: self.file.clone(),
+                line: self.source_line,
+            }),
         }
     }
 }
@@ -193,18 +208,140 @@ fn infer_edge_kind_from_text_ref(text: &str, matched: TextRefMatch) -> EdgeKind 
     }
 }
 
-struct BodyRefRecorder<'a> {
+/// Immutable inputs shared by every extraction operation for one markdown body.
+///
+/// The logical file path is intentionally distinct from the physical path used
+/// by the adapter for reads and provenance. Body references are identities in
+/// the corpus graph, so every emitted span and code-reference handle uses this
+/// logical path.
+struct BodyScanContext<'a> {
     file_path: &'a Utf8Path,
-    file_path_str: &'a str,
-    line: u32,
-    is_heading: bool,
-    result: &'a mut ScanResult,
-    discovered_refs: &'a mut Vec<DiscoveredRef>,
+    line_index: &'a LineIndex,
+    code_path_roots: &'a [String],
 }
 
-impl BodyRefRecorder<'_> {
-    fn record(&mut self, raw: &str, hint: RefHint, edge_kind: &EdgeKind) {
-        self.record_with_disposition(raw, hint, edge_kind, UnresolvedRefDisposition::CorpusGate);
+/// One canonical body reference before resolver and extraction projections.
+enum BodyReference {
+    Corpus {
+        discovered: DiscoveredRef,
+        is_heading: bool,
+        unresolved_disposition: UnresolvedRefDisposition,
+    },
+    Code(CodePathRef),
+}
+
+/// Canonical output of one markdown-body scan.
+struct BodyScanOutput {
+    references: Vec<BodyReference>,
+    heading_spans: Vec<HeadingSpan>,
+}
+
+impl BodyScanOutput {
+    /// Derive the legacy resolver inputs and typed extraction facts together.
+    ///
+    /// This is the sole projection boundary: scanning records each reference
+    /// once, so the two downstream representations cannot drift independently.
+    fn into_projections(self) -> (ScanResult, Vec<DiscoveredRef>) {
+        let mut result = ScanResult {
+            heading_spans: self.heading_spans,
+            ..ScanResult::default()
+        };
+        let mut discovered_refs = Vec::with_capacity(self.references.len());
+
+        for reference in self.references {
+            match reference {
+                BodyReference::Corpus {
+                    discovered,
+                    is_heading,
+                    unresolved_disposition,
+                } => {
+                    match &discovered.hint {
+                        RefHint::Label { prefix, number } => {
+                            let file_path = discovered
+                                .span
+                                .as_ref()
+                                .map(|span| Utf8PathBuf::from(&span.file))
+                                .expect("body corpus references carry a source span");
+                            result.label_candidates.push(LabelCandidate {
+                                prefix: prefix.clone(),
+                                number: *number,
+                                file_path,
+                                edge_kind: discovered.edge_kind.clone(),
+                                is_heading,
+                            });
+                        }
+                        RefHint::FilePath => {
+                            let line = discovered
+                                .span
+                                .as_ref()
+                                .map(|span| span.line)
+                                .expect("body corpus references carry a source span");
+                            result.file_refs.push(FileRef {
+                                target: discovered.raw.clone(),
+                                line,
+                                unresolved_disposition,
+                            });
+                        }
+                        RefHint::SectionRef => {
+                            let section = discovered
+                                .raw
+                                .strip_prefix("section:")
+                                .or_else(|| discovered.raw.strip_prefix('§'))
+                                .unwrap_or(&discovered.raw);
+                            let line = discovered
+                                .span
+                                .as_ref()
+                                .map(|span| span.line)
+                                .expect("body corpus references carry a source span");
+                            result.section_refs.push((section.to_string(), line));
+                        }
+                        RefHint::External | RefHint::Implausible { .. } | RefHint::CodePath => {
+                            unreachable!("non-corpus hints are not recorded as corpus references")
+                        }
+                    }
+                    discovered_refs.push(discovered);
+                }
+                BodyReference::Code(code_ref) => {
+                    discovered_refs.push(code_ref.discovered_ref());
+                    result.code_refs.push(code_ref);
+                }
+            }
+        }
+
+        (result, discovered_refs)
+    }
+}
+
+/// Mutable state for scanning one markdown body into canonical references.
+struct BodyScanner<'a> {
+    context: BodyScanContext<'a>,
+    references: Vec<BodyReference>,
+}
+
+impl<'a> BodyScanner<'a> {
+    fn new(context: BodyScanContext<'a>) -> Self {
+        Self {
+            context,
+            references: Vec::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        raw: &str,
+        hint: RefHint,
+        edge_kind: &EdgeKind,
+        line: u32,
+        is_heading: bool,
+    ) {
+        self.record_with_disposition(
+            raw,
+            hint,
+            edge_kind,
+            line,
+            is_heading,
+            UnresolvedRefDisposition::CorpusGate,
+        );
     }
 
     fn record_with_disposition(
@@ -212,53 +349,33 @@ impl BodyRefRecorder<'_> {
         raw: &str,
         hint: RefHint,
         edge_kind: &EdgeKind,
+        line: u32,
+        is_heading: bool,
         unresolved_disposition: UnresolvedRefDisposition,
     ) {
         let discovered_edge_kind = match &hint {
-            RefHint::Label { prefix, number } => {
-                self.result.label_candidates.push(LabelCandidate {
-                    prefix: prefix.clone(),
-                    number: *number,
-                    file_path: self.file_path.to_path_buf(),
-                    edge_kind: edge_kind.clone(),
-                    is_heading: self.is_heading,
-                });
-                edge_kind.clone()
-            }
-            RefHint::FilePath => {
-                self.result.file_refs.push(FileRef {
-                    target: raw.to_string(),
-                    line: self.line,
-                    unresolved_disposition,
-                });
-                edge_kind.clone()
-            }
-            RefHint::SectionRef => {
-                let section_num = raw
-                    .strip_prefix("section:")
-                    .or_else(|| raw.strip_prefix('§'))
-                    .unwrap_or(raw);
-                self.result
-                    .section_refs
-                    .push((section_num.to_string(), self.line));
-                EdgeKind::Cites
-            }
+            RefHint::Label { .. } | RefHint::FilePath => edge_kind.clone(),
+            RefHint::SectionRef => EdgeKind::Cites,
             // Body code paths flow through the dedicated code-ref pipeline
             // (`scan_code_path_refs`), never this recorder; a CodePath hint here
             // has no body-text edge to record.
             RefHint::External | RefHint::Implausible { .. } | RefHint::CodePath => return,
         };
 
-        self.discovered_refs.push(DiscoveredRef {
-            raw: raw.to_string(),
-            hint,
-            source: RefSource::Body,
-            edge_kind: discovered_edge_kind,
-            inverse: false,
-            span: Some(SourceSpan {
-                file: self.file_path_str.to_string(),
-                line: self.line,
-            }),
+        self.references.push(BodyReference::Corpus {
+            discovered: DiscoveredRef {
+                raw: raw.to_string(),
+                hint,
+                source: RefSource::Body,
+                edge_kind: discovered_edge_kind,
+                inverse: false,
+                span: Some(SourceSpan {
+                    file: self.context.file_path.to_string(),
+                    line,
+                }),
+            },
+            is_heading,
+            unresolved_disposition,
         });
     }
 }
@@ -274,22 +391,19 @@ impl BodyRefRecorder<'_> {
 /// are scanned with regex patterns. Text events within the same block element
 /// are concatenated before regex matching.
 ///
-/// Returns both a `ScanResult` (for backward compat) and a `Vec<DiscoveredRef>`
-/// for the new typed extraction pipeline.
+/// Returns the resolver projection and typed extraction projection derived from
+/// one canonical body-reference stream.
 pub(crate) fn scan_file_cmark(
     body: &str,
     file_path: &Utf8Path,
     line_index: &LineIndex,
     code_path_roots: &[String],
 ) -> (ScanResult, Vec<DiscoveredRef>) {
-    let mut result = ScanResult {
-        label_candidates: Vec::new(),
-        heading_spans: Vec::new(),
-        section_refs: Vec::new(),
-        file_refs: Vec::new(),
-        code_refs: Vec::new(),
-    };
-    let mut discovered_refs: Vec<DiscoveredRef> = Vec::new();
+    let mut scanner = BodyScanner::new(BodyScanContext {
+        file_path,
+        line_index,
+        code_path_roots,
+    });
     let mut heading_drafts = Vec::new();
 
     let mut opts = Options::empty();
@@ -308,8 +422,6 @@ pub(crate) fn scan_file_cmark(
     let mut html_accumulator = String::new();
     let mut html_block_start_offset: usize = 0;
 
-    let file_path_str = file_path.as_str();
-
     for (event, range) in parser.into_offset_iter() {
         #[allow(clippy::match_same_arms)] // Code/Math arms intentionally explicit for documentation
         match event {
@@ -324,16 +436,7 @@ pub(crate) fn scan_file_cmark(
             // Inline code spans are scanned only for code-path references.
             Event::Code(code) => {
                 if !in_code_block {
-                    scan_code_path_refs(
-                        code.as_ref(),
-                        range.start,
-                        file_path,
-                        file_path_str,
-                        line_index,
-                        code_path_roots,
-                        &mut result,
-                        &mut discovered_refs,
-                    );
+                    scanner.scan_code_path_refs(code.as_ref(), range.start);
                 }
             }
             Event::InlineMath(_) | Event::DisplayMath(_) => {}
@@ -347,17 +450,7 @@ pub(crate) fn scan_file_cmark(
             Event::End(TagEnd::HtmlBlock) => {
                 in_html_block = false;
                 if !html_accumulator.is_empty() {
-                    scan_text_for_refs(
-                        &html_accumulator,
-                        html_block_start_offset,
-                        file_path,
-                        file_path_str,
-                        line_index,
-                        false,
-                        &mut result,
-                        &mut discovered_refs,
-                        code_path_roots,
-                    );
+                    scanner.scan_text_for_refs(&html_accumulator, html_block_start_offset, false);
                     html_accumulator.clear();
                 }
             }
@@ -376,17 +469,7 @@ pub(crate) fn scan_file_cmark(
                     if !heading.is_empty() {
                         let start_line = line_index.offset_to_line(active.start_offset);
                         // Scan heading text for label definitions (is_heading = true)
-                        scan_text_for_refs(
-                            &heading,
-                            active.start_offset,
-                            file_path,
-                            file_path_str,
-                            line_index,
-                            true,
-                            &mut result,
-                            &mut discovered_refs,
-                            code_path_roots,
-                        );
+                        scanner.scan_text_for_refs(&heading, active.start_offset, true);
                         heading_drafts.push(HeadingDraft {
                             level: active.level,
                             title: heading,
@@ -416,18 +499,12 @@ pub(crate) fn scan_file_cmark(
                     LinkType::WikiLink { .. } => {
                         // Wiki-links: [[target]] - dest_url contains the target
                         if !dest.is_empty() {
-                            BodyRefRecorder {
-                                file_path,
-                                file_path_str,
-                                line,
-                                is_heading: false,
-                                result: &mut result,
-                                discovered_refs: &mut discovered_refs,
-                            }
-                            .record_with_disposition(
+                            scanner.record_with_disposition(
                                 dest,
                                 classify_body_ref(dest),
                                 &EdgeKind::Cites,
+                                line,
+                                false,
                                 UnresolvedRefDisposition::AmbiguousExternalOk,
                             );
                         }
@@ -442,41 +519,18 @@ pub(crate) fn scan_file_cmark(
                                 dest
                             };
                             if !clean_dest.is_empty() {
-                                if record_source_link_ref(
-                                    dest,
-                                    offset,
-                                    file_path,
-                                    file_path_str,
-                                    line_index,
-                                    &mut result,
-                                    &mut discovered_refs,
-                                ) {
+                                if scanner.record_source_link_ref(dest, offset) {
                                     continue;
                                 }
-                                if record_code_path_ref(
-                                    clean_dest,
-                                    offset,
-                                    file_path,
-                                    file_path_str,
-                                    line_index,
-                                    code_path_roots,
-                                    &mut result,
-                                    &mut discovered_refs,
-                                ) {
+                                if scanner.record_code_path_ref(clean_dest, offset) {
                                     continue;
                                 }
-                                BodyRefRecorder {
-                                    file_path,
-                                    file_path_str,
-                                    line,
-                                    is_heading: false,
-                                    result: &mut result,
-                                    discovered_refs: &mut discovered_refs,
-                                }
-                                .record(
+                                scanner.record(
                                     clean_dest,
                                     classify_body_ref(clean_dest),
                                     &EdgeKind::Cites,
+                                    line,
+                                    false,
                                 );
                             }
                         }
@@ -495,17 +549,7 @@ pub(crate) fn scan_file_cmark(
                 TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_) | TagEnd::TableCell,
             ) => {
                 if !in_code_block && !text_accumulator.is_empty() {
-                    scan_text_for_refs(
-                        &text_accumulator,
-                        block_start_offset,
-                        file_path,
-                        file_path_str,
-                        line_index,
-                        false,
-                        &mut result,
-                        &mut discovered_refs,
-                        code_path_roots,
-                    );
+                    scanner.scan_text_for_refs(&text_accumulator, block_start_offset, false);
                     text_accumulator.clear();
                 }
             }
@@ -530,33 +574,13 @@ pub(crate) fn scan_file_cmark(
                     html_accumulator.push_str(html.as_ref());
                 } else {
                     // Standalone HTML line outside HtmlBlock
-                    scan_text_for_refs(
-                        html.as_ref(),
-                        range.start,
-                        file_path,
-                        file_path_str,
-                        line_index,
-                        false,
-                        &mut result,
-                        &mut discovered_refs,
-                        code_path_roots,
-                    );
+                    scanner.scan_text_for_refs(html.as_ref(), range.start, false);
                 }
             }
 
             Event::InlineHtml(html) => {
                 if !in_code_block {
-                    scan_text_for_refs(
-                        html.as_ref(),
-                        range.start,
-                        file_path,
-                        file_path_str,
-                        line_index,
-                        false,
-                        &mut result,
-                        &mut discovered_refs,
-                        code_path_roots,
-                    );
+                    scanner.scan_text_for_refs(html.as_ref(), range.start, false);
                 }
             }
 
@@ -575,26 +599,18 @@ pub(crate) fn scan_file_cmark(
 
     // Flush any remaining accumulated text (e.g., body without block wrappers)
     if !text_accumulator.is_empty() && !in_code_block {
-        scan_text_for_refs(
-            &text_accumulator,
-            block_start_offset,
-            file_path,
-            file_path_str,
-            line_index,
-            false,
-            &mut result,
-            &mut discovered_refs,
-            code_path_roots,
-        );
+        scanner.scan_text_for_refs(&text_accumulator, block_start_offset, false);
     }
 
-    result.heading_spans = finalize_heading_spans(
-        file_path_str,
-        &heading_drafts,
-        body_end_line(body, line_index),
-    );
-
-    (result, discovered_refs)
+    BodyScanOutput {
+        references: scanner.references,
+        heading_spans: finalize_heading_spans(
+            file_path.as_str(),
+            &heading_drafts,
+            body_end_line(body, line_index),
+        ),
+    }
+    .into_projections()
 }
 
 const fn heading_level_number(level: HeadingLevel) -> u32 {
@@ -760,32 +776,12 @@ fn classify_body_ref(value: &str) -> RefHint {
     RefHint::FilePath
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Scan accumulated text for labels, section refs, file paths using the same
 /// regex patterns as the old scanner. Creates both `LabelCandidate`/ScanResult
 /// entries and `DiscoveredRef` entries.
-fn scan_text_for_refs(
-    text: &str,
-    block_start_offset: usize,
-    file_path: &Utf8Path,
-    file_path_str: &str,
-    line_index: &LineIndex,
-    is_heading: bool,
-    result: &mut ScanResult,
-    discovered_refs: &mut Vec<DiscoveredRef>,
-    code_path_roots: &[String],
-) {
-    let line = line_index.offset_to_line(block_start_offset);
-    {
-        let mut recorder = BodyRefRecorder {
-            file_path,
-            file_path_str,
-            line,
-            is_heading,
-            result,
-            discovered_refs,
-        };
-
+impl BodyScanner<'_> {
+    fn scan_text_for_refs(&mut self, text: &str, block_start_offset: usize, is_heading: bool) {
+        let line = self.context.line_index.offset_to_line(block_start_offset);
         // Labels — infer edge kind per-line, not per-block
         for caps in LABEL_RE.captures_iter(text) {
             let prefix = caps
@@ -806,10 +802,12 @@ fn scan_text_for_refs(
                         start,
                     },
                 );
-                recorder.record(
+                self.record(
                     &format!("{prefix}-{number}"),
                     RefHint::Label { prefix, number },
                     &edge_kind,
+                    line,
+                    is_heading,
                 );
             }
         }
@@ -833,7 +831,13 @@ fn scan_text_for_refs(
                         start,
                     },
                 );
-                recorder.record(&format!("§{section_num}"), RefHint::SectionRef, &edge_kind);
+                self.record(
+                    &format!("§{section_num}"),
+                    RefHint::SectionRef,
+                    &edge_kind,
+                    line,
+                    is_heading,
+                );
             }
         }
 
@@ -860,43 +864,58 @@ fn scan_text_for_refs(
                     start: m.start(),
                 },
             );
-            recorder.record(path, RefHint::FilePath, &edge_kind);
+            self.record(path, RefHint::FilePath, &edge_kind, line, is_heading);
+        }
+
+        self.scan_code_path_refs(text, block_start_offset);
+    }
+
+    fn scan_code_path_refs(&mut self, text: &str, block_start_offset: usize) {
+        for captures in CODE_PATH_RE.captures_iter(text) {
+            let Some(path_match) = captures.name("path") else {
+                continue;
+            };
+            if !has_code_path_left_boundary(text, path_match.start()) {
+                continue;
+            }
+            let path = trim_code_path_punctuation(path_match.as_str());
+            if path.is_empty() || !is_recognized_code_path(path, self.context.code_path_roots) {
+                continue;
+            }
+            let start_line = captures
+                .name("start")
+                .and_then(|m| m.as_str().parse::<u32>().ok());
+            let end_line = captures
+                .name("end")
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+                .or(start_line);
+            let source_line = self
+                .context
+                .line_index
+                .offset_to_line(block_start_offset + path_match.start());
+            self.record_normalized_code_path_ref(path, start_line, end_line, source_line);
         }
     }
 
-    scan_code_path_refs(
-        text,
-        block_start_offset,
-        file_path,
-        file_path_str,
-        line_index,
-        code_path_roots,
-        result,
-        discovered_refs,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scan_code_path_refs(
-    text: &str,
-    block_start_offset: usize,
-    file_path: &Utf8Path,
-    file_path_str: &str,
-    line_index: &LineIndex,
-    code_path_roots: &[String],
-    result: &mut ScanResult,
-    discovered_refs: &mut Vec<DiscoveredRef>,
-) {
-    for captures in CODE_PATH_RE.captures_iter(text) {
-        let Some(path_match) = captures.name("path") else {
-            continue;
+    fn record_code_path_ref(&mut self, raw: &str, block_start_offset: usize) -> bool {
+        let Some(captures) = CODE_PATH_RE.captures(raw) else {
+            return false;
         };
-        if !has_code_path_left_boundary(text, path_match.start()) {
-            continue;
+        let Some(path_match) = captures.name("path") else {
+            return false;
+        };
+        if path_match.start() != 0 {
+            return false;
+        }
+        let matched = captures
+            .get(0)
+            .map_or("", |m| trim_code_path_punctuation(m.as_str()));
+        if matched.len() != trim_code_path_punctuation(raw).len() {
+            return false;
         }
         let path = trim_code_path_punctuation(path_match.as_str());
-        if path.is_empty() || !is_recognized_code_path(path, code_path_roots) {
-            continue;
+        if path.is_empty() || !is_recognized_code_path(path, self.context.code_path_roots) {
+            return false;
         }
         let start_line = captures
             .name("start")
@@ -905,140 +924,49 @@ fn scan_code_path_refs(
             .name("end")
             .and_then(|m| m.as_str().parse::<u32>().ok())
             .or(start_line);
-        let source_line = line_index.offset_to_line(block_start_offset + path_match.start());
-        record_normalized_code_path_ref(
-            path,
+        let source_line = self.context.line_index.offset_to_line(block_start_offset);
+        self.record_normalized_code_path_ref(path, start_line, end_line, source_line);
+        true
+    }
+
+    fn record_source_link_ref(&mut self, raw: &str, block_start_offset: usize) -> bool {
+        let (without_fragment, fragment_line) = split_line_fragment(raw);
+        let (path, suffix_start, suffix_end) = split_line_suffix(without_fragment);
+        let path = trim_code_path_punctuation(path);
+        if !is_source_file_path(path) {
+            return false;
+        }
+        let start_line = suffix_start.or(fragment_line);
+        let end_line = suffix_end.or(start_line);
+        let source_line = self.context.line_index.offset_to_line(block_start_offset);
+        self.record_normalized_code_path_ref(path, start_line, end_line, source_line);
+        true
+    }
+
+    fn record_normalized_code_path_ref(
+        &mut self,
+        path: &str,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+        source_line: u32,
+    ) {
+        let end_line = match (start_line, end_line) {
+            (Some(start), Some(end)) if end < start => Some(start),
+            (_, end) => end,
+        };
+        let file_path = self.context.file_path.as_str();
+        let target = code_ref_target(path, start_line, end_line);
+        let handle_id = code_ref_handle_id(file_path, source_line, &target);
+        self.references.push(BodyReference::Code(CodePathRef {
+            handle_id,
+            file: file_path.to_string(),
+            target,
+            path: path.to_string(),
             start_line,
             end_line,
             source_line,
-            file_path,
-            file_path_str,
-            result,
-            discovered_refs,
-        );
+        }));
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_code_path_ref(
-    raw: &str,
-    block_start_offset: usize,
-    file_path: &Utf8Path,
-    file_path_str: &str,
-    line_index: &LineIndex,
-    code_path_roots: &[String],
-    result: &mut ScanResult,
-    discovered_refs: &mut Vec<DiscoveredRef>,
-) -> bool {
-    let Some(captures) = CODE_PATH_RE.captures(raw) else {
-        return false;
-    };
-    let Some(path_match) = captures.name("path") else {
-        return false;
-    };
-    if path_match.start() != 0 {
-        return false;
-    }
-    let matched = captures
-        .get(0)
-        .map_or("", |m| trim_code_path_punctuation(m.as_str()));
-    if matched.len() != trim_code_path_punctuation(raw).len() {
-        return false;
-    }
-    let path = trim_code_path_punctuation(path_match.as_str());
-    if path.is_empty() || !is_recognized_code_path(path, code_path_roots) {
-        return false;
-    }
-    let start_line = captures
-        .name("start")
-        .and_then(|m| m.as_str().parse::<u32>().ok());
-    let end_line = captures
-        .name("end")
-        .and_then(|m| m.as_str().parse::<u32>().ok())
-        .or(start_line);
-    let source_line = line_index.offset_to_line(block_start_offset);
-    record_normalized_code_path_ref(
-        path,
-        start_line,
-        end_line,
-        source_line,
-        file_path,
-        file_path_str,
-        result,
-        discovered_refs,
-    );
-    true
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_source_link_ref(
-    raw: &str,
-    block_start_offset: usize,
-    file_path: &Utf8Path,
-    file_path_str: &str,
-    line_index: &LineIndex,
-    result: &mut ScanResult,
-    discovered_refs: &mut Vec<DiscoveredRef>,
-) -> bool {
-    let (without_fragment, fragment_line) = split_line_fragment(raw);
-    let (path, suffix_start, suffix_end) = split_line_suffix(without_fragment);
-    let path = trim_code_path_punctuation(path);
-    if !is_source_file_path(path) {
-        return false;
-    }
-    let start_line = suffix_start.or(fragment_line);
-    let end_line = suffix_end.or(start_line);
-    let source_line = line_index.offset_to_line(block_start_offset);
-    record_normalized_code_path_ref(
-        path,
-        start_line,
-        end_line,
-        source_line,
-        file_path,
-        file_path_str,
-        result,
-        discovered_refs,
-    );
-    true
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_normalized_code_path_ref(
-    path: &str,
-    start_line: Option<u32>,
-    end_line: Option<u32>,
-    source_line: u32,
-    file_path: &Utf8Path,
-    file_path_str: &str,
-    result: &mut ScanResult,
-    discovered_refs: &mut Vec<DiscoveredRef>,
-) {
-    let end_line = match (start_line, end_line) {
-        (Some(start), Some(end)) if end < start => Some(start),
-        (_, end) => end,
-    };
-    let target = code_ref_target(path, start_line, end_line);
-    let handle_id = code_ref_handle_id(file_path_str, source_line, &target);
-    result.code_refs.push(CodePathRef {
-        handle_id: handle_id.clone(),
-        file: file_path_str.to_string(),
-        target,
-        path: path.to_string(),
-        start_line,
-        end_line,
-        source_line,
-    });
-    discovered_refs.push(DiscoveredRef {
-        raw: handle_id,
-        hint: RefHint::External,
-        source: RefSource::Body,
-        edge_kind: EdgeKind::Cites,
-        inverse: false,
-        span: Some(SourceSpan {
-            file: file_path.to_string(),
-            line: source_line,
-        }),
-    });
 }
 
 fn code_ref_handle_id(file_path: &str, source_line: u32, target: &str) -> String {

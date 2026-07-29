@@ -158,9 +158,8 @@ pub(crate) struct FileRef {
 
 /// Uniform per-file extraction output.
 ///
-/// Collects all information extracted from a single markdown file before
-/// resolution. Runs alongside existing `ScanResult`/`PendingEdge` types
-/// (not replacing them).
+/// Collects the typed metadata and reference projection for one markdown file
+/// before graph resolution.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FileExtraction {
     /// File path relative to the corpus root.

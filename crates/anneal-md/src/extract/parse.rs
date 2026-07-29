@@ -1,6 +1,5 @@
 //! Markdown parser that turns source files into extraction artifacts.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -70,8 +69,7 @@ pub(crate) fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Parsed frontmatter result: status, metadata, field edges, all keys, and parse
-/// success (D-05, D-07).
+/// Parsed frontmatter result: status, metadata, field edges, and all keys (D-05, D-07).
 #[derive(Default)]
 pub(crate) struct FrontmatterParseResult {
     pub(crate) status: Option<String>,
@@ -79,8 +77,6 @@ pub(crate) struct FrontmatterParseResult {
     pub(crate) field_edges: Vec<FrontmatterEdge>,
     /// All frontmatter keys, for init auto-detection (D-07).
     pub(crate) all_keys: Vec<String>,
-    /// `true` when YAML deserialization failed (section 7.2 silent-failure tracking).
-    pub(crate) yaml_failed: bool,
     /// Explicit `date:` frontmatter field (lower priority than `updated:`).
     pub(crate) frontmatter_date: Option<chrono::NaiveDate>,
 }
@@ -88,22 +84,15 @@ pub(crate) struct FrontmatterParseResult {
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
 ///
 /// Deserializes as `serde_yaml_ng::Value` to handle arbitrary fields and
-/// YAML type coercion. On parse failure, returns defaults with `yaml_failed`
-/// set to `true` so callers can track files with malformed YAML.
+/// YAML type coercion. On parse failure, returns an empty extraction.
 /// The `config` parameter drives which frontmatter keys produce edges.
 pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> FrontmatterParseResult {
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return FrontmatterParseResult {
-            yaml_failed: true,
-            ..FrontmatterParseResult::default()
-        };
+        return FrontmatterParseResult::default();
     };
 
     let Some(mapping) = value.as_mapping() else {
-        return FrontmatterParseResult {
-            yaml_failed: true,
-            ..FrontmatterParseResult::default()
-        };
+        return FrontmatterParseResult::default();
     };
 
     // Collect all frontmatter keys for init auto-detection (D-07)
@@ -182,7 +171,6 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         metadata,
         field_edges,
         all_keys,
-        yaml_failed: false,
         frontmatter_date,
     }
 }
@@ -297,14 +285,6 @@ pub(crate) struct ImplausibleRef {
     pub(crate) line: Option<u32>,
 }
 
-/// An external URL found in frontmatter.
-pub(crate) struct ExternalRef {
-    #[allow(dead_code)]
-    pub(crate) file: String,
-    #[allow(dead_code)]
-    pub(crate) url: String,
-}
-
 /// Extract a `YYYY-MM-DD` date prefix from a filename.
 ///
 /// Matches filenames like `2026-03-29-architecture-spike-findings.md`.
@@ -331,30 +311,42 @@ fn resolve_file_date(
         .or_else(|| date_from_filename(filename))
 }
 
-/// Result of `build_graph`: the populated graph, label candidates for namespace
-/// inference, pending edges for resolution, and observed status values for
-/// lattice inference.
+/// Result of graph construction, grouped by the downstream phase that owns
+/// each artifact.
 pub(crate) struct BuildResult {
     pub(crate) graph: DiGraph,
+    pub(crate) resolution: ResolutionInputs,
+    pub(crate) init: InitObservations,
+    pub(crate) files: FileArtifacts<Arc<HashMap<String, Utf8PathBuf>>>,
+}
+
+/// Inputs retained for namespace, version, and pending-edge resolution.
+#[derive(Default)]
+pub(crate) struct ResolutionInputs {
     pub(crate) label_candidates: Vec<LabelCandidate>,
     pub(crate) pending_edges: Vec<PendingEdge>,
+    /// Bare filename -> full relative paths, for corpus-wide resolution fallback.
+    pub(crate) filename_index: HashMap<String, Vec<Utf8PathBuf>>,
+}
+
+/// Corpus-wide measurements consumed by configuration initialization.
+#[derive(Default)]
+pub(crate) struct InitObservations {
     /// Statuses found exclusively in terminal-convention directories (D-04).
     pub(crate) terminal_by_directory: HashSet<String>,
     /// Frontmatter keys observed across all files with occurrence counts (D-07).
     pub(crate) observed_frontmatter_keys: HashMap<String, usize>,
-    /// Bare filename -> full relative paths, for corpus-wide resolution fallback.
-    pub(crate) filename_index: HashMap<String, Vec<Utf8PathBuf>>,
-    /// Implausible frontmatter values that were filtered before resolution.
-    pub(crate) implausible_refs: Vec<ImplausibleRef>,
-    /// External URL references found in frontmatter (tracked, not resolved).
-    #[allow(dead_code)] // Consumed when HandleKind::External is added
-    pub(crate) external_refs: Vec<ExternalRef>,
-    /// Per-file typed extraction output (populated alongside existing PendingEdge flow).
+}
+
+/// Per-file artifacts retained for fact and provenance emission.
+#[derive(Default)]
+pub(crate) struct FileArtifacts<Origins> {
+    /// Per-file typed extraction output consumed by metadata fact emission.
     pub(crate) extractions: Vec<FileExtraction>,
     /// Per-file markdown payload read during graph construction.
     pub(crate) file_payloads: HashMap<String, ParsedMarkdownFile>,
     /// Physical source paths keyed by logical file handle.
-    pub(crate) file_origins: Arc<HashMap<String, Utf8PathBuf>>,
+    pub(crate) file_origins: Origins,
     /// Precomputed snippets for file handles, keyed by relative file path.
     pub(crate) file_snippets: HashMap<String, String>,
     /// Precomputed snippets for label handles, keyed by label identity.
@@ -363,14 +355,15 @@ pub(crate) struct BuildResult {
     pub(crate) heading_spans: HashMap<String, Vec<HeadingSpan>>,
     /// In-repo code path references discovered in markdown body text.
     pub(crate) code_refs: Vec<CodePathRef>,
-    /// Files whose YAML frontmatter failed to deserialize (§7.2 silent-failure tracking).
-    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
-    pub(crate) malformed_frontmatter: Vec<String>,
-    /// Count of directory entries skipped because their filename was not valid UTF-8 (§7.3).
-    #[allow(dead_code)] // Consumed by status/check reporting once surfaced
-    pub(crate) skipped_non_utf8: usize,
+    /// Implausible frontmatter values retained as file-scoped diagnostic evidence.
+    pub(crate) implausible_refs: Vec<ImplausibleRef>,
 }
 
+/// A bounded sibling tree mounted into the markdown graph.
+///
+/// `physical_root` is used for reads, `handle_prefix` keys its files relative
+/// to the shared git project, and `containment_root` guards provenance against
+/// symlink escapes.
 #[derive(Clone, Debug)]
 pub(crate) struct ExternalScanRoot {
     pub(crate) physical_root: Utf8PathBuf,
@@ -520,6 +513,7 @@ fn parse_markdown_file(
     })
 }
 
+/// Build a graph from the selected corpus-relative scan roots.
 pub(crate) fn build_graph_scoped(
     root: &Utf8Path,
     config: &AnnealConfig,
@@ -528,87 +522,62 @@ pub(crate) fn build_graph_scoped(
     build_graph_with_external_roots(root, config, scan_roots, &[])
 }
 
-pub(crate) fn build_graph_with_external_roots(
-    root: &Utf8Path,
-    config: &AnnealConfig,
-    scan_roots: &[Utf8PathBuf],
-    external_roots: &[ExternalScanRoot],
-) -> Result<BuildResult> {
-    let mut graph = DiGraph::new();
-    let mut all_label_candidates = Vec::new();
-    let mut pending_edges = Vec::new();
-    // D-04: Track which statuses appear in terminal vs non-terminal directories
-    let mut status_in_terminal: HashMap<String, usize> = HashMap::new();
-    let mut status_in_nonterminal: HashMap<String, usize> = HashMap::new();
+/// Mutable state for one graph-construction run.
+///
+/// `MarkdownFileCandidate` keeps the physical read/provenance path separate
+/// from the logical graph handle. This builder preserves that distinction while
+/// accumulating graph nodes, resolution inputs, and adapter projections.
+struct GraphBuilder<'a> {
+    root: &'a Utf8Path,
+    config: &'a AnnealConfig,
+    graph: DiGraph,
+    resolution: ResolutionInputs,
+    init: InitObservations,
+    files: FileArtifacts<HashMap<String, Utf8PathBuf>>,
+    status_in_terminal: HashMap<String, usize>,
+    status_in_nonterminal: HashMap<String, usize>,
+    external_nodes: HashMap<String, NodeId>,
+}
 
-    // D-07: Track all observed frontmatter keys for init auto-detection
-    let mut observed_frontmatter_keys: HashMap<String, usize> = HashMap::new();
-
-    // Bare filename -> relative paths, for corpus-wide resolution fallback
-    let mut filename_index: HashMap<String, Vec<Utf8PathBuf>> = HashMap::new();
-
-    // Plausibility filter tracking
-    let mut implausible_refs: Vec<ImplausibleRef> = Vec::new();
-    let mut external_refs: Vec<ExternalRef> = Vec::new();
-    let mut external_nodes: HashMap<String, NodeId> = HashMap::new();
-    let mut extractions: Vec<FileExtraction> = Vec::new();
-    let mut file_payloads: HashMap<String, ParsedMarkdownFile> = HashMap::new();
-    let mut file_origins: HashMap<String, Utf8PathBuf> = HashMap::new();
-    let mut file_snippets: HashMap<String, String> = HashMap::new();
-    let mut label_snippets: HashMap<String, String> = HashMap::new();
-    let mut heading_spans: HashMap<String, Vec<HeadingSpan>> = HashMap::new();
-    let mut code_refs: Vec<CodePathRef> = Vec::new();
-    let mut malformed_frontmatter: Vec<String> = Vec::new();
-
-    // §7.3: Track non-UTF-8 filenames silently skipped by the walker filter.
-    // Uses Cell so the FnMut closure can increment without &mut self conflicts.
-    let skipped_non_utf8: Cell<usize> = Cell::new(0);
-
-    let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
-
-    let mut candidates = collect_markdown_files(
-        MarkdownWalk {
-            physical_root: root,
-            handle_prefix: Utf8Path::new(""),
-            scan_roots: Some(scan_roots),
-            containment_root: None,
-        },
-        &dir_exclusions,
-        file_glob_set.as_ref(),
-        &skipped_non_utf8,
-    )?;
-    for external_root in external_roots {
-        candidates.extend(collect_markdown_files(
-            MarkdownWalk {
-                physical_root: &external_root.physical_root,
-                handle_prefix: &external_root.handle_prefix,
-                scan_roots: None,
-                containment_root: Some(&external_root.containment_root),
-            },
-            &dir_exclusions,
-            file_glob_set.as_ref(),
-            &skipped_non_utf8,
-        )?);
+impl<'a> GraphBuilder<'a> {
+    fn new(root: &'a Utf8Path, config: &'a AnnealConfig) -> Self {
+        Self {
+            root,
+            config,
+            graph: DiGraph::new(),
+            resolution: ResolutionInputs::default(),
+            init: InitObservations::default(),
+            files: FileArtifacts::default(),
+            status_in_terminal: HashMap::new(),
+            status_in_nonterminal: HashMap::new(),
+            external_nodes: HashMap::new(),
+        }
     }
+}
 
-    for candidate in candidates {
-        let utf8_path = candidate.physical_path;
-        let relative = candidate.logical_path;
-        if let Some(existing) = file_origins.get(relative.as_str()) {
+impl GraphBuilder<'_> {
+    /// Parse one physical file and register all artifacts under its logical handle.
+    fn add_file(&mut self, candidate: MarkdownFileCandidate) -> Result<()> {
+        let physical_path = candidate.physical_path;
+        let logical_path = candidate.logical_path;
+        if let Some(existing) = self.files.file_origins.get(logical_path.as_str()) {
             anyhow::bail!(
                 "markdown handle collision for {:?}: both {} and {} map to the same logical handle",
-                relative.as_str(),
+                logical_path.as_str(),
                 existing,
-                utf8_path
+                physical_path
             );
         }
-        file_origins.insert(relative.to_string(), utf8_path.clone());
+        self.files
+            .file_origins
+            .insert(logical_path.to_string(), physical_path.clone());
 
-        if let Some(filename) = relative.file_name() {
-            filename_index
+        if let Some(filename) = logical_path.file_name() {
+            self.resolution
+                .filename_index
                 .entry(filename.to_string())
                 .or_default()
-                .push(relative.clone());
+                .push(logical_path.clone());
         }
 
         let ParsedMarkdownFileScan {
@@ -624,13 +593,15 @@ pub(crate) fn build_graph_with_external_roots(
             mut scan_result,
             body_refs,
         } = parse_markdown_file(
-            &utf8_path,
-            relative,
-            &config.frontmatter,
-            &config.code_path_root.root,
+            &physical_path,
+            logical_path,
+            &self.config.frontmatter,
+            &self.config.code_path_root.root,
         )?;
         if let Some(snippet) = file_snippet {
-            file_snippets.insert(relative.to_string(), snippet);
+            self.files
+                .file_snippets
+                .insert(relative.to_string(), snippet);
         }
 
         let FrontmatterParseResult {
@@ -638,57 +609,39 @@ pub(crate) fn build_graph_with_external_roots(
             metadata,
             field_edges,
             all_keys,
-            yaml_failed,
             frontmatter_date: _,
         } = frontmatter;
 
-        // §7.2: Track files whose YAML frontmatter was present but malformed.
-        if yaml_failed {
-            malformed_frontmatter.push(relative.to_string());
-        }
-
         for key in &all_keys {
-            *observed_frontmatter_keys.entry(key.clone()).or_insert(0) += 1;
+            *self
+                .init
+                .observed_frontmatter_keys
+                .entry(key.clone())
+                .or_insert(0) += 1;
         }
+        self.observe_status_directory(&relative, status.as_deref());
 
-        if let Some(ref s) = status {
-            // D-04: Track directory convention for terminal status classification
-            let in_terminal = crate::extract::path_conventions::has_terminal_directory(&relative);
-            if in_terminal {
-                *status_in_terminal.entry(s.clone()).or_insert(0) += 1;
-            } else {
-                *status_in_nonterminal.entry(s.clone()).or_insert(0) += 1;
-            }
-        }
-
-        // Create pending edges from extensible frontmatter field edges
-        let file_node_placeholder =
-            NodeId::new(u32::try_from(graph.node_count()).expect("graph exceeds u32::MAX nodes"));
-        let mut file_external_targets: Vec<String> = Vec::new();
-
-        // Cache classify_frontmatter_value results so the second loop can reuse them.
+        // Pending frontmatter edges must use the next graph ID because the file
+        // node is inserted only after all targets have been classified.
+        let file_node_placeholder = NodeId::new(
+            u32::try_from(self.graph.node_count()).expect("graph exceeds u32::MAX nodes"),
+        );
+        let mut external_targets = Vec::new();
         let mut hint_cache: HashMap<&str, RefHint> = HashMap::new();
-        for fe in &field_edges {
-            for target in &fe.targets {
+        for field_edge in &field_edges {
+            for target in &field_edge.targets {
                 hint_cache
                     .entry(target.as_str())
                     .or_insert_with(|| classify_frontmatter_value(target));
             }
         }
 
-        for fe in &field_edges {
-            for target in &fe.targets {
-                let hint = &hint_cache[target.as_str()];
-                match hint {
-                    RefHint::External => {
-                        external_refs.push(ExternalRef {
-                            file: relative.to_string(),
-                            url: target.clone(),
-                        });
-                        file_external_targets.push(target.clone());
-                    }
+        for field_edge in &field_edges {
+            for target in &field_edge.targets {
+                match &hint_cache[target.as_str()] {
+                    RefHint::External => external_targets.push(target.clone()),
                     RefHint::Implausible { reason } => {
-                        implausible_refs.push(ImplausibleRef {
+                        self.files.implausible_refs.push(ImplausibleRef {
                             file: relative.to_string(),
                             raw_value: target.clone(),
                             reason: *reason,
@@ -696,11 +649,6 @@ pub(crate) fn build_graph_with_external_roots(
                         });
                     }
                     RefHint::CodePath => {
-                        // Mint an external:code handle via the body code-ref
-                        // pipeline (parse.rs minting block below) so the
-                        // filesystem probe decides existence. A present target
-                        // resolves cleanly; a missing one becomes W006
-                        // spec_code_drift, never a false E001 broken_reference.
                         scan_result
                             .code_refs
                             .push(CodePathRef::from_frontmatter_field(
@@ -709,11 +657,11 @@ pub(crate) fn build_graph_with_external_roots(
                             ));
                     }
                     RefHint::Label { .. } | RefHint::FilePath | RefHint::SectionRef => {
-                        pending_edges.push(PendingEdge {
+                        self.resolution.pending_edges.push(PendingEdge {
                             source: file_node_placeholder,
                             target_identity: target.clone(),
-                            kind: fe.edge_kind.clone(),
-                            inverse: fe.inverse,
+                            kind: field_edge.edge_kind.clone(),
+                            inverse: field_edge.inverse,
                             line: Some(1),
                             unresolved_disposition: UnresolvedRefDisposition::CorpusGate,
                         });
@@ -722,7 +670,7 @@ pub(crate) fn build_graph_with_external_roots(
             }
         }
 
-        let file_node = graph.add_node(Handle::file(
+        let file_node = self.graph.add_node(Handle::file(
             relative.clone(),
             status.clone(),
             file_date,
@@ -733,82 +681,33 @@ pub(crate) fn build_graph_with_external_roots(
             file_node, file_node_placeholder,
             "node insertion order changed between placeholder computation and add_node"
         );
+        self.add_external_targets(file_node, &relative, external_targets);
+        self.merge_body_scan(file_node, &relative, &content, &mut scan_result);
 
-        for target in file_external_targets {
-            let external_node = if let Some(existing) = external_nodes.get(&target).copied() {
-                existing
-            } else {
-                let node_id =
-                    graph.add_node(Handle::external(target.clone(), Some(relative.clone())));
-                external_nodes.insert(target.clone(), node_id);
-                node_id
-            };
-
-            graph.add_edge(file_node, external_node, EdgeKind::Cites);
-        }
-
-        if !scan_result.heading_spans.is_empty() {
-            heading_spans.insert(
-                relative.to_string(),
-                std::mem::take(&mut scan_result.heading_spans),
-            );
-        }
-
-        let mut seen_label_ids = HashSet::new();
-        for candidate in &scan_result.label_candidates {
-            let label_id = format!("{}-{}", candidate.prefix, candidate.number);
-            if !seen_label_ids.insert(label_id.clone()) || label_snippets.contains_key(&label_id) {
-                continue;
-            }
-            if let Some(snippet) = extract_label_snippet_from_content(&content, &label_id) {
-                label_snippets.insert(label_id, snippet);
-            }
-        }
-        all_label_candidates.extend(scan_result.label_candidates);
-        for code_ref in std::mem::take(&mut scan_result.code_refs) {
-            let handle_id = code_ref.handle_id.clone();
-            if !external_nodes.contains_key(&handle_id) {
-                let node_id =
-                    graph.add_node(Handle::external(handle_id.clone(), Some(relative.clone())));
-                external_nodes.insert(handle_id.clone(), node_id);
-            }
-            pending_edges.push(PendingEdge {
-                source: file_node,
-                target_identity: handle_id,
-                kind: EdgeKind::Cites,
-                inverse: false,
-                line: Some(code_ref.source_line),
-                unresolved_disposition: UnresolvedRefDisposition::AmbiguousExternalOk,
-            });
-            code_refs.push(code_ref);
-        }
-
-        // Build FileExtraction with DiscoveredRef for frontmatter + body refs
         let mut discovered_refs = Vec::new();
-        for fe in &field_edges {
-            for target in &fe.targets {
-                let hint = hint_cache[target.as_str()].clone();
+        for field_edge in &field_edges {
+            for target in &field_edge.targets {
                 discovered_refs.push(DiscoveredRef {
                     raw: target.clone(),
-                    hint,
+                    hint: hint_cache[target.as_str()].clone(),
                     source: RefSource::Frontmatter {
-                        field: fe.edge_kind.as_str().to_string(),
+                        field: field_edge.edge_kind.as_str().to_string(),
                     },
-                    edge_kind: fe.edge_kind.clone(),
-                    inverse: fe.inverse,
+                    edge_kind: field_edge.edge_kind.clone(),
+                    inverse: field_edge.inverse,
                     span: None,
                 });
             }
         }
         discovered_refs.extend(body_refs);
-        extractions.push(FileExtraction {
+        self.files.extractions.push(FileExtraction {
             file: relative.to_string(),
             status,
             metadata,
             refs: discovered_refs,
-            all_keys: all_keys.clone(),
+            all_keys,
         });
-        file_payloads.insert(
+        self.files.file_payloads.insert(
             relative.to_string(),
             ParsedMarkdownFile {
                 body,
@@ -817,11 +716,104 @@ pub(crate) fn build_graph_with_external_roots(
                 revision,
             },
         );
+        self.add_body_pending_edges(file_node, &scan_result);
 
+        Ok(())
+    }
+
+    fn observe_status_directory(&mut self, logical_path: &Utf8Path, status: Option<&str>) {
+        let Some(status) = status else {
+            return;
+        };
+        let counts = if crate::extract::path_conventions::has_terminal_directory(logical_path) {
+            &mut self.status_in_terminal
+        } else {
+            &mut self.status_in_nonterminal
+        };
+        *counts.entry(status.to_string()).or_insert(0) += 1;
+    }
+}
+
+impl GraphBuilder<'_> {
+    /// Add graph and resolution artifacts emitted by frontmatter and body scans.
+    fn ensure_external_node(&mut self, identity: String, logical_path: &Utf8Path) -> NodeId {
+        if let Some(existing) = self.external_nodes.get(&identity).copied() {
+            return existing;
+        }
+        let node_id = self.graph.add_node(Handle::external(
+            identity.clone(),
+            Some(logical_path.to_path_buf()),
+        ));
+        self.external_nodes.insert(identity, node_id);
+        node_id
+    }
+
+    fn add_external_targets(
+        &mut self,
+        file_node: NodeId,
+        logical_path: &Utf8Path,
+        targets: Vec<String>,
+    ) {
+        for target in targets {
+            let external_node = self.ensure_external_node(target, logical_path);
+            self.graph
+                .add_edge(file_node, external_node, EdgeKind::Cites);
+        }
+    }
+
+    fn merge_body_scan(
+        &mut self,
+        file_node: NodeId,
+        logical_path: &Utf8Path,
+        content: &str,
+        scan_result: &mut ScanResult,
+    ) {
+        if !scan_result.heading_spans.is_empty() {
+            self.files.heading_spans.insert(
+                logical_path.to_string(),
+                std::mem::take(&mut scan_result.heading_spans),
+            );
+        }
+
+        let mut seen_label_ids = HashSet::new();
+        for candidate in &scan_result.label_candidates {
+            let label_id = format!("{}-{}", candidate.prefix, candidate.number);
+            if !seen_label_ids.insert(label_id.clone())
+                || self.files.label_snippets.contains_key(&label_id)
+            {
+                continue;
+            }
+            if let Some(snippet) = extract_label_snippet_from_content(content, &label_id) {
+                self.files.label_snippets.insert(label_id, snippet);
+            }
+        }
+        self.resolution
+            .label_candidates
+            .append(&mut scan_result.label_candidates);
+
+        for code_ref in std::mem::take(&mut scan_result.code_refs) {
+            let handle_id = code_ref.handle_id.clone();
+            self.ensure_external_node(handle_id.clone(), logical_path);
+            self.resolution.pending_edges.push(PendingEdge {
+                source: file_node,
+                target_identity: handle_id,
+                kind: EdgeKind::Cites,
+                inverse: false,
+                line: Some(code_ref.source_line),
+                unresolved_disposition: UnresolvedRefDisposition::AmbiguousExternalOk,
+            });
+            self.files.code_refs.push(code_ref);
+        }
+    }
+
+    fn add_body_pending_edges(&mut self, file_node: NodeId, scan_result: &ScanResult) {
         for file_ref in &scan_result.file_refs {
-            let (target_identity, unresolved_disposition) =
-                normalize_body_file_ref(root, &file_ref.target, file_ref.unresolved_disposition);
-            pending_edges.push(PendingEdge {
+            let (target_identity, unresolved_disposition) = normalize_body_file_ref(
+                self.root,
+                &file_ref.target,
+                file_ref.unresolved_disposition,
+            );
+            self.resolution.pending_edges.push(PendingEdge {
                 source: file_node,
                 target_identity,
                 kind: EdgeKind::Cites,
@@ -831,7 +823,7 @@ pub(crate) fn build_graph_with_external_roots(
             });
         }
         for (section_ref, line) in &scan_result.section_refs {
-            pending_edges.push(PendingEdge {
+            self.resolution.pending_edges.push(PendingEdge {
                 source: file_node,
                 target_identity: format!("section:{section_ref}"),
                 kind: EdgeKind::Cites,
@@ -841,48 +833,103 @@ pub(crate) fn build_graph_with_external_roots(
             });
         }
     }
+}
 
-    // D-04: Compute terminal_by_directory -- statuses that appear EXCLUSIVELY
-    // in terminal directories (count > 0 in terminal, count == 0 in nonterminal)
-    let mut terminal_by_directory = HashSet::new();
-    for (status, count) in &status_in_terminal {
-        if *count > 0 && !status_in_nonterminal.contains_key(status) {
-            terminal_by_directory.insert(status.clone());
+impl GraphBuilder<'_> {
+    fn finish(self) -> BuildResult {
+        let terminal_by_directory = self
+            .status_in_terminal
+            .iter()
+            .filter(|(status, count)| {
+                **count > 0 && !self.status_in_nonterminal.contains_key(*status)
+            })
+            .map(|(status, _)| status.clone())
+            .collect();
+
+        BuildResult {
+            graph: self.graph,
+            resolution: self.resolution,
+            init: InitObservations {
+                terminal_by_directory,
+                ..self.init
+            },
+            files: {
+                let FileArtifacts {
+                    extractions,
+                    file_payloads,
+                    file_origins,
+                    file_snippets,
+                    label_snippets,
+                    heading_spans,
+                    code_refs,
+                    implausible_refs,
+                } = self.files;
+                FileArtifacts {
+                    extractions,
+                    file_payloads,
+                    file_origins: Arc::new(file_origins),
+                    file_snippets,
+                    label_snippets,
+                    heading_spans,
+                    code_refs,
+                    implausible_refs,
+                }
+            },
         }
     }
+}
 
-    Ok(BuildResult {
-        graph,
-        label_candidates: all_label_candidates,
-        pending_edges,
-        terminal_by_directory,
-        observed_frontmatter_keys,
-        filename_index,
-        implausible_refs,
-        external_refs,
-        extractions,
-        file_payloads,
-        file_origins: Arc::new(file_origins),
-        file_snippets,
-        label_snippets,
-        heading_spans,
-        code_refs,
-        malformed_frontmatter,
-        skipped_non_utf8: skipped_non_utf8.get(),
-    })
+/// Build one markdown graph from corpus-relative and bounded external roots.
+///
+/// Primary files keep corpus-relative handles. External files keep the
+/// project-relative prefix supplied by `ExternalScanRoot`; neither path is
+/// recomputed here, so collection remains the sole keying authority.
+pub(crate) fn build_graph_with_external_roots(
+    root: &Utf8Path,
+    config: &AnnealConfig,
+    scan_roots: &[Utf8PathBuf],
+    external_roots: &[ExternalScanRoot],
+) -> Result<BuildResult> {
+    let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
+    let mut candidates = collect_markdown_files(
+        MarkdownWalk {
+            physical_root: root,
+            handle_prefix: Utf8Path::new(""),
+            scan_roots: Some(scan_roots),
+            containment_root: None,
+        },
+        &dir_exclusions,
+        file_glob_set.as_ref(),
+    )?;
+    for external_root in external_roots {
+        candidates.extend(collect_markdown_files(
+            MarkdownWalk {
+                physical_root: &external_root.physical_root,
+                handle_prefix: &external_root.handle_prefix,
+                scan_roots: None,
+                containment_root: Some(&external_root.containment_root),
+            },
+            &dir_exclusions,
+            file_glob_set.as_ref(),
+        )?);
+    }
+
+    let mut builder = GraphBuilder::new(root, config);
+    for candidate in candidates {
+        builder.add_file(candidate)?;
+    }
+    Ok(builder.finish())
 }
 
 fn collect_markdown_files(
     scan: MarkdownWalk<'_>,
     dir_exclusions: &[&str],
     file_glob_set: Option<&GlobSet>,
-    skipped_non_utf8: &Cell<usize>,
 ) -> Result<Vec<MarkdownFileCandidate>> {
     let walker = WalkDir::new(scan.physical_root.as_std_path())
         .into_iter()
         .filter_entry(|entry| {
             let Some(name) = entry.file_name().to_str() else {
-                skipped_non_utf8.set(skipped_non_utf8.get() + 1);
                 return false;
             };
             if entry.file_type().is_dir()
@@ -1017,6 +1064,7 @@ mod tests {
         let result = build_graph(root, &config).expect("build graph");
 
         let payload = result
+            .files
             .file_payloads
             .get("source.md")
             .expect("source payload");
@@ -1025,11 +1073,12 @@ mod tests {
         assert_eq!(payload.frontmatter_scalars, parsed.frontmatter_scalars);
         assert_eq!(payload.revision, parsed.revision);
         assert_eq!(
-            result.file_snippets.get("source.md"),
+            result.files.file_snippets.get("source.md"),
             parsed.file_snippet.as_ref()
         );
         assert_eq!(
             result
+                .files
                 .heading_spans
                 .get("source.md")
                 .map_or(0, std::vec::Vec::len),
@@ -1037,6 +1086,7 @@ mod tests {
         );
 
         let source_extraction = result
+            .files
             .extractions
             .iter()
             .find(|extraction| extraction.file == "source.md")
@@ -1085,28 +1135,21 @@ mod tests {
         // URL should NOT appear in pending_edges
         assert!(
             !result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|e| e.target_identity.contains("https://")),
             "URL should not be in pending_edges, got: {:?}",
             result
+                .resolution
                 .pending_edges
                 .iter()
                 .map(|e| &e.target_identity)
                 .collect::<Vec<_>>()
         );
-        // URL should appear in external_refs
-        assert!(
-            result
-                .external_refs
-                .iter()
-                .any(|e| e.url == "https://example.com"),
-            "URL should be in external_refs, got {} entries",
-            result.external_refs.len()
-        );
         // URL should appear in extraction as RefHint::External
-        assert_eq!(result.extractions.len(), 1);
-        let ext = &result.extractions[0];
+        assert_eq!(result.files.extractions.len(), 1);
+        let ext = &result.files.extractions[0];
         assert_eq!(ext.refs.len(), 1);
         assert_eq!(ext.refs[0].raw, "https://example.com");
         assert_eq!(ext.refs[0].hint, RefHint::External);
@@ -1139,6 +1182,7 @@ mod tests {
         // Prose should NOT appear in pending_edges
         assert!(
             !result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|e| e.target_identity == "claude-desktop session"),
@@ -1147,12 +1191,13 @@ mod tests {
         // Prose should appear in implausible_refs
         assert!(
             result
+                .files
                 .implausible_refs
                 .iter()
                 .any(|r| r.raw_value == "claude-desktop session"
                     && r.reason == ImplausibleReason::FreeformProse),
             "prose should be in implausible_refs with 'freeform prose' reason, got {} entries",
-            result.implausible_refs.len()
+            result.files.implausible_refs.len()
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1171,11 +1216,13 @@ mod tests {
         // Valid .md ref should be in pending_edges
         assert!(
             result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|e| e.target_identity == "foo.md"),
             "valid ref should be in pending_edges, got: {:?}",
             result
+                .resolution
                 .pending_edges
                 .iter()
                 .map(|e| &e.target_identity)
@@ -1183,15 +1230,9 @@ mod tests {
         );
         // Should NOT be in implausible_refs
         assert!(
-            result.implausible_refs.is_empty(),
+            result.files.implausible_refs.is_empty(),
             "valid ref should not produce implausible_refs"
         );
-        // Should NOT be in external_refs
-        assert!(
-            result.external_refs.is_empty(),
-            "valid ref should not produce external_refs"
-        );
-
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1211,6 +1252,7 @@ mod tests {
 
         assert!(
             !result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|e| e.target_identity.contains("/absolute/")),
@@ -1218,6 +1260,7 @@ mod tests {
         );
         assert!(
             result
+                .files
                 .implausible_refs
                 .iter()
                 .any(|r| r.raw_value == "/absolute/path.md"
@@ -1244,6 +1287,7 @@ mod tests {
 
         assert!(
             !result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|e| e.target_identity.contains('*')),
@@ -1251,6 +1295,7 @@ mod tests {
         );
         assert!(
             result
+                .files
                 .implausible_refs
                 .iter()
                 .any(|r| r.raw_value == "*.md" && r.reason == ImplausibleReason::WildcardPattern),
@@ -1283,14 +1328,15 @@ mod tests {
 
         // Must have extractions for both files
         assert_eq!(
-            result.extractions.len(),
+            result.files.extractions.len(),
             2,
             "should have one FileExtraction per file, got {}",
-            result.extractions.len()
+            result.files.extractions.len()
         );
 
         // Find the source.md extraction (it has the depends-on reference)
         let source_ext = result
+            .files
             .extractions
             .iter()
             .find(|e| e.status.as_deref() == Some("draft"))
@@ -1323,6 +1369,7 @@ mod tests {
 
         // target.md extraction should have no refs (no frontmatter edges)
         let target_ext = result
+            .files
             .extractions
             .iter()
             .find(|e| e.status.as_deref() == Some("active"))
@@ -1350,9 +1397,9 @@ mod tests {
         let config = AnnealConfig::default();
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
-        assert_eq!(result.extractions.len(), 1);
+        assert_eq!(result.files.extractions.len(), 1);
 
-        let ext = &result.extractions[0];
+        let ext = &result.files.extractions[0];
         assert_eq!(
             ext.refs.len(),
             3,
@@ -1396,11 +1443,15 @@ mod tests {
         let result = build_graph(root, &config).unwrap();
 
         assert_eq!(
-            result.file_snippets.get("guide.md").map(String::as_str),
+            result
+                .files
+                .file_snippets
+                .get("guide.md")
+                .map(String::as_str),
             Some("First paragraph line. Still same paragraph.")
         );
         assert_eq!(
-            result.label_snippets.get("OQ-64").map(String::as_str),
+            result.files.label_snippets.get("OQ-64").map(String::as_str),
             Some("Details: See OQ-64 here.")
         );
 
@@ -1429,6 +1480,7 @@ mod tests {
             "section headings should not emit handles"
         );
         let spans = result
+            .files
             .heading_spans
             .get("guide.md")
             .expect("guide heading spans");
@@ -1467,6 +1519,7 @@ mod tests {
 
         // URLs must never enter pending_edges (which is what produces E001)
         let url_edges: Vec<_> = result
+            .resolution
             .pending_edges
             .iter()
             .filter(|e| e.target_identity.starts_with("http"))
@@ -1480,18 +1533,12 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // URLs should be in external_refs
-        assert_eq!(
-            result.external_refs.len(),
-            3,
-            "should have 3 external refs (2 from spec.md + 1 from impl.md)"
-        );
-
         // --- Extraction pipeline ---
-        assert_eq!(result.extractions.len(), 2);
+        assert_eq!(result.files.extractions.len(), 2);
 
         // spec.md: two URLs, both External
         let spec_ext = result
+            .files
             .extractions
             .iter()
             .find(|e| e.status.as_deref() == Some("active"))
@@ -1504,6 +1551,7 @@ mod tests {
 
         // impl.md: one FilePath + one External
         let impl_ext = result
+            .files
             .extractions
             .iter()
             .find(|e| e.status.as_deref() == Some("draft"))
@@ -1532,11 +1580,12 @@ mod tests {
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
 
-        assert!(result.pending_edges.iter().any(|edge| {
+        assert!(result.resolution.pending_edges.iter().any(|edge| {
             edge.target_identity == "claim"
                 && edge.unresolved_disposition == UnresolvedRefDisposition::AmbiguousExternalOk
         }));
         let doc_ext = result
+            .files
             .extractions
             .iter()
             .find(|extraction| extraction.file == "doc.md")
@@ -1565,11 +1614,11 @@ mod tests {
         let mut result = build_graph(root, &config).unwrap();
         crate::extract::resolve::resolve_all(
             &mut result.graph,
-            &result.label_candidates,
-            &result.pending_edges,
+            &result.resolution.label_candidates,
+            &result.resolution.pending_edges,
             &config,
             root,
-            &result.filename_index,
+            &result.resolution.filename_index,
         );
         let doc_node = result
             .graph
@@ -1598,7 +1647,7 @@ mod tests {
         let root = Utf8Path::from_path(&tmp).unwrap();
         let result = build_graph(root, &config).unwrap();
 
-        assert!(result.pending_edges.iter().any(|edge| {
+        assert!(result.resolution.pending_edges.iter().any(|edge| {
             edge.target_identity == "missing.md"
                 && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
         }));
@@ -1622,17 +1671,17 @@ mod tests {
         let config = AnnealConfig::default();
         let root = Utf8Path::from_path(&tmp).unwrap();
         let mut result = build_graph(root, &config).unwrap();
-        assert!(result.pending_edges.iter().any(|edge| {
+        assert!(result.resolution.pending_edges.iter().any(|edge| {
             edge.target_identity == "target.md"
                 && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
         }));
         crate::extract::resolve::resolve_all(
             &mut result.graph,
-            &result.label_candidates,
-            &result.pending_edges,
+            &result.resolution.label_candidates,
+            &result.resolution.pending_edges,
             &config,
             root,
-            &result.filename_index,
+            &result.resolution.filename_index,
         );
         let doc_node = result
             .graph
@@ -1666,25 +1715,27 @@ mod tests {
 
         assert!(
             !result
+                .resolution
                 .pending_edges
                 .iter()
                 .any(|edge| edge.target_identity.contains("analysis.rs")
                     && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate),
             "source-code citations should not enter gate-level pending edges: {:?}",
             result
+                .resolution
                 .pending_edges
                 .iter()
                 .map(|edge| (edge.target_identity.as_str(), edge.unresolved_disposition))
                 .collect::<Vec<_>>()
         );
         assert!(
-            result.code_refs.iter().any(|reference| reference.path
+            result.files.code_refs.iter().any(|reference| reference.path
                 == "/Users/morgan/code/anneal/crates/anneal-core/src/runtime/analysis.rs"
                 && reference.start_line == Some(1078)),
             "source-code citation should be preserved as a code ref: {:?}",
-            result.code_refs
+            result.files.code_refs
         );
-        assert!(result.pending_edges.iter().any(|edge| {
+        assert!(result.resolution.pending_edges.iter().any(|edge| {
             edge.target_identity == "missing.md"
                 && edge.unresolved_disposition == UnresolvedRefDisposition::CorpusGate
         }));
