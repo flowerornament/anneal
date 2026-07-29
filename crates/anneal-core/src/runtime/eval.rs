@@ -24,6 +24,7 @@ use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
 };
 use crate::ids::Generation;
+use crate::impact::ImpactTraversalPolicy;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::PlanError;
@@ -139,9 +140,6 @@ pub const READ_FULL_CAPABILITY: RuntimeCapability = RuntimeCapability::ReadFull;
 const DEFAULT_READ_FULL_TOKEN_LIMIT: i64 = 8_000;
 const DEFAULT_EXPLAIN_DEPTH: usize = 5;
 const DEFAULT_EXPLAIN_ROW_LIMIT: usize = 3;
-const CONFIG_IMPACT_TRAVERSE: &str = "impact.traverse";
-const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExplainDepth(usize);
 
@@ -2151,7 +2149,7 @@ struct GraphIndex {
     incoming: BTreeMap<String, BTreeSet<String>>,
     outgoing_edges: BTreeMap<String, BTreeSet<(String, String)>>,
     incoming_edges: BTreeMap<String, BTreeSet<(String, String)>>,
-    impact_traverse: BTreeSet<String>,
+    impact_traverse: ImpactTraversalPolicy,
     out_edge_count: BTreeMap<String, usize>,
     in_edge_count: BTreeMap<String, usize>,
     cite_count: BTreeMap<String, usize>,
@@ -2457,10 +2455,9 @@ impl GraphIndex {
             CONFIG_LINEAR_NAMESPACE => {
                 self.linear_namespaces.insert(value.to_owned());
             }
-            CONFIG_IMPACT_TRAVERSE => {
-                self.impact_traverse.insert(value.to_owned());
+            _ => {
+                self.impact_traverse.insert_config(key, value);
             }
-            _ => {}
         }
     }
 
@@ -3164,17 +3161,9 @@ impl GraphIndex {
             return;
         };
         for (kind, next) in edges {
-            if self.impact_traverses(kind) {
+            if self.impact_traverse.traverses(kind) {
                 visit(next);
             }
-        }
-    }
-
-    fn impact_traverses(&self, kind: &str) -> bool {
-        if self.impact_traverse.is_empty() {
-            DEFAULT_IMPACT_TRAVERSE.contains(&kind)
-        } else {
-            self.impact_traverse.contains(kind)
         }
     }
 }

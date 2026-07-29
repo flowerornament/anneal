@@ -19,10 +19,10 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
-    ConfigFact, ConfigFacts, CorpusId, EdgeFact, FactStore, Generation, InferredCorpusRoot,
-    ProjectExtension, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact, Source,
-    SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbDispatchError, VerbEntry,
-    VerbLayer, VerbRegistry, append_snapshot_entry_capped, infer_corpus_root,
+    ConfigFacts, CorpusId, EdgeFact, FactStore, Generation, ImpactTraversalPolicy,
+    InferredCorpusRoot, ProjectExtension, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact,
+    Source, SourceContext, SourceInfo, VerbArg, VerbArgKind, VerbCapability, VerbDispatchError,
+    VerbEntry, VerbLayer, VerbRegistry, append_snapshot_entry_capped, infer_corpus_root,
     load_project_extension, merge_program_layers, read_snapshot_history, render_verb_arg_facts,
 };
 use anneal_md::{EdgeAssertionRefreshProgressSink, MarkdownSource};
@@ -45,8 +45,6 @@ const DEFAULT_CORPUS: &str = "cli";
 const EMPTY_ROWS_DIAGNOSTIC: &str = "(0 rows)";
 const CHECK_DIAGNOSTIC_QUERY: &str = "? diagnostic(code, severity, subject, file, line, evidence).";
 const DEFAULT_AUTO_SNAPSHOT_LIMIT: usize = 100;
-const DEFAULT_IMPACT_TRAVERSE: &[&str] = &["DependsOn", "Supersedes", "Verifies"];
-const IMPACT_TRAVERSE_CONFIG_KEY: &str = "impact.traverse";
 const SUPERSEDES_EDGE_KIND: &str = "Supersedes";
 
 fn drift_refresh_progress_sink() -> CodeDriftRefreshProgressSink {
@@ -2459,10 +2457,10 @@ struct ImpactDependency {
 }
 
 fn compute_handle_impact(store: &FactStore, handle: &str) -> Vec<ImpactDependency> {
-    let traverse = impact_traverse_set(store.configs());
+    let traverse = ImpactTraversalPolicy::from_config_facts(store.configs());
     let mut incoming = BTreeMap::<&str, Vec<&EdgeFact>>::new();
     for edge in store.edges() {
-        if traverse.contains(edge.kind.as_str()) {
+        if traverse.traverses(edge.kind.as_str()) {
             incoming.entry(edge.to.as_str()).or_default().push(edge);
         }
     }
@@ -2655,19 +2653,6 @@ fn lineage_distances<'a>(
         }
     }
     distances
-}
-
-fn impact_traverse_set(configs: &[ConfigFact]) -> BTreeSet<&str> {
-    let configured = configs
-        .iter()
-        .filter(|fact| fact.key == IMPACT_TRAVERSE_CONFIG_KEY)
-        .map(|fact| fact.value.as_str())
-        .collect::<BTreeSet<_>>();
-    if configured.is_empty() {
-        DEFAULT_IMPACT_TRAVERSE.iter().copied().collect()
-    } else {
-        configured
-    }
 }
 
 fn lineage_node_row(requested: &str, normalized_root: &str, node: LineageNode) -> Row {
@@ -7726,6 +7711,76 @@ mod tests {
             .nth(1)
             .expect("impact section");
         assert!(!impact_text.contains("d.md"));
+    }
+
+    #[test]
+    fn handle_impact_and_primitive_share_the_default_policy() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+        fs::create_dir(&root).expect("create corpus root");
+        fs::write(root.join("b.md"), "# B\n").expect("write b");
+        fs::write(root.join("a.md"), "---\ndepends-on: b.md\n---\n# A\n").expect("write a");
+        fs::write(root.join("c.md"), "---\nverifies: b.md\n---\n# C\n").expect("write c");
+        fs::write(root.join("d.md"), "---\nsuperseded-by: b.md\n---\n# D\n").expect("write d");
+        fs::write(root.join("e.md"), "---\ndischarges: b.md\n---\n# E\n").expect("write e");
+        fs::write(root.join("f.md"), "---\ndepends-on: a.md\n---\n# F\n").expect("write f");
+
+        let session = RuntimeSession::load_for_test(&root).expect("session loads");
+        let handle_output = session
+            .run(RuntimeCommand::Handle {
+                handle: "b.md".to_string(),
+                impact: true,
+                lineage: false,
+            })
+            .expect("handle runs");
+        let CommandOutput::Rows {
+            rows: handle_rows, ..
+        } = handle_output
+        else {
+            panic!("handle should emit rows");
+        };
+        let handle_impact = handle_rows
+            .iter()
+            .filter(|row| required_string(row, "relation").is_ok_and(|value| value == "impact"))
+            .map(|row| {
+                (
+                    required_string(row, "other").expect("other").to_string(),
+                    *required_number(row, "depth").expect("depth"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let eval_output = session
+            .run(RuntimeCommand::Eval {
+                query: r#"? impact("b.md", affected, depth)."#.to_string(),
+                explain: ExplainOptions::disabled(),
+                limit: None,
+            })
+            .expect("impact eval runs");
+        let CommandOutput::Rows {
+            rows: eval_rows, ..
+        } = eval_output
+        else {
+            panic!("impact eval should emit rows");
+        };
+        let primitive_impact = eval_rows
+            .iter()
+            .map(|row| {
+                (
+                    required_string(row, "affected")
+                        .expect("affected")
+                        .to_string(),
+                    *required_number(row, "depth").expect("depth"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(handle_impact, primitive_impact);
+        assert_eq!(handle_impact.get("a.md"), Some(&NumberValue::Int(1)));
+        assert_eq!(handle_impact.get("c.md"), Some(&NumberValue::Int(1)));
+        assert_eq!(handle_impact.get("d.md"), Some(&NumberValue::Int(1)));
+        assert_eq!(handle_impact.get("f.md"), Some(&NumberValue::Int(2)));
+        assert!(!handle_impact.contains_key("e.md"));
     }
 
     #[test]
