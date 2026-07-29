@@ -869,6 +869,25 @@ mod tests {
     }
 
     #[test]
+    fn top_and_agent_help_project_the_same_product_thesis() {
+        fn thesis_paragraph<'a>(rendered: &'a str, canonical: &str) -> &'a str {
+            rendered
+                .split("\n\n")
+                .find(|paragraph| *paragraph == canonical)
+                .expect("rendered help contains the product thesis")
+        }
+
+        let top = HelpTopic::Top.render();
+        let agent = HelpTopic::Agent.render();
+        let canonical = skill_section(SKILL_MARKDOWN, "Product Thesis").expect("product thesis");
+
+        assert_eq!(
+            thesis_paragraph(&top, canonical),
+            thesis_paragraph(&agent, canonical)
+        );
+    }
+
+    #[test]
     fn semantic_help_names_parse_for_corpus_resolution() {
         for name in ["runtime", "convergence", "frontier", "banana"] {
             let parsed = Invocation::parse(os(&["anneal", "help", name])).expect("parse help");
