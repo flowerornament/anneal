@@ -1,10 +1,12 @@
-//! The atlas's Rust item-scanner authority.
+//! The Atlas's shared Rust source-projection and item-scanner authority.
 //!
-//! One line-based grammar answers "what items does this file declare" for every
-//! atlas view and for `cargo xtask nontest-loc`. It is deliberately
-//! approximate: no `syn`, no second Rust parser. Declaration lines are the
-//! intentional interface, bodies are excluded, and text inside string literals
-//! or block comments can misclassify. See `xtask/README.md` for the contract.
+//! One lexical projection masks strings and comments before every line-based
+//! declaration and brace scan. Atlas views and `cargo xtask nontest-loc`
+//! therefore share one answer for declared items, test-only regions, module
+//! headers, imports, and production source. This remains deliberately smaller
+//! than a Rust parser: declaration lines are the intentional interface and
+//! function bodies are excluded. See `xtask/README.md` for the approximation
+//! contract.
 
 use std::{
     collections::BTreeMap,
@@ -32,8 +34,8 @@ pub(crate) enum ItemKind {
     Static,
     /// A top-level `impl` block, named by its target type (`impl Tile`,
     /// `impl Trait for Tile` → `Tile`). Not a census kind — it exists because
-    /// the density grade's denominator is "top-level items" and the worst
-    /// god-objects are one giant impl with zero public types.
+    /// the concentration view's denominator is "top-level items" and the
+    /// worst god objects are one giant impl with zero public types.
     Impl,
 }
 
@@ -56,8 +58,8 @@ pub(crate) struct LineItem<'a> {
     pub(crate) name: &'a str,
 }
 
-/// One declared item with its declaration block — the carrier the atlas views
-/// fold into census rows and co-mention edges.
+/// One declared item with its declaration block — the carrier Atlas views fold
+/// into census rows and co-mention edges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Item {
     pub(crate) kind: ItemKind,
@@ -96,12 +98,12 @@ pub(crate) fn nontest_loc(mut args: impl Iterator<Item = String>) -> Result<()> 
 /// Every test-only region of one file: each top-level inline module whose
 /// `cfg` gate implies `test`, whatever the module is named.
 ///
-/// This is the one test boundary authority shared by the atlas census,
-/// relationship heuristics, and concentration report. It is a set of regions
-/// rather than a single terminal line because test code is not always last: a
-/// file may open a test module, return to production code, and close with
-/// another test module. A single terminal boundary previously hid production
-/// code placed between two test modules.
+/// This is the one test boundary authority shared by the Atlas census,
+/// relationship heuristics, and concentration report. It is a set of regions rather than a
+/// single terminal line because test code is not always last: a file may open
+/// a `loom_tests` module, return to production code, and close with `tests`.
+/// A single boundary would count an interleaved module as production and hide
+/// production code after it.
 ///
 /// Test-only *helpers* outside a module (`#[cfg(test)] fn helper()`) stay
 /// counted as production, deliberately: gating one item is a property of that
@@ -115,17 +117,21 @@ pub(crate) struct TestRegions {
 
 impl TestRegions {
     pub(crate) fn of(text: &str) -> Self {
-        let lines: Vec<&str> = text.lines().collect();
+        RustSourceProjection::of(text.to_owned()).test_regions()
+    }
+
+    fn from_projection(projected: &RustSourceProjection) -> Self {
+        let lines: Vec<&str> = projected.text().lines().collect();
         let mut spans = Vec::new();
         let mut index = 0;
         while index < lines.len() {
-            let opened = gates_test(lines[index])
+            let opened = (projected.lines[index].starts_in_code && gates_test(lines[index]))
                 .then(|| declaration_after_attributes(&lines, index))
                 .flatten()
                 .filter(|&start| opens_inline_module(lines[start]));
             match opened {
                 Some(start) => {
-                    let end = closing_line(&lines, start);
+                    let end = closing_line(projected.projected_lines(), start);
                     spans.push((index + 1, end + 1));
                     index = end + 1;
                 }
@@ -167,7 +173,7 @@ impl TestRegions {
 }
 
 /// Non-test LOC of one file — the `TestRegions` count exposed by the
-/// `nontest-loc` verb and reused by atlas views.
+/// `nontest-loc` verb and reused by Atlas views.
 pub(crate) fn non_test_loc(text: &str) -> usize {
     TestRegions::of(text).non_test_loc()
 }
@@ -175,14 +181,9 @@ pub(crate) fn non_test_loc(text: &str) -> usize {
 /// The file modules (`mod name;`) a file declares under a test-implying gate.
 /// Their whole file is test code, which no single-file scan can know — the
 /// atlas resolves these against the crate's file list.
+#[cfg(test)]
 pub(crate) fn test_module_declarations(text: &str) -> Vec<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    (0..lines.len())
-        .filter(|&index| gates_test(lines[index]))
-        .filter_map(|index| declaration_after_attributes(&lines, index))
-        .filter_map(|start| declares_file_module(lines[start]))
-        .map(str::to_owned)
-        .collect()
+    RustSourceProjection::of(text.to_owned()).test_module_declarations()
 }
 
 /// Whether a line is a top-level attribute whose `cfg` predicate implies
@@ -256,9 +257,9 @@ fn module_name(line: &str) -> Option<&str> {
 
 /// The line closing a top-level block opened at `start` — under rustfmt's
 /// column-0 discipline, the next bare `}`.
-fn closing_line(lines: &[&str], start: usize) -> usize {
+fn closing_line(lines: &[ProjectedLine], start: usize) -> usize {
     (start + 1..lines.len())
-        .find(|&index| lines[index] == "}")
+        .find(|&index| lines[index].code == "}")
         .unwrap_or(lines.len().saturating_sub(1))
 }
 
@@ -266,11 +267,9 @@ fn closing_line(lines: &[&str], start: usize) -> usize {
 /// entry is the module's orientation line; the joined block is the comment
 /// audit's citation surface. Collected file-wide — inner docs of
 /// nested inline modules are rare enough to leave to the heuristic.
+#[cfg(test)]
 pub(crate) fn module_header_lines(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| line.trim_start().strip_prefix("//!"))
-        .map(|rest| rest.trim().to_owned())
-        .collect()
+    RustSourceProjection::of(text.to_owned()).module_header_lines()
 }
 
 /// Scan Rust source text into its declared items, attributing them to `file`.
@@ -278,41 +277,51 @@ pub(crate) fn module_header_lines(text: &str) -> Vec<String> {
 /// Doc attribution follows rustdoc's shape line-wise: a `///` run attaches to
 /// the next declaration through any attributes, comments, and blank lines; any
 /// other intervening line (a statement, an inner attribute) detaches it.
+#[cfg(test)]
 pub(crate) fn scan_source(text: &str, file: &Path) -> Vec<Item> {
-    let lines: Vec<&str> = text.lines().collect();
+    RustSourceProjection::of(text.to_owned()).items(file)
+}
+
+fn scan_projected_source(file: &Path, projected: &RustSourceProjection) -> Vec<Item> {
+    let lines: Vec<&str> = projected.text().lines().collect();
     let mut items = Vec::new();
     let mut pending_doc: Option<String> = None;
     let mut attr_depth = 0usize;
     for (index, line) in lines.iter().enumerate() {
+        let code_line = projected.lines[index].code.as_str();
         let trimmed = line.trim_start();
         if attr_depth > 0 {
-            attr_depth = next_attr_depth(attr_depth, trimmed);
+            attr_depth = next_attr_depth(attr_depth, code_line.trim_start());
             continue;
         }
-        if let Some(doc) = trimmed.strip_prefix("///") {
+        if let Some(doc) = projected.outer_doc_comment(index, line) {
             // First line of the run is the doc summary the atlas displays.
             pending_doc.get_or_insert_with(|| doc.trim().to_owned());
             continue;
         }
-        if trimmed.starts_with("#[") {
-            attr_depth = next_attr_depth(0, trimmed);
+        if code_line.trim_start().starts_with("#[") {
+            attr_depth = next_attr_depth(0, code_line.trim_start());
             continue;
         }
-        if trimmed.is_empty() || trimmed.starts_with("//") {
+        if code_line.trim().is_empty() || trimmed.starts_with("//") {
             continue;
         }
-        let Some(found) = classify_line(line) else {
+        let Some(found) = classify_line(code_line) else {
             pending_doc = None;
             continue;
         };
         let declaration_block = match found.kind {
-            ItemKind::Struct | ItemKind::Enum => braced_block(&lines, index),
+            ItemKind::Struct | ItemKind::Enum => {
+                braced_block(&lines, projected.projected_lines(), index)
+            }
             ItemKind::PubUse => semicolon_block(&lines, index),
             // Impl blocks capture the header only (through the opening
             // brace): bodies are excluded by design — signatures are the
             // intentional interface — and the methods inside are
             // scanned as their own (non-top-level) items.
-            ItemKind::Fn | ItemKind::Impl => signature_block(&lines, index),
+            ItemKind::Fn | ItemKind::Impl => {
+                signature_block(&lines, projected.projected_lines(), index)
+            }
             _ => (*line).to_owned(),
         };
         items.push(Item {
@@ -330,8 +339,7 @@ pub(crate) fn scan_source(text: &str, file: &Path) -> Vec<Item> {
 }
 
 /// Track how deep inside a (possibly multi-line) `#[...]` attribute the scan
-/// is, by square-bracket counting. Textual by design — brackets inside string
-/// literals can miscount, which only ever mis-attaches a doc summary.
+/// is, by square-bracket counting over the lexical code projection.
 fn next_attr_depth(depth: usize, line: &str) -> usize {
     line.chars().fold(depth, |depth, ch| match ch {
         '[' => depth + 1,
@@ -340,16 +348,17 @@ fn next_attr_depth(depth: usize, line: &str) -> usize {
     })
 }
 
-/// Lines from the declaration to its matching closing brace (struct/enum
-/// bodies), or to the terminating `;` for unit/tuple forms. Brace counting is
+/// Capture a struct or enum declaration through its matching closing brace.
+///
+/// Unit and tuple forms stop at their terminating `;`. Brace counting is
 /// textual; an unterminated block degrades to the rest of the file.
-fn braced_block(lines: &[&str], start: usize) -> String {
+fn braced_block(lines: &[&str], code: &[ProjectedLine], start: usize) -> String {
     let mut depth = 0usize;
     let mut opened = false;
     let mut end = start;
-    'outer: for (offset, line) in lines[start..].iter().enumerate() {
+    'outer: for (offset, projected) in code[start..].iter().enumerate() {
         end = start + offset;
-        for ch in line.chars() {
+        for ch in projected.code.chars() {
             match ch {
                 '{' => {
                     depth += 1;
@@ -369,18 +378,236 @@ fn braced_block(lines: &[&str], start: usize) -> String {
     lines[start..=end].join("\n")
 }
 
-/// Lines from the fn declaration through the first line carrying the
-/// body-opening `{` (or a terminating `;` for trait-method signatures) — the
-/// whole signature even when rustfmt breaks it across lines.
-fn signature_block(lines: &[&str], start: usize) -> String {
+/// Capture a function signature through its body-opening `{` or terminating `;`.
+///
+/// This preserves the whole signature when rustfmt breaks it across lines.
+fn signature_block(lines: &[&str], code: &[ProjectedLine], start: usize) -> String {
     let mut end = start;
-    for (offset, line) in lines[start..].iter().enumerate() {
+    for (offset, projected) in code[start..].iter().enumerate() {
         end = start + offset;
-        if line.contains('{') || line.contains(';') {
+        if projected.code.contains('{') || projected.code.contains(';') {
             break;
         }
     }
     lines[start..=end].join("\n")
+}
+
+#[derive(Debug)]
+struct ProjectedLine {
+    code: String,
+    /// Whether this line begins outside a continued string or block comment.
+    starts_in_code: bool,
+}
+
+/// One lexical view of Rust source shared by every line-based scan.
+pub(crate) struct RustSourceProjection {
+    text: String,
+    lines: Vec<ProjectedLine>,
+}
+
+impl RustSourceProjection {
+    pub(crate) fn of(text: String) -> Self {
+        Self {
+            lines: code_projection(&text),
+            text,
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn items(&self, file: &Path) -> Vec<Item> {
+        scan_projected_source(file, self)
+    }
+
+    pub(crate) fn test_regions(&self) -> TestRegions {
+        TestRegions::from_projection(self)
+    }
+
+    pub(crate) fn test_module_declarations(&self) -> Vec<String> {
+        let lines: Vec<_> = self.text.lines().collect();
+        (0..lines.len())
+            .filter(|&index| self.lines[index].starts_in_code && gates_test(lines[index]))
+            .filter_map(|index| declaration_after_attributes(&lines, index))
+            .filter_map(|start| declares_file_module(lines[start]))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn projected_lines(&self) -> &[ProjectedLine] {
+        &self.lines
+    }
+
+    pub(crate) fn code_lines(&self) -> impl Iterator<Item = &str> {
+        self.lines.iter().map(|line| line.code.as_str())
+    }
+
+    pub(crate) fn module_header_lines(&self) -> Vec<String> {
+        self.text
+            .lines()
+            .zip(&self.lines)
+            .filter(|(_, projected)| projected.starts_in_code)
+            .filter_map(|(line, _)| line.trim_start().strip_prefix("//!"))
+            .map(|rest| rest.trim().to_owned())
+            .collect()
+    }
+
+    fn outer_doc_comment<'a>(&self, index: usize, line: &'a str) -> Option<&'a str> {
+        self.lines[index]
+            .starts_in_code
+            .then(|| line.trim_start().strip_prefix("///"))
+            .flatten()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LexicalState {
+    Code,
+    BlockComment(usize),
+    String { escaped: bool },
+    RawString { hashes: usize },
+}
+
+/// Project Rust source onto code bytes while preserving line and byte offsets.
+///
+/// This is deliberately smaller than a parser: it recognizes only comments
+/// and string literals, the two lexical forms that can counterfeit declaration
+/// lines or braces for the line grammar.
+fn code_projection(text: &str) -> Vec<ProjectedLine> {
+    let bytes = text.as_bytes();
+    let mut state = LexicalState::Code;
+    let mut starts_in_code = true;
+    let mut line = Vec::new();
+    let mut lines = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\n' {
+            lines.push(ProjectedLine {
+                code: String::from_utf8(line).expect("masked source remains UTF-8"),
+                starts_in_code,
+            });
+            line = Vec::new();
+            starts_in_code = matches!(state, LexicalState::Code);
+            index += 1;
+            continue;
+        }
+        match state {
+            LexicalState::Code if bytes[index..].starts_with(b"//") => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    line.push(b' ');
+                    index += 1;
+                }
+            }
+            LexicalState::Code if bytes[index..].starts_with(b"/*") => {
+                line.extend_from_slice(b"  ");
+                state = LexicalState::BlockComment(1);
+                index += 2;
+            }
+            LexicalState::Code => {
+                if let Some((prefix_len, hashes)) = raw_string_open(&bytes[index..]) {
+                    line.extend(std::iter::repeat_n(b' ', prefix_len));
+                    state = LexicalState::RawString { hashes };
+                    index += prefix_len;
+                } else if byte == b'\''
+                    && let Some(literal_len) = char_literal_len(&text[index..])
+                {
+                    line.extend(std::iter::repeat_n(b' ', literal_len));
+                    index += literal_len;
+                } else if byte == b'"' {
+                    line.push(b' ');
+                    state = LexicalState::String { escaped: false };
+                    index += 1;
+                } else {
+                    line.push(byte);
+                    index += 1;
+                }
+            }
+            LexicalState::BlockComment(depth) if bytes[index..].starts_with(b"/*") => {
+                line.extend_from_slice(b"  ");
+                state = LexicalState::BlockComment(depth + 1);
+                index += 2;
+            }
+            LexicalState::BlockComment(depth) if bytes[index..].starts_with(b"*/") => {
+                line.extend_from_slice(b"  ");
+                state = if depth == 1 {
+                    LexicalState::Code
+                } else {
+                    LexicalState::BlockComment(depth - 1)
+                };
+                index += 2;
+            }
+            LexicalState::BlockComment(_) => {
+                line.push(b' ');
+                index += 1;
+            }
+            LexicalState::String { escaped } => {
+                line.push(b' ');
+                state = if escaped {
+                    LexicalState::String { escaped: false }
+                } else if byte == b'\\' {
+                    LexicalState::String { escaped: true }
+                } else if byte == b'"' {
+                    LexicalState::Code
+                } else {
+                    state
+                };
+                index += 1;
+            }
+            LexicalState::RawString { hashes } => {
+                let closes = byte == b'"'
+                    && bytes
+                        .get(index + 1..index + 1 + hashes)
+                        .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'));
+                line.push(b' ');
+                index += 1;
+                if closes {
+                    line.extend(std::iter::repeat_n(b' ', hashes));
+                    index += hashes;
+                    state = LexicalState::Code;
+                }
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(ProjectedLine {
+            code: String::from_utf8(line).expect("masked source remains UTF-8"),
+            starts_in_code,
+        });
+    }
+    lines
+}
+
+fn raw_string_open(bytes: &[u8]) -> Option<(usize, usize)> {
+    let prefix = if bytes.starts_with(b"br") {
+        2
+    } else if bytes.starts_with(b"r") {
+        1
+    } else {
+        return None;
+    };
+    let hashes = bytes[prefix..]
+        .iter()
+        .take_while(|byte| **byte == b'#')
+        .count();
+    (bytes.get(prefix + hashes) == Some(&b'"')).then_some((prefix + hashes + 1, hashes))
+}
+
+fn char_literal_len(text: &str) -> Option<usize> {
+    let body = text.strip_prefix('\'')?;
+    let content_len = if let Some(escaped) = body.strip_prefix('\\') {
+        if let Some(unicode) = escaped.strip_prefix("u{") {
+            unicode.find('}')? + 4
+        } else if escaped.starts_with('x') {
+            4
+        } else {
+            escaped.chars().next()?.len_utf8() + 1
+        }
+    } else {
+        body.chars().next()?.len_utf8()
+    };
+    (body.as_bytes().get(content_len) == Some(&b'\'')).then_some(content_len + 2)
 }
 
 fn semicolon_block(lines: &[&str], start: usize) -> String {
@@ -394,42 +621,48 @@ fn semicolon_block(lines: &[&str], start: usize) -> String {
     lines[start..=end].join("\n")
 }
 
-/// One finite public name exposed by a captured `pub use` declaration.
+/// One local name introduced by a captured `use` declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReexportedName {
+pub(crate) struct ImportBinding {
     pub(crate) source: String,
     pub(crate) source_path: String,
-    pub(crate) exposed: String,
+    pub(crate) local_name: String,
 }
 
-/// Extract exposed names from the scanner-owned `pub use` block. Nested groups
-/// are flattened; globs remain explicit unresolved entries instead of
-/// disappearing from downstream inventories.
-pub(crate) fn reexported_names(declaration: &str) -> Vec<ReexportedName> {
+/// Extract bindings from a scanner-owned `use` block.
+///
+/// Nested groups are flattened; globs remain explicit unresolved entries
+/// instead of disappearing from downstream inventories.
+pub(crate) fn import_bindings(declaration: &str) -> Vec<ImportBinding> {
     let Some((_, after_use)) = declaration.split_once("use ") else {
         return Vec::new();
     };
     let target = after_use.split(';').next().unwrap_or(after_use).trim();
+    import_bindings_from_use_tree(target)
+}
+
+/// Extract bindings from one Rust use tree (the text after `use`).
+pub(crate) fn import_bindings_from_use_tree(use_tree: &str) -> Vec<ImportBinding> {
     let mut names = BTreeMap::new();
-    collect_reexported_names(target, "", &mut names);
+    collect_import_bindings(use_tree, "", &mut names);
     names
         .into_iter()
-        .map(|(exposed, source_path)| ReexportedName {
+        .map(|(local_name, source_path)| ImportBinding {
             source: source_path
                 .rsplit("::")
                 .next()
                 .unwrap_or(&source_path)
                 .to_owned(),
             source_path,
-            exposed,
+            local_name,
         })
         .collect()
 }
 
-fn collect_reexported_names(tree: &str, parent: &str, names: &mut BTreeMap<String, String>) {
+fn collect_import_bindings(tree: &str, parent: &str, names: &mut BTreeMap<String, String>) {
     let tree = tree.trim();
     let Some(open) = tree.find('{') else {
-        collect_reexported_leaf(tree, parent, names);
+        collect_import_binding_leaf(tree, parent, names);
         return;
     };
     let Some(close) = tree.rfind('}') else {
@@ -439,14 +672,14 @@ fn collect_reexported_names(tree: &str, parent: &str, names: &mut BTreeMap<Strin
     for member in split_top_level(&tree[open + 1..close]) {
         let member = member.trim();
         if member == "self" {
-            collect_reexported_leaf("self", &prefix, names);
+            collect_import_binding_leaf("self", &prefix, names);
         } else if !member.is_empty() {
-            collect_reexported_names(member, &prefix, names);
+            collect_import_bindings(member, &prefix, names);
         }
     }
 }
 
-fn collect_reexported_leaf(tree: &str, parent: &str, names: &mut BTreeMap<String, String>) {
+fn collect_import_binding_leaf(tree: &str, parent: &str, names: &mut BTreeMap<String, String>) {
     let tree = tree.trim();
     if tree.is_empty() {
         return;
@@ -468,7 +701,12 @@ fn collect_reexported_leaf(tree: &str, parent: &str, names: &mut BTreeMap<String
     } else {
         qualified_path(parent, source)
     };
-    let exposed = exposed.rsplit("::").next().unwrap_or(exposed).trim();
+    let exposed = if tree == "self" {
+        parent.rsplit("::").next().unwrap_or(parent)
+    } else {
+        exposed.rsplit("::").next().unwrap_or(exposed)
+    }
+    .trim();
     if !source_path.is_empty() && !exposed.is_empty() {
         names.insert(exposed.to_owned(), source_path);
     }
@@ -492,7 +730,7 @@ fn qualified_path(parent: &str, child: &str) -> String {
 /// argument splitter, shared by the struct/enum member scan and the `cfg`
 /// predicate reader. Tuple variants (`Stop(u32, u32)`) and string arguments
 /// (`feature = "a,b"`) therefore stay whole.
-fn split_top_level(text: &str) -> Vec<&str> {
+pub(crate) fn split_top_level(text: &str) -> Vec<&str> {
     let mut depth = 0usize;
     let mut quoted = false;
     let mut start = 0usize;
@@ -913,27 +1151,27 @@ pub use crate::measurement::{
         assert_eq!(export.kind, ItemKind::PubUse);
         assert_eq!(export.declaration_block, text.trim_end());
         assert_eq!(
-            reexported_names(&export.declaration_block),
+            import_bindings(&export.declaration_block),
             vec![
-                ReexportedName {
+                ImportBinding {
                     source: "*".to_owned(),
                     source_path: "crate::measurement::hidden::*".to_owned(),
-                    exposed: "*".to_owned(),
+                    local_name: "*".to_owned(),
                 },
-                ReexportedName {
+                ImportBinding {
                     source: "BlockFrame".to_owned(),
                     source_path: "crate::measurement::block::BlockFrame".to_owned(),
-                    exposed: "BlockFrame".to_owned(),
+                    local_name: "BlockFrame".to_owned(),
                 },
-                ReexportedName {
+                ImportBinding {
                     source: "Floor".to_owned(),
                     source_path: "crate::measurement::Floor".to_owned(),
-                    exposed: "Floor".to_owned(),
+                    local_name: "Floor".to_owned(),
                 },
-                ReexportedName {
+                ImportBinding {
                     source: "BlockRefusal".to_owned(),
                     source_path: "crate::measurement::block::BlockRefusal".to_owned(),
-                    exposed: "Refusal".to_owned(),
+                    local_name: "Refusal".to_owned(),
                 },
             ]
         );
@@ -1032,11 +1270,21 @@ pub use crate::grade::Cost;
             vec!["Module header line.", "Second header line."]
         );
         assert!(module_header_lines("pub fn a() {}\n").is_empty());
+        assert_eq!(
+            module_header_lines(
+                r##"const FIXTURE: &str = r#"
+//! Not a module header.
+"#;
+//! Real module header.
+"##
+            ),
+            vec!["Real module header."]
+        );
     }
 
     #[test]
     fn test_regions_cover_every_gated_module_not_only_the_last() {
-        // Regression: production code between two test modules remains counted.
+        // Regression class: production code between two test modules.
         // A single terminal boundary counted the interleaved module — and
         // everything after it — as production.
         let source = "\
@@ -1061,6 +1309,78 @@ mod tests {
         // 13 lines, 4 in each region: the two declarations, the blank lines
         // around them, and the two production fns remain.
         assert_eq!(regions.non_test_loc(), 5);
+    }
+
+    #[test]
+    fn fixture_source_inside_strings_cannot_declare_items_or_close_test_regions() {
+        let source = r##"
+#[cfg(test)]
+mod tests {
+    fn fixture() {
+        let ordinary = "\
+pub fn ghost() {
+}
+";
+        let raw = r#"
+pub struct Phantom {
+}
+"#;
+        assert!(!ordinary.is_empty() && !raw.is_empty());
+    }
+}
+
+pub fn real() {}
+"##;
+        let regions = TestRegions::of(source);
+        assert!(regions.covers(5), "ordinary fixture text stays test-only");
+        assert!(regions.covers(9), "raw fixture text stays test-only");
+        assert!(
+            !regions.covers(17),
+            "production after the module remains live"
+        );
+
+        let items = scan_source(source, Path::new("fixture.rs"));
+        let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
+        assert!(names.contains(&"real"));
+        assert!(!names.contains(&"ghost"));
+        assert!(!names.contains(&"Phantom"));
+    }
+
+    #[test]
+    fn character_literals_cannot_change_declaration_boundaries() {
+        let source = "\
+pub struct Token<const C: char = '{'>;
+pub struct ByteToken<const C: u8 = b'}'>;
+pub struct After;
+";
+        let items = scan_source(source, Path::new("fixture.rs"));
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].declaration_block,
+            "pub struct Token<const C: char = '{'>;"
+        );
+        assert_eq!(
+            items[1].declaration_block,
+            "pub struct ByteToken<const C: u8 = b'}'>;"
+        );
+        assert_eq!(items[2].name, "After");
+    }
+
+    #[test]
+    fn unicode_source_bytes_do_not_break_lexical_projection() {
+        let source = "const π: f64 = 3.14;\npub struct After;\n";
+        let projection = RustSourceProjection::of(source.to_owned());
+        assert_eq!(
+            projection.code_lines().collect::<Vec<_>>(),
+            source.lines().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            projection
+                .items(Path::new("fixture.rs"))
+                .last()
+                .map(|item| item.name.as_str()),
+            Some("After")
+        );
     }
 
     #[test]

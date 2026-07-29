@@ -167,12 +167,13 @@ struct CrateMap {
     files: Vec<FileMap>,
 }
 
+/// One Rust file and every scanner-owned view Atlas derives from it.
 struct FileMap {
     /// Workspace-relative path with `/` separators — the atlas's module key.
     rel: String,
-    text: String,
     items: Vec<Item>,
     regions: scan::TestRegions,
+    projection: scan::RustSourceProjection,
     /// Whether the whole file is test code, because a sibling declares it
     /// under a test-implying gate (`#[cfg(test)] mod fixtures;`). A file
     /// cannot know this about itself; `Workspace::load` resolves it.
@@ -187,13 +188,14 @@ impl FileMap {
     }
 
     fn of(rel: String, text: String) -> Self {
-        let items = scan::scan_source(&text, Path::new(&rel));
-        let regions = scan::TestRegions::of(&text);
+        let projection = scan::RustSourceProjection::of(text);
+        let items = projection.items(Path::new(&rel));
+        let regions = projection.test_regions();
         Self {
             rel,
-            text,
             items,
             regions,
+            projection,
             test_file: false,
         }
     }
@@ -215,13 +217,13 @@ impl FileMap {
             .filter(|item| !self.test_file && !self.regions.covers(item.line))
     }
 
-    /// Source lines outside every test-only region.
-    fn production_lines(&self) -> impl Iterator<Item = &str> {
-        self.text
-            .lines()
+    /// Lexically projected lines outside every test-only region.
+    fn production_code_lines(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.projection
+            .code_lines()
             .enumerate()
             .filter(|(index, _)| !self.test_file && !self.regions.covers(index + 1))
-            .map(|(_, line)| line)
+            .map(|(index, line)| (index + 1, line))
     }
 }
 
@@ -348,7 +350,8 @@ fn mark_test_files(files: &mut [FileMap]) {
         .iter()
         .flat_map(|file| {
             let directory = child_directory(&file.rel);
-            scan::test_module_declarations(&file.text)
+            file.projection
+                .test_module_declarations()
                 .into_iter()
                 .flat_map(move |name| {
                     [
@@ -714,6 +717,11 @@ fn build_graph(ws: &Workspace, filter: Filter) -> Graph {
         line: usize,
     }
     let mut registry: BTreeMap<&str, Vec<Decl<'_>>> = BTreeMap::new();
+    let workspace_roots = ws
+        .crates
+        .iter()
+        .map(|crate_map| crate_map.name.replace('-', "_"))
+        .collect::<BTreeSet<_>>();
     for (crate_index, crate_map) in ws.crates.iter().enumerate() {
         for file in &crate_map.files {
             for item in file.production_items() {
@@ -736,6 +744,7 @@ fn build_graph(ws: &Workspace, filter: Filter) -> Graph {
     let mut edges = Vec::new();
     for (crate_index, crate_map) in ws.crates.iter().enumerate() {
         for file in &crate_map.files {
+            let external_bindings = external_import_bindings(file, &workspace_roots);
             for item in file.production_items() {
                 if item.kind == ItemKind::PubUse {
                     continue;
@@ -755,7 +764,7 @@ fn build_graph(ws: &Workspace, filter: Filter) -> Graph {
                 let mut seen: BTreeSet<(&str, EdgeClass)> = BTreeSet::new();
                 for (region, class) in regions {
                     for token in identifiers(region) {
-                        if token == item.name {
+                        if token == item.name || external_bindings.suppresses(token) {
                             continue;
                         }
                         let Some((name, decls)) = registry.get_key_value(token) else {
@@ -863,7 +872,7 @@ fn dump(ws: &Workspace, graph: &Graph, filter: Filter) -> Result<String> {
                         line: item.line,
                         visibility: item.visibility,
                         crate_root: module_path_of(&crate_map.src_rel, &file.rel).is_none(),
-                        names: scan::reexported_names(&item.declaration_block),
+                        names: scan::import_bindings(&item.declaration_block),
                     });
                     continue;
                 }
@@ -933,10 +942,10 @@ fn dump(ws: &Workspace, graph: &Graph, filter: Filter) -> Result<String> {
     for pending in pending_reexports {
         let kind = reexport_edge_kind(pending.visibility, pending.crate_root);
         for name in pending.names {
-            let target_id = item_id(&pending.file, pending.line, &name.exposed);
+            let target_id = item_id(&pending.file, pending.line, &name.local_name);
             items.push(DumpItem {
                 id: target_id.clone(),
-                name: name.exposed.clone(),
+                name: name.local_name.clone(),
                 kind: "re-export",
                 home: pending.home.clone(),
                 file: pending.file.clone(),
@@ -954,7 +963,7 @@ fn dump(ws: &Workspace, graph: &Graph, filter: Filter) -> Result<String> {
                 source: name.source,
                 source_path: Some(name.source_path),
                 source_id: source.id,
-                target: name.exposed,
+                target: name.local_name,
                 target_id: Some(target_id),
                 target_file: Some(pending.file.clone()),
                 ambiguous: source.ambiguous,
@@ -1018,7 +1027,7 @@ struct PendingReexport {
     line: usize,
     visibility: Visibility,
     crate_root: bool,
-    names: Vec<scan::ReexportedName>,
+    names: Vec<scan::ImportBinding>,
 }
 
 struct ResolvedDeclaration {
@@ -1201,9 +1210,9 @@ fn name_card(
         for item in file.production_items() {
             if item.kind == ItemKind::PubUse {
                 if in_fragment(&file.rel)
-                    && scan::reexported_names(&item.declaration_block)
+                    && scan::import_bindings(&item.declaration_block)
                         .iter()
-                        .any(|export| export.source == name || export.exposed == name)
+                        .any(|export| export.source == name || export.local_name == name)
                 {
                     reexports.push(format!("{}:{}", file.rel, item.line));
                 }
@@ -1238,8 +1247,8 @@ fn name_card(
     // excluded — approximate by design.
     let mut refs = 0usize;
     for file in ws.files() {
-        for (index, line) in file.text.lines().enumerate() {
-            if defining.contains(&(file.rel.as_str(), index + 1)) {
+        for (line_number, line) in file.production_code_lines() {
+            if defining.contains(&(file.rel.as_str(), line_number)) {
                 continue;
             }
             refs += count_word_occurrences(line, name);
@@ -1486,7 +1495,7 @@ fn module_card(
              like crates/<crate>/src/<module>.rs)"
         )
     })?;
-    let header = scan::module_header_lines(&file.text).first().cloned();
+    let header = file.projection.module_header_lines().first().cloned();
     let mut tally = Tally::default();
     tally.add_file(file, filter);
     let undocumented = file
@@ -1703,7 +1712,7 @@ summarized by kind — pass --items for the full table)"
 fn fan_out(file: &FileMap) -> (usize, usize) {
     let mut imports = 0usize;
     let mut internal = 0usize;
-    for line in file.production_lines() {
+    for (_, line) in file.production_code_lines() {
         let Some(target) = use_import(line) else {
             continue;
         };
@@ -1732,6 +1741,72 @@ fn use_import(line: &str) -> Option<&str> {
     .map(str::trim_start)
 }
 
+/// Bindings introduced by `use` statements rooted outside this workspace.
+///
+/// This extends the Atlas's textual import grammar rather than adding a
+/// second Rust parser. Suppressing an unresolved external binding is safer
+/// than claiming it names a same-spelled workspace declaration.
+struct ExternalImportBindings {
+    names: BTreeSet<String>,
+    has_glob: bool,
+}
+
+impl ExternalImportBindings {
+    fn suppresses(&self, name: &str) -> bool {
+        self.has_glob || self.names.contains(name)
+    }
+
+    fn absorb_import(&mut self, use_tree: &str) {
+        for binding in scan::import_bindings_from_use_tree(use_tree) {
+            if binding.local_name == "*" {
+                self.has_glob = true;
+            } else {
+                self.names.insert(binding.local_name);
+            }
+        }
+    }
+}
+
+/// Collect external import bindings that suppress same-named graph edges.
+fn external_import_bindings(
+    file: &FileMap,
+    workspace_roots: &BTreeSet<String>,
+) -> ExternalImportBindings {
+    let mut bindings = ExternalImportBindings {
+        names: BTreeSet::new(),
+        has_glob: false,
+    };
+    let mut statement = None::<String>;
+    for (_, line) in file.production_code_lines() {
+        if let Some(current) = statement.as_mut() {
+            current.push(' ');
+            current.push_str(line.trim());
+        } else if let Some(target) = use_import(line) {
+            statement = Some(target.to_owned());
+        }
+        let Some(current) = statement.as_ref() else {
+            continue;
+        };
+        if !current.contains(';') {
+            continue;
+        }
+        let completed = statement.take().expect("completed import statement");
+        let completed = completed.split(';').next().unwrap_or_default().trim();
+        if completed.starts_with('{') {
+            continue;
+        }
+        let mut tokens = identifiers(completed);
+        let Some(root) = tokens.next() else {
+            continue;
+        };
+        if matches!(root, "crate" | "super" | "self") || workspace_roots.contains(root) {
+            continue;
+        }
+        bindings.absorb_import(completed);
+    }
+    bindings
+}
+
 /// Files in the same crate whose `use` lines mention this module's path or
 /// its final segment — the labeled fan-in heuristic. `None` for crate roots:
 /// every `crate::` path references them, so the count would be noise.
@@ -1748,7 +1823,8 @@ fn fan_in<'a>(crate_map: &'a CrateMap, file: &FileMap) -> Option<Vec<&'a str>> {
             continue;
         }
         let mentions = other
-            .production_lines()
+            .production_code_lines()
+            .map(|(_, line)| line)
             .filter_map(use_import)
             .any(|target| {
                 target.contains(&module_path) || count_word_occurrences(target, &segment) > 0
@@ -1810,7 +1886,7 @@ fn comments_audit(ws: &Workspace, filter: Filter, json: bool) -> Result<String> 
             let mut row = AuditRow::default();
             for file in &crate_map.files {
                 row.files += 1;
-                let header = scan::module_header_lines(&file.text);
+                let header = file.projection.module_header_lines();
                 if header.is_empty() {
                     row.missing_header += 1;
                 } else if !cites(&header.join("\n")) {
@@ -1888,7 +1964,7 @@ fn comments_audit(ws: &Workspace, filter: Filter, json: bool) -> Result<String> 
 fn max_block(file: &FileMap) -> Option<(usize, &Item)> {
     let mut tops: Vec<&Item> = file.items.iter().filter(|item| item.top_level).collect();
     tops.sort_by_key(|item| item.line);
-    let end_of_file = file.text.lines().count() + 1;
+    let end_of_file = file.projection.text().lines().count() + 1;
     let mut best: Option<(usize, &Item)> = None;
     for (index, item) in tops.iter().enumerate() {
         // A block ends at whichever comes first: the next top-level item or
@@ -2749,6 +2825,108 @@ pub fn use_shared(x: Shared) -> Shared {
             .collect();
         assert_eq!(from_c.len(), 1);
         assert!(from_c[0].ambiguous && from_c[0].target_file.is_none());
+    }
+
+    #[test]
+    fn external_import_cannot_resolve_to_a_same_named_workspace_type() {
+        let workspace_value = "pub struct Value;\npub struct Tile;\n";
+        let external_value = "\
+use serde_json::Value;
+
+pub fn encode(_: Tile) -> Value {
+    todo!()
+}
+";
+        let workspace_crate = |name: &str, text: &str| CrateMap {
+            name: name.to_owned(),
+            src_rel: format!("crates/{name}/src"),
+            files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
+        };
+        let ws = Workspace {
+            root: PathBuf::from("/fixture"),
+            crates: vec![
+                workspace_crate("workspace-value", workspace_value),
+                workspace_crate("external-user", external_value),
+            ],
+        };
+        let graph = build_graph(&ws, PUBISH);
+
+        assert!(
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.source_name == "encode")
+                .all(|edge| edge.target != "Value"),
+            "an external import must suppress its same-named workspace candidate"
+        );
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.source_name == "encode" && edge.target == "Tile"),
+            "external binding suppression must preserve unrelated workspace edges"
+        );
+    }
+
+    #[test]
+    fn external_import_bindings_report_only_names_introduced_into_scope() {
+        let bindings = |import| {
+            let mut bindings = ExternalImportBindings {
+                names: BTreeSet::new(),
+                has_glob: false,
+            };
+            bindings.absorb_import(import);
+            bindings
+        };
+        assert_eq!(
+            bindings("serde_json::value::Value").names,
+            BTreeSet::from(["Value".to_owned()])
+        );
+        assert_eq!(
+            bindings("serde_json::{Map, Value as JsonValue}").names,
+            BTreeSet::from(["JsonValue".to_owned(), "Map".to_owned()])
+        );
+        assert_eq!(
+            bindings("serde_json::{self, Value}").names,
+            BTreeSet::from(["Value".to_owned(), "serde_json".to_owned()])
+        );
+        assert!(bindings("serde_json::*").has_glob);
+    }
+
+    #[test]
+    fn import_text_inside_comments_and_strings_cannot_suppress_graph_edges() {
+        let workspace_value = "pub struct Value;\n";
+        let user = r##"
+/*
+use external::Value;
+*/
+const SOURCE: &str = r#"
+use external::Value;
+"#;
+
+pub fn encode() -> Value {
+    todo!()
+}
+"##;
+        let workspace_crate = |name: &str, text: &str| CrateMap {
+            name: name.to_owned(),
+            src_rel: format!("crates/{name}/src"),
+            files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
+        };
+        let ws = Workspace {
+            root: PathBuf::from("/fixture"),
+            crates: vec![
+                workspace_crate("workspace-value", workspace_value),
+                workspace_crate("user", user),
+            ],
+        };
+        let graph = build_graph(&ws, PUBISH);
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.source_name == "encode" && edge.target == "Value")
+        );
     }
 
     #[test]
