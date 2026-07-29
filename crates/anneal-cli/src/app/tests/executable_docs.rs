@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 #[test]
 fn shipped_help_and_describe_examples_are_executable() {
@@ -60,9 +61,9 @@ fn validate_static_help(session: &RuntimeSession) -> Vec<String> {
 }
 
 fn validate_project_example(session: &RuntimeSession, program: &str) -> anyhow::Result<()> {
-    let project_file = session.root.join(anneal_core::PROJECT_RULE_FILE);
+    let project_file = session.root().join(anneal_core::PROJECT_RULE_FILE);
     fs::write(&project_file, program).context("write project example")?;
-    let result = RuntimeSession::load_for_test(&session.root).map(|_| ());
+    let result = RuntimeSession::load_for_test(session.root()).map(|_| ());
     fs::remove_file(project_file).context("remove project example")?;
     result
 }
