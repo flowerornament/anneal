@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
+use anneal_core::runtime::ExplainOptions;
 use anneal_core::runtime::Literal;
-use anneal_core::runtime::eval::ExplainOptions;
 use anneal_core::{
     InferredCorpusRoot, VerbArg, VerbArgKind, VerbEntry, infer_corpus_root, render_verb_arg_facts,
 };

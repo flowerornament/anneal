@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
+use anneal_core::runtime::{ExplainOptions, NumberValue};
 use anneal_core::{
     CorpusId, EdgeFact, FactBatch, FactBatchMode, FactIdentity, FactStore, Generation, HandleFact,
     MetaFact, NativeId, OriginUri, Revision, SourceName,

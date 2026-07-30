@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::Row;
-use anneal_core::runtime::eval::NumberValue;
-use anneal_core::runtime::prelude::datalog_string_literal;
+use anneal_core::runtime::datalog_string_literal;
 use anyhow::Result;
 
 use super::value::{

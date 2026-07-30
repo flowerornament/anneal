@@ -6,12 +6,12 @@ use crate::ir::plan::{PlanError, ProgramPlan, plan};
 use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{Atom, Body, NegatedAtom, PredicateRef};
 use crate::runtime::eval::{
-    Database, DerivationNode, EvalError, EvalOptions, QueryOutput, QueryWarning, project_fact_head,
+    Database, EvalError, EvalOptions, QueryOutput, QueryWarning, project_fact_head,
 };
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::vm::execute::{DerivedTuple, eval_planned_query_output};
 use crate::vm::fixpoint::run_rule_group;
-use crate::vm::provenance::derivation_ref;
+use crate::vm::provenance::{DerivationNode, derivation_ref};
 
 pub struct Evaluator {
     program: AnalyzedProgram,

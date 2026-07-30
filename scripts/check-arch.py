@@ -11,7 +11,35 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VM_DIR = ROOT / "crates" / "anneal-core" / "src" / "vm"
+CRATES_DIR = ROOT / "crates"
+CORE_SRC = CRATES_DIR / "anneal-core" / "src"
+VM_DIR = CORE_SRC / "vm"
+
+PRIVATE_CORE_MODULES = {
+    "config_schema",
+    "driver",
+    "facts",
+    "hash",
+    "history",
+    "ids",
+    "impact",
+    "ir",
+    "lifecycle",
+    "metadata",
+    "path_policy",
+    "policy",
+    "project",
+    "ranking",
+    "retrieval",
+    "source",
+    "store",
+    "target_probe",
+    "time",
+    "trail",
+    "verbs",
+    "visibility",
+    "vm",
+}
 
 ALLOWED_WORKSPACE_DEPS = {
     "anneal": {"anneal-cli"},
@@ -119,9 +147,55 @@ def check_workspace_dag() -> None:
         fail("\n" + "\n".join(violations))
 
 
+def public_modules(source: str) -> set[str]:
+    return set(
+        re.findall(r"^pub mod ([a-zA-Z_][a-zA-Z0-9_]*)\b", source, re.MULTILINE)
+    )
+
+
+def check_core_facades() -> None:
+    root_modules = public_modules((CORE_SRC / "lib.rs").read_text())
+    if root_modules != {"runtime"}:
+        fail(
+            "anneal-core must expose only the runtime module; found: "
+            + ", ".join(sorted(root_modules))
+        )
+
+    runtime_modules = public_modules((CORE_SRC / "runtime" / "mod.rs").read_text())
+    if runtime_modules:
+        fail(
+            "anneal-core runtime implementation modules must stay private: "
+            + ", ".join(sorted(runtime_modules))
+        )
+
+    root_pattern = re.compile(
+        r"anneal_core::(" + "|".join(sorted(PRIVATE_CORE_MODULES)) + r")::"
+    )
+    runtime_pattern = re.compile(
+        r"anneal_core::runtime::"
+        r"(analysis|ast|eval|loader|ndjson|parser|prelude|primitives|schedule)::"
+    )
+    violations = []
+    for crate_dir in sorted(CRATES_DIR.iterdir()):
+        if crate_dir.name == "anneal-core":
+            continue
+        for path in sorted(crate_dir.rglob("*.rs")):
+            source = path.read_text()
+            for line_number, line in enumerate(source.splitlines(), start=1):
+                if root_pattern.search(line) or runtime_pattern.search(line):
+                    violations.append(
+                        f"{path.relative_to(ROOT)}:{line_number}: "
+                        "import anneal-core through its root or runtime facade"
+                    )
+
+    if violations:
+        fail("\n" + "\n".join(violations))
+
+
 def main() -> None:
     check_vm_imports()
     check_workspace_dag()
+    check_core_facades()
     print("check-arch: ok")
 
 

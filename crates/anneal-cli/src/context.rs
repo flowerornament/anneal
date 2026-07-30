@@ -4,11 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use anneal_core::ranking::{context_neighbor_sort_score, context_sort_score};
-use anneal_core::runtime::eval::NumberValue;
-use anneal_core::runtime::prelude::{ContextQueryArgs, render_context_query};
+use anneal_core::runtime::NumberValue;
+use anneal_core::runtime::{ContextQueryArgs, render_context_query};
 use anneal_core::runtime::{Row, Value};
 use serde::Serialize;
+
+use crate::context_ordering::{hit_score, neighbor_score};
 
 pub const DEFAULT_CONTEXT_BUDGET: i64 = 4_000;
 pub const DEFAULT_CONTEXT_HITS: usize = 3;
@@ -353,7 +354,7 @@ pub struct ContextNeighbor {
 
 impl ContextNeighbor {
     fn sort_score(&self) -> f64 {
-        context_neighbor_sort_score(
+        neighbor_score(
             self.group.as_str(),
             self.disposition.as_str(),
             self.degree,
@@ -459,7 +460,7 @@ fn context_hit_sort_score(row: &Row) -> Result<f64, ContextGroupError> {
     let score = number_field(row, "score")?;
     let field = string_field(row, "field")?;
     let reason = string_field(row, "reason")?;
-    Ok(context_sort_score(score, reason.as_str(), field.as_str()))
+    Ok(hit_score(score, reason.as_str(), field.as_str()))
 }
 
 #[cfg(test)]
@@ -467,7 +468,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
-    use anneal_core::runtime::prelude::{CONTEXT_OUTPUT_SCHEMA, standard_prelude_program};
+    use anneal_core::runtime::{CONTEXT_OUTPUT_SCHEMA, standard_prelude_program};
     use anneal_core::runtime::{Database, EvalOptions, Evaluator, analyze, parse_program};
     use anneal_core::{
         ActorContext, CancellationToken, ConfigFacts, ContentFact, EdgeFact, FactBatch,

@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use anneal_core::CorpusId;
-use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
-use anneal_core::runtime::prelude::standard_prelude_program;
+use anneal_core::runtime::standard_prelude_program;
+use anneal_core::runtime::{ExplainOptions, NumberValue};
 use anneal_core::runtime::{analyze, parse_program};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;

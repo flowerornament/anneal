@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::{Row, Value};
 
 use super::value::{required_number, required_string};

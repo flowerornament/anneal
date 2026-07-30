@@ -20,13 +20,12 @@ use crate::runtime::ast::{
     AggregateFunction, ComparisonOp, Ident, NumberLiteral, OrderDirection, PredicateRef,
 };
 use crate::runtime::eval::{
-    Database, EvalError, EvalOptions, ExplainOptions, NumberValue, QueryOutput, QueryWarning, Row,
-    Tuple, Value,
+    Database, EvalError, EvalOptions, ExplainOptions, QueryOutput, QueryWarning, Row, Tuple, Value,
 };
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::vm::frame::PlannedFrame;
 use crate::vm::provenance::{DerivationNode, DerivationRef, derivation_ref};
-use crate::vm::value::{ListArena, PhysicalValue};
+use crate::vm::value::{ListArena, NumberValue, PhysicalValue};
 
 const MAX_AGGREGATE_DERIVATION_CHILDREN: usize = 32;
 

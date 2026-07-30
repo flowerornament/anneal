@@ -205,7 +205,7 @@ impl ReadChunk {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> ReadChunkParts {
+    pub(crate) fn into_parts(self) -> ReadChunkParts {
         ReadChunkParts {
             handle: self.handle,
             span_id: self.span_id,
@@ -217,15 +217,14 @@ impl ReadChunk {
     }
 }
 
-/// Owned fields of a `ReadChunk`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadChunkParts {
-    pub handle: String,
-    pub span_id: String,
-    pub text: String,
-    pub start_line: i64,
-    pub end_line: i64,
-    pub tokens: i64,
+pub(crate) struct ReadChunkParts {
+    pub(crate) handle: String,
+    pub(crate) span_id: String,
+    pub(crate) text: String,
+    pub(crate) start_line: i64,
+    pub(crate) end_line: i64,
+    pub(crate) tokens: i64,
 }
 
 /// Whole-handle content returned by `read_full(...)`.

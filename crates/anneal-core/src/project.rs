@@ -71,13 +71,6 @@ pub struct ProjectExtension {
     program: Program,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectExtensionParts {
-    pub discovery: ConfigFacts,
-    pub runtime_config: ConfigFacts,
-    pub program: Program,
-}
-
 impl ProjectExtension {
     pub fn discovery(&self) -> &ConfigFacts {
         &self.discovery
@@ -102,14 +95,6 @@ impl ProjectExtension {
 
     pub fn program(&self) -> &Program {
         &self.program
-    }
-
-    pub fn into_parts(self) -> ProjectExtensionParts {
-        ProjectExtensionParts {
-            discovery: self.discovery,
-            runtime_config: self.runtime_config,
-            program: self.program,
-        }
     }
 }
 
@@ -1381,8 +1366,9 @@ mod tests {
 
         let mut program = standard_prelude_program().unwrap();
         let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
-        let extension = extension.into_parts();
-        program.statements.extend(extension.program.statements);
+        program
+            .statements
+            .extend(extension.program().statements.clone());
         let query_program =
             parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
         program.statements.extend(query_program.statements);
@@ -1424,8 +1410,9 @@ mod tests {
 
         let mut program = standard_prelude_program().unwrap();
         let extension = load_project_extension(root.path(), &[], &program).expect("project loads");
-        let extension = extension.into_parts();
-        program.statements.extend(extension.program.statements);
+        program
+            .statements
+            .extend(extension.program().statements.clone());
         let query_program =
             parse_program("verbs-query", "? verbs(name, query, doc, output_schema).").unwrap();
         program.statements.extend(query_program.statements);

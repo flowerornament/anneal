@@ -1,7 +1,7 @@
 use std::fs;
 
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::Value;
-use anneal_core::runtime::eval::NumberValue;
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 

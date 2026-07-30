@@ -4,6 +4,7 @@ version = "0.22.0"
 edition = "2024"
 license = "MIT"
 description = "Substrate runtime types for anneal"
+publish = false
 
 [lints.rust]
 unsafe_code = "deny"

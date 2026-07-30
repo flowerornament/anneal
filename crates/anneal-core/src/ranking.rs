@@ -74,7 +74,6 @@ pub const FIELD_IDENTIFIER: &str = "identifier";
 pub const FIELD_TITLE: &str = "title";
 pub const FIELD_HEADING: &str = "heading";
 pub const FIELD_BODY: &str = "body";
-pub const FIELD_FRONTMATTER_PREFIX: &str = "frontmatter:";
 pub const FIELD_FRONTMATTER_GLOB: &str = "frontmatter:*";
 
 pub const REASON_IDENTIFIER_SUBSTRING: &str = "identifier-substring";
@@ -127,7 +126,7 @@ impl SearchScore {
     }
 }
 
-/// Internal search candidate produced from stored corpus facts.
+/// Search candidate exchanged between providers and ranking policy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     corpus: String,
@@ -294,81 +293,6 @@ fn field_weight(field: &str) -> f32 {
         FIELD_BODY => 0.82,
         _ if field.starts_with("frontmatter:") => 0.88,
         _ => 0.75,
-    }
-}
-
-#[must_use]
-pub fn context_sort_score(score: f64, reason: &str, field: &str) -> f64 {
-    score + context_reason_bonus(reason) + context_field_bonus(field)
-}
-
-pub const CONTEXT_NEIGHBOR_GROUP_CURRENT: &str = "current";
-pub const CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT: &str = "in_flight";
-pub const CONTEXT_NEIGHBOR_GROUP_SUPERSEDED: &str = "superseded";
-pub const CONTEXT_NEIGHBOR_GROUP_HIDDEN: &str = "hidden";
-
-#[must_use]
-pub fn context_neighbor_sort_score(
-    group: &str,
-    disposition: &str,
-    degree: i64,
-    is_self: bool,
-) -> f64 {
-    context_neighbor_group_bonus(group)
-        + context_neighbor_disposition_bonus(disposition)
-        + context_neighbor_self_bonus(is_self)
-        - context_neighbor_degree_penalty(degree)
-}
-
-fn context_neighbor_group_bonus(group: &str) -> f64 {
-    match group {
-        CONTEXT_NEIGHBOR_GROUP_CURRENT => 300.0,
-        CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT => 200.0,
-        CONTEXT_NEIGHBOR_GROUP_SUPERSEDED => 100.0,
-        CONTEXT_NEIGHBOR_GROUP_HIDDEN => 0.0,
-        _ => 150.0,
-    }
-}
-
-fn context_neighbor_disposition_bonus(disposition: &str) -> f64 {
-    match disposition {
-        "current_head" => 35.0,
-        "current" => 20.0,
-        "superseded" => -40.0,
-        _ => 0.0,
-    }
-}
-
-fn context_neighbor_self_bonus(is_self: bool) -> f64 {
-    if is_self { 50.0 } else { 0.0 }
-}
-
-fn context_neighbor_degree_penalty(degree: i64) -> f64 {
-    let degree = degree.max(0);
-    match degree {
-        0..=9 => 0.0,
-        10..=24 => 8.0,
-        25..=49 => 16.0,
-        50..=99 => 28.0,
-        100..=249 => 40.0,
-        _ => 55.0,
-    }
-}
-
-fn context_reason_bonus(reason: &str) -> f64 {
-    match reason {
-        REASON_PARENT_CLUSTER => 0.250,
-        _ => 0.0,
-    }
-}
-
-fn context_field_bonus(field: &str) -> f64 {
-    match field {
-        FIELD_HEADING => 0.040,
-        FIELD_BODY => 0.015,
-        FIELD_TITLE | FIELD_IDENTIFIER => 0.005,
-        field if field.starts_with(FIELD_FRONTMATTER_PREFIX) => 0.002,
-        _ => 0.0,
     }
 }
 
@@ -1363,20 +1287,6 @@ mod benchmark;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn context_sort_score_applies_reason_and_field_policy() {
-        let base = context_sort_score(0.8, REASON_BODY_SUBSTRING, FIELD_BODY);
-        let heading = context_sort_score(0.8, REASON_HEADING_SUBSTRING, FIELD_HEADING);
-        let clustered = context_sort_score(0.8, REASON_PARENT_CLUSTER, FIELD_IDENTIFIER);
-        let frontmatter =
-            context_sort_score(0.8, REASON_FRONTMATTER_VALUE_MATCH, "frontmatter:status");
-
-        assert!(
-            clustered > heading && heading > base && base > frontmatter,
-            "context ranking should prefer clustered canonical hits, then headings, then body, then frontmatter"
-        );
-    }
 
     #[test]
     fn clustered_child_hits_promote_canonical_parent_file() {

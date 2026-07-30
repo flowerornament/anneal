@@ -3,16 +3,16 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use anneal_core::ranking::{
-    CONTEXT_NEIGHBOR_GROUP_CURRENT, CONTEXT_NEIGHBOR_GROUP_HIDDEN,
-    CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT, CONTEXT_NEIGHBOR_GROUP_SUPERSEDED,
-};
-use anneal_core::runtime::prelude::datalog_string_literal;
+use anneal_core::runtime::datalog_string_literal;
 use anneal_core::runtime::write_ndjson;
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::ContextOutput;
+use crate::context_ordering::{
+    NEIGHBOR_GROUP_CURRENT, NEIGHBOR_GROUP_HIDDEN, NEIGHBOR_GROUP_IN_FLIGHT,
+    NEIGHBOR_GROUP_SUPERSEDED,
+};
 
 use super::value::{display_string_value, write_text_block};
 
@@ -113,10 +113,10 @@ pub(super) fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput
         for (handle, neighbors) in by_handle {
             writeln!(writer, "{handle}:")?;
             let groups = [
-                (CONTEXT_NEIGHBOR_GROUP_CURRENT, "current"),
-                (CONTEXT_NEIGHBOR_GROUP_IN_FLIGHT, "in-flight"),
-                (CONTEXT_NEIGHBOR_GROUP_SUPERSEDED, "superseded"),
-                (CONTEXT_NEIGHBOR_GROUP_HIDDEN, "hidden"),
+                (NEIGHBOR_GROUP_CURRENT, "current"),
+                (NEIGHBOR_GROUP_IN_FLIGHT, "in-flight"),
+                (NEIGHBOR_GROUP_SUPERSEDED, "superseded"),
+                (NEIGHBOR_GROUP_HIDDEN, "hidden"),
             ];
             for (group, label) in groups {
                 let group_neighbors = neighbors
@@ -127,7 +127,7 @@ pub(super) fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput
                 if group_neighbors.is_empty() {
                     continue;
                 }
-                let limit = if group == CONTEXT_NEIGHBOR_GROUP_HIDDEN {
+                let limit = if group == NEIGHBOR_GROUP_HIDDEN {
                     1
                 } else {
                     MAX_NEIGHBORS_PER_HANDLE
@@ -150,7 +150,7 @@ pub(super) fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput
                 }
                 if omitted == 0 {
                     writeln!(writer)?;
-                } else if group == CONTEXT_NEIGHBOR_GROUP_HIDDEN {
+                } else if group == NEIGHBOR_GROUP_HIDDEN {
                     writeln!(writer, ", ... {omitted} hidden inventory handles")?;
                 } else {
                     writeln!(writer, ", ... {omitted} more")?;

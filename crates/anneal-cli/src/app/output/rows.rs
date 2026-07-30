@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::{Row, Value, write_ndjson};
 use anyhow::Result;
 use serde::Serialize;

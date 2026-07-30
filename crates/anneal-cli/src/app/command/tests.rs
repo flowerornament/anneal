@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::num::NonZeroUsize;
 
-use anneal_core::runtime::eval::ExplainRowLimit;
+use anneal_core::runtime::ExplainRowLimit;
 use camino::Utf8PathBuf;
 
 use crate::app::command::{Invocation, OutputPreference, RootSelection, RuntimeCommand};

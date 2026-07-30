@@ -5,9 +5,10 @@
 
 pub mod app;
 mod context;
+mod context_ordering;
 
-pub use anneal_core::runtime::prelude::CONTEXT_OUTPUT_SCHEMA;
-use anneal_core::runtime::prelude::{datalog_string_literal, low_confidence_filter};
+pub use anneal_core::runtime::CONTEXT_OUTPUT_SCHEMA;
+use anneal_core::runtime::{datalog_string_literal, low_confidence_filter};
 use anneal_core::{ActorContext, VerbArg, VerbDispatchError, VerbEntry, VerbRegistry, VerbRunPlan};
 
 pub use context::{
@@ -222,7 +223,7 @@ impl DescribeCommand {
 
 #[cfg(test)]
 mod tests {
-    use anneal_core::runtime::prelude::standard_prelude_program;
+    use anneal_core::runtime::standard_prelude_program;
     use anneal_core::runtime::{
         Database, EvalOptions, Evaluator, Literal, NumberLiteral, Program, QueryOutput, Row,
         analyze, parse_program,

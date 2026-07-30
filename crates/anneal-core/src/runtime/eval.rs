@@ -49,6 +49,8 @@ use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
 use crate::runtime::ast::{
     AggregateFunction, Expr, Head, Ident, Literal, NumberLiteral, PredicateRef, Term,
 };
+#[cfg(test)]
+use crate::runtime::evaluator::Evaluator;
 use crate::runtime::introspection::{
     IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
 };
@@ -63,19 +65,16 @@ use crate::trail::{
 };
 use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::execute::{DeltaMap, DerivedRelation, DerivedTuple};
-pub use crate::vm::provenance::{DerivationKind, DerivationNode};
-use crate::vm::provenance::{DerivationRef, derivation_ref};
+#[cfg(test)]
+use crate::vm::provenance::DerivationKind;
+use crate::vm::provenance::{DerivationNode, DerivationRef, derivation_ref};
 use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
-use crate::vm::value::ListArena;
-pub use crate::vm::value::NumberValue;
-use crate::vm::value::PhysicalValue;
+use crate::vm::value::{ListArena, NumberValue, PhysicalValue};
 use crate::vm::view::{
     SnapshotCandidate, SnapshotReference, SnapshotSelection, TupleOverlay,
     handle_snapshot_patch_field, latest_snapshot_candidate, nearest_snapshot_candidate,
     snapshot_reference,
 };
-
-pub use crate::runtime::evaluator::Evaluator;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Tuple(pub Vec<Value>);

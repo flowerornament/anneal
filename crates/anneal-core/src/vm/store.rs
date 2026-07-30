@@ -11,9 +11,10 @@ use crate::facts::{
 use crate::ir::ids::{FieldId, RelationId, RowId};
 use crate::ir::interner::Interner;
 use crate::ir::schema::{RelationSchema, SchemaRegistry};
-use crate::runtime::eval::{NumberValue, Value};
+use crate::runtime::eval::Value;
 use crate::store::{FactStore, GenerationFact};
 use crate::visibility::hidden_handles;
+use crate::vm::value::NumberValue;
 
 use super::value::{ListArena, PhysicalValue};
 

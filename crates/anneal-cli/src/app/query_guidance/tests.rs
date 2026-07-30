@@ -1,6 +1,6 @@
 use std::fs;
 
-use anneal_core::runtime::eval::ExplainOptions;
+use anneal_core::runtime::ExplainOptions;
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 

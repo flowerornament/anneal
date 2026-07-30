@@ -6,12 +6,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anneal_code::CodeSource;
-use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
-use anneal_core::runtime::prelude::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::runtime::{
     AnalyzedProgram, Database, EvalOptions, Evaluator, Program, QueryOutput, Row, Statement, Value,
     analyze, parse_program,
 };
+use anneal_core::runtime::{ExplainOptions, NumberValue};
+use anneal_core::runtime::{LoadedPrelude, PreludeError, datalog_string_literal};
 use anneal_core::{
     ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
     ConfigFacts, CorpusId, FactStore, Generation, ProjectExtension, SnapshotAppendOutcome,

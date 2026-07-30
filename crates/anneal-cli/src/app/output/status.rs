@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::Row;
-use anneal_core::runtime::eval::NumberValue;
 use anyhow::Result;
 
 use super::EMPTY_ROWS_DIAGNOSTIC;

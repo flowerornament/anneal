@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use anneal_core::runtime::Value;
-use anneal_core::runtime::eval::{ExplainOptions, NumberValue};
+use anneal_core::runtime::{ExplainOptions, NumberValue};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 

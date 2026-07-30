@@ -2,9 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use anneal_core::runtime::ast::DerivedAtom;
-use anneal_core::runtime::eval::QueryWarning;
-use anneal_core::runtime::prelude::datalog_string_literal;
+use anneal_core::runtime::DerivedAtom;
+use anneal_core::runtime::QueryWarning;
+use anneal_core::runtime::datalog_string_literal;
 use anneal_core::runtime::{
     AnalyzedProgram, Atom, Body, CallArg, CallStyle, Expr, Literal, NegatedAtom, NumberLiteral,
     Query, Row, Statement, StoredAtom, parse_program, stored_relation_fields,

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use anneal_core::runtime::eval::ExplainOptions;
+use anneal_core::runtime::ExplainOptions;
 use anneal_core::runtime::{Row, Value};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;

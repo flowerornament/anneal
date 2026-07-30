@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::{Row, Value};
 use anyhow::{Result, bail};
 

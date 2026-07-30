@@ -5,8 +5,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use anneal_core::runtime::prelude::datalog_string_literal;
-use anneal_core::target_probe::{
+use anneal_core::runtime::datalog_string_literal;
+use anneal_core::{
     CodeDriftEvidence, CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest,
 };
 use anneal_core::{

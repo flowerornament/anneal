@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use anneal_core::runtime::eval::NumberValue;
+use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::{Row, Value};
 use anneal_core::{EdgeFact, FactStore, ImpactTraversalPolicy};
 

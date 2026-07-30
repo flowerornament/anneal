@@ -82,6 +82,14 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- `anneal-core` exposes two supported library facades: adapter and provider
+  contracts at the crate root, and host/query contracts under
+  `anneal_core::runtime`. Implementation modules are private, each supported
+  item has one canonical path, and `publish = false` prevents the internal
+  crate from becoming an accidental registry contract.
+
 ## v0.21.7 - 2026-07-21
 
 ### Changed
