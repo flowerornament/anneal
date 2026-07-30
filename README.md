@@ -254,7 +254,13 @@ anneal help agent
 ```
 
 `status` renders aggregate corpus vital signs and prints copy-runnable
-orientation/work queries. `recent_frontier` returns recently changed file
+orientation/work queries. When authored markdown frontmatter exists outside
+typed projections and W007's exact alias set, it also names the top three keys
+by distinct file-handle count and points to
+`unmodeled_frontmatter_key(key, distinct_file_handles,
+reference_name_signal, rank)` for the complete ranked inventory. The lexical
+signal only breaks equal-count ties; it never suggests an edge kind.
+`recent_frontier` returns recently changed file
 handles for goal-less reading; `ranked_anchor` returns the durable spine from
 the broader `anchor` relation. Both close with `order by rank asc` so the list
 arrives in reading order — rank 1 first — because `order by <expr> [asc|desc]`

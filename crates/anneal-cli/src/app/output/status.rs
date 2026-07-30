@@ -8,7 +8,9 @@ use anneal_core::runtime::Row;
 use anyhow::Result;
 
 use super::EMPTY_ROWS_DIAGNOSTIC;
-use super::value::{display_number, number_to_i64, required_number, required_string};
+use super::value::{
+    display_number, number_to_i64, optional_string, required_number, required_string,
+};
 
 #[cfg(test)]
 mod tests;
@@ -37,10 +39,14 @@ pub(super) fn write_status_text<W: Write>(
 
     let mut metrics = BTreeMap::<(&str, &str), StatusMetric<'_>>::new();
     let mut pipeline = Vec::new();
+    let mut vocabulary = Vec::new();
     for row in rows {
         let metric = StatusMetric::from_row(row)?;
         if metric.category == "pipeline" {
             pipeline.push(metric);
+        }
+        if metric.category == "vocabulary" {
+            vocabulary.push(metric);
         }
         metrics.insert((metric.category, metric.name), metric);
     }
@@ -118,6 +124,23 @@ pub(super) fn write_status_text<W: Write>(
         metric_count(&metrics, "diagnostics", "suggestion"),
         metric_count(&metrics, "diagnostics", "info")
     )?;
+    if !vocabulary.is_empty() {
+        vocabulary.sort_by(|left, right| {
+            number_to_i64(right.count)
+                .cmp(&number_to_i64(left.count))
+                .then_with(|| right.detail.is_some().cmp(&left.detail.is_some()))
+                .then_with(|| left.name.cmp(right.name))
+        });
+        let keys = vocabulary
+            .iter()
+            .map(|metric| format!("{} {}", metric.name, display_number(metric.count)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            writer,
+            "Vocabulary   top 3 unmodeled authored keys by distinct file handles: {keys}; query `unmodeled_frontmatter_key`"
+        )?;
+    }
     let drift_cold = metric_count(&metrics, "drift", "cold");
     if has_metric_category(&metrics, "drift") {
         let warm = metric_count(&metrics, "drift", "intact")
@@ -209,6 +232,7 @@ struct StatusMetric<'a> {
     category: &'a str,
     name: &'a str,
     count: &'a NumberValue,
+    detail: Option<&'a str>,
 }
 
 impl<'a> StatusMetric<'a> {
@@ -217,6 +241,7 @@ impl<'a> StatusMetric<'a> {
             category: required_string(row, "category")?,
             name: required_string(row, "name")?,
             count: required_number(row, "count")?,
+            detail: optional_string(row, "detail")?,
         })
     }
 }

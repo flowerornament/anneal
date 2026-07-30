@@ -13,6 +13,7 @@ enum PredicateFamily {
     ConcernPair,
     RetiredObligation,
     GitRecency,
+    FrontmatterVocabulary,
 }
 
 impl PredicateFamily {
@@ -45,6 +46,9 @@ impl PredicateFamily {
             "frontmatter_mapping_alias" | "configured_frontmatter_alias" => {
                 Some(Self::FrontmatterMappingAlias)
             }
+            "frontmatter_reference_name_fragment"
+            | "frontmatter_reference_name_signal"
+            | "unmodeled_frontmatter_key" => Some(Self::FrontmatterVocabulary),
             "pipeline_stall" | "s003_pipeline_stall" => Some(Self::PipelineStall),
             "abandoned_namespace" | "s004_abandoned_namespace" => Some(Self::AbandonedNamespace),
             "top_pair" | "s005_top_pair" => Some(Self::ConcernPair),
@@ -129,6 +133,9 @@ fn predicate_requires(name: &str, family: Option<PredicateFamily>) -> &'static [
         ],
         "frontmatter_mapping_gap" => &[
             "raw markdown frontmatter metadata, markdown parent-directory metadata, and the absence of a project mapping for an exact built-in alias.",
+        ],
+        _ if family == Some(PredicateFamily::FrontmatterVocabulary) => &[
+            "markdown file metadata classified as authored_unmodeled, excluding every key covered by the finite W007 alias vocabulary.",
         ],
         "missing_frontmatter_file" => &[
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
@@ -235,6 +242,15 @@ fn predicate_relationship(name: &str, family: Option<PredicateFamily>) -> Option
         }
         "frontmatter_mapping_gap" => Some(
             "Diagnostic-rule predicate behind W007 frontmatter-mapping-gap warnings. It recognizes a finite exact alias vocabulary and never infers edges from fuzzy key similarity.",
+        ),
+        "unmodeled_frontmatter_key" => Some(
+            "Inverse-discovery inventory of authored markdown vocabulary that no typed projection consumes and W007 does not already report. Usage count dominates; the lexical signal only breaks ties.",
+        ),
+        "frontmatter_reference_name_signal" => Some(
+            "Finite lowercase substring signal used only to rank equal-count unmodeled keys. It does not infer a relationship or recommend an edge mapping.",
+        ),
+        "frontmatter_reference_name_fragment" => Some(
+            "Queryable finite lowercase fragment vocabulary behind the reference-name ranking signal.",
         ),
         "dependency_status_classification" => Some(
             "Effective dependency-validity classification with origin: project entries override conservative builtins one status at a time.",
@@ -503,6 +519,10 @@ fn common_joins_for(name: &str, family: Option<PredicateFamily>) -> &'static [&'
             "`frontmatter_mapping_gap(key, count, field, kind, direction), diagnostic{code: \"W007\", subject: key}` to inspect the supported recovery mapping",
             "`frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}` to list the markdown handles carrying that unmapped key",
         ],
+        "unmodeled_frontmatter_key" => &[
+            "`unmodeled_frontmatter_key(key, count, signal, rank)` to inspect the ranked key inventory",
+            "`unmodeled_frontmatter_key(key, count, signal, rank), *meta{handle: h, key: key, role: \"authored_unmodeled\"}` to list carrying handles",
+        ],
         _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "`dependency_status_classification(status, classification, origin)` to inspect the effective set and provenance",
             "`dependency_dead_status(status), *handle{id: target, status: status}, terminal(target)` to inspect possible W001 targets",
@@ -660,6 +680,12 @@ fn predicate_see_also(name: &str, family: Option<PredicateFamily>) -> &'static [
             "*meta",
             "*config",
         ],
+        _ if family == Some(PredicateFamily::FrontmatterVocabulary) => &[
+            "frontmatter_mapping_alias",
+            "frontmatter_mapping_gap",
+            "W007",
+            "*meta",
+        ],
         _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "dependency-validity",
             "dependency_config_gap",
@@ -761,6 +787,13 @@ fn predicate_example(name: &str, family: Option<PredicateFamily>) -> Option<&'st
             Some("? frontmatter_mapping_alias(key, suggested_field, edge_kind, direction).")
         }
         "configured_frontmatter_alias" => Some("? configured_frontmatter_alias(key)."),
+        "frontmatter_reference_name_signal" => Some("? frontmatter_reference_name_signal(key)."),
+        "frontmatter_reference_name_fragment" => {
+            Some("? frontmatter_reference_name_fragment(fragment).")
+        }
+        "unmodeled_frontmatter_key" => Some(
+            "? unmodeled_frontmatter_key(key, distinct_file_handles, reference_name_signal, rank).",
+        ),
         "dependency_dead_status" => Some("? dependency_dead_status(status)."),
         "dependency_valid_status" => Some("? dependency_valid_status(status)."),
         "dependency_status_classification" => {

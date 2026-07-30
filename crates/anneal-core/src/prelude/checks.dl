@@ -463,6 +463,73 @@ frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, 
 diagnostic("W007", "warning", key, null, null, ("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)) :=
   frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction).
 
+@doc(
+  name: "frontmatter_reference_name_signal",
+  doc: "Return unmodeled frontmatter keys containing a finite lowercase substring fragment associated with references. This is a ranking signal only: it never infers or suggests an edge kind."
+).
+@predicate(
+  name: "frontmatter_reference_name_signal",
+  args: ["key"]
+).
+frontmatter_reference_name_fragment("ref").
+frontmatter_reference_name_fragment("link").
+frontmatter_reference_name_fragment("cite").
+frontmatter_reference_name_fragment("relat").
+frontmatter_reference_name_fragment("source").
+frontmatter_reference_name_fragment("depend").
+frontmatter_reference_name_fragment("require").
+frontmatter_reference_name_fragment("supersed").
+frontmatter_reference_name_fragment("replace").
+frontmatter_reference_name_fragment("extend").
+frontmatter_reference_name_fragment("build").
+frontmatter_reference_name_fragment("track").
+frontmatter_reference_name_fragment("pin").
+frontmatter_reference_name_fragment("companion").
+
+frontmatter_reference_name_signal(key) :=
+  unmodeled_frontmatter_key_present(key),
+  frontmatter_reference_name_fragment(fragment),
+  key contains fragment.
+
+frontmatter_mapping_alias_key(key) :=
+  frontmatter_mapping_alias(key, suggested_field, edge_kind, direction).
+
+unmodeled_frontmatter_key_use(key, h) :=
+  *handle{id: h, kind: "file"},
+  *meta{handle: h, key: key, role: "authored_unmodeled", source: "markdown"},
+  not frontmatter_mapping_alias_key(key).
+
+unmodeled_frontmatter_key_present(key) :=
+  unmodeled_frontmatter_key_use(key, h).
+
+unmodeled_frontmatter_key_signal(key, 1) :=
+  unmodeled_frontmatter_key_use(key, sample),
+  frontmatter_reference_name_signal(key).
+
+unmodeled_frontmatter_key_signal(key, 0) :=
+  unmodeled_frontmatter_key_use(key, sample),
+  not frontmatter_reference_name_signal(key).
+
+unmodeled_frontmatter_rank_weight(key, h, 2) :=
+  unmodeled_frontmatter_key_use(key, h).
+
+unmodeled_frontmatter_rank_weight(key, key, 1) :=
+  frontmatter_reference_name_signal(key).
+
+@doc(
+  name: "unmodeled_frontmatter_key",
+  doc: "Rank authored markdown frontmatter keys that no typed projection consumes and W007 does not already cover. Counts are distinct file handles; reference_name_signal only breaks equal-count ties and never suggests an edge kind."
+).
+@predicate(
+  name: "unmodeled_frontmatter_key",
+  args: ["key", "distinct_file_handles", "reference_name_signal", "rank"]
+).
+unmodeled_frontmatter_key(key, distinct_file_handles, reference_name_signal, rank) :=
+  unmodeled_frontmatter_key_use(key, sample),
+  distinct_file_handles = Count{ h : unmodeled_frontmatter_key_use(key, h) },
+  unmodeled_frontmatter_key_signal(key, reference_name_signal),
+  rank = Sum{ weight : unmodeled_frontmatter_rank_weight(key, unit, weight) }.
+
 terminal_status_used(status) :=
   *handle{id: h, status: status},
   status != null,

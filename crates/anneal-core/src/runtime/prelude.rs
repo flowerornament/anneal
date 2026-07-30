@@ -2354,6 +2354,78 @@ mod tests {
     }
 
     #[test]
+    fn inverse_frontmatter_discovery_counts_files_and_keeps_heuristics_subordinate() {
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "unmodeled",
+                    "? unmodeled_frontmatter_key(key, distinct_file_handles, reference_name_signal, rank).",
+                ),
+                (
+                    "W007",
+                    r#"? diagnostic("W007", severity, subject, file, line, evidence)."#,
+                ),
+            ],
+            diagnostic_catalog_database(),
+        );
+        let rows = output(&outputs, "unmodeled");
+
+        assert_eq!(
+            rows.rows.len(),
+            3,
+            "inverse-discovery rows: {:?}",
+            rows.rows
+        );
+        assert!(has_row(
+            rows,
+            &[
+                ("key", string("authors")),
+                ("distinct_file_handles", int(2)),
+                ("reference_name_signal", int(0)),
+                ("rank", int(4)),
+            ]
+        ));
+        assert!(has_row(
+            rows,
+            &[
+                ("key", string("sources")),
+                ("distinct_file_handles", int(1)),
+                ("reference_name_signal", int(1)),
+                ("rank", int(3)),
+            ]
+        ));
+        assert!(has_row(
+            rows,
+            &[
+                ("key", string("notes")),
+                ("distinct_file_handles", int(1)),
+                ("reference_name_signal", int(0)),
+                ("rank", int(2)),
+            ]
+        ));
+        for excluded in [
+            "references",
+            "builds_on",
+            "replaced_by",
+            "replaces",
+            "related",
+            "target_path",
+        ] {
+            assert!(
+                !has_row(rows, &[("key", string(excluded))]),
+                "{excluded} belongs to W007, a typed projection, a derived row, or a non-file handle"
+            );
+        }
+        assert!(
+            has_row(
+                output(&outputs, "W007"),
+                &[("subject", string("references"))]
+            ),
+            "inverse discovery must not consume W007's population"
+        );
+    }
+
+    #[test]
     fn every_frontmatter_mapping_alias_has_config_suppression() {
         let aliases = evaluate_standard_prelude_queries(
             "? frontmatter_mapping_alias(key, suggested_field, edge_kind, direction).",
@@ -3013,7 +3085,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         configured_alias: Option<&str>,
     ) -> Database {
         let corpus = CorpusId::from("diagnostics");
-        let source = SourceName::from("host");
+        let source = SourceName::from("markdown");
         let generation = Generation::initial();
         let scope = FixtureScope {
             corpus: &corpus,
@@ -3152,7 +3224,28 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 &scope,
                 "team/with-a.md",
                 "authors",
-                "person",
+                "Ada",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "authors",
+                "Grace",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-b.md",
+                "authors",
+                "Linus",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "notes",
+                "free metadata",
                 MetaRole::AuthoredUnmodeled,
             ),
             meta_with_role(

@@ -141,8 +141,16 @@ axis_of("forward_dependency_to_next_status", "structure").
 axis_of("frontier", "convergence").
 axis_of("frontmatter_adoption_high", "lifecycle").
 axis_of("frontmatter_mapping_alias", "infrastructure").
+axis_of("frontmatter_mapping_alias_key", "infrastructure").
 axis_of("frontmatter_mapping_gap", "diagnostic").
 axis_of("frontmatter_unmapped_alias_use", "diagnostic").
+axis_of("frontmatter_reference_name_fragment", "infrastructure").
+axis_of("frontmatter_reference_name_signal", "infrastructure").
+axis_of("unmodeled_frontmatter_key_use", "infrastructure").
+axis_of("unmodeled_frontmatter_key_present", "infrastructure").
+axis_of("unmodeled_frontmatter_key_signal", "infrastructure").
+axis_of("unmodeled_frontmatter_rank_weight", "infrastructure").
+axis_of("unmodeled_frontmatter_key", "infrastructure").
 axis_of("handle_file", "structure").
 axis_of("hit_currency_disposition", "currency").
 axis_of("hit_currency_disposition_known", "currency").

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use anneal_core::runtime::ExplainOptions;
-use anneal_core::runtime::{Row, Value};
+use anneal_core::runtime::{NumberValue, Row, Value};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 
@@ -35,6 +35,9 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
         status_metric("diagnostics", "warning", 17),
         status_metric("diagnostics", "suggestion", 1),
         status_metric("diagnostics", "info", 1),
+        status_metric("vocabulary", "description", 21),
+        status_metric("vocabulary", "author", 13),
+        status_metric("vocabulary", "authors", 30),
         status_metric("drift", "cold", 3),
     ]);
     let mut rendered = Vec::new();
@@ -57,6 +60,9 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
     assert!(rendered.contains("Diagnostics  20 total, 1 error, 17 warning, 1 suggestion, 1 info"));
     assert!(rendered.contains(
+        "Vocabulary   top 3 unmodeled authored keys by distinct file handles: authors 30, description 21, author 13; query `unmodeled_frontmatter_key`"
+    ));
+    assert!(rendered.contains(
         "Code refs    drift evidence not built for 3 refs; run `anneal check --refresh-drift`"
     ));
     assert!(rendered.contains("Read first"));
@@ -72,6 +78,45 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     assert!(rendered.contains("Work"));
     assert!(rendered.contains("diagnostic{code: code, severity: severity"));
     assert!(!rendered.contains("bad.md"));
+}
+
+#[test]
+fn status_human_render_omits_vocabulary_line_when_no_unmodeled_keys_exist() {
+    let output = status_output(vec![
+        status_metric("scale", "handles", 1),
+        status_metric("scale", "file_handles", 1),
+        status_metric("scale", "file_handles_with_status", 1),
+        status_metric("scale", "statusless_file_handles", 0),
+    ]);
+    let mut rendered = Vec::new();
+
+    output
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render status");
+    let rendered = String::from_utf8(rendered).expect("utf8");
+
+    assert!(!rendered.contains("Vocabulary"));
+}
+
+#[test]
+fn status_human_render_preserves_vocabulary_signal_tie_break() {
+    let output = status_output(vec![
+        status_metric("vocabulary", "notes", 1),
+        row(&[
+            ("category", Value::String("vocabulary".to_string())),
+            ("name", Value::String("source-link".to_string())),
+            ("count", Value::Number(NumberValue::Int(1))),
+            ("detail", Value::String("reference_name_signal".to_string())),
+        ]),
+    ]);
+    let mut rendered = Vec::new();
+
+    output
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render status");
+    let rendered = String::from_utf8(rendered).expect("utf8");
+
+    assert!(rendered.contains("source-link 1, notes 1"));
 }
 
 #[test]
@@ -212,4 +257,46 @@ fn status_dashboard_counts_match_status_item_sections() {
             "{metric} dashboard count should match status_item({section})"
         );
     }
+}
+
+#[test]
+fn status_vocabulary_metrics_select_top_three_without_overlapping_w007() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+    fs::create_dir(&root).expect("create corpus root");
+    fs::write(
+        root.join("a.md"),
+        "---\nauthors: [Ada, Grace]\ndescription: A\nsource-link: x.md\nnotes: free\nreferences: x.md\n---\n# A\n",
+    )
+    .expect("write a");
+    fs::write(
+        root.join("b.md"),
+        "---\nauthors: Ada\ndescription: B\n---\n# B\n",
+    )
+    .expect("write b");
+    fs::write(root.join("c.md"), "---\nauthors: Ada\n---\n# C\n").expect("write c");
+
+    let session = RuntimeSession::load_for_test(&root).expect("session loads");
+    let status = session.run(RuntimeCommand::Status).expect("status runs");
+    let CommandOutput::Status(status) = status else {
+        panic!("status should emit status output");
+    };
+    let vocabulary = status_metric_counts(&status.rows, "vocabulary");
+
+    assert_eq!(
+        vocabulary,
+        BTreeMap::from([
+            ("authors".to_string(), 3),
+            ("description".to_string(), 2),
+            ("source-link".to_string(), 1),
+        ])
+    );
+    assert!(
+        !vocabulary.contains_key("notes"),
+        "the lexical signal may break the equal-count boundary"
+    );
+    assert!(
+        !vocabulary.contains_key("references"),
+        "W007 aliases must not double-report in inverse discovery"
+    );
 }

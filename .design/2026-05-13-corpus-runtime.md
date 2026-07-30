@@ -2038,6 +2038,13 @@ file handle. The warning carries the conventional field, edge kind, and
 direction and teaches a `*meta` drill-down; its finite alias vocabulary remains
 active when no `config frontmatter` block exists. Generic `source`/`sources`
 remain deliberately unclassified pending a coherent built-in mapping policy.
+The adjacent `unmodeled_frontmatter_key(key, distinct_file_handles,
+reference_name_signal, rank)` relation inventories every other
+`authored_unmodeled` markdown key. It excludes the W007 alias population,
+counts distinct file handles rather than metadata rows, and ranks by
+`distinct_file_handles * 2 + reference_name_signal`; the finite lowercase
+lexical signal therefore breaks only equal-count ties and never suggests an
+edge kind.
 
 Diagnostics are deliberately built as **named evidence chains**: the
 predicate(s) carrying a diagnostic's evidence (`s003_pipeline_stall`,
@@ -2461,6 +2468,11 @@ vocabulary remains descriptive, not normative, but it is no longer a
 separate `anneal vocab` command. Agents discover observed words through
 direct relation-pattern queries: `*handle{status: status}`,
 `*edge{kind: kind}`, `*handle{namespace: ns}`, and `*meta{key: key}`.
+For inverse discovery, `unmodeled_frontmatter_key(key,
+distinct_file_handles, reference_name_signal, rank)` narrows the metadata
+vocabulary to authored markdown keys that no typed projection consumes and
+W007 does not already cover. Its count names the unit; its lexical signal
+ranks rather than recommends.
 `describe runtime` teaches these recipes. Rationale: the vocabulary is
 ordinary corpus data; querying it directly reinforces Code Mode and
 avoids another memorized surface.
@@ -2491,7 +2503,12 @@ then by deterministic convergence-signal priority. Machine mode remains
 the same projected `status` row stream, without additional human
 formatting. Per CR-D106, the projection includes a diagnostic severity
 histogram so a clean Health line cannot hide an adjacent warning,
-suggestion, or information set. The human heading for the generic `work`
+suggestion, or information set. When inverse-discovery rows exist, the
+projection also includes the top three unmodeled authored frontmatter keys,
+selected by distinct file-handle count with the reference-name signal used
+only to break equal-count ties. The human line presents the selected keys by
+descending count and deterministic key order, and names the selection, unit, and
+`unmodeled_frontmatter_key` drill-down. The human heading for the generic `work`
 section SHOULD make clear that those rows are other work not already
 listed as blocked; the full ranked work vocabulary remains available
 through `frontier` eval composition.

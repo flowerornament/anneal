@@ -182,6 +182,12 @@ including in corpora with no `config frontmatter` block. Run
 `anneal describe W007` for the distinct-handle count, the supported mapping,
 and the `*meta` drill-down to the handles carrying that key.
 
+`status` conditionally names the top three other unmodeled authored
+frontmatter keys by distinct file-handle count. Query
+`unmodeled_frontmatter_key(key, distinct_file_handles,
+reference_name_signal, rank)` for the full inventory; the lexical signal is
+only a tie-breaker and does not recommend an edge kind.
+
 `external_root` additively mounts a sibling directory outside the corpus root
 but inside the same Git repository into the markdown graph. External files use
 Git-project-relative handles such as `formal/models/prism.md`, so references
