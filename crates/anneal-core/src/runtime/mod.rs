@@ -1,9 +1,19 @@
 //! Dynamic rule-layer runtime for anneal.
 //!
-//! The runtime treats source facts as immutable stored relations and
-//! derives query relations by fixed point. Engine-derived primitives may
-//! later be plugged in as ordinary read-only relations; the rule layer
-//! itself stays source-neutral and engine-replaceable.
+//! This is the host facade layered over the shared crate-root substrate:
+//!
+//! - parse and load a program;
+//! - analyze signatures, safety, dependencies, and strata;
+//! - evaluate stored facts and engine primitives to a fixed point;
+//! - project rows, explanations, prelude helpers, and NDJSON.
+//!
+//! Source facts remain immutable stored relations during one evaluation.
+//! Engine-derived primitives enter as read-only relations, so the rule layer
+//! stays source-neutral and engine-replaceable. Errors retain their phase:
+//! [`ParseError`] and [`LoadError`] precede [`StaticError`], while [`EvalError`]
+//! covers planning and execution. Hosts should import this facade, never its
+//! private implementation modules. See CR-D51, CR-D74, and
+//! `.design/2026-07-29-anneal-core-public-api-altitude.md`.
 
 pub(crate) mod analysis;
 pub(crate) mod ast;

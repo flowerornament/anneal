@@ -1,4 +1,18 @@
 //! Parser for anneal's Datalog-like language.
+//!
+//! The authoritative grammar and semantic distinctions are in the master
+//! corpus-runtime spec, Part IV (§§17-24). This module implements that grammar
+//! in five readable regions:
+//!
+//! 1. program, directive, and query statements;
+//! 2. rule heads and body atoms;
+//! 3. expressions, calls, aggregation, and ordering;
+//! 4. token navigation and parse diagnostics;
+//! 5. UTF-8-aware lexing with one-based source locations.
+//!
+//! The recursive-descent parser preserves syntax distinctions in the AST; it
+//! does not perform relation validation, safety analysis, or stratification.
+//! Those belong to the runtime analysis phase.
 
 use crate::ast::{
     Aggregate, AggregateFunction, ArithmeticOp, Atom, Body, CallArg, CallStyle, Comparison,
@@ -9,20 +23,31 @@ use crate::ast::{
     named_string_arg,
 };
 
+/// Parses one complete program or query using the grammar in master-spec §17.
+///
+/// The returned AST preserves source locations for later analysis and
+/// diagnostics. Semantic validation is deliberately deferred to the runtime.
 pub fn parse_program(source: &str, input: &str) -> Result<Program, ParseError> {
     Parser::new(source, input)?.parse_program()
 }
 
+/// Parses the embedded prelude and marks every rule as prelude-owned.
+///
+/// This is the same grammar as [`parse_program`]; the only additional operation
+/// is assigning the load-layer provenance required by CR-D21.
 pub fn parse_prelude_program(source: &str, input: &str) -> Result<Program, ParseError> {
     let mut program = parse_program(source, input)?;
     program.assign_rule_layer(RuleLayer::Prelude);
     Ok(program)
 }
 
+/// Lexical or syntactic failure with a one-based source location.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{location}: {message}")]
 pub struct ParseError {
+    /// Source file and one-based line/column where parsing failed.
     pub location: SourceLocation,
+    /// Lexical or grammar expectation; semantic failures use runtime errors.
     pub message: String,
 }
 
@@ -49,6 +74,8 @@ impl Parser {
             cursor: 0,
         })
     }
+
+    // Program grammar: statements, directives, declarations, and queries.
 
     fn parse_program(mut self) -> Result<Program, ParseError> {
         let mut statements = Vec::new();
@@ -245,6 +272,8 @@ impl Parser {
         })
     }
 
+    // Relational grammar: heads, body atoms, calls, time blocks, and ordering.
+
     fn parse_head(&mut self) -> Result<Head, ParseError> {
         let location = self.peek().location(&self.source);
         let predicate = self.parse_predicate_ref()?;
@@ -362,6 +391,10 @@ impl Parser {
             }));
         }
         if self.starts_derived_atom() {
+            // A call can be either a body atom or the left side of a
+            // comparison/aggregate. Parse the atom-shaped case first, then
+            // restore the checkpoint when following syntax proves expression
+            // context.
             let checkpoint = self.cursor;
             let derived = self.parse_derived_atom()?;
             if !self.starts_comparison_or_aggregation() {
@@ -547,6 +580,8 @@ impl Parser {
         })
     }
 
+    // Expression grammar: precedence climbing, literals, and aggregates.
+
     fn parse_term(&mut self) -> Result<Term, ParseError> {
         if self.eat(&TokenKind::Underscore) {
             Ok(Term::Wildcard)
@@ -731,6 +766,8 @@ impl Parser {
         Ok(items)
     }
 
+    // Grammar lookahead for the ambiguous call, comparison, and aggregate forms.
+
     fn starts_comparison_or_aggregation(&self) -> bool {
         matches!(
             self.peek().kind,
@@ -795,6 +832,8 @@ impl Parser {
             _ => None,
         }
     }
+
+    // Token navigation and expectation diagnostics.
 
     fn expect_keyword(&mut self, expected: &str) -> Result<(), ParseError> {
         if self.eat_keyword(expected) {
@@ -915,6 +954,8 @@ fn rule_origin(layer: RuleLayer, source: &str, token: &Token) -> RuleOrigin {
 fn required_annotation_string<'a>(args: &'a [NamedArg], name: &str) -> Option<&'a str> {
     named_string_arg(args, name)
 }
+
+// Lexical representation and scanner. Offsets are bytes; columns are chars.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Token {

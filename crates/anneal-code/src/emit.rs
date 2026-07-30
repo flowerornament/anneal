@@ -1,8 +1,18 @@
+//! Shared code-fact identity and projection helpers.
+//!
+//! Artifact-specific modules decode structure; this module owns the common
+//! representation they emit: handle construction, project-relative paths,
+//! origin metadata, content-budget accounting, and stable adapter identities.
+//! Keeping these choices shared prevents rustdoc, EEP-48, and bare-source
+//! extraction from creating parallel identity policies. See CR-D8 and CR-D41.
+
+use rustdoc_types::{ItemKind, Visibility};
+
 use super::{
     BTreeMap, Command, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, FactBatch,
-    FactIdentity, HandleFact, HandleId, ItemKind, MetaFact, NativeId, OriginUri, Revision,
-    SOURCE_NAME, Utf8Path, Utf8PathBuf, Visibility, meta_key, normalize_path_inside_root,
-    normalize_relative_path, relation_value,
+    FactIdentity, HandleFact, HandleId, MetaFact, NativeId, OriginUri, Revision, SOURCE_NAME,
+    Utf8Path, Utf8PathBuf, meta_key, normalize_path_inside_root, normalize_relative_path,
+    relation_value,
 };
 
 #[derive(Clone, Debug)]

@@ -1,3 +1,12 @@
+//! EEP-48 artifact discovery, decoding, and fact projection.
+//!
+//! BEAM files and standalone docs chunks converge here into one package view
+//! before facts are emitted. Computing the content budget across the complete
+//! artifact set is load-bearing: per-module projection must not independently
+//! claim completeness. Shared handle and metadata vocabulary lives in
+//! `emit` and `vocab`. See CR-D4, CR-D8, and
+//! `.design/2026-06-10-anneal-code-adapter.md`.
+
 use super::{
     ArtifactManifest, CodeDiscoveryConfig, ContentBudgetReport, ContentFact, Cursor, EdgeFact,
     EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,

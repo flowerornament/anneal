@@ -1,26 +1,26 @@
 //! Rust code adapter for anneal.
 //!
-//! This crate ingests pre-built `rustdoc --output-format json` and EEP-48 artifacts.
-//! It does not build rustdoc artifacts or ingest source bodies.
+//! This crate ingests pre-built `rustdoc --output-format json`, EEP-48
+//! artifacts, and source-tree classification. It does not build documentation
+//! artifacts or emit source bodies as retrievable content.
+//! `CodeSource` implements the CR-D4 adapter boundary and emits the CR-D8
+//! stored relations; format modules decode inputs while `emit` owns their
+//! shared identity and metadata policy.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-use std::fs::{self, File};
-use std::io::{BufReader, Cursor};
+use std::fs;
+use std::io::Cursor;
 use std::process::Command;
 
 use anneal_core::{
     ConcernFact, ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode,
     FactIdentity, HandleFact, HandleId, MetaFact, NativeId, OriginUri, Pattern, Revision, Source,
     SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact,
-    default_lexical_search_info, fnv1a_64, normalize_path_inside_root, normalize_relative_path,
+    default_lexical_search_info, normalize_path_inside_root, normalize_relative_path,
 };
 use beam_file::RawBeamFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use eetf::Term as EetfTerm;
-use rustdoc_types::{
-    Crate as RustdocCrate, FunctionSignature, Id, Impl, Item, ItemEnum, ItemKind, Type, Visibility,
-};
 use serde_json::Value as JsonValue;
 
 mod classify;
@@ -37,9 +37,9 @@ use config::{
 use eep48::extract_eep48_set;
 use emit::{
     ContentBudgetReport, area_for, code_identity, emit_content_budget_meta,
-    ensure_external_code_handle, first_paragraph, git_version_tags, handle_id, item_kind_name,
-    meta_values, normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact,
-    token_count, truncate_at_char_boundary, version_handle_id, visibility_name,
+    ensure_external_code_handle, first_paragraph, git_version_tags, handle_id, meta_values,
+    normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact, token_count,
+    truncate_at_char_boundary, version_handle_id,
 };
 use rustdoc::{
     content_text, extract_rustdoc, markdown_links, signature_type_refs, stable_fragment,
@@ -49,11 +49,15 @@ use vocab::{
     SOURCE_NAME, concern_name, config_key, edge_kind, meta_key, relation_value,
 };
 
-/// Rustdoc JSON `Source` implementation.
+/// Code graph source for rustdoc, EEP-48, and bare source trees.
 #[derive(Clone, Debug, Default)]
 pub struct CodeSource;
 
 impl CodeSource {
+    /// Returns whether any code-source input is configured for this corpus.
+    ///
+    /// An unconfigured source is valid and emits an empty full snapshot; it is
+    /// not an extraction error.
     #[must_use]
     pub fn is_configured(config: &ConfigFacts) -> bool {
         config.values(config_key::RUSTDOC_JSON).next().is_some()

@@ -1,3 +1,11 @@
+//! Canonical vocabulary emitted and consumed by the code adapter.
+//!
+//! Configuration keys, metadata keys, edge kinds, and relation values are
+//! centralized here so artifact projectors cannot silently invent dialects.
+//! This module owns names only; validation belongs to `config`, and fact
+//! construction belongs to `emit` plus the format-specific projectors. See
+//! the adapter boundary in CR-D4 and stored vocabulary in CR-D8.
+
 pub(crate) const SOURCE_NAME: &str = "code";
 pub(crate) const DEFAULT_SOURCE_EXTENSIONS: &[&str] = &["rs", "ex", "exs"];
 pub(crate) const DEFAULT_CONTENT_BUDGET_BYTES: usize = 1024 * 1024;

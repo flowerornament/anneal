@@ -1,3 +1,13 @@
+//! Code-source configuration parsing and project containment.
+//!
+//! This module parses source-scoped configuration facts and locally validates
+//! their value shapes and relative paths. Ordinary artifact paths remain
+//! corpus-relative;
+//! `source_root` may climb only within the enclosing project boundary used by
+//! code-target provenance. Because that boundary depends on the active corpus
+//! root, containment is enforced at extraction. Projection and artifact
+//! decoding live in their format-specific modules. See CR-D4 and CR-D41.
+
 use super::{
     ConfigFacts, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES,
     DEFAULT_SOURCE_EXTENSIONS, JsonValue, SourceError, Utf8Path, Utf8PathBuf, config_key, fs,

@@ -1,3 +1,8 @@
+//! Contract tests shared across rustdoc, EEP-48, and bare-source extraction.
+//!
+//! Fixtures assert that the three input paths converge on the same public fact
+//! vocabulary while preserving format-specific provenance and budget signals.
+
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;

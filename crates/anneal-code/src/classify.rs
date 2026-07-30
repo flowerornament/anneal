@@ -1,3 +1,12 @@
+//! Bare-source classification and file-level fact projection.
+//!
+//! This companion pass runs with or without rustdoc or EEP-48 artifacts. It
+//! owns tracked-file discovery, generated/test classification, source
+//! obligations, protocol implementations, and version tags. Handle identities
+//! stay relative to the validated source root so source-derived facts share
+//! the same citation space as artifact-backed extraction. See the `Source`
+//! boundary in CR-D4 and stored-fact contract in CR-D8.
+
 use super::{
     BTreeMap, BTreeSet, Command, ConcernFact, EdgeFact, FactBatch, HandleFact, Revision,
     SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity, concern_name,

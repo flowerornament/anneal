@@ -1,4 +1,34 @@
-use super::*;
+//! Rustdoc JSON indexing and fact projection.
+//!
+//! Projection is deliberately two-phase: index every local handle and file
+//! first, then emit structure, type, documentation, implementation, and
+//! content facts. Reference resolution therefore never depends on rustdoc item
+//! order. External targets are materialized through the shared `emit` policy,
+//! and `emit` also owns the shared kind/visibility vocabulary; this module owns
+//! traversal of rustdoc's item graph. See CR-D4, CR-D8, and CR-D41.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::BufReader;
+
+use anneal_core::{
+    ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact, Revision,
+    SourceContext, SourceError, SourceName, SpanFact, fnv1a_64, normalize_path_inside_root,
+    normalize_relative_path,
+};
+use camino::{Utf8Path, Utf8PathBuf};
+use rustdoc_types::{
+    Crate as RustdocCrate, FunctionSignature, Id, Impl, Item, ItemEnum, ItemKind, Type,
+};
+use serde_json::Value as JsonValue;
+
+use super::config::{ArtifactManifest, CodeDiscoveryConfig};
+use super::emit::{
+    ContentBudgetReport, area_for, code_identity, first_paragraph, handle_id, item_kind_name,
+    package_root_file, push_meta_fact, token_count, truncate_at_char_boundary, visibility_name,
+};
+use super::vocab::{SOURCE_NAME, edge_kind, meta_key, relation_value};
 
 pub(super) fn extract_rustdoc(
     root: &Utf8Path,

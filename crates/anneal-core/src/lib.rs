@@ -1,10 +1,22 @@
 //! Shared substrate and extension contracts for anneal.
 //!
-//! The crate root is the shared substrate and adapter/provider facade:
-//! identities, facts, extraction, retrieval, ranking, policy, and persistence.
+//! The crate root is the shared substrate and adapter/provider facade. It owns:
+//!
+//! - corpus, source, generation, and handle identities;
+//! - stored facts, source extraction, refresh, and generation merge;
+//! - retrieval, ranking, policy, trails, verbs, and shared persistence.
+//!
 //! Query hosts additionally use [`runtime`] for grammar, analysis, evaluation,
-//! and row rendering. Each supported item has one canonical path through one
-//! of those facades; implementation modules remain private.
+//! and row rendering. Root admission is transitive: a shared type may not
+//! expose a host-only type through a method, field, associated type, or trait
+//! bound. Each supported item has one canonical facade path; implementation
+//! modules remain private.
+//!
+//! Errors stay phase-local. Adapters return [`SourceError`], refresh and store
+//! transactions return [`SourceDriverError`] and [`StoreError`], and query
+//! language failures are exposed through [`runtime`]. The full admission rule
+//! and boundary fixtures are specified in
+//! `.design/2026-07-29-anneal-core-public-api-altitude.md`.
 //!
 //! This crate must not depend on any adapter.
 
