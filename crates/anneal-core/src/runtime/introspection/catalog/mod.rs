@@ -5,11 +5,8 @@ mod primitive;
 mod stored;
 mod verb;
 
-/// Predicate teaching policy consumed by the index builder.
-pub(super) use predicate::{
-    common_joins, diagnostic_code_extra_lines, predicate_example, predicate_extra_lines,
-    predicate_relationship, predicate_requires, predicate_see_also,
-};
+/// Shared teaching policy consumed by the index builder.
+pub(super) use predicate::{diagnostic_code_extra_lines, runtime_teaching};
 /// Primitive teaching policy consumed by the index builder.
 pub(super) use primitive::{
     primitive_determinism, primitive_doc, primitive_example, primitive_relationship,

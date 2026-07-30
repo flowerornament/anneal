@@ -90,6 +90,7 @@ impl IntrospectionBuilder {
         provenance: &str,
         example: &str,
     ) {
+        let teaching = catalog::runtime_teaching(name);
         self.schema.insert(projection::schema_tuple(
             name,
             "stored",
@@ -102,7 +103,7 @@ impl IntrospectionBuilder {
             summary: doc,
             kind: Some(DescribeKind::StoredRelation),
             signature: Some(&signature),
-            common_joins: catalog::common_joins(name),
+            common_joins: teaching.common_joins,
             see_also: catalog::stored_relation_see_also(name),
             examples: vec![example],
             extra_lines: catalog::stored_relation_extra_lines(name),
@@ -141,6 +142,7 @@ impl IntrospectionBuilder {
         for primitive in PrimitivePredicate::ALL {
             let name = primitive.name();
             let signature = primitive.signature();
+            let teaching = catalog::runtime_teaching(name);
             self.schema.insert(projection::schema_tuple(
                 name,
                 "primitive",
@@ -156,11 +158,11 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::EnginePrimitive),
                     signature: Some(&projection::call_signature(name, signature.parameters)),
                     relationship: catalog::primitive_relationship(*primitive),
-                    common_joins: catalog::common_joins(name),
+                    common_joins: teaching.common_joins,
                     requires: catalog::primitive_requires(*primitive),
                     see_also: catalog::primitive_see_also(*primitive),
                     examples: catalog::primitive_example(*primitive).into_iter().collect(),
-                    extra_lines: catalog::predicate_extra_lines(name),
+                    extra_lines: teaching.extra_lines,
                 }),
             ));
             self.source_of.insert(Tuple(vec![
@@ -187,6 +189,7 @@ impl IntrospectionBuilder {
 
         let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
         for entry in registry.iter() {
+            let teaching = catalog::runtime_teaching(entry.name().as_str());
             self.verbs.insert(Tuple(vec![
                 string_value(entry.name().as_str()),
                 string_value(entry.query_source()),
@@ -201,7 +204,7 @@ impl IntrospectionBuilder {
                     kind: Some(DescribeKind::Verb),
                     signature: Some(&format!("anneal {}", entry.name())),
                     relationship: Some(catalog::verb_relationship(entry.name().as_str())),
-                    common_joins: catalog::common_joins(entry.name().as_str()),
+                    common_joins: teaching.common_joins,
                     see_also: catalog::verb_see_also(entry.name().as_str()),
                     examples: catalog::verb_example(entry.name().as_str())
                         .into_iter()
@@ -317,6 +320,7 @@ impl IntrospectionBuilder {
     ) {
         for (name, info) in predicates {
             let doc = docs.get(&name).map_or(info.doc(), program::DocInfo::doc);
+            let teaching = catalog::runtime_teaching(&name);
             self.schema.insert(projection::schema_tuple(
                 &name,
                 "derived",
@@ -355,7 +359,7 @@ impl IntrospectionBuilder {
                     ]));
                 }
             }
-            if let Some(example) = catalog::predicate_example(&name) {
+            if let Some(example) = teaching.example {
                 self.examples
                     .insert(Tuple(vec![string_value(&name), string_value(example)]));
             }
@@ -367,12 +371,12 @@ impl IntrospectionBuilder {
                     summary: doc,
                     kind: Some(DescribeKind::DerivedPredicate),
                     signature: Some(&signature),
-                    relationship: catalog::predicate_relationship(&name),
-                    common_joins: catalog::common_joins(&name),
-                    requires: catalog::predicate_requires(&name),
-                    see_also: catalog::predicate_see_also(&name),
-                    examples: catalog::predicate_example(&name).into_iter().collect(),
-                    extra_lines: catalog::predicate_extra_lines(&name),
+                    relationship: teaching.relationship,
+                    common_joins: teaching.common_joins,
+                    requires: teaching.requires,
+                    see_also: teaching.see_also,
+                    examples: teaching.example.into_iter().collect(),
+                    extra_lines: teaching.extra_lines,
                 }),
             ));
         }

@@ -1,25 +1,100 @@
 //! Derived-predicate relationships, joins, requirements, and examples.
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PredicateFamily {
+    ConvergenceEnergy,
+    CorpusArea,
+    Blocking,
+    Flow,
+    DependencyValidity,
+    FrontmatterMappingAlias,
+    PipelineStall,
+    AbandonedNamespace,
+    ConcernPair,
+    RetiredObligation,
+    GitRecency,
+}
+
+impl PredicateFamily {
+    fn for_name(name: &str) -> Option<Self> {
+        match name {
+            "entropy" | "entropy_priority" | "primary_entropy" | "potential_subject"
+            | "potential" | "potential_weight" | "frontier" | "ranked_work" => {
+                Some(Self::ConvergenceEnergy)
+            }
+            "area"
+            | "area_of"
+            | "area_file_count"
+            | "area_error_location_count"
+            | "area_error_count"
+            | "area_cross_edges"
+            | "area_health"
+            | "area_frontier" => Some(Self::CorpusArea),
+            "blocked" | "blocker" => Some(Self::Blocking),
+            "advancing"
+            | "recently_advanced"
+            | "holding"
+            | "regressed"
+            | "re_opened"
+            | "drifting"
+            | "flow"
+            | "snapshot_history_present" => Some(Self::Flow),
+            "dependency_dead_status"
+            | "dependency_valid_status"
+            | "dependency_status_classification" => Some(Self::DependencyValidity),
+            "frontmatter_mapping_alias" | "configured_frontmatter_alias" => {
+                Some(Self::FrontmatterMappingAlias)
+            }
+            "pipeline_stall" | "s003_pipeline_stall" => Some(Self::PipelineStall),
+            "abandoned_namespace" | "s004_abandoned_namespace" => Some(Self::AbandonedNamespace),
+            "top_pair" | "s005_top_pair" => Some(Self::ConcernPair),
+            "obligation" | "undischarged" => Some(Self::RetiredObligation),
+            "git_mtime" | "changed_within" => Some(Self::GitRecency),
+            _ => None,
+        }
+    }
+}
+
+/// Complete shared teaching policy for one runtime name.
+pub(in crate::runtime::introspection) struct RuntimeTeaching {
+    pub(in crate::runtime::introspection) relationship: Option<&'static str>,
+    pub(in crate::runtime::introspection) common_joins: &'static [&'static str],
+    pub(in crate::runtime::introspection) requires: &'static [&'static str],
+    pub(in crate::runtime::introspection) see_also: &'static [&'static str],
+    pub(in crate::runtime::introspection) example: Option<&'static str>,
+    pub(in crate::runtime::introspection) extra_lines: Vec<String>,
+}
+
+/// Assembles every shared teaching facet from one family classification.
+pub(in crate::runtime::introspection) fn runtime_teaching(name: &str) -> RuntimeTeaching {
+    let family = PredicateFamily::for_name(name);
+    RuntimeTeaching {
+        relationship: predicate_relationship(name, family),
+        common_joins: common_joins_for(name, family),
+        requires: predicate_requires(name, family),
+        see_also: predicate_see_also(name, family),
+        example: predicate_example(name, family),
+        extra_lines: predicate_extra_lines(name, family),
+    }
+}
+
 /// Names evidence or configuration required by a derived predicate.
-pub(in crate::runtime::introspection) fn predicate_requires(name: &str) -> &'static [&'static str] {
+fn predicate_requires(name: &str, family: Option<PredicateFamily>) -> &'static [&'static str] {
     match name {
-        "entropy" | "primary_entropy" | "potential_subject" | "potential" | "frontier"
-        | "ranked_work" => &[
-            "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
-        ],
+        _ if family == Some(PredicateFamily::ConvergenceEnergy)
+            && !matches!(name, "entropy_priority" | "potential_weight") =>
+        {
+            &[
+                "stored handles plus the relevant diagnostic, obligation, lifecycle, freshness, or graph facts that create unsettled-work signals.",
+            ]
+        }
         "entropy_priority" => {
             &["`potential_weight` rows for the same source; lower priority values win ties."]
         }
-        "area"
-        | "area_file_count"
-        | "area_error_location_count"
-        | "area_error_count"
-        | "area_cross_edges"
-        | "area_health"
-        | "area_frontier" => &[
+        _ if family == Some(PredicateFamily::CorpusArea) && name != "area_of" => &[
             "`area_of` rows from source facts. Area health also uses diagnostics, edges, and potential convergence signals.",
         ],
-        "blocked" | "blocker" => {
+        _ if family == Some(PredicateFamily::Blocking) => {
             &["active lifecycle config, at least one potential signal, and no recent status flux."]
         }
         "broken_reference" => {
@@ -40,9 +115,7 @@ pub(in crate::runtime::introspection) fn predicate_requires(name: &str) -> &'sta
         "lifecycle_config_gap" => {
             &["handle statuses plus `config convergence` active, terminal, and ordering entries."]
         }
-        "dependency_dead_status"
-        | "dependency_valid_status"
-        | "dependency_status_classification" => &[
+        _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "conservative builtin status classifications plus per-status `config dependency` overrides.",
         ],
         "dependency_config_gap" => &[
@@ -61,23 +134,16 @@ pub(in crate::runtime::introspection) fn predicate_requires(name: &str) -> &'sta
             "parent-directory metadata and enough neighboring frontmatter adoption to make the omission suspicious.",
         ],
         "orphaned_handle" => &["label or version handles plus graph in-degree counts."],
-        "pipeline_stall" | "s003_pipeline_stall" => &[
+        _ if family == Some(PredicateFamily::PipelineStall) => &[
             "configured lifecycle ordering, current status population, and automatic snapshot history.",
         ],
-        "abandoned_namespace" | "s004_abandoned_namespace" => {
+        _ if family == Some(PredicateFamily::AbandonedNamespace) => {
             &["active namespace membership, lifecycle status, and freshness."]
         }
-        "top_pair" | "s005_top_pair" => {
+        _ if family == Some(PredicateFamily::ConcernPair) => {
             &["namespace co-occurrence in file references plus configured concern groups."]
         }
-        "advancing"
-        | "recently_advanced"
-        | "holding"
-        | "regressed"
-        | "re_opened"
-        | "drifting"
-        | "flow"
-        | "snapshot_history_present" => &[
+        _ if family == Some(PredicateFamily::Flow) => &[
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
         ],
         "recent_frontier" => &[
@@ -100,9 +166,7 @@ pub(in crate::runtime::introspection) fn predicate_requires(name: &str) -> &'sta
 }
 
 /// Places a derived predicate relative to adjacent runtime concepts.
-pub(in crate::runtime::introspection) fn predicate_relationship(
-    name: &str,
-) -> Option<&'static str> {
+fn predicate_relationship(name: &str, family: Option<PredicateFamily>) -> Option<&'static str> {
     match name {
         "diagnostic" => Some(
             "Shared diagnostic stream used by `status`, `check`, and eval diagnostics; individual rules contribute rows by diagnostic code.",
@@ -175,9 +239,13 @@ pub(in crate::runtime::introspection) fn predicate_relationship(
         "dependency_status_classification" => Some(
             "Effective dependency-validity classification with origin: project entries override conservative builtins one status at a time.",
         ),
-        "dependency_dead_status" | "dependency_valid_status" => Some(
-            "Effective unary projections of dependency_status_classification; use the three-column relation when classification provenance matters.",
-        ),
+        _ if family == Some(PredicateFamily::DependencyValidity)
+            && name != "dependency_status_classification" =>
+        {
+            Some(
+                "Effective unary projections of dependency_status_classification; use the three-column relation when classification provenance matters.",
+            )
+        }
         "orphaned_handle" => {
             Some("Diagnostic-rule predicate behind S001 orphaned-handle suggestions.")
         }
@@ -204,7 +272,7 @@ pub(in crate::runtime::introspection) fn predicate_relationship(
 }
 
 /// Returns predicate-specific teaching details beyond the declared doc string.
-pub(in crate::runtime::introspection) fn predicate_extra_lines(name: &str) -> Vec<String> {
+fn predicate_extra_lines(name: &str, family: Option<PredicateFamily>) -> Vec<String> {
     match name {
         "potential_weight" => vec![
             "Default weights in v0.15: undischarged=5, broken_ref=4, stale_dep=3, spec_code_drift=3, confidence_gap=3, freshness_decay=1, missing_meta=1, orphan_label=1.".to_string(),
@@ -262,13 +330,11 @@ pub(in crate::runtime::introspection) fn predicate_extra_lines(name: &str) -> Ve
             "Default when unconfigured: active status-bearing handles minus the aspirational study tier: plan, research, reference, exploratory.".to_string(),
             "W006 spec_code_drift uses this gate instead of bare active(h), so forward plans and external-code studies do not look like rot.".to_string(),
         ],
-        "obligation" | "undischarged" => vec![
+        _ if family == Some(PredicateFamily::RetiredObligation) => vec![
             "Retired obligations equivalent: `anneal -e '? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.'`.".to_string(),
         ],
         "lifecycle_config_gap" => lifecycle_config_gap_variant_lines(),
-        "dependency_dead_status"
-        | "dependency_valid_status"
-        | "dependency_status_classification" => vec![
+        _ if family == Some(PredicateFamily::DependencyValidity) => vec![
             "Builtins: dead = superseded, retired, archived, historical, deprecated; valid = authoritative, complete, decided, stable, ratified.".to_string(),
             "Override one status with `config dependency { dead([\"custom-retired\"]). }` or `config dependency { valid([\"custom-current\"]). }`; a project entry replaces that status's builtin meaning.".to_string(),
             "Query `dependency_status_classification(status, classification, origin)` to see the effective set and whether each row is builtin or project.".to_string(),
@@ -314,8 +380,7 @@ fn frontmatter_mapping_gap_lines() -> Vec<String> {
     ]
 }
 
-/// Returns executable adjacent joins for a runtime name.
-pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&'static str] {
+fn common_joins_for(name: &str, family: Option<PredicateFamily>) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
             "`diagnostic{code: code, severity: \"error\", subject: h, file: file, line: line}` mirrors `anneal check` rows",
@@ -385,7 +450,7 @@ pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&
             "`status_item(\"drifting\", h, score, why), regressed(h)` or `re_opened(h)` to inspect drifting leaves",
             "`status_item(section, h, score, why), primary_entropy(h, why)` to compare prioritized convergence reasons",
         ],
-        "blocked" | "blocker" => &[
+        _ if family == Some(PredicateFamily::Blocking) => &[
             "`blocked(h), entropy(h, source)` to see the unsettled signal",
             "`blocker(h, energy, source), primary_entropy(h, source)` to keep one strongest blocker row per handle",
             "`blocker(h, energy, source), *handle{id: h, file: file}` to add location metadata",
@@ -438,9 +503,7 @@ pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&
             "`frontmatter_mapping_gap(key, count, field, kind, direction), diagnostic{code: \"W007\", subject: key}` to inspect the supported recovery mapping",
             "`frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}` to list the markdown handles carrying that unmapped key",
         ],
-        "dependency_dead_status"
-        | "dependency_valid_status"
-        | "dependency_status_classification" => &[
+        _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "`dependency_status_classification(status, classification, origin)` to inspect the effective set and provenance",
             "`dependency_dead_status(status), *handle{id: target, status: status}, terminal(target)` to inspect possible W001 targets",
         ],
@@ -448,15 +511,15 @@ pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&
             "`orphaned_handle(h), diagnostic{code: \"S001\", subject: h}` to inspect orphaned-handle suggestions",
             "`orphaned_handle(h), *handle{id: h, namespace: namespace}` to group orphans by namespace",
         ],
-        "pipeline_stall" | "s003_pipeline_stall" => &[
+        _ if family == Some(PredicateFamily::PipelineStall) => &[
             "`pipeline_stall(status, count, next_status, based_on_history), diagnostic{code: \"S003\", subject: status}` to inspect stalled lifecycle statuses",
             "`snapshot_history_present(count), pipeline_stall(status, stalled, next_status, true)` to confirm automatic status snapshots have accrued",
         ],
-        "abandoned_namespace" | "s004_abandoned_namespace" => &[
+        _ if family == Some(PredicateFamily::AbandonedNamespace) => &[
             "`abandoned_namespace(namespace, total, terminal_count, stale_count), diagnostic{code: \"S004\", subject: namespace}` to inspect abandoned namespace suggestions",
             "`abandoned_namespace(namespace, total, terminal_count, stale_count), namespace_label(namespace, h)` to inspect members",
         ],
-        "top_pair" | "s005_top_pair" => &[
+        _ if family == Some(PredicateFamily::ConcernPair) => &[
             "`top_pair(left_prefix, right_prefix, count), diagnostic{code: \"S005\", subject: left_prefix}` to inspect concern-group candidates",
             "`top_pair(left_prefix, right_prefix, count), same_concern_pair(left_prefix, right_prefix)` to test whether a configured concern already covers it",
         ],
@@ -464,12 +527,12 @@ pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&
             "`entropy(h, source), potential(h, energy)` to see weighted convergence reasons",
             "`entropy(h, source), diagnostic{subject: h}` to connect signals to diagnostics",
         ],
-        "obligation" | "undischarged" => &[
+        _ if family == Some(PredicateFamily::RetiredObligation) => &[
             "`undischarged(h), obligation(h), *handle{id: h, file: file, status: status}` mirrors retired obligations",
             "`undischarged(h), *handle{id: h, namespace: \"OQ\"}` for namespace-scoped obligations",
             "`undischarged(h), area_of{h: h, area: area}` to group open obligations by area",
         ],
-        "git_mtime" | "changed_within" => &[
+        _ if family == Some(PredicateFamily::GitRecency) => &[
             "`*handle{id: h, file: file}, git_mtime(file, instant)` to inspect raw git-backed change time",
             "`changed_within(h, 7), *handle{id: h, kind: \"file\", summary: summary}` to keep the result at file granularity",
             "`changed_within(h, 7), search{query: \"text\", handle: h}` for lower-authority recently-edited search hits",
@@ -478,21 +541,29 @@ pub(in crate::runtime::introspection) fn common_joins(name: &str) -> &'static [&
             "`potential_weight(source, weight), entropy(h, source)` to see which handles use each weight",
             "`potential(h, energy), primary_entropy(h, source)` to inspect the weighted result",
         ],
-        "advancing" | "holding" | "regressed" | "re_opened" | "drifting" | "flow" => &[
-            "`flow(h, direction), *handle{id: h, status: status}` to add current lifecycle state",
-            "`drifting(h), re_opened(h)` to separate reopened handles from ordinary regressions",
-            "`holding(h), potential(h, energy)` to prioritize stuck handles with work remaining",
-        ],
-        "area_of" | "area_health" | "area_frontier" => &[
-            "`area_of{h: h, area: \"X\"}, frontier(h, energy)` for area-scoped work",
-            "`area_of{h: h, area: \"X\"}, diagnostic{subject: h}` for area-scoped diagnostics",
-        ],
+        _ if family == Some(PredicateFamily::Flow)
+            && !matches!(name, "recently_advanced" | "snapshot_history_present") =>
+        {
+            &[
+                "`flow(h, direction), *handle{id: h, status: status}` to add current lifecycle state",
+                "`drifting(h), re_opened(h)` to separate reopened handles from ordinary regressions",
+                "`holding(h), potential(h, energy)` to prioritize stuck handles with work remaining",
+            ]
+        }
+        _ if family == Some(PredicateFamily::CorpusArea)
+            && matches!(name, "area_of" | "area_health" | "area_frontier") =>
+        {
+            &[
+                "`area_of{h: h, area: \"X\"}, frontier(h, energy)` for area-scoped work",
+                "`area_of{h: h, area: \"X\"}, diagnostic{subject: h}` for area-scoped diagnostics",
+            ]
+        }
         _ => &[],
     }
 }
 
 /// Returns adjacent vocabulary for predicate drill-down.
-pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'static [&'static str] {
+fn predicate_see_also(name: &str, family: Option<PredicateFamily>) -> &'static [&'static str] {
     match name {
         "diagnostic" => &[
             "status",
@@ -504,8 +575,7 @@ pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'sta
             "abandoned_namespace",
             "top_pair",
         ],
-        "entropy" | "primary_entropy" | "potential" | "potential_subject" | "potential_weight"
-        | "frontier" | "ranked_work" => &[
+        _ if family == Some(PredicateFamily::ConvergenceEnergy) && name != "entropy_priority" => &[
             "diagnostic",
             "obligation",
             "freshness",
@@ -539,7 +609,9 @@ pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'sta
             "freshness",
             "*handle",
         ],
-        "blocked" | "blocker" => &["potential", "primary_entropy", "entropy", "flux", "status"],
+        _ if family == Some(PredicateFamily::Blocking) => {
+            &["potential", "primary_entropy", "entropy", "flux", "status"]
+        }
         "broken_reference" => &["E001", "diagnostic", "*edge", "*handle"],
         "undischarged_obligation" => &["E002", "diagnostic", "obligation", "discharge_count"],
         "stale_reference" => &[
@@ -578,7 +650,7 @@ pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'sta
             "dependency-validity",
             "W001",
         ],
-        "frontmatter_mapping_alias" | "configured_frontmatter_alias" => {
+        _ if family == Some(PredicateFamily::FrontmatterMappingAlias) => {
             &["frontmatter_mapping_gap", "W007", "*config"]
         }
         "frontmatter_mapping_gap" => &[
@@ -588,9 +660,7 @@ pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'sta
             "*meta",
             "*config",
         ],
-        "dependency_dead_status"
-        | "dependency_valid_status"
-        | "dependency_status_classification" => &[
+        _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "dependency-validity",
             "dependency_config_gap",
             "stale_reference",
@@ -598,44 +668,46 @@ pub(in crate::runtime::introspection) fn predicate_see_also(name: &str) -> &'sta
             "*config",
         ],
         "orphaned_handle" => &["S001", "diagnostic", "in_degree"],
-        "pipeline_stall" | "s003_pipeline_stall" => &[
+        _ if family == Some(PredicateFamily::PipelineStall) => &[
             "S003",
             "diagnostic",
             "status_population",
             "snapshot_history_present",
             "W005",
         ],
-        "abandoned_namespace" | "s004_abandoned_namespace" => {
+        _ if family == Some(PredicateFamily::AbandonedNamespace) => {
             &["S004", "diagnostic", "namespace_label", "freshness"]
         }
-        "top_pair" | "s005_top_pair" => &["S005", "diagnostic", "*concern", "same_concern_pair"],
+        _ if family == Some(PredicateFamily::ConcernPair) => {
+            &["S005", "diagnostic", "*concern", "same_concern_pair"]
+        }
         "area_of" => &["area", "area_health", "area_frontier", "*handle", "schema"],
-        "area"
-        | "area_file_count"
-        | "area_error_location_count"
-        | "area_error_count"
-        | "area_cross_edges"
-        | "area_health"
-        | "area_frontier" => &[
+        _ if family == Some(PredicateFamily::CorpusArea) => &[
             "area_of",
             "diagnostic",
             "potential",
             "primary_entropy",
             "area_health",
         ],
-        "advancing" | "holding" | "regressed" | "re_opened" | "drifting" | "flow" => &[
-            "convergence",
-            "snapshot_history_present",
-            "potential",
-            "settled",
-        ],
-        "obligation" | "undischarged" => &["*config", "discharged", "discharge_count"],
+        _ if family == Some(PredicateFamily::Flow)
+            && !matches!(name, "recently_advanced" | "snapshot_history_present") =>
+        {
+            &[
+                "convergence",
+                "snapshot_history_present",
+                "potential",
+                "settled",
+            ]
+        }
+        _ if family == Some(PredicateFamily::RetiredObligation) => {
+            &["*config", "discharged", "discharge_count"]
+        }
         _ => &[],
     }
 }
 
 /// Returns the canonical executable example for a derived predicate.
-pub(in crate::runtime::introspection) fn predicate_example(name: &str) -> Option<&'static str> {
+fn predicate_example(name: &str, family: Option<PredicateFamily>) -> Option<&'static str> {
     match name {
         "entropy" => Some(r#"? entropy("docs/runtime-overview.md", source)."#),
         "entropy_priority" => Some(r#"? entropy_priority("stale_dep", priority)."#),
@@ -695,13 +767,15 @@ pub(in crate::runtime::introspection) fn predicate_example(name: &str) -> Option
             Some("? dependency_status_classification(status, classification, origin).")
         }
         "orphaned_handle" => Some("? orphaned_handle(h)."),
-        "pipeline_stall" | "s003_pipeline_stall" => {
+        _ if family == Some(PredicateFamily::PipelineStall) => {
             Some("? pipeline_stall(status, count, next_status, based_on_history).")
         }
-        "abandoned_namespace" | "s004_abandoned_namespace" => {
+        _ if family == Some(PredicateFamily::AbandonedNamespace) => {
             Some("? abandoned_namespace(namespace, total, terminal_count, stale_count).")
         }
-        "top_pair" | "s005_top_pair" => Some("? top_pair(left_prefix, right_prefix, count)."),
+        _ if family == Some(PredicateFamily::ConcernPair) => {
+            Some("? top_pair(left_prefix, right_prefix, count).")
+        }
         "incoming_edge" => Some(r#"? incoming_edge("REQ-1", from, kind)."#),
         "outgoing_edge" => Some(r#"? outgoing_edge("plan.md", to, kind)."#),
         "area_of" => Some(r#"? area_of{h: "docs/runtime-overview.md", area: area}."#),
@@ -713,7 +787,7 @@ pub(in crate::runtime::introspection) fn predicate_example(name: &str) -> Option
         "diagnostic" => {
             Some(r#"? diagnostic{code: "E001", severity: severity, subject: subject}."#)
         }
-        "obligation" | "undischarged" => {
+        _ if family == Some(PredicateFamily::RetiredObligation) => {
             Some("? undischarged(h), obligation(h), *handle{id: h, file: file, status: status}.")
         }
         _ => None,
