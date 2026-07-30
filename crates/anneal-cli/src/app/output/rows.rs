@@ -18,6 +18,9 @@ use super::{
     EMPTY_ROWS_DIAGNOSTIC, RowView, empty_binding_hint_text, missing_handle_hint, zero_binding_rows,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// Per-handle signal sets attached only to ranked-anchor JSON rows.
 pub(in crate::app) struct RankedAnchorEnrichment {
     pub(in crate::app) handle_field: String,

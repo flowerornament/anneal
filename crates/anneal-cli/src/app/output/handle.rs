@@ -14,6 +14,9 @@ use super::value::{
 };
 use super::{EMPTY_ROWS_DIAGNOSTIC, missing_handle_hint};
 
+#[cfg(test)]
+mod tests;
+
 /// Render one handle's identity, adjacency, code references, impact, and lineage.
 pub(in crate::app) fn write_handle_text<W: Write>(
     mut writer: W,

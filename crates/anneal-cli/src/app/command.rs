@@ -15,6 +15,9 @@ use crate::{DEFAULT_READ_BUDGET, DEFAULT_SEARCH_LIMIT};
 
 use super::help::{HelpTopic, retired_command_message, retired_save_message};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, PartialEq, Eq)]
 /// Parsed process invocation before corpus loading.
 pub(super) struct Invocation {

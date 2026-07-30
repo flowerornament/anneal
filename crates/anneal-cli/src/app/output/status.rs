@@ -10,6 +10,9 @@ use anyhow::Result;
 use super::EMPTY_ROWS_DIAGNOSTIC;
 use super::value::{display_number, number_to_i64, required_number, required_string};
 
+#[cfg(test)]
+mod tests;
+
 /// Status relation rows plus the snapshot state needed by the dashboard.
 pub(in crate::app) struct StatusOutput {
     pub(in crate::app) rows: Vec<Row>,

@@ -5,6 +5,9 @@ use anyhow::Result;
 
 use super::value::required_string;
 
+#[cfg(test)]
+mod tests;
+
 /// Partition one snapshot into rendered errors and adjacent non-errors.
 pub(in crate::app) fn partition_check_diagnostics(rows: Vec<Row>) -> Result<(Vec<Row>, usize)> {
     let mut error_rows = Vec::new();

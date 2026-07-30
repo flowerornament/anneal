@@ -6,6 +6,9 @@ use anneal_core::runtime::eval::NumberValue;
 use anneal_core::runtime::{Row, Value};
 use anneal_core::{EdgeFact, FactStore, ImpactTraversalPolicy};
 
+#[cfg(test)]
+mod tests;
+
 /// Metadata key linking a non-file handle to its containing file handle.
 pub(super) const RESOLVED_FILE_META_KEY: &str = "md.resolved_file";
 /// Edge kind defining the file supersession graph.

@@ -1,5 +1,8 @@
 //! Canonical CLI help, agent briefing, and retirement guidance.
 
+#[cfg(test)]
+mod tests;
+
 /// Shipped agent briefing projected by `anneal help agent`.
 pub(super) const SKILL_MARKDOWN: &str = include_str!("../../../../skills/anneal/SKILL.md");
 

@@ -16,6 +16,9 @@ use crate::ContextOutput;
 
 use super::value::{display_string_value, write_text_block};
 
+#[cfg(test)]
+mod tests;
+
 /// Render ranked context hits, spans, and neighborhoods for a human reader.
 pub(super) fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput) -> Result<()> {
     const MAX_TEXT_LINES_PER_SPAN: usize = 8;

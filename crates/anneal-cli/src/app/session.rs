@@ -39,6 +39,9 @@ use super::query_guidance::{
     zero_result_hint_for_query,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// Corpus identity used by the single-process CLI runtime.
 pub(super) const DEFAULT_CORPUS: &str = "cli";
 /// Full diagnostic relation evaluated once before the renderer partitions it.

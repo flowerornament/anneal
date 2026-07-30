@@ -14,6 +14,9 @@ use chrono::NaiveDate;
 use super::command::RuntimeCommand;
 use super::output::eval_zero_result_hint;
 
+#[cfg(test)]
+mod tests;
+
 /// Derive zero-result guidance from the parsed query and rendered rows.
 pub(super) fn zero_result_hint_for_query(query_source: &str, rows: &[Row]) -> Option<String> {
     if !rows.is_empty() {

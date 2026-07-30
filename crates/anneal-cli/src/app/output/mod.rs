@@ -18,12 +18,15 @@ mod rows;
 mod status;
 mod value;
 
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+
 use context::{write_context_ndjson, write_context_text};
 pub(super) use guidance::{
     eval_zero_result_hint, partition_check_diagnostics, search_zero_result_hint,
 };
-#[cfg(test)]
-pub(super) use handle::write_handle_text;
 pub(super) use help::{render_dynamic_verb_help, render_dynamic_verb_help_with_collision};
 pub(super) use init::run_init;
 pub(super) use rows::{RankedAnchorEnrichment, RankedAnchorSignal};
@@ -32,8 +35,6 @@ use rows::{
 };
 pub(super) use status::StatusOutput;
 use status::write_status_text;
-#[cfg(test)]
-pub(super) use value::required_number;
 pub(super) use value::required_string;
 
 /// Compact marker rendered when the selected relation has no rows.
