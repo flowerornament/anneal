@@ -27,6 +27,15 @@ pub(crate) mod prelude;
 pub(crate) mod primitives;
 pub(crate) mod schedule;
 
+use crate::{CorpusId, FactStore, StoreError};
+
+pub use crate::facts::SnapshotFact;
+pub use crate::history::{
+    HistoryError, HistoryWarning, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact,
+    SnapshotHistory, append_snapshot_entry, append_snapshot_entry_capped, read_snapshot_history,
+    repo_history_path,
+};
+pub use crate::time::{SnapshotTime, SnapshotTimeError};
 pub use crate::vm::provenance::{DerivationKind, DerivationNode};
 pub use crate::vm::value::NumberValue;
 pub use analysis::{
@@ -52,3 +61,23 @@ pub use prelude::{
     PreludeFile, PreludeHash, PreludeLoadError, PreludeSet, PreludeSourceFile, PreludeSourceMap,
     datalog_string_literal, low_confidence_filter, render_context_query, standard_prelude_program,
 };
+
+/// Return runtime-owned snapshot facts stored beside shared source facts.
+#[must_use]
+pub fn snapshot_facts(store: &FactStore) -> &[SnapshotFact] {
+    store.snapshots()
+}
+
+/// Replace runtime snapshot facts for one corpus.
+pub fn replace_snapshot_facts(
+    store: &mut FactStore,
+    corpus: &CorpusId,
+    snapshots: Vec<SnapshotFact>,
+) -> Result<(), StoreError> {
+    store.replace_snapshots(corpus, snapshots)
+}
+
+/// Load parsed history entries into runtime snapshot rows.
+pub fn replace_snapshot_history(store: &mut FactStore, history: &SnapshotHistory) {
+    store.replace_snapshot_history(history);
+}

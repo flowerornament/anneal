@@ -1,10 +1,124 @@
 //! Time parsing and snapshot reference helpers.
 
+use std::fmt;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::de;
+use serde::{Deserialize, Serialize};
 
 const ISO_DATE_LEN: usize = "YYYY-MM-DD".len();
 const RFC3339_TIME_START: usize = "YYYY-MM-DDT".len();
 const RFC3339_TIME_END: usize = "YYYY-MM-DDTHH:MM:SS".len();
+
+/// Validated wire-preserving timestamp for runtime snapshots.
+///
+/// Ordering is deliberately absent: existing selection compares raw wire text
+/// within day and snapshot ties, while a semantic total order would silently
+/// change that behavior.
+///
+/// ```compile_fail
+/// use anneal_core::runtime::SnapshotTime;
+///
+/// fn require_order<T: Ord>() {}
+/// require_order::<SnapshotTime>();
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotTime(Arc<SnapshotTimeInner>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct SnapshotTimeInner {
+    wire: Arc<str>,
+    day_since_epoch: i64,
+}
+
+impl SnapshotTime {
+    /// Parse an exact ISO date or the runtime's accepted RFC3339 subset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotTimeError`] when the complete input does not match
+    /// either accepted wire form.
+    pub fn parse(value: impl Into<String>) -> Result<Self, SnapshotTimeError> {
+        let value = value.into();
+        let Some(day_since_epoch) = snapshot_days_since_epoch(&value) else {
+            return Err(SnapshotTimeError { value });
+        };
+        Ok(Self(Arc::new(SnapshotTimeInner {
+            wire: Arc::from(value),
+            day_since_epoch,
+        })))
+    }
+
+    /// Return the original, unnormalized wire text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0.wire
+    }
+
+    /// Return the calendar day encoded by the wire text.
+    ///
+    /// This cache has no independent authority: parsing derives it from
+    /// `as_str`, and no constructor accepts the two representations separately.
+    #[must_use]
+    pub fn day_since_epoch(&self) -> i64 {
+        self.0.day_since_epoch
+    }
+}
+
+impl TryFrom<String> for SnapshotTime {
+    type Error = SnapshotTimeError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<&str> for SnapshotTime {
+    type Error = SnapshotTimeError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl AsRef<str> for SnapshotTime {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for SnapshotTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for SnapshotTime {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SnapshotTime {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(de::Error::custom)
+    }
+}
+
+/// Invalid snapshot timestamp wire text.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("snapshot timestamp {value:?} is not parseable")]
+pub struct SnapshotTimeError {
+    value: String,
+}
 
 pub(crate) fn current_days_since_epoch() -> Option<i64> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
@@ -150,5 +264,36 @@ mod tests {
         assert_eq!(snapshot_days_since_epoch("2026-05-13T10:30:45Zjunk"), None);
         assert_eq!(snapshot_days_since_epoch("2026-05-13T24:00:00Z"), None);
         assert_eq!(snapshot_days_since_epoch("2026-05-13 10:30:45Z"), None);
+    }
+
+    #[test]
+    fn snapshot_time_preserves_wire_bytes_and_derived_day() {
+        let value = "2026-05-13T10:30:45.123+02:30";
+        let time = SnapshotTime::parse(value).expect("timestamp parses");
+        let clone = time.clone();
+
+        assert_eq!(time.as_str(), value);
+        assert_eq!(
+            time.day_since_epoch(),
+            snapshot_days_since_epoch(value).expect("day parses")
+        );
+        assert!(Arc::ptr_eq(&time.0, &clone.0));
+        assert_eq!(
+            serde_json::to_string(&time).expect("timestamp serializes"),
+            format!("{value:?}")
+        );
+        assert_eq!(
+            serde_json::from_str::<SnapshotTime>(&format!("{value:?}"))
+                .expect("timestamp deserializes"),
+            time
+        );
+    }
+
+    #[test]
+    fn snapshot_time_is_one_shared_pointer() {
+        assert_eq!(
+            std::mem::size_of::<SnapshotTime>(),
+            std::mem::size_of::<usize>()
+        );
     }
 }

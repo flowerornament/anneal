@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{CorpusId, Generation, HandleId, NativeId, OriginUri, Revision, SourceName};
+use crate::time::SnapshotTime;
 use crate::visibility::FactVisibility;
 
 /// Origin tuple carried by every source-derived stored fact.
@@ -122,7 +123,7 @@ pub struct ConfigFact {
 pub struct SnapshotFact {
     pub corpus: CorpusId,
     pub snapshot: String,
-    pub at: String,
+    pub at: SnapshotTime,
     pub id: HandleId,
     pub key: String,
     pub value: String,

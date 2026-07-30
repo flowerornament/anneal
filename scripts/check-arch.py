@@ -154,7 +154,8 @@ def public_modules(source: str) -> set[str]:
 
 
 def check_core_facades() -> None:
-    root_modules = public_modules((CORE_SRC / "lib.rs").read_text())
+    root_source = (CORE_SRC / "lib.rs").read_text()
+    root_modules = public_modules(root_source)
     if root_modules != {"runtime"}:
         fail(
             "anneal-core must expose only the runtime module; found: "
@@ -166,6 +167,33 @@ def check_core_facades() -> None:
         fail(
             "anneal-core runtime implementation modules must stay private: "
             + ", ".join(sorted(runtime_modules))
+        )
+
+    root_exports = re.findall(r"pub use\s+.*?;", root_source, re.DOTALL)
+    if any(
+        re.search(
+            r"\b(history|SnapshotFact|SnapshotTime|SnapshotEntry|HistoryWarning)\b",
+            export,
+        )
+        for export in root_exports
+    ):
+        fail("anneal-core snapshot contracts belong under the runtime facade")
+
+    store_source = (CORE_SRC / "store.rs").read_text()
+    public_store_signatures = re.findall(
+        r"^\s*pub fn\s+\w+\s*\(.*?(?:->\s*.*?)?\s*\{",
+        store_source,
+        re.MULTILINE | re.DOTALL,
+    )
+    snapshot_signatures = [
+        signature.splitlines()[0].strip()
+        for signature in public_store_signatures
+        if re.search(r"\b(Snapshot\w*|HistoryWarning|HistoryError)\b", signature)
+    ]
+    if snapshot_signatures:
+        fail(
+            "FactStore public signatures must not expose runtime-owned snapshot contracts: "
+            + ", ".join(sorted(snapshot_signatures))
         )
 
     root_pattern = re.compile(

@@ -9,13 +9,13 @@ use serde::{Deserialize, Serialize};
 use crate::facts::SnapshotFact;
 use crate::ids::{CorpusId, HandleId};
 use crate::runtime::prelude::PreludeSet;
-use crate::time::snapshot_days_since_epoch;
+use crate::time::SnapshotTime;
 
 /// One append-only snapshot entry in `.anneal/history.jsonl`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotEntry {
     pub snapshot: String,
-    pub at: String,
+    pub at: SnapshotTime,
     pub corpus: CorpusId,
     #[serde(default = "unknown_prelude_hash")]
     pub prelude_hash: String,
@@ -25,7 +25,7 @@ pub struct SnapshotEntry {
 impl SnapshotEntry {
     pub fn new(
         snapshot: impl Into<String>,
-        at: impl Into<String>,
+        at: SnapshotTime,
         corpus: CorpusId,
         prelude: &PreludeSet,
         facts: Vec<SnapshotEntryFact>,
@@ -35,21 +35,21 @@ impl SnapshotEntry {
 
     pub fn with_prelude_hash(
         snapshot: impl Into<String>,
-        at: impl Into<String>,
+        at: SnapshotTime,
         corpus: CorpusId,
         prelude_hash: impl Into<String>,
         facts: Vec<SnapshotEntryFact>,
     ) -> Self {
         Self {
             snapshot: snapshot.into(),
-            at: at.into(),
+            at,
             corpus,
             prelude_hash: prelude_hash.into(),
             facts,
         }
     }
 
-    pub fn to_snapshot_facts(&self) -> Vec<SnapshotFact> {
+    pub(crate) fn to_snapshot_facts(&self) -> Vec<SnapshotFact> {
         self.facts
             .iter()
             .map(|fact| SnapshotFact {
@@ -113,7 +113,7 @@ impl SnapshotHistory {
         &self.warnings
     }
 
-    pub fn snapshot_facts(&self) -> Vec<SnapshotFact> {
+    pub(crate) fn snapshot_facts(&self) -> Vec<SnapshotFact> {
         self.entries
             .iter()
             .flat_map(SnapshotEntry::to_snapshot_facts)
@@ -320,12 +320,6 @@ fn validate_snapshot_entry(entry: &SnapshotEntry) -> Result<(), String> {
     if entry.snapshot.is_empty() {
         return Err("snapshot id is empty".to_string());
     }
-    if snapshot_days_since_epoch(&entry.at).is_none() {
-        return Err(format!(
-            "snapshot timestamp {:?} is not parseable",
-            entry.at
-        ));
-    }
     for fact in &entry.facts {
         if fact.key.is_empty() {
             return Err(format!("snapshot fact for {:?} has empty key", fact.id));
@@ -356,20 +350,24 @@ mod tests {
         HandleId::new(value).expect("fixture handle is nonempty")
     }
 
+    fn snapshot_time(value: impl Into<String>) -> SnapshotTime {
+        SnapshotTime::parse(value).expect("fixture timestamp parses")
+    }
+
     #[test]
     fn append_and_read_snapshot_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
         let first = SnapshotEntry::new(
             "s1",
-            "2026-05-13T10:00:00Z",
+            snapshot_time("2026-05-13T10:00:00Z"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
         let second = SnapshotEntry::new(
             "s2",
-            "2026-05-14T10:00:00Z",
+            snapshot_time("2026-05-14T10:00:00Z"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(
@@ -396,13 +394,80 @@ mod tests {
     fn snapshot_entry_can_record_custom_prelude_hash() {
         let entry = SnapshotEntry::with_prelude_hash(
             "s1",
-            "2026-05-13T10:00:00Z",
+            snapshot_time("2026-05-13T10:00:00Z"),
             CorpusId::from("test"),
             "custom-hash",
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
 
         assert_eq!(entry.prelude_hash, "custom-hash");
+    }
+
+    #[test]
+    fn snapshot_entry_json_preserves_exact_time_wire_forms() {
+        for at in [
+            "2026-05-13",
+            "2026-05-13T10:30:45Z",
+            "2026-05-13T10:30:45.123+02:30",
+        ] {
+            let entry = SnapshotEntry::with_prelude_hash(
+                "s1",
+                snapshot_time(at),
+                CorpusId::from("test"),
+                "custom-hash",
+                vec![],
+            );
+            let encoded = serde_json::to_string(&entry).expect("entry serializes");
+
+            assert!(
+                encoded.contains(&format!(r#""at":{at:?}"#)),
+                "wire form changed: {encoded}"
+            );
+            assert_eq!(
+                serde_json::from_str::<SnapshotEntry>(&encoded)
+                    .expect("entry deserializes")
+                    .at
+                    .as_str(),
+                at
+            );
+        }
+    }
+
+    #[test]
+    fn capped_rewrite_preserves_exact_snapshot_time_wire_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
+        let first = SnapshotEntry::with_prelude_hash(
+            "s1",
+            snapshot_time("2026-05-13"),
+            CorpusId::from("test"),
+            "hash",
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
+        );
+        append_snapshot_entry(&root, &first).expect("append first");
+
+        assert_eq!(
+            fs::read_to_string(repo_history_path(&root)).expect("read first history"),
+            "{\"snapshot\":\"s1\",\"at\":\"2026-05-13\",\"corpus\":\"test\",\"prelude_hash\":\"hash\",\"facts\":[{\"id\":\"a.md\",\"key\":\"status\",\"value\":\"draft\"}]}\n"
+        );
+
+        let second = SnapshotEntry::with_prelude_hash(
+            "s2",
+            snapshot_time("2026-05-14T10:30:45.123+02:30"),
+            CorpusId::from("test"),
+            "hash",
+            vec![SnapshotEntryFact::new(
+                handle_id("a.md"),
+                "status",
+                "current",
+            )],
+        );
+        append_snapshot_entry_capped(&root, &second, 1).expect("rewrite capped history");
+
+        assert_eq!(
+            fs::read_to_string(repo_history_path(&root)).expect("read rewritten history"),
+            "{\"snapshot\":\"s2\",\"at\":\"2026-05-14T10:30:45.123+02:30\",\"corpus\":\"test\",\"prelude_hash\":\"hash\",\"facts\":[{\"id\":\"a.md\",\"key\":\"status\",\"value\":\"current\"}]}\n"
+        );
     }
 
     #[test]
@@ -421,7 +486,7 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
         let entry = SnapshotEntry::new(
             "s1",
-            "2026-05-13",
+            snapshot_time("2026-05-13"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
@@ -450,7 +515,7 @@ mod tests {
             &root,
             &SnapshotEntry::new(
                 "s1",
-                "2026-05-13T10:00:00Z",
+                snapshot_time("2026-05-13T10:00:00Z"),
                 CorpusId::from("test"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
@@ -480,6 +545,7 @@ mod tests {
         assert_eq!(history.entries().len(), 1);
         assert_eq!(history.warnings().len(), 1);
         assert_eq!(history.warnings()[0].line, 2);
+        assert!(history.warnings()[0].message.contains("snapshot timestamp"));
     }
 
     #[test]
@@ -490,7 +556,7 @@ mod tests {
             &root,
             &SnapshotEntry::new(
                 "s1",
-                "2026-05-13T10:00:00Z",
+                snapshot_time("2026-05-13T10:00:00Z"),
                 CorpusId::from("test"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
@@ -520,27 +586,17 @@ mod tests {
         assert_eq!(history.entries().len(), 1);
         assert_eq!(history.warnings().len(), 1);
         assert_eq!(history.warnings()[0].line, 2);
+        assert!(history.warnings()[0].message.contains("snapshot timestamp"));
     }
 
     #[test]
-    fn append_snapshot_entry_rejects_invalid_entries() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
-        let entry = SnapshotEntry::new(
-            "s1",
-            "2026-05-13junk",
-            CorpusId::from("test"),
-            standard_prelude_set(),
-            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
-        );
+    fn snapshot_entry_requires_validated_time() {
+        let err = SnapshotTime::parse("2026-05-13junk").expect_err("timestamp rejected");
 
-        let err = append_snapshot_entry(&root, &entry).expect_err("entry rejected");
-
-        assert!(
-            matches!(err, HistoryError::InvalidEntry(message) if message.contains("timestamp"))
+        assert_eq!(
+            err.to_string(),
+            "snapshot timestamp \"2026-05-13junk\" is not parseable"
         );
-        let history = read_snapshot_history(&root).expect("read missing history");
-        assert!(history.entries().is_empty());
     }
 
     #[test]
@@ -548,14 +604,14 @@ mod tests {
         let history = SnapshotHistory::from_entries(vec![
             SnapshotEntry::new(
                 "",
-                "2026-05-13",
+                snapshot_time("2026-05-13"),
                 CorpusId::from("test"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
-                "2026-05-13",
+                snapshot_time("2026-05-13"),
                 CorpusId::from("test"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
@@ -587,7 +643,7 @@ mod tests {
                 &root,
                 &SnapshotEntry::new(
                     format!("s{idx}"),
-                    format!("2026-05-1{idx}T10:00:00Z"),
+                    snapshot_time(format!("2026-05-1{idx}T10:00:00Z")),
                     CorpusId::from("test"),
                     standard_prelude_set(),
                     vec![SnapshotEntryFact::new(
@@ -632,7 +688,7 @@ mod tests {
 
         let entry = SnapshotEntry::new(
             "s1",
-            "2026-05-13T10:00:00Z",
+            snapshot_time("2026-05-13T10:00:00Z"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
@@ -654,14 +710,14 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 root");
         let first = SnapshotEntry::new(
             "s1",
-            "2026-05-13T10:00:00Z",
+            snapshot_time("2026-05-13T10:00:00Z"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
         let duplicate = SnapshotEntry::new(
             "s2",
-            "2026-05-13T10:01:00Z",
+            snapshot_time("2026-05-13T10:01:00Z"),
             CorpusId::from("test"),
             standard_prelude_set(),
             vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],

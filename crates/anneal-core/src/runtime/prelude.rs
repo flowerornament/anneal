@@ -2425,7 +2425,8 @@ mod tests {
                     SnapshotFact {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
-                        at: "2026-05-01".to_string(),
+                        at: crate::time::SnapshotTime::parse("2026-05-01")
+                            .expect("fixture timestamp parses"),
                         id: handle_id("draft-1.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
@@ -2433,7 +2434,8 @@ mod tests {
                     SnapshotFact {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
-                        at: "2026-05-01".to_string(),
+                        at: crate::time::SnapshotTime::parse("2026-05-01")
+                            .expect("fixture timestamp parses"),
                         id: handle_id("draft-2.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
@@ -2441,7 +2443,8 @@ mod tests {
                     SnapshotFact {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
-                        at: "2026-05-01".to_string(),
+                        at: crate::time::SnapshotTime::parse("2026-05-01")
+                            .expect("fixture timestamp parses"),
                         id: handle_id("draft-3.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
@@ -2698,7 +2701,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                         SnapshotFact {
                             corpus: corpus.clone(),
                             snapshot: "s1".to_string(),
-                            at: "2026-05-01".to_string(),
+                            at: crate::time::SnapshotTime::parse("2026-05-01")
+                                .expect("fixture timestamp parses"),
                             id: handle_id("ticket-2"),
                             key: "status".to_string(),
                             value: "open".to_string(),
@@ -2706,7 +2710,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                         SnapshotFact {
                             corpus: corpus.clone(),
                             snapshot: "s1".to_string(),
-                            at: "2026-05-01".to_string(),
+                            at: crate::time::SnapshotTime::parse("2026-05-01")
+                                .expect("fixture timestamp parses"),
                             id: handle_id("ticket-1"),
                             key: "status".to_string(),
                             value: "open".to_string(),

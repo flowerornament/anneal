@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use anneal_core::CorpusId;
-use anneal_core::runtime::standard_prelude_program;
-use anneal_core::runtime::{ExplainOptions, NumberValue};
-use anneal_core::runtime::{analyze, parse_program};
+use anneal_core::runtime::{
+    ExplainOptions, NumberValue, SnapshotEntry, SnapshotEntryFact, SnapshotTime, analyze,
+    append_snapshot_entry, parse_program, read_snapshot_history, standard_prelude_program,
+};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 
@@ -272,7 +273,7 @@ fn status_writes_capped_automatic_snapshot_history() {
     };
     assert!(second.flow_baseline_ready);
 
-    let history = anneal_core::read_snapshot_history(&root).expect("read history");
+    let history = read_snapshot_history(&root).expect("read history");
 
     assert_eq!(history.entries().len(), 1);
     assert!(history.entries()[0].facts.iter().any(|fact| {
@@ -286,14 +287,14 @@ fn runtime_loads_snapshot_history_for_eval_at_blocks() {
     let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
     fs::create_dir(&root).expect("create corpus root");
     fs::write(root.join("a.md"), "---\nstatus: current\n---\n# A\n").expect("write doc");
-    anneal_core::append_snapshot_entry(
+    append_snapshot_entry(
         &root,
-        &anneal_core::SnapshotEntry::with_prelude_hash(
+        &SnapshotEntry::with_prelude_hash(
             "s1",
-            "2026-05-13T10:00:00Z",
+            SnapshotTime::parse("2026-05-13T10:00:00Z").expect("fixture timestamp parses"),
             CorpusId::from(DEFAULT_CORPUS),
             "test-prelude",
-            vec![anneal_core::SnapshotEntryFact::new(
+            vec![SnapshotEntryFact::new(
                 anneal_core::HandleId::new("a.md").expect("fixture handle is nonempty"),
                 "status",
                 "draft",

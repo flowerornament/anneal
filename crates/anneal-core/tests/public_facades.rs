@@ -124,3 +124,64 @@ mod layered_host {
         assert_eq!(hit.handle().as_str(), "fixture.handle");
     }
 }
+
+mod snapshot_host {
+    use anneal_core::runtime::{
+        Database, Evaluator, SnapshotEntry, SnapshotEntryFact, SnapshotFact, SnapshotHistory,
+        SnapshotTime, Value, analyze, parse_program, replace_snapshot_facts,
+        replace_snapshot_history, snapshot_facts,
+    };
+    use anneal_core::{CorpusId, FactStore, HandleId};
+
+    #[test]
+    fn snapshot_contract_layers_runtime_operations_over_the_shared_store() {
+        let corpus = CorpusId::from("snapshot-fixture");
+        let entry = SnapshotEntry::with_prelude_hash(
+            "s1",
+            SnapshotTime::parse("2026-05-13T10:00:00+02:30").expect("fixture timestamp parses"),
+            corpus.clone(),
+            "fixture-prelude",
+            vec![SnapshotEntryFact::new(
+                HandleId::new("fixture.handle").expect("fixture handle is nonempty"),
+                "status",
+                "draft",
+            )],
+        );
+        let history = SnapshotHistory::from_entries(vec![entry]);
+        let mut store = FactStore::default();
+
+        replace_snapshot_history(&mut store, &history);
+        assert_eq!(snapshot_facts(&store).len(), 1);
+        replace_snapshot_facts(
+            &mut store,
+            &corpus,
+            vec![SnapshotFact {
+                corpus: corpus.clone(),
+                snapshot: "s1".to_string(),
+                at: SnapshotTime::parse("2026-05-13T10:00:00+02:30")
+                    .expect("fixture timestamp parses"),
+                id: HandleId::new("fixture.handle").expect("fixture handle is nonempty"),
+                key: "status".to_string(),
+                value: "draft".to_string(),
+            }],
+        )
+        .expect("runtime replaces snapshot facts");
+
+        let program = parse_program(
+            "snapshot-host-fixture",
+            r"? *snapshot{snapshot: snapshot, at: at, id: id, key: key, value: value}.",
+        )
+        .expect("program parses");
+        let analyzed = analyze(program).expect("program analyzes");
+        let query = analyzed.queries().next().expect("fixture query").clone();
+        let mut evaluator = Evaluator::new(analyzed, Database::from_store(&store));
+
+        evaluator.run_fixpoint().expect("program evaluates");
+        let output = evaluator.eval_query(&query).expect("query evaluates");
+
+        assert_eq!(
+            output.rows[0].fields.get("at"),
+            Some(&Value::String("2026-05-13T10:00:00+02:30".to_string()))
+        );
+    }
+}

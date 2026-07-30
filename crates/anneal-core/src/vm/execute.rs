@@ -1733,7 +1733,7 @@ mod tests {
         SnapshotFact {
             corpus: CorpusId::from("test"),
             snapshot: snapshot.to_string(),
-            at: at.to_string(),
+            at: crate::time::SnapshotTime::parse(at).expect("fixture timestamp parses"),
             id: crate::HandleId::new(id).expect("fixture handle is nonempty"),
             key: key.to_string(),
             value: value.to_string(),

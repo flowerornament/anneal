@@ -130,7 +130,7 @@ impl FactStore {
         &self.configs
     }
 
-    pub fn snapshots(&self) -> &[SnapshotFact] {
+    pub(crate) fn snapshots(&self) -> &[SnapshotFact] {
         &self.snapshots
     }
 
@@ -154,7 +154,7 @@ impl FactStore {
     ///
     /// Snapshot rows are runtime-owned historical state, so source generation
     /// swaps do not retract them.
-    pub fn replace_snapshots(
+    pub(crate) fn replace_snapshots(
         &mut self,
         corpus: &CorpusId,
         snapshots: Vec<SnapshotFact>,
@@ -173,7 +173,7 @@ impl FactStore {
     /// One history file may contain entries for multiple corpora, so this
     /// replaces every corpus represented in the parsed history atomically
     /// within the in-memory store.
-    pub fn replace_snapshot_history(&mut self, history: &SnapshotHistory) {
+    pub(crate) fn replace_snapshot_history(&mut self, history: &SnapshotHistory) {
         let snapshots = history.snapshot_facts();
         let corpora = snapshots
             .iter()
@@ -506,7 +506,7 @@ fn sort_snapshots(snapshots: &mut [SnapshotFact]) {
         left.corpus
             .cmp(&right.corpus)
             .then_with(|| left.snapshot.cmp(&right.snapshot))
-            .then_with(|| left.at.cmp(&right.at))
+            .then_with(|| left.at.as_str().cmp(right.at.as_str()))
             .then_with(|| left.id.cmp(&right.id))
             .then_with(|| left.key.cmp(&right.key))
             .then_with(|| left.value.cmp(&right.value))
@@ -686,7 +686,7 @@ mod tests {
         SnapshotFact {
             corpus: CorpusId::from(corpus),
             snapshot: snapshot.to_string(),
-            at: at.to_string(),
+            at: crate::time::SnapshotTime::parse(at).expect("fixture timestamp parses"),
             id: handle_id(id),
             key: key.to_string(),
             value: value.to_string(),
@@ -1380,14 +1380,14 @@ mod tests {
         let history = SnapshotHistory::from_entries(vec![
             SnapshotEntry::new(
                 "s1",
-                "2026-05-13",
+                crate::time::SnapshotTime::parse("2026-05-13").expect("fixture timestamp parses"),
                 CorpusId::from("test"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
-                "2026-05-13",
+                crate::time::SnapshotTime::parse("2026-05-13").expect("fixture timestamp parses"),
                 CorpusId::from("other"),
                 standard_prelude_set(),
                 vec![SnapshotEntryFact::new(

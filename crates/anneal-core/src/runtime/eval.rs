@@ -4056,7 +4056,7 @@ fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
     named_row([
         ("corpus", Value::String(fact.corpus.to_string())),
         ("snapshot", Value::String(fact.snapshot.clone())),
-        ("at", Value::String(fact.at.clone())),
+        ("at", Value::String(fact.at.to_string())),
         ("id", Value::String(fact.id.to_string())),
         ("key", Value::String(fact.key.clone())),
         ("value", Value::String(fact.value.clone())),
@@ -4221,7 +4221,7 @@ mod tests {
         SnapshotFact {
             corpus: CorpusId::from("test"),
             snapshot: snapshot.to_string(),
-            at: at.to_string(),
+            at: crate::time::SnapshotTime::parse(at).expect("fixture timestamp parses"),
             id: handle_id(id),
             key: key.to_string(),
             value: value.to_string(),

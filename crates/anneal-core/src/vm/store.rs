@@ -466,7 +466,7 @@ impl TupleDb {
         vec![
             self.string_value(fact.corpus.as_str()),
             self.string_value(&fact.snapshot),
-            self.string_value(&fact.at),
+            self.string_value(fact.at.as_str()),
             self.string_value(fact.id.as_str()),
             self.string_value(&fact.key),
             self.string_value(&fact.value),

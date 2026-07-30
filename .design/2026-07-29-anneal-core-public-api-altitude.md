@@ -103,7 +103,7 @@ these current implementation modules:
 | `config_schema` | typed runtime configuration declarations consumed by adapters and hosts |
 | `retrieval`, `ranking` | CR-D5 provider and ranker contracts plus their default implementations |
 | `policy`, `trail`, `verbs` | authorization, trail, and saved-verb extension contracts |
-| `project`, `history` | project loading and snapshot history used by surfaces and hosts |
+| `project` | project loading shared by configured adapters and hosts |
 | `path_policy`, `impact` | shared validated path and impact-policy values |
 | `target_probe` | code-target drift and provenance required by the markdown adapter class |
 
@@ -120,6 +120,14 @@ Workspace convenience alone does not prove a contract.
 `anneal_core::runtime` selects the grammar, AST, static analysis, parser,
 loader, evaluator, value/row/explanation, prelude helper, and NDJSON contracts
 needed to embed a query runtime.
+
+Snapshot persistence also belongs under `runtime`. The first transitive
+admission audit falsified this document's original catalog claim that
+`history` was shared root substrate: root-level history constructors required
+`runtime::PreludeSet`, while root `FactStore` methods exposed host-only
+snapshot facts and history in the other direction. The correction and wire
+compatibility contract are specified in
+`.design/2026-07-30-snapshot-persistence-facade.md`.
 
 The current `analysis`, `ast`, `eval`, `loader`, `ndjson`, `parser`, and
 `prelude` submodules become private. Required items are re-exported directly

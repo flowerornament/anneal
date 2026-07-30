@@ -223,16 +223,16 @@ impl DescribeCommand {
 
 #[cfg(test)]
 mod tests {
-    use anneal_core::runtime::standard_prelude_program;
     use anneal_core::runtime::{
         Database, EvalOptions, Evaluator, Literal, NumberLiteral, Program, QueryOutput, Row,
-        analyze, parse_program,
+        SnapshotFact, SnapshotTime, analyze, parse_program, replace_snapshot_facts,
+        standard_prelude_program,
     };
     use anneal_core::{
         ActorContext, ConfigFact, ConfigKey, ContentFact, CorpusId, EdgeFact, FactBatch,
         FactBatchMode, FactIdentity, FactStore, Generation, HandleFact, NativeId, OriginUri,
-        Pattern, Revision, SnapshotFact, SourceCapabilities, SourceInfo, SourceName, SpanFact,
-        VerbLayer, VerbRegistry,
+        Pattern, Revision, SourceCapabilities, SourceInfo, SourceName, SpanFact, VerbLayer,
+        VerbRegistry,
     };
 
     use super::*;
@@ -555,19 +555,19 @@ mod tests {
                 ],
             )
             .expect("replace configs");
-        store
-            .replace_snapshots(
-                &CorpusId::from("phase10"),
-                vec![SnapshotFact {
-                    corpus: CorpusId::from("phase10"),
-                    snapshot: "s1".to_string(),
-                    at: "2026-05-01".to_string(),
-                    id: anneal_core::HandleId::new("ticket-2").expect("fixture handle is nonempty"),
-                    key: "status".to_string(),
-                    value: "open".to_string(),
-                }],
-            )
-            .expect("replace snapshots");
+        replace_snapshot_facts(
+            &mut store,
+            &CorpusId::from("phase10"),
+            vec![SnapshotFact {
+                corpus: CorpusId::from("phase10"),
+                snapshot: "s1".to_string(),
+                at: SnapshotTime::parse("2026-05-01").expect("fixture timestamp parses"),
+                id: anneal_core::HandleId::new("ticket-2").expect("fixture handle is nonempty"),
+                key: "status".to_string(),
+                value: "open".to_string(),
+            }],
+        )
+        .expect("replace snapshots");
         Database::from_store(&store).with_sources([SourceInfo {
             name: "fixture",
             recognizes: vec![Pattern::new("*.md")],

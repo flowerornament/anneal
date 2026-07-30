@@ -10,14 +10,15 @@ use anneal_core::runtime::{
     AnalyzedProgram, Database, EvalOptions, Evaluator, Program, QueryOutput, Row, Statement, Value,
     analyze, parse_program,
 };
-use anneal_core::runtime::{ExplainOptions, NumberValue};
-use anneal_core::runtime::{LoadedPrelude, PreludeError, datalog_string_literal};
+use anneal_core::runtime::{
+    ExplainOptions, LoadedPrelude, NumberValue, PreludeError, SnapshotAppendOutcome, SnapshotEntry,
+    SnapshotEntryFact, SnapshotTime, append_snapshot_entry_capped, datalog_string_literal,
+    read_snapshot_history, replace_snapshot_history, snapshot_facts,
+};
 use anneal_core::{
     ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
-    ConfigFacts, CorpusId, FactStore, Generation, ProjectExtension, SnapshotAppendOutcome,
-    SnapshotEntry, SnapshotEntryFact, Source, SourceContext, SourceInfo, VerbEntry, VerbLayer,
-    VerbRegistry, append_snapshot_entry_capped, load_project_extension, merge_program_layers,
-    read_snapshot_history,
+    ConfigFacts, CorpusId, FactStore, Generation, ProjectExtension, Source, SourceContext,
+    SourceInfo, VerbEntry, VerbLayer, VerbRegistry, load_project_extension, merge_program_layers,
 };
 use anneal_md::{EdgeAssertionRefreshProgressSink, MarkdownSource};
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -357,7 +358,7 @@ impl RuntimeSession {
             store.handles().iter().map(|handle| handle.file.as_str()),
         );
         let history = read_snapshot_history(root).context("failed to read snapshot history")?;
-        store.replace_snapshot_history(&history);
+        replace_snapshot_history(&mut store, &history);
         Ok(Self {
             root: root.to_path_buf(),
             program,
@@ -650,22 +651,23 @@ impl RuntimeSession {
 // Snapshot persistence and row enrichment derive presentation data from one loaded store.
 impl RuntimeSession {
     fn record_status_snapshot(&self) -> Result<SnapshotAppendOutcome> {
-        let entry = self.status_snapshot_entry();
+        let entry = self.status_snapshot_entry()?;
         append_snapshot_entry_capped(&self.root, &entry, DEFAULT_AUTO_SNAPSHOT_LIMIT)
             .context("failed to append automatic status snapshot")
     }
 
     fn snapshot_history_count(&self) -> usize {
-        self.store
-            .snapshots()
+        snapshot_facts(&self.store)
             .iter()
             .map(|snapshot| snapshot.snapshot.as_str())
             .collect::<BTreeSet<_>>()
             .len()
     }
 
-    fn status_snapshot_entry(&self) -> SnapshotEntry {
+    fn status_snapshot_entry(&self) -> Result<SnapshotEntry> {
         let at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+        let snapshot = format!("status-{at}");
+        let snapshot_time = SnapshotTime::parse(at).context("chrono emitted invalid RFC3339")?;
         let mut facts = self
             .store
             .handles()
@@ -682,13 +684,13 @@ impl RuntimeSession {
                 .then_with(|| left.key.cmp(&right.key))
                 .then_with(|| left.value.cmp(&right.value))
         });
-        SnapshotEntry::with_prelude_hash(
-            format!("status-{at}"),
-            at,
+        Ok(SnapshotEntry::with_prelude_hash(
+            snapshot,
+            snapshot_time,
             CorpusId::from(DEFAULT_CORPUS),
             self.prelude_hash.clone(),
             facts,
-        )
+        ))
     }
 
     fn run_query(

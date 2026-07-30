@@ -56,14 +56,9 @@ pub use driver::{
 };
 pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
-    HandleFact, MetaFact, SnapshotFact, SpanFact,
+    HandleFact, MetaFact, SpanFact,
 };
 pub use hash::fnv1a_64;
-pub use history::{
-    HistoryError, HistoryWarning, SnapshotAppendOutcome, SnapshotEntry, SnapshotEntryFact,
-    SnapshotHistory, append_snapshot_entry, append_snapshot_entry_capped, read_snapshot_history,
-    repo_history_path,
-};
 pub use ids::{
     CorpusId, Generation, HandleId, HandleIdError, NativeId, OriginUri, Revision, SourceName,
 };
