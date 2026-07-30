@@ -21,11 +21,12 @@ pub(in crate::runtime::introspection) fn stored_relation_extra_lines(name: &str)
             "Adapters leave assertion_* null when assertion-time evidence is not verified.".to_string(),
         ],
         "meta" => vec![
-            "Open metadata extension on handles. Three kinds of keys:".to_string(),
+            "Open metadata extension on handles. role is derived, authored_modeled, or authored_unmodeled; adapters assign it at emission from source authorship and effective configuration.".to_string(),
+            "Three ownership families of keys:".to_string(),
             "STANDARD (defined by anneal, same meaning on any corpus): external_class, target_path, target_start_line, target_end_line, target_exists, target_history_status, target_probe_base, target_resolved_path.".to_string(),
             "SOURCE (produced by a specific source adapter, prefix tells you which): md.resolved_file, md.parent_dir.".to_string(),
-            "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields.".to_string(),
-            r"Discover frontmatter keys with `? *meta{handle: h, key: k}.` on your corpus.".to_string(),
+            "FRONTMATTER (passed through from YAML, corpus-defined): status, date, author, depends-on, tags, and project-specific fields. Modeled fields retain their authored row while also feeding a typed projection.".to_string(),
+            r#"Discover open authored frontmatter with `? *meta{handle: h, key: key, role: "authored_unmodeled"}.`."#.to_string(),
         ],
         "snapshot" => vec![
             "Automatic status snapshots power `at(\"snapshot:last\")` queries; agents do not manage a snapshot command.".to_string(),

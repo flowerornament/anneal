@@ -14,8 +14,8 @@ use std::process::Command;
 
 use anneal_core::{
     ConcernFact, ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode,
-    FactIdentity, HandleFact, HandleId, MetaFact, NativeId, OriginUri, Pattern, Revision, Source,
-    SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact,
+    FactIdentity, HandleFact, HandleId, MetaFact, MetaRole, NativeId, OriginUri, Pattern, Revision,
+    Source, SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact,
     default_lexical_search_info, normalize_path_inside_root, normalize_relative_path,
 };
 use beam_file::RawBeamFile;

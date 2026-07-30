@@ -125,8 +125,8 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         let Some(key_str) = key.as_str() else {
             continue;
         };
-        // Skip special fields
-        if matches!(key_str, "status" | "updated" | "date" | "purpose" | "note") {
+        // Special fields are projected directly rather than as graph edges.
+        if is_special_frontmatter_key(key_str) {
             continue;
         }
 
@@ -173,6 +173,14 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         all_keys,
         frontmatter_date,
     }
+}
+
+pub(crate) fn is_modeled_frontmatter_key(config: &FrontmatterConfig, key: &str) -> bool {
+    is_special_frontmatter_key(key) || config.fields.contains_key(key)
+}
+
+fn is_special_frontmatter_key(key: &str) -> bool {
+    matches!(key, "status" | "updated" | "date" | "purpose" | "note")
 }
 
 fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {

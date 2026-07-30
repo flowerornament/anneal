@@ -424,7 +424,8 @@ impl TupleDb {
         let handle = self.string_value(fact.handle.as_str());
         let key = self.string_value(&fact.key);
         let value = self.string_value(&fact.value);
-        self.source_values(&fact.identity, [handle, key, value])
+        let role = self.string_value(fact.role.as_str());
+        self.source_values(&fact.identity, [handle, key, value, role])
     }
 
     fn content_values(&mut self, fact: &ContentFact) -> Vec<PhysicalValue> {

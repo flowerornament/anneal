@@ -632,7 +632,7 @@ mod tests {
 
     use crate::facts::{
         ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity, HandleFact,
-        MetaFact, SnapshotFact, SpanFact,
+        MetaFact, MetaRole, SnapshotFact, SpanFact,
     };
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::NumberValue;
@@ -3099,15 +3099,83 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
             meta(&scope, "team/with-a.md", "md.parent_dir", "team"),
             meta(&scope, "team/with-b.md", "md.parent_dir", "team"),
             meta(&scope, "team/missing.md", "md.parent_dir", "team"),
-            meta(&scope, "team/with-a.md", "references", "first.md"),
-            meta(&scope, "team/with-a.md", "references", "second.md"),
-            meta(&scope, "team/with-b.md", "references", "first.md"),
-            meta(&scope, "team/with-a.md", "builds_on", "base.md"),
-            meta(&scope, "team/with-a.md", "replaced_by", "new.md"),
-            meta(&scope, "team/with-a.md", "replaces", "old.md"),
-            meta(&scope, "team/with-a.md", "sources", "source.md"),
-            meta(&scope, "team/with-a.md", "authors", "person"),
-            meta(&scope, "src/old.rs", "related", "design.md"),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "references",
+                "first.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "references",
+                "second.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-b.md",
+                "references",
+                "first.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "builds_on",
+                "base.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "replaced_by",
+                "new.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "replaces",
+                "old.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "sources",
+                "source.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "team/with-a.md",
+                "authors",
+                "person",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "src/old.rs",
+                "related",
+                "design.md",
+                MetaRole::AuthoredUnmodeled,
+            ),
+            meta_with_role(
+                &scope,
+                "scratch/with.md",
+                "references",
+                "generated.md",
+                MetaRole::Derived,
+            ),
+            meta_with_role(
+                &scope,
+                "scratch/with.md",
+                "builds_on",
+                "configured.md",
+                MetaRole::AuthoredModeled,
+            ),
             meta(&scope, "scratch/with.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-a.md", "md.parent_dir", "scratch"),
             meta(&scope, "scratch/missing-b.md", "md.parent_dir", "scratch"),
@@ -3193,11 +3261,22 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     }
 
     fn meta(scope: &FixtureScope<'_>, handle: &str, key: &str, value: &str) -> MetaFact {
+        meta_with_role(scope, handle, key, value, MetaRole::Derived)
+    }
+
+    fn meta_with_role(
+        scope: &FixtureScope<'_>,
+        handle: &str,
+        key: &str,
+        value: &str,
+        role: MetaRole,
+    ) -> MetaFact {
         MetaFact {
             identity: identity(scope, &format!("{handle}:{key}:{value}")),
             handle: handle_id(handle),
             key: key.to_string(),
             value: value.to_string(),
+            role,
         }
     }
 

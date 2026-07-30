@@ -616,9 +616,10 @@ Adapters emit stored relations. Rules and queries consume them.
 - `*handle`: handle id, kind, status, namespace, file, line, area, summary,
   identity, revision, generation
 - `*edge`: typed handle relationship
-- `*meta`: frontmatter and extracted metadata, including `external_class`,
-  `target_path`, `target_start_line`, `target_end_line`, `target_exists`, and
-  `target_history_status` for code external handles
+- `*meta`: frontmatter and extracted metadata, with `role` distinguishing
+  derived rows from modeled or unmodeled authored vocabulary; standard keys
+  include `external_class`, `target_path`, `target_start_line`,
+  `target_end_line`, `target_exists`, and `target_history_status`
 - `*content`: bounded text chunks
 - `*span`: addressable content spans
 - `*concern`: concern-group membership

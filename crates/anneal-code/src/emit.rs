@@ -10,9 +10,9 @@ use rustdoc_types::{ItemKind, Visibility};
 
 use super::{
     BTreeMap, Command, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, FactBatch,
-    FactIdentity, HandleFact, HandleId, MetaFact, NativeId, OriginUri, Revision, SOURCE_NAME,
-    Utf8Path, Utf8PathBuf, meta_key, normalize_path_inside_root, normalize_relative_path,
-    relation_value,
+    FactIdentity, HandleFact, HandleId, MetaFact, MetaRole, NativeId, OriginUri, Revision,
+    SOURCE_NAME, Utf8Path, Utf8PathBuf, meta_key, normalize_path_inside_root,
+    normalize_relative_path, relation_value,
 };
 
 #[derive(Clone, Debug)]
@@ -128,6 +128,7 @@ pub(super) fn push_meta_fact(
         handle: handle_id(handle),
         key: key.to_string(),
         value: value.to_string(),
+        role: MetaRole::Derived,
     });
 }
 

@@ -56,7 +56,7 @@ pub use driver::{
 };
 pub use facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
-    HandleFact, MetaFact, SpanFact,
+    HandleFact, MetaFact, MetaRole, SpanFact,
 };
 pub use hash::fnv1a_64;
 pub use ids::{

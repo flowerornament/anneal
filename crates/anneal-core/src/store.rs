@@ -481,6 +481,7 @@ fn compare_meta_facts(left: &MetaFact, right: &MetaFact) -> Ordering {
         .cmp(&right.handle)
         .then_with(|| left.key.cmp(&right.key))
         .then_with(|| left.value.cmp(&right.value))
+        .then_with(|| left.role.cmp(&right.role))
         .then_with(|| compare_identity(&left.identity, &right.identity))
 }
 
@@ -525,7 +526,7 @@ mod tests {
     use super::*;
     use crate::facts::{
         ConcernFact, ConfigFact, ContentFact, EdgeFact, FactBatch, FactBatchMode, FactIdentity,
-        HandleFact, MetaFact, SpanFact,
+        HandleFact, MetaFact, MetaRole, SpanFact,
     };
     use crate::history::{SnapshotEntry, SnapshotEntryFact};
     use crate::ids::{CorpusId, Generation, HandleId, NativeId, OriginUri, Revision, SourceName};
@@ -607,6 +608,7 @@ mod tests {
             handle: handle_id(native_id),
             key: key.to_string(),
             value: value.to_string(),
+            role: MetaRole::Derived,
         }
     }
 
@@ -826,6 +828,7 @@ mod tests {
             handle: handle_id("original"),
             key: "status".to_string(),
             value: "draft".to_string(),
+            role: MetaRole::AuthoredModeled,
         });
         md.set_visibility(NativeId::from("original.md"), FactVisibility::Private);
         store.merge(md).expect("seed markdown source");

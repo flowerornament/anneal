@@ -4,7 +4,7 @@ use std::fs;
 use anneal_core::runtime::{ExplainOptions, NumberValue};
 use anneal_core::{
     CorpusId, EdgeFact, FactBatch, FactBatchMode, FactIdentity, FactStore, Generation, HandleFact,
-    MetaFact, NativeId, OriginUri, Revision, SourceName,
+    MetaFact, MetaRole, NativeId, OriginUri, Revision, SourceName,
 };
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
@@ -80,6 +80,7 @@ fn test_meta(handle: &str, key: &str, value: &str) -> MetaFact {
         handle: handle_id(handle),
         key: key.to_string(),
         value: value.to_string(),
+        role: MetaRole::Derived,
     }
 }
 

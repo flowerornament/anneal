@@ -76,6 +76,29 @@ pub struct MetaFact {
     pub handle: HandleId,
     pub key: String,
     pub value: String,
+    pub role: MetaRole,
+}
+
+/// How a metadata row relates to the source's authored vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaRole {
+    /// Adapter- or runtime-derived metadata that was not authored under this key.
+    Derived,
+    /// A literal authored key/value pair consumed by a typed projection.
+    AuthoredModeled,
+    /// A literal authored key/value pair retained only as open metadata.
+    AuthoredUnmodeled,
+}
+
+impl MetaRole {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Derived => "derived",
+            Self::AuthoredModeled => "authored_modeled",
+            Self::AuthoredUnmodeled => "authored_unmodeled",
+        }
+    }
 }
 
 /// Stored `*content` row.
@@ -206,8 +229,9 @@ pub(crate) const STORED_RELATION_DESCRIPTORS: &[StoredRelationDescriptor] = &[
             "handle",
             "key",
             "value",
+            "role",
         ],
-        doc: "Stored key/value metadata attached to handles.",
+        doc: "Stored key/value metadata attached to handles, classified by its relationship to authored source vocabulary.",
         provenance: "source",
         example: r"? *meta{handle: h, key: key, value: value}.",
     },

@@ -443,7 +443,7 @@ configured_frontmatter_alias("obsoletes") :=
 
 frontmatter_unmapped_alias_use(key, h) :=
   frontmatter_mapping_alias(key, suggested_field, edge_kind, direction),
-  *meta{handle: h, key: key, value: value},
+  *meta{handle: h, key: key, value: value, role: "authored_unmodeled"},
   *meta{handle: h, key: "md.parent_dir", value: parent_dir},
   not configured_frontmatter_alias(key).
 

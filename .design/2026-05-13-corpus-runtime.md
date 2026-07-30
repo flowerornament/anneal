@@ -529,7 +529,11 @@ populates and every rule may join on.
   corpus, source, native_id, origin_uri, revision, generation
 }
 
-*meta{handle, key, value, corpus, source, generation}
+*meta{
+  handle, key, value,
+  role,         // derived | authored_modeled | authored_unmodeled
+  corpus, source, generation
+}
 
 *content{
   handle, span_id, lines, text, tokens, corpus, source, generation
@@ -551,7 +555,7 @@ populates and every rule may join on.
 |---|---|
 | `*handle` | Identity: every thing the corpus knows about |
 | `*edge` | Typed binary relationships, plus optional assertion-time evidence for the citing line |
-| `*meta` | Open key/value extension on handles |
+| `*meta` | Open key/value extension on handles, with an emitted role distinguishing derived metadata from modeled or unmodeled authored vocabulary |
 | `*content` | Bounded text spans of a handle; the read-substrate |
 | `*span` | Citable region with line range and engine-generated summary |
 | `*concern` | Cross-cutting groupings: any handle can belong to any concern |
@@ -559,6 +563,19 @@ populates and every rule may join on.
 | `*snapshot` | Historical handle state from snapshot history |
 | `*trail` | Session paths (§13) |
 | `*generation` | Per-source generation tracker (§7); supports retraction |
+
+`*meta.role` is an emitted sum, not a key-name heuristic.
+`authored_modeled` means the exact key/value pair appeared in source and the
+adapter consumed that key into a typed projection; `authored_unmodeled` means
+the pair appeared in source but remains only open metadata; `derived` means
+the adapter or runtime emitted a key that was not literally authored under
+that name. Adapters are the authorship oracle and classify the row at emission,
+when both source text and effective configuration are known; the substrate
+preserves that declaration but cannot reconstruct authorship independently.
+Prefixes remain an ownership
+convention: adapter-specific diagnostic evidence uses `md.*`, `code.*`, or a
+host prefix under CR-D31, while source-neutral standard metadata such as
+`target_path` remains unprefixed.
 
 For `*edge`, `revision` remains the source fact identity revision: it
 answers "which adapter source revision emitted this edge row?"

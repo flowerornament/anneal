@@ -3946,6 +3946,7 @@ fn meta_row(fact: &MetaFact) -> NamedRow {
             ("handle", Value::String(fact.handle.to_string())),
             ("key", Value::String(fact.key.clone())),
             ("value", Value::String(fact.value.clone())),
+            ("role", Value::String(fact.role.as_str().to_string())),
         ],
     )
 }
@@ -4083,7 +4084,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use tempfile::{TempDir, tempdir};
 
-    use crate::facts::{FactBatch, FactBatchMode, FactIdentity, SnapshotFact};
+    use crate::facts::{FactBatch, FactBatchMode, FactIdentity, MetaRole, SnapshotFact};
     use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
     use crate::ir::plan::plan;
     use crate::ranking::{SearchHit, default_lexical_search_info};
@@ -4170,6 +4171,7 @@ mod tests {
             handle: handle_id(handle),
             key: key.to_string(),
             value: value.to_string(),
+            role: MetaRole::Derived,
         }
     }
 

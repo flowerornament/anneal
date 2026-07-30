@@ -12,7 +12,7 @@ use anneal_core::{
 use anneal_core::{
     CodeDriftRefreshProgressSink, CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact,
     EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation, HandleFact, HandleId, MetaFact,
-    NativeId, OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact,
+    MetaRole, NativeId, OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact,
     runtime_config_declaration_by_key,
 };
 use anyhow::{Context, Result};
@@ -261,7 +261,13 @@ fn extract_markdown_facts_from_anneal_config(
 
     for extraction in &result.files.extractions {
         emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
-        emit_frontmatter_meta(&mut batch, &mut revisions, &result, &extraction.file);
+        emit_frontmatter_meta(
+            &mut batch,
+            &mut revisions,
+            config,
+            &result,
+            &extraction.file,
+        );
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
     emit_code_ref_meta(
@@ -1268,6 +1274,7 @@ fn emit_resolved_file_meta(
         handle: handle_id(&handle.id),
         key: "md.resolved_file".to_string(),
         value: file,
+        role: MetaRole::Derived,
     });
 }
 
@@ -1729,12 +1736,14 @@ fn emit_file_parent_meta(batch: &mut FactBatch, revisions: &mut RevisionCache<'_
         handle: handle_id(file),
         key: "md.parent_dir".to_string(),
         value: parent,
+        role: MetaRole::Derived,
     });
 }
 
 fn emit_frontmatter_meta(
     batch: &mut FactBatch,
     revisions: &mut RevisionCache<'_>,
+    config: &config::AnnealConfig,
     result: &parse::BuildResult,
     file: &str,
 ) {
@@ -1748,7 +1757,16 @@ fn emit_frontmatter_meta(
             handle: handle_id(file),
             key: key.clone(),
             value: value.clone(),
+            role: frontmatter_meta_role(&config.frontmatter, key),
         });
+    }
+}
+
+fn frontmatter_meta_role(config: &config::FrontmatterConfig, key: &str) -> MetaRole {
+    if parse::is_modeled_frontmatter_key(config, key) {
+        MetaRole::AuthoredModeled
+    } else {
+        MetaRole::AuthoredUnmodeled
     }
 }
 
@@ -1770,6 +1788,7 @@ fn emit_implausible_ref_meta(
             handle: handle_id(&reference.file),
             key: "md.implausible_ref".to_string(),
             value: serde_json::to_string(&value)?,
+            role: MetaRole::Derived,
         });
     }
     Ok(())
@@ -1806,12 +1825,14 @@ fn emit_code_ref_meta(
             handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::EXTERNAL_CLASS.to_string(),
             value: CodeTargetMeta::CLASS_CODE.to_string(),
+            role: MetaRole::Derived,
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
+            role: MetaRole::Derived,
         });
         let probe = if options.probe_code_target_history {
             probe_cache.probe(root, &reference.path)
@@ -1823,12 +1844,14 @@ fn emit_code_ref_meta(
             handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_EXISTS.to_string(),
             value: probe.exists.as_str().to_string(),
+            role: MetaRole::Derived,
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
             handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_HISTORY_STATUS.to_string(),
             value: probe.history_status.as_str().to_string(),
+            role: MetaRole::Derived,
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
@@ -1836,6 +1859,7 @@ fn emit_code_ref_meta(
                 handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_PROBE_BASE.to_string(),
                 value: base.to_string(),
+                role: MetaRole::Derived,
             });
         }
         if let Some(path) = probe.resolved_path {
@@ -1844,6 +1868,7 @@ fn emit_code_ref_meta(
                 handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_RESOLVED_PATH.to_string(),
                 value: path.to_string(),
+                role: MetaRole::Derived,
             });
         }
         if let Some(start_line) = reference.start_line {
@@ -1852,6 +1877,7 @@ fn emit_code_ref_meta(
                 handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_START_LINE.to_string(),
                 value: start_line.to_string(),
+                role: MetaRole::Derived,
             });
         }
         if let Some(end_line) = reference.end_line {
@@ -1860,6 +1886,7 @@ fn emit_code_ref_meta(
                 handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_END_LINE.to_string(),
                 value: end_line.to_string(),
+                role: MetaRole::Derived,
             });
         }
         let assertion = assertions.assertion_for(&reference.file, reference.source_line);
@@ -1896,18 +1923,21 @@ fn emit_code_drift_evidence_meta(
         handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_DISPOSITION.to_string(),
         value: evidence.disposition.clone(),
+        role: MetaRole::Derived,
     });
     batch.meta.push(MetaFact {
         identity: identity.clone(),
         handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_EVIDENCE_HEAD.to_string(),
         value: evidence.evidence_head.clone(),
+        role: MetaRole::Derived,
     });
     batch.meta.push(MetaFact {
         identity: identity.clone(),
         handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_ASSERTION_PREMISE.to_string(),
         value: evidence.assertion_premise.clone(),
+        role: MetaRole::Derived,
     });
     if let Some(commits) = evidence.commits_since_assertion {
         batch.meta.push(MetaFact {
@@ -1915,6 +1945,7 @@ fn emit_code_drift_evidence_meta(
             handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_COMMITS_SINCE.to_string(),
             value: commits.to_string(),
+            role: MetaRole::Derived,
         });
     }
     if let Some(moved_to) = &evidence.moved_to {
@@ -1923,6 +1954,7 @@ fn emit_code_drift_evidence_meta(
             handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_MOVED_TO.to_string(),
             value: moved_to.clone(),
+            role: MetaRole::Derived,
         });
     }
     batch.meta.push(MetaFact {
@@ -1930,6 +1962,7 @@ fn emit_code_drift_evidence_meta(
         handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE_COUNT.to_string(),
         value: evidence.move_candidates.len().to_string(),
+        role: MetaRole::Derived,
     });
     for candidate in &evidence.move_candidates {
         batch.meta.push(MetaFact {
@@ -1937,6 +1970,7 @@ fn emit_code_drift_evidence_meta(
             handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE.to_string(),
             value: candidate.clone(),
+            role: MetaRole::Derived,
         });
     }
 }
@@ -2217,7 +2251,7 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
-    use anneal_core::{CodeTargetMeta, CorpusId, FactBatch, Generation, SourceName};
+    use anneal_core::{CodeTargetMeta, CorpusId, FactBatch, Generation, MetaRole, SourceName};
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
@@ -2234,6 +2268,74 @@ mod tests {
         assert_eq!(area_for("compiler/design.md"), "compiler");
         assert_eq!(area_for("compiler/sub/design.md"), "compiler");
         assert_eq!(area_for(""), "");
+    }
+
+    #[test]
+    fn frontmatter_roles_distinguish_modeled_unmodeled_and_derived_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let root = repo.join(".design");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::write(
+            root.join("anneal.dl"),
+            "config frontmatter {\n  field(\"references\", \"Cites\", \"forward\").\n}\n",
+        )
+        .expect("write config");
+        std::fs::write(
+            root.join("spec.md"),
+            "---\nstatus: draft\nupdated: 2026-07-30\npurpose: Test metadata roles\nreferences: other.md\ntarget_path: authored/value.rs\nauthors:\n  - Ada\n  - Grace\n---\n# Spec\n",
+        )
+        .expect("write spec");
+        std::fs::write(root.join("other.md"), "# Other\n").expect("write target");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add role fixture"]);
+
+        let batch = extract_markdown_facts(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            Generation::initial(),
+        )
+        .expect("extract markdown");
+        let role = |handle: &str, key: &str| {
+            batch
+                .meta
+                .iter()
+                .find(|fact| fact.handle.as_str() == handle && fact.key == key)
+                .map(|fact| fact.role)
+        };
+
+        for key in ["status", "updated", "purpose", "references"] {
+            assert_eq!(
+                role("spec.md", key),
+                Some(MetaRole::AuthoredModeled),
+                "{key} should be consumed by a typed projection"
+            );
+        }
+        for key in ["target_path", "authors"] {
+            assert_eq!(
+                role("spec.md", key),
+                Some(MetaRole::AuthoredUnmodeled),
+                "{key} should remain open authored metadata"
+            );
+        }
+        for key in ["md.parent_dir", "md.resolved_file"] {
+            assert_eq!(
+                role("spec.md", key),
+                Some(MetaRole::Derived),
+                "{key} should be adapter-derived"
+            );
+        }
+        assert_eq!(
+            batch
+                .meta
+                .iter()
+                .filter(|fact| fact.handle.as_str() == "spec.md" && fact.key == "authors")
+                .count(),
+            2,
+            "frontmatter list values retain one role per emitted scalar"
+        );
     }
 
     #[test]
