@@ -69,7 +69,9 @@ use crate::vm::execute::{DeltaMap, DerivedRelation, DerivedTuple};
 use crate::vm::provenance::DerivationKind;
 use crate::vm::provenance::{DerivationNode, DerivationRef, derivation_ref};
 use crate::vm::store::{LogicalRowInsert, RelationStore, TupleDb, TupleRow};
-use crate::vm::value::{ListArena, NumberValue, PhysicalValue};
+use crate::vm::value::{
+    ListArena, NumberValue, NumericBinaryError, PhysicalValue, eval_numeric_binary,
+};
 use crate::vm::view::{
     SnapshotCandidate, SnapshotReference, SnapshotSelection, TupleOverlay,
     handle_snapshot_patch_field, latest_snapshot_candidate, nearest_snapshot_candidate,
@@ -3526,6 +3528,14 @@ impl From<PlanError> for EvalError {
     }
 }
 
+impl From<NumericBinaryError> for EvalError {
+    fn from(error: NumericBinaryError) -> Self {
+        match error {
+            NumericBinaryError::DivisionByZero => Self::DivisionByZero,
+        }
+    }
+}
+
 impl From<AuthorizationError> for EvalError {
     fn from(error: AuthorizationError) -> Self {
         match error {
@@ -3683,27 +3693,9 @@ fn eval_fact_binary(
     let (Value::Number(left), Value::Number(right)) = (left, right) else {
         return Err(EvalError::UnsupportedExpression);
     };
-    let (NumberValue::Int(left), NumberValue::Int(right)) = (left, right) else {
-        return Err(EvalError::UnsupportedExpression);
-    };
-    let value = match op {
-        crate::runtime::ast::ArithmeticOp::Add => left + right,
-        crate::runtime::ast::ArithmeticOp::Sub => left - right,
-        crate::runtime::ast::ArithmeticOp::Mul => left * right,
-        crate::runtime::ast::ArithmeticOp::Div => {
-            if right == 0 {
-                return Err(EvalError::DivisionByZero);
-            }
-            left / right
-        }
-        crate::runtime::ast::ArithmeticOp::Rem => {
-            if right == 0 {
-                return Err(EvalError::DivisionByZero);
-            }
-            left % right
-        }
-    };
-    Ok(Value::Number(NumberValue::Int(value)))
+    eval_numeric_binary(left, op, right)
+        .map(Value::Number)
+        .map_err(EvalError::from)
 }
 
 pub(crate) fn value_from_literal(literal: &Literal) -> Value {
@@ -5270,6 +5262,14 @@ mod tests {
                 .children()
                 .iter()
                 .any(|child| derivation_contains(child, kind))
+    }
+
+    fn derivation_contains_label(node: &DerivationNode, label: &str) -> bool {
+        node.label() == label
+            || node
+                .children()
+                .iter()
+                .any(|child| derivation_contains_label(child, label))
     }
 
     fn derivation_rule_depth(node: &DerivationNode) -> usize {
@@ -9457,6 +9457,100 @@ release_blocker(code) := issue(code, "error").
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(handles, vec![s("b"), s("a"), s("c")]);
+    }
+
+    #[test]
+    fn scalar_equality_binds_computed_values_independent_of_source_order() {
+        let input = r#"
+            base("a", 2).
+            computed(h, n, doubled, mixed, negative) :=
+              mixed = doubled + 0.5,
+              negative = -5,
+              doubled = n * 2,
+              n = raw + 1,
+              base(h, raw),
+              n = 3.
+            ? computed(h, n, doubled, mixed, negative).
+        "#;
+        assert_predicate_is_authoritative_planned(input, "computed");
+        let output = evaluate_query_output_with_options(
+            input,
+            Database::default(),
+            EvalOptions::default().with_explain_all(),
+        );
+
+        assert_eq!(
+            output.rows[0].fields,
+            row([
+                ("doubled", n(6)),
+                ("h", s("a")),
+                ("mixed", f(6.5)),
+                ("n", n(3)),
+                ("negative", n(-5)),
+            ])
+        );
+        let derivation = output.rows[0]
+            .derivation
+            .as_ref()
+            .expect("computed row has derivation");
+        assert!(derivation_contains(derivation, DerivationKind::Comparison));
+        assert!(derivation_contains_label(
+            derivation,
+            "scalar equality bound a value"
+        ));
+    }
+
+    #[test]
+    fn scalar_equality_binds_both_sides_in_direct_queries() {
+        let outputs = evaluate_queries(
+            r"
+            value(1 + 0.5).
+            ? n = 1 + 1 order by n desc.
+            ? -5 = n.
+            ? value(v).
+            ",
+            Database::default(),
+        );
+
+        assert_query_rows(&outputs[0], vec![row([("n", n(2))])]);
+        assert_query_rows(&outputs[1], vec![row([("n", n(-5))])]);
+        assert_query_rows(&outputs[2], vec![row([("v", f(1.5))])]);
+    }
+
+    #[test]
+    fn computed_values_and_direct_values_are_both_valid_top_k_inputs() {
+        let input = r#"
+            score("a", 3).
+            score("b", 5).
+            direct(h, rank) :=
+              (h, rank) = TopK{ k: 1, key: raw : (h, raw) : score(h, raw) }.
+            computed(h, rank) :=
+              (h, rank) = TopK{ k: 1, key: weighted :
+                (h, weighted) : score(h, raw), weighted = raw * 2
+              }.
+            ? direct(h, rank).
+            ? computed(h, rank).
+        "#;
+        assert_predicate_is_authoritative_planned(input, "direct");
+        assert_predicate_is_authoritative_planned(input, "computed");
+        let outputs = evaluate_queries(input, Database::default());
+        assert_query_rows(&outputs[0], vec![row([("h", s("b")), ("rank", n(5))])]);
+        assert_query_rows(&outputs[1], vec![row([("h", s("b")), ("rank", n(10))])]);
+    }
+
+    #[test]
+    fn scalar_equality_inside_an_aggregate_can_use_outer_bindings() {
+        let input = r#"
+            base(1).
+            item("a").
+            result(x, y) :=
+              base(x),
+              y = Max{ z : item(v), z = x + 1 }.
+            ? result(x, y).
+        "#;
+        assert_predicate_is_authoritative_planned(input, "result");
+        let outputs = evaluate_queries(input, Database::default());
+        assert_query_rows(&outputs[0], vec![row([("x", n(1)), ("y", n(2))])]);
     }
 
     #[test]

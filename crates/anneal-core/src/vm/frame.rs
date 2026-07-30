@@ -32,6 +32,12 @@ impl PlannedFrame {
         self
     }
 
+    pub(crate) fn record_step(&mut self, trace: bool, step: impl FnOnce() -> DerivationRef) {
+        if trace {
+            self.steps.push(step());
+        }
+    }
+
     pub(crate) fn get(&self, slot: SlotId) -> Option<PhysicalValue> {
         self.slots.get(slot.index()).and_then(|value| *value)
     }

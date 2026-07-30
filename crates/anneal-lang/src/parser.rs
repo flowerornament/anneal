@@ -642,7 +642,33 @@ impl Parser {
             }
             TokenKind::Number(raw) => {
                 self.bump();
-                Ok(Expr::Literal(Literal::Number(parse_number(&raw))))
+                let number = parse_number(&raw, false).ok_or_else(|| {
+                    ParseError::new(
+                        &self.source,
+                        self.previous(),
+                        "numeric literal is out of range",
+                    )
+                })?;
+                Ok(Expr::Literal(Literal::Number(number)))
+            }
+            TokenKind::Minus | TokenKind::Plus
+                if matches!(self.peek_n(1).kind, TokenKind::Number(_)) =>
+            {
+                let negative = self.eat(&TokenKind::Minus);
+                if !negative {
+                    self.expect(&TokenKind::Plus)?;
+                }
+                let TokenKind::Number(raw) = self.bump().kind.clone() else {
+                    unreachable!("signed literal lookahead requires a number");
+                };
+                let number = parse_number(&raw, negative).ok_or_else(|| {
+                    ParseError::new(
+                        &self.source,
+                        self.previous(),
+                        "numeric literal is out of range",
+                    )
+                })?;
+                Ok(Expr::Literal(Literal::Number(number)))
             }
             TokenKind::LBracket => {
                 self.bump();
@@ -932,11 +958,21 @@ impl Parser {
     }
 }
 
-fn parse_number(raw: &str) -> NumberLiteral {
+fn parse_number(raw: &str, negative: bool) -> Option<NumberLiteral> {
     if raw.contains('.') {
-        NumberLiteral::Float(raw.parse().expect("lexer produced numeric literal"))
+        let value = raw.parse::<f64>().ok()?;
+        return Some(NumberLiteral::Float(if negative { -value } else { value }));
+    }
+    if !negative {
+        return raw.parse().ok().map(NumberLiteral::Int);
+    }
+    let magnitude = raw.parse::<u64>().ok()?;
+    if magnitude == i64::MAX as u64 + 1 {
+        Some(NumberLiteral::Int(i64::MIN))
     } else {
-        NumberLiteral::Int(raw.parse().expect("lexer produced numeric literal"))
+        i64::try_from(magnitude)
+            .ok()
+            .map(|value| NumberLiteral::Int(-value))
     }
 }
 
@@ -1316,6 +1352,91 @@ mod tests {
         assert!(matches!(query.body.atoms[0], Atom::Stored(_)));
         assert!(matches!(query.body.atoms[1], Atom::Negation(_)));
         assert!(matches!(query.body.atoms[2], Atom::Comparison(_)));
+    }
+
+    #[test]
+    fn signed_numeric_literals_do_not_change_binary_minus_adjacency() {
+        let program = parse_program(
+            "inline",
+            r"
+            ? value(x),
+              a = -5,
+              b = +2.5,
+              c = x-5,
+              d = x - 5,
+              e = x -5,
+              f = (-5),
+              g = 1 - -5.
+            ",
+        )
+        .expect("signed literals and adjacent subtraction parse");
+        let query = program.queries().next().expect("query");
+        let comparisons = query
+            .body
+            .atoms
+            .iter()
+            .filter_map(|atom| match atom {
+                Atom::Comparison(comparison) => Some(comparison),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            comparisons[0].right,
+            Expr::Literal(Literal::Number(NumberLiteral::Int(-5)))
+        ));
+        assert!(matches!(
+            comparisons[1].right,
+            Expr::Literal(Literal::Number(NumberLiteral::Float(value)))
+                if value.to_bits() == 2.5_f64.to_bits()
+        ));
+        for comparison in &comparisons[2..5] {
+            assert!(matches!(
+                comparison.right,
+                Expr::Binary {
+                    op: ArithmeticOp::Sub,
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            comparisons[5].right,
+            Expr::Literal(Literal::Number(NumberLiteral::Int(-5)))
+        ));
+        assert!(matches!(
+            &comparisons[6].right,
+            Expr::Binary {
+                op: ArithmeticOp::Sub,
+                right,
+                ..
+            } if matches!(
+                right.as_ref(),
+                Expr::Literal(Literal::Number(NumberLiteral::Int(-5)))
+            )
+        ));
+    }
+
+    #[test]
+    fn signed_integer_literals_cover_the_full_i64_domain() {
+        let program =
+            parse_program("inline", "? n = -9223372036854775808.").expect("i64 minimum parses");
+        let query = program.queries().next().expect("query");
+        let Atom::Comparison(comparison) = &query.body.atoms[0] else {
+            panic!("expected comparison");
+        };
+        assert!(matches!(
+            comparison.right,
+            Expr::Literal(Literal::Number(NumberLiteral::Int(i64::MIN)))
+        ));
+
+        for input in ["? n = 9223372036854775808.", "? n = -9223372036854775809."] {
+            let error = parse_program("inline", input).expect_err("out-of-range integer rejects");
+            assert!(
+                error
+                    .to_string()
+                    .contains("numeric literal is out of range")
+            );
+        }
     }
 
     #[test]

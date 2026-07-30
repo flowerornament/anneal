@@ -190,6 +190,14 @@ impl DerivationNode {
         )
     }
 
+    pub(crate) fn planned_equality_binding(provenance: &CompareProvenance) -> Self {
+        Self::located(
+            DerivationKind::Comparison,
+            "scalar equality bound a value",
+            provenance.location.clone(),
+        )
+    }
+
     pub(crate) fn planned_aggregate(provenance: &AggregateProvenance, children: Vec<Self>) -> Self {
         Self::aggregate_from_parts(provenance.function, provenance.location.clone(), children)
     }

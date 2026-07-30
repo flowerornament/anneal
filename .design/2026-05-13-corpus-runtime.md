@@ -1418,6 +1418,22 @@ Operators:
 | `starts_with` `ends_with` | string prefix / suffix |
 | `+` `-` `*` `/` `%` | arithmetic on numbers |
 
+**Definition CR-D107 (Scalar equality binding).** Scalar `=` is
+declarative unification, consistent with aggregate result unification
+(CR-D33). If both operands are ground, it filters by equality. If
+exactly one operand is an unbound bare variable and the other is
+ground, it binds that variable to the computed value. Binding closure
+is computed to a fixed point, so equation order carries no meaning.
+An equation with no groundable side is rejected rather than assigned
+an arbitrary direction. Non-equality comparisons require both operands
+to be ground.
+
+Signed numeric literals are literal syntax, not a general unary
+operator. Integer-only arithmetic preserves integer results; arithmetic
+mixing an integer and float produces a float. Scalar equations that
+feed generated values back into a recursive predicate are rejected
+under CR-D18 rather than admitted to an unbounded fixpoint.
+
 Built-in functions (used in expressions, not as predicates):
 
 ```
@@ -3834,6 +3850,7 @@ config key.
 - CR-D104: Dimensional axis map (§27.4)
 - CR-D105: Verb-surface rung (§35)
 - CR-D106: Zero-result adjacency (§3)
+- CR-D107: Scalar equality binding (§18)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

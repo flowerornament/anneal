@@ -308,6 +308,10 @@ Grammar tour:
   Negation uses `not` after variables are positively bound:
     missing_discharge(h) := obligation(h), not discharged(h).
 
+  Scalar equality binds one bare variable from a grounded expression:
+    anneal -e '? *handle{id: h}, in_degree(h, raw), score = raw * 2.'
+    Equation order does not determine binding order.
+
   Aggregates bind tuples from grouped rows:
     area(area) := area_of(h, area).
     area_count(area, n) :=

@@ -1171,6 +1171,26 @@ mod tests {
     }
 
     #[test]
+    fn scalar_equality_binding_counts_as_a_verb_output_field() {
+        let project = program(
+            "anneal.dl",
+            r#"
+            @verb(
+              name: "computed",
+              query: "? n = 1 + 1.",
+              doc: "Compute one scalar.",
+              output_schema: "{\"n\":\"Number\"}",
+              args: [],
+              capabilities: []
+            ).
+            "#,
+        );
+
+        VerbRegistry::from_layers(&[(VerbLayer::Project, &project)])
+            .expect("equation-bound output matches the verb schema");
+    }
+
+    #[test]
     fn registry_rejects_duplicate_verbs_in_one_layer() {
         let project = program(
             "anneal.dl",

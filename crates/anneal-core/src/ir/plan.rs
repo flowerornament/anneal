@@ -18,7 +18,7 @@ use crate::runtime::ast::{
     Rule, RuleLayer, SourceLocation, StoredAtom, Term, TimeBlock,
 };
 use crate::runtime::primitives::PrimitivePredicate;
-use crate::runtime::schedule::greedy_execution_order;
+use crate::runtime::schedule::{ComparisonAction, greedy_execution_schedule};
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 use super::ids::{FieldId, RelationId, SlotId};
@@ -208,7 +208,7 @@ pub(crate) enum AtomPlan {
         relation: RelationId,
         patterns: Vec<ColumnPatternPlan>,
     },
-    Filter {
+    Comparison {
         comparison: ComparePlan,
     },
     Negation {
@@ -255,10 +255,21 @@ pub(crate) enum TermPlan {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComparePlan {
-    pub(crate) left: ExprPlan,
-    pub(crate) op: ComparisonOp,
-    pub(crate) right: ExprPlan,
+    pub(crate) action: CompareActionPlan,
     pub(crate) provenance: CompareProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CompareActionPlan {
+    Filter {
+        left: ExprPlan,
+        op: ComparisonOp,
+        right: ExprPlan,
+    },
+    Bind {
+        target: SlotId,
+        value: ExprPlan,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -726,7 +737,13 @@ fn plan_query(
         })
         .collect::<Result<Vec<_>, PlanError>>()?;
     let slots = SlotLayout::from_vars(query.query().body.positive_binding_variables());
-    let body = plan_body(&query.query().body, catalog, &slots, Some(query_index))?;
+    let body = plan_body(
+        &query.query().body,
+        catalog,
+        &slots,
+        Some(query_index),
+        &BTreeSet::new(),
+    )?;
     let projection = slots
         .vars()
         .iter()
@@ -801,7 +818,7 @@ fn plan_rule(
         .iter()
         .map(|term| plan_term(term, &slots))
         .collect::<Result<Vec<_>, _>>()?;
-    let body = plan_body(&rule.body, catalog, &slots, query_index)?;
+    let body = plan_body(&rule.body, catalog, &slots, query_index, &BTreeSet::new())?;
     Ok(RuleGroupPlan {
         head: Some(head),
         head_terms,
@@ -1069,10 +1086,12 @@ fn stage_execution(
 }
 
 fn reject_recursive_value_generation(rule: &RuleGroupPlan) -> Result<(), PlanError> {
+    let mut comparison_bound_slots = BTreeSet::new();
+    collect_comparison_bound_slots(&rule.body, &mut comparison_bound_slots);
     let generates_value = rule
         .head_terms
         .iter()
-        .any(planned_head_term_generates_value);
+        .any(|term| planned_head_term_generates_value(term, &comparison_bound_slots));
     if generates_value {
         let provenance = rule
             .provenance
@@ -1086,10 +1105,36 @@ fn reject_recursive_value_generation(rule: &RuleGroupPlan) -> Result<(), PlanErr
     Ok(())
 }
 
-fn planned_head_term_generates_value(term: &TermPlan) -> bool {
+fn planned_head_term_generates_value(
+    term: &TermPlan,
+    comparison_bound_slots: &BTreeSet<SlotId>,
+) -> bool {
     match term {
-        TermPlan::Wildcard | TermPlan::Expr(ExprPlan::Slot(_) | ExprPlan::Literal(_)) => false,
+        TermPlan::Wildcard | TermPlan::Expr(ExprPlan::Literal(_)) => false,
+        TermPlan::Expr(ExprPlan::Slot(slot)) => comparison_bound_slots.contains(slot),
         TermPlan::Expr(ExprPlan::Binary { .. } | ExprPlan::Tuple(_)) => true,
+    }
+}
+
+fn collect_comparison_bound_slots(body: &RuleBodyPlan, out: &mut BTreeSet<SlotId>) {
+    for atom in &body.atoms {
+        match atom {
+            AtomPlan::Comparison {
+                comparison:
+                    ComparePlan {
+                        action: CompareActionPlan::Bind { target, .. },
+                        ..
+                    },
+            } => {
+                out.insert(*target);
+            }
+            AtomPlan::TimeScope { inner, .. } => collect_comparison_bound_slots(inner, out),
+            AtomPlan::Scan { .. }
+            | AtomPlan::Comparison { .. }
+            | AtomPlan::Negation { .. }
+            | AtomPlan::PrimitiveCall { .. }
+            | AtomPlan::Aggregate(_) => {}
+        }
     }
 }
 
@@ -1239,7 +1284,7 @@ fn time_scope_atom_unsupported(
                 predicate: predicate.clone(),
             },
         ),
-        AtomPlan::Filter { .. } => None,
+        AtomPlan::Comparison { .. } => None,
         AtomPlan::Aggregate(aggregate) => {
             return time_scope_unsupported_atom(reference, &aggregate.inner, catalog);
         }
@@ -1304,9 +1349,11 @@ fn collect_atom_unsupported_reasons(
 ) {
     match atom {
         AtomPlan::Scan { .. } | AtomPlan::PrimitiveCall { .. } => {}
-        AtomPlan::Filter { comparison } => {
-            if !planned_comparison_executable(comparison.op) {
-                out.insert(UnsupportedReason::UnsupportedComparison(comparison.op));
+        AtomPlan::Comparison { comparison } => {
+            if let CompareActionPlan::Filter { op, .. } = &comparison.action
+                && !planned_comparison_executable(*op)
+            {
+                out.insert(UnsupportedReason::UnsupportedComparison(*op));
             }
         }
         AtomPlan::Aggregate(aggregate) => {
@@ -1354,21 +1401,34 @@ fn plan_body(
     catalog: &PlanCatalog,
     slots: &SlotLayout,
     query_index: Option<usize>,
+    initial_bound: &BTreeSet<Ident>,
 ) -> Result<RuleBodyPlan, PlanError> {
+    let schedule = greedy_execution_schedule(body, initial_bound);
     let atoms = body
         .atoms
         .iter()
-        .map(|atom| plan_atom(atom, catalog, slots, query_index))
+        .enumerate()
+        .map(|(index, atom)| {
+            plan_atom(
+                atom,
+                schedule.comparison_actions[index],
+                &schedule.bound_before[index],
+                catalog,
+                slots,
+                query_index,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let execution_atoms = greedy_execution_order(body);
     Ok(RuleBodyPlan {
         atoms,
-        execution_atoms,
+        execution_atoms: schedule.atom_indexes,
     })
 }
 
 fn plan_atom(
     atom: &Atom,
+    comparison_action: Option<ComparisonAction>,
+    bound_before: &BTreeSet<Ident>,
     catalog: &PlanCatalog,
     slots: &SlotLayout,
     query_index: Option<usize>,
@@ -1395,10 +1455,18 @@ fn plan_atom(
                 }),
             }
         }
-        Atom::Comparison(comparison) => plan_comparison(comparison, slots),
-        Atom::Aggregation(aggregate) => plan_aggregate(aggregate, catalog, slots, query_index),
+        Atom::Comparison(comparison) => plan_comparison(
+            comparison,
+            comparison_action.ok_or(PlanError::UnsupportedExpression)?,
+            slots,
+        ),
+        Atom::Aggregation(aggregate) => {
+            plan_aggregate(aggregate, catalog, slots, query_index, bound_before)
+        }
         Atom::Negation(negation) => plan_negation(negation, catalog, slots, query_index),
-        Atom::TimeBlock(time_block) => plan_time_scope(time_block, catalog, slots, query_index),
+        Atom::TimeBlock(time_block) => {
+            plan_time_scope(time_block, catalog, slots, query_index, bound_before)
+        }
     }
 }
 
@@ -1510,12 +1578,29 @@ fn plan_call_arg(arg: &CallArg, slots: &SlotLayout) -> Result<TermPlan, PlanErro
     }
 }
 
-fn plan_comparison(comparison: &Comparison, slots: &SlotLayout) -> Result<AtomPlan, PlanError> {
-    Ok(AtomPlan::Filter {
-        comparison: ComparePlan {
+fn plan_comparison(
+    comparison: &Comparison,
+    action: ComparisonAction,
+    slots: &SlotLayout,
+) -> Result<AtomPlan, PlanError> {
+    let action = match action {
+        ComparisonAction::Filter => CompareActionPlan::Filter {
             left: plan_expr(&comparison.left, slots)?,
             op: comparison.op,
             right: plan_expr(&comparison.right, slots)?,
+        },
+        ComparisonAction::BindLeft => CompareActionPlan::Bind {
+            target: plan_binding_target(&comparison.left, slots)?,
+            value: plan_expr(&comparison.right, slots)?,
+        },
+        ComparisonAction::BindRight => CompareActionPlan::Bind {
+            target: plan_binding_target(&comparison.right, slots)?,
+            value: plan_expr(&comparison.left, slots)?,
+        },
+    };
+    Ok(AtomPlan::Comparison {
+        comparison: ComparePlan {
+            action,
             provenance: CompareProvenance {
                 location: comparison.location.clone(),
             },
@@ -1523,11 +1608,19 @@ fn plan_comparison(comparison: &Comparison, slots: &SlotLayout) -> Result<AtomPl
     })
 }
 
+fn plan_binding_target(expr: &Expr, slots: &SlotLayout) -> Result<SlotId, PlanError> {
+    let Expr::Var(variable) = expr else {
+        return Err(PlanError::UnsupportedExpression);
+    };
+    slots.slot(variable)
+}
+
 fn plan_aggregate(
     aggregate: &Aggregate,
     catalog: &PlanCatalog,
     outer_slots: &SlotLayout,
     query_index: Option<usize>,
+    outer_bound: &BTreeSet<Ident>,
 ) -> Result<AtomPlan, PlanError> {
     let mut inner_vars = BTreeSet::new();
     collect_body_vars(&aggregate.body, &mut inner_vars);
@@ -1583,6 +1676,7 @@ fn plan_aggregate(
             catalog,
             &inner_slots,
             query_index,
+            outer_bound,
         )?),
         inner_slots,
         outer_to_inner_slots,
@@ -1716,6 +1810,7 @@ fn plan_time_scope(
     catalog: &PlanCatalog,
     slots: &SlotLayout,
     query_index: Option<usize>,
+    outer_bound: &BTreeSet<Ident>,
 ) -> Result<AtomPlan, PlanError> {
     let mut outer_slots = BTreeSet::new();
     let mut scoped_vars = BTreeSet::new();
@@ -1723,7 +1818,7 @@ fn plan_time_scope(
     for var in scoped_vars {
         outer_slots.insert(slots.slot(&var)?);
     }
-    let inner = plan_body(&time_block.body, catalog, slots, query_index)?;
+    let inner = plan_body(&time_block.body, catalog, slots, query_index, outer_bound)?;
     let unsupported = time_scope_unsupported_atom(&time_block.reference, &inner, catalog);
     Ok(AtomPlan::TimeScope {
         reference: time_block.reference.clone(),
@@ -2346,6 +2441,8 @@ mod tests {
         for source in [
             "p(0). p(x + 1) := p(x).",
             "p(0). p((x,)) := p(x).",
+            "p(0). p(y) := p(x), y = x + 1.",
+            "p(0). p(y) := y = x + 1, p(x).",
             "left(0). right(x + 1) := left(x). left(x) := right(x).",
         ] {
             let error = plan(&analyzed(source)).expect_err("recursive generator must fail");
@@ -2377,6 +2474,40 @@ mod tests {
     fn nonrecursive_rules_allow_computed_heads() {
         plan(&analyzed("base(1). adjusted(x + 1) := base(x)."))
             .expect("single-pass computed head plans");
+    }
+
+    #[test]
+    fn equality_comparisons_plan_as_specialized_bind_or_filter_actions() {
+        let planned = plan(&analyzed(
+            "base(2). result(left, right) := base(n), left = n + 1, n + 2 = right, left < right.",
+        ))
+        .expect("program plans");
+        let result = PredicateRef::parse("result").expect("predicate");
+        let relation = planned
+            .catalog
+            .predicate_relation(&result)
+            .expect("result relation")
+            .id;
+        let rule = planned
+            .global
+            .strata
+            .iter()
+            .flat_map(|stratum| &stratum.rule_groups)
+            .find(|rule| rule.head == Some(relation))
+            .expect("result rule");
+        let actions = rule
+            .body
+            .atoms
+            .iter()
+            .filter_map(|atom| match atom {
+                AtomPlan::Comparison { comparison } => Some(&comparison.action),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(actions[0], CompareActionPlan::Bind { .. }));
+        assert!(matches!(actions[1], CompareActionPlan::Bind { .. }));
+        assert!(matches!(actions[2], CompareActionPlan::Filter { .. }));
     }
 
     #[test]

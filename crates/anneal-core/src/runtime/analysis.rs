@@ -10,6 +10,7 @@ use crate::runtime::ast::{
     Query, Rule, RuleLayer, SourceLocation, Statement, StoredAtom, Term,
 };
 use crate::runtime::primitives::{PrimitivePredicate, PrimitiveSignature, primitive_signatures};
+use crate::runtime::schedule::collect_positive_atom_binding_variables;
 use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 type SignatureMap = BTreeMap<PredicateRef, PredicateSignature>;
@@ -1535,11 +1536,13 @@ fn positive_vars_outside(
     outer_bound: &BTreeSet<Ident>,
 ) -> BTreeSet<Ident> {
     let mut outside_bound = outer_bound.clone();
-    for (other_index, other) in body.atoms.iter().enumerate() {
-        if other_index != excluded_index {
-            collect_positive_atom_vars(other, &mut outside_bound);
-        }
-    }
+    let atoms = body
+        .atoms
+        .iter()
+        .enumerate()
+        .filter(|(other_index, _)| *other_index != excluded_index)
+        .map(|(_, atom)| atom);
+    collect_positive_atom_binding_variables(&atoms, &mut outside_bound);
     outside_bound
 }
 
@@ -1610,10 +1613,8 @@ fn check_aggregate_safety(
     aggregate: &Aggregate,
     outside_bound: &BTreeSet<Ident>,
 ) -> Result<(), StaticError> {
-    let mut body_bound = BTreeSet::new();
-    collect_positive_body_vars(&aggregate.body, &mut body_bound);
     let mut row_bound = outside_bound.clone();
-    row_bound.extend(body_bound);
+    collect_positive_body_vars(&aggregate.body, &mut row_bound);
 
     let rank_var = rank_arg_variable(aggregate);
 
@@ -1809,10 +1810,6 @@ fn negated_vars(negated: &NegatedAtom) -> BTreeSet<Ident> {
     vars
 }
 
-fn collect_positive_atom_vars(atom: &Atom, out: &mut BTreeSet<Ident>) {
-    atom.collect_positive_binding_variables(out);
-}
-
 fn collect_positive_body_vars(body: &Body, out: &mut BTreeSet<Ident>) {
     body.collect_positive_binding_variables(out);
 }
@@ -1924,8 +1921,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unbound_comparison_variable() {
-        let input = r"bad(h) := *handle{id: h}, h = missing.";
+    fn rejects_comparison_when_neither_side_can_be_grounded() {
+        let input = r"bad(h) := *handle{id: h}, missing = other.";
         let err = analyze_err("inline", input);
         let StaticError::UnboundExpressionVariable {
             location: actual, ..
@@ -1933,11 +1930,21 @@ mod tests {
         else {
             panic!("expected unbound expression variable");
         };
-        assert_eq!(actual, &location("inline", input, "h = missing"));
+        assert_eq!(actual, &location("inline", input, "missing = other"));
         assert!(
             err.to_string()
-                .contains(&location("inline", input, "h = missing").to_string())
+                .contains(&location("inline", input, "missing = other").to_string())
         );
+    }
+
+    #[test]
+    fn equality_binding_closure_is_order_independent() {
+        let program = parse_program(
+            "inline",
+            r"computed(h, n, doubled) := doubled = n * 2, n = base + 1, *score{h, base}.",
+        )
+        .expect("program parses");
+        analyze(program).expect("equality binding closure grounds the rule");
     }
 
     #[test]

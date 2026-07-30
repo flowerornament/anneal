@@ -121,6 +121,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Scalar `=` equations bind an unbound variable from a grounded expression,
+  independent of rule-body order, and signed numeric literals work in
+  expressions. Integer arithmetic stays integral while mixed numeric arithmetic
+  produces floats.
+
 ### Fixed
 
 - Recursive rules that construct new values fail during planning instead of

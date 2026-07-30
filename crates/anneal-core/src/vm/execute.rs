@@ -11,10 +11,10 @@ use regex::Regex;
 use crate::ir::ids::{ListId, SymbolId};
 use crate::ir::interner::Interner;
 use crate::ir::plan::{
-    AggregateArgPlanError, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan, ComparePlan,
-    ExprPlan, LiteralPlan, OrderKeyPlan, OutputPlan, PlanCatalog, PlanRelationKind, ProgramPlan,
-    QueryPlan, RuleBodyPlan, RuleGroupPlan, TermPlan, UnsupportedTimeScope,
-    UnsupportedTimeScopeAtom,
+    AggregateArgPlanError, AggregatePlan, AtomPlan, CallArgPlan, ColumnPatternPlan,
+    CompareActionPlan, ComparePlan, ExprPlan, LiteralPlan, OrderKeyPlan, OutputPlan, PlanCatalog,
+    PlanRelationKind, ProgramPlan, QueryPlan, RuleBodyPlan, RuleGroupPlan, TermPlan,
+    UnsupportedTimeScope, UnsupportedTimeScopeAtom,
 };
 use crate::runtime::ast::{
     AggregateFunction, ComparisonOp, Ident, NumberLiteral, OrderDirection, PredicateRef,
@@ -25,7 +25,7 @@ use crate::runtime::eval::{
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::vm::frame::PlannedFrame;
 use crate::vm::provenance::{DerivationNode, DerivationRef, derivation_ref};
-use crate::vm::value::{ListArena, NumberValue, PhysicalValue};
+use crate::vm::value::{ListArena, NumberValue, PhysicalValue, eval_numeric_binary};
 
 const MAX_AGGREGATE_DERIVATION_CHILDREN: usize = 32;
 
@@ -411,7 +411,7 @@ fn eval_planned_atom(
             args,
             ..
         } => eval_planned_primitive(predicate, *primitive, args, bindings, ctx),
-        AtomPlan::Filter { comparison } => eval_planned_filter(comparison, bindings, ctx),
+        AtomPlan::Comparison { comparison } => eval_planned_comparison(comparison, bindings, ctx),
         AtomPlan::Aggregate(aggregate) => eval_planned_aggregate(aggregate, bindings, ctx),
         AtomPlan::Negation {
             inner, provenance, ..
@@ -594,7 +594,9 @@ fn planned_atom_time_scope_error(atom: &AtomPlan) -> Option<EvalError> {
             .or_else(|| planned_body_time_scope_error(inner)),
         AtomPlan::Aggregate(aggregate) => planned_body_time_scope_error(&aggregate.inner),
         AtomPlan::Negation { inner, .. } => planned_body_time_scope_error(inner),
-        AtomPlan::Scan { .. } | AtomPlan::Filter { .. } | AtomPlan::PrimitiveCall { .. } => None,
+        AtomPlan::Scan { .. } | AtomPlan::Comparison { .. } | AtomPlan::PrimitiveCall { .. } => {
+            None
+        }
     }
 }
 
@@ -701,23 +703,43 @@ fn eval_planned_primitive(
     Ok(out)
 }
 
-fn eval_planned_filter(
+fn eval_planned_comparison(
     comparison: &ComparePlan,
     bindings: Vec<PlannedFrame>,
     ctx: &mut PlannedEvalCtx<'_, '_>,
 ) -> Result<Vec<PlannedFrame>, EvalError> {
-    let mut out = Vec::new();
-    let trace = ctx.options.explain().is_enabled();
-    for binding in bindings {
-        let left = eval_planned_expr_logical(&comparison.left, &binding, ctx.env)?;
-        let right = eval_planned_expr_logical(&comparison.right, &binding, ctx.env)?;
-        if compare(&left, comparison.op, &right)? {
-            out.push(binding.push_step(trace, || {
-                derivation_ref(DerivationNode::planned_comparison(&comparison.provenance))
-            }));
+    match &comparison.action {
+        CompareActionPlan::Filter { left, op, right } => {
+            let mut out = Vec::new();
+            let trace = ctx.options.explain().is_enabled();
+            for binding in bindings {
+                let left = eval_planned_expr_logical(left, &binding, ctx.env)?;
+                let right = eval_planned_expr_logical(right, &binding, ctx.env)?;
+                if compare(&left, *op, &right)? {
+                    out.push(binding.push_step(trace, || {
+                        derivation_ref(DerivationNode::planned_comparison(&comparison.provenance))
+                    }));
+                }
+            }
+            Ok(out)
+        }
+        CompareActionPlan::Bind { target, value } => {
+            let mut bindings = bindings;
+            let trace = ctx.options.explain().is_enabled();
+            for binding in &mut bindings {
+                let value = eval_planned_expr(value, binding, ctx.env)?;
+                if !binding.set(*target, value) {
+                    return Err(EvalError::UnsupportedExpression);
+                }
+                binding.record_step(trace, || {
+                    derivation_ref(DerivationNode::planned_equality_binding(
+                        &comparison.provenance,
+                    ))
+                });
+            }
+            Ok(bindings)
         }
     }
-    Ok(out)
 }
 
 fn eval_planned_aggregate(
@@ -1232,27 +1254,9 @@ fn eval_planned_binary_values(
     let (Value::Number(left), Value::Number(right)) = (left, right) else {
         return Err(EvalError::UnsupportedExpression);
     };
-    let (NumberValue::Int(left), NumberValue::Int(right)) = (left, right) else {
-        return Err(EvalError::UnsupportedExpression);
-    };
-    let value = match op {
-        crate::runtime::ast::ArithmeticOp::Add => left + right,
-        crate::runtime::ast::ArithmeticOp::Sub => left - right,
-        crate::runtime::ast::ArithmeticOp::Mul => left * right,
-        crate::runtime::ast::ArithmeticOp::Div => {
-            if right == 0 {
-                return Err(EvalError::DivisionByZero);
-            }
-            left / right
-        }
-        crate::runtime::ast::ArithmeticOp::Rem => {
-            if right == 0 {
-                return Err(EvalError::DivisionByZero);
-            }
-            left % right
-        }
-    };
-    Ok(Value::Number(NumberValue::Int(value)))
+    eval_numeric_binary(left, op, right)
+        .map(Value::Number)
+        .map_err(EvalError::from)
 }
 
 fn planned_non_negative_int(

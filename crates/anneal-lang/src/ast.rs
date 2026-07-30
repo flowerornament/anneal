@@ -544,6 +544,20 @@ impl Body {
         for atom in &self.atoms {
             atom.collect_positive_binding_variables(out);
         }
+        loop {
+            let before = out.len();
+            for atom in &self.atoms {
+                let Atom::Comparison(comparison) = atom else {
+                    continue;
+                };
+                if let Some(ComparisonResolution::Bind { target, .. }) = comparison.resolve(out) {
+                    out.insert(target.clone());
+                }
+            }
+            if out.len() == before {
+                break;
+            }
+        }
     }
 }
 
@@ -588,6 +602,38 @@ impl StoredAtom {
             }
         }
     }
+}
+
+impl Comparison {
+    /// Resolves this comparison against the variables grounded before it runs.
+    pub fn resolve<'a>(&'a self, bound: &BTreeSet<Ident>) -> Option<ComparisonResolution<'a>> {
+        let left_ground = expr_is_ground(&self.left, bound);
+        let right_ground = expr_is_ground(&self.right, bound);
+        if left_ground && right_ground {
+            return Some(ComparisonResolution::Filter);
+        }
+        if self.op != ComparisonOp::Eq {
+            return None;
+        }
+        match (&self.left, left_ground, &self.right, right_ground) {
+            (Expr::Var(target), false, value, true) | (value, true, Expr::Var(target), false) => {
+                Some(ComparisonResolution::Bind { target, value })
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ComparisonResolution<'a> {
+    Filter,
+    Bind { target: &'a Ident, value: &'a Expr },
+}
+
+fn expr_is_ground(expr: &Expr, bound: &BTreeSet<Ident>) -> bool {
+    let mut variables = BTreeSet::new();
+    expr.variables(&mut variables);
+    variables.iter().all(|variable| bound.contains(variable))
 }
 
 impl DerivedAtom {
