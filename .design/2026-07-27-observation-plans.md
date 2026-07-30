@@ -41,9 +41,16 @@ What this measurement establishes, exactly:
 
 What it does **not** establish: that a given handle's *local* neighbourhood is
 dominated by nondiscriminative citations. Global mass does not license a local
-claim (§6). Until that is measured (§7 Q2), the surface problem is that the
-strata are **unnamed and numerically submerged** — not that any particular
-vantage is drowned.
+claim (§6).
+
+**That local question has since been measured (§7 Q2) and the answer is no.**
+Across three corpora the median affected handle cites exactly one
+nondiscriminative target; on the smallest, none exist at all. So the surface
+problem is that the strata are **unnamed and numerically submerged** — not that
+any particular vantage is drowned. The advice and topology-profile tracks that
+depended on the stronger reading lose their motivation accordingly; the
+resolution work does not, because `read --budget` returning a mid-word prefix is
+demonstrated rather than inferred.
 
 ## 2. The correction that shapes everything
 
@@ -348,8 +355,35 @@ unproven demand (§7 Q3).
 1. What concentration threshold, if any, survives calibration across anneal,
    murail, and synthetic counter-shapes — or is it corpus-relative, meaning
    metrics-only is the permanent answer?
-2. **What fraction of handles have hub-dominated *local* neighbourhoods?** Until
-   measured with a defined local oracle (D1), the local failure mode is asserted.
+2. ~~What fraction of handles have hub-dominated *local* neighbourhoods?~~
+   **Measured 2026-07-30 — the answer weakens this document's own motivation.**
+
+   | corpus | files | nondiscriminative targets | handles citing ≥1 | per-handle max / median |
+   |---|---|---|---|---|
+   | anneal | 146 | 0 | 0 | — |
+   | herald | 392 | 6 | 6 (1.5%) | 3 / 1 |
+   | murail | 611 | 9 | 167 (27%) | 11 / 1 |
+
+   The phenomenon **exists but is mild**. On the largest corpus 27% of files cite
+   at least one nondiscriminative target, yet the **median affected handle cites
+   exactly one** — which is not a drowned neighbourhood. Only a handful (max 11)
+   are meaningfully affected. On anneal it is absent entirely, and that corpus is
+   too small to exhibit it.
+
+   **Consequence, per the standard this design set for itself:** the
+   advice/disposition track (D1's disposition altitude, D2's topology profile,
+   the caution line) **loses its motivation and should be dropped rather than
+   built.** The resolution half is unaffected — `read --budget` returning a
+   mid-word prefix is directly demonstrated, not inferred.
+
+   **Caveats, both load-bearing.** The measurement uses
+   `topic_nondiscriminative_target` as a **proxy**: its threshold is tuned for
+   topic coupling, not navigation, so the cutoff is inherited from a different
+   purpose. D1 named this as one of three candidate oracles, not the definitive
+   one. And three corpora is not a distribution. A purpose-built local oracle
+   could move these numbers; what it cannot do is restore the assumption that
+   local drowning is the default condition, because on every corpus measured the
+   median affected handle cites one hub.
 3. Does the generic neighborhood plan earn a surface at all, or do the named plans
    plus direct adjacency cover the real demand?
 4. **Which execution and rendering caps make a generic dense-stratum walk both
