@@ -2,6 +2,33 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.22.0 - 2026-07-29
+
+### Added
+
+- `W007` reports exact reference-like markdown frontmatter keys that have no
+  configured edge mapping, one aggregate row per key with a distinct-handle
+  count and the conventional field, edge kind, and direction to configure. The
+  finite alias vocabulary works without a `config frontmatter` block, project
+  mappings suppress the warning per key, and `anneal describe W007` teaches the
+  raw `*meta` drill-down.
+- `anneal-core` exposes `ImpactTraversalPolicy` as the single authority for
+  impact traversal. It derives the configuration key from the runtime schema,
+  owns the built-in edge-kind set, and applies project overrides consistently
+  across the CLI and evaluator.
+- `cargo xtask atlas` and `just atlas` provide a read-only Rust architecture
+  instrument for maintainers: workspace/module census, concentration, name and
+  module cards, comment audits, revision diffs, and a machine-readable dump.
+  Atlas is development tooling and is not included in the release binary.
+
+### Changed
+
+- The CLI application, markdown scan/build state, and runtime introspection are
+  organized around explicit command, projection, rendering, source, catalog,
+  and build-phase boundaries. Help, status, search, read, impact, lineage, eval,
+  and describe outputs remain byte-identical in text and machine formats,
+  including stderr guidance and exit codes.
+
 ## v0.21.8 - 2026-07-26
 
 ### Added
@@ -54,23 +81,6 @@ All notable changes to `anneal` are documented in this file.
   bounded form is `order by rank asc` with `--limit`.
 
 ## Unreleased
-
-### Added
-
-- `W007` reports exact reference-like markdown frontmatter keys that have no
-  configured edge mapping, one row per key with a distinct-handle count and the
-  conventional field, edge kind, and direction to configure. The finite alias
-  vocabulary works without a `config frontmatter` block, project mappings
-  suppress the warning per key, and `anneal describe W007` teaches the raw
-  metadata drill-down.
-
-### Changed
-
-- S001 evidence names the orphaned handle kind:
-  `("orphaned_handle", kind, handle)`. This inserts `kind` into the previous
-  positional shape `("orphaned_handle", handle)`. The diagnostic subject is
-  the orphaned label or version handle; `file` is its declaring file, not a
-  claim that the document itself is orphaned.
 
 ## v0.21.7 - 2026-07-21
 
