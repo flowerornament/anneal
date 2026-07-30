@@ -1560,13 +1560,23 @@ fully derived in an earlier stratum. Mutual recursion through
 negation is rejected at load time with the cycle named.
 Aggregate body dependencies are stratifying per CR-D88.
 
-Safety rules (enforced at load):
+Safety rules (enforced before execution):
 
 1. Every variable in a rule head must appear positively in the body
 2. Every variable inside `not P(...)` must be bound positively
    elsewhere in the same rule
 3. No mutual recursion through negation (engine names the cycle and
    all rules participating)
+4. A recursive rule head may pass through bound values or emit fixed
+   literals, but may not construct new values. Value-generating heads
+   fail during planning rather than admitting an unbounded fixpoint.
+
+Depth-bearing traversal remains available through
+`impact(handle, affected, depth)`, whose engine implementation controls
+termination with visited-set tracking. A rule over a genuinely finite,
+authored depth domain can instead join an explicit successor relation.
+The fixpoint language does not infer termination from an acyclic
+property observed only in one dataset.
 
 Load error example:
 

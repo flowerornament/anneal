@@ -121,6 +121,12 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Recursive rules that construct new values fail during planning instead of
+  entering an unbounded fixpoint. Recursive pass-through and fixed-literal
+  heads remain valid.
+
 ## v0.21.7 - 2026-07-21
 
 ### Changed

@@ -3411,6 +3411,7 @@ pub enum PlanningErrorKind {
     UnknownField,
     ArityMismatch,
     UnplannedVariable,
+    RecursiveValueGeneration,
     UnsupportedExpression,
 }
 
@@ -3513,6 +3514,9 @@ impl From<PlanError> for EvalError {
             PlanError::UnknownField { .. } => PlanningErrorKind::UnknownField,
             PlanError::ArityMismatch { .. } => PlanningErrorKind::ArityMismatch,
             PlanError::UnplannedVariable { .. } => PlanningErrorKind::UnplannedVariable,
+            PlanError::RecursiveValueGeneration { .. } => {
+                PlanningErrorKind::RecursiveValueGeneration
+            }
             PlanError::UnsupportedExpression => PlanningErrorKind::UnsupportedExpression,
         };
         Self::PlannedExecutorPlanning {
@@ -5129,10 +5133,16 @@ mod tests {
             settled(h) := *handle{id: h, status: "authoritative"}.
             settled(h) := *handle{id: h, status: "current"}.
 
+            # MVS-3 exercises recursion to fixed point; the successor relation
+            # keeps the generated depth domain explicitly finite.
+            next_depth(1, 2).
+            next_depth(2, 3).
+            next_depth(3, 4).
             supersedes_chain(s, t, 1) := *edge{from: s, to: t, kind: "Supersedes"}.
-            supersedes_chain(s, t, d + 1) :=
+            supersedes_chain(s, t, next) :=
               *edge{from: s, to: mid, kind: "Supersedes"},
-              supersedes_chain(mid, t, d).
+              supersedes_chain(mid, t, depth),
+              next_depth(depth, next).
 
             linear_namespace("OQ").
             obligation(h) :=
@@ -5337,6 +5347,24 @@ mod tests {
                 }
             ),
             "expected planned executor planning error, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_value_generation_fails_before_fixpoint_execution() {
+        let error = evaluate_fixpoint_error(
+            "p(0). p(x + 1) := p(x).",
+            Database::from_store(&FactStore::default()),
+        );
+        assert!(
+            matches!(
+                error,
+                EvalError::PlannedExecutorPlanning {
+                    kind: PlanningErrorKind::RecursiveValueGeneration,
+                    ..
+                }
+            ),
+            "unexpected recursive generator error: {error:?}"
         );
     }
 

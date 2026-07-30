@@ -630,6 +630,15 @@ pub(crate) enum PlanError {
     },
     #[error("unplanned variable '{variable}'")]
     UnplannedVariable { variable: Ident },
+    #[error(
+        "{location}: recursive predicate '{predicate}' generates new values in its rule head; \
+         use impact(handle, affected, depth) for hop-counted traversal, or join an explicit \
+         finite successor relation"
+    )]
+    RecursiveValueGeneration {
+        predicate: PredicateRef,
+        location: SourceLocation,
+    },
     #[error("unsupported expression")]
     UnsupportedExpression,
 }
@@ -865,6 +874,7 @@ fn plan_rule_stages(
                 &predicates,
                 &rule_group_indexes,
                 rules,
+                rule_groups,
                 catalog,
                 query_index,
                 &dependencies,
@@ -1014,6 +1024,7 @@ fn stage_execution(
     predicates: &BTreeSet<PredicateRef>,
     rule_group_indexes: &[usize],
     rules: &[&Rule],
+    rule_groups: &[RuleGroupPlan],
     catalog: &PlanCatalog,
     query_index: Option<usize>,
     dependencies: &BTreeMap<PredicateRef, BTreeSet<PredicateRef>>,
@@ -1033,7 +1044,14 @@ fn stage_execution(
         let Some(rule) = rules.get(*rule_group) else {
             return Err(PlanError::UnsupportedExpression);
         };
-        for (atom_index, predicate) in recursive_atom_predicates(&rule.body, predicates) {
+        let Some(planned) = rule_groups.get(*rule_group) else {
+            return Err(PlanError::UnsupportedExpression);
+        };
+        let recursive_atoms = recursive_atom_predicates(&rule.body, predicates);
+        if !recursive_atoms.is_empty() {
+            reject_recursive_value_generation(planned)?;
+        }
+        for (atom_index, predicate) in recursive_atoms {
             let delta_relation = catalog
                 .predicate_relation_in_scope(&predicate, query_index)
                 .ok_or_else(|| PlanError::UnknownPredicate {
@@ -1048,6 +1066,31 @@ fn stage_execution(
         }
     }
     Ok(StageExecution::Recursive { deltas })
+}
+
+fn reject_recursive_value_generation(rule: &RuleGroupPlan) -> Result<(), PlanError> {
+    let generates_value = rule
+        .head_terms
+        .iter()
+        .any(planned_head_term_generates_value);
+    if generates_value {
+        let provenance = rule
+            .provenance
+            .as_ref()
+            .ok_or(PlanError::UnsupportedExpression)?;
+        return Err(PlanError::RecursiveValueGeneration {
+            predicate: provenance.predicate.clone(),
+            location: provenance.location.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn planned_head_term_generates_value(term: &TermPlan) -> bool {
+    match term {
+        TermPlan::Wildcard | TermPlan::Expr(ExprPlan::Slot(_) | ExprPlan::Literal(_)) => false,
+        TermPlan::Expr(ExprPlan::Binary { .. } | ExprPlan::Tuple(_)) => true,
+    }
 }
 
 fn stage_migration(
@@ -2296,6 +2339,44 @@ mod tests {
 
         assert!(source_stage < diagnostic_stage);
         assert!(diagnostic_stage < entropy_stage);
+    }
+
+    #[test]
+    fn recursive_rules_reject_value_generating_heads() {
+        for source in [
+            "p(0). p(x + 1) := p(x).",
+            "p(0). p((x,)) := p(x).",
+            "left(0). right(x + 1) := left(x). left(x) := right(x).",
+        ] {
+            let error = plan(&analyzed(source)).expect_err("recursive generator must fail");
+            assert!(
+                matches!(error, PlanError::RecursiveValueGeneration { .. }),
+                "unexpected planning error for {source:?}: {error:?}"
+            );
+        }
+
+        let message = plan(&analyzed("p(0). p(x + 1) := p(x)."))
+            .expect_err("recursive generator must fail")
+            .to_string();
+        assert!(message.contains("impact(handle, affected, depth)"));
+        assert!(message.contains("finite successor relation"));
+    }
+
+    #[test]
+    fn recursive_rules_allow_pass_through_values_and_fixed_literals() {
+        for source in [
+            "edge(\"a\", \"b\"). reach(x, y) := edge(x, y). reach(x, z) := reach(x, y), edge(y, z).",
+            "p(0). p(1) := p(0).",
+            "base(1). edge(2, 2). p(x + 1) := base(x). p(y) := p(x), edge(x, y).",
+        ] {
+            plan(&analyzed(source)).expect("finite recursive rule plans");
+        }
+    }
+
+    #[test]
+    fn nonrecursive_rules_allow_computed_heads() {
+        plan(&analyzed("base(1). adjusted(x + 1) := base(x)."))
+            .expect("single-pass computed head plans");
     }
 
     #[test]
