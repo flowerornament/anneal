@@ -1637,8 +1637,7 @@ mod tests {
         ));
         assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
         assert!(
-            rendered
-                .contains("Diagnostics  20 total · 1 error · 17 warning · 1 suggestion · 1 info")
+            rendered.contains("Diagnostics  20 total, 1 error, 17 warning, 1 suggestion, 1 info")
         );
         assert!(rendered.contains(
             "Code refs    drift evidence not built for 3 refs; run `anneal check --refresh-drift`"
