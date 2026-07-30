@@ -2,6 +2,45 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## v0.23.0 - 2026-07-30
+
+### Added
+
+- `unmodeled_frontmatter_key` inventories authored markdown frontmatter keys
+  that anneal does not model, ranked by distinct file handles. A conservative
+  name-shape signal breaks equal-count ties but never suggests an edge kind.
+  `anneal status` shows the top three keys in a compact `Vocabulary` line and
+  names the predicate for drill-down.
+- Stored `*meta` rows carry a `role` of `derived`, `authored_modeled`, or
+  `authored_unmodeled`. The source that owns each key records the classification
+  when it emits the fact, so discovery does not depend on a generated-key name
+  list.
+- `SnapshotTime` validates accepted date and RFC 3339 snapshot wire forms while
+  preserving the original bytes for history compatibility.
+
+### Changed
+
+- `anneal-core` has two supported facades: shared substrate and extension
+  contracts at the crate root, and query/runtime contracts under
+  `anneal_core::runtime`. Eighteen public implementation modules are private,
+  reducing the simplified public surface from 3,034 to 1,585 lines. Canonical
+  migrations include `anneal_core::facts::FactBatch` to
+  `anneal_core::FactBatch`, `anneal_core::runtime::eval::Database` to
+  `anneal_core::runtime::Database`, and root snapshot/history items to
+  `anneal_core::runtime`. No crates.io consumer is broken because the library
+  crates have never been published; `anneal-core` is now `publish = false`.
+  Vendored and path consumers should use the canonical facade paths.
+- Handle identity is corpus-unique at the store boundary. Two sources emitting
+  the same handle id within one corpus now fail with
+  `DuplicateHandleIdConflict` instead of merging silently. Valid corpora are
+  unaffected, as verified against anneal, murail, and herald; a corpus that
+  relied on duplicate ids now receives the named error.
+- The CLI, markdown scan/build state, and runtime introspection are organized
+  around explicit ownership boundaries. The status diagnostic histogram uses
+  commas consistently; otherwise help, status, search, read, impact, lineage,
+  eval, and describe remain byte-identical in text and machine formats,
+  including stderr guidance and exit codes.
+
 ## v0.22.0 - 2026-07-29
 
 ### Added
@@ -81,14 +120,6 @@ All notable changes to `anneal` are documented in this file.
   bounded form is `order by rank asc` with `--limit`.
 
 ## Unreleased
-
-### Changed
-
-- `anneal-core` exposes two supported library facades: adapter and provider
-  contracts at the crate root, and host/query contracts under
-  `anneal_core::runtime`. Implementation modules are private, each supported
-  item has one canonical path, and `publish = false` prevents the internal
-  crate from becoming an accidental registry contract.
 
 ## v0.21.7 - 2026-07-21
 
