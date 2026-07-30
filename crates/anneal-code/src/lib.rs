@@ -11,7 +11,7 @@ use std::process::Command;
 
 use anneal_core::{
     ConcernFact, ConfigFacts, ConfigKey, ContentFact, EdgeFact, FactBatch, FactBatchMode,
-    FactIdentity, HandleFact, MetaFact, NativeId, OriginUri, Pattern, Revision, Source,
+    FactIdentity, HandleFact, HandleId, MetaFact, NativeId, OriginUri, Pattern, Revision, Source,
     SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName, SpanFact,
     default_lexical_search_info, fnv1a_64, normalize_path_inside_root, normalize_relative_path,
 };
@@ -37,9 +37,9 @@ use config::{
 use eep48::extract_eep48_set;
 use emit::{
     ContentBudgetReport, area_for, code_identity, emit_content_budget_meta,
-    ensure_external_code_handle, first_paragraph, git_version_tags, item_kind_name, meta_values,
-    normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact, token_count,
-    truncate_at_char_boundary, version_handle_id, visibility_name,
+    ensure_external_code_handle, first_paragraph, git_version_tags, handle_id, item_kind_name,
+    meta_values, normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact,
+    token_count, truncate_at_char_boundary, version_handle_id, visibility_name,
 };
 use rustdoc::{
     content_text, extract_rustdoc, markdown_links, signature_type_refs, stable_fragment,

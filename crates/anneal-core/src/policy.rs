@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ids::HandleId;
 use crate::source::{ActorContext, RuntimeCapability};
 
 /// Coarse action category for policy decisions and diagnostics.
@@ -43,18 +44,18 @@ impl fmt::Display for ActionKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     Read {
-        handle: String,
+        handle: HandleId,
     },
     ReadFull {
-        handle: String,
+        handle: HandleId,
     },
     Search {
         query: String,
-        handle: Option<String>,
+        handle: Option<HandleId>,
     },
     Match {
         pattern: String,
-        handle: Option<String>,
+        handle: Option<HandleId>,
     },
     Eval,
     TrailPrivateRead,

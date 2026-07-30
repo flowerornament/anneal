@@ -245,7 +245,7 @@ fn code_meta<'a>(batch: &'a FactBatch, handle: &str, key: &str) -> Vec<&'a str> 
     batch
         .meta
         .iter()
-        .filter(|meta| meta.handle == handle && meta.key == key)
+        .filter(|meta| meta.handle.as_str() == handle && meta.key == key)
         .map(|meta| meta.value.as_str())
         .collect()
 }
@@ -254,7 +254,7 @@ fn handle_class(batch: &FactBatch, handle: &str) -> Option<String> {
     batch
         .meta
         .iter()
-        .find(|meta| meta.handle == handle && meta.key == meta_key::CLASS)
+        .find(|meta| meta.handle.as_str() == handle && meta.key == meta_key::CLASS)
         .map(|meta| meta.value.clone())
 }
 
@@ -276,16 +276,21 @@ fn rustdoc_source_projects_code_facts_without_raw_ids() {
         .extract(&context(&root, &config))
         .expect("code extraction");
 
-    assert!(batch.handles.iter().any(|handle| handle.id == "src/lib.rs"));
+    assert!(
+        batch
+            .handles
+            .iter()
+            .any(|handle| handle.id.as_str() == "src/lib.rs")
+    );
     let widget = batch
         .handles
         .iter()
         .find(|handle| {
-            handle.kind == "section" && handle.id.starts_with("src/lib.rs#demo::Widget@")
+            handle.kind == "section" && handle.id.as_str().starts_with("src/lib.rs#demo::Widget@")
         })
         .expect("widget handle");
     assert!(
-        !widget.id.ends_with("#1"),
+        !widget.id.as_str().ends_with("#1"),
         "raw rustdoc ids must not become emitted handle ids"
     );
     assert!(batch.meta.iter().any(|meta| {
@@ -294,11 +299,13 @@ fn rustdoc_source_projects_code_facts_without_raw_ids() {
             && meta.value == "demo::Widget"
     }));
     assert!(batch.edges.iter().any(|edge| {
-        edge.from == widget.id && edge.kind == edge_kind::CITES && edge.to.contains("demo::Other")
+        edge.from == widget.id
+            && edge.kind == edge_kind::CITES
+            && edge.to.as_str().contains("demo::Other")
     }));
     assert!(batch.edges.iter().any(|edge| {
         edge.kind == edge_kind::USES_TYPE
-            && edge.from.contains("demo::make")
+            && edge.from.as_str().contains("demo::make")
             && edge.to == widget.id
     }));
     assert!(
@@ -308,7 +315,7 @@ fn rustdoc_source_projects_code_facts_without_raw_ids() {
             .any(|content| { content.handle == widget.id && content.text.contains("Widget docs") })
     );
     assert!(batch.meta.iter().any(|meta| {
-        meta.handle == "Cargo.toml"
+        meta.handle.as_str() == "Cargo.toml"
             && meta.key == meta_key::CONTENT_BUDGET_ROOT_DISPOSITION
             && meta.value == relation_value::BUDGET_COMPLETE
     }));
@@ -332,12 +339,12 @@ fn rustdoc_source_declares_visible_content_budget_truncation() {
         .expect("code extraction");
 
     assert!(batch.meta.iter().any(|meta| {
-        meta.handle == "Cargo.toml"
+        meta.handle.as_str() == "Cargo.toml"
             && meta.key == meta_key::CONTENT_BUDGET_ROOT_DISPOSITION
             && meta.value == relation_value::BUDGET_TRUNCATED
     }));
     assert!(batch.meta.iter().any(|meta| {
-        meta.handle.contains("demo::make")
+        meta.handle.as_str().contains("demo::make")
             && meta.key == meta_key::CONTENT_BUDGET_DISPOSITION
             && meta.value == relation_value::PER_ITEM_CAP
     }));
@@ -362,7 +369,7 @@ fn rustdoc_source_classifies_source_tree_files_and_obligations() {
         .handles
         .iter()
         .find(|handle| {
-            handle.kind == "section" && handle.id.starts_with("src/lib.rs#demo::Widget@")
+            handle.kind == "section" && handle.id.as_str().starts_with("src/lib.rs#demo::Widget@")
         })
         .expect("widget handle");
 
@@ -371,7 +378,7 @@ fn rustdoc_source_classifies_source_tree_files_and_obligations() {
         Some(relation_value::CLASS_PUBLIC_API)
     );
     assert_eq!(
-        handle_class(&batch, &widget.id).as_deref(),
+        handle_class(&batch, widget.id.as_str()).as_deref(),
         Some(relation_value::CLASS_PUBLIC_API)
     );
     assert_eq!(
@@ -387,7 +394,9 @@ fn rustdoc_source_classifies_source_tree_files_and_obligations() {
         Some(relation_value::CLASS_GENERATED)
     );
     assert!(batch.handles.iter().any(|handle| {
-        handle.kind == "file" && handle.id == "src/private.rs" && handle.summary == "src/private.rs"
+        handle.kind == "file"
+            && handle.id.as_str() == "src/private.rs"
+            && handle.summary == "src/private.rs"
     }));
     assert_eq!(
         code_meta(&batch, "src/private.rs", meta_key::OBLIGATION_COUNT),
@@ -399,7 +408,7 @@ fn rustdoc_source_classifies_source_tree_files_and_obligations() {
             .any(|value| value.starts_with("TODO:2:"))
     );
     assert!(batch.concerns.iter().any(|concern| {
-        concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
+        concern.name == concern_name::CODE_TODO && concern.member.as_str() == "src/private.rs"
     }));
 }
 
@@ -421,7 +430,7 @@ fn source_root_alone_activates_file_level_extraction() {
         batch
             .handles
             .iter()
-            .any(|handle| handle.kind == "file" && handle.id == "src/lib.rs"),
+            .any(|handle| handle.kind == "file" && handle.id.as_str() == "src/lib.rs"),
         "standalone mode emits file handles from the source tree"
     );
     assert!(
@@ -437,7 +446,7 @@ fn source_root_alone_activates_file_level_extraction() {
         Some(relation_value::CLASS_TEST)
     );
     assert!(batch.concerns.iter().any(|concern| {
-        concern.name == concern_name::CODE_TODO && concern.member == "src/private.rs"
+        concern.name == concern_name::CODE_TODO && concern.member.as_str() == "src/private.rs"
     }));
 }
 
@@ -512,14 +521,14 @@ fn source_extension_config_widens_the_file_level_scan() {
         batch
             .handles
             .iter()
-            .any(|handle| handle.id == "scripts/tool.py"),
+            .any(|handle| handle.id.as_str() == "scripts/tool.py"),
         "configured extension is scanned"
     );
     assert!(
         !batch
             .handles
             .iter()
-            .any(|handle| handle.id == "scripts/build.rs"),
+            .any(|handle| handle.id.as_str() == "scripts/build.rs"),
         "explicit extension config replaces the default set"
     );
 }
@@ -563,7 +572,7 @@ fn rustdoc_source_projects_git_version_tags_as_package_metadata() {
         .expect("code extraction");
 
     assert!(batch.handles.iter().any(|handle| {
-        handle.id == "code-version:demo-0.1.0"
+        handle.id.as_str() == "code-version:demo-0.1.0"
             && handle.kind == "version"
             && handle.namespace == SOURCE_NAME
     }));
@@ -572,8 +581,8 @@ fn rustdoc_source_projects_git_version_tags_as_package_metadata() {
         vec!["demo-0.1.0"]
     );
     assert!(batch.edges.iter().any(|edge| {
-        edge.from == "Cargo.toml"
-            && edge.to == "code-version:demo-0.1.0"
+        edge.from.as_str() == "Cargo.toml"
+            && edge.to.as_str() == "code-version:demo-0.1.0"
             && edge.kind == edge_kind::CONTAINS
     }));
 }
@@ -602,7 +611,7 @@ fn rustdoc_source_projects_each_root_independently() {
         batch
             .handles
             .iter()
-            .filter(|handle| handle.kind == "file" && handle.id == "src/private.rs")
+            .filter(|handle| handle.kind == "file" && handle.id.as_str() == "src/private.rs")
             .count(),
         2
     );
@@ -611,7 +620,7 @@ fn rustdoc_source_projects_each_root_independently() {
             .meta
             .iter()
             .filter(|meta| {
-                meta.handle == "src/private.rs"
+                meta.handle.as_str() == "src/private.rs"
                     && meta.key == meta_key::CLASS
                     && meta.value == relation_value::CLASS_PRIVATE
             })
@@ -643,10 +652,12 @@ fn eep48_source_projects_elixir_docs_and_metadata() {
     let member = "lib/herald/agent.ex#Herald.Agent.run/2";
 
     assert!(batch.handles.iter().any(|handle| {
-        handle.id == module && handle.kind == "section" && handle.namespace == "module"
+        handle.id.as_str() == module && handle.kind == "section" && handle.namespace == "module"
     }));
     assert!(batch.handles.iter().any(|handle| {
-        handle.id == member && handle.status.as_deref() == Some("deprecated") && handle.line == 12
+        handle.id.as_str() == member
+            && handle.status.as_deref() == Some("deprecated")
+            && handle.line == 12
     }));
     assert_eq!(
         code_meta(&batch, module, meta_key::QUALIFIED_NAME),
@@ -662,26 +673,27 @@ fn eep48_source_projects_elixir_docs_and_metadata() {
     );
     assert_eq!(code_meta(&batch, member, meta_key::SINCE), vec!["1.0"]);
     assert!(batch.edges.iter().any(|edge| {
-        edge.from == module
+        edge.from.as_str() == module
             && edge.kind == edge_kind::IMPLEMENTS
-            && edge.to.contains("Herald.AgentBehaviour")
+            && edge.to.as_str().contains("Herald.AgentBehaviour")
     }));
     assert!(batch.edges.iter().any(|edge| {
-        edge.from == member && edge.kind == edge_kind::CITES && edge.to.contains("guides")
+        edge.from.as_str() == member
+            && edge.kind == edge_kind::CITES
+            && edge.to.as_str().contains("guides")
     }));
     assert!(batch.edges.iter().any(|edge| {
-        edge.from == member && edge.kind == edge_kind::USES_TYPE && edge.to.contains("String.t")
+        edge.from.as_str() == member
+            && edge.kind == edge_kind::USES_TYPE
+            && edge.to.as_str().contains("String.t")
     }));
-    assert!(
-        batch
-            .content
-            .iter()
-            .any(|content| { content.handle == member && content.text.contains("Run the agent") })
-    );
+    assert!(batch.content.iter().any(|content| {
+        content.handle.as_str() == member && content.text.contains("Run the agent")
+    }));
     assert!(batch.edges.iter().any(|edge| {
         edge.file == "lib/herald/agent.ex"
             && edge.kind == edge_kind::IMPLEMENTS
-            && edge.to.contains("Herald.Protocol")
+            && edge.to.as_str().contains("Herald.Protocol")
     }));
 }
 
@@ -705,12 +717,12 @@ fn eep48_source_declares_member_doc_budget_truncation() {
         .expect("code extraction");
 
     assert!(batch.meta.iter().any(|meta| {
-        meta.handle == "mix.exs"
+        meta.handle.as_str() == "mix.exs"
             && meta.key == meta_key::CONTENT_BUDGET_ROOT_DISPOSITION
             && meta.value == relation_value::BUDGET_TRUNCATED
     }));
     assert!(batch.meta.iter().any(|meta| {
-        meta.handle == "lib/herald/agent.ex#Herald.Agent.run/2"
+        meta.handle.as_str() == "lib/herald/agent.ex#Herald.Agent.run/2"
             && meta.key == meta_key::CONTENT_BUDGET_DISPOSITION
             && meta.value == relation_value::PER_ITEM_CAP
     }));

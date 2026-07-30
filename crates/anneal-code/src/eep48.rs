@@ -3,7 +3,7 @@ use super::{
     EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,
     SOURCE_NAME, SourceContext, SourceError, SourceName, SpanFact, Utf8Path, Utf8PathBuf, area_for,
     code_identity, content_text, edge_kind, emit_content_budget_meta, ensure_external_code_handle,
-    first_paragraph, fs, markdown_links, meta_key, normalize_code_source_path,
+    first_paragraph, fs, handle_id, markdown_links, meta_key, normalize_code_source_path,
     normalize_path_inside_root, package_root_file, push_meta_fact, relation_value,
     signature_type_refs, stable_fragment, token_count, truncate_at_char_boundary,
 };
@@ -565,13 +565,13 @@ impl Eep48Projector {
         if batch
             .handles
             .iter()
-            .any(|handle| handle.id == self.module_file)
+            .any(|handle| handle.id.as_str() == self.module_file)
         {
             return;
         }
         batch.handles.push(HandleFact {
             identity: self.identity_for(batch, &self.module_file, &self.module_file),
-            id: self.module_file.clone(),
+            id: handle_id(&self.module_file),
             kind: "file".to_string(),
             status: None,
             namespace: String::new(),
@@ -592,7 +592,7 @@ impl Eep48Projector {
         };
         batch.handles.push(HandleFact {
             identity: self.identity_for(batch, &self.module_handle, &self.module_file),
-            id: self.module_handle.clone(),
+            id: handle_id(&self.module_handle),
             kind: "section".to_string(),
             status: self
                 .parsed
@@ -663,7 +663,7 @@ impl Eep48Projector {
             };
             batch.handles.push(HandleFact {
                 identity: self.identity_for(batch, &handle, &self.module_file),
-                id: handle.clone(),
+                id: handle_id(&handle),
                 kind: "section".to_string(),
                 status: entry
                     .metadata
@@ -710,11 +710,11 @@ impl Eep48Projector {
         if !batch
             .handles
             .iter()
-            .any(|handle| handle.id == self.package_handle)
+            .any(|handle| handle.id.as_str() == self.package_handle)
         {
             batch.handles.push(HandleFact {
                 identity: identity.clone(),
-                id: self.package_handle.clone(),
+                id: handle_id(&self.package_handle),
                 kind: "file".to_string(),
                 status: None,
                 namespace: SOURCE_NAME.to_string(),
@@ -909,7 +909,7 @@ impl Eep48Projector {
         batch.spans.push(SpanFact {
             identity: identity.clone(),
             id: span_id.clone(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             start_line: line,
             end_line: line.saturating_add(lines.saturating_sub(1)),
             summary: signature
@@ -921,7 +921,7 @@ impl Eep48Projector {
         });
         batch.content.push(ContentFact {
             identity,
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             span_id,
             lines,
             tokens: token_count(&text),
@@ -1071,8 +1071,8 @@ impl Eep48Projector {
         let native_id = format!("{from}::edge::{ordinal}::{kind}::{to}::{line}");
         batch.edges.push(EdgeFact {
             identity: self.identity_for(batch, &native_id, &self.module_file),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: kind.to_string(),
             file: self.module_file.clone(),
             line,

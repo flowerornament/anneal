@@ -1,7 +1,7 @@
 mod adapter_facade {
     use anneal_core::{
-        ConfigFacts, FactBatch, FactBatchMode, FactStore, OneShotSourceDriver, Pattern, Source,
-        SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName,
+        ConfigFacts, FactBatch, FactBatchMode, FactStore, HandleId, OneShotSourceDriver, Pattern,
+        Source, SourceCapabilities, SourceContext, SourceError, SourceInfo, SourceName,
         SourceRefreshRequest, refresh_source,
     };
 
@@ -44,6 +44,12 @@ mod adapter_facade {
             store.generation_for(request.corpus(), &report.source),
             Some(report.current_generation)
         );
+        assert_eq!(
+            HandleId::new("fixture.handle")
+                .expect("adapter handle is nonempty")
+                .as_str(),
+            "fixture.handle"
+        );
     }
 }
 
@@ -78,7 +84,9 @@ mod layered_host {
     use std::cmp::Ordering;
 
     use anneal_core::runtime::EvalOptions;
-    use anneal_core::{ActorContext, Ranker, RankingContext, RuntimeCapability, SearchHit};
+    use anneal_core::{
+        ActorContext, HandleId, Ranker, RankingContext, RuntimeCapability, SearchHit,
+    };
 
     struct FixtureRanker;
 
@@ -98,11 +106,21 @@ mod layered_host {
         let options = EvalOptions::default()
             .with_actor(actor)
             .with_ranker(FixtureRanker);
+        let hit = SearchHit::new(
+            "fixture",
+            "fixture",
+            HandleId::new("fixture.handle").expect("host handle is nonempty"),
+            None,
+            1.0,
+            "fixture",
+            "identifier",
+        );
 
         assert!(
             options
                 .actor()
                 .has_runtime_capability(RuntimeCapability::Eval)
         );
+        assert_eq!(hit.handle().as_str(), "fixture.handle");
     }
 }

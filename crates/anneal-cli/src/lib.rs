@@ -562,7 +562,7 @@ mod tests {
                     corpus: CorpusId::from("phase10"),
                     snapshot: "s1".to_string(),
                     at: "2026-05-01".to_string(),
-                    id: "ticket-2".to_string(),
+                    id: anneal_core::HandleId::new("ticket-2").expect("fixture handle is nonempty"),
                     key: "status".to_string(),
                     value: "open".to_string(),
                 }],
@@ -586,7 +586,7 @@ mod tests {
     fn handle(id: &str, kind: &str, status: Option<&str>, summary: &str) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: anneal_core::HandleId::new(id).expect("fixture handle is nonempty"),
             kind: kind.to_string(),
             status: status.map(ToString::to_string),
             namespace: String::new(),
@@ -601,8 +601,8 @@ mod tests {
     fn edge(from: &str, to: &str, kind: &str, line: u32) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}:{kind}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: anneal_core::HandleId::new(from).expect("fixture handle is nonempty"),
+            to: anneal_core::HandleId::new(to).expect("fixture handle is nonempty"),
             kind: kind.to_string(),
             file: format!("{from}.md"),
             line,
@@ -614,7 +614,7 @@ mod tests {
     fn content(handle: &str, span_id: &str, text: &str, tokens: u32) -> ContentFact {
         ContentFact {
             identity: identity(&format!("{handle}#{span_id}:content")),
-            handle: handle.to_string(),
+            handle: anneal_core::HandleId::new(handle).expect("fixture handle is nonempty"),
             span_id: span_id.to_string(),
             lines: 1,
             text: text.to_string(),
@@ -626,7 +626,7 @@ mod tests {
         SpanFact {
             identity: identity(&format!("{handle}#{span_id}:span")),
             id: span_id.to_string(),
-            handle: handle.to_string(),
+            handle: anneal_core::HandleId::new(handle).expect("fixture handle is nonempty"),
             start_line,
             end_line,
             summary: String::new(),

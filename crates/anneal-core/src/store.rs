@@ -9,7 +9,7 @@ use crate::facts::{
     HandleFact, MetaFact, SnapshotFact, SpanFact,
 };
 use crate::history::SnapshotHistory;
-use crate::ids::{CorpusId, Generation, NativeId, SourceName};
+use crate::ids::{CorpusId, Generation, HandleId, NativeId, SourceName};
 use crate::visibility::FactVisibility;
 
 /// In-memory stored-fact relation set with runtime-owned generation swaps.
@@ -39,14 +39,13 @@ impl FactStore {
     pub fn merge(&mut self, batch: FactBatch) -> Result<(), StoreError> {
         let mut validated = ValidatedBatch::from_batch(&batch)?;
 
-        if matches!(batch.mode, FactBatchMode::FullSnapshot) {
-            self.remove_scope(&validated.scope);
-        } else {
+        if matches!(validated.mode, FactBatchMode::Delta) {
             validated
                 .native_ids
                 .extend(batch.retractions.iter().cloned());
-            self.remove_native_ids(&validated.scope, &validated.native_ids);
         }
+        self.validate_handle_ids(&batch, &validated)?;
+        self.remove_replaced(&validated);
 
         self.handles.extend(batch.handles);
         self.edges.extend(batch.edges);
@@ -71,6 +70,35 @@ impl FactStore {
             batch.generation,
         );
         self.canonicalize_source_relations();
+        Ok(())
+    }
+
+    fn validate_handle_ids(
+        &self,
+        batch: &FactBatch,
+        validated: &ValidatedBatch,
+    ) -> Result<(), StoreError> {
+        let mut claimants = BTreeMap::<(&CorpusId, &HandleId), &FactIdentity>::new();
+        for fact in self
+            .handles
+            .iter()
+            .filter(|fact| validated.retains(&fact.identity))
+            .chain(batch.handles.iter())
+        {
+            let key = (&fact.identity.corpus, &fact.id);
+            if let Some(first) = claimants.insert(key, &fact.identity) {
+                return Err(StoreError::DuplicateHandleId(Box::new(
+                    DuplicateHandleIdConflict {
+                        corpus: fact.identity.corpus.clone(),
+                        id: fact.id.clone(),
+                        first_source: first.source.clone(),
+                        first_native_id: first.native_id.clone(),
+                        second_source: fact.identity.source.clone(),
+                        second_native_id: fact.identity.native_id.clone(),
+                    },
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -210,31 +238,14 @@ impl FactStore {
             .position(|row| &row.corpus == corpus && &row.source == source)
     }
 
-    fn remove_scope(&mut self, scope: &BatchScope) {
-        self.handles.retain(|fact| !scope.matches(&fact.identity));
-        self.edges.retain(|fact| !scope.matches(&fact.identity));
-        self.content.retain(|fact| !scope.matches(&fact.identity));
-        self.spans.retain(|fact| !scope.matches(&fact.identity));
-        self.meta.retain(|fact| !scope.matches(&fact.identity));
-        self.concerns.retain(|fact| !scope.matches(&fact.identity));
-        self.visibility.retain(|key, _| !scope.matches_key(key));
-    }
-
-    fn remove_native_ids(&mut self, scope: &BatchScope, native_ids: &BTreeSet<NativeId>) {
-        self.handles
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.edges
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.content
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.spans
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.meta
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.concerns
-            .retain(|fact| !scope.matches_native(&fact.identity, native_ids));
-        self.visibility
-            .retain(|key, _| !scope.matches_native_key(key, native_ids));
+    fn remove_replaced(&mut self, batch: &ValidatedBatch) {
+        self.handles.retain(|fact| batch.retains(&fact.identity));
+        self.edges.retain(|fact| batch.retains(&fact.identity));
+        self.content.retain(|fact| batch.retains(&fact.identity));
+        self.spans.retain(|fact| batch.retains(&fact.identity));
+        self.meta.retain(|fact| batch.retains(&fact.identity));
+        self.concerns.retain(|fact| batch.retains(&fact.identity));
+        self.visibility.retain(|key, _| batch.retains_key(key));
     }
 }
 
@@ -271,10 +282,25 @@ struct BatchScope {
 
 struct ValidatedBatch {
     scope: BatchScope,
+    mode: FactBatchMode,
     native_ids: BTreeSet<NativeId>,
 }
 
 impl ValidatedBatch {
+    fn retains(&self, identity: &FactIdentity) -> bool {
+        match self.mode {
+            FactBatchMode::FullSnapshot => !self.scope.matches(identity),
+            FactBatchMode::Delta => !self.scope.matches_native(identity, &self.native_ids),
+        }
+    }
+
+    fn retains_key(&self, key: &VisibilityKey) -> bool {
+        match self.mode {
+            FactBatchMode::FullSnapshot => !self.scope.matches_key(key),
+            FactBatchMode::Delta => !self.scope.matches_native_key(key, &self.native_ids),
+        }
+    }
+
     fn from_batch(batch: &FactBatch) -> Result<Self, StoreError> {
         let scope = BatchScope::from_batch(batch);
         let mut native_ids = BTreeSet::new();
@@ -299,7 +325,11 @@ impl ValidatedBatch {
         {
             return Err(StoreError::VisibilityWithoutFact);
         }
-        Ok(Self { scope, native_ids })
+        Ok(Self {
+            scope,
+            mode: batch.mode,
+            native_ids,
+        })
     }
 }
 
@@ -328,13 +358,24 @@ impl BatchScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     MixedSourceBatch,
     MismatchedGeneration,
     VisibilityWithoutFact,
     MixedConfigCorpus,
     MixedSnapshotCorpus,
+    DuplicateHandleId(Box<DuplicateHandleIdConflict>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateHandleIdConflict {
+    pub corpus: CorpusId,
+    pub id: HandleId,
+    pub first_source: SourceName,
+    pub first_native_id: NativeId,
+    pub second_source: SourceName,
+    pub second_native_id: NativeId,
 }
 
 impl fmt::Display for StoreError {
@@ -353,6 +394,16 @@ impl fmt::Display for StoreError {
             Self::MixedSnapshotCorpus => {
                 f.write_str("snapshot facts contain multiple corpus scopes")
             }
+            Self::DuplicateHandleId(conflict) => write!(
+                f,
+                "handle id {} is claimed twice in corpus {}: {}/{} and {}/{}",
+                conflict.id,
+                conflict.corpus,
+                conflict.first_source,
+                conflict.first_native_id,
+                conflict.second_source,
+                conflict.second_native_id,
+            ),
         }
     }
 }
@@ -477,14 +528,27 @@ mod tests {
         HandleFact, MetaFact, SpanFact,
     };
     use crate::history::{SnapshotEntry, SnapshotEntryFact};
-    use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+    use crate::ids::{CorpusId, Generation, HandleId, NativeId, OriginUri, Revision, SourceName};
     use crate::runtime::prelude::standard_prelude_set;
     use crate::visibility::FactVisibility;
 
+    fn handle_id(value: &str) -> HandleId {
+        HandleId::new(value).expect("fixture handle is nonempty")
+    }
+
     fn identity(native_id: &str, generation: Generation) -> FactIdentity {
+        identity_for("test", "test-source", native_id, generation)
+    }
+
+    fn identity_for(
+        corpus: &str,
+        source: &str,
+        native_id: &str,
+        generation: Generation,
+    ) -> FactIdentity {
         FactIdentity::new(
-            CorpusId::from("test"),
-            SourceName::from("test-source"),
+            CorpusId::from(corpus),
+            SourceName::from(source),
             NativeId::from(native_id),
             OriginUri::from(format!("file://{native_id}")),
             Revision::from("r1"),
@@ -495,9 +559,30 @@ mod tests {
     fn handle(native_id: &str, generation: Generation, status: &str) -> HandleFact {
         HandleFact {
             identity: identity(native_id, generation),
-            id: native_id.to_string(),
+            id: handle_id(native_id),
             kind: "file".to_string(),
             status: Some(status.to_string()),
+            namespace: String::new(),
+            file: native_id.to_string(),
+            line: 1,
+            date: None,
+            area: String::new(),
+            summary: String::new(),
+        }
+    }
+
+    fn scoped_handle(
+        corpus: &str,
+        source: &str,
+        native_id: &str,
+        id: &str,
+        generation: Generation,
+    ) -> HandleFact {
+        HandleFact {
+            identity: identity_for(corpus, source, native_id, generation),
+            id: handle_id(id),
+            kind: "file".to_string(),
+            status: Some("draft".to_string()),
             namespace: String::new(),
             file: native_id.to_string(),
             line: 1,
@@ -519,7 +604,7 @@ mod tests {
     ) -> MetaFact {
         MetaFact {
             identity: identity(native_id, generation),
-            handle: native_id.to_string(),
+            handle: handle_id(native_id),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -528,8 +613,8 @@ mod tests {
     fn edge(from: &str, to: &str, generation: Generation) -> EdgeFact {
         EdgeFact {
             identity: identity(from, generation),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: "DependsOn".to_string(),
             file: from.to_string(),
             line: 1,
@@ -541,7 +626,7 @@ mod tests {
     fn content(native_id: &str, span_id: &str, generation: Generation) -> ContentFact {
         ContentFact {
             identity: identity(native_id, generation),
-            handle: native_id.to_string(),
+            handle: handle_id(native_id),
             span_id: span_id.to_string(),
             lines: 1,
             text: format!("content for {native_id}"),
@@ -553,7 +638,7 @@ mod tests {
         SpanFact {
             identity: identity(native_id, generation),
             id: span_id.to_string(),
-            handle: native_id.to_string(),
+            handle: handle_id(native_id),
             start_line: 1,
             end_line: 2,
             summary: format!("span for {native_id}"),
@@ -564,7 +649,7 @@ mod tests {
         ConcernFact {
             identity: identity(member, generation),
             name: name.to_string(),
-            member: member.to_string(),
+            member: handle_id(member),
         }
     }
 
@@ -602,7 +687,7 @@ mod tests {
             corpus: CorpusId::from(corpus),
             snapshot: snapshot.to_string(),
             at: at.to_string(),
-            id: id.to_string(),
+            id: handle_id(id),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -634,8 +719,248 @@ mod tests {
         store.merge(second).expect("merge second");
 
         assert_eq!(store.handles().len(), 1);
-        assert_eq!(store.handles()[0].id, "b.md");
+        assert_eq!(store.handles()[0].id.as_str(), "b.md");
         assert_eq!(store.generations()[0].current, Generation::new(2));
+    }
+
+    #[test]
+    fn merge_rejects_duplicate_handle_ids_within_one_corpus() {
+        let mut store = FactStore::default();
+        let mut batch = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        batch.handles.push(scoped_handle(
+            "test",
+            "md",
+            "first.md",
+            "shared",
+            Generation::new(1),
+        ));
+        batch.handles.push(scoped_handle(
+            "test",
+            "md",
+            "second.md",
+            "shared",
+            Generation::new(1),
+        ));
+
+        let error = store.merge(batch).expect_err("duplicate id rejected");
+
+        assert!(matches!(
+            error,
+            StoreError::DuplicateHandleId(ref conflict) if conflict.id.as_str() == "shared"
+        ));
+        assert!(store.handles().is_empty());
+        assert!(store.generations().is_empty());
+    }
+
+    #[test]
+    fn rejected_full_snapshot_leaves_existing_sources_untouched() {
+        let mut store = FactStore::default();
+        for (source, native_id, id) in [
+            ("md", "original.md", "original"),
+            ("code", "src/lib.rs", "occupied"),
+        ] {
+            let mut batch = FactBatch::new(
+                CorpusId::from("test"),
+                SourceName::from(source),
+                FactBatchMode::FullSnapshot,
+                Generation::new(1),
+            );
+            batch.handles.push(scoped_handle(
+                "test",
+                source,
+                native_id,
+                id,
+                Generation::new(1),
+            ));
+            store.merge(batch).expect("seed source");
+        }
+        let before_handles = store.handles().to_vec();
+        let before_generations = store.generations().to_vec();
+
+        let mut replacement = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(2),
+        );
+        replacement.handles.push(scoped_handle(
+            "test",
+            "md",
+            "replacement.md",
+            "occupied",
+            Generation::new(2),
+        ));
+
+        let error = store
+            .merge(replacement)
+            .expect_err("cross-source duplicate rejected");
+
+        assert!(matches!(error, StoreError::DuplicateHandleId(_)));
+        assert_eq!(store.handles(), before_handles);
+        assert_eq!(store.generations(), before_generations);
+    }
+
+    #[test]
+    fn rejected_delta_leaves_relations_visibility_and_generation_untouched() {
+        let mut store = FactStore::default();
+        let mut md = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        md.handles.push(scoped_handle(
+            "test",
+            "md",
+            "original.md",
+            "original",
+            Generation::new(1),
+        ));
+        md.meta.push(MetaFact {
+            identity: identity_for("test", "md", "original.md", Generation::new(1)),
+            handle: handle_id("original"),
+            key: "status".to_string(),
+            value: "draft".to_string(),
+        });
+        md.set_visibility(NativeId::from("original.md"), FactVisibility::Private);
+        store.merge(md).expect("seed markdown source");
+
+        let mut code = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("code"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        code.handles.push(scoped_handle(
+            "test",
+            "code",
+            "src/lib.rs",
+            "occupied",
+            Generation::new(1),
+        ));
+        store.merge(code).expect("seed code source");
+
+        let before_handles = store.handles().to_vec();
+        let before_meta = store.meta().to_vec();
+        let before_generations = store.generations().to_vec();
+        let before_visibility = store.visibility_for(&identity_for(
+            "test",
+            "md",
+            "original.md",
+            Generation::new(1),
+        ));
+
+        let mut delta = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::Delta,
+            Generation::new(2),
+        );
+        delta.handles.push(scoped_handle(
+            "test",
+            "md",
+            "original.md",
+            "occupied",
+            Generation::new(2),
+        ));
+
+        let error = store
+            .merge(delta)
+            .expect_err("cross-source duplicate rejected");
+
+        assert!(matches!(error, StoreError::DuplicateHandleId(_)));
+        assert_eq!(store.handles(), before_handles);
+        assert_eq!(store.meta(), before_meta);
+        assert_eq!(store.generations(), before_generations);
+        assert_eq!(
+            store.visibility_for(&identity_for(
+                "test",
+                "md",
+                "original.md",
+                Generation::new(1)
+            )),
+            before_visibility
+        );
+    }
+
+    #[test]
+    fn full_snapshot_and_delta_may_replace_the_same_native_handle() {
+        let mut store = FactStore::default();
+        let mut first = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(1),
+        );
+        first.handles.push(scoped_handle(
+            "test",
+            "md",
+            "doc.md",
+            "doc",
+            Generation::new(1),
+        ));
+        store.merge(first).expect("seed source");
+
+        let mut full = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::FullSnapshot,
+            Generation::new(2),
+        );
+        full.handles.push(scoped_handle(
+            "test",
+            "md",
+            "doc.md",
+            "doc",
+            Generation::new(2),
+        ));
+        store.merge(full).expect("full replacement");
+
+        let mut delta = FactBatch::new(
+            CorpusId::from("test"),
+            SourceName::from("md"),
+            FactBatchMode::Delta,
+            Generation::new(3),
+        );
+        delta.handles.push(scoped_handle(
+            "test",
+            "md",
+            "doc.md",
+            "doc",
+            Generation::new(3),
+        ));
+        store.merge(delta).expect("delta replacement");
+
+        assert_eq!(store.handles().len(), 1);
+        assert_eq!(store.handles()[0].identity.generation, Generation::new(3));
+    }
+
+    #[test]
+    fn equal_handle_ids_are_independent_across_corpora() {
+        let mut store = FactStore::default();
+        for corpus in ["first", "second"] {
+            let mut batch = FactBatch::new(
+                CorpusId::from(corpus),
+                SourceName::from("md"),
+                FactBatchMode::FullSnapshot,
+                Generation::new(1),
+            );
+            batch.handles.push(scoped_handle(
+                corpus,
+                "md",
+                "doc.md",
+                "shared",
+                Generation::new(1),
+            ));
+            store.merge(batch).expect("independent corpus");
+        }
+
+        assert_eq!(store.handles().len(), 2);
     }
 
     #[test]
@@ -825,7 +1150,7 @@ mod tests {
         store.merge(delta).expect("merge delta");
 
         assert_eq!(store.handles().len(), 1);
-        assert_eq!(store.handles()[0].id, "b.md");
+        assert_eq!(store.handles()[0].id.as_str(), "b.md");
         assert!(store.meta().is_empty());
         assert_eq!(store.generations()[0].current, Generation::new(2));
     }
@@ -1027,7 +1352,7 @@ mod tests {
             store
                 .snapshots()
                 .iter()
-                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id == "b.md")
+                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id.as_str() == "b.md")
         );
     }
 
@@ -1058,14 +1383,18 @@ mod tests {
                 "2026-05-13",
                 CorpusId::from("test"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+                vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
                 "2026-05-13",
                 CorpusId::from("other"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("b.md", "status", "current")],
+                vec![SnapshotEntryFact::new(
+                    handle_id("b.md"),
+                    "status",
+                    "current",
+                )],
             ),
         ]);
 
@@ -1077,7 +1406,7 @@ mod tests {
             store
                 .snapshots()
                 .iter()
-                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id == "b.md")
+                .any(|fact| fact.corpus == CorpusId::from("other") && fact.id.as_str() == "b.md")
         );
     }
 }

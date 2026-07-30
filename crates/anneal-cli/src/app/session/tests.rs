@@ -275,12 +275,9 @@ fn status_writes_capped_automatic_snapshot_history() {
     let history = anneal_core::read_snapshot_history(&root).expect("read history");
 
     assert_eq!(history.entries().len(), 1);
-    assert!(
-        history.entries()[0]
-            .facts
-            .iter()
-            .any(|fact| { fact.id == "a.md" && fact.key == "status" && fact.value == "draft" })
-    );
+    assert!(history.entries()[0].facts.iter().any(|fact| {
+        fact.id.as_str() == "a.md" && fact.key == "status" && fact.value == "draft"
+    }));
 }
 
 #[test]
@@ -297,7 +294,9 @@ fn runtime_loads_snapshot_history_for_eval_at_blocks() {
             CorpusId::from(DEFAULT_CORPUS),
             "test-prelude",
             vec![anneal_core::SnapshotEntryFact::new(
-                "a.md", "status", "draft",
+                anneal_core::HandleId::new("a.md").expect("fixture handle is nonempty"),
+                "status",
+                "draft",
             )],
         ),
     )

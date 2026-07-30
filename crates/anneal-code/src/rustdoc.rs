@@ -177,7 +177,7 @@ impl<'a> RustdocProjector<'a> {
             };
             batch.handles.push(HandleFact {
                 identity: self.identity_for(batch, file, file),
-                id: file.clone(),
+                id: handle_id(file),
                 kind: "file".to_string(),
                 status: None,
                 namespace: String::new(),
@@ -268,7 +268,7 @@ impl<'a> RustdocProjector<'a> {
             let kind = item_kind_name(item.inner.item_kind());
             batch.handles.push(HandleFact {
                 identity: self.identity_for(batch, handle, &file),
-                id: handle.clone(),
+                id: handle_id(handle),
                 kind: "section".to_string(),
                 status: item.deprecation.as_ref().map(|_| "deprecated".to_string()),
                 namespace: kind.to_string(),
@@ -451,14 +451,14 @@ impl<'a> RustdocProjector<'a> {
             batch.spans.push(SpanFact {
                 identity: identity.clone(),
                 id: span_id.clone(),
-                handle: handle.clone(),
+                handle: handle_id(&handle),
                 start_line,
                 end_line: start_line.saturating_add(lines.saturating_sub(1)),
                 summary,
             });
             batch.content.push(ContentFact {
                 identity,
-                handle: handle.clone(),
+                handle: handle_id(&handle),
                 span_id,
                 lines,
                 tokens: token_count(&text),
@@ -620,7 +620,7 @@ impl<'a> RustdocProjector<'a> {
         let identity = self.identity_for(batch, handle, "");
         batch.handles.push(HandleFact {
             identity: identity.clone(),
-            id: handle.to_string(),
+            id: handle_id(handle),
             kind: "external".to_string(),
             status: None,
             namespace: "code".to_string(),
@@ -664,8 +664,8 @@ impl<'a> RustdocProjector<'a> {
         let native_id = format!("{from}::edge::{ordinal}::{kind}::{to}::{line}");
         batch.edges.push(EdgeFact {
             identity: self.identity_for(batch, &native_id, &file),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: kind.to_string(),
             file,
             line,

@@ -393,7 +393,7 @@ fn ranked_handles(index: &SearchIndex, query: &str) -> Vec<String> {
     ranked
         .into_iter()
         .filter_map(|hit| {
-            let handle = hit.hit().handle().to_owned();
+            let handle = hit.hit().handle().to_string();
             seen.insert(handle.clone()).then_some(handle)
         })
         .collect()

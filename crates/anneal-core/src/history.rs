@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::facts::SnapshotFact;
-use crate::ids::CorpusId;
+use crate::ids::{CorpusId, HandleId};
 use crate::runtime::prelude::PreludeSet;
 use crate::time::snapshot_days_since_epoch;
 
@@ -71,15 +71,15 @@ fn unknown_prelude_hash() -> String {
 /// One key/value fact captured for a handle in a snapshot entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotEntryFact {
-    pub id: String,
+    pub id: HandleId,
     pub key: String,
     pub value: String,
 }
 
 impl SnapshotEntryFact {
-    pub fn new(id: impl Into<String>, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(id: HandleId, key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
-            id: id.into(),
+            id,
             key: key.into(),
             value: value.into(),
         }
@@ -327,9 +327,6 @@ fn validate_snapshot_entry(entry: &SnapshotEntry) -> Result<(), String> {
         ));
     }
     for fact in &entry.facts {
-        if fact.id.is_empty() {
-            return Err("snapshot fact id is empty".to_string());
-        }
         if fact.key.is_empty() {
             return Err(format!("snapshot fact for {:?} has empty key", fact.id));
         }
@@ -355,6 +352,10 @@ mod tests {
     use super::*;
     use crate::runtime::prelude::standard_prelude_set;
 
+    fn handle_id(value: &str) -> HandleId {
+        HandleId::new(value).expect("fixture handle is nonempty")
+    }
+
     #[test]
     fn append_and_read_snapshot_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -364,14 +365,18 @@ mod tests {
             "2026-05-13T10:00:00Z",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
         let second = SnapshotEntry::new(
             "s2",
             "2026-05-14T10:00:00Z",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "current")],
+            vec![SnapshotEntryFact::new(
+                handle_id("a.md"),
+                "status",
+                "current",
+            )],
         );
 
         append_snapshot_entry(&root, &first).expect("append first");
@@ -394,7 +399,7 @@ mod tests {
             "2026-05-13T10:00:00Z",
             CorpusId::from("test"),
             "custom-hash",
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
 
         assert_eq!(entry.prelude_hash, "custom-hash");
@@ -419,7 +424,7 @@ mod tests {
             "2026-05-13",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
         append_snapshot_entry(&root, &entry).expect("append first");
         let path = repo_history_path(&root);
@@ -448,7 +453,7 @@ mod tests {
                 "2026-05-13T10:00:00Z",
                 CorpusId::from("test"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+                vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
         )
         .expect("append valid entry");
@@ -488,7 +493,7 @@ mod tests {
                 "2026-05-13T10:00:00Z",
                 CorpusId::from("test"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+                vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
         )
         .expect("append valid entry");
@@ -526,7 +531,7 @@ mod tests {
             "2026-05-13junk",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
 
         let err = append_snapshot_entry(&root, &entry).expect_err("entry rejected");
@@ -546,14 +551,14 @@ mod tests {
                 "2026-05-13",
                 CorpusId::from("test"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+                vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
             SnapshotEntry::new(
                 "s1",
                 "2026-05-13",
                 CorpusId::from("test"),
                 standard_prelude_set(),
-                vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+                vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
             ),
         ]);
 
@@ -585,7 +590,11 @@ mod tests {
                     format!("2026-05-1{idx}T10:00:00Z"),
                     CorpusId::from("test"),
                     standard_prelude_set(),
-                    vec![SnapshotEntryFact::new("a.md", "status", format!("s{idx}"))],
+                    vec![SnapshotEntryFact::new(
+                        handle_id("a.md"),
+                        "status",
+                        format!("s{idx}"),
+                    )],
                 ),
                 2,
             )
@@ -626,7 +635,7 @@ mod tests {
             "2026-05-13T10:00:00Z",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
 
         append_snapshot_entry_capped(&root, &entry, 100).expect("append capped");
@@ -648,14 +657,14 @@ mod tests {
             "2026-05-13T10:00:00Z",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
         let duplicate = SnapshotEntry::new(
             "s2",
             "2026-05-13T10:01:00Z",
             CorpusId::from("test"),
             standard_prelude_set(),
-            vec![SnapshotEntryFact::new("a.md", "status", "draft")],
+            vec![SnapshotEntryFact::new(handle_id("a.md"), "status", "draft")],
         );
 
         assert_eq!(

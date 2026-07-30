@@ -672,7 +672,7 @@ impl RuntimeSession {
             .iter()
             .filter_map(|handle| {
                 handle.status.as_ref().map(|status| {
-                    SnapshotEntryFact::new(handle.id.as_str(), "status", status.as_str())
+                    SnapshotEntryFact::new(handle.id.clone(), "status", status.as_str())
                 })
             })
             .collect::<Vec<_>>();

@@ -6,20 +6,21 @@
 
 use std::fmt;
 
+use crate::ids::HandleId;
 use crate::ranking::SearchHit;
 use crate::source::ActorContext;
 
 /// Request for bounded span retrieval behind the public `read(...)` relation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadRequest<'a> {
-    handle: &'a str,
+    handle: &'a HandleId,
     budget: i64,
     span_id: Option<&'a str>,
 }
 
 impl<'a> ReadRequest<'a> {
     #[must_use]
-    pub const fn new(handle: &'a str, budget: i64, span_id: Option<&'a str>) -> Self {
+    pub const fn new(handle: &'a HandleId, budget: i64, span_id: Option<&'a str>) -> Self {
         Self {
             handle,
             budget,
@@ -28,7 +29,7 @@ impl<'a> ReadRequest<'a> {
     }
 
     #[must_use]
-    pub const fn handle(&self) -> &'a str {
+    pub const fn handle(&self) -> &'a HandleId {
         self.handle
     }
 
@@ -46,13 +47,13 @@ impl<'a> ReadRequest<'a> {
 /// Request for whole-handle retrieval behind the gated `read_full(...)` primitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadFullRequest<'a> {
-    handle: &'a str,
+    handle: &'a HandleId,
     token_limit: i64,
 }
 
 impl<'a> ReadFullRequest<'a> {
     #[must_use]
-    pub const fn new(handle: &'a str, token_limit: i64) -> Self {
+    pub const fn new(handle: &'a HandleId, token_limit: i64) -> Self {
         Self {
             handle,
             token_limit,
@@ -60,7 +61,7 @@ impl<'a> ReadFullRequest<'a> {
     }
 
     #[must_use]
-    pub const fn handle(&self) -> &'a str {
+    pub const fn handle(&self) -> &'a HandleId {
         self.handle
     }
 
@@ -74,7 +75,7 @@ impl<'a> ReadFullRequest<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchRequest<'a> {
     query: &'a str,
-    handle: Option<&'a str>,
+    handle: Option<&'a HandleId>,
     span: SearchSpanScope<'a>,
     reason: Option<&'a str>,
     field: Option<&'a str>,
@@ -84,7 +85,7 @@ impl<'a> SearchRequest<'a> {
     #[must_use]
     pub const fn new(
         query: &'a str,
-        handle: Option<&'a str>,
+        handle: Option<&'a HandleId>,
         span: SearchSpanScope<'a>,
         reason: Option<&'a str>,
         field: Option<&'a str>,
@@ -104,7 +105,7 @@ impl<'a> SearchRequest<'a> {
     }
 
     #[must_use]
-    pub const fn handle(&self) -> Option<&'a str> {
+    pub const fn handle(&self) -> Option<&'a HandleId> {
         self.handle
     }
 
@@ -146,7 +147,7 @@ impl SearchSpanScope<'_> {
 /// One bounded span returned by a content provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadChunk {
-    handle: String,
+    handle: HandleId,
     span_id: String,
     text: String,
     start_line: i64,
@@ -157,7 +158,7 @@ pub struct ReadChunk {
 impl ReadChunk {
     #[must_use]
     pub fn new(
-        handle: impl Into<String>,
+        handle: HandleId,
         span_id: impl Into<String>,
         text: impl Into<String>,
         start_line: i64,
@@ -165,7 +166,7 @@ impl ReadChunk {
         tokens: i64,
     ) -> Self {
         Self {
-            handle: handle.into(),
+            handle,
             span_id: span_id.into(),
             text: text.into(),
             start_line,
@@ -175,7 +176,7 @@ impl ReadChunk {
     }
 
     #[must_use]
-    pub fn handle(&self) -> &str {
+    pub fn handle(&self) -> &HandleId {
         &self.handle
     }
 
@@ -219,7 +220,7 @@ impl ReadChunk {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReadChunkParts {
-    pub(crate) handle: String,
+    pub(crate) handle: HandleId,
     pub(crate) span_id: String,
     pub(crate) text: String,
     pub(crate) start_line: i64,
@@ -230,23 +231,23 @@ pub(crate) struct ReadChunkParts {
 /// Whole-handle content returned by `read_full(...)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadFullContent {
-    handle: String,
+    handle: HandleId,
     text: String,
     tokens: i64,
 }
 
 impl ReadFullContent {
     #[must_use]
-    pub fn new(handle: impl Into<String>, text: impl Into<String>, tokens: i64) -> Self {
+    pub fn new(handle: HandleId, text: impl Into<String>, tokens: i64) -> Self {
         Self {
-            handle: handle.into(),
+            handle,
             text: text.into(),
             tokens,
         }
     }
 
     #[must_use]
-    pub fn handle(&self) -> &str {
+    pub fn handle(&self) -> &HandleId {
         &self.handle
     }
 
@@ -309,7 +310,7 @@ pub trait SearchProvider: Send + Sync {
 #[derive(Debug)]
 pub enum ReadError {
     BudgetExceeded {
-        handle: String,
+        handle: HandleId,
         tokens: i64,
         limit: i64,
     },

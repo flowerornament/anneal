@@ -10,6 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::ids::HandleId;
 use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
 
 const DRIFT_CACHE_SCHEMA_VERSION: u32 = 1;
@@ -63,7 +64,7 @@ pub struct CodeTargetProbe {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeDriftEvidenceRequest {
-    pub ref_handle: String,
+    pub ref_handle: HandleId,
     pub target_path: String,
     pub edge_file: String,
     pub assertion_date: Option<String>,
@@ -127,7 +128,7 @@ struct DriftEvidenceFile {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CachedCodeDriftEvidence {
-    ref_handle: String,
+    ref_handle: HandleId,
     target_path: String,
     assertion_premise: String,
     repo_root: String,
@@ -628,7 +629,7 @@ fn migrate_entries_to_head(
         let key = drift_cache_key_from_parts(
             repo_root,
             head,
-            &entry.ref_handle,
+            entry.ref_handle.as_str(),
             &entry.target_path,
             &entry.assertion_premise,
         );
@@ -664,7 +665,7 @@ fn drift_cache_key(repo_root: &Utf8Path, head: &str, request: &CodeDriftEvidence
     drift_cache_key_from_parts(
         repo_root,
         head,
-        &request.ref_handle,
+        request.ref_handle.as_str(),
         &request.target_path,
         &assertion_premise(request),
     )
@@ -1290,7 +1291,8 @@ mod tests {
         run_git(&repo, &["commit", "-m", "touch churn"]);
 
         let request_for = |target: &str| CodeDriftEvidenceRequest {
-            ref_handle: format!("external:code:spec.md:1:{target}"),
+            ref_handle: HandleId::new(format!("external:code:spec.md:1:{target}"))
+                .expect("fixture handle is nonempty"),
             target_path: target.to_string(),
             edge_file: ".design/spec.md".to_string(),
             assertion_date: None,
@@ -1378,7 +1380,8 @@ mod tests {
         let assertion_revision = git_stdout(&repo, &["rev-parse", "HEAD"]);
 
         let request = |edge_file: &str| CodeDriftEvidenceRequest {
-            ref_handle: format!("external:code:{edge_file}:1:src/lib.rs"),
+            ref_handle: HandleId::new(format!("external:code:{edge_file}:1:src/lib.rs"))
+                .expect("fixture handle is nonempty"),
             target_path: "src/lib.rs".to_string(),
             edge_file: edge_file.to_string(),
             assertion_date: None,
@@ -1451,7 +1454,8 @@ mod tests {
         let assertion_revision = git_stdout(&repo, &["rev-parse", "HEAD"]);
 
         let request_for = |target: &str| CodeDriftEvidenceRequest {
-            ref_handle: format!("external:code:spec.md:1:{target}"),
+            ref_handle: HandleId::new(format!("external:code:spec.md:1:{target}"))
+                .expect("fixture handle is nonempty"),
             target_path: target.to_string(),
             edge_file: ".design/spec.md".to_string(),
             assertion_date: None,
@@ -1516,7 +1520,8 @@ mod tests {
         run_git(&repo, &["commit", "-m", "split cli"]);
 
         let request = CodeDriftEvidenceRequest {
-            ref_handle: "external:code:spec.md:6:src/cli.rs".to_string(),
+            ref_handle: HandleId::new("external:code:spec.md:6:src/cli.rs")
+                .expect("fixture handle is nonempty"),
             target_path: "src/cli.rs".to_string(),
             edge_file: ".design/spec.md".to_string(),
             assertion_date: None,

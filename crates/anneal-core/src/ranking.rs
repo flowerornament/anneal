@@ -11,6 +11,7 @@ use camino::Utf8Path;
 use crate::config_schema::{
     SEARCH_BOOST_HUB_KEY, SEARCH_BOOST_STATUS_ENTRY_PREFIX, parse_search_boost_value,
 };
+use crate::ids::HandleId;
 use crate::retrieval::SearchSpanScope;
 use crate::source::SearchInfo;
 
@@ -131,7 +132,7 @@ impl SearchScore {
 pub struct SearchHit {
     corpus: String,
     source: String,
-    handle: String,
+    handle: HandleId,
     span_id: Option<String>,
     raw_score: SearchScore,
     score_boost: SearchScore,
@@ -144,7 +145,7 @@ impl SearchHit {
     pub fn new(
         corpus: impl Into<String>,
         source: impl Into<String>,
-        handle: impl Into<String>,
+        handle: HandleId,
         span_id: Option<String>,
         raw_score: f32,
         reason: impl Into<String>,
@@ -153,7 +154,7 @@ impl SearchHit {
         Self {
             corpus: corpus.into(),
             source: source.into(),
-            handle: handle.into(),
+            handle,
             span_id,
             raw_score: SearchScore::new(raw_score),
             score_boost: SearchScore::new(0.0),
@@ -173,7 +174,7 @@ impl SearchHit {
     }
 
     #[must_use]
-    pub fn handle(&self) -> &str {
+    pub fn handle(&self) -> &HandleId {
         &self.handle
     }
 
@@ -244,7 +245,7 @@ impl Ranker for DefaultRanker {
     fn calibrate(&self, hit: &SearchHit, _ctx: &RankingContext) -> f32 {
         SearchScore::new(
             hit.raw_score().get() * field_weight(hit.field()) + hit.score_boost().get()
-                - historical_path_penalty(hit.handle()),
+                - historical_path_penalty(hit.handle().as_str()),
         )
         .get()
     }
@@ -255,7 +256,8 @@ impl Ranker for DefaultRanker {
             .then_with(|| a.source().cmp(b.source()))
             .then_with(|| hit_tie_priority(a).cmp(&hit_tie_priority(b)))
             .then_with(|| {
-                handle_fragment_priority(a.handle()).cmp(&handle_fragment_priority(b.handle()))
+                handle_fragment_priority(a.handle().as_str())
+                    .cmp(&handle_fragment_priority(b.handle().as_str()))
             })
             .then_with(|| a.handle().cmp(b.handle()))
             .then_with(|| a.span_id().cmp(&b.span_id()))
@@ -330,22 +332,30 @@ pub(crate) struct SearchHandleDocument<'a> {
 struct SearchDocumentKey {
     corpus: String,
     source: String,
-    handle: String,
+    handle: HandleId,
 }
 
 impl SearchDocumentKey {
-    fn new(corpus: &str, source: &str, handle: &str) -> Self {
+    fn new(corpus: &str, source: &str, handle: HandleId) -> Self {
         Self {
             corpus: corpus.to_owned(),
             source: source.to_owned(),
-            handle: handle.to_owned(),
+            handle,
         }
+    }
+
+    fn from_runtime(corpus: &str, source: &str, handle: &str) -> Self {
+        Self::new(
+            corpus,
+            source,
+            HandleId::new(handle).expect("search-index handles are nonempty"),
+        )
     }
 }
 
 #[derive(Clone, Debug, Default)]
 struct SearchDocument {
-    parent_file: Option<String>,
+    parent_file: Option<HandleId>,
     kind: Option<String>,
     status: Option<String>,
     fields: Vec<SearchField>,
@@ -441,7 +451,8 @@ impl SearchIndex {
 
     pub(crate) fn insert_handle(&mut self, fields: SearchHandleDocument<'_>) {
         let document = self.document_mut(fields.corpus, fields.source, fields.handle);
-        document.parent_file = (fields.file != fields.handle).then(|| fields.file.to_owned());
+        document.parent_file = (!fields.file.is_empty() && fields.file != fields.handle)
+            .then(|| HandleId::new(fields.file).expect("search-index files are nonempty"));
         document.kind = fields.kind.map(str::to_owned);
         document.status = fields.status.map(str::to_ascii_lowercase);
         push_field(
@@ -558,9 +569,10 @@ impl SearchIndex {
             .iter()
             .filter(|(key, document)| match handle {
                 Some(handle) if cluster_only || base_reason_filter.is_none() => {
-                    key.handle == handle || document.parent_file.as_deref() == Some(handle)
+                    key.handle.as_str() == handle
+                        || document.parent_file.as_ref().map(HandleId::as_str) == Some(handle)
                 }
-                Some(handle) => key.handle == handle,
+                Some(handle) => key.handle.as_str() == handle,
                 None => true,
             })
             .flat_map(|(key, document)| {
@@ -585,7 +597,7 @@ impl SearchIndex {
             );
         }
         if let Some(handle) = handle {
-            hits.retain(|hit| hit.handle() == handle);
+            hits.retain(|hit| hit.handle().as_str() == handle);
         }
         if cluster_only {
             hits.retain(|hit| hit.reason() == REASON_PARENT_CLUSTER);
@@ -604,19 +616,19 @@ impl SearchIndex {
     ) {
         *self
             .incoming_edge_counts
-            .entry(SearchDocumentKey::new(corpus, source, to))
+            .entry(SearchDocumentKey::from_runtime(corpus, source, to))
             .or_default() += 1;
         if kind == SUPERSEDES_EDGE_KIND {
             self.supersedes_from
-                .insert(SearchDocumentKey::new(corpus, source, from));
+                .insert(SearchDocumentKey::from_runtime(corpus, source, from));
             self.supersedes_to
-                .insert(SearchDocumentKey::new(corpus, source, to));
+                .insert(SearchDocumentKey::from_runtime(corpus, source, to));
         }
     }
 
     fn document_mut(&mut self, corpus: &str, source: &str, handle: &str) -> &mut SearchDocument {
         self.documents
-            .entry(SearchDocumentKey::new(corpus, source, handle))
+            .entry(SearchDocumentKey::from_runtime(corpus, source, handle))
             .or_default()
     }
 
@@ -638,14 +650,16 @@ impl SearchIndex {
 
         let mut clusters = BTreeMap::<SearchDocumentKey, ParentCluster>::new();
         for hit in hits.iter() {
-            let child_key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+            let child_key =
+                SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle().clone());
             let Some(child) = self.documents.get(&child_key) else {
                 continue;
             };
-            let Some(parent_handle) = child.parent_file.as_deref() else {
+            let Some(parent_handle) = child.parent_file.as_ref() else {
                 continue;
             };
-            let parent_key = SearchDocumentKey::new(hit.corpus(), hit.source(), parent_handle);
+            let parent_key =
+                SearchDocumentKey::new(hit.corpus(), hit.source(), parent_handle.clone());
             if !self.documents.contains_key(&parent_key) {
                 continue;
             }
@@ -715,7 +729,7 @@ impl SearchIndex {
     }
 
     fn calibrate_direct_hit(&self, hit: &SearchHit, ctx: &RankingContext) -> f32 {
-        let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+        let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle().clone());
         let mut boosted = hit.clone();
         boosted.score_boost =
             SearchScore::new(boosted.score_boost().get() + self.ranker_boost_for_key(&key));
@@ -727,7 +741,7 @@ impl SearchIndex {
             if hit.reason() == REASON_PARENT_CLUSTER {
                 continue;
             }
-            let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle());
+            let key = SearchDocumentKey::new(hit.corpus(), hit.source(), hit.handle().clone());
             hit.score_boost =
                 SearchScore::new(hit.score_boost.get() + self.ranker_boost_for_key(&key));
         }
@@ -830,13 +844,13 @@ struct ParentDirectSignal {
 
 #[derive(Clone, Debug, Default)]
 struct ParentCluster {
-    children: BTreeSet<String>,
+    children: BTreeSet<HandleId>,
     best_raw_score: f32,
 }
 
 impl ParentCluster {
-    fn record_child(&mut self, child: &str, raw_score: f32) {
-        self.children.insert(child.to_owned());
+    fn record_child(&mut self, child: &HandleId, raw_score: f32) {
+        self.children.insert(child.clone());
         self.best_raw_score = self.best_raw_score.max(raw_score);
     }
 
@@ -844,19 +858,9 @@ impl ParentCluster {
         self.children.len() >= 2 && self.best_raw_score >= PARENT_CLUSTER_MIN_CHILD_RAW_SCORE
     }
 
-    fn cluster_score(&self, query: &SearchQuery) -> f32 {
-        let hit = SearchHit::new(
-            "",
-            "",
-            "",
-            None,
-            self.best_raw_score + PARENT_CLUSTER_RAW_SCORE_BOOST,
-            REASON_PARENT_CLUSTER,
-            FIELD_IDENTIFIER,
-        );
-        let ctx = RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD);
-        DefaultRanker
-            .calibrate(&hit, &ctx)
+    fn cluster_score(&self, _query: &SearchQuery) -> f32 {
+        SearchScore::new(self.best_raw_score + PARENT_CLUSTER_RAW_SCORE_BOOST)
+            .get()
             .min(PARENT_CLUSTER_MAX_SCORE)
     }
 }
@@ -907,7 +911,7 @@ impl SearchDocument {
                         SearchHit::new(
                             key.corpus.as_str(),
                             key.source.as_str(),
-                            key.handle.as_str(),
+                            key.handle.clone(),
                             field.span_id.clone(),
                             score,
                             field.reason.clone(),
@@ -1288,6 +1292,10 @@ mod benchmark;
 mod tests {
     use super::*;
 
+    fn handle_id(value: &str) -> HandleId {
+        HandleId::new(value).expect("fixture handle is nonempty")
+    }
+
     #[test]
     fn clustered_child_hits_promote_canonical_parent_file() {
         let mut index = SearchIndex::default();
@@ -1325,14 +1333,22 @@ mod tests {
         );
 
         let first = ranked.first().expect("ranked hit");
-        assert_eq!(first.hit().handle(), "docs/canonical.md");
+        assert_eq!(first.hit().handle().as_str(), "docs/canonical.md");
         assert_eq!(first.hit().reason(), REASON_PARENT_CLUSTER);
-        assert!(ranked.iter().any(|hit| hit.hit().handle() == "MCD-1"));
-        assert!(ranked.iter().any(|hit| hit.hit().handle() == "MCD-2"));
+        assert!(
+            ranked
+                .iter()
+                .any(|hit| hit.hit().handle().as_str() == "MCD-1")
+        );
+        assert!(
+            ranked
+                .iter()
+                .any(|hit| hit.hit().handle().as_str() == "MCD-2")
+        );
         assert!(
             !ranked
                 .iter()
-                .any(|hit| hit.hit().handle() == "docs/other.md")
+                .any(|hit| hit.hit().handle().as_str() == "docs/other.md")
         );
     }
 
@@ -1355,9 +1371,12 @@ mod tests {
         let query = SearchQuery::parse("milestone chain").expect("query parses");
         let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
 
-        assert!(!hits.iter().any(
-            |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
-        ));
+        assert!(
+            !hits
+                .iter()
+                .any(|hit| hit.handle().as_str() == "docs/canonical.md"
+                    && hit.reason() == REASON_PARENT_CLUSTER)
+        );
     }
 
     #[test]
@@ -1392,7 +1411,7 @@ mod tests {
         );
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].handle(), "docs/canonical.md");
+        assert_eq!(hits[0].handle().as_str(), "docs/canonical.md");
         assert_eq!(hits[0].reason(), REASON_PARENT_CLUSTER);
     }
 
@@ -1428,7 +1447,7 @@ mod tests {
         );
 
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].handle(), "docs/canonical.md");
+        assert_eq!(hits[0].handle().as_str(), "docs/canonical.md");
         assert_eq!(hits[0].reason(), REASON_PARENT_CLUSTER);
     }
 
@@ -1493,7 +1512,8 @@ mod tests {
         let parent_cluster_hits = hits
             .iter()
             .filter(|hit| {
-                hit.handle() == "docs/milestone-chain.md" && hit.reason() == REASON_PARENT_CLUSTER
+                hit.handle().as_str() == "docs/milestone-chain.md"
+                    && hit.reason() == REASON_PARENT_CLUSTER
             })
             .collect::<Vec<_>>();
 
@@ -1525,9 +1545,12 @@ mod tests {
         let query = SearchQuery::parse("milestone chain").expect("query parses");
         let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
 
-        assert!(!hits.iter().any(
-            |hit| hit.handle() == "docs/canonical.md" && hit.reason() == REASON_PARENT_CLUSTER
-        ));
+        assert!(
+            !hits
+                .iter()
+                .any(|hit| hit.handle().as_str() == "docs/canonical.md"
+                    && hit.reason() == REASON_PARENT_CLUSTER)
+        );
     }
 
     #[test]
@@ -1557,8 +1580,10 @@ mod tests {
         let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
 
         assert!(
-            !hits.iter().any(|hit| hit.handle() == "docs/code-review.md"
-                && hit.reason() == REASON_PARENT_CLUSTER)
+            !hits
+                .iter()
+                .any(|hit| hit.handle().as_str() == "docs/code-review.md"
+                    && hit.reason() == REASON_PARENT_CLUSTER)
         );
     }
 
@@ -1599,7 +1624,7 @@ mod tests {
         );
 
         let first = ranked.first().expect("ranked hit").hit();
-        assert_eq!(first.handle(), "docs/runtime-overview.md");
+        assert_eq!(first.handle().as_str(), "docs/runtime-overview.md");
         assert_eq!(first.reason(), REASON_IDENTIFIER_SUBSTRING);
     }
 
@@ -1624,11 +1649,9 @@ mod tests {
             SearchQuery::parse("medium content decomposition milestones").expect("query parses");
         let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
 
-        assert!(
-            !hits
-                .iter()
-                .any(|hit| hit.handle() == "LABELS.md" && hit.reason() == REASON_PARENT_CLUSTER)
-        );
+        assert!(!hits.iter().any(
+            |hit| hit.handle().as_str() == "LABELS.md" && hit.reason() == REASON_PARENT_CLUSTER
+        ));
     }
 
     #[test]
@@ -1655,7 +1678,7 @@ mod tests {
         );
 
         let hit = ranked.first().expect("expanded query finds OQ");
-        assert_eq!(hit.hit().handle(), "OQ-42");
+        assert_eq!(hit.hit().handle().as_str(), "OQ-42");
         assert!(!hit.low_confidence());
     }
 
@@ -1707,7 +1730,7 @@ mod tests {
         );
 
         assert_eq!(
-            ranked.first().expect("ranked hit").hit().handle(),
+            ranked.first().expect("ranked hit").hit().handle().as_str(),
             "formal-model/sample-formal-model-v17.md"
         );
     }
@@ -1753,7 +1776,7 @@ mod tests {
         );
 
         assert_eq!(
-            ranked.first().expect("ranked hit").hit().handle(),
+            ranked.first().expect("ranked hit").hit().handle().as_str(),
             "authority.md"
         );
     }
@@ -1802,7 +1825,7 @@ mod tests {
         );
 
         assert_eq!(
-            ranked.first().expect("ranked hit").hit().handle(),
+            ranked.first().expect("ranked hit").hit().handle().as_str(),
             "draft.md"
         );
     }
@@ -1856,13 +1879,13 @@ mod tests {
         );
 
         assert_eq!(
-            ranked.first().expect("ranked hit").hit().handle(),
+            ranked.first().expect("ranked hit").hit().handle().as_str(),
             "perf/2026-05-31.md"
         );
         assert!(
             ranked
                 .iter()
-                .any(|hit| hit.hit().handle() == "perf/2026-05-30.md"),
+                .any(|hit| hit.hit().handle().as_str() == "perf/2026-05-30.md"),
             "superseded material stays reachable"
         );
     }
@@ -1891,7 +1914,7 @@ mod tests {
             .find(|hit| hit.field() == FIELD_HEADING)
             .expect("heading hit is indexed");
 
-        assert_eq!(heading_hit.handle(), "docs/protocol.md");
+        assert_eq!(heading_hit.handle().as_str(), "docs/protocol.md");
         assert_eq!(
             heading_hit.span_id(),
             Some("docs/protocol.md#h/lease-protocol")
@@ -1966,7 +1989,7 @@ mod tests {
         let hit = SearchHit::new(
             "test",
             "fixture",
-            "draft.md",
+            handle_id("draft.md"),
             None,
             raw_score,
             REASON_TITLE_SUBSTRING,
@@ -1979,6 +2002,23 @@ mod tests {
         );
 
         assert!(ranked[0].low_confidence());
+    }
+
+    #[test]
+    fn empty_provenance_file_is_not_treated_as_a_parent_handle() {
+        let mut index = SearchIndex::default();
+
+        insert_handle(&mut index, "external:module", "", "external module");
+
+        let key = SearchDocumentKey::new("test", "fixture", handle_id("external:module"));
+        assert_eq!(
+            index
+                .documents
+                .get(&key)
+                .expect("external handle was indexed")
+                .parent_file,
+            None
+        );
     }
 
     fn insert_handle(index: &mut SearchIndex, handle: &str, file: &str, summary: &str) {

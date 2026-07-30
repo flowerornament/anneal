@@ -48,18 +48,18 @@ fn compute_handle_impact(store: &FactStore, handle: &str) -> Vec<ImpactDependenc
             continue;
         };
         for edge in edges {
-            if !seen.insert(edge.from.clone()) {
+            if !seen.insert(edge.from.to_string()) {
                 continue;
             }
             let next_depth = depth.saturating_add(1);
             dependencies.push(ImpactDependency {
-                handle: edge.from.clone(),
+                handle: edge.from.to_string(),
                 depth: next_depth,
                 kind: edge.kind.clone(),
                 file: edge.file.clone(),
                 line: edge.line,
             });
-            queue.push_back((edge.from.clone(), next_depth));
+            queue.push_back((edge.from.to_string(), next_depth));
         }
     }
     dependencies
@@ -103,7 +103,7 @@ fn resolve_lineage_file_handle(store: &FactStore, handle: &str) -> Option<String
     if let Some(resolved) = store
         .meta()
         .iter()
-        .find(|fact| fact.handle == handle && fact.key == RESOLVED_FILE_META_KEY)
+        .find(|fact| fact.handle.as_str() == handle && fact.key == RESOLVED_FILE_META_KEY)
         .map(|fact| fact.value.as_str())
         && file_handles.contains(resolved)
     {

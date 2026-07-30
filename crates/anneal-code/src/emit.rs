@@ -1,7 +1,7 @@
 use super::{
     BTreeMap, Command, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, FactBatch,
-    FactIdentity, HandleFact, ItemKind, MetaFact, NativeId, OriginUri, Revision, SOURCE_NAME,
-    Utf8Path, Utf8PathBuf, Visibility, meta_key, normalize_path_inside_root,
+    FactIdentity, HandleFact, HandleId, ItemKind, MetaFact, NativeId, OriginUri, Revision,
+    SOURCE_NAME, Utf8Path, Utf8PathBuf, Visibility, meta_key, normalize_path_inside_root,
     normalize_relative_path, relation_value,
 };
 
@@ -80,7 +80,11 @@ pub(super) fn version_handle_id(tag: &str) -> String {
     format!("code-version:{tag}")
 }
 
-pub(super) fn meta_values(batch: &FactBatch, key: &str) -> BTreeMap<String, String> {
+pub(super) fn handle_id(value: impl Into<String>) -> HandleId {
+    HandleId::new(value).expect("code-source handle identities are nonempty")
+}
+
+pub(super) fn meta_values(batch: &FactBatch, key: &str) -> BTreeMap<HandleId, String> {
     batch
         .meta
         .iter()
@@ -111,7 +115,7 @@ pub(super) fn push_meta_fact(
 ) {
     batch.meta.push(MetaFact {
         identity: identity.clone(),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: key.to_string(),
         value: value.to_string(),
     });
@@ -125,13 +129,17 @@ pub(super) fn ensure_external_code_handle(
     handle: &str,
     qualified: &str,
 ) {
-    if batch.handles.iter().any(|existing| existing.id == handle) {
+    if batch
+        .handles
+        .iter()
+        .any(|existing| existing.id.as_str() == handle)
+    {
         return;
     }
     let identity = code_identity(batch, root, revision, handle, file);
     batch.handles.push(HandleFact {
         identity: identity.clone(),
-        id: handle.to_string(),
+        id: handle_id(handle),
         kind: "external".to_string(),
         status: None,
         namespace: "code".to_string(),

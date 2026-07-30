@@ -17,7 +17,7 @@ depends-on:
 
 ## 1. The measured mismatch
 
-At v0.22.0, `cargo public-api -p anneal-core --simplified` reports:
+At v0.22.0, `cargo public-api -p anneal-core -sss --color never` reports:
 
 ```
 3,034 public API lines
@@ -78,6 +78,12 @@ ground:
 > An item belongs at the root if and only if both consumer classes require it,
 > or it is specifically an adapter/provider extension contract. Otherwise it
 > belongs under `runtime` or remains private.
+
+Admission is transitive through public signatures. A legitimately admitted root
+type cannot carry a root method, associated type, field, or trait bound whose
+type fails the same admission test. The owning type does not launder a
+host-only type into the shared facade. A host-only operation on a shared type
+must instead become private or enter through the runtime facade.
 
 The root remains flat because that is the contract already taught by the master
 spec's `Source`, `SourceContext`, and `FactBatch` examples. A third `adapter`
@@ -199,6 +205,13 @@ known facade:
   `anneal-core`.
 
 Growth at a declared altitude is not backsliding. Unexamined reachability is.
+
+The first known transitive-exposure finding is snapshot persistence:
+`FactStore` belongs at the root, but its public snapshot methods expose
+host/runtime-only `SnapshotFact` and `SnapshotHistory` there. This does not
+justify another root type. The snapshot persistence seam and a truthful typed
+snapshot-time value are a focused follow-up; they are not folded into the
+handle-identity change that exposed the gap.
 
 ## 8. Implementation evidence
 

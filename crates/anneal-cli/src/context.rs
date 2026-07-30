@@ -1261,7 +1261,7 @@ mod tests {
     fn handle_in_file(id: &str, file: &str, summary: &str) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: anneal_core::HandleId::new(id).expect("fixture handle is nonempty"),
             kind: if id == file { "file" } else { "label" }.to_string(),
             status: Some("current".to_string()),
             namespace: String::new(),
@@ -1276,7 +1276,7 @@ mod tests {
     fn content(handle: &str, span_id: &str, text: &str, tokens: u32) -> ContentFact {
         ContentFact {
             identity: identity(&format!("{handle}#{span_id}")),
-            handle: handle.to_string(),
+            handle: anneal_core::HandleId::new(handle).expect("fixture handle is nonempty"),
             span_id: span_id.to_string(),
             lines: 1,
             text: text.to_string(),
@@ -1298,7 +1298,7 @@ mod tests {
         SpanFact {
             identity: identity(&format!("{handle}#{span_id}")),
             id: span_id.to_string(),
-            handle: handle.to_string(),
+            handle: anneal_core::HandleId::new(handle).expect("fixture handle is nonempty"),
             start_line,
             end_line,
             summary: summary.to_string(),
@@ -1308,8 +1308,8 @@ mod tests {
     fn edge(from: &str, to: &str, kind: &str) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}:{kind}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: anneal_core::HandleId::new(from).expect("fixture handle is nonempty"),
+            to: anneal_core::HandleId::new(to).expect("fixture handle is nonempty"),
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,

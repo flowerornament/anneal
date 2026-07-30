@@ -23,7 +23,7 @@ use crate::facts::{
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
 };
-use crate::ids::Generation;
+use crate::ids::{Generation, HandleId};
 use crate::impact::ImpactTraversalPolicy;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
@@ -447,8 +447,8 @@ pub struct Database {
     graph: Arc<GraphIndex>,
     content: Arc<ContentIndex>,
     search: Arc<OnceLock<SearchIndex>>,
-    hidden_handles: Arc<BTreeSet<String>>,
-    hidden_content_spans: Arc<BTreeMap<String, BTreeSet<String>>>,
+    hidden_handles: Arc<BTreeSet<crate::HandleId>>,
+    hidden_content_spans: Arc<BTreeMap<crate::HandleId, BTreeSet<String>>>,
     content_provider: Option<Arc<dyn ContentProvider>>,
     search_provider: Option<Arc<dyn SearchProvider>>,
     introspection: Arc<IntrospectionIndex>,
@@ -713,12 +713,17 @@ impl Database {
         }
         let handle = match string_constraint(constraints, 1) {
             ArgConstraint::Any => None,
-            ArgConstraint::Exact(handle) => Some(handle),
+            ArgConstraint::Exact(handle) => {
+                let Ok(handle) = HandleId::new(handle) else {
+                    return Ok(Vec::new());
+                };
+                Some(handle)
+            }
             ArgConstraint::Impossible => return Ok(Vec::new()),
         };
         options.authorize(Action::Search {
             query: query_text.to_owned(),
-            handle: handle.map(str::to_owned),
+            handle: handle.clone(),
         })?;
         let span = match search_span_filter(constraints, 2) {
             SearchSpanConstraint::Any => SearchSpanScope::Any,
@@ -728,7 +733,7 @@ impl Database {
         };
         let reason = optional_string_constraint(constraints, 4);
         let field = optional_string_constraint(constraints, 5);
-        let request = SearchRequest::new(query_text, handle, span, reason, field);
+        let request = SearchRequest::new(query_text, handle.as_ref(), span, reason, field);
         let search_ctx = SearchContext::new(&options.actor);
         let hits = self
             .search_provider()
@@ -766,8 +771,11 @@ impl Database {
         if budget < 0 {
             return Ok(Vec::new());
         }
+        let Ok(handle_id) = HandleId::new(handle) else {
+            return Ok(Vec::new());
+        };
         options.authorize(Action::Read {
-            handle: handle.to_owned(),
+            handle: handle_id.clone(),
         })?;
         if self.hidden_handles.contains(handle) {
             return Ok(Vec::new());
@@ -783,10 +791,10 @@ impl Database {
         let chunks = if let Some(provider) = self.content_provider.as_deref() {
             let read_ctx = ReadContext::new(&options.actor);
             provider
-                .read(ReadRequest::new(handle, budget, span_id), &read_ctx)
+                .read(ReadRequest::new(&handle_id, budget, span_id), &read_ctx)
                 .map_err(map_read_error)?
         } else {
-            self.read_chunks_from_tuples(handle, budget, span_id)
+            self.read_chunks_from_tuples(&handle_id, budget, span_id)
         };
         let chunks = chunks
             .into_iter()
@@ -807,8 +815,11 @@ impl Database {
         let ArgConstraint::Exact(handle) = string_constraint(constraints, 0) else {
             return Ok(Vec::new());
         };
+        let Ok(handle_id) = HandleId::new(handle) else {
+            return Ok(Vec::new());
+        };
         options.authorize(Action::ReadFull {
-            handle: handle.to_owned(),
+            handle: handle_id.clone(),
         })?;
         if self.hidden_handles.contains(handle)
             || (self.content_provider.is_some() && self.handle_has_hidden_spans(handle))
@@ -822,12 +833,12 @@ impl Database {
             let read_ctx = ReadContext::new(&options.actor);
             provider
                 .read_full(
-                    ReadFullRequest::new(handle, options.read_full_token_limit),
+                    ReadFullRequest::new(&handle_id, options.read_full_token_limit),
                     &read_ctx,
                 )
                 .map_err(map_read_error)?
         } else {
-            self.full_content_from_tuples(handle, options.read_full_token_limit)?
+            self.full_content_from_tuples(&handle_id, options.read_full_token_limit)?
         };
         let Some(content) = content else {
             return Ok(Vec::new());
@@ -837,13 +848,13 @@ impl Database {
         }
         if content.tokens() > options.read_full_token_limit {
             return Err(EvalError::ReadFullBudgetExceeded {
-                handle: content.handle().to_owned(),
+                handle: content.handle().clone(),
                 tokens: content.tokens(),
                 limit: options.read_full_token_limit,
             });
         }
         let tuple = Tuple(vec![
-            string_value(content.handle()),
+            string_value(content.handle().as_str()),
             Value::String(content.text().to_owned()),
         ]);
         Ok(tuple_matches_constraints(&tuple, constraints)
@@ -852,9 +863,9 @@ impl Database {
             .collect())
     }
 
-    fn hit_is_visible(&self, handle: &str, span_id: Option<&str>) -> bool {
+    fn hit_is_visible(&self, handle: &HandleId, span_id: Option<&str>) -> bool {
         !self.hidden_handles.contains(handle)
-            && span_id.is_none_or(|span_id| !self.span_is_hidden(handle, span_id))
+            && span_id.is_none_or(|span_id| !self.span_is_hidden(handle.as_str(), span_id))
     }
 
     fn span_is_hidden(&self, handle: &str, span_id: &str) -> bool {
@@ -868,7 +879,7 @@ impl Database {
     }
     fn read_chunks_from_tuples(
         &self,
-        handle: &str,
+        handle: &HandleId,
         budget: i64,
         span_id: Option<&str>,
     ) -> Vec<ReadChunk> {
@@ -906,7 +917,7 @@ impl Database {
     }
     fn full_content_from_tuples(
         &self,
-        handle: &str,
+        handle: &HandleId,
         token_limit: i64,
     ) -> Result<Option<ReadFullContent>, EvalError> {
         let mut tokens = 0_i64;
@@ -918,7 +929,7 @@ impl Database {
             tokens = tokens.saturating_add(span.tokens);
             if tokens > token_limit {
                 return Err(EvalError::ReadFullBudgetExceeded {
-                    handle: handle.to_owned(),
+                    handle: handle.clone(),
                     tokens,
                     limit: token_limit,
                 });
@@ -931,7 +942,7 @@ impl Database {
         if content.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(ReadFullContent::new(handle, content, tokens)))
+            Ok(Some(ReadFullContent::new(handle.clone(), content, tokens)))
         }
     }
     fn match_tuples_from_tuples(
@@ -945,10 +956,13 @@ impl Database {
         let ArgConstraint::Exact(handle) = string_constraint(constraints, 1) else {
             return Vec::new();
         };
+        let Ok(handle) = HandleId::new(handle) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         for span in self
             .tuple_content
-            .content_spans_for_handle(&self.tuples, handle)
+            .content_spans_for_handle(&self.tuples, &handle)
         {
             for (line_offset, line) in span.text.lines().enumerate() {
                 if !regex.is_match(line) {
@@ -1420,33 +1434,42 @@ impl StoredRelation {
 struct ContentIndex {
     content: BTreeMap<ContentKey, ContentPayload>,
     spans: BTreeMap<ContentKey, SpanPayload>,
-    span_keys_by_handle_span: BTreeMap<(String, String), BTreeSet<ContentKey>>,
-    span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
+    span_keys_by_handle_span: BTreeMap<(HandleId, String), BTreeSet<ContentKey>>,
+    span_order_by_handle: BTreeMap<HandleId, BTreeSet<OrderedSpanKey>>,
 }
 #[derive(Clone, Debug, Default)]
 struct TupleContentIndex {
     content_rows: BTreeMap<ContentKey, RowId>,
     spans: BTreeMap<ContentKey, SpanPayload>,
-    span_keys_by_handle_span: BTreeMap<(String, String), BTreeSet<ContentKey>>,
-    span_order_by_handle: BTreeMap<String, BTreeSet<OrderedSpanKey>>,
+    span_keys_by_handle_span: BTreeMap<(HandleId, String), BTreeSet<ContentKey>>,
+    span_order_by_handle: BTreeMap<HandleId, BTreeSet<OrderedSpanKey>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContentKey {
     corpus: String,
     source: String,
-    handle: String,
+    handle: HandleId,
     span_id: String,
 }
 
 impl ContentKey {
-    fn new(corpus: &str, source: &str, handle: &str, span_id: &str) -> Self {
+    fn new(corpus: &str, source: &str, handle: HandleId, span_id: &str) -> Self {
         Self {
             corpus: corpus.to_owned(),
             source: source.to_owned(),
-            handle: handle.to_owned(),
+            handle,
             span_id: span_id.to_owned(),
         }
+    }
+
+    fn from_runtime(corpus: &str, source: &str, handle: &str, span_id: &str) -> Option<Self> {
+        Some(Self::new(
+            corpus,
+            source,
+            HandleId::new(handle).ok()?,
+            span_id,
+        ))
     }
 }
 
@@ -1551,7 +1574,9 @@ impl ContentIndex {
         ) else {
             return;
         };
-        let key = ContentKey::new(corpus, source, handle, span_id);
+        let Some(key) = ContentKey::from_runtime(corpus, source, handle, span_id) else {
+            return;
+        };
         let payload = ContentPayload {
             text: text.to_owned(),
             tokens,
@@ -1578,17 +1603,19 @@ impl ContentIndex {
         else {
             return;
         };
-        let key = ContentKey::new(corpus, source, handle, span_id);
+        let Some(key) = ContentKey::from_runtime(corpus, source, handle, span_id) else {
+            return;
+        };
         let payload = SpanPayload {
             start_line,
             end_line,
         };
         self.span_order_by_handle
-            .entry(handle.to_owned())
+            .entry(key.handle.clone())
             .or_default()
             .insert(OrderedSpanKey::new(corpus, source, span_id, start_line));
         self.span_keys_by_handle_span
-            .entry((handle.to_owned(), span_id.to_owned()))
+            .entry((key.handle.clone(), span_id.to_owned()))
             .or_default()
             .insert(key.clone());
         self.spans.insert(key, payload);
@@ -1600,7 +1627,7 @@ impl ContentIndex {
         Some(ContentSpan { key, content, span })
     }
 
-    fn content_spans_for_handle(&self, handle: &str) -> impl Iterator<Item = ContentSpan<'_>> {
+    fn content_spans_for_handle(&self, handle: &HandleId) -> impl Iterator<Item = ContentSpan<'_>> {
         self.span_order_by_handle
             .get(handle)
             .into_iter()
@@ -1609,7 +1636,7 @@ impl ContentIndex {
                     self.content_span(&ContentKey::new(
                         &ordered_key.corpus,
                         &ordered_key.source,
-                        handle,
+                        handle.clone(),
                         &ordered_key.span_id,
                     ))
                 })
@@ -1618,18 +1645,18 @@ impl ContentIndex {
 
     fn content_spans_for_handle_and_span<'a>(
         &'a self,
-        handle: &'a str,
+        handle: &'a HandleId,
         span_id: &'a str,
     ) -> impl Iterator<Item = ContentSpan<'a>> + 'a {
         self.span_keys_by_handle_span
-            .get(&(handle.to_owned(), span_id.to_owned()))
+            .get(&(handle.clone(), span_id.to_owned()))
             .into_iter()
             .flat_map(|keys| keys.iter().filter_map(|key| self.content_span(key)))
     }
 
     fn full_content_under_limit(
         &self,
-        handle: &str,
+        handle: &HandleId,
         token_limit: i64,
     ) -> Result<Option<ReadFullContent>, ReadError> {
         let mut tokens = 0_i64;
@@ -1638,7 +1665,7 @@ impl ContentIndex {
             tokens = tokens.saturating_add(span.content.tokens);
             if tokens > token_limit {
                 return Err(ReadError::BudgetExceeded {
-                    handle: handle.to_owned(),
+                    handle: handle.clone(),
                     tokens,
                     limit: token_limit,
                 });
@@ -1651,7 +1678,7 @@ impl ContentIndex {
         if content.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(ReadFullContent::new(handle, content, tokens)))
+            Ok(Some(ReadFullContent::new(handle.clone(), content, tokens)))
         }
     }
 }
@@ -1667,9 +1694,13 @@ impl TupleContentIndex {
             ) else {
                 return;
             };
-            index
-                .content_rows
-                .insert(ContentKey::new(corpus, source, handle, span_id), row_id);
+            index.content_rows.insert(
+                match ContentKey::from_runtime(corpus, source, handle, span_id) {
+                    Some(key) => key,
+                    None => return,
+                },
+                row_id,
+            );
         });
         tuples.for_each_tuple_row(SPAN_RELATION, |row| {
             let (
@@ -1690,15 +1721,17 @@ impl TupleContentIndex {
             else {
                 return;
             };
-            let key = ContentKey::new(corpus, source, handle, span_id);
+            let Some(key) = ContentKey::from_runtime(corpus, source, handle, span_id) else {
+                return;
+            };
             index
                 .span_order_by_handle
-                .entry(handle.to_owned())
+                .entry(key.handle.clone())
                 .or_default()
                 .insert(OrderedSpanKey::new(corpus, source, span_id, start_line));
             index
                 .span_keys_by_handle_span
-                .entry((handle.to_owned(), span_id.to_owned()))
+                .entry((key.handle.clone(), span_id.to_owned()))
                 .or_default()
                 .insert(key.clone());
             index.spans.insert(
@@ -1730,13 +1763,13 @@ impl TupleContentIndex {
     fn content_span_for_ordered_key<'a>(
         &'a self,
         tuples: &'a TupleDb,
-        handle: &str,
+        handle: &HandleId,
         ordered_key: &OrderedSpanKey,
     ) -> Option<TupleContentSpan<'a>> {
         let lookup = ContentKey::new(
             &ordered_key.corpus,
             &ordered_key.source,
-            handle,
+            handle.clone(),
             &ordered_key.span_id,
         );
         let (key, _) = self.content_rows.get_key_value(&lookup)?;
@@ -1746,7 +1779,7 @@ impl TupleContentIndex {
     fn content_spans_for_handle<'a>(
         &'a self,
         tuples: &'a TupleDb,
-        handle: &'a str,
+        handle: &'a HandleId,
     ) -> Vec<TupleContentSpan<'a>> {
         self.span_order_by_handle
             .get(handle)
@@ -1762,11 +1795,11 @@ impl TupleContentIndex {
     fn content_spans_for_handle_and_span<'a>(
         &'a self,
         tuples: &'a TupleDb,
-        handle: &'a str,
+        handle: &'a HandleId,
         span_id: &'a str,
     ) -> Vec<TupleContentSpan<'a>> {
         self.span_keys_by_handle_span
-            .get(&(handle.to_owned(), span_id.to_owned()))
+            .get(&(handle.clone(), span_id.to_owned()))
             .into_iter()
             .flat_map(|keys| keys.iter().filter_map(|key| self.content_span(tuples, key)))
             .collect()
@@ -1818,7 +1851,7 @@ impl ContentProvider for ContentIndex {
 
 fn read_chunk(span: ContentSpan<'_>) -> ReadChunk {
     ReadChunk::new(
-        &span.key.handle,
+        span.key.handle.clone(),
         &span.key.span_id,
         span.content.text.clone(),
         span.span.start_line,
@@ -1835,7 +1868,7 @@ fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChun
         return Some(read_chunk(span));
     }
     Some(ReadChunk::new(
-        &span.key.handle,
+        span.key.handle.clone(),
         &span.key.span_id,
         clip_text_to_budget(&span.content.text, budget),
         span.span.start_line,
@@ -1845,7 +1878,7 @@ fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChun
 }
 fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
     ReadChunk::new(
-        &span.key.handle,
+        span.key.handle.clone(),
         &span.key.span_id,
         span.text.to_owned(),
         span.span.start_line,
@@ -1861,7 +1894,7 @@ fn read_chunk_with_budget_from_tuple(span: TupleContentSpan<'_>, budget: i64) ->
         return Some(read_chunk_from_tuple(span));
     }
     Some(ReadChunk::new(
-        &span.key.handle,
+        span.key.handle.clone(),
         &span.key.span_id,
         clip_text_to_budget(span.text, budget),
         span.span.start_line,
@@ -1909,7 +1942,7 @@ fn enforce_read_budget(chunks: Vec<ReadChunk>, budget: i64, exact_span: bool) ->
 fn read_tuple(chunk: ReadChunk, budget: i64) -> Tuple {
     let chunk = chunk.into_parts();
     Tuple(vec![
-        string_value(&chunk.handle),
+        string_value(chunk.handle.as_str()),
         int_value(budget),
         string_value(&chunk.span_id),
         Value::String(chunk.text),
@@ -1923,7 +1956,7 @@ fn search_tuple(hit: &crate::ranking::RankedSearchHit, query: &str) -> Tuple {
     let hit_data = hit.hit();
     Tuple(vec![
         string_value(query),
-        string_value(hit_data.handle()),
+        string_value(hit_data.handle().as_str()),
         hit_data.span_id().map_or(Value::Null, string_value),
         float_value(f64::from(hit.score().get())),
         string_value(hit_data.reason()),
@@ -2132,7 +2165,7 @@ impl SearchProvider for SearchIndex {
         };
         Ok(self.search_hits(
             &query,
-            request.handle(),
+            request.handle().map(HandleId::as_str),
             request.span(),
             request.reason(),
             request.field(),
@@ -2142,24 +2175,24 @@ impl SearchProvider for SearchIndex {
 
 #[derive(Clone, Debug, Default)]
 struct GraphIndex {
-    nodes: BTreeSet<String>,
-    handles: BTreeMap<String, HandleState>,
-    outgoing: BTreeMap<String, BTreeSet<String>>,
-    incoming: BTreeMap<String, BTreeSet<String>>,
-    outgoing_edges: BTreeMap<String, BTreeSet<(String, String)>>,
-    incoming_edges: BTreeMap<String, BTreeSet<(String, String)>>,
+    nodes: BTreeSet<HandleId>,
+    handles: BTreeMap<HandleId, HandleState>,
+    outgoing: BTreeMap<HandleId, BTreeSet<HandleId>>,
+    incoming: BTreeMap<HandleId, BTreeSet<HandleId>>,
+    outgoing_edges: BTreeMap<HandleId, BTreeSet<(String, HandleId)>>,
+    incoming_edges: BTreeMap<HandleId, BTreeSet<(String, HandleId)>>,
     impact_traverse: ImpactTraversalPolicy,
-    out_edge_count: BTreeMap<String, usize>,
-    in_edge_count: BTreeMap<String, usize>,
-    cite_count: BTreeMap<String, usize>,
-    discharge_count: BTreeMap<String, usize>,
-    content_tokens: BTreeMap<String, usize>,
+    out_edge_count: BTreeMap<HandleId, usize>,
+    in_edge_count: BTreeMap<HandleId, usize>,
+    cite_count: BTreeMap<HandleId, usize>,
+    discharge_count: BTreeMap<HandleId, usize>,
+    content_tokens: BTreeMap<HandleId, usize>,
     active_statuses: BTreeSet<String>,
     terminal_statuses: BTreeSet<String>,
     settled_statuses: BTreeSet<String>,
     pipeline_positions: BTreeMap<String, i64>,
     linear_namespaces: BTreeSet<String>,
-    status_snapshots: BTreeMap<String, Vec<SnapshotStatus>>,
+    status_snapshots: BTreeMap<HandleId, Vec<SnapshotStatus>>,
     git_mtimes: BTreeMap<String, String>,
     evaluation_day: Option<i64>,
 }
@@ -2185,9 +2218,8 @@ impl GraphIndex {
         match relation.as_str() {
             HANDLE_RELATION => {
                 if let Some(id) = row_string(row, ID_FIELD) {
-                    self.nodes.insert(id.to_owned());
-                    self.handles.insert(
-                        id.to_owned(),
+                    self.insert_handle(
+                        id,
                         HandleState {
                             kind: row_string(row, KIND_FIELD).unwrap_or_default().to_owned(),
                             status: row_string(row, STATUS_FIELD).map(str::to_owned),
@@ -2206,35 +2238,7 @@ impl GraphIndex {
                 else {
                     return;
                 };
-                let from = from.to_owned();
-                let to = to.to_owned();
-                self.nodes.insert(from.clone());
-                self.nodes.insert(to.clone());
-                self.outgoing
-                    .entry(from.clone())
-                    .or_default()
-                    .insert(to.clone());
-                self.incoming
-                    .entry(to.clone())
-                    .or_default()
-                    .insert(from.clone());
-                if let Some(kind) = row_string(row, KIND_FIELD) {
-                    self.outgoing_edges
-                        .entry(from.clone())
-                        .or_default()
-                        .insert((kind.to_owned(), to.clone()));
-                    self.incoming_edges
-                        .entry(to.clone())
-                        .or_default()
-                        .insert((kind.to_owned(), from.clone()));
-                }
-                *self.out_edge_count.entry(from).or_default() += 1;
-                *self.in_edge_count.entry(to.clone()).or_default() += 1;
-                if row_string(row, KIND_FIELD) == Some(CITES_EDGE_KIND) {
-                    *self.cite_count.entry(to).or_default() += 1;
-                } else if row_string(row, KIND_FIELD) == Some(DISCHARGES_EDGE_KIND) {
-                    *self.discharge_count.entry(to).or_default() += 1;
-                }
+                self.insert_edge(from, to, row_string(row, KIND_FIELD));
             }
             CONFIG_RELATION => self.insert_config(row),
             CONTENT_RELATION => {
@@ -2243,8 +2247,7 @@ impl GraphIndex {
                 else {
                     return;
                 };
-                let tokens = usize::try_from(tokens).unwrap_or(0);
-                *self.content_tokens.entry(handle.to_owned()).or_default() += tokens;
+                self.insert_content_tokens(handle, tokens);
             }
             SNAPSHOT_RELATION => {
                 let (Some(id), Some(key), Some(status), Some(at)) = (
@@ -2281,9 +2284,8 @@ impl GraphIndex {
         match relation {
             HANDLE_RELATION => {
                 if let Some(id) = row.string(ID_FIELD) {
-                    self.nodes.insert(id.to_owned());
-                    self.handles.insert(
-                        id.to_owned(),
+                    self.insert_handle(
+                        id,
                         HandleState {
                             kind: row.string(KIND_FIELD).unwrap_or_default().to_owned(),
                             status: row.string(STATUS_FIELD).map(str::to_owned),
@@ -2298,35 +2300,7 @@ impl GraphIndex {
                 let (Some(from), Some(to)) = (row.string(FROM_FIELD), row.string(TO_FIELD)) else {
                     return;
                 };
-                let from = from.to_owned();
-                let to = to.to_owned();
-                self.nodes.insert(from.clone());
-                self.nodes.insert(to.clone());
-                self.outgoing
-                    .entry(from.clone())
-                    .or_default()
-                    .insert(to.clone());
-                self.incoming
-                    .entry(to.clone())
-                    .or_default()
-                    .insert(from.clone());
-                if let Some(kind) = row.string(KIND_FIELD) {
-                    self.outgoing_edges
-                        .entry(from.clone())
-                        .or_default()
-                        .insert((kind.to_owned(), to.clone()));
-                    self.incoming_edges
-                        .entry(to.clone())
-                        .or_default()
-                        .insert((kind.to_owned(), from.clone()));
-                }
-                *self.out_edge_count.entry(from).or_default() += 1;
-                *self.in_edge_count.entry(to.clone()).or_default() += 1;
-                if row.string(KIND_FIELD) == Some(CITES_EDGE_KIND) {
-                    *self.cite_count.entry(to).or_default() += 1;
-                } else if row.string(KIND_FIELD) == Some(DISCHARGES_EDGE_KIND) {
-                    *self.discharge_count.entry(to).or_default() += 1;
-                }
+                self.insert_edge(from, to, row.string(KIND_FIELD));
             }
             CONFIG_RELATION => self.insert_config_tuple(row),
             CONTENT_RELATION => {
@@ -2335,8 +2309,7 @@ impl GraphIndex {
                 else {
                     return;
                 };
-                let tokens = usize::try_from(tokens).unwrap_or(0);
-                *self.content_tokens.entry(handle.to_owned()).or_default() += tokens;
+                self.insert_content_tokens(handle, tokens);
             }
             SNAPSHOT_RELATION => {
                 let (Some(id), Some(key), Some(status), Some(at)) = (
@@ -2370,8 +2343,59 @@ impl GraphIndex {
         }
     }
 
+    fn insert_handle(&mut self, id: &str, state: HandleState) {
+        let Ok(id) = HandleId::new(id) else {
+            return;
+        };
+        self.nodes.insert(id.clone());
+        self.handles.insert(id, state);
+    }
+
+    fn insert_edge(&mut self, from: &str, to: &str, kind: Option<&str>) {
+        let (Ok(from), Ok(to)) = (HandleId::new(from), HandleId::new(to)) else {
+            return;
+        };
+        self.nodes.insert(from.clone());
+        self.nodes.insert(to.clone());
+        self.outgoing
+            .entry(from.clone())
+            .or_default()
+            .insert(to.clone());
+        self.incoming
+            .entry(to.clone())
+            .or_default()
+            .insert(from.clone());
+        if let Some(kind) = kind {
+            self.outgoing_edges
+                .entry(from.clone())
+                .or_default()
+                .insert((kind.to_owned(), to.clone()));
+            self.incoming_edges
+                .entry(to.clone())
+                .or_default()
+                .insert((kind.to_owned(), from.clone()));
+        }
+        *self.out_edge_count.entry(from).or_default() += 1;
+        *self.in_edge_count.entry(to.clone()).or_default() += 1;
+        if kind == Some(CITES_EDGE_KIND) {
+            *self.cite_count.entry(to).or_default() += 1;
+        } else if kind == Some(DISCHARGES_EDGE_KIND) {
+            *self.discharge_count.entry(to).or_default() += 1;
+        }
+    }
+
+    fn insert_content_tokens(&mut self, handle: &str, tokens: i64) {
+        let Ok(handle) = HandleId::new(handle) else {
+            return;
+        };
+        *self.content_tokens.entry(handle).or_default() += usize::try_from(tokens).unwrap_or(0);
+    }
+
     fn insert_status_snapshot(&mut self, handle: &str, snapshot: SnapshotStatus) {
-        let snapshots = self.status_snapshots.entry(handle.to_owned()).or_default();
+        let Ok(handle) = HandleId::new(handle) else {
+            return;
+        };
+        let snapshots = self.status_snapshots.entry(handle).or_default();
         let idx = snapshots
             .binary_search_by(|probe| {
                 probe
@@ -2539,9 +2563,9 @@ impl GraphIndex {
                 .nodes
                 .iter()
                 .flat_map(|start| {
-                    self.reachable_from(start, from_direction, None)
+                    self.reachable_from(start.as_str(), from_direction, None)
                         .into_iter()
-                        .map(|step| Tuple(vec![string_value(start), string_value(&step.node)]))
+                        .map(move |step| Tuple(vec![string_value(start), string_value(&step.node)]))
                 })
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
@@ -2587,9 +2611,9 @@ impl GraphIndex {
                 .nodes
                 .iter()
                 .flat_map(|start| {
-                    self.impact_reachable_from(start, Direction::Incoming, max_depth)
+                    self.impact_reachable_from(start.as_str(), Direction::Incoming, max_depth)
                         .into_iter()
-                        .map(|step| {
+                        .map(move |step| {
                             Tuple(vec![
                                 string_value(start),
                                 string_value(&step.node),
@@ -2641,9 +2665,9 @@ impl GraphIndex {
                 .nodes
                 .iter()
                 .flat_map(|start| {
-                    self.neighborhood_from(start, max_depth)
+                    self.neighborhood_from(start.as_str(), max_depth)
                         .into_iter()
-                        .map(|step| {
+                        .map(move |step| {
                             Tuple(vec![
                                 string_value(start),
                                 int_value(step.depth),
@@ -2659,15 +2683,15 @@ impl GraphIndex {
     fn lifecycle_tuples(
         &self,
         constraints: &[(usize, Value)],
-        predicate: fn(&Self, &str, &HandleState) -> bool,
+        predicate: fn(&Self, &HandleId, &HandleState) -> bool,
     ) -> Vec<Tuple> {
         let handle = string_constraint(constraints, 0);
         match handle {
             ArgConstraint::Impossible => Vec::new(),
             ArgConstraint::Exact(id) => self
                 .handles
-                .get(id)
-                .filter(|state| predicate(self, id, state))
+                .get_key_value(id)
+                .filter(|(id, state)| predicate(self, id, state))
                 .map(|_| vec![Tuple(vec![string_value(id)])])
                 .unwrap_or_default(),
             ArgConstraint::Any => self
@@ -2731,7 +2755,7 @@ impl GraphIndex {
     fn handle_count_tuples(
         &self,
         constraints: &[(usize, Value)],
-        counts: &BTreeMap<String, usize>,
+        counts: &BTreeMap<HandleId, usize>,
     ) -> Vec<Tuple> {
         let handle = string_constraint(constraints, 0);
         let count = i64_constraint(constraints, 1);
@@ -2804,12 +2828,12 @@ impl GraphIndex {
             (ArgConstraint::Impossible, _) | (_, ArgConstraint::Impossible) => Vec::new(),
             (ArgConstraint::Exact(handle), _) => self
                 .handles
-                .get(handle)
-                .map(|state| {
+                .get_key_value(handle)
+                .map(|(handle_id, state)| {
                     Tuple(vec![
                         string_value(handle),
                         int_value(days),
-                        int_value(self.flux_delta(handle, state, days, today)),
+                        int_value(self.flux_delta(handle_id, state, days, today)),
                     ])
                 })
                 .into_iter()
@@ -2873,7 +2897,7 @@ impl GraphIndex {
             ArgConstraint::Any => self
                 .handles
                 .keys()
-                .filter_map(|handle| self.changed_within_tuple_for(handle, days, cutoff))
+                .filter_map(|handle| self.changed_within_tuple_for(handle.as_str(), days, cutoff))
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
@@ -2889,7 +2913,7 @@ impl GraphIndex {
     fn count_tuples(
         &self,
         constraints: &[(usize, Value)],
-        counts: &BTreeMap<String, usize>,
+        counts: &BTreeMap<HandleId, usize>,
     ) -> Vec<Tuple> {
         let handle = string_constraint(constraints, 0);
         let count = i64_constraint(constraints, 1);
@@ -2919,7 +2943,7 @@ impl GraphIndex {
         }
     }
 
-    fn is_terminal(&self, _handle: &str, state: &HandleState) -> bool {
+    fn is_terminal(&self, _handle: &HandleId, state: &HandleState) -> bool {
         let Some(status) = state.status.as_deref() else {
             return false;
         };
@@ -2932,22 +2956,22 @@ impl GraphIndex {
         is_terminal_status(status)
     }
 
-    fn is_active(&self, handle: &str, state: &HandleState) -> bool {
+    fn is_active(&self, handle: &HandleId, state: &HandleState) -> bool {
         !self.is_terminal(handle, state)
     }
 
-    fn is_settled(&self, _handle: &str, state: &HandleState) -> bool {
+    fn is_settled(&self, _handle: &HandleId, state: &HandleState) -> bool {
         let Some(status) = state.status.as_deref() else {
             return false;
         };
         self.settled_statuses.contains(status) || is_canonical_settled_status(status)
     }
 
-    fn is_obligation(&self, _handle: &str, state: &HandleState) -> bool {
+    fn is_obligation(&self, _handle: &HandleId, state: &HandleState) -> bool {
         state.kind == LABEL_KIND && self.linear_namespaces.contains(&state.namespace)
     }
 
-    fn is_discharged(&self, handle: &str, _state: &HandleState) -> bool {
+    fn is_discharged(&self, handle: &HandleId, _state: &HandleState) -> bool {
         self.discharge_count
             .get(handle)
             .copied()
@@ -2955,7 +2979,7 @@ impl GraphIndex {
             > 0
     }
 
-    fn is_undischarged(&self, handle: &str, state: &HandleState) -> bool {
+    fn is_undischarged(&self, handle: &HandleId, state: &HandleState) -> bool {
         self.is_obligation(handle, state)
             && !self.is_discharged(handle, state)
             && !self.is_terminal(handle, state)
@@ -2987,7 +3011,13 @@ impl GraphIndex {
         ordering
     }
 
-    fn flux_delta(&self, handle: &str, state: &HandleState, days: i64, today: Option<i64>) -> i64 {
+    fn flux_delta(
+        &self,
+        handle: &HandleId,
+        state: &HandleState,
+        days: i64,
+        today: Option<i64>,
+    ) -> i64 {
         let Some(today) = today else {
             return 0;
         };
@@ -3044,15 +3074,18 @@ impl GraphIndex {
         include_start: bool,
         max_depth: Option<i64>,
     ) -> Vec<GraphStep> {
+        let Ok(start) = HandleId::new(start) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         if include_start {
             out.push(GraphStep {
-                node: start.to_owned(),
+                node: start.clone(),
                 depth: 0,
             });
         }
-        let mut seen = BTreeSet::from([start.to_owned()]);
-        let mut queue = VecDeque::from([(start.to_owned(), 0_i64)]);
+        let mut seen = BTreeSet::from([start.clone()]);
+        let mut queue = VecDeque::from([(start, 0_i64)]);
         while let Some((node, depth)) = queue.pop_front() {
             if max_depth.is_some_and(|max_depth| depth >= max_depth) {
                 continue;
@@ -3078,9 +3111,12 @@ impl GraphIndex {
         direction: Direction,
         max_depth: Option<i64>,
     ) -> Vec<GraphStep> {
+        let Ok(start) = HandleId::new(start) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
-        let mut seen = BTreeSet::from([start.to_owned()]);
-        let mut queue = VecDeque::from([(start.to_owned(), 0_i64)]);
+        let mut seen = BTreeSet::from([start.clone()]);
+        let mut queue = VecDeque::from([(start, 0_i64)]);
         while let Some((node, depth)) = queue.pop_front() {
             if max_depth.is_some_and(|max_depth| depth >= max_depth) {
                 continue;
@@ -3100,7 +3136,12 @@ impl GraphIndex {
         out
     }
 
-    fn visit_neighbors(&self, node: &str, direction: Direction, mut visit: impl FnMut(&String)) {
+    fn visit_neighbors(
+        &self,
+        node: &HandleId,
+        direction: Direction,
+        mut visit: impl FnMut(&HandleId),
+    ) {
         match direction {
             Direction::Outgoing => {
                 if let Some(outgoing) = self.outgoing.get(node) {
@@ -3133,9 +3174,9 @@ impl GraphIndex {
 
     fn visit_impact_neighbors(
         &self,
-        node: &str,
+        node: &HandleId,
         direction: Direction,
-        mut visit: impl FnMut(&String),
+        mut visit: impl FnMut(&HandleId),
     ) {
         match direction {
             Direction::Outgoing => {
@@ -3153,8 +3194,8 @@ impl GraphIndex {
 
     fn visit_impact_edges(
         &self,
-        edges: Option<&BTreeSet<(String, String)>>,
-        visit: &mut impl FnMut(&String),
+        edges: Option<&BTreeSet<(String, HandleId)>>,
+        visit: &mut impl FnMut(&HandleId),
     ) {
         let Some(edges) = edges else {
             return;
@@ -3176,7 +3217,7 @@ enum Direction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GraphStep {
-    node: String,
+    node: HandleId,
     depth: i64,
 }
 
@@ -3322,8 +3363,8 @@ fn tuple_matches_constraints(tuple: &Tuple, constraints: &[(usize, Value)]) -> b
     tuple.matches_constraints(constraints)
 }
 
-fn string_value(value: &str) -> Value {
-    Value::String(value.to_owned())
+fn string_value(value: impl AsRef<str>) -> Value {
+    Value::String(value.as_ref().to_owned())
 }
 
 fn int_value(value: i64) -> Value {
@@ -3420,9 +3461,9 @@ pub enum EvalError {
     },
     #[error("policy denied action '{action}' for actor '{actor}'")]
     PolicyDenied { actor: String, action: Action },
-    #[error("read_full({handle:?}) would return {tokens} tokens, exceeding the hard limit {limit}")]
+    #[error("read_full({handle}) would return {tokens} tokens, exceeding the hard limit {limit}")]
     ReadFullBudgetExceeded {
-        handle: String,
+        handle: HandleId,
         tokens: i64,
         limit: i64,
     },
@@ -3547,7 +3588,12 @@ fn primitive_tuples(
             let handle = match string_constraint(constraints, 1) {
                 ArgConstraint::Any => None,
                 ArgConstraint::Impossible => return Ok(Vec::new()),
-                ArgConstraint::Exact(handle) => Some(handle.to_owned()),
+                ArgConstraint::Exact(handle) => {
+                    let Ok(handle) = HandleId::new(handle) else {
+                        return Ok(Vec::new());
+                    };
+                    Some(handle)
+                }
             };
             options.authorize(Action::Match {
                 pattern: pattern.to_owned(),
@@ -3833,7 +3879,7 @@ fn trail_ref_row(
         ("ordinal", usize_value(ordinal)),
         ("corpus", Value::String(reference.corpus.to_string())),
         ("source", Value::String(reference.source.to_string())),
-        ("handle", Value::String(reference.handle.clone())),
+        ("handle", Value::String(reference.handle.to_string())),
         ("span_id", opt_string(reference.span_id.as_ref())),
         ("score", score_value(reference.score)),
     ])
@@ -3854,7 +3900,7 @@ fn handle_row(fact: &HandleFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
         [
-            ("id", Value::String(fact.id.clone())),
+            ("id", Value::String(fact.id.to_string())),
             ("kind", Value::String(fact.kind.clone())),
             ("status", opt_string(fact.status.as_ref())),
             ("namespace", Value::String(fact.namespace.clone())),
@@ -3875,8 +3921,8 @@ fn edge_row(fact: &EdgeFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
         [
-            ("from", Value::String(fact.from.clone())),
-            ("to", Value::String(fact.to.clone())),
+            ("from", Value::String(fact.from.to_string())),
+            ("to", Value::String(fact.to.to_string())),
             ("kind", Value::String(fact.kind.clone())),
             ("file", Value::String(fact.file.clone())),
             (
@@ -3897,7 +3943,7 @@ fn meta_row(fact: &MetaFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
         [
-            ("handle", Value::String(fact.handle.clone())),
+            ("handle", Value::String(fact.handle.to_string())),
             ("key", Value::String(fact.key.clone())),
             ("value", Value::String(fact.value.clone())),
         ],
@@ -3909,7 +3955,7 @@ fn content_row(fact: &ContentFact) -> NamedRow {
     source_fact_row(
         &fact.identity,
         [
-            ("handle", Value::String(fact.handle.clone())),
+            ("handle", Value::String(fact.handle.to_string())),
             ("span_id", Value::String(fact.span_id.clone())),
             (
                 "lines",
@@ -3930,7 +3976,7 @@ fn span_row(fact: &SpanFact) -> NamedRow {
         &fact.identity,
         [
             ("id", Value::String(fact.id.clone())),
-            ("handle", Value::String(fact.handle.clone())),
+            ("handle", Value::String(fact.handle.to_string())),
             (
                 "start_line",
                 Value::Number(NumberValue::Int(i64::from(fact.start_line))),
@@ -3950,7 +3996,7 @@ fn concern_row(fact: &ConcernFact) -> NamedRow {
         &fact.identity,
         [
             ("name", Value::String(fact.name.clone())),
-            ("member", Value::String(fact.member.clone())),
+            ("member", Value::String(fact.member.to_string())),
         ],
     )
 }
@@ -3958,11 +4004,11 @@ fn concern_row(fact: &ConcernFact) -> NamedRow {
 fn hidden_content_spans<F>(
     store: &FactStore,
     fact_visible: &F,
-) -> BTreeMap<String, BTreeSet<String>>
+) -> BTreeMap<crate::HandleId, BTreeSet<String>>
 where
     F: Fn(&FactIdentity) -> bool,
 {
-    let mut hidden = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut hidden = BTreeMap::<crate::HandleId, BTreeSet<String>>::new();
     for (handle, span_id) in store
         .content()
         .iter()
@@ -3984,7 +4030,9 @@ where
     hidden
 }
 
-fn hidden_content_span_count(spans_by_handle: &BTreeMap<String, BTreeSet<String>>) -> usize {
+fn hidden_content_span_count(
+    spans_by_handle: &BTreeMap<crate::HandleId, BTreeSet<String>>,
+) -> usize {
     spans_by_handle.values().map(BTreeSet::len).sum()
 }
 
@@ -4009,7 +4057,7 @@ fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
         ("corpus", Value::String(fact.corpus.to_string())),
         ("snapshot", Value::String(fact.snapshot.clone())),
         ("at", Value::String(fact.at.clone())),
-        ("id", Value::String(fact.id.clone())),
+        ("id", Value::String(fact.id.to_string())),
         ("key", Value::String(fact.key.clone())),
         ("value", Value::String(fact.value.clone())),
     ])
@@ -4027,6 +4075,10 @@ mod tests {
     use std::fmt::Write as _;
     use std::fs;
     use std::sync::OnceLock;
+
+    fn handle_id(value: &str) -> HandleId {
+        HandleId::new(value).expect("fixture handle is nonempty")
+    }
 
     use camino::Utf8PathBuf;
     use tempfile::{TempDir, tempdir};
@@ -4074,7 +4126,7 @@ mod tests {
     ) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: handle_id(id),
             kind: kind.to_string(),
             status: status.map(str::to_string),
             namespace: namespace.to_string(),
@@ -4102,8 +4154,8 @@ mod tests {
     fn edge(from: &str, to: &str, kind: &str) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
@@ -4115,7 +4167,7 @@ mod tests {
     fn meta(handle: &str, key: &str, value: &str) -> MetaFact {
         MetaFact {
             identity: identity(&format!("{handle}:meta:{key}")),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -4128,7 +4180,7 @@ mod tests {
     fn content_with_text(handle: &str, span_id: &str, text: &str, tokens: u32) -> ContentFact {
         ContentFact {
             identity: identity(&format!("{handle}#{span_id}")),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             span_id: span_id.to_string(),
             lines: 1,
             text: text.to_string(),
@@ -4140,7 +4192,7 @@ mod tests {
         SpanFact {
             identity: identity(&format!("{handle}#{span_id}:span")),
             id: span_id.to_string(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             start_line,
             end_line,
             summary: String::new(),
@@ -4170,7 +4222,7 @@ mod tests {
             corpus: CorpusId::from("test"),
             snapshot: snapshot.to_string(),
             at: at.to_string(),
-            id: id.to_string(),
+            id: handle_id(id),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -4468,7 +4520,7 @@ mod tests {
         batch.concerns = vec![ConcernFact {
             identity: identity("concern:C-core:a.md"),
             name: "C-core".to_string(),
-            member: "a.md".to_string(),
+            member: handle_id("a.md"),
         }];
 
         let mut store = FactStore::default();
@@ -4612,14 +4664,14 @@ mod tests {
             surfaced_refs: vec![TrailReference {
                 corpus: CorpusId::from("test"),
                 source: SourceName::from("md"),
-                handle: "alpha.md".to_string(),
+                handle: handle_id("alpha.md"),
                 span_id: Some("body".to_string()),
                 score: Some(0.875),
             }],
             consumed_refs: vec![TrailReference {
                 corpus: CorpusId::from("test"),
                 source: SourceName::from("md"),
-                handle: "beta.md".to_string(),
+                handle: handle_id("beta.md"),
                 span_id: None,
                 score: None,
             }],
@@ -5023,7 +5075,7 @@ mod tests {
     ) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: handle_id(id),
             kind: kind.to_string(),
             status: Some(status.to_string()),
             namespace: namespace.to_string(),
@@ -5038,8 +5090,8 @@ mod tests {
     fn mvs_edge(from: &str, to: &str, kind: &str, file: &str, line: u32) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}:{kind}:{line}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: kind.to_string(),
             file: file.to_string(),
             line,
@@ -5460,8 +5512,8 @@ mod tests {
         batch.handles = vec![handle("a.md", "file", "draft", "", "core")];
         batch.edges = vec![EdgeFact {
             identity: identity("a.md->missing:Pending"),
-            from: "a.md".to_string(),
-            to: "missing.md".to_string(),
+            from: handle_id("a.md"),
+            to: handle_id("missing.md"),
             kind: "Pending".to_string(),
             file: "a.md".to_string(),
             line: 7,
@@ -5741,11 +5793,11 @@ mod tests {
             ctx: &ReadContext<'_>,
         ) -> Result<Vec<ReadChunk>, ReadError> {
             assert_eq!(ctx.actor().actor, "anonymous-cli");
-            assert_eq!(request.handle(), "external.md");
+            assert_eq!(request.handle().as_str(), "external.md");
             assert_eq!(request.budget(), 20);
             assert_eq!(request.span_id(), Some("s2"));
             Ok(vec![ReadChunk::new(
-                request.handle(),
+                request.handle().clone(),
                 "s2",
                 "lazy provider content",
                 40,
@@ -5760,7 +5812,7 @@ mod tests {
             _ctx: &ReadContext<'_>,
         ) -> Result<Option<ReadFullContent>, ReadError> {
             Ok(Some(ReadFullContent::new(
-                request.handle(),
+                request.handle().clone(),
                 "lazy provider content",
                 7,
             )))
@@ -5824,7 +5876,7 @@ mod tests {
 
     impl Policy for DenyReadHandlePolicy {
         fn check(&self, _actor: &ActorContext, action: &Action) -> PolicyDecision {
-            if matches!(action, Action::Read { handle } if handle == self.0) {
+            if matches!(action, Action::Read { handle } if handle.as_str() == self.0) {
                 PolicyDecision::Deny
             } else {
                 PolicyDecision::Allow
@@ -5980,7 +6032,7 @@ mod tests {
             EvalError::PolicyDenied {
                 action: Action::Read { handle },
                 ..
-            } if handle == "alpha.md"
+            } if handle.as_str() == "alpha.md"
         ));
 
         let output = evaluate_query_output_with_options(
@@ -6068,9 +6120,16 @@ mod tests {
             _ctx: &ReadContext<'_>,
         ) -> Result<Vec<ReadChunk>, ReadError> {
             Ok(vec![
-                ReadChunk::new(request.handle(), "a", "fits", 1, 1, 4),
-                ReadChunk::new(request.handle(), "b", "too far", 2, 2, 100),
-                ReadChunk::new(request.handle(), "c", "would fit only if skipping", 3, 3, 1),
+                ReadChunk::new(request.handle().clone(), "a", "fits", 1, 1, 4),
+                ReadChunk::new(request.handle().clone(), "b", "too far", 2, 2, 100),
+                ReadChunk::new(
+                    request.handle().clone(),
+                    "c",
+                    "would fit only if skipping",
+                    3,
+                    3,
+                    1,
+                ),
             ])
         }
 
@@ -6080,7 +6139,7 @@ mod tests {
             _ctx: &ReadContext<'_>,
         ) -> Result<Option<ReadFullContent>, ReadError> {
             Ok(Some(ReadFullContent::new(
-                request.handle(),
+                request.handle().clone(),
                 "too much content",
                 request.token_limit().saturating_add(1),
             )))
@@ -6127,7 +6186,7 @@ mod tests {
                 handle,
                 tokens: 11,
                 limit: 10
-            } if handle == "external.md"
+            } if handle.as_str() == "external.md"
         ));
     }
 
@@ -6447,7 +6506,7 @@ mod tests {
                 SearchHit::new(
                     "test",
                     "lexical",
-                    "lexical.md",
+                    handle_id("lexical.md"),
                     Some("body".to_string()),
                     1.0,
                     "provider",
@@ -6456,7 +6515,7 @@ mod tests {
                 SearchHit::new(
                     "test",
                     "semantic",
-                    "semantic.md",
+                    handle_id("semantic.md"),
                     Some("body".to_string()),
                     0.2,
                     "provider",
@@ -6478,7 +6537,7 @@ mod tests {
             Ok(vec![SearchHit::new(
                 "test",
                 "external",
-                "secret.md",
+                handle_id("secret.md"),
                 Some("body".to_string()),
                 1.0,
                 "provider",
@@ -6670,7 +6729,7 @@ mod tests {
                 handle,
                 tokens: 17,
                 limit: 16,
-            } if handle == "alpha.md"
+            } if handle.as_str() == "alpha.md"
         ));
     }
 
@@ -7260,7 +7319,7 @@ release_blocker(code) := issue(code, "error").
             .map(|idx| TrailReference {
                 corpus: CorpusId::from("test"),
                 source: SourceName::from("md"),
-                handle: format!("surfaced-{idx}.md"),
+                handle: handle_id(&format!("surfaced-{idx}.md")),
                 span_id: None,
                 score: Some(if idx == 0 { f32::NAN } else { 0.5 }),
             })
@@ -7269,7 +7328,7 @@ release_blocker(code) := issue(code, "error").
             .map(|idx| TrailReference {
                 corpus: CorpusId::from("test"),
                 source: SourceName::from("md"),
-                handle: format!("consumed-{idx}.md"),
+                handle: handle_id(&format!("consumed-{idx}.md")),
                 span_id: None,
                 score: Some(if idx == 0 { 1.5 } else { 0.25 }),
             })

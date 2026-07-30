@@ -383,7 +383,7 @@ impl TupleDb {
     }
 
     fn handle_values(&mut self, fact: &HandleFact) -> Vec<PhysicalValue> {
-        let id = self.string_value(&fact.id);
+        let id = self.string_value(fact.id.as_str());
         let kind = self.string_value(&fact.kind);
         let status = self.opt_string(fact.status.as_ref());
         let namespace = self.string_value(&fact.namespace);
@@ -399,8 +399,8 @@ impl TupleDb {
     }
 
     fn edge_values(&mut self, fact: &EdgeFact) -> Vec<PhysicalValue> {
-        let from = self.string_value(&fact.from);
-        let to = self.string_value(&fact.to);
+        let from = self.string_value(fact.from.as_str());
+        let to = self.string_value(fact.to.as_str());
         let kind = self.string_value(&fact.kind);
         let file = self.string_value(&fact.file);
         let line = physical_int_value(i64::from(fact.line));
@@ -421,14 +421,14 @@ impl TupleDb {
     }
 
     fn meta_values(&mut self, fact: &MetaFact) -> Vec<PhysicalValue> {
-        let handle = self.string_value(&fact.handle);
+        let handle = self.string_value(fact.handle.as_str());
         let key = self.string_value(&fact.key);
         let value = self.string_value(&fact.value);
         self.source_values(&fact.identity, [handle, key, value])
     }
 
     fn content_values(&mut self, fact: &ContentFact) -> Vec<PhysicalValue> {
-        let handle = self.string_value(&fact.handle);
+        let handle = self.string_value(fact.handle.as_str());
         let span_id = self.string_value(&fact.span_id);
         let lines = physical_int_value(i64::from(fact.lines));
         let text = self.string_value(&fact.text);
@@ -438,7 +438,7 @@ impl TupleDb {
 
     fn span_values(&mut self, fact: &SpanFact) -> Vec<PhysicalValue> {
         let id = self.string_value(&fact.id);
-        let handle = self.string_value(&fact.handle);
+        let handle = self.string_value(fact.handle.as_str());
         let start_line = physical_int_value(i64::from(fact.start_line));
         let end_line = physical_int_value(i64::from(fact.end_line));
         let summary = self.string_value(&fact.summary);
@@ -447,7 +447,7 @@ impl TupleDb {
 
     fn concern_values(&mut self, fact: &ConcernFact) -> Vec<PhysicalValue> {
         let name = self.string_value(&fact.name);
-        let member = self.string_value(&fact.member);
+        let member = self.string_value(fact.member.as_str());
         self.source_values(&fact.identity, [name, member])
     }
 
@@ -467,7 +467,7 @@ impl TupleDb {
             self.string_value(fact.corpus.as_str()),
             self.string_value(&fact.snapshot),
             self.string_value(&fact.at),
-            self.string_value(&fact.id),
+            self.string_value(fact.id.as_str()),
             self.string_value(&fact.key),
             self.string_value(&fact.value),
         ]
@@ -837,8 +837,8 @@ mod tests {
         batch.handles.push(private);
         batch.edges.push(EdgeFact {
             identity: identity("edge"),
-            from: "public.md".to_string(),
-            to: "private.md".to_string(),
+            from: crate::HandleId::new("public.md").expect("fixture handle is nonempty"),
+            to: crate::HandleId::new("private.md").expect("fixture handle is nonempty"),
             kind: "DependsOn".to_string(),
             file: "public.md".to_string(),
             line: 1,
@@ -859,7 +859,7 @@ mod tests {
     fn handle_fact(id: &str, status: &str) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: crate::HandleId::new(id).expect("fixture handle is nonempty"),
             kind: "file".to_string(),
             status: Some(status.to_string()),
             namespace: String::new(),

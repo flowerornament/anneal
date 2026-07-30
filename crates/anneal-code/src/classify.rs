@@ -1,7 +1,7 @@
 use super::{
     BTreeMap, BTreeSet, Command, ConcernFact, EdgeFact, FactBatch, HandleFact, Revision,
     SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity, concern_name,
-    edge_kind, ensure_external_code_handle, fs, git_version_tags, meta_key, meta_values,
+    edge_kind, ensure_external_code_handle, fs, git_version_tags, handle_id, meta_key, meta_values,
     normalize_path_inside_root, normalize_relative_path, package_root_file, push_code_meta,
     push_meta_fact, relation_value, stable_fragment, truncate_at_char_boundary, version_handle_id,
 };
@@ -87,7 +87,7 @@ impl SourceTreeClassification {
         for handle in &batch.handles {
             if handle.kind == "section"
                 && visibility_by_handle
-                    .get(&handle.id)
+                    .get(handle.id.as_str())
                     .is_some_and(|visibility| visibility == "public")
             {
                 public_files.insert(handle.file.clone());
@@ -104,14 +104,22 @@ impl SourceTreeClassification {
                 continue;
             }
             let class = self.class_for_handle(
-                &id,
+                id.as_str(),
                 &file,
                 &kind,
                 &package_handle,
                 &public_files,
                 &visibility_by_handle,
             );
-            push_code_meta(batch, root, &revision, &id, &file, meta_key::CLASS, class);
+            push_code_meta(
+                batch,
+                root,
+                &revision,
+                id.as_str(),
+                &file,
+                meta_key::CLASS,
+                class,
+            );
         }
 
         self.emit_obligations(batch, root, &revision);
@@ -131,12 +139,12 @@ impl SourceTreeClassification {
             .map(|handle| handle.id.clone())
             .collect::<BTreeSet<_>>();
         for file in self.files.keys() {
-            if existing.contains(file) {
+            if existing.contains(file.as_str()) {
                 continue;
             }
             batch.handles.push(HandleFact {
                 identity: code_identity(batch, root, revision, file, file),
-                id: file.clone(),
+                id: handle_id(file),
                 kind: "file".to_string(),
                 status: None,
                 namespace: String::new(),
@@ -156,7 +164,7 @@ impl SourceTreeClassification {
         kind: &str,
         package_handle: &str,
         public_files: &BTreeSet<String>,
-        visibility_by_handle: &BTreeMap<String, String>,
+        visibility_by_handle: &BTreeMap<anneal_core::HandleId, String>,
     ) -> &'static str {
         if let Some(scan) = self.files.get(file) {
             if scan.generated {
@@ -212,7 +220,7 @@ impl SourceTreeClassification {
                 batch.concerns.push(ConcernFact {
                     identity: identity.clone(),
                     name: concern.to_string(),
-                    member: file.clone(),
+                    member: handle_id(file),
                 });
                 push_meta_fact(
                     batch,
@@ -256,8 +264,8 @@ impl SourceTreeClassification {
             let identity = code_identity(batch, root, revision, &native_id, &impl_.file);
             batch.edges.push(EdgeFact {
                 identity: identity.clone(),
-                from: from.clone(),
-                to: to.clone(),
+                from: handle_id(&from),
+                to: handle_id(&to),
                 kind: edge_kind::IMPLEMENTS.to_string(),
                 file: impl_.file.clone(),
                 line: impl_.line,
@@ -294,10 +302,14 @@ impl SourceTreeClassification {
     ) {
         for (idx, tag) in self.tags.iter().enumerate() {
             let tag_handle = version_handle_id(tag);
-            if !batch.handles.iter().any(|handle| handle.id == tag_handle) {
+            if !batch
+                .handles
+                .iter()
+                .any(|handle| handle.id.as_str() == tag_handle)
+            {
                 batch.handles.push(HandleFact {
                     identity: code_identity(batch, root, revision, &tag_handle, package_handle),
-                    id: tag_handle.clone(),
+                    id: handle_id(&tag_handle),
                     kind: "version".to_string(),
                     status: None,
                     namespace: SOURCE_NAME.to_string(),
@@ -320,8 +332,8 @@ impl SourceTreeClassification {
             let native_id = format!("{package_handle}::edge::version::{idx}::{tag}");
             batch.edges.push(EdgeFact {
                 identity: code_identity(batch, root, revision, &native_id, package_handle),
-                from: package_handle.to_string(),
-                to: tag_handle,
+                from: handle_id(package_handle),
+                to: handle_id(tag_handle),
                 kind: edge_kind::CONTAINS.to_string(),
                 file: package_handle.to_string(),
                 line: 1,

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::StoredRelationDescriptor;
 use crate::hash::fnv1a_64;
-use crate::ids::{CorpusId, Generation, SourceName};
+use crate::ids::{CorpusId, Generation, HandleId, SourceName};
 use crate::policy::{AllowAllPolicy, AuthorizationError, Policy, authorize_trail_private};
 use crate::source::ActorContext;
 use crate::visibility::FactVisibility;
@@ -147,7 +147,7 @@ impl TrailRefKind {
 pub struct TrailReference {
     pub corpus: CorpusId,
     pub source: SourceName,
-    pub handle: String,
+    pub handle: HandleId,
     pub span_id: Option<String>,
     pub score: Option<f32>,
 }
@@ -674,7 +674,7 @@ mod tests {
             surfaced_refs: vec![TrailReference {
                 corpus: CorpusId::from("test"),
                 source: SourceName::from("md"),
-                handle: "alpha.md".to_string(),
+                handle: HandleId::new("alpha.md").expect("fixture handle is nonempty"),
                 span_id: Some("body".to_string()),
                 score: Some(0.9),
             }],
@@ -820,7 +820,7 @@ mod tests {
                 TrailReference {
                     corpus: CorpusId::from("test"),
                     source: SourceName::from("md"),
-                    handle: "alpha.md".to_string(),
+                    handle: HandleId::new("alpha.md").expect("fixture handle is nonempty"),
                     span_id: None,
                     score: None,
                 },

@@ -11,8 +11,9 @@ use anneal_core::{
 };
 use anneal_core::{
     CodeDriftRefreshProgressSink, CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact,
-    EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation, HandleFact, MetaFact, NativeId,
-    OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact, runtime_config_declaration_by_key,
+    EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation, HandleFact, HandleId, MetaFact,
+    NativeId, OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact,
+    runtime_config_declaration_by_key,
 };
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -26,6 +27,10 @@ use crate::extract::graph::{DiGraph, EdgeKind};
 use crate::extract::handle::{Handle, HandleKind, NodeId, resolved_file};
 use crate::extract::parse::{self, PendingEdge};
 use crate::{EdgeAssertionRefreshProgress, EdgeAssertionRefreshProgressSink};
+
+fn handle_id(value: impl Into<String>) -> HandleId {
+    HandleId::new(value).expect("markdown handle identities are nonempty after extraction")
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
@@ -1233,7 +1238,7 @@ fn handle_fact(
 
     HandleFact {
         identity,
-        id: handle.id.clone(),
+        id: handle_id(&handle.id),
         kind: handle.kind.as_str().to_string(),
         status: handle.status.clone(),
         namespace,
@@ -1260,7 +1265,7 @@ fn emit_resolved_file_meta(
     let native_id = native_id_for(handle);
     batch.meta.push(MetaFact {
         identity: identity_for(batch, revisions, &native_id, &file),
-        handle: handle.id.clone(),
+        handle: handle_id(&handle.id),
         key: "md.resolved_file".to_string(),
         value: file,
     });
@@ -1298,8 +1303,8 @@ fn edge_fact(
     let assertion = assertions.assertion_for(&file, input.line);
     EdgeFact {
         identity: identity_for(batch, revisions, &native_id, &file),
-        from: source_handle.id.clone(),
-        to: input.to,
+        from: handle_id(&source_handle.id),
+        to: handle_id(input.to),
         kind: input.kind.to_string(),
         file,
         line: input.line,
@@ -1721,7 +1726,7 @@ fn emit_file_parent_meta(batch: &mut FactBatch, revisions: &mut RevisionCache<'_
         .map_or_else(String::new, ToString::to_string);
     batch.meta.push(MetaFact {
         identity: identity_for(batch, revisions, file, file),
-        handle: file.to_string(),
+        handle: handle_id(file),
         key: "md.parent_dir".to_string(),
         value: parent,
     });
@@ -1740,7 +1745,7 @@ fn emit_frontmatter_meta(
     for (key, value) in &payload.frontmatter_scalars {
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: file.to_string(),
+            handle: handle_id(file),
             key: key.clone(),
             value: value.clone(),
         });
@@ -1762,7 +1767,7 @@ fn emit_implausible_ref_meta(
         });
         batch.meta.push(MetaFact {
             identity: identity_for(batch, revisions, &reference.file, &reference.file),
-            handle: reference.file.clone(),
+            handle: handle_id(&reference.file),
             key: "md.implausible_ref".to_string(),
             value: serde_json::to_string(&value)?,
         });
@@ -1798,13 +1803,13 @@ fn emit_code_ref_meta(
         let identity = identity_for(batch, revisions, &reference.handle_id, &reference.file);
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.handle_id.clone(),
+            handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::EXTERNAL_CLASS.to_string(),
             value: CodeTargetMeta::CLASS_CODE.to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.handle_id.clone(),
+            handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_PATH.to_string(),
             value: reference.path.clone(),
         });
@@ -1815,20 +1820,20 @@ fn emit_code_ref_meta(
         };
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.handle_id.clone(),
+            handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_EXISTS.to_string(),
             value: probe.exists.as_str().to_string(),
         });
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: reference.handle_id.clone(),
+            handle: handle_id(&reference.handle_id),
             key: CodeTargetMeta::TARGET_HISTORY_STATUS.to_string(),
             value: probe.history_status.as_str().to_string(),
         });
         if let Some(base) = probe.probe_base {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.handle_id.clone(),
+                handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_PROBE_BASE.to_string(),
                 value: base.to_string(),
             });
@@ -1836,7 +1841,7 @@ fn emit_code_ref_meta(
         if let Some(path) = probe.resolved_path {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.handle_id.clone(),
+                handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_RESOLVED_PATH.to_string(),
                 value: path.to_string(),
             });
@@ -1844,7 +1849,7 @@ fn emit_code_ref_meta(
         if let Some(start_line) = reference.start_line {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.handle_id.clone(),
+                handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_START_LINE.to_string(),
                 value: start_line.to_string(),
             });
@@ -1852,7 +1857,7 @@ fn emit_code_ref_meta(
         if let Some(end_line) = reference.end_line {
             batch.meta.push(MetaFact {
                 identity: identity.clone(),
-                handle: reference.handle_id.clone(),
+                handle: handle_id(&reference.handle_id),
                 key: CodeTargetMeta::TARGET_END_LINE.to_string(),
                 value: end_line.to_string(),
             });
@@ -1860,7 +1865,8 @@ fn emit_code_ref_meta(
         let assertion = assertions.assertion_for(&reference.file, reference.source_line);
         drift_targets.push((identity, reference.handle_id.clone()));
         drift_requests.push(CodeDriftEvidenceRequest {
-            ref_handle: reference.handle_id.clone(),
+            ref_handle: HandleId::new(reference.handle_id.clone())
+                .expect("extracted code-reference handles are nonempty"),
             target_path: reference.path.clone(),
             edge_file: reference.file.clone(),
             assertion_date: assertion.as_ref().map(|value| value.date.clone()),
@@ -1887,26 +1893,26 @@ fn emit_code_drift_evidence_meta(
 ) {
     batch.meta.push(MetaFact {
         identity: identity.clone(),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_DISPOSITION.to_string(),
         value: evidence.disposition.clone(),
     });
     batch.meta.push(MetaFact {
         identity: identity.clone(),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_EVIDENCE_HEAD.to_string(),
         value: evidence.evidence_head.clone(),
     });
     batch.meta.push(MetaFact {
         identity: identity.clone(),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_ASSERTION_PREMISE.to_string(),
         value: evidence.assertion_premise.clone(),
     });
     if let Some(commits) = evidence.commits_since_assertion {
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_COMMITS_SINCE.to_string(),
             value: commits.to_string(),
         });
@@ -1914,21 +1920,21 @@ fn emit_code_drift_evidence_meta(
     if let Some(moved_to) = &evidence.moved_to {
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_MOVED_TO.to_string(),
             value: moved_to.clone(),
         });
     }
     batch.meta.push(MetaFact {
         identity: identity.clone(),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE_COUNT.to_string(),
         value: evidence.move_candidates.len().to_string(),
     });
     for candidate in &evidence.move_candidates {
         batch.meta.push(MetaFact {
             identity: identity.clone(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             key: CodeTargetMeta::REFERENT_MOVE_CANDIDATE.to_string(),
             value: candidate.clone(),
         });
@@ -1987,14 +1993,14 @@ fn emit_content_spans(
                             SpanFact {
                                 identity: identity.clone(),
                                 id: heading.id.clone(),
-                                handle: path_str.clone(),
+                                handle: handle_id(&path_str),
                                 start_line: heading.start_line,
                                 end_line: heading.end_line,
                                 summary: heading.path,
                             },
                             ContentFact {
                                 identity,
-                                handle: path_str.clone(),
+                                handle: handle_id(&path_str),
                                 span_id: heading.id,
                                 lines,
                                 text,
@@ -2007,7 +2013,7 @@ fn emit_content_spans(
                 let identity = identity_for(batch, revisions, &path_str, &path_str);
                 batch.content.push(ContentFact {
                     identity: identity.clone(),
-                    handle: path_str.clone(),
+                    handle: handle_id(&path_str),
                     span_id: span_id.clone(),
                     lines: line_count,
                     text: body,
@@ -2016,7 +2022,7 @@ fn emit_content_spans(
                 batch.spans.push(SpanFact {
                     identity,
                     id: span_id,
-                    handle: path_str.clone(),
+                    handle: handle_id(&path_str),
                     start_line,
                     end_line: start_line.saturating_add(line_count.saturating_sub(1)),
                     summary: result
@@ -2042,14 +2048,14 @@ fn emit_content_spans(
                 batch.spans.push(SpanFact {
                     identity: identity.clone(),
                     id: span_id.clone(),
-                    handle: handle.id.clone(),
+                    handle: handle_id(&handle.id),
                     start_line: declaration_line(result, node_id, handle),
                     end_line: declaration_line(result, node_id, handle),
                     summary: summary.clone(),
                 });
                 batch.content.push(ContentFact {
                     identity,
-                    handle: handle.id.clone(),
+                    handle: handle_id(&handle.id),
                     span_id,
                     lines: 1,
                     text: summary.clone(),
@@ -2145,7 +2151,7 @@ fn emit_concerns(
                 batch.concerns.push(ConcernFact {
                     identity: identity_for(batch, revisions, &native_id_for(handle), file),
                     name: name.clone(),
-                    member: handle.id.clone(),
+                    member: handle_id(&handle.id),
                 });
             }
         }
@@ -2280,12 +2286,12 @@ mod tests {
         let baseline_spec = baseline
             .handles
             .iter()
-            .find(|handle| handle.id == "spec.md")
+            .find(|handle| handle.id.as_str() == "spec.md")
             .expect("baseline spec handle");
         let combined_spec = combined
             .handles
             .iter()
-            .find(|handle| handle.id == "spec.md")
+            .find(|handle| handle.id.as_str() == "spec.md")
             .expect("combined spec handle");
         assert_eq!(
             combined_spec, baseline_spec,
@@ -2294,7 +2300,7 @@ mod tests {
         let formal_handle = combined
             .handles
             .iter()
-            .find(|handle| handle.id == "formal/models/prism.md")
+            .find(|handle| handle.id.as_str() == "formal/models/prism.md")
             .expect("project-relative external handle");
         let formal_path = formal
             .join("prism.md")
@@ -2305,15 +2311,17 @@ mod tests {
             format!("file://{formal_path}")
         );
         assert!(combined.edges.iter().any(|edge| {
-            edge.from == "spec.md" && edge.to == "formal/models/prism.md" && edge.kind == "Cites"
+            edge.from.as_str() == "spec.md"
+                && edge.to.as_str() == "formal/models/prism.md"
+                && edge.kind == "Cites"
         }));
 
         let code_edge = combined
             .edges
             .iter()
             .find(|edge| {
-                edge.from == "formal/models/prism.md"
-                    && edge.to.contains("src/lib.rs:1")
+                edge.from.as_str() == "formal/models/prism.md"
+                    && edge.to.as_str().contains("src/lib.rs:1")
                     && edge.kind == "Cites"
             })
             .expect("external file code citation");
@@ -2381,7 +2389,7 @@ mod tests {
                 .handles
                 .iter()
                 .filter(|handle| handle.kind == "file")
-                .map(|handle| handle.id.clone())
+                .map(|handle| handle.id.to_string())
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&first), ids(&second));
@@ -2565,14 +2573,14 @@ mod tests {
             batch
                 .handles
                 .iter()
-                .any(|handle| handle.id == handle_id && handle.kind == "external"),
+                .any(|handle| handle.id.as_str() == handle_id && handle.kind == "external"),
             "expected external code handle in {:?}",
             batch.handles
         );
         assert!(
             batch.edges.iter().any(|edge| {
-                edge.from == "doc.md"
-                    && edge.to == handle_id
+                edge.from.as_str() == "doc.md"
+                    && edge.to.as_str() == handle_id
                     && edge.kind == "Cites"
                     && edge.line == 3
             }),
@@ -2591,19 +2599,21 @@ mod tests {
                 batch
                     .meta
                     .iter()
-                    .any(|meta| meta.handle == handle_id && meta.key == key && meta.value == value),
+                    .any(|meta| meta.handle.as_str() == handle_id
+                        && meta.key == key
+                        && meta.value == value),
                 "missing {key}={value} metadata in {:?}",
                 batch.meta
             );
         }
         assert!(batch.meta.iter().any(|meta| {
-            meta.handle == handle_id
+            meta.handle.as_str() == handle_id
                 && meta.key == CodeTargetMeta::TARGET_PROBE_BASE
                 && meta.value == root.as_str()
         }));
         let resolved_path = root.join("lib/example/admission.rs");
         assert!(batch.meta.iter().any(|meta| {
-            meta.handle == handle_id
+            meta.handle.as_str() == handle_id
                 && meta.key == CodeTargetMeta::TARGET_RESOLVED_PATH
                 && meta.value == resolved_path.as_str()
         }));
@@ -2643,13 +2653,15 @@ mod tests {
             batch
                 .handles
                 .iter()
-                .any(|handle| handle.id == handle_id && handle.kind == "external"),
+                .any(|handle| handle.id.as_str() == handle_id && handle.kind == "external"),
             "expected external code handle for frontmatter code path in {:?}",
             batch.handles
         );
         assert!(
             batch.edges.iter().any(|edge| {
-                edge.from == "doc.md" && edge.to == handle_id && edge.kind == "Cites"
+                edge.from.as_str() == "doc.md"
+                    && edge.to.as_str() == handle_id
+                    && edge.kind == "Cites"
             }),
             "expected code Cites edge for frontmatter code path in {:?}",
             batch.edges
@@ -2665,7 +2677,8 @@ mod tests {
         // target has no handle — that is exactly the E001 broken_ref shape.
         assert!(
             !batch.edges.iter().any(|edge| {
-                edge.from == "doc.md" && edge.to == "formal-model/proofs/Space.agda"
+                edge.from.as_str() == "doc.md"
+                    && edge.to.as_str() == "formal-model/proofs/Space.agda"
             }),
             "frontmatter code path must not emit a raw corpus-gated edge: {:?}",
             batch.edges
@@ -2708,7 +2721,7 @@ mod tests {
             batch
                 .handles
                 .iter()
-                .any(|handle| handle.id == handle_id && handle.kind == "external"),
+                .any(|handle| handle.id.as_str() == handle_id && handle.kind == "external"),
             "expected external code handle so broken_ref cannot fire: {:?}",
             batch.handles
         );
@@ -2719,7 +2732,7 @@ mod tests {
             !batch
                 .edges
                 .iter()
-                .any(|edge| edge.from == "doc.md" && edge.to == "lib/old.rs"),
+                .any(|edge| edge.from.as_str() == "doc.md" && edge.to.as_str() == "lib/old.rs"),
             "missing frontmatter code path must not emit a raw corpus-gated edge: {:?}",
             batch.edges
         );
@@ -2743,7 +2756,7 @@ mod tests {
             !batch
                 .edges
                 .iter()
-                .any(|edge| edge.from == "doc.md" && edge.to == "claim"),
+                .any(|edge| edge.from.as_str() == "doc.md" && edge.to.as_str() == "claim"),
             "ambiguous unresolved wikilink should not emit an E001-producing edge: {:?}",
             batch.edges
         );
@@ -2933,10 +2946,9 @@ mod tests {
 
     fn assert_code_ref_meta(batch: &anneal_core::FactBatch, target: &str, key: &str, value: &str) {
         assert!(
-            batch
-                .meta
-                .iter()
-                .any(|meta| meta.handle == target && meta.key == key && meta.value == value),
+            batch.meta.iter().any(|meta| meta.handle.as_str() == target
+                && meta.key == key
+                && meta.value == value),
             "missing {key}={value} for {target} in {:?}",
             batch.meta
         );
@@ -2950,7 +2962,9 @@ mod tests {
         batch
             .edges
             .iter()
-            .find(|edge| edge.from == from && edge.to == to && edge.kind == "Cites")
+            .find(|edge| {
+                edge.from.as_str() == from && edge.to.as_str() == to && edge.kind == "Cites"
+            })
             .unwrap_or_else(|| panic!("missing {from} -> {to} Cites edge in {:?}", batch.edges))
     }
 

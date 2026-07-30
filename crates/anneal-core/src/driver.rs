@@ -290,7 +290,7 @@ mod tests {
                     Revision::from("r1"),
                     generation,
                 ),
-                id: "doc.md".to_string(),
+                id: crate::HandleId::new("doc.md").expect("fixture handle is nonempty"),
                 kind: "file".to_string(),
                 status: Some(status),
                 namespace: String::new(),

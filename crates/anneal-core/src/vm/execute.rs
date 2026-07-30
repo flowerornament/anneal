@@ -1704,7 +1704,7 @@ mod tests {
     ) -> HandleFact {
         HandleFact {
             identity: identity(id),
-            id: id.to_string(),
+            id: crate::HandleId::new(id).expect("fixture handle is nonempty"),
             kind: kind.to_string(),
             status: status.map(str::to_string),
             namespace: namespace.to_string(),
@@ -1719,8 +1719,8 @@ mod tests {
     fn edge(from: &str, to: &str, kind: &str) -> EdgeFact {
         EdgeFact {
             identity: identity(&format!("{from}->{to}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: crate::HandleId::new(from).expect("fixture handle is nonempty"),
+            to: crate::HandleId::new(to).expect("fixture handle is nonempty"),
             kind: kind.to_string(),
             file: "fixture.md".to_string(),
             line: 1,
@@ -1734,7 +1734,7 @@ mod tests {
             corpus: CorpusId::from("test"),
             snapshot: snapshot.to_string(),
             at: at.to_string(),
-            id: id.to_string(),
+            id: crate::HandleId::new(id).expect("fixture handle is nonempty"),
             key: key.to_string(),
             value: value.to_string(),
         }

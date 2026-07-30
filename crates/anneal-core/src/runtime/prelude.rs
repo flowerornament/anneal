@@ -2426,7 +2426,7 @@ mod tests {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
                         at: "2026-05-01".to_string(),
-                        id: "draft-1.md".to_string(),
+                        id: handle_id("draft-1.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
                     },
@@ -2434,7 +2434,7 @@ mod tests {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
                         at: "2026-05-01".to_string(),
-                        id: "draft-2.md".to_string(),
+                        id: handle_id("draft-2.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
                     },
@@ -2442,7 +2442,7 @@ mod tests {
                         corpus: corpus.clone(),
                         snapshot: "s1".to_string(),
                         at: "2026-05-01".to_string(),
-                        id: "draft-3.md".to_string(),
+                        id: handle_id("draft-3.md"),
                         key: "status".to_string(),
                         value: "draft".to_string(),
                     },
@@ -2644,7 +2644,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         if let Some(handle) = batch
             .handles
             .iter_mut()
-            .find(|handle| handle.id == "stub.md")
+            .find(|handle| handle.id.as_str() == "stub.md")
         {
             handle.date = Some("2026-05-30".to_string());
         }
@@ -2699,7 +2699,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                             corpus: corpus.clone(),
                             snapshot: "s1".to_string(),
                             at: "2026-05-01".to_string(),
-                            id: "ticket-2".to_string(),
+                            id: handle_id("ticket-2"),
                             key: "status".to_string(),
                             value: "open".to_string(),
                         },
@@ -2707,7 +2707,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                             corpus: corpus.clone(),
                             snapshot: "s1".to_string(),
                             at: "2026-05-01".to_string(),
-                            id: "ticket-1".to_string(),
+                            id: handle_id("ticket-1"),
                             key: "status".to_string(),
                             value: "open".to_string(),
                         },
@@ -3146,6 +3146,10 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         generation: Generation,
     }
 
+    fn handle_id(value: &str) -> crate::HandleId {
+        crate::HandleId::new(value).expect("fixture handle is nonempty")
+    }
+
     fn handle(
         scope: &FixtureScope<'_>,
         id: &str,
@@ -3157,7 +3161,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         let file = fixture_file_for(id);
         HandleFact {
             identity: identity(scope, id),
-            id: id.to_string(),
+            id: handle_id(id),
             kind: kind.to_string(),
             status: status.map(str::to_string),
             namespace: namespace.to_string(),
@@ -3173,8 +3177,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         let file = fixture_file_for(from);
         EdgeFact {
             identity: identity(scope, &format!("{from}->{to}")),
-            from: from.to_string(),
-            to: to.to_string(),
+            from: handle_id(from),
+            to: handle_id(to),
             kind: kind.to_string(),
             file,
             line,
@@ -3186,7 +3190,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     fn meta(scope: &FixtureScope<'_>, handle: &str, key: &str, value: &str) -> MetaFact {
         MetaFact {
             identity: identity(scope, &format!("{handle}:{key}:{value}")),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -3201,7 +3205,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
     ) -> ContentFact {
         ContentFact {
             identity: identity(scope, &format!("{handle}#{span_id}")),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             span_id: span_id.to_string(),
             lines: 1,
             text: text.to_string(),
@@ -3219,7 +3223,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
         SpanFact {
             identity: identity(scope, &format!("{handle}#{span_id}")),
             id: span_id.to_string(),
-            handle: handle.to_string(),
+            handle: handle_id(handle),
             start_line,
             end_line,
             summary: String::new(),

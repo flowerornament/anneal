@@ -52,7 +52,9 @@ pub use history::{
     SnapshotHistory, append_snapshot_entry, append_snapshot_entry_capped, read_snapshot_history,
     repo_history_path,
 };
-pub use ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+pub use ids::{
+    CorpusId, Generation, HandleId, HandleIdError, NativeId, OriginUri, Revision, SourceName,
+};
 pub use impact::ImpactTraversalPolicy;
 pub use lifecycle::is_terminal_status;
 pub use metadata::CodeTargetMeta;
@@ -79,7 +81,7 @@ pub use source::{
     ConfigValueShape, DuplicateConfigOrdinal, Pattern, RuntimeCapability, SearchInfo, Source,
     SourceCapabilities, SourceContext, SourceError, SourceInfo, TimeRef,
 };
-pub use store::{FactStore, GenerationFact, StoreError};
+pub use store::{DuplicateHandleIdConflict, FactStore, GenerationFact, StoreError};
 pub use target_probe::{
     CodeDriftEvidence, CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest,
     CodeDriftRefreshProgress, CodeDriftRefreshProgressSink, CodeTargetProbe, CodeTargetProbeCache,

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CorpusId, Generation, NativeId, OriginUri, Revision, SourceName};
+use crate::ids::{CorpusId, Generation, HandleId, NativeId, OriginUri, Revision, SourceName};
 use crate::visibility::FactVisibility;
 
 /// Origin tuple carried by every source-derived stored fact.
@@ -42,7 +42,7 @@ impl FactIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleFact {
     pub identity: FactIdentity,
-    pub id: String,
+    pub id: HandleId,
     pub kind: String,
     pub status: Option<String>,
     pub namespace: String,
@@ -57,8 +57,8 @@ pub struct HandleFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeFact {
     pub identity: FactIdentity,
-    pub from: String,
-    pub to: String,
+    pub from: HandleId,
+    pub to: HandleId,
     pub kind: String,
     pub file: String,
     pub line: u32,
@@ -72,7 +72,7 @@ pub struct EdgeFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaFact {
     pub identity: FactIdentity,
-    pub handle: String,
+    pub handle: HandleId,
     pub key: String,
     pub value: String,
 }
@@ -81,7 +81,7 @@ pub struct MetaFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentFact {
     pub identity: FactIdentity,
-    pub handle: String,
+    pub handle: HandleId,
     pub span_id: String,
     pub lines: u32,
     pub text: String,
@@ -93,7 +93,7 @@ pub struct ContentFact {
 pub struct SpanFact {
     pub identity: FactIdentity,
     pub id: String,
-    pub handle: String,
+    pub handle: HandleId,
     pub start_line: u32,
     pub end_line: u32,
     pub summary: String,
@@ -104,7 +104,7 @@ pub struct SpanFact {
 pub struct ConcernFact {
     pub identity: FactIdentity,
     pub name: String,
-    pub member: String,
+    pub member: HandleId,
 }
 
 /// Runtime-populated `*config` row.
@@ -123,7 +123,7 @@ pub struct SnapshotFact {
     pub corpus: CorpusId,
     pub snapshot: String,
     pub at: String,
-    pub id: String,
+    pub id: HandleId,
     pub key: String,
     pub value: String,
 }

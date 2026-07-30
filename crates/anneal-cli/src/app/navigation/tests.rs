@@ -14,6 +14,10 @@ use crate::app::navigation::{RESOLVED_FILE_META_KEY, SUPERSEDES_EDGE_KIND, handl
 use crate::app::output::{CommandOutput, RowView};
 use crate::app::session::RuntimeSession;
 
+fn handle_id(value: &str) -> anneal_core::HandleId {
+    anneal_core::HandleId::new(value).expect("fixture handle is nonempty")
+}
+
 fn string_field<'a>(row: &'a anneal_core::runtime::Row, field: &str) -> anyhow::Result<&'a str> {
     match row.fields.get(field) {
         Some(anneal_core::runtime::Value::String(value)) => Ok(value),
@@ -45,7 +49,7 @@ fn test_identity(native_id: &str) -> FactIdentity {
 fn test_handle(id: &str, kind: &str, status: Option<&str>, file: &str) -> HandleFact {
     HandleFact {
         identity: test_identity(id),
-        id: id.to_string(),
+        id: handle_id(id),
         kind: kind.to_string(),
         status: status.map(str::to_string),
         namespace: String::new(),
@@ -60,8 +64,8 @@ fn test_handle(id: &str, kind: &str, status: Option<&str>, file: &str) -> Handle
 fn test_edge(from: &str, to: &str, kind: &str) -> EdgeFact {
     EdgeFact {
         identity: test_identity(from),
-        from: from.to_string(),
-        to: to.to_string(),
+        from: handle_id(from),
+        to: handle_id(to),
         kind: kind.to_string(),
         file: from.to_string(),
         line: 1,
@@ -73,7 +77,7 @@ fn test_edge(from: &str, to: &str, kind: &str) -> EdgeFact {
 fn test_meta(handle: &str, key: &str, value: &str) -> MetaFact {
     MetaFact {
         identity: test_identity(handle),
-        handle: handle.to_string(),
+        handle: handle_id(handle),
         key: key.to_string(),
         value: value.to_string(),
     }

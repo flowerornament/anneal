@@ -349,19 +349,26 @@ mod tests {
             .expect("extract");
 
         assert_eq!(batch.generation, Generation::new(8));
-        assert!(batch.handles.iter().any(|fact| fact.id == "a.md"));
-        assert!(batch.handles.iter().any(|fact| fact.id == "OQ-1"));
+        assert!(batch.handles.iter().any(|fact| fact.id.as_str() == "a.md"));
+        assert!(batch.handles.iter().any(|fact| fact.id.as_str() == "OQ-1"));
+        assert!(batch.edges.iter().any(|fact| fact.from.as_str() == "a.md"
+            && fact.to.as_str() == "b.md"
+            && fact.kind == "DependsOn"));
+        assert!(batch.meta.iter().any(|fact| {
+            fact.handle.as_str() == "a.md" && fact.key == "purpose" && fact.value == "Test file"
+        }));
         assert!(
             batch
-                .edges
+                .spans
                 .iter()
-                .any(|fact| fact.from == "a.md" && fact.to == "b.md" && fact.kind == "DependsOn")
+                .any(|fact| fact.handle.as_str() == "a.md")
         );
-        assert!(batch.meta.iter().any(|fact| {
-            fact.handle == "a.md" && fact.key == "purpose" && fact.value == "Test file"
-        }));
-        assert!(batch.spans.iter().any(|fact| fact.handle == "a.md"));
-        assert!(batch.content.iter().any(|fact| fact.handle == "a.md"));
+        assert!(
+            batch
+                .content
+                .iter()
+                .any(|fact| fact.handle.as_str() == "a.md")
+        );
         assert!(
             !batch.handles.iter().any(|fact| fact.kind == "section"),
             "markdown headings should not emit section handles"
@@ -370,7 +377,7 @@ mod tests {
             batch
                 .spans
                 .iter()
-                .any(|fact| fact.id == "a.md#h/a" && fact.summary == "A"),
+                .any(|fact| fact.id.as_str() == "a.md#h/a" && fact.summary == "A"),
             "markdown headings should emit structural spans"
         );
         assert!(
@@ -421,8 +428,13 @@ mod tests {
             .extract(&context(&root, &config, Some(Generation::new(0))))
             .expect("extract");
 
-        assert!(!batch.handles.iter().any(|fact| fact.id == "a.md"));
-        assert!(batch.handles.iter().any(|fact| fact.id == "included/b.md"));
+        assert!(!batch.handles.iter().any(|fact| fact.id.as_str() == "a.md"));
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|fact| fact.id.as_str() == "included/b.md")
+        );
     }
 
     #[test]
@@ -515,19 +527,19 @@ mod tests {
             store
                 .handles()
                 .iter()
-                .any(|fact| fact.id == "a.md" && fact.status.as_deref() == Some("active"))
+                .any(|fact| fact.id.as_str() == "a.md" && fact.status.as_deref() == Some("active"))
         );
         assert!(
             !store
                 .meta()
                 .iter()
-                .any(|fact| fact.handle == "a.md" && fact.value == "Old")
+                .any(|fact| fact.handle.as_str() == "a.md" && fact.value == "Old")
         );
         assert!(
             store
                 .meta()
                 .iter()
-                .any(|fact| fact.handle == "a.md" && fact.value == "New")
+                .any(|fact| fact.handle.as_str() == "a.md" && fact.value == "New")
         );
     }
 }
