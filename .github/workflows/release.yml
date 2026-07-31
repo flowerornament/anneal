@@ -56,6 +56,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
@@ -65,3 +67,13 @@ jobs:
         with:
           files: anneal-*.tar.gz
           generate_release_notes: true
+
+      - name: Installer smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          INSTALL_DIR="$tmpdir/bin" bash install.sh \
+            --tag "$GITHUB_REF_NAME" \
+            --skill-target "$tmpdir/skills/anneal"
+          "$tmpdir/bin/anneal" --version
+          diff -ru skills/anneal "$tmpdir/skills/anneal"

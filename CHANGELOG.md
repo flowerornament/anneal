@@ -18,6 +18,8 @@ All notable changes to `anneal` are documented in this file.
 - The Home Manager module installs the package owned by Anneal's flake by
   default, preserving the producer derivation for binary substitution.
   `programs.anneal.package` remains available for intentional overrides.
+- The published-installer smoke test runs after tag assets exist instead of
+  making ordinary branch CI wait for a release that has not been tagged yet.
 
 ## v0.24.0 - 2026-07-31
 

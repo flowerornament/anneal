@@ -139,7 +139,8 @@ force-update the `release` branch (`--force-with-lease`) so downstream flake
 consumers can track `?ref=refs/heads/release` and resolve to the latest released
 commit via `nix flake update`.
 
-Pushing `vX.Y.Z` triggers `.github/workflows/release.yml` and publishes binaries for:
+Pushing `vX.Y.Z` triggers `.github/workflows/release.yml`, publishes binaries,
+then smoke-tests the installer against that exact published tag for:
 - `aarch64-apple-darwin`
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`

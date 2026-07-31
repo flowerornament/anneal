@@ -180,5 +180,15 @@ class NixCacheReleaseTests(unittest.TestCase):
         )
 
 
+class ReleaseWorkflowTests(unittest.TestCase):
+    def test_published_installer_smoke_runs_only_after_release_creation(self) -> None:
+        ci = (release.ROOT / ".github/workflows/ci.yml").read_text()
+        workflow = (release.ROOT / ".github/workflows/release.yml").read_text()
+        smoke = "name: Installer smoke test"
+
+        self.assertNotIn(smoke, ci)
+        self.assertLess(workflow.index("name: Create release"), workflow.index(smoke))
+
+
 if __name__ == "__main__":
     unittest.main()
