@@ -2,6 +2,21 @@
 
 All notable changes to `anneal` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Scalar `=` equations bind an unbound variable from a grounded expression,
+  independent of rule-body order, and signed numeric literals work in
+  expressions. Integer arithmetic stays integral while mixed numeric arithmetic
+  produces floats.
+
+### Fixed
+
+- Recursive rules that construct new values fail during planning instead of
+  entering an unbounded fixpoint. Recursive pass-through and fixed-literal
+  heads remain valid.
+
 ## v0.23.0 - 2026-07-30
 
 ### Added
@@ -118,21 +133,6 @@ All notable changes to `anneal` are documented in this file.
   Eight examples that taught invalid syntax are corrected, including `describe
   anchor` recommending a `TopK` form that the grammar never accepted — the
   bounded form is `order by rank asc` with `--limit`.
-
-## Unreleased
-
-### Added
-
-- Scalar `=` equations bind an unbound variable from a grounded expression,
-  independent of rule-body order, and signed numeric literals work in
-  expressions. Integer arithmetic stays integral while mixed numeric arithmetic
-  produces floats.
-
-### Fixed
-
-- Recursive rules that construct new values fail during planning instead of
-  entering an unbounded fixpoint. Recursive pass-through and fixed-literal
-  heads remain valid.
 
 ## v0.21.7 - 2026-07-21
 

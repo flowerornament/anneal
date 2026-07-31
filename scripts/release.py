@@ -22,6 +22,8 @@ ANNEAL_MANIFESTS = [
     ROOT / "crates/anneal-mcp/Cargo.toml",
     ROOT / "crates/anneal-md/Cargo.toml",
 ]
+CHANGELOG_INTRO_MARKER = "All notable changes to `anneal` are documented in this file.\n\n"
+UNRELEASED_HEADING = "## Unreleased"
 
 
 def fail(message: str) -> None:
@@ -131,9 +133,9 @@ def changelog_text() -> str:
     return read_text(ROOT / "CHANGELOG.md")
 
 
-def changelog_has_entry(version: str) -> bool:
+def changelog_text_has_entry(text: str, version: str) -> bool:
     pattern = rf"(?m)^## v?{re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$"
-    return re.search(pattern, changelog_text()) is not None
+    return re.search(pattern, text) is not None
 
 
 def changelog_entry(version: str) -> str:
@@ -154,23 +156,102 @@ def changelog_entry(version: str) -> str:
     return text[heading.end() : heading.end() + next_heading.start()]
 
 
-def changelog_insert_entry(version: str) -> None:
-    if changelog_has_entry(version):
-        return
-
-    today = date.today().isoformat()
-    scaffold = (
+def changelog_scaffold(version: str, today: str) -> str:
+    return (
         f"## v{version} - {today}\n\n"
         "### Changed\n\n"
         "- TODO: summarize release changes.\n\n"
     )
 
+
+def changelog_pending_entries(unreleased_block: str) -> list[str]:
+    entries = []
+    bullets = list(re.finditer(r"(?m)^- ", unreleased_block))
+    for bullet in bullets:
+        boundary = re.search(
+            r"(?m)^(?:- |### )",
+            unreleased_block[bullet.end() :],
+        )
+        end = (
+            len(unreleased_block)
+            if boundary is None
+            else bullet.end() + boundary.start()
+        )
+        entry = " ".join(unreleased_block[bullet.end() : end].split())
+        entries.append(entry)
+    return entries
+
+
+def changelog_insert_entry_text(
+    text: str, version: str, today: str
+) -> tuple[str, list[str]]:
+    if CHANGELOG_INTRO_MARKER not in text:
+        raise ValueError("could not find CHANGELOG.md insertion marker")
+
+    unreleased_matches = list(
+        re.finditer(rf"(?m)^{re.escape(UNRELEASED_HEADING)}\s*$", text)
+    )
+    if len(unreleased_matches) != 1:
+        raise ValueError("CHANGELOG.md must contain exactly one ## Unreleased section")
+
+    unreleased = unreleased_matches[0]
+    next_heading = re.search(r"(?m)^## ", text[unreleased.end() :])
+    unreleased_end = (
+        len(text)
+        if next_heading is None
+        else unreleased.end() + next_heading.start()
+    )
+    unreleased_block = text[unreleased.start() : unreleased_end]
+    pending_entries = changelog_pending_entries(unreleased_block)
+
+    without_unreleased = text[: unreleased.start()] + text[unreleased_end:]
+    marker_end = (
+        without_unreleased.index(CHANGELOG_INTRO_MARKER)
+        + len(CHANGELOG_INTRO_MARKER)
+    )
+    normalized = (
+        without_unreleased[:marker_end]
+        + unreleased_block
+        + without_unreleased[marker_end:]
+    )
+    if changelog_text_has_entry(normalized, version):
+        return normalized, pending_entries
+
+    insert_at = marker_end + len(unreleased_block)
+    updated = (
+        normalized[:insert_at]
+        + changelog_scaffold(version, today)
+        + normalized[insert_at:]
+    )
+    return updated, pending_entries
+
+
+def unreleased_warning(version: str, pending_entries: list[str]) -> str | None:
+    if not pending_entries:
+        return None
+
+    entries = "\n".join(f"  - {entry}" for entry in pending_entries)
+    return (
+        f"warning: CHANGELOG.md Unreleased still contains "
+        f"{len(pending_entries)} entries after scaffolding v{version}:\n"
+        f"{entries}\n"
+        f"Review whether they belong in v{version}."
+    )
+
+
+def changelog_insert_entry(version: str) -> None:
     text = changelog_text()
-    marker = "All notable changes to `anneal` are documented in this file.\n\n"
-    if marker not in text:
-        fail("could not find CHANGELOG.md insertion marker")
-    updated = text.replace(marker, marker + scaffold, 1)
+    try:
+        updated, pending_entries = changelog_insert_entry_text(
+            text, version, date.today().isoformat()
+        )
+    except ValueError as error:
+        fail(str(error))
+
     write_text(ROOT / "CHANGELOG.md", updated)
+    warning = unreleased_warning(version, pending_entries)
+    if warning is not None:
+        print(warning, file=sys.stderr)
 
 
 def changelog_entry_is_ready(version: str) -> bool:
