@@ -101,24 +101,22 @@ class ChangelogBumpTests(unittest.TestCase):
 
 
 class NixCacheReleaseTests(unittest.TestCase):
-    def test_cache_visibility_waits_for_read_after_write(self) -> None:
-        with (
-            patch.object(release, "cache_contains", side_effect=[False, False, True]),
-            patch.object(release.time, "sleep") as sleep,
-        ):
-            self.assertTrue(release.wait_for_cache_visibility("/nix/store/anneal"))
+    def test_cache_lookup_bypasses_stale_negative_narinfo(self) -> None:
+        with patch.object(release, "command_succeeds", return_value=True) as run:
+            self.assertTrue(release.cache_contains("/nix/store/anneal"))
 
-        self.assertEqual(sleep.call_count, 2)
-
-    def test_cache_visibility_wait_is_bounded(self) -> None:
-        with (
-            patch.object(release, "CACHE_VISIBILITY_CHECKS", 3),
-            patch.object(release, "cache_contains", return_value=False),
-            patch.object(release.time, "sleep") as sleep,
-        ):
-            self.assertFalse(release.wait_for_cache_visibility("/nix/store/anneal"))
-
-        self.assertEqual(sleep.call_count, 2)
+        run.assert_called_once_with(
+            [
+                "nix",
+                "path-info",
+                "--store",
+                release.CACHE_URI,
+                "--option",
+                "narinfo-cache-negative-ttl",
+                "0",
+                "/nix/store/anneal",
+            ]
+        )
 
     def test_missing_cache_output_names_system_and_remediation(self) -> None:
         error = io.StringIO()
