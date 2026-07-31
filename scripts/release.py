@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -33,6 +34,11 @@ CACHE_PUBLIC_KEY = (
     "flowerornament.cachix.org-1:gSODgIXgfRANrEGITBOF8XWaEKNy8hkNGfRVwqUG46c="
 )
 CACHE_PIN_REVISIONS = 3
+CACHE_VISIBILITY_TIMEOUT_SECONDS = 180
+CACHE_VISIBILITY_POLL_SECONDS = 5
+CACHE_VISIBILITY_CHECKS = (
+    1 + CACHE_VISIBILITY_TIMEOUT_SECONDS // CACHE_VISIBILITY_POLL_SECONDS
+)
 
 
 def fail(message: str) -> None:
@@ -397,6 +403,15 @@ def cache_contains(path: str) -> bool:
     return command_succeeds(["nix", "path-info", "--store", CACHE_URI, path])
 
 
+def wait_for_cache_visibility(path: str) -> bool:
+    for check in range(CACHE_VISIBILITY_CHECKS):
+        if cache_contains(path):
+            return True
+        if check + 1 < CACHE_VISIBILITY_CHECKS:
+            time.sleep(CACHE_VISIBILITY_POLL_SECONDS)
+    return False
+
+
 def local_store_contains(path: str) -> bool:
     return command_succeeds(["nix", "path-info", path])
 
@@ -472,7 +487,7 @@ def publish_nix_cache(system: str) -> None:
         )
 
     run(["cachix", "push", CACHE_NAME, built_output])
-    if not cache_contains(built_output):
+    if not wait_for_cache_visibility(built_output):
         fail(f"Cachix did not expose {built_output} after a successful push")
     run(
         [
