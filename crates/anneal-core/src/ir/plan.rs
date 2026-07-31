@@ -1927,6 +1927,7 @@ fn provider_for_primitive(primitive: PrimitivePredicate) -> ProviderRef {
         | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
+        | PrimitivePredicate::LifecycleStatusClassification
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
         | PrimitivePredicate::Obligation
@@ -1957,6 +1958,7 @@ fn capability_for_primitive(primitive: PrimitivePredicate) -> CapabilityAction {
         | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
+        | PrimitivePredicate::LifecycleStatusClassification
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
         | PrimitivePredicate::Obligation
@@ -2001,6 +2003,7 @@ fn demand_for_primitive(primitive: PrimitivePredicate) -> DemandPolicy {
         | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
+        | PrimitivePredicate::LifecycleStatusClassification
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
         | PrimitivePredicate::Obligation

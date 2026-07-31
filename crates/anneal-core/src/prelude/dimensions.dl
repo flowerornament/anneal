@@ -120,6 +120,8 @@ axis_of("configured_frontmatter_alias", "infrastructure").
 axis_of("configured_lifecycle_status", "infrastructure").
 axis_of("configured_pipeline_status", "infrastructure").
 axis_of("configured_terminal_status", "infrastructure").
+axis_of("modeled_lifecycle_status", "lifecycle").
+axis_of("modeled_terminal_status", "lifecycle").
 axis_of("currency_current", "currency").
 axis_of("currency_current_head", "currency").
 axis_of("currency_disposition", "currency").

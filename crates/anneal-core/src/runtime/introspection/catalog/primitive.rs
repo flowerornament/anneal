@@ -38,6 +38,9 @@ pub(in crate::runtime::introspection) fn primitive_doc(
         PrimitivePredicate::Settled => {
             "Return handles that the corpus considers resolved enough to use as stable context."
         }
+        PrimitivePredicate::LifecycleStatusClassification => {
+            "Return each effectively modeled lifecycle status classification and whether project config or a builtin supplied it."
+        }
         PrimitivePredicate::PipelinePosition => {
             "Return the numeric order for a handle's status, so queries can compare whether one status is ahead of another."
         }
@@ -133,6 +136,7 @@ pub(in crate::runtime::introspection) fn primitive_requires(
         | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
+        | PrimitivePredicate::LifecycleStatusClassification
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
         | PrimitivePredicate::Discharged
@@ -266,5 +270,8 @@ pub(in crate::runtime::introspection) fn primitive_example(
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::ReadFull
         | PrimitivePredicate::Match => None,
+        PrimitivePredicate::LifecycleStatusClassification => {
+            Some("? lifecycle_status_classification(status, classification, origin).")
+        }
     }
 }

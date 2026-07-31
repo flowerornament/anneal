@@ -364,17 +364,18 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "W005",
         severity: "warning",
-        summary: "Lifecycle config gap: a status appears in handles or ordering without a matching active/terminal partition, or the ordering cannot terminate.",
+        summary: "Lifecycle config gap: a status appears in handles or ordering without an effective builtin or project classification, or the ordering cannot terminate.",
         rule: "lifecycle_config_gap",
         evidence: r#"("lifecycle_config_gap", status, count, variant)"#,
         common_joins: &[
             "`diagnostic{code: \"W005\", subject: status}, lifecycle_config_gap(status, count, variant)` to inspect lifecycle config drift",
-            "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
+            "`lifecycle_status_classification(status, classification, origin)` to inspect effective builtin and project classifications",
         ],
         example: r#"? diagnostic{code: "W005", subject: status, evidence: evidence}."#,
         see_also: &[
             "diagnostic",
             "lifecycle_config_gap",
+            "lifecycle_status_classification",
             "configured_pipeline_status",
             "pipeline_stall",
         ],

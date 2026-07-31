@@ -234,9 +234,9 @@ fn predicate_relationship(name: &str, family: Option<PredicateFamily>) -> Option
         "implausible_ref" => {
             Some("Diagnostic-rule predicate behind W004 implausible-reference warnings.")
         }
-        "lifecycle_config_gap" => {
-            Some("Diagnostic-rule predicate behind W005 lifecycle-config-gap warnings.")
-        }
+        "lifecycle_config_gap" => Some(
+            "Diagnostic-rule predicate behind W005 warnings for lifecycle vocabulary that neither project config nor builtin policy models.",
+        ),
         "dependency_config_gap" => {
             Some("Diagnostic-rule predicate behind S006 dependency-config-gap suggestions.")
         }
@@ -373,9 +373,12 @@ pub(in crate::runtime::introspection) fn diagnostic_code_extra_lines(code: &str)
 
 fn lifecycle_config_gap_variant_lines() -> Vec<String> {
     vec![
-        "Variants: used_status_unpartitioned = a handle uses a status outside active/terminal.".to_string(),
-        "Variants: ordering_status_unpartitioned = convergence.ordering names a status outside active/terminal.".to_string(),
+        "Variants: used_status_unpartitioned = a handle uses a status with no effective lifecycle classification.".to_string(),
+        "Variants: ordering_status_unpartitioned = convergence.ordering names a status with no effective lifecycle classification.".to_string(),
         "Variants: ordering_not_terminal = the final ordered status is not terminal, so the lattice cannot settle.".to_string(),
+        "Builtin pipeline: raw, draft, research, plan, current, active, stable, authoritative. Builtin settled: authoritative, current, active, stable, living.".to_string(),
+        "Builtin terminal stems: superseded, archived, historical, prior, retired, deprecated, obsolete, withdrawn, cancelled/canceled, closed, resolved, done, completed, incorporated, digested.".to_string(),
+        "Query `lifecycle_status_classification(status, classification, origin)` to inspect effective builtin and project classifications; unknown statuses intentionally produce no row.".to_string(),
     ]
 }
 
@@ -509,7 +512,7 @@ fn common_joins_for(name: &str, family: Option<PredicateFamily>) -> &'static [&'
         ],
         "lifecycle_config_gap" => &[
             "`lifecycle_config_gap(status, count, variant), diagnostic{code: \"W005\", subject: status}` to inspect lifecycle config warnings",
-            "`lifecycle_config_gap(status, count, variant), configured_pipeline_status(status, level)` to compare against ordering",
+            "`lifecycle_status_classification(status, classification, origin)` to inspect the effective lifecycle vocabulary and provenance",
         ],
         "dependency_config_gap" => &[
             "`dependency_config_gap(status, count, variant), diagnostic{code: \"S006\", subject: status}` to inspect unclassified terminal statuses",
@@ -660,6 +663,7 @@ fn predicate_see_also(name: &str, family: Option<PredicateFamily>) -> &'static [
         "lifecycle_config_gap" => &[
             "W005",
             "diagnostic",
+            "lifecycle_status_classification",
             "configured_pipeline_status",
             "pipeline_stall",
         ],

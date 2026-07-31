@@ -176,6 +176,7 @@ impl IntrospectionIndex {
             | PrimitivePredicate::Terminal
             | PrimitivePredicate::Active
             | PrimitivePredicate::Settled
+            | PrimitivePredicate::LifecycleStatusClassification
             | PrimitivePredicate::PipelinePosition
             | PrimitivePredicate::PipelinePositionFor
             | PrimitivePredicate::Obligation

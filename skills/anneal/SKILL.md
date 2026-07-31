@@ -177,6 +177,12 @@ when a target is both terminal and effectively classified dead. Query
 the builtin and project rows; classify a custom terminal status under
 `config dependency` when S006 reports it as unknown.
 
+Lifecycle defaults are also queryable rather than implicit. Query
+`lifecycle_status_classification(status, classification, origin)` to see
+whether project config or builtin policy models a status as pipeline, settled,
+active, or terminal. W005 reports statuses for which that relation has no row;
+settled does not imply terminal.
+
 W007 reports exact reference-like frontmatter keys that have no edge mapping,
 including in corpora with no `config frontmatter` block. Run
 `anneal describe W007` for the distinct-handle count, the supported mapping,

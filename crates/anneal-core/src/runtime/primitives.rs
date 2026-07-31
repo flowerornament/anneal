@@ -11,6 +11,7 @@ pub(crate) enum PrimitivePredicate {
     Terminal,
     Active,
     Settled,
+    LifecycleStatusClassification,
     PipelinePosition,
     PipelinePositionFor,
     Obligation,
@@ -65,6 +66,7 @@ impl PrimitivePredicate {
         Self::Terminal,
         Self::Active,
         Self::Settled,
+        Self::LifecycleStatusClassification,
         Self::PipelinePosition,
         Self::PipelinePositionFor,
         Self::Obligation,
@@ -104,6 +106,7 @@ impl PrimitivePredicate {
             "terminal" => Some(Self::Terminal),
             "active" => Some(Self::Active),
             "settled" => Some(Self::Settled),
+            "lifecycle_status_classification" => Some(Self::LifecycleStatusClassification),
             "pipeline_position" => Some(Self::PipelinePosition),
             "pipeline_position_for" => Some(Self::PipelinePositionFor),
             "obligation" => Some(Self::Obligation),
@@ -142,6 +145,7 @@ impl PrimitivePredicate {
             Self::Terminal => "terminal",
             Self::Active => "active",
             Self::Settled => "settled",
+            Self::LifecycleStatusClassification => "lifecycle_status_classification",
             Self::PipelinePosition => "pipeline_position",
             Self::PipelinePositionFor => "pipeline_position_for",
             Self::Obligation => "obligation",
@@ -196,6 +200,10 @@ impl PrimitivePredicate {
             | Self::Undischarged => PrimitiveSignature {
                 parameters: &["h"],
                 sealed: false,
+            },
+            Self::LifecycleStatusClassification => PrimitiveSignature {
+                parameters: &["status", "classification", "origin"],
+                sealed: true,
             },
             Self::PipelinePosition => PrimitiveSignature {
                 parameters: &["h", "n"],
@@ -301,6 +309,7 @@ impl PrimitivePredicate {
             Self::Terminal
             | Self::Active
             | Self::Settled
+            | Self::LifecycleStatusClassification
             | Self::PipelinePosition
             | Self::PipelinePositionFor
             | Self::Obligation
@@ -370,6 +379,7 @@ impl PrimitivePredicate {
             | Self::Terminal
             | Self::Active
             | Self::Settled
+            | Self::LifecycleStatusClassification
             | Self::PipelinePosition
             | Self::PipelinePositionFor
             | Self::Obligation

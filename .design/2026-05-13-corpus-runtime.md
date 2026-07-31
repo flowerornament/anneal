@@ -769,6 +769,25 @@ silent for unsupported host metadata so agent queries can distinguish
 "no signal" from "relation missing"; snapshot-backed precision can
 improve without changing the relational shape.
 
+**Definition CR-D108 (Effective lifecycle classification).**
+`lifecycle_status_classification(status, classification, origin)` is the
+sealed, queryable authority for lifecycle vocabulary understood by the
+runtime. `classification` is `active`, `terminal`, `settled`, or `pipeline`;
+`origin` is `project` or `builtin`. Project active/terminal entries override
+the builtin terminal heuristic for that status, project settled entries
+override the canonical settled origin, and a configured pipeline ordering
+replaces the canonical pipeline ordering. A status may carry independent
+pipeline and settled classifications, but settled never implies terminal.
+Unknown statuses produce no row rather than being treated as active,
+terminal, or settled. The `active` classification records an explicit project
+partition; the soft `active/1` default remains the complement of terminal for
+query compatibility, but that fallback does not silently model unknown
+vocabulary. W005 uses this effective relation to distinguish a real
+configuration gap from vocabulary the runtime already models, while
+`configured_*` relations remain literal projections of project config.
+Rationale: defaults and overrides must agree by construction across lifecycle
+evaluation and diagnostics, and their provenance must remain inspectable.
+
 The aggregation form
 `TopK{k: N, key: score : (h, score) : body}` (Part IV §17)
 provides bounded selection. There is no parallel `top_k` function
@@ -3851,6 +3870,7 @@ config key.
 - CR-D105: Verb-surface rung (§35)
 - CR-D106: Zero-result adjacency (§3)
 - CR-D107: Scalar equality binding (§18)
+- CR-D108: Effective lifecycle classification (§11)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

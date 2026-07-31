@@ -28,7 +28,10 @@ use crate::impact::ImpactTraversalPolicy;
 use crate::ir::ids::RowId;
 use crate::ir::interner::Interner;
 use crate::ir::plan::PlanError;
-use crate::lifecycle::is_terminal_status;
+use crate::lifecycle::{
+    CANONICAL_PIPELINE_ORDERING, CANONICAL_SETTLED_STATUSES, TERMINAL_STATUS_HEURISTICS,
+    canonical_pipeline_position, is_canonical_settled_status, is_terminal_status,
+};
 #[cfg(test)]
 use crate::policy::ActionKind;
 #[cfg(test)]
@@ -2499,6 +2502,9 @@ impl GraphIndex {
             PrimitivePredicate::Terminal => self.lifecycle_tuples(constraints, Self::is_terminal),
             PrimitivePredicate::Active => self.lifecycle_tuples(constraints, Self::is_active),
             PrimitivePredicate::Settled => self.lifecycle_tuples(constraints, Self::is_settled),
+            PrimitivePredicate::LifecycleStatusClassification => {
+                self.lifecycle_status_classification_tuples(constraints)
+            }
             PrimitivePredicate::PipelinePosition => self.pipeline_position_tuples(constraints),
             PrimitivePredicate::PipelinePositionFor => {
                 self.pipeline_position_for_tuples(constraints)
@@ -2734,6 +2740,81 @@ impl GraphIndex {
         }
     }
 
+    fn lifecycle_status_classification_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        match string_constraint(constraints, 0) {
+            ArgConstraint::Impossible => Vec::new(),
+            ArgConstraint::Exact(status) => self
+                .lifecycle_status_classifications(status)
+                .into_iter()
+                .map(|(classification, origin)| {
+                    Tuple(vec![
+                        string_value(status),
+                        string_value(classification),
+                        string_value(origin),
+                    ])
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+            ArgConstraint::Any => self
+                .lifecycle_status_candidates()
+                .into_iter()
+                .flat_map(|status| {
+                    self.lifecycle_status_classifications(&status)
+                        .into_iter()
+                        .map(move |(classification, origin)| {
+                            Tuple(vec![
+                                string_value(&status),
+                                string_value(classification),
+                                string_value(origin),
+                            ])
+                        })
+                })
+                .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+                .collect(),
+        }
+    }
+
+    fn lifecycle_status_candidates(&self) -> BTreeSet<String> {
+        self.handles
+            .values()
+            .filter_map(|state| state.status.clone())
+            .chain(self.active_statuses.iter().cloned())
+            .chain(self.terminal_statuses.iter().cloned())
+            .chain(self.settled_statuses.iter().cloned())
+            .chain(self.pipeline_positions.keys().cloned())
+            .chain(
+                CANONICAL_PIPELINE_ORDERING
+                    .iter()
+                    .chain(CANONICAL_SETTLED_STATUSES)
+                    .chain(TERMINAL_STATUS_HEURISTICS)
+                    .map(|status| (*status).to_owned()),
+            )
+            .collect()
+    }
+
+    fn lifecycle_status_classifications(
+        &self,
+        status: &str,
+    ) -> BTreeSet<(&'static str, &'static str)> {
+        let mut classifications = BTreeSet::new();
+
+        if let Some(origin) = self.terminal_status_origin(status) {
+            classifications.insert(("terminal", origin));
+        } else if self.active_statuses.contains(status) {
+            classifications.insert(("active", "project"));
+        }
+
+        if let Some(origin) = self.settled_status_origin(status) {
+            classifications.insert(("settled", origin));
+        }
+
+        if let Some(origin) = self.pipeline_status_origin(status) {
+            classifications.insert(("pipeline", origin));
+        }
+
+        classifications
+    }
+
     fn pipeline_position_for_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
         let status = string_constraint(constraints, 0);
         let position = i64_constraint(constraints, 1);
@@ -2949,13 +3030,17 @@ impl GraphIndex {
         let Some(status) = state.status.as_deref() else {
             return false;
         };
+        self.terminal_status_origin(status).is_some()
+    }
+
+    fn terminal_status_origin(&self, status: &str) -> Option<&'static str> {
         if self.terminal_statuses.contains(status) {
-            return true;
+            return Some("project");
         }
         if self.active_statuses.contains(status) {
-            return false;
+            return None;
         }
-        is_terminal_status(status)
+        is_terminal_status(status).then_some("builtin")
     }
 
     fn is_active(&self, handle: &HandleId, state: &HandleState) -> bool {
@@ -2966,7 +3051,22 @@ impl GraphIndex {
         let Some(status) = state.status.as_deref() else {
             return false;
         };
-        self.settled_statuses.contains(status) || is_canonical_settled_status(status)
+        self.settled_status_origin(status).is_some()
+    }
+
+    fn settled_status_origin(&self, status: &str) -> Option<&'static str> {
+        if self.settled_statuses.contains(status) {
+            return Some("project");
+        }
+        is_canonical_settled_status(status).then_some("builtin")
+    }
+
+    fn pipeline_status_origin(&self, status: &str) -> Option<&'static str> {
+        if self.pipeline_positions.contains_key(status) {
+            return Some("project");
+        }
+        (self.pipeline_positions.is_empty() && canonical_pipeline_position(status).is_some())
+            .then_some("builtin")
     }
 
     fn is_obligation(&self, _handle: &HandleId, state: &HandleState) -> bool {
@@ -3297,30 +3397,6 @@ const CONFIG_TERMINAL_STATUS: &str = "convergence.terminal";
 const CONFIG_SETTLED_STATUS: &str = "convergence.settled";
 const CONFIG_PIPELINE_ORDERING: &str = "convergence.ordering";
 const CONFIG_LINEAR_NAMESPACE: &str = "handles.linear";
-const CANONICAL_PIPELINE_ORDERING: &[&str] = &[
-    "raw",
-    "draft",
-    "research",
-    "plan",
-    "current",
-    "active",
-    "stable",
-    "authoritative",
-];
-const CANONICAL_SETTLED_STATUSES: &[&str] =
-    &["authoritative", "current", "active", "stable", "living"];
-
-fn is_canonical_settled_status(status: &str) -> bool {
-    CANONICAL_SETTLED_STATUSES.contains(&status)
-}
-
-fn canonical_pipeline_position(status: &str) -> Option<i64> {
-    CANONICAL_PIPELINE_ORDERING
-        .iter()
-        .position(|candidate| candidate == &status)
-        .map(|idx| i64::try_from(idx).unwrap_or(i64::MAX))
-}
-
 fn freshness_days(state: &HandleState, today: Option<i64>) -> i64 {
     let (Some(date), Some(today)) = (state.date, today) else {
         return 0;
@@ -3639,6 +3715,7 @@ fn primitive_tuples(
         | PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled
+        | PrimitivePredicate::LifecycleStatusClassification
         | PrimitivePredicate::PipelinePosition
         | PrimitivePredicate::PipelinePositionFor
         | PrimitivePredicate::Obligation
@@ -7576,6 +7653,86 @@ release_blocker(code) := issue(code, "error").
             vec![row([("delta", n(1))])],
         );
         assert!(rows.next().is_none(), "unexpected extra lifecycle output");
+    }
+
+    #[test]
+    fn lifecycle_status_classification_reports_effective_origin_and_precedence() {
+        let outputs = evaluate_queries(
+            r#"
+            ? lifecycle_status_classification("draft", classification, origin).
+            ? lifecycle_status_classification("current", classification, origin).
+            ? lifecycle_status_classification("superseded", classification, origin).
+            ? lifecycle_status_classification("unknown", classification, origin).
+            "#,
+            Database::from_store(&fixture_store()),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("classification", s("pipeline")),
+                ("origin", s("builtin")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![
+                row([("classification", s("pipeline")), ("origin", s("builtin"))]),
+                row([("classification", s("settled")), ("origin", s("builtin"))]),
+            ],
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([
+                ("classification", s("terminal")),
+                ("origin", s("builtin")),
+            ])],
+        );
+        assert_query_rows(&outputs[3], Vec::new());
+
+        let mut store = fixture_store();
+        store
+            .replace_configs(
+                &CorpusId::from("test"),
+                vec![
+                    config("convergence.active", "superseded"),
+                    config("convergence.settled", "custom-settled"),
+                    ordered_config("convergence.ordering", "custom-start", 0),
+                ],
+            )
+            .expect("replace lifecycle precedence config");
+        let outputs = evaluate_queries(
+            r#"
+            ? lifecycle_status_classification("superseded", classification, origin).
+            ? lifecycle_status_classification("custom-settled", classification, origin).
+            ? lifecycle_status_classification("custom-start", classification, origin).
+            ? lifecycle_status_classification("draft", classification, origin).
+            "#,
+            Database::from_store(&store),
+        );
+
+        assert_query_rows(
+            &outputs[0],
+            vec![row([
+                ("classification", s("active")),
+                ("origin", s("project")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[1],
+            vec![row([
+                ("classification", s("settled")),
+                ("origin", s("project")),
+            ])],
+        );
+        assert_query_rows(
+            &outputs[2],
+            vec![row([
+                ("classification", s("pipeline")),
+                ("origin", s("project")),
+            ])],
+        );
+        assert_query_rows(&outputs[3], Vec::new());
     }
 
     #[test]

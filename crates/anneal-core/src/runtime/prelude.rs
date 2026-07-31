@@ -2171,22 +2171,6 @@ mod tests {
             ]
         ));
         assert!(has_row(
-            output(&outputs, "W005-ordering"),
-            &[
-                ("severity", string("warning")),
-                ("file", Value::Null),
-                (
-                    "evidence",
-                    list(vec![
-                        string("lifecycle_config_gap"),
-                        string("blocked"),
-                        int(1),
-                        string("ordering_status_unpartitioned")
-                    ])
-                )
-            ]
-        ));
-        assert!(has_row(
             output(&outputs, "W006"),
             &[
                 ("severity", string("warning")),
@@ -2974,6 +2958,110 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 ("classification", string("valid")),
                 ("origin", string("builtin"))
             ]
+        ));
+    }
+
+    #[test]
+    fn lifecycle_config_gap_uses_effective_classification_and_preserves_unknowns() {
+        let corpus = CorpusId::from("lifecycle-classification");
+        let source = SourceName::from("fixture");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = [
+            ("active.md", "active"),
+            ("authoritative.md", "authoritative"),
+            ("current.md", "current"),
+            ("draft.md", "draft"),
+            ("superseded.md", "superseded"),
+            ("unknown.md", "project-specific"),
+        ]
+        .into_iter()
+        .map(|(id, status)| handle(&scope, id, "file", Some(status), "", "area"))
+        .collect();
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge lifecycle status fixture");
+
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                ("gap", "? lifecycle_config_gap(status, count, variant)."),
+                (
+                    "classification",
+                    "? lifecycle_status_classification(status, classification, origin).",
+                ),
+            ],
+            Database::from_store(&store),
+        );
+
+        let gap = output(&outputs, "gap");
+        assert_eq!(gap.rows.len(), 1);
+        assert!(has_row(
+            gap,
+            &[
+                ("status", string("project-specific")),
+                ("count", int(1)),
+                ("variant", string("used_status_unpartitioned")),
+            ],
+        ));
+        let classification = output(&outputs, "classification");
+        for (status, expected_classification) in [
+            ("active", "pipeline"),
+            ("authoritative", "pipeline"),
+            ("current", "pipeline"),
+            ("draft", "pipeline"),
+            ("superseded", "terminal"),
+        ] {
+            assert!(has_row(
+                classification,
+                &[
+                    ("status", string(status)),
+                    ("classification", string(expected_classification)),
+                    ("origin", string("builtin")),
+                ],
+            ));
+        }
+        assert!(!has_row(
+            classification,
+            &[("status", string("project-specific"))]
+        ));
+
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.settled", "complete", None),
+                    config(&corpus, "convergence.ordering", "raw", Some(0)),
+                    config(&corpus, "convergence.ordering", "complete", Some(1)),
+                ],
+            )
+            .expect("replace settled lifecycle fixture config");
+        let outputs = evaluate_standard_prelude_cases(
+            &[("gap", "? lifecycle_config_gap(status, count, variant).")],
+            Database::from_store(&store),
+        );
+        let gap = output(&outputs, "gap");
+        assert!(has_row(
+            gap,
+            &[
+                ("status", string("complete")),
+                ("variant", string("ordering_not_terminal")),
+            ],
+        ));
+        assert!(!has_row(
+            gap,
+            &[
+                ("status", string("complete")),
+                ("variant", string("ordering_status_unpartitioned")),
+            ],
         ));
     }
 

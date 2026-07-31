@@ -648,7 +648,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | W002 | Warning | Higher lifecycle state depends on lower state |
 | W003 | Warning | Missing frontmatter |
 | W004 | Warning | Malformed or suspicious frontmatter value |
-| W005 | Warning | Lifecycle config gap |
+| W005 | Warning | Lifecycle status has no effective builtin or project classification, or ordering cannot terminate |
 | W006 | Warning | Code-authoritative spec cites missing code |
 | W007 | Warning | Reference-like frontmatter key has no configured edge mapping |
 | I001 | Info | Section reference summary |

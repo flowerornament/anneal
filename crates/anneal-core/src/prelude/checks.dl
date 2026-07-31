@@ -299,6 +299,12 @@ asserts_code(status) :=
 configured_lifecycle_status(status) := configured_active_status(status).
 configured_lifecycle_status(status) := configured_terminal_status(status).
 
+modeled_lifecycle_status(status) :=
+  lifecycle_status_classification(status, classification, origin).
+
+modeled_terminal_status(status) :=
+  lifecycle_status_classification(status, "terminal", origin).
+
 used_lifecycle_status(status) :=
   *handle{status: status},
   status != null.
@@ -322,7 +328,7 @@ max_pipeline_status(status) :=
 
 @doc(
   name: "lifecycle_config_gap",
-  doc: "Return lifecycle statuses that corpus data or ordering config use without a matching active/terminal partition, plus orderings that cannot terminate."
+  doc: "Return lifecycle statuses that corpus data or ordering config use without an effective builtin or project classification, plus orderings that cannot terminate."
 ).
 @predicate(
   name: "lifecycle_config_gap",
@@ -331,17 +337,17 @@ max_pipeline_status(status) :=
 lifecycle_config_gap(status, count, "used_status_unpartitioned") :=
   used_lifecycle_status(status),
   status_handle_count(status, count),
-  not configured_lifecycle_status(status).
+  not modeled_lifecycle_status(status).
 
 lifecycle_config_gap(status, count, "ordering_status_unpartitioned") :=
   configured_pipeline_status(status, level),
   status_handle_count(status, count),
-  not configured_lifecycle_status(status).
+  not modeled_lifecycle_status(status).
 
 lifecycle_config_gap(status, count, "ordering_not_terminal") :=
   max_pipeline_status(status),
   status_handle_count(status, count),
-  not configured_terminal_status(status).
+  not modeled_terminal_status(status).
 
 diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
   lifecycle_config_gap(status, count, variant).
