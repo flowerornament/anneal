@@ -171,9 +171,9 @@ class NixCacheReleaseTests(unittest.TestCase):
                 "0",
                 "--option",
                 "substituters",
-                release.CACHE_URI,
+                f"{release.CACHE_URI} https://cache.nixos.org/",
                 "--option",
-                "trusted-public-keys",
+                "extra-trusted-public-keys",
                 release.CACHE_PUBLIC_KEY,
                 ".#packages.x86_64-linux.default",
             ]

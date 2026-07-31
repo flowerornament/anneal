@@ -433,9 +433,9 @@ def build_nix_output(system: str, *, substitutes_only: bool = False) -> str:
                 "0",
                 "--option",
                 "substituters",
-                CACHE_URI,
+                f"{CACHE_URI} https://cache.nixos.org/",
                 "--option",
-                "trusted-public-keys",
+                "extra-trusted-public-keys",
                 CACHE_PUBLIC_KEY,
             ]
         )
