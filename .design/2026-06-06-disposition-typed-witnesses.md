@@ -4,9 +4,8 @@ date: 2026-06-06
 authors: [claude]
 reviewers: []
 relates:
-  - .design/2026-06-05-datalog-compiler-reference-map.md   # standing review gate, reference frame
-  - .design/2026-05-13-corpus-runtime.md                    # master spec — CR-D home for the trust invariant
-  - /Users/morgan/code/murail-dev/GATES.md                  # external: the architecture-witness shape (source)
+  - 2026-06-05-datalog-compiler-reference-map.md   # standing review gate, reference frame
+  - 2026-05-13-corpus-runtime.md                   # master spec — CR-D home for the trust invariant
 ---
 
 # Disposition-typed witnesses — anneal as architecture-witness consumer and instance — 2026-06-06

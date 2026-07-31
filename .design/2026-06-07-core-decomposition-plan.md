@@ -7,7 +7,7 @@ relates:
   - 2026-06-02-pass-contracts.md          # the LOCKED north star (§12 module layout, §13 old→new map)
   - 2026-06-04-runtime-architecture.md    # superseded by this doc (its gap table is pre-kftp)
   - 2026-06-04-plan-ir-reconciliation.md  # the kftp plan that built the planned executor
-  - 2026-06-06-kftp-slices-2-5-code-review.md  # decomposition findings (kbgj.1/.2), plan-authority (kbgj.5)
+  - reviews/2026-06-06-kftp-slices-2-5-code-review.md  # decomposition findings (kbgj.1/.2), plan-authority (kbgj.5)
 ---
 
 # anneal-core decomposition: realizing pass-contracts §12 — 2026-06-07

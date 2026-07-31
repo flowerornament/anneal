@@ -5,7 +5,7 @@ issue: anneal-dm3w
 epic: anneal-g0l4
 authors: [claude]
 reviewers: [codex, subagent-factcheck]
-relates: [.design/2026-06-01-perf-architecture-arc.md, .design/2026-06-02-allocation-study.md]
+relates: [2026-06-01-perf-architecture-arc.md, 2026-06-02-allocation-study.md]
 ---
 
 # Pass-contract appendix — the compiler's typed artifacts and boundaries — 2026-06-02

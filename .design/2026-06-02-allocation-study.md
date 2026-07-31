@@ -4,7 +4,7 @@ date: 2026-06-02
 issue: anneal-2p0q
 epic: anneal-g0l4
 authors: [codex]
-relates: [.design/2026-06-01-perf-architecture-arc.md]
+relates: [2026-06-01-perf-architecture-arc.md]
 ---
 
 # Allocation Study: Compiler Arc Phase 1 — 2026-06-02

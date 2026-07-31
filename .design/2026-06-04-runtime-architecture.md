@@ -5,8 +5,8 @@ date: 2026-06-04
 epic: anneal-g0l4
 authors: [claude]
 relates:
-  - .design/2026-06-02-pass-contracts.md   # the PLAN (appendix)
-  - .design/2026-06-02-allocation-study.md # the WHY
+  - 2026-06-02-pass-contracts.md   # the PLAN (appendix)
+  - 2026-06-02-allocation-study.md # the WHY
 ---
 
 # anneal runtime architecture (post-compiler-arc, as built) — 2026-06-04

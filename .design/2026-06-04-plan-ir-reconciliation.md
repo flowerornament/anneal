@@ -5,10 +5,10 @@ epic: anneal-kftp
 authors: [claude]
 reviewers: [codex]
 relates:
-  - .design/2026-06-02-pass-contracts.md       # the locked appendix (§§6-8 = the design)
-  - .design/2026-06-04-runtime-architecture.md # as-built map
-  - .design/2026-06-04-post-arc-profile.md     # why (ranked #1 eval surface)
-  - .design/2026-06-05-datalog-compiler-reference-map.md # Datalog compiler reference map + standing review gate
+  - 2026-06-02-pass-contracts.md       # the locked appendix (§§6-8 = the design)
+  - 2026-06-04-runtime-architecture.md # as-built map
+  - 2026-06-04-post-arc-profile.md     # why (ranked #1 eval surface)
+  - 2026-06-05-datalog-compiler-reference-map.md # Datalog compiler reference map + standing review gate
 ---
 
 # Plan/IR middle-end — reconciliation (anneal-kftp Phase 0) — 2026-06-04

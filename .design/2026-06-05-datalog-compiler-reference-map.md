@@ -5,10 +5,10 @@ epic: anneal-kftp
 authors: [codex]
 reviewers: [claude]
 relates:
-  - .design/2026-06-01-perf-architecture-arc.md
-  - .design/2026-06-02-pass-contracts.md
-  - .design/2026-06-04-plan-ir-reconciliation.md
-  - .design/2026-06-04-runtime-architecture.md
+  - 2026-06-01-perf-architecture-arc.md
+  - 2026-06-02-pass-contracts.md
+  - 2026-06-04-plan-ir-reconciliation.md
+  - 2026-06-04-runtime-architecture.md
 ---
 
 # Datalog compiler reference map — 2026-06-05

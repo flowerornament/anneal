@@ -4,7 +4,7 @@ date: 2026-06-02
 issue: anneal-9pfj
 authors: [claude]
 reviewers: [codex]
-relates: [.design/2026-06-01-perf-architecture-arc.md]
+relates: [2026-06-01-perf-architecture-arc.md]
 ---
 
 # Ordered query output — `order by` as a projection-boundary primitive — 2026-06-02
