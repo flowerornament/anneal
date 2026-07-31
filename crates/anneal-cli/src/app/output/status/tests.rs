@@ -48,16 +48,20 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     let rendered = String::from_utf8(rendered).expect("utf8");
 
     assert!(rendered.starts_with("Status\n"));
-    assert!(rendered.contains("Scale        10 handles · 8 files · 25% lifecycle coverage"));
+    assert!(rendered.contains("Scale        10 handles, 8 files, 25% lifecycle coverage"));
     assert!(rendered.contains(
         "Coverage     25% of file handles carry lifecycle status; orientation is graph+recency-led"
     ));
     assert!(
         rendered.contains(
-            "Convergence  broken=1  blocked=2  open=3  advancing=4  holding=5  drifting=6"
+            "Convergence  broken=1, blocked=2, open=3, advancing=4, holding=5, drifting=6"
         )
     );
-    assert!(rendered.contains("Health       errors=1  blockers=2  spec_code_drift=1"));
+    assert!(
+        rendered.contains(
+            "Health       errors=1, blockers=2, spec_code_drift=1 distinct source handles"
+        )
+    );
     assert!(rendered.contains("Diagnostics  20 total, 1 error, 17 warning, 1 suggestion, 1 info"));
     assert!(rendered.contains(
         "Vocabulary   top 3 unmodeled authored keys by distinct file handles: authors 30, description 21, author 13; query `unmodeled_frontmatter_key`"
@@ -78,6 +82,7 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     assert!(rendered.contains("Work"));
     assert!(rendered.contains("diagnostic{code: code, severity: severity"));
     assert!(!rendered.contains("bad.md"));
+    assert_dashboard_summary_separator_contract(&rendered);
 }
 
 #[test]
@@ -142,11 +147,12 @@ fn status_human_render_marks_flow_pending_without_snapshot_baseline() {
 
     assert!(
         rendered.contains(
-            "Convergence  broken=0  blocked=0  open=1  advancing=-  holding=-  drifting=-"
+            "Convergence  broken=0, blocked=0, open=1, advancing=-, holding=-, drifting=-"
         )
     );
     assert!(rendered.contains("Note: flow signals empty until snapshot baseline accumulates."));
     assert!(rendered.contains("Run `anneal status` again to populate."));
+    assert_dashboard_summary_separator_contract(&rendered);
 }
 
 #[test]
@@ -167,9 +173,75 @@ fn status_human_render_orders_pipeline_rows_by_status_name() {
     let rendered = String::from_utf8(rendered).expect("utf8");
 
     assert!(
-        rendered.contains("Pipeline     draft 3 · stable 2"),
+        rendered.contains("Pipeline     draft 3, stable 2"),
         "pipeline should render deterministically:\n{rendered}"
     );
+    assert_dashboard_summary_separator_contract(&rendered);
+}
+
+#[test]
+fn status_human_render_splits_warm_code_reference_tally() {
+    let output = status_output(vec![
+        status_metric("drift", "intact", 1),
+        status_metric("drift", "drifted", 2),
+        status_metric("drift", "moved", 3),
+        status_metric("drift", "moved_ambiguous", 4),
+        status_metric("drift", "gone", 5),
+        status_metric("drift", "unknown", 6),
+        status_metric("drift", "dirty", 7),
+        status_metric("drift", "cold", 8),
+    ]);
+    let mut rendered = Vec::new();
+
+    output
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render status");
+    let rendered = String::from_utf8(rendered).expect("utf8");
+
+    assert!(rendered.contains("Code refs    1 intact, 2 drifted, 3 moved, 4 moved?, 5 gone\n"));
+    assert!(
+        rendered.contains(
+            "             6 unknown, 7 dirty, 8 cold (run `anneal check --refresh-drift`)"
+        )
+    );
+    assert_dashboard_summary_separator_contract(&rendered);
+}
+
+#[test]
+fn status_renderer_source_contains_no_chunking_separator() {
+    let source = include_str!("../status.rs");
+
+    assert!(
+        !source.contains('·'),
+        "status dashboard renderer must use commas or split overloaded lines"
+    );
+}
+
+fn assert_dashboard_summary_separator_contract(rendered: &str) {
+    const LABELS: [&str; 8] = [
+        "Scale",
+        "Coverage",
+        "Pipeline",
+        "Convergence",
+        "Health",
+        "Diagnostics",
+        "Vocabulary",
+        "Code refs",
+    ];
+
+    for line in rendered.lines().take_while(|line| !line.is_empty()) {
+        let content = if LABELS.iter().any(|label| line.starts_with(label))
+            || line.starts_with("             ")
+        {
+            line.get(13..).expect("status label column is ASCII")
+        } else {
+            continue;
+        };
+        assert!(
+            !content.contains('·') && !content.contains("  "),
+            "status dashboard summary must use commas or split overloaded lines: {line}"
+        );
+    }
 }
 
 #[test]

@@ -59,7 +59,7 @@ pub(super) fn write_status_text<W: Write>(
 
     writeln!(
         writer,
-        "Scale        {total_handles} handles · {file_handles} files · {coverage}% lifecycle coverage ({statusless_files} statusless files)"
+        "Scale        {total_handles} handles, {file_handles} files, {coverage}% lifecycle coverage ({statusless_files} statusless files)"
     )?;
     if total_handles == 0 {
         writeln!(
@@ -78,14 +78,14 @@ pub(super) fn write_status_text<W: Write>(
             .iter()
             .map(|metric| format!("{} {}", metric.name, display_number(metric.count)))
             .collect::<Vec<_>>()
-            .join(" · ");
+            .join(", ");
         writeln!(writer, "Pipeline     {parts}")?;
     }
 
     if flow_baseline_ready {
         writeln!(
             writer,
-            "Convergence  broken={}  blocked={}  open={}  advancing={}  holding={}  drifting={}",
+            "Convergence  broken={}, blocked={}, open={}, advancing={}, holding={}, drifting={}",
             metric_count(&metrics, "convergence", "broken"),
             metric_count(&metrics, "convergence", "blocked"),
             metric_count(&metrics, "convergence", "open"),
@@ -96,7 +96,7 @@ pub(super) fn write_status_text<W: Write>(
     } else {
         writeln!(
             writer,
-            "Convergence  broken={}  blocked={}  open={}  advancing=-  holding=-  drifting=-",
+            "Convergence  broken={}, blocked={}, open={}, advancing=-, holding=-, drifting=-",
             metric_count(&metrics, "convergence", "broken"),
             metric_count(&metrics, "convergence", "blocked"),
             metric_count(&metrics, "convergence", "open")
@@ -110,7 +110,7 @@ pub(super) fn write_status_text<W: Write>(
 
     writeln!(
         writer,
-        "Health       errors={}  blockers={}  spec_code_drift={}",
+        "Health       errors={}, blockers={}, spec_code_drift={} distinct source handles",
         metric_count(&metrics, "health", "errors"),
         metric_count(&metrics, "health", "blockers"),
         metric_count(&metrics, "health", "spec_code_drift")
@@ -151,21 +151,25 @@ pub(super) fn write_status_text<W: Write>(
             + metric_count(&metrics, "drift", "unknown")
             + metric_count(&metrics, "drift", "dirty");
         if warm > 0 {
-            write!(
+            writeln!(
                 writer,
-                "Code refs    {} intact · {} drifted · {} moved · {} moved? · {} gone · {} unknown · {} dirty",
+                "Code refs    {} intact, {} drifted, {} moved, {} moved?, {} gone",
                 metric_count(&metrics, "drift", "intact"),
                 metric_count(&metrics, "drift", "drifted"),
                 metric_count(&metrics, "drift", "moved"),
                 metric_count(&metrics, "drift", "moved_ambiguous"),
-                metric_count(&metrics, "drift", "gone"),
+                metric_count(&metrics, "drift", "gone")
+            )?;
+            write!(
+                writer,
+                "             {} unknown, {} dirty",
                 metric_count(&metrics, "drift", "unknown"),
                 metric_count(&metrics, "drift", "dirty")
             )?;
             if drift_cold > 0 {
                 write!(
                     writer,
-                    " · {drift_cold} cold (run `anneal check --refresh-drift`)"
+                    ", {drift_cold} cold (run `anneal check --refresh-drift`)"
                 )?;
             }
             writeln!(writer)?;

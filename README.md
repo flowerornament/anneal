@@ -412,7 +412,7 @@ since the citing line was written:
 
 ```bash
 anneal check --refresh-drift      # build drift evidence (explicit, cached)
-anneal status                     # Code refs  2 intact · 75 drifted · 8 moved · ...
+anneal status                     # Code refs  2 intact, 75 drifted, 8 moved, ...
 anneal handle SPEC.md             # Cites src/cli.rs  [referent-moved-ambiguous · 11 candidates]
 anneal -e '? code_ref(spec, ref, path, code_handle, disposition).'
 anneal -e '? assertion_drift("SPEC.md", target, commits).'
