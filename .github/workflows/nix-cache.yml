@@ -9,7 +9,7 @@ permissions:
 
 concurrency:
   group: nix-cache-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -35,6 +35,8 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
 
       - name: Configure public cache
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
@@ -71,6 +73,8 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
 
       - name: Configure public cache
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17

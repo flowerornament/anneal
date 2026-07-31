@@ -152,6 +152,12 @@ class NixCacheReleaseTests(unittest.TestCase):
                 "--print-out-paths",
                 "--max-jobs",
                 "0",
+                "--option",
+                "substituters",
+                release.CACHE_URI,
+                "--option",
+                "trusted-public-keys",
+                release.CACHE_PUBLIC_KEY,
                 ".#packages.x86_64-linux.default",
             ]
         )

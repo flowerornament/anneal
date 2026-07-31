@@ -29,6 +29,9 @@ CHANGELOG_INTRO_MARKER = (
 UNRELEASED_HEADING = "## Unreleased"
 CACHE_NAME = "flowerornament"
 CACHE_URI = f"https://{CACHE_NAME}.cachix.org"
+CACHE_PUBLIC_KEY = (
+    "flowerornament.cachix.org-1:gSODgIXgfRANrEGITBOF8XWaEKNy8hkNGfRVwqUG46c="
+)
 CACHE_PIN_REVISIONS = 3
 
 
@@ -112,9 +115,15 @@ def flake_package_systems() -> list[str]:
     return re.findall(r'"([^"]+)"', match.group("body"))
 
 
-def cache_workflow_systems() -> list[str]:
+def cache_workflow_systems(job: str) -> list[str]:
     text = read_text(ROOT / ".github/workflows/nix-cache.yml")
-    return re.findall(r"- system: ([^\n]+)", text)
+    match = re.search(
+        rf"(?ms)^  {re.escape(job)}:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
+        text,
+    )
+    if match is None:
+        fail(f"could not find {job} job in nix-cache.yml")
+    return re.findall(r"- system: ([^\n]+)", match.group("body"))
 
 
 def installer_targets() -> list[str]:
@@ -406,7 +415,18 @@ def build_nix_output(system: str, *, substitutes_only: bool = False) -> str:
         "--print-out-paths",
     ]
     if substitutes_only:
-        command.extend(["--max-jobs", "0"])
+        command.extend(
+            [
+                "--max-jobs",
+                "0",
+                "--option",
+                "substituters",
+                CACHE_URI,
+                "--option",
+                "trusted-public-keys",
+                CACHE_PUBLIC_KEY,
+            ]
+        )
     command.append(f".#packages.{system}.default")
     output = capture(command)
     paths = output.splitlines()
@@ -545,12 +565,13 @@ def verify() -> None:
         )
 
     package_systems = flake_package_systems()
-    cache_systems = cache_workflow_systems()
-    if cache_systems != package_systems * 2:
-        fail(
-            "Nix cache publish/consume systems do not both match flake.nix: "
-            f"flake={package_systems}, workflow={cache_systems}"
-        )
+    for job in ("publish", "consume"):
+        cache_systems = cache_workflow_systems(job)
+        if cache_systems != package_systems:
+            fail(
+                f"Nix cache {job} systems do not match flake.nix: "
+                f"flake={package_systems}, workflow={cache_systems}"
+            )
 
     if not beads_config_is_public_safe():
         fail(
