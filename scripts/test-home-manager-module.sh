@@ -33,14 +33,20 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 configured_json="$TMPDIR/configured.json"
 bare_json="$TMPDIR/bare.json"
+override_json="$TMPDIR/override.json"
 eval_module="$TMPDIR/eval-home-manager-module.nix"
 root_json="$(json_quote "$ROOT")"
 
 cat > "$eval_module" <<'EOF'
 { root, mode }:
 let
-  flake = builtins.getFlake "path:${root}";
+  flake = builtins.getFlake "git+file://${root}";
   pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
+  consumerPkgs = pkgs // {
+    rustPlatform = pkgs.rustPlatform // {
+      buildRustPackage = _: throw "Home Manager module rebuilt Anneal with consumer pkgs";
+    };
+  };
   lib = flake.inputs.nixpkgs.lib;
   module = flake.outputs.homeManagerModules.default;
   stub = { lib, ... }: {
@@ -69,6 +75,7 @@ let
       default = { };
     };
   };
+  overridePackage = consumerPkgs.writeShellScriptBin "anneal-test-override" "exit 0";
   caseModule =
     if mode == "configured" then
       {
@@ -85,6 +92,11 @@ let
       {
         programs.anneal.enable = true;
       }
+    else if mode == "override" then
+      {
+        programs.anneal.enable = true;
+        programs.anneal.package = overridePackage;
+      }
     else
       {
         programs.anneal.enable = true;
@@ -93,8 +105,10 @@ let
       };
   evaluated = lib.evalModules {
     modules = [ module stub caseModule ];
-    specialArgs = { inherit pkgs; };
+    specialArgs.pkgs = consumerPkgs;
   };
+  installedPackage = builtins.head evaluated.config.home.packages;
+  producerPackage = flake.outputs.packages.${builtins.currentSystem}.default;
 in
 if mode == "configured" then
   {
@@ -105,31 +119,38 @@ if mode == "configured" then
     agentsSkillSource = evaluated.config.home.file.".agents/skills/anneal-test".source;
     codexSkillSource = evaluated.config.home.file.".codex/skills/anneal-test".source;
     packageCount = builtins.length evaluated.config.home.packages;
+    packageDrvPath = installedPackage.drvPath;
+    producerPackageDrvPath = producerPackage.drvPath;
   }
 else
   {
     hasFile = evaluated.config.xdg.configFile ? "anneal/config.toml";
     hasAgentsSkill = evaluated.config.home.file ? ".agents/skills/anneal";
     packageCount = builtins.length evaluated.config.home.packages;
+    packageDrvPath = installedPackage.drvPath;
+    producerPackageDrvPath = producerPackage.drvPath;
+    overridePackageDrvPath = overridePackage.drvPath;
   }
 EOF
 
 eval_module_json="$(json_quote "$eval_module")"
 nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"configured\"; }" > "$configured_json"
 nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"bare\"; }" > "$bare_json"
+nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"override\"; }" > "$override_json"
 
 if nix eval --impure --json --expr "import ${eval_module_json} { root = ${root_json}; mode = \"invalid\"; }" >/dev/null 2>&1; then
     printf 'invalid skill target case unexpectedly succeeded\n' >&2
     exit 1
 fi
 
-python3 - <<'PY' "$configured_json" "$bare_json"
+python3 - <<'PY' "$configured_json" "$bare_json" "$override_json"
 import json
 import pathlib
 import sys
 
 configured = json.loads(pathlib.Path(sys.argv[1]).read_text())
 bare = json.loads(pathlib.Path(sys.argv[2]).read_text())
+override = json.loads(pathlib.Path(sys.argv[3]).read_text())
 
 if not configured.get("hasFile"):
     raise SystemExit("configured case did not emit anneal/config.toml")
@@ -153,6 +174,21 @@ if configured_package_count < 1:
 bare_package_count = bare["packageCount"]
 if bare_package_count < 1:
     raise SystemExit("bare case did not add anneal to home.packages")
+
+for case_name, case in (("configured", configured), ("bare", bare)):
+    if case["packageDrvPath"] != case["producerPackageDrvPath"]:
+        raise SystemExit(
+            f"{case_name} module package does not use the producer derivation:\n"
+            f"  module:   {case['packageDrvPath']}\n"
+            f"  producer: {case['producerPackageDrvPath']}"
+        )
+
+if override["packageDrvPath"] != override["overridePackageDrvPath"]:
+    raise SystemExit(
+        "explicit programs.anneal.package override was not installed:\n"
+        f"  module:   {override['packageDrvPath']}\n"
+        f"  override: {override['overridePackageDrvPath']}"
+    )
 
 content = configured["text"]
 
@@ -185,6 +221,8 @@ print("configured_has_codex_skill=true")
 print("bare_has_agents_skill=false")
 print(f"configured_package_count={configured_package_count}")
 print(f"bare_package_count={bare_package_count}")
+print("package_identity=producer")
+print("package_override=preserved")
 PY
 
 printf 'Home Manager module smoke test passed.\n'

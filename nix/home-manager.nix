@@ -1,11 +1,7 @@
-{ src, annealVersion }:
+{ self, src }:
 { config, lib, pkgs, ... }:
 let
-  defaultPackage = import ./package.nix {
-    inherit pkgs;
-    inherit src;
-    version = annealVersion;
-  };
+  defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   isRelativeSkillTarget = target: target != "" && builtins.substring 0 1 target != "/";
 in
 {

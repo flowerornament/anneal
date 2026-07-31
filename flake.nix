@@ -18,8 +18,8 @@
       });
 
       homeManagerModules.default = import ./nix/home-manager.nix {
+        inherit self;
         src = ./.;
-        inherit annealVersion;
       };
 
       # Source tree path for skill syncing (nix-config agent-sync.nix).
