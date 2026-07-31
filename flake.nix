@@ -9,7 +9,7 @@
   };
   outputs = { self, nixpkgs }:
     let
-      annealVersion = "0.24.0";
+      annealVersion = "0.24.1";
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         pkgs = nixpkgs.legacyPackages.${system};

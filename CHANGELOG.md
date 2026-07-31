@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.24.1 - 2026-07-31
+
 ### Added
 
 - Native Nix outputs for all advertised systems publish to the public Cachix
