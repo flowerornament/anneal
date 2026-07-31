@@ -308,6 +308,7 @@ impl RuntimeSession {
                 project.runtime_config().clone()
             });
         let config_facts = ConfigFacts::from_entries(discovery);
+        let evidence_demands = command.evidence_demands(&program, &registry);
         let mut markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
         if let Some(progress) = drift_refresh_progress_for(command) {
@@ -322,10 +323,10 @@ impl RuntimeSession {
             corpus: corpus.clone(),
             roots: roots.as_slice(),
             config_facts: &config_facts,
-            probe_code_target_history: command.demands_code_target_history(),
-            read_code_drift_evidence: command.demands_code_drift_evidence(),
+            probe_code_target_history: evidence_demands.code_target_history,
+            read_code_drift_evidence: evidence_demands.code_drift,
             refresh_code_drift_evidence: command.refreshes_code_drift_evidence(),
-            probe_edge_assertions: command.demands_edge_assertions()
+            probe_edge_assertions: evidence_demands.edge_assertions
                 || command.refreshes_code_drift_evidence(),
             time_ref: None,
             previous_generation: Some(Generation::new(0)),

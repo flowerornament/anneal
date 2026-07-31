@@ -40,7 +40,7 @@ pub use crate::vm::provenance::{DerivationKind, DerivationNode};
 pub use crate::vm::value::NumberValue;
 pub use analysis::{
     AnalyzedProgram, AnalyzedQuery, DependencyCycle, StaticError, StoredFieldSet, Stratum, analyze,
-    stored_relation_fields,
+    query_dependencies, stored_relation_fields,
 };
 pub use ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, ComparisonOp,

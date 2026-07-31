@@ -1,6 +1,8 @@
 use std::fs;
 
 use anneal_core::runtime::ExplainOptions;
+use anneal_core::runtime::standard_prelude_program;
+use anneal_core::{VerbLayer, VerbRegistry};
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
 
@@ -80,6 +82,8 @@ fn eval_does_not_warn_for_code_section_handles() {
 
 #[test]
 fn transitive_convergence_queries_demand_code_target_history() {
+    let program = standard_prelude_program().expect("prelude parses");
+    let registry = VerbRegistry::default();
     for query in [
         "? status_item(section, h, score, why).",
         "? holding(h).",
@@ -88,17 +92,27 @@ fn transitive_convergence_queries_demand_code_target_history() {
         "? area_frontier(area, h, score, why).",
         "? primary_entropy(h, source).",
     ] {
+        let demands = RuntimeCommand::Eval {
+            query: query.to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        }
+        .evidence_demands(&program, &registry);
         assert!(
-            query_demands_code_target_history(query),
+            demands.code_target_history,
             "{query} should demand target-history facts through potential/entropy"
         );
     }
     assert!(query_demands_code_target_history(
         "? *meta{handle: h, key: \"target_exists\", value: exists}."
     ));
-    assert!(query_demands_code_target_history(
-        "? frontier(h, energy), *handle{id: h}."
-    ));
+    let frontier = RuntimeCommand::Eval {
+        query: "? frontier(h, energy), *handle{id: h}.".to_string(),
+        explain: ExplainOptions::disabled(),
+        limit: None,
+    }
+    .evidence_demands(&program, &registry);
+    assert!(frontier.code_target_history);
     assert!(!query_demands_code_target_history("? *handle{id: h}."));
     assert!(!query_demands_code_target_history(
         "? recent_frontier(h, rank, recency), *handle{id: h}."
@@ -123,11 +137,106 @@ fn edge_assertion_queries_demand_edge_assertion_probe_only_when_explicit() {
 
 #[test]
 fn code_reference_queries_demand_drift_evidence() {
-    assert!(query_demands_code_drift_evidence(
-        "? code_ref(spec, ref, path, code_handle, disposition)."
-    ));
-    assert!(query_demands_code_drift_evidence(
-        "? drift_profile(bucket, count)."
-    ));
+    let program = standard_prelude_program().expect("prelude parses");
+    let registry = VerbRegistry::default();
+    for query in [
+        "? code_ref(spec, ref, path, code_handle, disposition).",
+        "? drift_profile(bucket, count).",
+        "? diagnostic(code, severity, subject, file, line, evidence).",
+        r"
+        project_diagnostic(code, severity, subject, file, line, evidence) :=
+          diagnostic(code, severity, subject, file, line, evidence).
+        ? project_diagnostic(code, severity, subject, file, line, evidence).
+        ",
+    ] {
+        let demands = RuntimeCommand::Eval {
+            query: query.to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        }
+        .evidence_demands(&program, &registry);
+        assert!(
+            demands.code_drift,
+            "{query} should transitively demand drift evidence"
+        );
+    }
     assert!(!query_demands_code_drift_evidence("? *handle{id: h}."));
+}
+
+#[test]
+fn check_and_its_taught_diagnostic_query_load_the_same_evidence() {
+    let program = standard_prelude_program().expect("prelude parses");
+    let registry = VerbRegistry::default();
+    let check = RuntimeCommand::Check {
+        refresh_drift: false,
+    }
+    .evidence_demands(&program, &registry);
+    let drill_down = RuntimeCommand::Eval {
+        query: "? diagnostic(code, severity, subject, file, line, evidence).".to_string(),
+        explain: ExplainOptions::disabled(),
+        limit: None,
+    }
+    .evidence_demands(&program, &registry);
+
+    assert_eq!(drill_down, check);
+}
+
+#[test]
+fn unqueried_drift_rule_does_not_change_eval_evidence_demand() {
+    let program = standard_prelude_program().expect("prelude parses");
+    let registry = VerbRegistry::default();
+    let baseline = RuntimeCommand::Eval {
+        query: "? diagnostic(code, severity, subject, file, line, evidence).".to_string(),
+        explain: ExplainOptions::disabled(),
+        limit: None,
+    }
+    .evidence_demands(&program, &registry);
+    let with_unqueried_rule = RuntimeCommand::Eval {
+        query: r#"
+            unqueried(ref) := referent_disposition(ref, "referent-intact").
+            ? diagnostic(code, severity, subject, file, line, evidence).
+        "#
+        .to_string(),
+        explain: ExplainOptions::disabled(),
+        limit: None,
+    }
+    .evidence_demands(&program, &registry);
+
+    assert_eq!(baseline, with_unqueried_rule);
+    assert!(baseline.code_drift);
+}
+
+#[test]
+fn project_verb_derives_drift_evidence_demand_from_its_query() {
+    let prelude = standard_prelude_program().expect("prelude parses");
+    let project = anneal_core::runtime::parse_program(
+        "anneal.dl",
+        r#"
+        @verb(
+          name: "drift-audit",
+          query: "? project_drift(ref, disposition).",
+          doc: "Project drift audit.",
+          output_schema: "{\"ref\":\"String\",\"disposition\":\"String\"}",
+          args: [],
+          capabilities: ["read"]
+        ).
+        project_drift(ref, disposition) := referent_disposition(ref, disposition).
+        "#,
+    )
+    .expect("project program parses");
+    let registry = VerbRegistry::from_layers(&[
+        (VerbLayer::Prelude, &prelude),
+        (VerbLayer::Project, &project),
+    ])
+    .expect("verb registry builds");
+    let mut program = prelude;
+    program.statements.extend(project.statements);
+
+    let demands = RuntimeCommand::Verb {
+        name: "drift-audit".to_string(),
+        args: Vec::new(),
+    }
+    .evidence_demands(&program, &registry);
+
+    assert!(demands.code_drift);
 }

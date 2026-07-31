@@ -3,12 +3,11 @@
 use std::collections::BTreeSet;
 
 use crate::ir::plan::{PlanError, ProgramPlan, plan};
-use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery};
-use crate::runtime::ast::{Atom, Body, NegatedAtom, PredicateRef};
+use crate::runtime::analysis::{AnalyzedProgram, AnalyzedQuery, query_dependencies};
+use crate::runtime::ast::PredicateRef;
 use crate::runtime::eval::{
     Database, EvalError, EvalOptions, QueryOutput, QueryWarning, project_fact_head,
 };
-use crate::runtime::primitives::PrimitivePredicate;
 use crate::vm::execute::{DerivedTuple, eval_planned_query_output};
 use crate::vm::fixpoint::run_rule_group;
 use crate::vm::provenance::{DerivationNode, derivation_ref};
@@ -54,7 +53,7 @@ impl Evaluator {
     pub fn run_fixpoint_for_query(&mut self, query: &AnalyzedQuery) -> Result<(), EvalError> {
         self.options.authorize_eval()?;
         self.seed_facts()?;
-        let needed = global_predicate_dependencies_for_query(&self.program, query);
+        let needed = query_dependencies(self.program.program(), query.query());
         self.run_fixpoint_matching(|predicate| needed.contains(predicate))
     }
 
@@ -169,75 +168,4 @@ impl Evaluator {
         self.facts_seeded = true;
         Ok(())
     }
-}
-
-fn global_predicate_dependencies_for_query(
-    program: &AnalyzedProgram,
-    query: &AnalyzedQuery,
-) -> BTreeSet<PredicateRef> {
-    let mut needed = BTreeSet::new();
-    collect_body_global_predicates(&query.query().body, query, &mut needed);
-    for rule in &query.query().local_rules {
-        collect_body_global_predicates(&rule.body, query, &mut needed);
-    }
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for rule in program.rules() {
-            if !needed.contains(&rule.head.predicate) {
-                continue;
-            }
-            let before = needed.len();
-            collect_body_global_predicates(&rule.body, query, &mut needed);
-            changed |= needed.len() != before;
-        }
-    }
-    needed
-}
-
-fn collect_body_global_predicates(
-    body: &Body,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    for atom in &body.atoms {
-        collect_atom_global_predicates(atom, query, out);
-    }
-}
-
-fn collect_atom_global_predicates(
-    atom: &Atom,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    match atom {
-        Atom::Derived(derived) => collect_global_predicate(&derived.predicate, query, out),
-        Atom::Aggregation(aggregate) => {
-            collect_body_global_predicates(&aggregate.body, query, out);
-        }
-        Atom::Negation(negation) => {
-            if let NegatedAtom::Derived(derived) = &negation.atom {
-                collect_global_predicate(&derived.predicate, query, out);
-            }
-        }
-        Atom::TimeBlock(time_block) => {
-            collect_body_global_predicates(&time_block.body, query, out);
-        }
-        Atom::Stored(_) | Atom::Comparison(_) => {}
-    }
-}
-
-fn collect_global_predicate(
-    predicate: &PredicateRef,
-    query: &AnalyzedQuery,
-    out: &mut BTreeSet<PredicateRef>,
-) {
-    if PrimitivePredicate::from_predicate(predicate).is_some() {
-        return;
-    }
-    if query.local_predicates().any(|local| local == predicate) {
-        return;
-    }
-    out.insert(predicate.clone());
 }

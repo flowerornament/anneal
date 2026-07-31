@@ -174,6 +174,84 @@ impl AnalyzedQuery {
     }
 }
 
+/// Return the global predicates transitively required to evaluate `query`.
+///
+/// The dependency closure is fact-independent, so hosts can use it before
+/// source extraction to provision evidence required by the active program.
+pub fn query_dependencies(program: &Program, query: &Query) -> BTreeSet<PredicateRef> {
+    let local_predicates = query
+        .local_rules
+        .iter()
+        .map(|rule| rule.head.predicate.clone())
+        .collect::<BTreeSet<_>>();
+    let mut needed = BTreeSet::new();
+    collect_body_global_predicates(&query.body, &local_predicates, &mut needed);
+    for rule in &query.local_rules {
+        collect_body_global_predicates(&rule.body, &local_predicates, &mut needed);
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for rule in program.rules() {
+            if !needed.contains(&rule.head.predicate) {
+                continue;
+            }
+            let before = needed.len();
+            collect_body_global_predicates(&rule.body, &local_predicates, &mut needed);
+            changed |= needed.len() != before;
+        }
+    }
+    needed
+}
+
+fn collect_body_global_predicates(
+    body: &Body,
+    local_predicates: &BTreeSet<PredicateRef>,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    for atom in &body.atoms {
+        collect_atom_global_predicates(atom, local_predicates, out);
+    }
+}
+
+fn collect_atom_global_predicates(
+    atom: &Atom,
+    local_predicates: &BTreeSet<PredicateRef>,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    match atom {
+        Atom::Derived(derived) => {
+            collect_global_predicate(&derived.predicate, local_predicates, out);
+        }
+        Atom::Aggregation(aggregate) => {
+            collect_body_global_predicates(&aggregate.body, local_predicates, out);
+        }
+        Atom::Negation(negation) => {
+            if let NegatedAtom::Derived(derived) = &negation.atom {
+                collect_global_predicate(&derived.predicate, local_predicates, out);
+            }
+        }
+        Atom::TimeBlock(time_block) => {
+            collect_body_global_predicates(&time_block.body, local_predicates, out);
+        }
+        Atom::Stored(_) | Atom::Comparison(_) => {}
+    }
+}
+
+fn collect_global_predicate(
+    predicate: &PredicateRef,
+    local_predicates: &BTreeSet<PredicateRef>,
+    out: &mut BTreeSet<PredicateRef>,
+) {
+    if PrimitivePredicate::from_predicate(predicate).is_some()
+        || local_predicates.contains(predicate)
+    {
+        return;
+    }
+    out.insert(predicate.clone());
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stratum {
     pub level: usize,
@@ -2694,5 +2772,41 @@ mod tests {
             .map(PredicateRef::display_name)
             .collect::<Vec<_>>();
         assert!(names.iter().any(|name| name == "total"));
+    }
+
+    #[test]
+    fn query_dependency_closure_reaches_through_negation_and_global_rules() {
+        let program = parse_program(
+            "inline",
+            r#"
+            evidence(h) := *meta{handle: h, key: "evidence", value: value}.
+            present(h) := evidence(h).
+            warning(h) := *handle{id: h}, not present(h).
+            ? warning(h).
+            "#,
+        )
+        .expect("program parses");
+        let query = program.queries().next().expect("query present");
+        let evidence = PredicateRef::new(Ident::new_unchecked("evidence"));
+
+        assert!(query_dependencies(&program, query).contains(&evidence));
+    }
+
+    #[test]
+    fn unqueried_global_rule_does_not_change_query_dependency_closure() {
+        let program = parse_program(
+            "inline",
+            r#"
+            selected(h) := *handle{id: h}.
+            unrelated(h) := expensive(h).
+            expensive(h) := *meta{handle: h, key: "expensive", value: value}.
+            ? selected(h).
+            "#,
+        )
+        .expect("program parses");
+        let query = program.queries().next().expect("query present");
+        let expensive = PredicateRef::new(Ident::new_unchecked("expensive"));
+
+        assert!(!query_dependencies(&program, query).contains(&expensive));
     }
 }

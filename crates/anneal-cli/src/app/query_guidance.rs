@@ -3,12 +3,12 @@
 use std::collections::BTreeSet;
 
 use anneal_core::runtime::DerivedAtom;
-use anneal_core::runtime::QueryWarning;
-use anneal_core::runtime::datalog_string_literal;
 use anneal_core::runtime::{
     AnalyzedProgram, Atom, Body, CallArg, CallStyle, Expr, Literal, NegatedAtom, NumberLiteral,
-    Query, Row, Statement, StoredAtom, parse_program, stored_relation_fields,
+    PredicateRef, Program, Query, QueryWarning, Row, Statement, StoredAtom, datalog_string_literal,
+    parse_program, query_dependencies, stored_relation_fields,
 };
+use anneal_core::{CodeTargetMeta, VerbEntry, VerbRegistry};
 use chrono::NaiveDate;
 
 use super::command::RuntimeCommand;
@@ -82,11 +82,58 @@ fn ranked_anchor_atom_handle_field(atom: &Atom) -> Option<String> {
 }
 
 impl RuntimeCommand {
-    /// Return whether execution needs code-target history facts.
-    pub(super) fn demands_code_target_history(&self) -> bool {
+    /// Derive expensive extraction inputs from the command's effective query.
+    pub(super) fn evidence_demands(
+        &self,
+        program: &Program,
+        registry: &VerbRegistry,
+    ) -> EvidenceDemands {
+        let query_source = match self {
+            Self::Eval { query, .. } => Some(query.as_str()),
+            Self::Verb { name, .. } => registry.get(name).map(VerbEntry::query_source),
+            _ => None,
+        };
+        let dependencies = query_source.and_then(|source| {
+            let query_program = parse_program("evidence-demand", source).ok()?;
+            let query = query_program.queries().next()?.clone();
+            let mut effective_program = program.clone();
+            effective_program
+                .statements
+                .extend(query_program.statements);
+            Some(query_dependencies(&effective_program, &query))
+        });
+        let derived_target_history = dependencies
+            .as_ref()
+            .is_some_and(|dependencies| dependencies.contains(&predicate_ref("spec_code_drift")));
+        let derived_drift = dependencies.as_ref().is_some_and(|dependencies| {
+            [
+                "referent_disposition",
+                "assertion_drift",
+                "referent_moved_head",
+            ]
+            .iter()
+            .map(|predicate| predicate_ref(predicate))
+            .any(|predicate| dependencies.contains(&predicate))
+        });
+
+        EvidenceDemands {
+            code_target_history: self
+                .demands_code_target_history(query_source, derived_target_history),
+            code_drift: self.demands_code_drift_evidence(query_source, derived_drift),
+            edge_assertions: self.demands_edge_assertions(query_source),
+        }
+    }
+
+    fn demands_code_target_history(
+        &self,
+        query_source: Option<&str>,
+        derived_demand: bool,
+    ) -> bool {
         match self {
             Self::Status | Self::Verb { .. } | Self::Check { .. } | Self::Handle { .. } => true,
-            Self::Eval { query, .. } => query_demands_code_target_history(query),
+            Self::Eval { .. } => {
+                derived_demand || query_source.is_some_and(query_demands_code_target_history)
+            }
             Self::Describe { name } => matches!(
                 name.as_str(),
                 "W006"
@@ -108,11 +155,16 @@ impl RuntimeCommand {
         }
     }
 
-    /// Return whether execution needs design-code drift evidence.
-    pub(super) fn demands_code_drift_evidence(&self) -> bool {
+    fn demands_code_drift_evidence(
+        &self,
+        query_source: Option<&str>,
+        derived_demand: bool,
+    ) -> bool {
         match self {
             Self::Status | Self::Check { .. } | Self::Handle { .. } => true,
-            Self::Eval { query, .. } => query_demands_code_drift_evidence(query),
+            Self::Eval { .. } | Self::Verb { .. } => {
+                derived_demand || query_source.is_some_and(query_demands_code_drift_evidence)
+            }
             Self::Describe { name } => matches!(
                 name.as_str(),
                 "referent_disposition"
@@ -127,7 +179,6 @@ impl RuntimeCommand {
             | Self::Context { .. }
             | Self::Read { .. }
             | Self::Schema
-            | Self::Verb { .. }
             | Self::Help { .. }
             | Self::HelpName { .. } => false,
         }
@@ -143,10 +194,11 @@ impl RuntimeCommand {
         )
     }
 
-    /// Return whether execution needs edge-assertion provenance.
-    pub(super) fn demands_edge_assertions(&self) -> bool {
+    fn demands_edge_assertions(&self, query_source: Option<&str>) -> bool {
         match self {
-            Self::Eval { query, .. } => query_demands_edge_assertions(query),
+            Self::Eval { .. } | Self::Verb { .. } => {
+                query_source.is_some_and(query_demands_edge_assertions)
+            }
             Self::Describe { name } => {
                 matches!(
                     name.as_str(),
@@ -154,7 +206,6 @@ impl RuntimeCommand {
                 )
             }
             Self::Status
-            | Self::Verb { .. }
             | Self::Check { .. }
             | Self::Version
             | Self::Init { .. }
@@ -170,28 +221,24 @@ impl RuntimeCommand {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct EvidenceDemands {
+    pub(super) code_target_history: bool,
+    pub(super) code_drift: bool,
+    pub(super) edge_assertions: bool,
+}
+
+fn predicate_ref(name: &str) -> PredicateRef {
+    PredicateRef::new(anneal_core::runtime::Ident::new_unchecked(name))
+}
+
 /// Detect code-target-history predicates without accepting identifier substrings.
 pub(super) fn query_demands_code_target_history(query: &str) -> bool {
     [
-        "diagnostic",
-        "spec_code_drift",
         "target_exists",
         "target_history_status",
         "target_probe_base",
         "target_resolved_path",
-        "entropy",
-        "primary_entropy",
-        "potential",
-        "potential_subject",
-        "frontier",
-        "ranked_work",
-        "area_frontier",
-        "blocked",
-        "blocker",
-        "holding",
-        "flow",
-        "status_item",
-        "status_metric",
     ]
     .iter()
     .any(|needle| query_contains_identifier(query, needle))
@@ -200,15 +247,13 @@ pub(super) fn query_demands_code_target_history(query: &str) -> bool {
 /// Detect drift predicates without accepting identifier substrings.
 pub(super) fn query_demands_code_drift_evidence(query: &str) -> bool {
     [
-        "referent_disposition",
-        "assertion_drift",
-        "referent_moved_head",
-        "drift_profile",
-        "code_ref",
-        "code.referent_disposition",
-        "code.referent_commits_since",
-        "code.referent_moved_to",
-        "code.referent_move_candidate",
+        CodeTargetMeta::REFERENT_DISPOSITION,
+        CodeTargetMeta::REFERENT_COMMITS_SINCE,
+        CodeTargetMeta::REFERENT_MOVED_TO,
+        CodeTargetMeta::REFERENT_MOVE_CANDIDATE,
+        CodeTargetMeta::REFERENT_MOVE_CANDIDATE_COUNT,
+        CodeTargetMeta::REFERENT_EVIDENCE_HEAD,
+        CodeTargetMeta::REFERENT_ASSERTION_PREMISE,
     ]
     .iter()
     .any(|needle| query_contains_identifier(query, needle))
