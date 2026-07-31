@@ -984,6 +984,7 @@ mod tests {
             config convergence {
               ordering(["raw", "draft", "current"]).
               active(["draft", "current"]).
+              settled(["current"]).
               terminal("archived").
               asserts_code(["draft"]).
             }
@@ -1030,6 +1031,7 @@ mod tests {
                 ConfigEntry::ordered("convergence.ordering", "current", 2),
                 ConfigEntry::scalar("convergence.active", "draft"),
                 ConfigEntry::scalar("convergence.active", "current"),
+                ConfigEntry::scalar("convergence.settled", "current"),
                 ConfigEntry::scalar("convergence.terminal", "archived"),
                 ConfigEntry::scalar("convergence.asserts_code", "draft"),
                 ConfigEntry::scalar("dependency.dead", "incorporated"),

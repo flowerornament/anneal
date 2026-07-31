@@ -181,7 +181,8 @@ Lifecycle defaults are also queryable rather than implicit. Query
 `lifecycle_status_classification(status, classification, origin)` to see
 whether project config or builtin policy models a status as pipeline, settled,
 active, or terminal. W005 reports statuses for which that relation has no row;
-settled does not imply terminal.
+settled does not imply terminal. Declare a project-specific settled status with
+`config convergence { settled(["project-settled"]). }`.
 
 W007 reports exact reference-like frontmatter keys that have no edge mapping,
 including in corpora with no `config frontmatter` block. Run

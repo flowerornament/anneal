@@ -11,6 +11,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde::ser::SerializeMap;
 
+use crate::config_schema::{RuntimeConfigKey, runtime_config_key_for_config_key};
 #[cfg(test)]
 use crate::facts::SnapshotFact;
 use crate::facts::{
@@ -2461,17 +2462,25 @@ impl GraphIndex {
     }
 
     fn insert_config_values(&mut self, key: &str, value: &str, ordinal: Option<i64>) {
-        match key {
-            CONFIG_ACTIVE_STATUS => {
+        let Some(config_key) = runtime_config_key_for_config_key(key) else {
+            self.impact_traverse.insert_config(key, value);
+            return;
+        };
+        if !GRAPH_INDEX_CONFIG_KEYS.contains(&config_key) {
+            self.impact_traverse.insert_config(key, value);
+            return;
+        }
+        match config_key {
+            RuntimeConfigKey::ConvergenceActive => {
                 self.active_statuses.insert(value.to_owned());
             }
-            CONFIG_TERMINAL_STATUS => {
+            RuntimeConfigKey::ConvergenceTerminal => {
                 self.terminal_statuses.insert(value.to_owned());
             }
-            CONFIG_SETTLED_STATUS => {
+            RuntimeConfigKey::ConvergenceSettled => {
                 self.settled_statuses.insert(value.to_owned());
             }
-            CONFIG_PIPELINE_ORDERING => {
+            RuntimeConfigKey::ConvergenceOrdering => {
                 let position = ordinal.unwrap_or_else(|| {
                     i64::try_from(self.pipeline_positions.len()).unwrap_or(i64::MAX)
                 });
@@ -2480,12 +2489,10 @@ impl GraphIndex {
                     .and_modify(|existing| *existing = (*existing).min(position))
                     .or_insert(position);
             }
-            CONFIG_LINEAR_NAMESPACE => {
+            RuntimeConfigKey::HandlesLinear => {
                 self.linear_namespaces.insert(value.to_owned());
             }
-            _ => {
-                self.impact_traverse.insert_config(key, value);
-            }
+            _ => unreachable!("graph-index config key set and match arms stay aligned"),
         }
     }
 
@@ -3392,11 +3399,13 @@ const CITES_EDGE_KIND: &str = "Cites";
 const DISCHARGES_EDGE_KIND: &str = "Discharges";
 const MAX_TRAIL_REFS_PER_ENTRY: usize = 256;
 const MAX_TRAIL_GENERATIONS_PER_ENTRY: usize = 64;
-const CONFIG_ACTIVE_STATUS: &str = "convergence.active";
-const CONFIG_TERMINAL_STATUS: &str = "convergence.terminal";
-const CONFIG_SETTLED_STATUS: &str = "convergence.settled";
-const CONFIG_PIPELINE_ORDERING: &str = "convergence.ordering";
-const CONFIG_LINEAR_NAMESPACE: &str = "handles.linear";
+const GRAPH_INDEX_CONFIG_KEYS: &[RuntimeConfigKey] = &[
+    RuntimeConfigKey::ConvergenceActive,
+    RuntimeConfigKey::ConvergenceTerminal,
+    RuntimeConfigKey::ConvergenceSettled,
+    RuntimeConfigKey::ConvergenceOrdering,
+    RuntimeConfigKey::HandlesLinear,
+];
 fn freshness_days(state: &HandleState, today: Option<i64>) -> i64 {
     let (Some(date), Some(today)) = (state.date, today) else {
         return 0;
@@ -4170,6 +4179,18 @@ mod tests {
     };
     use crate::visibility::FactVisibility;
     use crate::{facts::STORED_RELATION_DESCRIPTORS, vm::store::TupleDb};
+
+    #[test]
+    fn graph_index_config_inputs_are_declared_in_the_runtime_schema() {
+        for key in GRAPH_INDEX_CONFIG_KEYS {
+            let declaration = crate::config_schema::runtime_config_declaration_by_key(*key)
+                .expect("every graph-index config input is supported project vocabulary");
+            assert_eq!(
+                runtime_config_key_for_config_key(&declaration.config_key()),
+                Some(*key)
+            );
+        }
+    }
 
     fn identity(native_id: &str) -> FactIdentity {
         identity_for_source("fixture", native_id)

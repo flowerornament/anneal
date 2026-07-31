@@ -487,6 +487,7 @@ fn render_unified_config(config: &config::AnnealConfig) -> String {
 
     if !config.convergence.ordering.is_empty()
         || !config.convergence.active.is_empty()
+        || !config.convergence.settled.is_empty()
         || !config.convergence.terminal.is_empty()
         || !config.convergence.asserts_code.is_empty()
         || !config.convergence.descriptions.is_empty()
@@ -504,6 +505,15 @@ fn render_unified_config(config: &config::AnnealConfig) -> String {
                 &mut out,
                 RuntimeConfigKey::ConvergenceActive,
                 &config.convergence.active,
+            );
+        }
+        if config.convergence.settled.is_empty() {
+            out.push_str("  # settled([\"project-settled\"]).\n");
+        } else {
+            list_config_call(
+                &mut out,
+                RuntimeConfigKey::ConvergenceSettled,
+                &config.convergence.settled,
             );
         }
         if !config.convergence.terminal.is_empty() {
@@ -2641,6 +2651,7 @@ mod tests {
         let output = render_or_write_init(root, InitMode::DryRun).expect("init dry run");
 
         assert!(output.body.contains("# external_root([\"../formal\"])."));
+        assert!(output.body.contains("# settled([\"project-settled\"])."));
         std::fs::write(root.join("anneal.dl"), &output.body).expect("write scaffold");
         crate::extract::config::load_config(root.as_std_path()).expect("scaffold parses");
     }

@@ -221,8 +221,8 @@ A typed relationship between handles. Common edges include `Cites`,
 `DependsOn`, `Supersedes`, `Verifies`, and `Discharges`.
 
 **Status**  
-The lifecycle state from frontmatter. Project config partitions statuses into
-active and terminal sets.
+The lifecycle state from frontmatter. Project config can classify statuses as
+active, settled, or terminal; settled does not imply terminal.
 
 **Convergence Lattice**  
 The model that tracks movement from active uncertainty toward terminal
@@ -459,6 +459,7 @@ source md {
 config convergence {
   ordering(["raw", "draft", "review", "approved", "published"]).
   active(["draft", "review", "approved"]).
+  settled(["approved"]).
   terminal(["published", "archived", "superseded"]).
   asserts_code(["draft", "review", "approved"]).
   description("draft", "Under construction; may change substantially").

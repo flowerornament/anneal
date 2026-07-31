@@ -29,6 +29,7 @@ pub enum RuntimeConfigKey {
     CorpusExclude,
     ConvergenceOrdering,
     ConvergenceActive,
+    ConvergenceSettled,
     ConvergenceTerminal,
     ConvergenceAssertsCode,
     ConvergenceDescription,
@@ -309,6 +310,12 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         RuntimeConfigValueMode::UnorderedSet,
     ),
     runtime_config_declaration(
+        RuntimeConfigKey::ConvergenceSettled,
+        "convergence",
+        "settled",
+        RuntimeConfigValueMode::UnorderedSet,
+    ),
+    runtime_config_declaration(
         RuntimeConfigKey::ConvergenceTerminal,
         "convergence",
         "terminal",
@@ -551,6 +558,13 @@ pub fn runtime_config_declaration_by_key(
         .find(|declaration| declaration.key == key)
 }
 
+pub(crate) fn runtime_config_key_for_config_key(config_key: &str) -> Option<RuntimeConfigKey> {
+    RUNTIME_CONFIG_DECLARATIONS
+        .iter()
+        .find(|declaration| declaration.config_key() == config_key)
+        .map(|declaration| declaration.key)
+}
+
 fn ordered_entries(
     key: &str,
     values: Vec<String>,
@@ -604,6 +618,14 @@ mod tests {
 
     #[test]
     fn runtime_config_schema_lowers_grouped_declarations() {
+        let settled = runtime_config_declaration_for("convergence", "settled").expect("schema");
+        assert_eq!(
+            settled
+                .entries(vec!["locked".to_string()])
+                .expect("entries"),
+            vec![ConfigEntry::scalar("convergence.settled", "locked")]
+        );
+
         let description =
             runtime_config_declaration_for("convergence", "description").expect("schema");
         assert_eq!(
@@ -699,6 +721,10 @@ mod tests {
             assert_eq!(
                 runtime_config_declaration_by_key(declaration.key()),
                 Some(*declaration)
+            );
+            assert_eq!(
+                runtime_config_key_for_config_key(&declaration.config_key()),
+                Some(declaration.key())
             );
         }
     }

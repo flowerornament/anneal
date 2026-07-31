@@ -275,7 +275,9 @@ pub(crate) struct StateConfig {
 pub(crate) struct ConvergenceConfig {
     /// Status values considered active (in-progress, not yet settled).
     pub(crate) active: Vec<String>,
-    /// Status values considered terminal (settled, no further work expected).
+    /// Status values considered settled without implying terminality.
+    pub(crate) settled: Vec<String>,
+    /// Status values considered terminal (off the active frontier).
     pub(crate) terminal: Vec<String>,
     /// Status values that claim facts about this corpus's current code.
     pub(crate) asserts_code: Vec<String>,
@@ -557,6 +559,10 @@ pub(crate) fn apply_runtime_config_facts(
         .values("convergence.active")
         .map(str::to_string)
         .collect();
+    config.convergence.settled = facts
+        .values("convergence.settled")
+        .map(str::to_string)
+        .collect();
     config.convergence.terminal = facts
         .values("convergence.terminal")
         .map(str::to_string)
@@ -812,6 +818,7 @@ default_filter = "all"
             config convergence {
               ordering(["raw", "draft", "current"]).
               active(["draft", "current"]).
+              settled(["current"]).
               terminal(["archived"]).
               asserts_code(["draft"]).
               description("draft", "needs work").
@@ -841,6 +848,7 @@ default_filter = "all"
         assert_eq!(config.exclude, ["feedback"]);
         assert_eq!(config.convergence.ordering, ["raw", "draft", "current"]);
         assert_eq!(config.convergence.active, ["draft", "current"]);
+        assert_eq!(config.convergence.settled, ["current"]);
         assert_eq!(config.convergence.terminal, ["archived"]);
         assert_eq!(config.convergence.asserts_code, ["draft"]);
         assert_eq!(

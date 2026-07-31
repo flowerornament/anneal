@@ -297,6 +297,8 @@ asserts_code(status) :=
   not configured_asserts_code_present("yes").
 
 configured_lifecycle_status(status) := configured_active_status(status).
+configured_lifecycle_status(status) :=
+  *config{key: "convergence.settled", value: status}.
 configured_lifecycle_status(status) := configured_terminal_status(status).
 
 modeled_lifecycle_status(status) :=

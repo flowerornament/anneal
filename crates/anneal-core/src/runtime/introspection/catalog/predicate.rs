@@ -116,9 +116,9 @@ fn predicate_requires(name: &str, family: Option<PredicateFamily>) -> &'static [
         "implausible_ref" => {
             &["markdown extraction metadata for references rejected by the plausibility filter."]
         }
-        "lifecycle_config_gap" => {
-            &["handle statuses plus `config convergence` active, terminal, and ordering entries."]
-        }
+        "lifecycle_config_gap" => &[
+            "handle statuses plus `config convergence` active, settled, terminal, and ordering entries.",
+        ],
         _ if family == Some(PredicateFamily::DependencyValidity) => &[
             "conservative builtin status classifications plus per-status `config dependency` overrides.",
         ],
@@ -379,6 +379,7 @@ fn lifecycle_config_gap_variant_lines() -> Vec<String> {
         "Builtin pipeline: raw, draft, research, plan, current, active, stable, authoritative. Builtin settled: authoritative, current, active, stable, living.".to_string(),
         "Builtin terminal stems: superseded, archived, historical, prior, retired, deprecated, obsolete, withdrawn, cancelled/canceled, closed, resolved, done, completed, incorporated, digested.".to_string(),
         "Query `lifecycle_status_classification(status, classification, origin)` to inspect effective builtin and project classifications; unknown statuses intentionally produce no row.".to_string(),
+        "Classify a project status as settled without making it terminal with `config convergence { settled([\"project-settled\"]). }`.".to_string(),
     ]
 }
 
