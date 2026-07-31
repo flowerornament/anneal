@@ -4,18 +4,47 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.24.0 - 2026-07-31
+
 ### Added
 
 - Scalar `=` equations bind an unbound variable from a grounded expression,
   independent of rule-body order, and signed numeric literals work in
   expressions. Integer arithmetic stays integral while mixed numeric arithmetic
   produces floats.
+- `lifecycle_status_classification(status, classification, origin)` exposes the
+  effective sealed lifecycle vocabulary and whether each classification comes
+  from built-in policy or project configuration.
+- `convergence.settled` is a supported project configuration key, matching the
+  runtime behavior and the configuration contract already specified by
+  CR-D108.
+
+### Changed
+
+- Status dashboard summary lines use commas rather than visual chunking
+  separators. `Health` names `spec_code_drift` as a count of distinct source
+  handles, and `Code refs` separates oracle dispositions from unavailable
+  evidence states.
 
 ### Fixed
 
+- Bare eval queries derive drift-evidence requirements from their actual
+  predicate dependency closure, so diagnostic drill-downs no longer over-report
+  `W006` rows when referent evidence is absent. On Herald this corrects the
+  diagnostic population from 604 to 371 rows and `W006` from 383 to 150.
+  `anneal check` was correctly provisioned throughout; bare `anneal -e`
+  drill-downs were the over-reporters. The truthful drill-down loads more
+  evidence: paired five-run measurements moved from 154.6 ms to 310.2 ms on
+  anneal, 1.116 s to 1.134 s on Murail, and 1.339 s to 1.898 s on Herald;
+  `status` and `check` remain flat.
+- `W005` no longer fires for lifecycle vocabulary already modeled by anneal's
+  effective built-in or project classification. Unclassified statuses remain
+  visible rather than being guessed.
 - Recursive rules that construct new values fail during planning instead of
   entering an unbounded fixpoint. Recursive pass-through and fixed-literal
-  heads remain valid.
+  heads remain valid, and the error teaches bounded alternatives.
+- `release-bump` keeps `Unreleased` at the top of the changelog and warns when
+  pending entries need to move into the scaffolded release section.
 
 ## v0.23.0 - 2026-07-30
 
