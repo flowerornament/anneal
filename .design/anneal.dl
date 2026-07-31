@@ -8,6 +8,10 @@ config suppress {
   rule("E001", "synthesis/v17.md").
 }
 
+config convergence {
+  settled(["locked"]).
+}
+
 @verb(
   name: "area-diagnostics",
   query: "area_diagnostic(h, code, file) :=\n  verb_arg(\"area\", area),\n  diagnostic{subject: h, code: code, file: file},\n  area_of{h: h, area: area}.\n\n? area_diagnostic(h, code, file).",
