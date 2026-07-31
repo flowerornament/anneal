@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Native Nix outputs for all advertised systems publish to the public Cachix
+  cache. Release tagging verifies those outputs before moving the release
+  channel, and fresh tokenless runners prove that each output substitutes with
+  local builds disabled.
+
 ### Fixed
 
 - The Home Manager module installs the package owned by Anneal's flake by

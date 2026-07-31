@@ -112,14 +112,19 @@ cargo install --path . --locked
 Run without installing:
 
 ```bash
-nix run github:flowerornament/anneal
+nix run --accept-flake-config github:flowerornament/anneal
 ```
 
 Install into your profile:
 
 ```bash
-nix profile install github:flowerornament/anneal
+nix profile install --accept-flake-config github:flowerornament/anneal
 ```
+
+The flake advertises Anneal's public Cachix cache, where native builds for all
+four supported Nix systems are published. `--accept-flake-config` permits that
+cache for the command. Persistent system configurations should trust
+`https://flowerornament.cachix.org` and its advertised public key explicitly.
 
 Add as a flake input:
 

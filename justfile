@@ -101,14 +101,19 @@ build:
 release-bump version:
     python3 scripts/release.py bump {{quote(version)}}
 
+# Verify every advertised Nix package output is present in the public cache
+[group('release')]
+cache-verify:
+    python3 scripts/release.py cache-verify
+
 # Release readiness checks: versions, changelog, targets, quality gate, release binary
 [group('release')]
 release-verify:
     python3 scripts/release.py verify
 
-# Tag and publish a release: pushes the annotated tag, force-updates the `release` branch, triggers the GitHub release workflow
+# Tag and publish a cache-ready release: verifies Nix outputs, pushes the tag, updates `release`, triggers binary publication
 [group('release')]
 [arg('version', pattern='[0-9]+\.[0-9]+\.[0-9]+', help='Semver release, e.g. 0.14.1')]
-[confirm("This will tag, force-update origin/release, and trigger the public GitHub release workflow. Continue?")]
+[confirm("This will verify cached Nix outputs, tag, force-update origin/release, and trigger binary publication. Continue?")]
 release-tag version:
     python3 scripts/release.py tag {{quote(version)}}

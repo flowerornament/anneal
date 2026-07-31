@@ -128,9 +128,15 @@ just release-tag 0.2.1
 
 `just release-verify` checks version alignment across `Cargo.toml`, `Cargo.lock`, and `flake.nix`; CHANGELOG entry presence without `TODO`/`TBD` placeholders; release target alignment across `release.yml`, `install.sh`, and `README.md`; public-repo safety for `.beads/config.yaml`; then runs `just check`, `just build`, `anneal --version`, and the corpus consistency check.
 
-`just release-tag` pushes the annotated tag and force-updates the
-`release` branch (`--force-with-lease`) so downstream flake consumers
-can track `?ref=refs/heads/release` and resolve to the latest released
+Every push to `master` runs the native Nix publication matrix, uploads each
+runtime closure to the public Cachix cache, pins the last three revisions per
+system, and proves substitution from a fresh tokenless runner with local builds
+disabled.
+
+`just release-tag` first verifies that every advertised Nix package output is
+present in the public cache. Only then does it push the annotated tag and
+force-update the `release` branch (`--force-with-lease`) so downstream flake
+consumers can track `?ref=refs/heads/release` and resolve to the latest released
 commit via `nix flake update`.
 
 Pushing `vX.Y.Z` triggers `.github/workflows/release.yml` and publishes binaries for:

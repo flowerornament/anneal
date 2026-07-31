@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -22,8 +23,13 @@ ANNEAL_MANIFESTS = [
     ROOT / "crates/anneal-mcp/Cargo.toml",
     ROOT / "crates/anneal-md/Cargo.toml",
 ]
-CHANGELOG_INTRO_MARKER = "All notable changes to `anneal` are documented in this file.\n\n"
+CHANGELOG_INTRO_MARKER = (
+    "All notable changes to `anneal` are documented in this file.\n\n"
+)
 UNRELEASED_HEADING = "## Unreleased"
+CACHE_NAME = "flowerornament"
+CACHE_URI = f"https://{CACHE_NAME}.cachix.org"
+CACHE_PIN_REVISIONS = 3
 
 
 def fail(message: str) -> None:
@@ -96,6 +102,19 @@ def flake_version() -> str:
 def workflow_targets() -> list[str]:
     text = read_text(ROOT / ".github/workflows/release.yml")
     return re.findall(r"- target: ([^\n]+)", text)
+
+
+def flake_package_systems() -> list[str]:
+    text = read_text(ROOT / "flake.nix")
+    match = re.search(r"(?m)^\s*systems = \[(?P<body>[^]]+)\];$", text)
+    if match is None:
+        fail("could not find package systems in flake.nix")
+    return re.findall(r'"([^"]+)"', match.group("body"))
+
+
+def cache_workflow_systems() -> list[str]:
+    text = read_text(ROOT / ".github/workflows/nix-cache.yml")
+    return re.findall(r"- system: ([^\n]+)", text)
 
 
 def installer_targets() -> list[str]:
@@ -197,17 +216,14 @@ def changelog_insert_entry_text(
     unreleased = unreleased_matches[0]
     next_heading = re.search(r"(?m)^## ", text[unreleased.end() :])
     unreleased_end = (
-        len(text)
-        if next_heading is None
-        else unreleased.end() + next_heading.start()
+        len(text) if next_heading is None else unreleased.end() + next_heading.start()
     )
     unreleased_block = text[unreleased.start() : unreleased_end]
     pending_entries = changelog_pending_entries(unreleased_block)
 
     without_unreleased = text[: unreleased.start()] + text[unreleased_end:]
-    marker_end = (
-        without_unreleased.index(CHANGELOG_INTRO_MARKER)
-        + len(CHANGELOG_INTRO_MARKER)
+    marker_end = without_unreleased.index(CHANGELOG_INTRO_MARKER) + len(
+        CHANGELOG_INTRO_MARKER
     )
     normalized = (
         without_unreleased[:marker_end]
@@ -315,14 +331,202 @@ def bump(version: str) -> None:
 
 
 def run(cmd: list[str]) -> None:
-    print(f"+ {' '.join(cmd)}")
+    print(f"+ {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
+
+
+def capture(cmd: list[str]) -> str:
+    print(f"+ {' '.join(cmd)}", flush=True)
+    result = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def command_succeeds(cmd: list[str]) -> bool:
+    return (
+        subprocess.run(
+            cmd,
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
+
+
+def nix_output_path(system: str) -> str:
+    return capture(
+        [
+            "nix",
+            "eval",
+            "--accept-flake-config",
+            "--raw",
+            f".#packages.{system}.default.outPath",
+        ]
+    )
+
+
+def nix_derivation_path(system: str) -> str:
+    return capture(
+        [
+            "nix",
+            "eval",
+            "--accept-flake-config",
+            "--raw",
+            f".#packages.{system}.default.drvPath",
+        ]
+    )
+
+
+def cache_contains(path: str) -> bool:
+    return command_succeeds(["nix", "path-info", "--store", CACHE_URI, path])
+
+
+def local_store_contains(path: str) -> bool:
+    return command_succeeds(["nix", "path-info", path])
+
+
+def check_cache_system(system: str) -> None:
+    if system not in flake_package_systems():
+        fail(f"{system} is not advertised by flake.nix")
+
+
+def build_nix_output(system: str, *, substitutes_only: bool = False) -> str:
+    command = [
+        "nix",
+        "build",
+        "--accept-flake-config",
+        "--no-link",
+        "--print-out-paths",
+    ]
+    if substitutes_only:
+        command.extend(["--max-jobs", "0"])
+    command.append(f".#packages.{system}.default")
+    output = capture(command)
+    paths = output.splitlines()
+    if len(paths) != 1:
+        fail(f"expected one Nix output for {system}, got {len(paths)}")
+    return paths[0]
+
+
+def cache_summary(*, system: str, derivation: str, output: str, result: str) -> str:
+    revision = capture(["git", "rev-parse", "HEAD"])
+    return "\n".join(
+        [
+            f"### Anneal Nix cache: {system}",
+            "",
+            f"- revision: `{revision}`",
+            f"- version: `{cargo_version()}`",
+            f"- derivation: `{derivation}`",
+            f"- output: `{output}`",
+            f"- result: {result}",
+            f"- pin: `anneal-{system}` (last {CACHE_PIN_REVISIONS} revisions)",
+        ]
+    )
+
+
+def emit_cache_summary(summary: str) -> None:
+    print(summary)
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path is not None:
+        with Path(summary_path).open("a", encoding="utf-8") as file:
+            file.write(f"{summary}\n")
+
+
+def publish_nix_cache(system: str) -> None:
+    check_cache_system(system)
+    derivation = nix_derivation_path(system)
+    expected_output = nix_output_path(system)
+    was_cached = cache_contains(expected_output)
+    built_output = build_nix_output(system)
+    if built_output != expected_output:
+        fail(
+            f"Nix output changed during the {system} build: "
+            f"expected {expected_output}, got {built_output}"
+        )
+
+    run(["cachix", "push", CACHE_NAME, built_output])
+    if not cache_contains(built_output):
+        fail(f"Cachix did not expose {built_output} after a successful push")
+    run(
+        [
+            "cachix",
+            "pin",
+            CACHE_NAME,
+            f"anneal-{system}",
+            built_output,
+            "--keep-revisions",
+            str(CACHE_PIN_REVISIONS),
+        ]
+    )
+    result = "substituted and republished" if was_cached else "built and published"
+    emit_cache_summary(
+        cache_summary(
+            system=system,
+            derivation=derivation,
+            output=built_output,
+            result=result,
+        )
+    )
+
+
+def consume_nix_cache(system: str) -> None:
+    check_cache_system(system)
+    derivation = nix_derivation_path(system)
+    expected_output = nix_output_path(system)
+    if not cache_contains(expected_output):
+        fail(f"Cachix is missing {system} output {expected_output}")
+    if local_store_contains(expected_output):
+        fail(
+            f"consumer proof started with {expected_output} already in the local store"
+        )
+
+    built_output = build_nix_output(system, substitutes_only=True)
+    if built_output != expected_output:
+        fail(
+            f"substitution returned the wrong {system} output: "
+            f"expected {expected_output}, got {built_output}"
+        )
+    run([f"{built_output}/bin/anneal", "--version"])
+    emit_cache_summary(
+        cache_summary(
+            system=system,
+            derivation=derivation,
+            output=built_output,
+            result="substituted from the public cache with local builds disabled",
+        )
+    )
+
+
+def verify_release_cache() -> None:
+    missing = [
+        (system, output)
+        for system in flake_package_systems()
+        if not cache_contains(output := nix_output_path(system))
+    ]
+    if missing:
+        details = "\n".join(f"  - {system}: {output}" for system, output in missing)
+        fail(
+            "release outputs are missing from the public Cachix cache:\n"
+            f"{details}\n"
+            "Wait for the Nix Cache workflow for this commit to succeed, then retry."
+        )
+    print("all advertised Nix package outputs are present in Cachix")
 
 
 def verify() -> None:
     versions = {
         **cargo_manifest_versions(),
-        **{f"Cargo.lock:{name}": version for name, version in cargo_lock_versions().items()},
+        **{
+            f"Cargo.lock:{name}": version
+            for name, version in cargo_lock_versions().items()
+        },
         **cargo_path_dependency_versions(),
         "flake.nix": flake_version(),
     }
@@ -340,8 +544,18 @@ def verify() -> None:
             f"workflow={workflow}, install={installer}, readme={readme}"
         )
 
+    package_systems = flake_package_systems()
+    cache_systems = cache_workflow_systems()
+    if cache_systems != package_systems * 2:
+        fail(
+            "Nix cache publish/consume systems do not both match flake.nix: "
+            f"flake={package_systems}, workflow={cache_systems}"
+        )
+
     if not beads_config_is_public_safe():
-        fail(".beads/config.yaml contains a concrete federation.remote; use local configuration instead")
+        fail(
+            ".beads/config.yaml contains a concrete federation.remote; use local configuration instead"
+        )
 
     version = unique_versions.pop()
     if not changelog_entry_is_ready(version):
@@ -387,6 +601,8 @@ def tag(version: str) -> None:
     if tags.stdout.strip():
         fail(f"tag {tag_name} already exists")
 
+    verify_release_cache()
+
     run(["git", "tag", "-a", tag_name, "-m", tag_name])
     run(["git", "push", "origin", tag_name])
     # Keep the moving release branch pointed at the latest published tag for
@@ -407,13 +623,33 @@ def main() -> None:
     tag_parser = subparsers.add_parser("tag", help="create and push a release tag")
     tag_parser.add_argument("version")
 
+    cache_publish_parser = subparsers.add_parser(
+        "cache-publish", help="build and publish one native Nix package output"
+    )
+    cache_publish_parser.add_argument("system")
+
+    cache_consume_parser = subparsers.add_parser(
+        "cache-consume", help="prove one Nix package output substitutes"
+    )
+    cache_consume_parser.add_argument("system")
+
+    subparsers.add_parser(
+        "cache-verify", help="verify every advertised Nix package output is cached"
+    )
+
     args = parser.parse_args()
     if args.command == "bump":
         bump(args.version)
     elif args.command == "verify":
         verify()
-    else:
+    elif args.command == "tag":
         tag(args.version)
+    elif args.command == "cache-publish":
+        publish_nix_cache(args.system)
+    elif args.command == "cache-consume":
+        consume_nix_cache(args.system)
+    else:
+        verify_release_cache()
 
 
 if __name__ == "__main__":

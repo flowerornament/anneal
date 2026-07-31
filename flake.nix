@@ -1,6 +1,12 @@
 {
   description = "Convergence assistant for knowledge corpora";
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+  nixConfig = {
+    extra-substituters = [ "https://flowerornament.cachix.org" ];
+    extra-trusted-public-keys = [
+      "flowerornament.cachix.org-1:gSODgIXgfRANrEGITBOF8XWaEKNy8hkNGfRVwqUG46c="
+    ];
+  };
   outputs = { self, nixpkgs }:
     let
       annealVersion = "0.24.0";
