@@ -3243,6 +3243,35 @@ Rationale: discovery configuration changes the extraction window, not
 the identity of already-known corpus objects; the stable project prefix
 prevents cross-root collisions without re-keying the primary corpus.
 
+**Definition CR-D110 (Markdown scan population disclosure).** Markdown
+discovery is defined by the configured filesystem mounts from CR-D70, not by
+Git tracking. When Git can classify the physical origins of file handles that
+the markdown adapter actually emitted, each ignored file carries derived
+`md.scan_git_disposition = "ignored"` metadata and appears in
+`gitignored_scanned_file(h, file)`. The status dashboard conditionally reports
+the positive count by distinct file handle. It does not emit a diagnostic or
+exclude the file: inclusion remains legal, so neither severity nor removal has
+been earned. Untracked-but-not-ignored files are not conflated with ignored
+files, and non-Git corpora make no claim because the classification is
+inapplicable rather than zero.
+
+The adapter MUST classify emitted handles through their physical origin map;
+it MUST NOT walk the filesystem a second time and present files merely present
+below a root as scanned. At this decision, a synthetic ignored directory
+reproduces the latent state, but the measured ignored-and-scanned population is
+zero on Anneal, Murail, and Herald. The disclosure still clears the delivery
+bar because it has no standing output cost and appears on the default arrival
+surface exactly when the otherwise-silent state first exists. Its batched Git
+classification cost remains a release gate; a material common-path regression
+requires deferral or a demand-driven design.
+
+Source policies are deliberately source-specific. In a joint graph,
+`anneal-code` defines source files as Git-tracked files and excludes both
+ignored and untracked paths, while `anneal-md` defines corpus files by
+configured mounts and includes ignored paths with this disclosure. The graph
+therefore carries both policies at once. This is the walks/tracks/mounts
+distinction made explicit, not one source-neutral membership rule.
+
 ### §43 Introspection
 
 **Definition CR-D44 (Introspection tuple encoding).**
@@ -3904,6 +3933,7 @@ config key.
 - CR-D107: Scalar equality binding (§18)
 - CR-D108: Effective lifecycle classification (§11)
 - CR-D109: Gate-output shadow protection (§26)
+- CR-D110: Markdown scan population disclosure (§42)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)

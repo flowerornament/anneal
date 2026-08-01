@@ -821,6 +821,51 @@ fn refresh_drift_builds_cache_and_handle_reads_annotations() {
     assert_eq!(rows[0]["severity"], "warning");
 }
 
+#[test]
+fn status_discloses_included_gitignored_markdown_files_without_diagnosing_them() {
+    let dir = tempdir();
+    write_config(dir.path(), "");
+    write_file(dir.path(), ".gitignore", "generated/\n");
+    write_file(dir.path(), "real.md", "# Real\n");
+    run_git(dir.path(), &["init"]);
+    run_git(dir.path(), &["add", ".gitignore", "anneal.dl", "real.md"]);
+    run_git(dir.path(), &["commit", "-m", "add corpus"]);
+    write_file(dir.path(), "generated/artifact.md", "# Generated\n");
+
+    let query = run_in(
+        dir.path(),
+        &["-e", "? gitignored_scanned_file(h, file).", "--format=json"],
+    );
+    let rows = json_rows(&query);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0]["h"], "generated/artifact.md");
+    assert_eq!(rows[0]["file"], "generated/artifact.md");
+
+    let status = run_in(dir.path(), &["status", "--format=text"]);
+    assert_success(&status);
+    assert!(
+        text(&status.stdout).contains(
+            "Scope        1 Git-ignored Markdown file handle included; query `gitignored_scanned_file`"
+        ),
+        "stdout:\n{}",
+        text(&status.stdout)
+    );
+
+    let check = run_in(dir.path(), &["check", "--format=json"]);
+    assert_success(&check);
+    assert!(
+        text(&check.stdout).is_empty(),
+        "Git-ignore membership is a scope observation, not a diagnostic: {}",
+        text(&check.stdout)
+    );
+
+    let describe = run_in(dir.path(), &["describe", "gitignored_scanned_file"]);
+    assert_success(&describe);
+    let description = text(&describe.stdout);
+    assert!(description.contains("configured filesystem scanning"));
+    assert!(description.contains("no rows do not establish that files are tracked"));
+}
+
 fn run_git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .env_remove("GIT_DIR")

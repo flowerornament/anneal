@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `gitignored_scanned_file(h, file)` and the conditional status `Scope` line
+  report Git-ignored Markdown file handles that configured filesystem scanning
+  includes. The graph remains unchanged; untracked drafts are not conflated
+  with ignored files, and non-Git corpora make no claim.
+
 ### Fixed
 
 - **Breaking:** project rules cannot shadow the gate-output relation

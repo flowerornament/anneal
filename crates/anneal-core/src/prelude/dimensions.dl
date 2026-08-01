@@ -148,6 +148,7 @@ axis_of("frontmatter_mapping_gap", "diagnostic").
 axis_of("frontmatter_unmapped_alias_use", "diagnostic").
 axis_of("frontmatter_reference_name_fragment", "infrastructure").
 axis_of("frontmatter_reference_name_signal", "infrastructure").
+axis_of("gitignored_scanned_file", "structure").
 axis_of("unmodeled_frontmatter_key_use", "infrastructure").
 axis_of("unmodeled_frontmatter_key_present", "infrastructure").
 axis_of("unmodeled_frontmatter_key_signal", "infrastructure").

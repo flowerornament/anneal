@@ -61,6 +61,18 @@ pub(super) fn write_status_text<W: Write>(
         writer,
         "Scale        {total_handles} handles, {file_handles} files, {coverage}% lifecycle coverage ({statusless_files} statusless files)"
     )?;
+    let gitignored_files = metric_count(&metrics, "scope", "gitignored_markdown_file_handles");
+    if gitignored_files > 0 {
+        let unit = if gitignored_files == 1 {
+            "file handle"
+        } else {
+            "file handles"
+        };
+        writeln!(
+            writer,
+            "Scope        {gitignored_files} Git-ignored Markdown {unit} included; query `gitignored_scanned_file`"
+        )?;
+    }
     if total_handles == 0 {
         writeln!(
             writer,

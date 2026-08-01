@@ -205,6 +205,12 @@ Git-project-relative handles such as `formal/models/prism.md`, so references
 can resolve across directories; mounts that escape the repository, overlap, or
 collide on a handle fail loudly.
 
+Markdown discovery follows configured filesystem mounts rather than Git
+tracking. `status` conditionally reports Git-ignored Markdown file handles that
+remain included; query `gitignored_scanned_file(h, file)` to list them and use
+`scan_exclude` when that content is outside the intended corpus. Untracked
+drafts are not treated as ignored, and non-Git corpora make no Git-ignore claim.
+
 When a query becomes a reusable corpus move, promote it into a project verb:
 
 ```dl

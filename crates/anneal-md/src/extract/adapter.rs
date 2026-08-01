@@ -1,7 +1,8 @@
 //! Adapter entry points that lower markdown extraction into core facts.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::process::Command;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -223,6 +224,7 @@ fn extract_markdown_facts_from_anneal_config(
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
+    let gitignored_files = gitignored_scanned_files(root, &result.files.file_origins);
     let mut edge_assertions = EdgeAssertionCache::new(
         root,
         &result.files.file_origins,
@@ -233,6 +235,9 @@ fn extract_markdown_facts_from_anneal_config(
         let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
         batch.handles.push(fact);
         emit_resolved_file_meta(&mut batch, &mut revisions, &result.graph, handle);
+        if gitignored_files.contains(&handle.id) {
+            emit_scan_git_disposition_meta(&mut batch, &mut revisions, handle);
+        }
     }
 
     let edge_order_context = EdgeOrderContext {
@@ -1115,6 +1120,66 @@ fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
     Utf8PathBuf::from_path_buf(path).ok()
 }
 
+/// Classify only files the markdown scanner actually emitted. The physical
+/// origin is Git's input; the logical handle remains the graph identity.
+fn gitignored_scanned_files(
+    root: &Utf8Path,
+    file_origins: &HashMap<String, Utf8PathBuf>,
+) -> BTreeSet<String> {
+    let canonical_root = root
+        .canonicalize_utf8()
+        .unwrap_or_else(|_| root.to_path_buf());
+    let candidates = file_origins
+        .iter()
+        .map(|(handle, physical)| {
+            let physical = physical.strip_prefix(root).map_or_else(
+                |_| physical.clone(),
+                |relative| canonical_root.join(relative),
+            );
+            (physical.to_string(), handle.clone())
+        })
+        .collect::<BTreeMap<_, _>>();
+    if candidates.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut command = git_command(&canonical_root);
+    let Ok(mut child) = command
+        .args(["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return BTreeSet::new();
+    };
+    let write_result = child.stdin.take().map(|mut stdin| {
+        for path in candidates.keys() {
+            stdin.write_all(path.as_bytes())?;
+            stdin.write_all(&[0])?;
+        }
+        Ok::<(), std::io::Error>(())
+    });
+    if !matches!(write_result, Some(Ok(()))) {
+        let _ = child.wait();
+        return BTreeSet::new();
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return BTreeSet::new();
+    };
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return BTreeSet::new();
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|path| std::str::from_utf8(path).ok())
+        .filter_map(|path| candidates.get(path))
+        .cloned()
+        .collect()
+}
+
 fn resolve_external_scan_roots(
     corpus_root: &Utf8Path,
     configured_roots: &[Utf8PathBuf],
@@ -1284,6 +1349,24 @@ fn emit_resolved_file_meta(
         handle: handle_id(&handle.id),
         key: "md.resolved_file".to_string(),
         value: file,
+        role: MetaRole::Derived,
+    });
+}
+
+fn emit_scan_git_disposition_meta(
+    batch: &mut FactBatch,
+    revisions: &mut RevisionCache<'_>,
+    handle: &Handle,
+) {
+    let Some(file) = handle.file_path.as_deref() else {
+        return;
+    };
+    let native_id = native_id_for(handle);
+    batch.meta.push(MetaFact {
+        identity: identity_for(batch, revisions, &native_id, file.as_str()),
+        handle: handle_id(&handle.id),
+        key: "md.scan_git_disposition".to_string(),
+        value: "ignored".to_string(),
         role: MetaRole::Derived,
     });
 }
@@ -2345,6 +2428,160 @@ mod tests {
                 .count(),
             2,
             "frontmatter list values retain one role per emitted scalar"
+        );
+    }
+
+    #[test]
+    fn gitignored_disposition_classifies_only_emitted_ignored_markdown_files() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        std::fs::create_dir_all(root.join("ignored")).expect("create ignored dir");
+        std::fs::create_dir_all(root.join("nested")).expect("create nested dir");
+        std::fs::create_dir_all(root.join("info-ignored")).expect("create info ignored dir");
+        std::fs::create_dir_all(root.join("excluded")).expect("create excluded dir");
+        std::fs::write(
+            root.join(".gitignore"),
+            "ignored/\ntracked-ignored.md\nexcluded/\n",
+        )
+        .expect("write gitignore");
+        std::fs::write(root.join("real.md"), "# Real\n").expect("write tracked file");
+        std::fs::write(root.join("untracked.md"), "# Draft\n").expect("write untracked file");
+        std::fs::write(root.join("tracked-ignored.md"), "# Tracked\n")
+            .expect("write forced tracked file");
+        std::fs::write(root.join("ignored/artifact.md"), "# Artifact\n")
+            .expect("write ignored file");
+        std::fs::write(root.join("nested/.gitignore"), "drop.md\n")
+            .expect("write nested gitignore");
+        std::fs::write(root.join("nested/drop.md"), "# Nested artifact\n")
+            .expect("write nested ignored file");
+        std::fs::write(root.join("info-ignored/cache.md"), "# Cache\n")
+            .expect("write info-excluded file");
+        std::fs::write(root.join("excluded/omitted.md"), "# Omitted\n")
+            .expect("write configured-excluded file");
+
+        run_git(&root, &["init"]);
+        std::fs::write(root.join(".git/info/exclude"), "info-ignored/\n")
+            .expect("write git info exclude");
+        run_git(
+            &root,
+            &["add", ".gitignore", "nested/.gitignore", "real.md"],
+        );
+        run_git(&root, &["add", "-f", "tracked-ignored.md"]);
+        run_git(&root, &["commit", "-m", "add scan fixture"]);
+
+        let batch = extract_markdown_facts_with_options(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                exclude: vec!["excluded/**".to_string()],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract markdown");
+        let file_handles = batch
+            .handles
+            .iter()
+            .filter(|fact| fact.kind == "file")
+            .map(|fact| fact.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(file_handles.contains("real.md"));
+        assert!(file_handles.contains("untracked.md"));
+        assert!(file_handles.contains("tracked-ignored.md"));
+        assert!(!file_handles.contains("excluded/omitted.md"));
+
+        let ignored_handles = batch
+            .meta
+            .iter()
+            .filter(|fact| fact.key == "md.scan_git_disposition" && fact.value == "ignored")
+            .map(|fact| fact.handle.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            ignored_handles,
+            [
+                "ignored/artifact.md",
+                "info-ignored/cache.md",
+                "nested/drop.md"
+            ]
+            .into_iter()
+            .collect(),
+            "Git classification must distinguish ignored files from untracked and force-tracked files"
+        );
+    }
+
+    #[test]
+    fn external_gitignored_file_keeps_project_relative_handle_and_physical_origin() {
+        let temp = tempdir().expect("tempdir");
+        let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 repo");
+        let root = repo.join(".design");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::create_dir_all(repo.join("formal")).expect("create external root");
+        std::fs::write(repo.join(".gitignore"), "formal/generated.md\n").expect("write gitignore");
+        std::fs::write(root.join("spec.md"), "# Spec\n").expect("write primary file");
+        std::fs::write(repo.join("formal/generated.md"), "# Generated model\n")
+            .expect("write ignored external file");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", ".gitignore", ".design/spec.md"]);
+        run_git(&repo, &["commit", "-m", "add external fixture"]);
+
+        let batch = extract_markdown_facts_with_options(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                external_roots: vec![Utf8PathBuf::from("../formal")],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract markdown");
+        let ignored = batch
+            .meta
+            .iter()
+            .find(|fact| {
+                fact.handle.as_str() == "formal/generated.md"
+                    && fact.key == "md.scan_git_disposition"
+            })
+            .expect("external ignored disposition");
+        assert_eq!(ignored.value, "ignored");
+        assert_eq!(
+            ignored.identity.origin_uri.as_str(),
+            format!(
+                "file://{}",
+                repo.canonicalize_utf8()
+                    .expect("canonical repo")
+                    .join("formal/generated.md")
+            )
+        );
+        assert!(
+            batch.meta.iter().all(|fact| {
+                fact.handle.as_str() != "spec.md" || fact.key != "md.scan_git_disposition"
+            }),
+            "the primary tracked handle remains unclassified"
+        );
+    }
+
+    #[test]
+    fn non_git_markdown_scan_makes_no_git_disposition_claim() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 root");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::write(root.join("draft.md"), "# Draft\n").expect("write draft");
+
+        let batch = extract_markdown_facts(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract markdown");
+        assert!(
+            batch
+                .meta
+                .iter()
+                .all(|fact| fact.key != "md.scan_git_disposition"),
+            "non-Git roots make no Git-ignore claim"
         );
     }
 

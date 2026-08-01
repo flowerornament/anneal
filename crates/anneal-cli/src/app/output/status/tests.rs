@@ -21,6 +21,7 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
         status_metric("scale", "file_handles", 8),
         status_metric("scale", "file_handles_with_status", 2),
         status_metric("scale", "statusless_file_handles", 6),
+        status_metric("scope", "gitignored_markdown_file_handles", 2),
         status_metric("convergence", "broken", 1),
         status_metric("convergence", "blocked", 2),
         status_metric("convergence", "open", 3),
@@ -49,6 +50,9 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
 
     assert!(rendered.starts_with("Status\n"));
     assert!(rendered.contains("Scale        10 handles, 8 files, 25% lifecycle coverage"));
+    assert!(rendered.contains(
+        "Scope        2 Git-ignored Markdown file handles included; query `gitignored_scanned_file`"
+    ));
     assert!(rendered.contains(
         "Coverage     25% of file handles carry lifecycle status; orientation is graph+recency-led"
     ));
@@ -101,6 +105,7 @@ fn status_human_render_omits_vocabulary_line_when_no_unmodeled_keys_exist() {
     let rendered = String::from_utf8(rendered).expect("utf8");
 
     assert!(!rendered.contains("Vocabulary"));
+    assert!(!rendered.contains("Scope"));
 }
 
 #[test]

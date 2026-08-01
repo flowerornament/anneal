@@ -506,6 +506,13 @@ config state {
 }
 ```
 
+Markdown discovery follows configured filesystem mounts rather than Git
+tracking. When a mounted Markdown file is Git-ignored, `status` conditionally
+names the included count and `gitignored_scanned_file(h, file)` lists the
+handles. Untracked-but-not-ignored drafts remain ordinary corpus files; non-Git
+corpora make no Git-ignore claim. Use `scan_exclude` when an included path is
+not part of the intended corpus.
+
 Label namespaces are inferred automatically. Use `force(["REQ"])` only for a
 sparse namespace that should be recognized before it has enough examples. Use
 `rejected([...])` for false positives and `linear([...])` for obligation
