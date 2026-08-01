@@ -537,7 +537,12 @@ release_blocker(h, "broken_ref") :=
 
 Load order is fixed: config and discovery facts first, source extraction
 second, prelude and project rules third, evaluation last. Project predicates
-shadow prelude predicates by name and arity. Project verbs are callable by name:
+shadow prelude predicates by name and arity. Gate-output relations declared
+with `shadow: "forbid"` are protected: `diagnostic/6` cannot be replaced from
+`anneal.dl`, because doing so could make a broken corpus pass `anneal check`.
+Use a separately named predicate for direct evaluation, or
+`ANNEAL_PRELUDE_PATH` when intentionally replacing the whole prelude package.
+Project verbs are callable by name:
 
 ```bash
 anneal release-blockers v0.11.0 --format=text

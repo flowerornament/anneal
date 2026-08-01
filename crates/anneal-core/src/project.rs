@@ -13,8 +13,8 @@ use crate::facts::ConfigFact;
 use crate::ids::CorpusId;
 use crate::runtime::analysis::{StaticError, analyze};
 use crate::runtime::ast::{
-    CallArg, Declaration, Expr, Head, Literal, NumberLiteral, Program, SourceLocation, Statement,
-    Term,
+    CallArg, Declaration, Expr, Head, Literal, NamedArg, NumberLiteral, Program, SourceLocation,
+    Statement, Term,
 };
 use crate::runtime::loader::{LoadError, load_program};
 use crate::runtime::parser::ParseError;
@@ -106,6 +106,7 @@ pub fn load_project_extension(
     let loaded = load_program(root, PROJECT_RULE_FILE)?;
     let (discovery, runtime_config, program) = split_project_program(loaded, sources)?;
     validate_no_verb_arg_definitions(&program)?;
+    validate_program_layer_merge(base_program, &program)?;
     validate_verbs(&program, base_program)?;
     Ok(ProjectExtension {
         discovery,
@@ -121,12 +122,60 @@ pub struct ShadowWarning {
     pub replaced_clauses: usize,
 }
 
-pub fn merge_program_layers(base: Program, extension: Program) -> (Program, Vec<ShadowWarning>) {
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct ProgramLayerError {
+    message: String,
+}
+
+impl ProgramLayerError {
+    fn invalid_policy(predicate: &str, actual: &str, location: &SourceLocation) -> Self {
+        Self {
+            message: format!(
+                "{location}: @predicate for '{predicate}' shadow policy must be \"replace\" or \"forbid\"; got {actual}"
+            ),
+        }
+    }
+
+    fn duplicate_policy(predicate: &str, location: &SourceLocation) -> Self {
+        Self {
+            message: format!(
+                "{location}: @predicate for '{predicate}' declares shadow policy more than once"
+            ),
+        }
+    }
+
+    fn protected_shadow(signature: &str, location: &SourceLocation) -> Self {
+        Self {
+            message: format!(
+                "{location}: '{signature}' cannot override the protected standard-library relation because it supplies the `anneal check` process result; replacing it can make a broken corpus pass. Define a separately named predicate and query it directly, or use ANNEAL_PRELUDE_PATH to intentionally replace the whole prelude package"
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PredicateShadowPolicy {
+    Replace,
+    Forbid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DeclaredShadowPolicy {
+    policy: PredicateShadowPolicy,
+    arity: Option<usize>,
+}
+
+pub fn merge_program_layers(
+    base: Program,
+    extension: Program,
+) -> Result<(Program, Vec<ShadowWarning>), ProgramLayerError> {
+    validate_program_layer_merge(&base, &extension)?;
     let shadowed = shadowed_predicates(&extension);
     if shadowed.is_empty() {
         let mut statements = base.statements;
         statements.extend(extension.statements);
-        return (Program::new(statements), Vec::new());
+        return Ok((Program::new(statements), Vec::new()));
     }
 
     let mut replaced = BTreeMap::<String, usize>::new();
@@ -155,7 +204,77 @@ pub fn merge_program_layers(base: Program, extension: Program) -> (Program, Vec<
                 })
         })
         .collect();
-    (Program::new(statements), warnings)
+    Ok((Program::new(statements), warnings))
+}
+
+fn validate_program_layer_merge(
+    base: &Program,
+    extension: &Program,
+) -> Result<(), ProgramLayerError> {
+    let policies = declared_shadow_policies(base)?;
+    for (predicate, location) in shadowed_predicates(extension) {
+        let Some(declared) = policies.get(&predicate) else {
+            continue;
+        };
+        if declared.policy == PredicateShadowPolicy::Forbid {
+            let signature = declared
+                .arity
+                .map_or_else(|| predicate.clone(), |arity| format!("{predicate}/{arity}"));
+            return Err(ProgramLayerError::protected_shadow(&signature, &location));
+        }
+    }
+    Ok(())
+}
+
+fn declared_shadow_policies(
+    program: &Program,
+) -> Result<BTreeMap<String, DeclaredShadowPolicy>, ProgramLayerError> {
+    let mut policies = BTreeMap::new();
+    for statement in &program.statements {
+        let Statement::Predicate(decl) = statement else {
+            continue;
+        };
+        let Some(policy_arg) = named_arg(decl.args(), "shadow") else {
+            continue;
+        };
+        let predicate = decl
+            .predicate_ref()
+            .and_then(Result::ok)
+            .map_or_else(|| "predicate".to_string(), |name| name.display_name());
+        let Expr::Literal(Literal::String(value)) = &policy_arg.expr else {
+            return Err(ProgramLayerError::invalid_policy(
+                &predicate,
+                "a non-string value",
+                decl.location(),
+            ));
+        };
+        let policy = match value.as_str() {
+            "replace" => PredicateShadowPolicy::Replace,
+            "forbid" => PredicateShadowPolicy::Forbid,
+            actual => {
+                return Err(ProgramLayerError::invalid_policy(
+                    &predicate,
+                    &format!("\"{actual}\""),
+                    decl.location(),
+                ));
+            }
+        };
+        let declared = DeclaredShadowPolicy {
+            policy,
+            arity: decl.string_list_arg("args").map(|args| args.len()),
+        };
+        if policies.insert(predicate.clone(), declared).is_some() {
+            return Err(ProgramLayerError::duplicate_policy(
+                &predicate,
+                decl.location(),
+            ));
+        }
+    }
+    Ok(policies)
+}
+
+fn named_arg<'a>(args: &'a [NamedArg], name: &str) -> Option<&'a NamedArg> {
+    args.iter().find(|arg| arg.name.as_str() == name)
 }
 
 fn shadowed_predicates(program: &Program) -> BTreeMap<String, SourceLocation> {
@@ -607,6 +726,8 @@ fn collect_verb_query_programs(
 pub enum ProjectLoadError {
     #[error(transparent)]
     Load(#[from] LoadError),
+    #[error(transparent)]
+    ProgramLayer(#[from] ProgramLayerError),
     #[error("{location}: unknown discovery fact '{key}'")]
     UnknownDiscoveryKey {
         key: String,
@@ -1457,7 +1578,7 @@ mod tests {
         )
         .expect("extension parses");
 
-        let (merged, warnings) = merge_program_layers(base, extension);
+        let (merged, warnings) = merge_program_layers(base, extension).expect("layers merge");
 
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].predicate, "blocked");
@@ -1480,6 +1601,63 @@ mod tests {
                     [Term::Expr(Expr::Literal(Literal::String(value)))] if value == "x"
                 )
         }));
+    }
+
+    #[test]
+    fn merge_program_layers_refuses_protected_predicate_shadowing() {
+        let base = parse_program(
+            "base",
+            r#"
+            @predicate(name: "diagnostic", args: ["code", "severity"], shadow: "forbid").
+            diagnostic("E001", "error").
+            "#,
+        )
+        .expect("base parses");
+        let extension = parse_program(PROJECT_RULE_FILE, r#"diagnostic("P001", "error")."#)
+            .expect("extension parses");
+
+        let error = merge_program_layers(base, extension).expect_err("shadow must fail");
+
+        assert!(error.to_string().contains("diagnostic/2"));
+        assert!(error.to_string().contains("can make a broken corpus pass"));
+        assert!(error.to_string().contains("ANNEAL_PRELUDE_PATH"));
+    }
+
+    #[test]
+    fn merge_program_layers_rejects_invalid_shadow_policy() {
+        let base = parse_program(
+            "base",
+            r#"
+            @predicate(name: "guard", args: ["h"], shadow: "sometimes").
+            guard("base").
+            "#,
+        )
+        .expect("base parses");
+
+        let error = merge_program_layers(base, Program::new(Vec::new()))
+            .expect_err("invalid policy must fail");
+
+        assert!(error.to_string().contains("@predicate for 'guard'"));
+        assert!(error.to_string().contains("\"sometimes\""));
+    }
+
+    #[test]
+    fn merge_program_layers_rejects_duplicate_shadow_policy_authority() {
+        let base = parse_program(
+            "base",
+            r#"
+            @predicate(name: "guard", args: ["h"], shadow: "forbid").
+            @predicate(name: "guard", args: ["h"], shadow: "replace").
+            guard("base").
+            "#,
+        )
+        .expect("base parses");
+
+        let error = merge_program_layers(base, Program::new(Vec::new()))
+            .expect_err("duplicate policy must fail");
+
+        assert!(error.to_string().contains("@predicate for 'guard'"));
+        assert!(error.to_string().contains("more than once"));
     }
 
     #[test]

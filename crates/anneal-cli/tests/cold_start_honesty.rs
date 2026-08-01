@@ -104,6 +104,33 @@ fn write_config(root: &Path, body: &str) {
     );
 }
 
+#[test]
+fn project_diagnostic_clause_cannot_disable_builtin_check_errors() {
+    let dir = tempdir();
+    write_config(dir.path(), "");
+    write_file(
+        dir.path(),
+        "a.md",
+        "---\nstatus: active\n---\n# A\n\n[Missing](nope.md)\n",
+    );
+
+    let baseline = run_in(dir.path(), &["check", "--format=json"]);
+    assert!(!baseline.status.success(), "broken reference must fail");
+    assert!(text(&baseline.stdout).contains(r#""code":"E001""#));
+
+    write_config(
+        dir.path(),
+        r#"diagnostic("P001", "info", "project", null, null, "project-row")."#,
+    );
+    let protected = run_in(dir.path(), &["check", "--format=json"]);
+    assert!(!protected.status.success(), "protected shadow must fail");
+    let stderr = text(&protected.stderr);
+    assert!(stderr.contains("diagnostic/6"), "{stderr}");
+    assert!(stderr.contains("can make a broken corpus pass"), "{stderr}");
+    assert!(stderr.contains("separately named predicate"), "{stderr}");
+    assert!(stderr.contains("ANNEAL_PRELUDE_PATH"), "{stderr}");
+}
+
 fn lifecycle_config(active: &[&str], terminal: &[&str], ordering: &[&str]) -> String {
     format!(
         r"config convergence {{

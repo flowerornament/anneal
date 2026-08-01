@@ -3,8 +3,9 @@ use std::fs;
 
 use anneal_core::CorpusId;
 use anneal_core::runtime::{
-    ExplainOptions, NumberValue, SnapshotEntry, SnapshotEntryFact, SnapshotTime, analyze,
-    append_snapshot_entry, parse_program, read_snapshot_history, standard_prelude_program,
+    ExplainOptions, NumberValue, Program, SnapshotEntry, SnapshotEntryFact, SnapshotTime,
+    Statement, analyze, append_snapshot_entry, parse_program, query_dependencies,
+    read_snapshot_history, standard_prelude_program,
 };
 use camino::Utf8PathBuf;
 use tempfile::tempdir;
@@ -14,7 +15,9 @@ use crate::app::output::{
     CommandOutput, RowView, render_dynamic_verb_help, render_dynamic_verb_help_with_collision,
     required_string,
 };
-use crate::app::session::{DEFAULT_CORPUS, RuntimeRegistry, RuntimeSession, handle_query};
+use crate::app::session::{
+    CHECK_DIAGNOSTIC_QUERY, DEFAULT_CORPUS, RuntimeRegistry, RuntimeSession, handle_query,
+};
 
 fn git(root: &camino::Utf8Path, args: &[&str]) {
     let status = std::process::Command::new("git")
@@ -24,6 +27,33 @@ fn git(root: &camino::Utf8Path, args: &[&str]) {
         .status()
         .unwrap_or_else(|err| panic!("git {args:?} failed to run: {err}"));
     assert!(status.success(), "git {args:?} failed: {status}");
+}
+
+#[test]
+fn check_gate_roots_are_structurally_protected_from_project_shadowing() {
+    let query_program = parse_program("check-gate", CHECK_DIAGNOSTIC_QUERY).expect("query parses");
+    let query = query_program.queries().next().expect("check query");
+    let roots = query_dependencies(&Program::new(Vec::new()), query);
+    assert!(
+        !roots.is_empty(),
+        "check must directly query a gate relation"
+    );
+
+    let prelude = standard_prelude_program().expect("prelude parses");
+    for root in roots {
+        assert!(
+            prelude.statements.iter().any(|statement| {
+                let Statement::Predicate(decl) = statement else {
+                    return false;
+                };
+                decl.predicate_ref().is_some_and(|predicate| {
+                    predicate.is_ok_and(|predicate| predicate == root)
+                        && decl.string_arg("shadow") == Some("forbid")
+                })
+            }),
+            "gate root {root} must declare shadow: forbid"
+        );
+    }
 }
 
 #[test]

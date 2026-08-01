@@ -289,7 +289,7 @@ impl RuntimeSession {
         let mut discovery = default_markdown_config();
         if let Some(project) = &project {
             merge_discovery(&mut discovery, project.discovery());
-            let (merged, warnings) = merge_program_layers(program, project.program().clone());
+            let (merged, warnings) = merge_program_layers(program, project.program().clone())?;
             for warning in warnings {
                 eprintln!(
                     "warning: {}:{}: '{}' overrides prelude ({} clauses)",

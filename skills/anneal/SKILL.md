@@ -152,7 +152,11 @@ question, oracle, disposition, entry predicates, and common joins.
 `anneal.dl` can add discovery facts, project rules, and project `@verb`s.
 Discovery facts are consumed before extraction; rules and verbs load after
 source facts exist. Project predicates shadow standard-library predicates by
-name and arity.
+name and arity, except gate-output relations declared `shadow: "forbid"`.
+`diagnostic/6` cannot be replaced from `anneal.dl`, because doing so could make
+a broken corpus pass `anneal check`; use a separately named predicate for
+direct evaluation, or `ANNEAL_PRELUDE_PATH` to replace the whole prelude
+package intentionally.
 
 Useful project config examples:
 

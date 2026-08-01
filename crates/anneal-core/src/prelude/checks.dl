@@ -7,12 +7,13 @@
 
 @doc(
   name: "diagnostic",
-  doc: "Return every standard diagnostic as data: code, severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations."
+  doc: "Return every standard diagnostic as data: code, severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; use a separately named predicate for project observations."
 ).
 
 @predicate(
   name: "diagnostic",
-  args: ["code", "severity", "subject", "file", "line", "evidence"]
+  args: ["code", "severity", "subject", "file", "line", "evidence"],
+  shadow: "forbid"
 ).
 
 section_ref(target) :=

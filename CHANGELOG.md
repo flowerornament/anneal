@@ -4,6 +4,15 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **Breaking:** project rules cannot shadow the gate-output relation
+  `diagnostic/6`. Replacing that relation removed every built-in error row and
+  could make `anneal check` pass on a broken corpus. Define a separately named
+  predicate and query it directly for project-specific observations, or use
+  `ANNEAL_PRELUDE_PATH` when intentionally replacing the whole standard-library
+  package.
+
 ## v0.24.1 - 2026-07-31
 
 ### Added

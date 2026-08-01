@@ -2904,7 +2904,8 @@ mod tests {
             .expect("checked-in prelude parses");
         let extension = load_project_extension(root, &[markdown_source_info()], &prelude)
             .expect("project extension loads");
-        let (mut program, _warnings) = merge_program_layers(prelude, extension.program().clone());
+        let (mut program, _warnings) =
+            merge_program_layers(prelude, extension.program().clone()).expect("layers merge");
         let query_program = parse_prelude_program(
             "<external-planning-smoke>",
             r#"

@@ -1787,6 +1787,38 @@ For predicates that should *never* be shadowed (engine identity
 guarantees), the prelude declares `@sealed` — projects attempting to
 shadow get a load error.
 
+**Definition CR-D109 (Gate-output shadow protection).** CR-D21 owns the
+general layer order and total-replacement rule. This separate decision owns a
+new exception with process-level authority: a *gate-output predicate* is a
+relation directly queried and partitioned by a built-in command to determine
+process success or failure. Its transitive dependencies are policy inputs, not
+gate outputs; they retain their declared shadow behavior. In particular, a
+project may redefine what counts as `terminal`, but it may not replace the
+`diagnostic` relation whose error rows make `anneal check` fail.
+
+The standard prelude declares gate outputs with
+`@predicate(..., shadow: "forbid")`. The default for declarations without a
+`shadow` field remains `replace`. A later project definition of a protected
+predicate is a load error before source extraction, naming both the gate risk
+and the available recovery: define a separately named predicate and query it
+directly, or use `ANNEAL_PRELUDE_PATH` when intentionally replacing the whole
+prelude package. A configuration acknowledgement cannot waive the protection;
+an acknowledgement would preserve the disabled-gate state and merely relocate
+blame.
+
+The built-in gate query is the executable authority for which direct relations
+are gate outputs. A regression test derives those roots from the same query the
+command runs and requires each root to declare a non-replacement policy. This
+is structural rather than a hand-maintained predicate-name list. Automatic
+cross-layer union is deliberately absent: it would expose only the cheap half
+of a project-diagnostic extension while omitting code namespacing, teaching
+cards, and an evidence contract.
+
+CR-D109 is separate from CR-D21 rather than an amendment because CR-D21 remains
+the general composition law; CR-D109 introduces a declared exception, a named
+load error, and an executable invariant tied specifically to process-gate
+authority.
+
 ### §27 Convergence vocabulary [CR-D22]
 
 **Definition CR-D22 (Convergence vocabulary).** Predicates defined in
@@ -3871,6 +3903,7 @@ config key.
 - CR-D106: Zero-result adjacency (§3)
 - CR-D107: Scalar equality binding (§18)
 - CR-D108: Effective lifecycle classification (§11)
+- CR-D109: Gate-output shadow protection (§26)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
