@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Markdown `external_root` mounts resolve inside jj added workspaces without a
+  caller-supplied repository mode. Mount containment and logical handle ids use
+  the workspace boundary while jj's Git target supplies backing evidence only;
+  Git history and blame semantics remain limited to direct Git worktrees.
+
 ## v0.25.0 - 2026-08-12
 
 ### Added

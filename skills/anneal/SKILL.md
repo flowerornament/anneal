@@ -261,9 +261,9 @@ terminal, dependency validity is separate from lifecycle convergence,
 rather than Git tracking — untracked drafts are not treated as ignored.
 
 `external_root` additively mounts a sibling directory outside the corpus root
-but inside the same Git repository. External files use
-Git-project-relative handles such as `formal/models/prism.md`, so references
-resolve across directories; mounts that escape the repository, overlap, or
+but inside the same Git-backed project boundary. External files use
+project-relative handles such as `formal/models/prism.md`, so references
+resolve across directories; mounts that escape the boundary, overlap, or
 collide on a handle fail loudly.
 
 When a query becomes a reusable corpus move, promote it into a project `@verb`

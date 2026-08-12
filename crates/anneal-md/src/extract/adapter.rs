@@ -1120,6 +1120,97 @@ fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
     Utf8PathBuf::from_path_buf(path).ok()
 }
 
+fn resolve_jj_pointer(pointer_path: &Utf8Path, label: &str) -> Result<Utf8PathBuf> {
+    let pointer = std::fs::read_to_string(pointer_path).with_context(|| {
+        format!(
+            "anneal could not read jj {label} metadata at {pointer_path}; jj's internal metadata layout may have changed"
+        )
+    })?;
+    let pointer = pointer.trim();
+    if pointer.is_empty() {
+        anyhow::bail!(
+            "anneal found an empty jj {label} pointer at {pointer_path}; jj's internal metadata layout may have changed"
+        );
+    }
+    pointer_path
+        .parent()
+        .expect("jj pointer metadata has a parent directory")
+        .join(pointer)
+        .canonicalize_utf8()
+        .with_context(|| {
+            format!(
+                "anneal could not resolve jj {label} pointer {pointer:?} from {pointer_path}; jj's internal metadata layout may have changed"
+            )
+        })
+}
+
+/// Validate backing without exposing its path: the workspace boundary, not
+/// jj's shared Git store, owns containment and handle identity.
+fn validate_jj_git_backing(project_root: &Utf8Path) -> Result<bool> {
+    let jj_dir = project_root.join(".jj");
+    if !jj_dir.try_exists().with_context(|| {
+        format!(
+            "anneal could not inspect jj workspace metadata at {jj_dir}; jj's internal metadata layout may have changed"
+        )
+    })? {
+        return Ok(false);
+    }
+
+    let repo_marker = jj_dir.join("repo");
+    let repo_dir = if repo_marker.is_dir() {
+        repo_marker
+            .canonicalize_utf8()
+            .context("failed to resolve jj repository metadata")?
+    } else {
+        resolve_jj_pointer(&repo_marker, "repository")?
+    };
+
+    let git_target = repo_dir.join("store/git_target");
+    let git_dir = resolve_jj_pointer(&git_target, "Git-backing")?;
+    let valid = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .args(["--git-dir", git_dir.as_str(), "rev-parse", "--git-dir"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !valid {
+        anyhow::bail!(
+            "anneal resolved jj Git-backing metadata to {git_dir}, but Git did not recognize it; jj's internal metadata layout may have changed"
+        );
+    }
+    Ok(true)
+}
+
+fn external_root_project_boundary(corpus_root: &Utf8Path) -> Result<Utf8PathBuf> {
+    let project_root = anneal_core::enclosing_project_root(corpus_root)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "md.external_root requires an enclosing project boundary with Git-backed provenance; none was found above {corpus_root}"
+            )
+        })?
+        .canonicalize_utf8()
+        .context("failed to resolve the enclosing project boundary")?;
+    let git_root = git_root_for(corpus_root);
+    if git_root.as_ref() == Some(&project_root) {
+        return Ok(project_root);
+    }
+    if validate_jj_git_backing(&project_root)? {
+        return Ok(project_root);
+    }
+    if let Some(git_root) = git_root {
+        anyhow::bail!(
+            "md.external_root cannot use enclosing project boundary {project_root}: provenance uses git root {git_root}; move the corpus boundary or use roots within one shared Git-backed project"
+        );
+    }
+    anyhow::bail!(
+        "md.external_root requires the corpus and external roots to share one Git-backed project boundary; no Git or jj backing was found for {corpus_root}"
+    )
+}
+
 /// Classify only files the markdown scanner actually emitted. The physical
 /// origin is Git's input; the logical handle remains the graph identity.
 fn gitignored_scanned_files(
@@ -1190,7 +1281,7 @@ fn resolve_external_scan_roots(
     for configured in configured_roots {
         if configured.as_str().trim().is_empty() || configured.is_absolute() {
             anyhow::bail!(
-                "md.external_root must be a non-empty relative path inside the corpus's git repository; got {configured:?}"
+                "md.external_root must be a non-empty relative path inside the corpus's project boundary; got {configured:?}"
             );
         }
     }
@@ -1198,24 +1289,7 @@ fn resolve_external_scan_roots(
     let corpus_root = corpus_root
         .canonicalize_utf8()
         .with_context(|| format!("failed to resolve markdown corpus root {corpus_root}"))?;
-    let project_root = anneal_core::enclosing_project_root(&corpus_root)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "md.external_root requires an enclosing project root and git repository; none was found above {corpus_root}"
-            )
-        })?
-        .canonicalize_utf8()
-        .context("failed to resolve the enclosing project root")?;
-    let git_root = git_root_for(&corpus_root).ok_or_else(|| {
-        anyhow::anyhow!(
-            "md.external_root requires the corpus and external roots to share one git repository; no git root was found for {corpus_root}"
-        )
-    })?;
-    if project_root != git_root {
-        anyhow::bail!(
-            "md.external_root cannot use enclosing project root {project_root}: provenance uses git root {git_root}; move the corpus boundary or use roots within one shared git project"
-        );
-    }
+    let project_root = external_root_project_boundary(&corpus_root)?;
 
     let mut mounts = Vec::<parse::ExternalScanRoot>::new();
     for configured in configured_roots {
@@ -1228,9 +1302,9 @@ fn resolve_external_scan_roots(
                 "md.external_root {configured:?} must resolve to a directory; got {physical_root}"
             );
         }
-        if !physical_root.starts_with(&git_root) {
+        if !physical_root.starts_with(&project_root) {
             anyhow::bail!(
-                "md.external_root {configured:?} resolves outside the provenance git root {git_root}"
+                "md.external_root {configured:?} resolves outside the project boundary {project_root}"
             );
         }
         if paths_overlap(&physical_root, &corpus_root) {
@@ -1248,10 +1322,10 @@ fn resolve_external_scan_roots(
             );
         }
         let handle_prefix = physical_root
-            .strip_prefix(&git_root)
+            .strip_prefix(&project_root)
             .with_context(|| {
                 format!(
-                    "failed to key md.external_root {physical_root} relative to git root {git_root}"
+                    "failed to key md.external_root {physical_root} relative to project boundary {project_root}"
                 )
             })?
             .to_path_buf();
@@ -1263,7 +1337,7 @@ fn resolve_external_scan_roots(
         mounts.push(parse::ExternalScanRoot {
             physical_root,
             handle_prefix,
-            containment_root: git_root.clone(),
+            containment_root: project_root.clone(),
         });
     }
     mounts.sort_by(|left, right| left.handle_prefix.cmp(&right.handle_prefix));
@@ -2339,7 +2413,7 @@ fn token_count(text: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::ffi::OsStr;
     use std::process::Command;
     use std::sync::{Arc, Mutex};
@@ -2775,8 +2849,8 @@ mod tests {
         .expect_err("external overlap rejects");
         assert!(duplicate.to_string().contains("must be disjoint"));
         let escape = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../../outside")])
-            .expect_err("git escape rejects");
-        assert!(escape.to_string().contains("provenance git root"));
+            .expect_err("project-boundary escape rejects");
+        assert!(escape.to_string().contains("outside the project boundary"));
 
         let collision = extract_markdown_facts_with_options(
             &corpus,
@@ -2815,7 +2889,102 @@ mod tests {
     }
 
     #[test]
-    fn external_root_requires_relative_path_and_git_project() {
+    fn external_root_resolves_jj_repository_directory() {
+        let temp = tempdir().expect("tempdir");
+        let workspace =
+            Utf8PathBuf::from_path_buf(temp.path().join("workspace")).expect("utf8 workspace");
+        let corpus = workspace.join(".design");
+        let formal = workspace.join("formal");
+        let repo_store = workspace.join(".jj/repo/store");
+        let git_dir = workspace.join(".jj/git");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(&formal).expect("create formal");
+        std::fs::create_dir_all(&repo_store).expect("create jj repository metadata");
+        run_git(&workspace, &["init", "--bare", git_dir.as_str()]);
+        std::fs::write(repo_store.join("git_target"), "../../git\n").expect("write jj Git target");
+
+        let mounts = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../formal")])
+            .expect("resolve non-colocated jj external root");
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].handle_prefix, Utf8PathBuf::from("formal"));
+        assert_eq!(
+            mounts[0].containment_root,
+            workspace.canonicalize_utf8().expect("canonical workspace")
+        );
+    }
+
+    #[test]
+    fn jj_desk_and_git_anchor_emit_identical_handle_ids() {
+        let temp = tempdir().expect("tempdir");
+        let fixture = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 fixture");
+        let anchor = fixture.join("main");
+        let desk = fixture.join("desk");
+        for root in [&anchor, &desk] {
+            std::fs::create_dir_all(root.join(".design")).expect("create corpus");
+            std::fs::create_dir_all(root.join("crates/murail-model/fm"))
+                .expect("create mounted source tree");
+            std::fs::write(root.join(".design/spec.md"), "# Spec\n")
+                .expect("write primary document");
+            std::fs::write(
+                root.join("crates/murail-model/fm/chapter.md"),
+                "# Chapter\n",
+            )
+            .expect("write mounted document");
+        }
+        run_git(&anchor, &["init"]);
+        std::fs::create_dir_all(anchor.join(".jj/repo/store")).expect("create anchor jj metadata");
+        std::fs::write(anchor.join(".jj/repo/store/git_target"), "../../../.git\n")
+            .expect("write anchor Git target");
+        std::fs::create_dir_all(desk.join(".jj")).expect("create desk jj metadata");
+        std::fs::write(desk.join(".jj/repo"), "../../main/.jj/repo\n")
+            .expect("write desk repository pointer");
+
+        let extract = |root: &Utf8Path| {
+            extract_markdown_facts_with_options(
+                &root.join(".design"),
+                CorpusId::from("test"),
+                SourceName::from("markdown"),
+                Generation::initial(),
+                &MarkdownExtractionOptions {
+                    external_roots: vec![Utf8PathBuf::from("../crates/murail-model/fm")],
+                    ..MarkdownExtractionOptions::default()
+                },
+            )
+            .expect("extract mounted corpus")
+            .handles
+            .into_iter()
+            .map(|handle| handle.id)
+            .collect::<BTreeSet<_>>()
+        };
+
+        assert_eq!(extract(&anchor), extract(&desk));
+    }
+
+    #[test]
+    fn external_root_reports_changed_jj_metadata_layout() {
+        let temp = tempdir().expect("tempdir");
+        let workspace =
+            Utf8PathBuf::from_path_buf(temp.path().join("workspace")).expect("utf8 workspace");
+        let corpus = workspace.join(".design");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        std::fs::create_dir_all(workspace.join("formal")).expect("create formal");
+        std::fs::create_dir_all(workspace.join(".jj")).expect("create jj metadata");
+        std::fs::write(workspace.join(".jj/repo"), "missing-repository\n")
+            .expect("write broken jj pointer");
+
+        let error = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../formal")])
+            .expect_err("malformed jj metadata rejects");
+
+        assert!(
+            error
+                .to_string()
+                .contains("jj's internal metadata layout may have changed")
+        );
+    }
+
+    #[test]
+    fn external_root_requires_relative_path_and_git_backed_project() {
         let temp = tempdir().expect("tempdir");
         let corpus = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 corpus");
         let sibling = Utf8PathBuf::from_path_buf(temp.path().join("formal")).expect("utf8 sibling");
@@ -2824,7 +2993,11 @@ mod tests {
 
         let no_project = resolve_external_scan_roots(&corpus, &[Utf8PathBuf::from("../formal")])
             .expect_err("project boundary required");
-        assert!(no_project.to_string().contains("enclosing project root"));
+        assert!(
+            no_project
+                .to_string()
+                .contains("enclosing project boundary")
+        );
 
         let absolute = resolve_external_scan_roots(&corpus, std::slice::from_ref(&sibling))
             .expect_err("absolute root rejects");
@@ -2833,7 +3006,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn external_root_rejects_symlinked_file_that_escapes_git_root() {
+    fn external_root_rejects_symlinked_file_that_escapes_project_boundary() {
         use std::os::unix::fs::symlink;
 
         let temp = tempdir().expect("tempdir");
@@ -2859,11 +3032,7 @@ mod tests {
             },
         )
         .expect_err("symlink escape rejects");
-        assert!(
-            error
-                .to_string()
-                .contains("outside the provenance git root")
-        );
+        assert!(error.to_string().contains("outside the project boundary"));
     }
 
     #[test]

@@ -989,7 +989,7 @@ fn collect_markdown_files(
                 .with_context(|| format!("failed to resolve external markdown file {path}"))?;
             if !canonical.starts_with(boundary) {
                 anyhow::bail!(
-                    "external markdown file {path} resolves outside the provenance git root {boundary}"
+                    "external markdown file {path} resolves outside the project boundary {boundary}"
                 );
             }
             canonical

@@ -142,7 +142,7 @@ pub(super) fn ensure_source_root_within_project(
         .map_err(|source| SourceError::io(&resolved, source))?;
     let boundary = anneal_core::enclosing_project_root(root).ok_or_else(|| {
         SourceError::InvalidConfig(format!(
-            "code.source_root {source_root:?} climbs above the corpus root, but no enclosing project root (git repo or workspace manifest) was found to bound it"
+            "code.source_root {source_root:?} climbs above the corpus root, but no enclosing project boundary (VCS workspace or package manifest) was found to bound it"
         ))
     })?;
     let boundary = boundary
@@ -150,7 +150,7 @@ pub(super) fn ensure_source_root_within_project(
         .map_err(|source| SourceError::io(&boundary, source))?;
     if !canonical.starts_with(&boundary) {
         return Err(SourceError::InvalidConfig(format!(
-            "code.source_root {source_root:?} resolves outside the enclosing project root {boundary}"
+            "code.source_root {source_root:?} resolves outside the enclosing project boundary {boundary}"
         )));
     }
     Ok(())

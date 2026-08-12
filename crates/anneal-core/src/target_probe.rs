@@ -1123,7 +1123,7 @@ fn read_head_history_paths(base: &Utf8Path) -> Option<BTreeSet<String>> {
 }
 
 /// The nearest ancestor of `corpus_root` that looks like a project root
-/// (git repository or recognized workspace/package manifest). This is the
+/// (VCS workspace or recognized workspace/package manifest). This is the
 /// boundary code-source roots and target probes may reach, never beyond.
 pub fn enclosing_project_root(corpus_root: &Utf8Path) -> Option<Utf8PathBuf> {
     let mut current = Some(corpus_root);
@@ -1138,6 +1138,7 @@ pub fn enclosing_project_root(corpus_root: &Utf8Path) -> Option<Utf8PathBuf> {
 
 fn is_project_root(path: &Utf8Path) -> bool {
     path.join(".git").exists()
+        || path.join(".jj").exists()
         || cargo_workspace_marker(path)
         || path.join("mix.exs").exists()
         || path.join("package.json").exists()
@@ -1183,6 +1184,17 @@ mod tests {
             probe.resolved_path.as_deref(),
             Some(repo.join("lib/live.rs").as_path())
         );
+    }
+
+    #[test]
+    fn project_boundary_recognizes_jj_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let workspace = utf8(dir.path().join("workspace"));
+        let corpus = workspace.join(".design");
+        fs::create_dir_all(workspace.join(".jj")).expect("create jj marker");
+        fs::create_dir_all(&corpus).expect("create corpus");
+
+        assert_eq!(enclosing_project_root(&corpus), Some(workspace));
     }
 
     #[test]

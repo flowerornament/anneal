@@ -280,7 +280,7 @@ fn valid_external_root(value: &str) -> Result<Utf8PathBuf, SourceError> {
     let path = Utf8PathBuf::from(trimmed);
     if trimmed.is_empty() || path.is_absolute() {
         return Err(SourceError::Other(format!(
-            "md.external_root must be a non-empty relative path inside the corpus's git repository; got {value:?}"
+            "md.external_root must be a non-empty relative path inside the corpus's project boundary; got {value:?}"
         )));
     }
     Ok(path)

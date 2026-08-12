@@ -3233,11 +3233,11 @@ selects corpus-relative subtrees for markdown extraction; it does not
 rewrite handle ids, `native_id`, or `origin_uri`. A file at
 `included/b.md` remains `included/b.md` even when the only scan root is
 `included`. `md.external_root` additively mounts disjoint sibling trees
-inside the corpus's enclosing Git project. Existing corpus files remain
-corpus-relative; externally mounted files are keyed relative to the Git
-project root, so a corpus at `.design` mounting `../formal` emits
+inside the corpus's enclosing project boundary. Existing corpus files remain
+corpus-relative; externally mounted files are keyed relative to that
+boundary, so a corpus at `.design` mounting `../formal` emits
 `formal/models/prism.md`. External roots never change primary handles,
-must share the provenance Git root, and fail on overlap or logical-handle
+must share one Git-backed project boundary, and fail on overlap or logical-handle
 collision. `scan_exclude` globs match the resulting logical handles.
 Rationale: discovery configuration changes the extraction window, not
 the identity of already-known corpus objects; the stable project prefix
@@ -3271,6 +3271,32 @@ ignored and untracked paths, while `anneal-md` defines corpus files by
 configured mounts and includes ignored paths with this disclosure. The graph
 therefore carries both policies at once. This is the walks/tracks/mounts
 distinction made explicit, not one source-neutral membership rule.
+
+**Definition CR-D111 (Project boundary, backing, and history capability).**
+Filesystem provenance has three coordinates that MUST NOT be collapsed:
+
+1. The **project boundary** bounds mounted paths and supplies stable,
+   project-relative handle prefixes. The shared core resolver recognizes VCS
+   workspace markers (`.git`, `.jj`) and supported package/workspace manifests.
+2. The **VCS backing** proves that the boundary belongs to one Git-backed
+   repository. A direct Git checkout supplies this proof itself. A jj workspace
+   may supply it through `.jj/repo` and the resolved repository's
+   `store/git_target`; these are jj-internal metadata and a layout mismatch is
+   reported as an Anneal compatibility failure, not blamed on corpus config.
+3. The **history capability** determines whether Git history operations are
+   meaningful for the current working tree. Direct Git checkouts provide the
+   existing blame and revision capability. A jj added workspace does not gain
+   Git history semantics merely because its backing store is Git-backed.
+
+For a jj added workspace, containment and external handle keying use the desk
+boundary, while the resolved Git directory is backing evidence only. This
+keeps logical handle ids byte-identical between the desk and its colocated
+anchor even when a mount crosses from `.design` into a source subtree. Direct
+Git/root disagreement without valid jj metadata remains a provenance
+disagreement; no boundary or backing remains provenance absence. No caller
+flag selects among these states: requiring an agent to carry repository mode
+would violate CR-D4. Real jj history, currency, and blame semantics require a
+separate decision.
 
 ### §43 Introspection
 
@@ -3934,6 +3960,7 @@ config key.
 - CR-D108: Effective lifecycle classification (§11)
 - CR-D109: Gate-output shadow protection (§26)
 - CR-D110: Markdown scan population disclosure (§42)
+- CR-D111: Project boundary, backing, and history capability (§42)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
