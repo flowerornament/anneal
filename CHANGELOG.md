@@ -4,12 +4,25 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.25.0 - 2026-08-12
+
 ### Added
 
 - `gitignored_scanned_file(h, file)` and the conditional status `Scope` line
   report Git-ignored Markdown file handles that configured filesystem scanning
   includes. The graph remains unchanged; untracked drafts are not conflated
   with ignored files, and non-Git corpora make no claim.
+
+### Changed
+
+- `anneal help agent` leads with what anneal is and how it earns trust before
+  its command surface. The oracle-honesty discipline is stated directly —
+  reports rather than advises, author-declared rather than inferred, absence
+  distinct from unknown, counts naming their unit and population, axes as
+  separate questions — so an arriving agent can calibrate how far to trust an
+  answer. A failures section names the mistakes that cost real time, including
+  that `search` matches every containing span rather than only the deepest.
+  Configuration reference gives way to the commands that own it.
 
 ### Fixed
 
