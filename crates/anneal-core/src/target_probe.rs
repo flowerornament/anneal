@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -554,9 +555,8 @@ fn read_drift_cache(
     let _ = head;
     // Validate each DISTINCT revision once. A large corpus has thousands of
     // cached entries but only a handful of distinct revisions (one HEAD, a
-    // few hundred spec-authoring commits) — validating per-entry spawns one
-    // `git cat-file -e` each (herald: ~3130 spawns, dominating status). Dedup
-    // collapses that to one spawn per revision.
+    // few hundred spec-authoring commits). Dedup first reduced Herald from
+    // ~3,130 `git cat-file` spawns to ~111; batching makes that one process.
     let mut revisions: BTreeSet<&str> = BTreeSet::new();
     for entry in file.entries.values() {
         if entry.repo_root != repo_root.as_str() {
@@ -567,11 +567,8 @@ fn read_drift_cache(
             revisions.insert(rev);
         }
     }
-    let exists: BTreeMap<&str, bool> = revisions
-        .iter()
-        .map(|rev| (*rev, revision_exists(repo_root, rev)))
-        .collect();
-    let revision_ok = |rev: &str| exists.get(rev).copied().unwrap_or(false);
+    let existing = existing_revisions(repo_root, &revisions);
+    let revision_ok = |rev: &str| existing.contains(rev);
     file.entries
         .iter()
         .filter(|(_, entry)| {
@@ -584,6 +581,65 @@ fn read_drift_cache(
         })
         .map(|(key, entry)| (key.clone(), entry.clone()))
         .collect()
+}
+
+fn existing_revisions<'a>(
+    repo_root: &Utf8Path,
+    revisions: &BTreeSet<&'a str>,
+) -> BTreeSet<&'a str> {
+    let requested = revisions
+        .iter()
+        .copied()
+        .filter(|revision| {
+            !revision.is_empty() && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let Ok(mut child) = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(repo_root.as_std_path())
+        .args(["cat-file", "--batch-check=%(objectname)"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return BTreeSet::new();
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return BTreeSet::new();
+    };
+    let mut input = requested.join("\n");
+    input.push('\n');
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output();
+    let wrote_input = matches!(writer.join(), Ok(Ok(())));
+    let Ok(output) = output else {
+        return BTreeSet::new();
+    };
+    if !wrote_input || !output.status.success() {
+        return BTreeSet::new();
+    }
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return BTreeSet::new();
+    };
+    requested
+        .into_iter()
+        .zip(stdout.lines())
+        .filter_map(|(revision, result)| {
+            // Batch mode exits successfully even for missing or ambiguous
+            // objects; only a full object id proves that a revision exists.
+            is_full_object_id(result).then_some(revision)
+        })
+        .collect()
+}
+
+fn is_full_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Precise invalidation on HEAD movement: an entry computed at an older HEAD
@@ -1163,6 +1219,47 @@ mod tests {
 
     fn utf8(path: std::path::PathBuf) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(path).expect("utf8 temp path")
+    }
+
+    #[test]
+    fn revision_batch_distinguishes_valid_short_and_missing_objects() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        fs::create_dir_all(&repo).expect("create repo");
+        run_git(&repo, &["init"]);
+        fs::write(repo.join("tracked.txt"), "tracked\n").expect("write fixture");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "fixture"]);
+        let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+        let short = git_stdout(&repo, &["rev-parse", "--short=9", "HEAD"]);
+        let missing = "0000000000000000000000000000000000000000".to_string();
+        let revisions = [
+            head.as_str(),
+            short.as_str(),
+            short.as_str(),
+            missing.as_str(),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        let existing = existing_revisions(&repo, &revisions);
+
+        assert_eq!(revisions.len(), 3, "repeated revisions are deduplicated");
+        assert!(existing.contains(head.as_str()));
+        assert!(existing.contains(short.as_str()));
+        assert!(
+            !existing.contains(missing.as_str()),
+            "batch-check exits successfully for missing objects, so stdout must decide"
+        );
+    }
+
+    #[test]
+    fn batch_revision_markers_are_not_object_ids() {
+        assert!(is_full_object_id(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_full_object_id("deadbeef missing"));
+        assert!(!is_full_object_id("deadbeef ambiguous"));
     }
 
     #[test]

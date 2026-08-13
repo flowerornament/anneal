@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Changed
 
+- Drift-evidence cache validation uses one batched Git process rather than one
+  process per distinct cached revision. On the Herald corpus, the paired
+  five-run mean for a bare diagnostic query fell from 1.91s to 1.35s with an
+  identical diagnostic population.
 - Goal-less orientation derives operative and retired handles from the sealed
   effective lifecycle classification instead of private status lists. Declaring
   a project status settled grants current-head anchor-boost eligibility and
