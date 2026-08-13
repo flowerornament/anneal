@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.25.1 - 2026-08-13
+
 ### Fixed
 
 - Markdown `external_root` mounts resolve inside jj added workspaces without a
