@@ -1766,6 +1766,187 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_classification_drives_orientation_and_status_weights() {
+        let corpus = CorpusId::from("classified");
+        let source = SourceName::from("host");
+        let generation = Generation::initial();
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation,
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        batch.handles = vec![
+            handle(&scope, "old.md", "file", Some("draft"), "", "topic"),
+            handle(&scope, "locked.md", "file", Some("locked"), "", "topic"),
+            handle(
+                &scope,
+                "deprecated.md",
+                "file",
+                Some("deprecated"),
+                "",
+                "topic",
+            ),
+            handle(&scope, "live.md", "file", Some("live"), "", "topic"),
+            handle(
+                &scope,
+                "reference.md",
+                "file",
+                Some("reference"),
+                "",
+                "topic",
+            ),
+            handle(
+                &scope,
+                "both.md",
+                "file",
+                Some("authoritative"),
+                "",
+                "topic",
+            ),
+        ];
+        batch.edges = vec![edge(&scope, "old.md", "locked.md", "Supersedes", 1)];
+
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge classified fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![
+                    config(&corpus, "convergence.settled", "locked", None),
+                    config(&corpus, "convergence.active", "live", None),
+                    config(&corpus, "convergence.active", "reference", None),
+                    config(&corpus, "convergence.terminal", "authoritative", None),
+                ],
+            )
+            .expect("replace classified fixture config");
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                ("locked-operative", r#"? operative("locked.md")."#),
+                (
+                    "locked-current-head-boost",
+                    r#"? anchor_currency_score("locked.md", score, priority, why)."#,
+                ),
+                (
+                    "deprecated-retired",
+                    r#"? orientation_retired_status("deprecated.md")."#,
+                ),
+                (
+                    "live-score",
+                    r#"? anchor_status_score("live.md", score, priority, why)."#,
+                ),
+                (
+                    "reference-score",
+                    r#"? anchor_status_score("reference.md", score, priority, why)."#,
+                ),
+                ("both-operative", r#"? operative("both.md")."#),
+                (
+                    "both-retired",
+                    r#"? orientation_retired_status("both.md")."#,
+                ),
+                ("both-anchor", r#"? anchor("both.md", score, why)."#),
+            ],
+            Database::from_store(&store),
+        );
+
+        assert_eq!(output(&outputs, "locked-operative").rows.len(), 1);
+        assert!(has_row(
+            output(&outputs, "locked-current-head-boost"),
+            &[("score", int(110)), ("why", string("current_head"))]
+        ));
+        assert_eq!(output(&outputs, "deprecated-retired").rows.len(), 1);
+        assert!(has_row(
+            output(&outputs, "live-score"),
+            &[("score", int(150))]
+        ));
+        assert!(has_row(
+            output(&outputs, "reference-score"),
+            &[("score", int(70))]
+        ));
+        assert_eq!(output(&outputs, "both-operative").rows.len(), 1);
+        assert_eq!(output(&outputs, "both-retired").rows.len(), 1);
+        assert_eq!(
+            output(&outputs, "both-anchor").rows.len(),
+            0,
+            "terminal gates still exclude a handle that is also settled"
+        );
+
+        let mismatched_corpus = CorpusId::from("mismatched");
+        let mismatched_scope = FixtureScope {
+            corpus: &mismatched_corpus,
+            source: &source,
+            generation,
+        };
+        let mut mismatched_batch = FactBatch::new(
+            mismatched_corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        mismatched_batch.handles = vec![
+            handle(
+                &mismatched_scope,
+                "live.md",
+                "file",
+                Some("live"),
+                "",
+                "topic",
+            ),
+            handle(
+                &mismatched_scope,
+                "reference.md",
+                "file",
+                Some("reference"),
+                "",
+                "topic",
+            ),
+        ];
+        let mut mismatched_store = FactStore::default();
+        mismatched_store
+            .merge(mismatched_batch)
+            .expect("merge mismatched fixture");
+        mismatched_store
+            .replace_configs(
+                &mismatched_corpus,
+                vec![config(
+                    &mismatched_corpus,
+                    "convergence.settled",
+                    "live",
+                    None,
+                )],
+            )
+            .expect("replace mismatched fixture config");
+        let mismatched = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "live-score",
+                    r#"? anchor_status_score("live.md", score, priority, why)."#,
+                ),
+                (
+                    "reference-score",
+                    r#"? anchor_status_score("reference.md", score, priority, why)."#,
+                ),
+            ],
+            Database::from_store(&mismatched_store),
+        );
+        assert_eq!(
+            output(&mismatched, "live-score").rows.len(),
+            0,
+            "a settled live status does not inherit the active-live weight"
+        );
+        assert_eq!(
+            output(&mismatched, "reference-score").rows.len(),
+            0,
+            "an unclassified reference literal earns no weight"
+        );
+    }
+
+    #[test]
     fn standard_prelude_derives_topic_pairs_and_currency_suspects() {
         let corpus = CorpusId::from("test");
         let source = SourceName::from("host");
@@ -1778,7 +1959,7 @@ mod tests {
 
         let mut old = handle(&scope, "topic/old.md", "file", Some("active"), "", "topic");
         old.date = Some("2026-05-30".to_string());
-        let mut new = handle(&scope, "topic/new.md", "file", Some("active"), "", "topic");
+        let mut new = handle(&scope, "topic/new.md", "file", Some("locked"), "", "topic");
         new.date = Some("2026-05-31".to_string());
         let mut marked_old = handle(
             &scope,
@@ -1882,6 +2063,12 @@ mod tests {
 
         let mut store = FactStore::default();
         store.merge(batch).expect("merge topic fixture");
+        store
+            .replace_configs(
+                &corpus,
+                vec![config(&corpus, "convergence.settled", "locked", None)],
+            )
+            .expect("replace topic fixture config");
         let outputs = evaluate_standard_prelude_cases(
             &[
                 (

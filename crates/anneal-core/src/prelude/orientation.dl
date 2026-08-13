@@ -12,25 +12,18 @@ orientation_file(h, file) :=
 orientation_replaced(h) :=
   *edge{from: h, kind: "Supersedes"}.
 
+@doc(
+  name: "operative",
+  doc: "Return file handles whose status is effectively classified settled, regardless of builtin or project origin. Declaring a project status settled grants eligibility for the +110 current_head anchor signal and standing to report currency_suspect; it never asserts a Supersedes edge."
+).
+@predicate(
+  name: "operative",
+  args: ["h"]
+).
 operative(h) :=
   orientation_file(h, file),
-  status_of(h, "authoritative").
-
-operative(h) :=
-  orientation_file(h, file),
-  status_of(h, "current").
-
-operative(h) :=
-  orientation_file(h, file),
-  status_of(h, "active").
-
-operative(h) :=
-  orientation_file(h, file),
-  status_of(h, "stable").
-
-operative(h) :=
-  orientation_file(h, file),
-  status_of(h, "living").
+  status_of(h, status),
+  lifecycle_status_classification(status, "settled", origin).
 
 currency_superseded(h) :=
   orientation_file(h, file),
@@ -64,19 +57,8 @@ currency_disposition(h, "unknown") :=
   not currency_superseded(h).
 
 orientation_retired_status(h) :=
-  status_of(h, "superseded").
-
-orientation_retired_status(h) :=
-  status_of(h, "retired").
-
-orientation_retired_status(h) :=
-  status_of(h, "archived").
-
-orientation_retired_status(h) :=
-  status_of(h, "historical").
-
-orientation_retired_status(h) :=
-  status_of(h, "prior").
+  status_of(h, status),
+  lifecycle_status_classification(status, "terminal", origin).
 
 orientation_replaced(h) :=
   orientation_retired_status(h).
@@ -252,29 +234,34 @@ recent_frontier(h, rank, recency) :=
   recent_frontier_ranked(h, rank, recency),
   rank <= 50.
 
-anchor_status_score(h, 250, 0, "authoritative_status") :=
-  orientation_file(h, file),
-  status_of(h, "authoritative").
+@doc(
+  name: "anchor_status_policy",
+  doc: "Declare explicit status-ranking weights together with the effective lifecycle classification required to earn each weight. The requirement is builtin ranking policy: a corpus that assigns another meaning to the same word does not inherit its score."
+).
+@predicate(
+  name: "anchor_status_policy",
+  args: ["status", "required_classification", "score", "priority", "why"]
+).
+anchor_status_policy("authoritative", "settled", 250, 0, "authoritative_status").
+anchor_status_policy("current", "settled", 150, 1, "authoritative_status").
+anchor_status_policy("living", "settled", 150, 1, "authoritative_status").
+anchor_status_policy("live", "active", 150, 1, "authoritative_status").
+anchor_status_policy("stable", "settled", 120, 2, "authoritative_status").
+anchor_status_policy("reference", "active", 70, 3, "authoritative_status").
 
-anchor_status_score(h, 150, 1, "authoritative_status") :=
+@doc(
+  name: "anchor_status_score",
+  doc: "Return an explicit status-ranking signal only when the status has the required effective lifecycle classification. Classification origin is irrelevant, but classification meaning is not: reclassifying a project status can add or remove its weight. Query anchor_status_policy to inspect each required classification and score."
+).
+@predicate(
+  name: "anchor_status_score",
+  args: ["h", "score", "priority", "why"]
+).
+anchor_status_score(h, score, priority, why) :=
   orientation_file(h, file),
-  status_of(h, "current").
-
-anchor_status_score(h, 150, 1, "authoritative_status") :=
-  orientation_file(h, file),
-  status_of(h, "living").
-
-anchor_status_score(h, 150, 1, "authoritative_status") :=
-  orientation_file(h, file),
-  status_of(h, "live").
-
-anchor_status_score(h, 120, 2, "authoritative_status") :=
-  orientation_file(h, file),
-  status_of(h, "stable").
-
-anchor_status_score(h, 70, 3, "authoritative_status") :=
-  orientation_file(h, file),
-  status_of(h, "reference").
+  status_of(h, status),
+  anchor_status_policy(status, required_classification, score, priority, why),
+  lifecycle_status_classification(status, required_classification, origin).
 
 anchor_curated_score(h, 65, 4, "curated_name") :=
   orientation_curated_hub(h).

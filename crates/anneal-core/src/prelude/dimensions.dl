@@ -87,6 +87,7 @@ axis_of("anchor_primary_why", "composition").
 axis_of("anchor_recent_score", "composition").
 axis_of("anchor_signal", "composition").
 axis_of("anchor_status_score", "composition").
+axis_of("anchor_status_policy", "composition").
 axis_of("anchor_subject", "composition").
 axis_of("anchor_total", "composition").
 axis_of("area", "structure").

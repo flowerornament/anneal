@@ -4,6 +4,16 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Goal-less orientation derives operative and retired handles from the sealed
+  effective lifecycle classification instead of private status lists. Declaring
+  a project status settled grants current-head anchor-boost eligibility and
+  standing to report currency suspects; terminal classifications consistently
+  exclude retired material from orientation rankings. Explicit status weights
+  contribute only when the corpus gives that status the lifecycle meaning
+  required by the ranking policy.
+
 ## v0.25.1 - 2026-08-13
 
 ### Fixed

@@ -788,6 +788,26 @@ configuration gap from vocabulary the runtime already models, while
 Rationale: defaults and overrides must agree by construction across lifecycle
 evaluation and diagnostics, and their provenance must remain inspectable.
 
+**Definition CR-D112 (Lifecycle-derived orientation policy).**
+`operative(h)` holds exactly for file handles whose source status has an
+effective `settled` classification under CR-D108, regardless of whether that
+classification is builtin or project-authored. Settled and terminal remain
+independent: a handle may satisfy both relations, while terminal gates may
+still exclude it from orientation outputs. Declaring a project status settled
+therefore grants eligibility for the `+110` `current_head` anchor signal and
+standing to report `currency_suspect`; the latter remains a REPORT hint and
+never asserts a `Supersedes` edge. `orientation_retired_status(h)` derives from
+the same authority's `terminal` partition, so orientation cannot carry a
+second retired vocabulary.
+
+Status ranking remains a separate ordering policy because a lifecycle
+partition does not supply relative weights. Each `anchor_status_policy` row
+names the effective lifecycle classification a status must have before its
+weight can contribute. Classification origin is irrelevant, but classification
+meaning is not: a project reclassification can add or remove a status weight.
+A bare status literal never earns ranking authority without the matching
+effective classification.
+
 The aggregation form
 `TopK{k: N, key: score : (h, score) : body}` (Part IV §17)
 provides bounded selection. There is no parallel `top_k` function
@@ -3961,6 +3981,7 @@ config key.
 - CR-D109: Gate-output shadow protection (§26)
 - CR-D110: Markdown scan population disclosure (§42)
 - CR-D111: Project boundary, backing, and history capability (§42)
+- CR-D112: Lifecycle-derived orientation policy (§11)
 
 ### CR-R (Rules)
 - CR-R1: Diagnostic ID literal (§29)
