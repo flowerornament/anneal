@@ -72,6 +72,26 @@ Avoid broad default dumps like raw `check --json`, empty search queries, or full
 - `cli/` and `output/` compose analyses into user-facing commands. Analysis logic belongs in its analysis module, not the CLI seam.
 - The shipped surfaces are the CLI binary, the tag-driven GitHub release assets, and `install.sh`.
 
+## Verify Before Asserting
+
+Claims about this system's own behavior get checked against the system, not recalled.
+Error strings, version state, predicate membership, counts, and file paths are quoted
+from a command or a `file:line`, or they are labelled `UNVERIFIED:` with the command
+that would settle them.
+
+Three traps, each of which has produced a wrong claim here:
+
+- **Scope is part of the claim.** What a tool walks, what the repo tracks, what config
+  mounts, and what a query emits are four different sets. `lifecycle_status_classification`
+  carries project origin, so it differs per corpus — measuring it here says nothing about
+  murail. Measure the set the claim is about.
+- **Truncated evidence reads as complete evidence.** `head -N` on a grep, an aborted
+  build, a `--limit` on a query: the output looks whole and nothing marks the cut. Do not
+  pipe through `head` when the result is about to become a conclusion.
+- **A passing check proves nothing if its target is absent.** A probe against a path that
+  does not exist, a fixture missing the case it guards, an assertion on a truncated list —
+  all pass while testing nothing.
+
 ## Rust Conventions
 
 - `unsafe_code` is denied workspace-wide. Any exception must use the narrowest `#[allow(unsafe_code)]` with documented invariants. Run `unsafe-checker` on every `unsafe` block before commit.
