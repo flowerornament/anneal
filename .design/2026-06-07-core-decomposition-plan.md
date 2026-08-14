@@ -197,10 +197,16 @@ cleaned. The §12 backend boundary held and is grep-evidenced at every step.
 and its parallel content, graph, and search insertion paths are retired.
 `TupleDb` is the only stored-row authority, including optional trail relations;
 relation enablement retained for introspection is metadata, not a second row
-representation. `check-arch` rejects any reintroduction of `NamedRow`. The next
-separate seam is the misnamed `GraphIndex`: it is one primitive-oracle index,
-not independent graph/lifecycle/time stores, and should be extracted around
-that shared representation secret rather than split by subject.
+representation. `check-arch` rejects any reintroduction of `NamedRow`. The
+primitive-oracle index is named `PrimitiveIndex`, not `GraphIndex`, because it
+serves graph, lifecycle, pipeline, snapshot, content, and time predicates from
+one precomputed representation. It remains cohesive and must not be split by
+subject. The private `runtime::eval::primitive_index` child owns that state and
+all accessors behind four operations: construct from tuples, apply runtime
+context, scope to a snapshot, and answer primitive tuples. `check-arch` enforces
+private fields and that exact operation set. Extracting the shared query/value
+helpers and row-field vocabulary is now an optional simplification, not a
+prerequisite for the index boundary.
 
 Remaining (deferred — own arcs, not blocking feature work):
 - `plan.rs` split (catalog/lower/stages/certificate/support — the second monolith);

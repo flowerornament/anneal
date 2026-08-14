@@ -106,18 +106,50 @@ def check_vm_imports() -> None:
         fail("\n" + "\n".join(violations))
 
 
-def check_single_stored_row_representation() -> None:
+def check_retired_runtime_representations() -> None:
+    retired = {
+        "GraphIndex": "primitive oracle must use the PrimitiveIndex contract",
+        "NamedRow": "stored rows must use the tuple substrate",
+    }
     violations = []
     for path in sorted(CORE_SRC.rglob("*.rs")):
         for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-            if re.search(r"\bNamedRow\b", line):
-                violations.append(
-                    f"{path.relative_to(ROOT)}:{line_number}: "
-                    "stored rows must use the tuple substrate"
-                )
+            for name, message in retired.items():
+                if re.search(rf"\b{name}\b", line):
+                    violations.append(
+                        f"{path.relative_to(ROOT)}:{line_number}: {message}"
+                    )
 
     if violations:
         fail("\n" + "\n".join(violations))
+
+
+def check_primitive_index_contract() -> None:
+    path = CORE_SRC / "runtime" / "eval" / "primitive_index.rs"
+    source = path.read_text()
+    index = re.search(r"struct PrimitiveIndex\s*\{(?P<body>.*?)\n\}", source, re.S)
+    if index is None:
+        fail("primitive index contract: missing PrimitiveIndex")
+    visible_fields = [
+        line.strip()
+        for line in index.group("body").splitlines()
+        if re.match(r"\s*pub(?:\([^)]*\))?\s+", line)
+    ]
+    if visible_fields:
+        fail("primitive index contract: state must remain private")
+
+    expected = {
+        "apply_context",
+        "from_tuples",
+        "scoped_to_snapshot_tuples",
+        "tuples",
+    }
+    actual = set(re.findall(r"^\s*pub\(super\) fn ([a-z_]+)", source, re.M))
+    if actual != expected:
+        fail(
+            "primitive index contract: expected exactly "
+            f"{sorted(expected)}, found {sorted(actual)}"
+        )
 
 
 def cargo_metadata() -> dict:
@@ -236,7 +268,8 @@ def check_core_facades() -> None:
 
 def main() -> None:
     check_vm_imports()
-    check_single_stored_row_representation()
+    check_retired_runtime_representations()
+    check_primitive_index_contract()
     check_workspace_dag()
     check_core_facades()
     print("check-arch: ok")
