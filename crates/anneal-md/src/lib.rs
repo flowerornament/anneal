@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use anneal_core::{
     CodeDriftRefreshProgressSink, ConfigFacts, ConfigKey, FactBatch, FactBatchMode, Pattern,
-    RelativePathPolicy, Source, SourceCapabilities, SourceContext, SourceError, SourceInfo,
-    SourceName, default_lexical_search_info, normalize_relative_path,
+    RelativePathPolicy, RepositoryContext, Source, SourceCapabilities, SourceContext, SourceError,
+    SourceInfo, SourceName, default_lexical_search_info, normalize_relative_path,
 };
 use camino::Utf8PathBuf;
 use serde::Serialize;
@@ -88,6 +88,7 @@ pub fn render_or_write_init(root: &camino::Utf8Path, mode: InitMode) -> anyhow::
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownSource {
     config: Option<extract::adapter::MarkdownConfig>,
+    repository: Option<RepositoryContext>,
     drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
     edge_assertion_refresh_progress: Option<EdgeAssertionRefreshProgressSink>,
 }
@@ -98,9 +99,16 @@ impl MarkdownSource {
             .map_err(|err| SourceError::Other(err.to_string()))?;
         Ok(Self {
             config: Some(config),
+            repository: None,
             drift_refresh_progress: None,
             edge_assertion_refresh_progress: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_repository_context(mut self, repository: RepositoryContext) -> Self {
+        self.repository = Some(repository);
+        self
     }
 
     #[must_use]
@@ -159,6 +167,7 @@ impl Source for MarkdownSource {
         discovery.options.probe_edge_assertions = cx.probe_edge_assertions;
         discovery.options.read_code_drift_evidence = cx.read_code_drift_evidence;
         discovery.options.refresh_code_drift_evidence = cx.refresh_code_drift_evidence;
+        discovery.options.repository.clone_from(&self.repository);
         discovery
             .options
             .drift_refresh_progress
@@ -242,6 +251,7 @@ impl MarkdownDiscoveryConfig {
                 drift_refresh_progress: None,
                 edge_assertion_refresh_progress: None,
                 probe_edge_assertions: false,
+                repository: None,
             },
         })
     }

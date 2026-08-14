@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::HandleId;
 use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
+use crate::repository::{RepositoryContext, RepositoryOperation};
 
 const DRIFT_CACHE_SCHEMA_VERSION: u32 = 1;
 const PATH_POLICY_VERSION: u32 = 1;
@@ -153,11 +154,17 @@ pub struct CodeDriftEvidenceCache {
 
 impl CodeDriftEvidenceCache {
     #[must_use]
-    pub fn open(corpus_root: &Utf8Path, mode: CodeDriftEvidenceMode) -> Self {
+    pub fn open(
+        corpus_root: &Utf8Path,
+        mode: CodeDriftEvidenceMode,
+        repository: &RepositoryContext,
+    ) -> Self {
         let repo_root =
             enclosing_project_root(corpus_root).unwrap_or_else(|| corpus_root.to_path_buf());
         let cache_path = repo_root.join(DRIFT_CACHE_RELATIVE_PATH);
-        let head = git_head(&repo_root);
+        let head = repository
+            .direct_git_root(RepositoryOperation::TargetHistory)
+            .and_then(|_| git_head(&repo_root));
         let mut changed = false;
         let entries = if matches!(mode, CodeDriftEvidenceMode::Disabled) {
             BTreeMap::new()
@@ -469,8 +476,13 @@ impl CodeTargetProbeCache {
         Self::default()
     }
 
-    pub fn probe(&mut self, corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
-        probe_code_target_with_cache(corpus_root, target_path, self)
+    pub fn probe(
+        &mut self,
+        corpus_root: &Utf8Path,
+        target_path: &str,
+        repository: &RepositoryContext,
+    ) -> CodeTargetProbe {
+        probe_code_target_with_cache(corpus_root, target_path, repository, self)
     }
 
     pub fn probe_without_history(
@@ -481,7 +493,15 @@ impl CodeTargetProbeCache {
         probe_code_target_without_history(corpus_root, target_path)
     }
 
-    fn history_contains_target(&mut self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
+    fn history_contains_target(
+        &mut self,
+        base: &Utf8Path,
+        target: &Utf8Path,
+        available: bool,
+    ) -> Option<bool> {
+        if !available {
+            return None;
+        }
         let history = self
             .history_by_base
             .entry(base.to_path_buf())
@@ -491,8 +511,13 @@ impl CodeTargetProbeCache {
             .map(|paths| paths.contains(target.as_str()))
     }
 
-    fn target_history_status(&mut self, base: &Utf8Path, target: &Utf8Path) -> TargetHistoryStatus {
-        match self.history_contains_target(base, target) {
+    fn target_history_status(
+        &mut self,
+        base: &Utf8Path,
+        target: &Utf8Path,
+        available: bool,
+    ) -> TargetHistoryStatus {
+        match self.history_contains_target(base, target, available) {
             Some(true) => TargetHistoryStatus::Present,
             Some(false) => TargetHistoryStatus::Absent,
             None => TargetHistoryStatus::Unavailable,
@@ -1035,12 +1060,14 @@ fn nonempty_line_count(output: &str) -> u32 {
 #[must_use]
 pub fn probe_code_target(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
     let mut cache = CodeTargetProbeCache::new();
-    probe_code_target_with_cache(corpus_root, target_path, &mut cache)
+    let repository = RepositoryContext::discover(corpus_root);
+    probe_code_target_with_cache(corpus_root, target_path, &repository, &mut cache)
 }
 
 fn probe_code_target_with_cache(
     corpus_root: &Utf8Path,
     target_path: &str,
+    repository: &RepositoryContext,
     cache: &mut CodeTargetProbeCache,
 ) -> CodeTargetProbe {
     let Some(normalized) =
@@ -1049,11 +1076,17 @@ fn probe_code_target_with_cache(
         return CodeTargetProbe::unknown();
     };
 
+    let history_available = repository.is_available(RepositoryOperation::TargetHistory);
+
     if let Some(project_root) = enclosing_project_root(corpus_root) {
         if let Some(found) = existing_target(&project_root, &normalized) {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                history_status: cache.target_history_status(&project_root, &normalized),
+                history_status: cache.target_history_status(
+                    &project_root,
+                    &normalized,
+                    history_available,
+                ),
                 probe_base: Some(project_root),
                 resolved_path: Some(found),
             };
@@ -1063,23 +1096,36 @@ fn probe_code_target_with_cache(
         {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                history_status: cache.target_history_status(corpus_root, &normalized),
+                history_status: cache.target_history_status(
+                    corpus_root,
+                    &normalized,
+                    history_available,
+                ),
                 probe_base: Some(corpus_root.to_path_buf()),
                 resolved_path: Some(found),
             };
         }
-        return missing_target_probe(cache, project_root, &normalized);
+        return missing_target_probe(cache, project_root, &normalized, history_available);
     }
 
     if let Some(found) = existing_target(corpus_root, &normalized) {
         return CodeTargetProbe {
             exists: TargetExistence::True,
-            history_status: cache.target_history_status(corpus_root, &normalized),
+            history_status: cache.target_history_status(
+                corpus_root,
+                &normalized,
+                history_available,
+            ),
             probe_base: Some(corpus_root.to_path_buf()),
             resolved_path: Some(found),
         };
     }
-    missing_target_probe(cache, corpus_root.to_path_buf(), &normalized)
+    missing_target_probe(
+        cache,
+        corpus_root.to_path_buf(),
+        &normalized,
+        history_available,
+    )
 }
 
 fn probe_code_target_without_history(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
@@ -1129,8 +1175,9 @@ fn missing_target_probe(
     cache: &mut CodeTargetProbeCache,
     base: Utf8PathBuf,
     normalized: &Utf8Path,
+    history_available: bool,
 ) -> CodeTargetProbe {
-    match cache.history_contains_target(&base, normalized) {
+    match cache.history_contains_target(&base, normalized, history_available) {
         Some(true) => CodeTargetProbe {
             exists: TargetExistence::False,
             history_status: TargetHistoryStatus::Present,
@@ -1219,6 +1266,11 @@ mod tests {
 
     fn utf8(path: std::path::PathBuf) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(path).expect("utf8 temp path")
+    }
+
+    fn drift_cache(corpus: &Utf8Path, mode: CodeDriftEvidenceMode) -> CodeDriftEvidenceCache {
+        let repository = RepositoryContext::discover(corpus);
+        CodeDriftEvidenceCache::open(corpus, mode, &repository)
     }
 
     #[test]
@@ -1325,8 +1377,9 @@ mod tests {
         fs::remove_file(repo.join("lib/old.rs")).expect("remove old");
 
         let mut cache = CodeTargetProbeCache::new();
-        let drift = cache.probe(&corpus, "lib/old.rs");
-        let illustrative = cache.probe(&corpus, "lib/never.rs");
+        let repository = RepositoryContext::discover(&corpus);
+        let drift = cache.probe(&corpus, "lib/old.rs", &repository);
+        let illustrative = cache.probe(&corpus, "lib/never.rs", &repository);
 
         assert_eq!(drift.exists, TargetExistence::False);
         assert_eq!(drift.history_status, TargetHistoryStatus::Present);
@@ -1416,11 +1469,10 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event);
         });
-        let mut batch_cache = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut batch_cache = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let batch = batch_cache.evidence_for_batch(&requests, Some(&progress));
 
-        let mut serial_cache =
-            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut serial_cache = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let serial = requests
             .iter()
             .map(|request| serial_cache.evidence_for(request))
@@ -1462,8 +1514,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(event);
         });
-        let mut read_cache =
-            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::ReadCache);
+        let mut read_cache = drift_cache(&corpus, CodeDriftEvidenceMode::ReadCache);
         let _ = read_cache.evidence_for_batch(&requests, Some(&read_progress));
         assert!(
             read_events
@@ -1498,8 +1549,7 @@ mod tests {
         };
         fs::write(repo.join("src/lib.rs"), "pub fn value() -> u8 { 2 }\n").expect("rewrite lib");
         run_git(&repo, &["add", "src/lib.rs"]);
-        let mut staged_cache =
-            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut staged_cache = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let staged = staged_cache
             .evidence_for(&request(".design/spec.md"))
             .expect("staged evidence");
@@ -1507,8 +1557,7 @@ mod tests {
 
         run_git(&repo, &["commit", "-m", "stage target"]);
         fs::write(corpus.join("untracked.md"), "# Untracked\n").expect("write untracked edge");
-        let mut untracked_cache =
-            CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut untracked_cache = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let untracked = untracked_cache
             .evidence_for(&request(".design/untracked.md"))
             .expect("untracked evidence");
@@ -1571,7 +1620,7 @@ mod tests {
             assertion_revision: Some(assertion_revision.clone()),
         };
 
-        let mut refresh = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut refresh = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let stable = refresh
             .evidence_for(&request_for("src/stable.rs"))
             .expect("stable evidence");
@@ -1591,7 +1640,7 @@ mod tests {
         assert_ne!(old_head, new_head);
 
         // ReadCache mode never recomputes: a served answer proves migration.
-        let mut read = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::ReadCache);
+        let mut read = drift_cache(&corpus, CodeDriftEvidenceMode::ReadCache);
         let migrated = read
             .evidence_for(&request_for("src/stable.rs"))
             .expect("untouched entry survives the HEAD move");
@@ -1636,7 +1685,7 @@ mod tests {
             assertion_date: None,
             assertion_revision: Some(assertion_revision),
         };
-        let mut refresh = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::Refresh);
+        let mut refresh = drift_cache(&corpus, CodeDriftEvidenceMode::Refresh);
         let evidence = refresh
             .evidence_for(&request)
             .expect("refresh computes evidence");
@@ -1652,7 +1701,7 @@ mod tests {
             assertion_revision: None,
             ..request
         };
-        let mut read = CodeDriftEvidenceCache::open(&corpus, CodeDriftEvidenceMode::ReadCache);
+        let mut read = drift_cache(&corpus, CodeDriftEvidenceMode::ReadCache);
         let cached = read
             .evidence_for(&read_request)
             .expect("read cache evidence without re-blaming assertions");

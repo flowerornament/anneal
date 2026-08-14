@@ -30,6 +30,7 @@ PRIVATE_CORE_MODULES = {
     "policy",
     "project",
     "ranking",
+    "repository",
     "retrieval",
     "source",
     "store",

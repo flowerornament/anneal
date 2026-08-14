@@ -17,8 +17,9 @@ use anneal_core::runtime::{
 };
 use anneal_core::{
     ActorContext, CancellationToken, CodeDriftRefreshProgressSink, CodeTargetMeta, ConfigEntry,
-    ConfigFacts, CorpusId, FactStore, Generation, ProjectExtension, Source, SourceContext,
-    SourceInfo, VerbEntry, VerbLayer, VerbRegistry, load_project_extension, merge_program_layers,
+    ConfigFacts, CorpusId, FactStore, Generation, ProjectExtension, RepositoryContext,
+    RepositoryOperation, Source, SourceContext, SourceInfo, VerbEntry, VerbLayer, VerbRegistry,
+    load_project_extension, merge_program_layers,
 };
 use anneal_md::{EdgeAssertionRefreshProgressSink, MarkdownSource};
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -309,8 +310,10 @@ impl RuntimeSession {
             });
         let config_facts = ConfigFacts::from_entries(discovery);
         let evidence_demands = command.evidence_demands(&program, &registry);
+        let repository = RepositoryContext::discover(root);
         let mut markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
+        markdown_source = markdown_source.with_repository_context(repository.clone());
         if let Some(progress) = drift_refresh_progress_for(command) {
             markdown_source = markdown_source.with_drift_refresh_progress(progress);
         }
@@ -356,6 +359,7 @@ impl RuntimeSession {
         }
         let git_mtimes = git_mtimes_for_files(
             root,
+            &repository,
             store.handles().iter().map(|handle| handle.file.as_str()),
         );
         let history = read_snapshot_history(root).context("failed to read snapshot history")?;
@@ -929,9 +933,13 @@ fn runtime_config_facts(
 
 fn git_mtimes_for_files<'a>(
     root: &camino::Utf8Path,
+    repository: &RepositoryContext,
     files: impl IntoIterator<Item = &'a str>,
 ) -> BTreeMap<String, String> {
-    if !is_inside_git_work_tree(root) {
+    if repository
+        .direct_git_root(RepositoryOperation::ChangeHistory)
+        .is_none()
+    {
         return BTreeMap::new();
     }
 
@@ -980,15 +988,6 @@ fn git_mtimes_for_files<'a>(
         }
     }
     mtimes
-}
-
-fn is_inside_git_work_tree(root: &camino::Utf8Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root.as_std_path())
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .is_ok_and(|output| output.status.success())
 }
 
 fn default_markdown_config() -> Vec<ConfigEntry> {

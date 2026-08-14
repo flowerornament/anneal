@@ -34,6 +34,7 @@ mod path_policy;
 mod policy;
 mod project;
 mod ranking;
+mod repository;
 mod retrieval;
 pub mod runtime;
 mod source;
@@ -78,6 +79,7 @@ pub use ranking::{
     DefaultRanker, REASON_PARENT_CLUSTER, Ranker, RankingContext, SearchHit, SearchScore,
     default_lexical_search_info,
 };
+pub use repository::{RepositoryContext, RepositoryOperation};
 pub use retrieval::{
     ContentProvider, ReadChunk, ReadContext, ReadError, ReadFullContent, ReadFullRequest,
     ReadRequest, RetrievalContext, SearchContext, SearchError, SearchProvider, SearchRequest,

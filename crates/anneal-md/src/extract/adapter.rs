@@ -13,8 +13,8 @@ use anneal_core::{
 use anneal_core::{
     CodeDriftRefreshProgressSink, CodeTargetMeta, CodeTargetProbeCache, ConcernFact, ContentFact,
     EdgeFact, FactBatch, FactBatchMode, FactIdentity, Generation, HandleFact, HandleId, MetaFact,
-    MetaRole, NativeId, OriginUri, Revision, RuntimeConfigKey, SourceName, SpanFact,
-    runtime_config_declaration_by_key,
+    MetaRole, NativeId, OriginUri, RepositoryContext, RepositoryOperation, Revision,
+    RuntimeConfigKey, SourceName, SpanFact, runtime_config_declaration_by_key,
 };
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -45,6 +45,7 @@ pub struct MarkdownExtractionOptions {
     pub drift_refresh_progress: Option<CodeDriftRefreshProgressSink>,
     pub edge_assertion_refresh_progress: Option<EdgeAssertionRefreshProgressSink>,
     pub probe_edge_assertions: bool,
+    pub(crate) repository: Option<RepositoryContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -224,11 +225,18 @@ fn extract_markdown_facts_from_anneal_config(
 
     let mut batch = FactBatch::new(corpus, source, FactBatchMode::FullSnapshot, generation);
     let mut revisions = RevisionCache::new(root, &result);
-    let gitignored_files = gitignored_scanned_files(root, &result.files.file_origins);
+    let repository = options
+        .repository
+        .as_ref()
+        .filter(|repository| repository.applies_to(root))
+        .cloned()
+        .unwrap_or_else(|| RepositoryContext::discover(root));
+    let gitignored_files = gitignored_scanned_files(root, &result.files.file_origins, &repository);
     let mut edge_assertions = EdgeAssertionCache::new(
         root,
         &result.files.file_origins,
         options.probe_edge_assertions,
+        &repository,
     );
 
     for (node_id, handle) in result.graph.nodes() {
@@ -282,6 +290,7 @@ fn extract_markdown_facts_from_anneal_config(
         root,
         &result,
         options,
+        &repository,
     )?;
     let file_payloads = std::mem::take(&mut result.files.file_payloads);
     let heading_spans = std::mem::take(&mut result.files.heading_spans);
@@ -918,8 +927,15 @@ impl<'a> EdgeAssertionCache<'a> {
         root: &'a Utf8Path,
         file_origins: &Arc<HashMap<String, Utf8PathBuf>>,
         enabled: bool,
+        repository: &RepositoryContext,
     ) -> Self {
-        let repo_root = enabled.then(|| git_root_for(root)).flatten();
+        let repo_root = enabled
+            .then(|| {
+                repository
+                    .direct_git_root(RepositoryOperation::AssertionBlame)
+                    .map(Utf8Path::to_path_buf)
+            })
+            .flatten();
         let show_memo = EdgeAssertionShowMemo::new(repo_root.clone());
         Self {
             root,
@@ -1216,7 +1232,14 @@ fn external_root_project_boundary(corpus_root: &Utf8Path) -> Result<Utf8PathBuf>
 fn gitignored_scanned_files(
     root: &Utf8Path,
     file_origins: &HashMap<String, Utf8PathBuf>,
+    repository: &RepositoryContext,
 ) -> BTreeSet<String> {
+    if repository
+        .direct_git_root(RepositoryOperation::IgnoreIndex)
+        .is_none()
+    {
+        return BTreeSet::new();
+    }
     let canonical_root = root
         .canonicalize_utf8()
         .unwrap_or_else(|_| root.to_path_buf());
@@ -1968,6 +1991,7 @@ fn emit_code_ref_meta(
     root: &Utf8Path,
     result: &parse::BuildResult,
     options: &MarkdownExtractionOptions,
+    repository: &RepositoryContext,
 ) -> Result<()> {
     let mut seen = HashSet::new();
     let mut probe_cache = CodeTargetProbeCache::new();
@@ -1979,7 +2003,7 @@ fn emit_code_ref_meta(
         (true, false) => CodeDriftEvidenceMode::ReadCache,
         (false, false) => CodeDriftEvidenceMode::Disabled,
     };
-    let mut drift_cache = CodeDriftEvidenceCache::open(root, drift_mode);
+    let mut drift_cache = CodeDriftEvidenceCache::open(root, drift_mode, repository);
     let mut drift_targets = Vec::<(FactIdentity, String)>::new();
     let mut drift_requests = Vec::<CodeDriftEvidenceRequest>::new();
     for reference in &result.files.code_refs {
@@ -2002,7 +2026,7 @@ fn emit_code_ref_meta(
             role: MetaRole::Derived,
         });
         let probe = if options.probe_code_target_history {
-            probe_cache.probe(root, &reference.path)
+            probe_cache.probe(root, &reference.path, repository)
         } else {
             probe_cache.probe_without_history(root, &reference.path)
         };
@@ -2418,13 +2442,15 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
-    use anneal_core::{CodeTargetMeta, CorpusId, FactBatch, Generation, MetaRole, SourceName};
+    use anneal_core::{
+        CodeTargetMeta, CorpusId, FactBatch, Generation, MetaRole, RepositoryContext, SourceName,
+    };
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
     use super::{
         EdgeAssertionCache, InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts,
-        git_command, render_or_write_init, resolve_external_scan_roots,
+        git_command, gitignored_scanned_files, render_or_write_init, resolve_external_scan_roots,
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
@@ -2503,6 +2529,46 @@ mod tests {
             2,
             "frontmatter list values retain one role per emitted scalar"
         );
+    }
+
+    #[test]
+    fn jj_workspace_does_not_inherit_ancestor_git_blame_or_ignore_index() {
+        let temp = tempdir().expect("tempdir");
+        let ancestor =
+            Utf8PathBuf::from_path_buf(temp.path().join("ancestor")).expect("utf8 ancestor");
+        let workspace = ancestor.join("workspace");
+        let root = workspace.join(".design");
+        std::fs::create_dir_all(workspace.join(".jj")).expect("create jj marker");
+        std::fs::create_dir_all(root.join("generated")).expect("create generated directory");
+        std::fs::write(root.join(".gitignore"), "generated/\n").expect("write ignore policy");
+        std::fs::write(root.join("doc.md"), "# Doc\n").expect("write tracked document");
+        std::fs::write(root.join("generated/artifact.md"), "# Generated\n")
+            .expect("write ignored document");
+        run_git(&ancestor, &["init", "--quiet"]);
+        run_git(&ancestor, &["add", "workspace/.design/doc.md"]);
+        run_git(&ancestor, &["commit", "-m", "track document"]);
+
+        let repository = RepositoryContext::discover(&root);
+        let origins = HashMap::from([
+            ("doc.md".to_string(), root.join("doc.md")),
+            (
+                "generated/artifact.md".to_string(),
+                root.join("generated/artifact.md"),
+            ),
+        ]);
+        assert!(
+            git_command(&root)
+                .args(["check-ignore", "generated/artifact.md"])
+                .status()
+                .expect("ancestor Git can classify the nested ignore rule")
+                .success(),
+            "the control must reproduce the wrong ancestor-index answer"
+        );
+
+        assert!(gitignored_scanned_files(&root, &origins, &repository).is_empty());
+        let origins = Arc::new(origins);
+        let mut assertions = EdgeAssertionCache::new(&root, &origins, true, &repository);
+        assert_eq!(assertions.assertion_for("doc.md", 1), None);
     }
 
     #[test]
@@ -3424,10 +3490,11 @@ mod tests {
                 .push(event);
         });
         let origins = Arc::new(HashMap::new());
-        let mut batch_cache = EdgeAssertionCache::new(&root, &origins, true);
+        let repository = RepositoryContext::discover(&root);
+        let mut batch_cache = EdgeAssertionCache::new(&root, &origins, true, &repository);
         let batch = batch_cache.prewarm_batch(&requests, Some(&progress));
 
-        let mut serial_cache = EdgeAssertionCache::new(&root, &origins, true);
+        let mut serial_cache = EdgeAssertionCache::new(&root, &origins, true, &repository);
         let serial = requests
             .iter()
             .map(|(file, line)| serial_cache.assertion_for(file, *line))
