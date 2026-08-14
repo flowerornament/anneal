@@ -1,4 +1,4 @@
-//! Runtime database, public eval types, and compatibility facade.
+//! Runtime database and public evaluation types.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -12,8 +12,6 @@ use serde::Serialize;
 use serde::ser::SerializeMap;
 
 use crate::config_schema::{RuntimeConfigKey, runtime_config_key_for_config_key};
-#[cfg(test)]
-use crate::facts::SnapshotFact;
 use crate::facts::{
     CONFIG_RELATION_NAME as CONFIG_RELATION, CONTENT_RELATION_NAME as CONTENT_RELATION,
     EDGE_RELATION_NAME as EDGE_RELATION, FactIdentity, HANDLE_RELATION_NAME as HANDLE_RELATION,
@@ -21,9 +19,7 @@ use crate::facts::{
     SPAN_RELATION_NAME as SPAN_RELATION,
 };
 #[cfg(test)]
-use crate::facts::{
-    ConcernFact, ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact,
-};
+use crate::facts::{ConfigFact, ContentFact, EdgeFact, HandleFact, MetaFact, SpanFact};
 use crate::ids::{Generation, HandleId};
 use crate::impact::ImpactTraversalPolicy;
 use crate::ir::ids::RowId;
@@ -55,17 +51,15 @@ use crate::runtime::ast::{
 };
 #[cfg(test)]
 use crate::runtime::evaluator::Evaluator;
-use crate::runtime::introspection::{
-    IntrospectionIndex, StoredRelationSummary, is_static_stored_relation,
-};
+use crate::runtime::introspection::{IntrospectionIndex, StoredRelationSummary};
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::source::{ActorContext, RuntimeCapability, SourceInfo};
 use crate::store::FactStore;
 use crate::time::{current_days_since_epoch, iso_days_since_epoch, snapshot_days_since_epoch};
 use crate::trail::{
-    TRAIL_GENERATION_RELATION, TRAIL_REF_RELATION, TRAIL_RELATION, TrailContext,
-    TrailEntryRedacted, TrailError, TrailGeneration, TrailQuery, TrailRefKind, TrailReference,
-    TrailStore,
+    TRAIL_GENERATION_RELATION, TRAIL_REF_RELATION, TRAIL_RELATION, TRAIL_RELATION_DESCRIPTORS,
+    TrailContext, TrailEntryRedacted, TrailError, TrailGeneration, TrailQuery, TrailRefKind,
+    TrailReference, TrailStore,
 };
 use crate::visibility::{FactVisibility, hidden_handles};
 use crate::vm::execute::{DeltaMap, DerivedRelation, DerivedTuple};
@@ -445,13 +439,13 @@ impl PartialOrd for Value {
 
 #[derive(Clone)]
 pub struct Database {
-    stored: BTreeMap<Ident, StoredRelation>,
     tuples: Arc<TupleDb>,
     tuple_overlay: Arc<TupleOverlay>,
-    tuple_content: Arc<TupleContentIndex>,
+    content: Arc<ContentIndex>,
     derived: BTreeMap<PredicateRef, DerivedRelation>,
     graph: Arc<GraphIndex>,
-    content: Arc<ContentIndex>,
+    // Availability is metadata; TupleDb remains the only row store.
+    trail_relations_enabled: bool,
     search: Arc<OnceLock<SearchIndex>>,
     hidden_handles: Arc<BTreeSet<crate::HandleId>>,
     hidden_content_spans: Arc<BTreeMap<crate::HandleId, BTreeSet<String>>>,
@@ -463,13 +457,12 @@ pub struct Database {
 impl Default for Database {
     fn default() -> Self {
         Self {
-            stored: BTreeMap::new(),
             tuples: Arc::new(TupleDb::default()),
             tuple_overlay: Arc::new(TupleOverlay::default()),
-            tuple_content: Arc::new(TupleContentIndex::default()),
+            content: Arc::new(ContentIndex::default()),
             derived: BTreeMap::new(),
             graph: Arc::new(GraphIndex::default()),
-            content: Arc::new(ContentIndex::default()),
+            trail_relations_enabled: false,
             search: Arc::new(OnceLock::new()),
             hidden_handles: Arc::new(BTreeSet::new()),
             hidden_content_spans: Arc::new(BTreeMap::new()),
@@ -483,14 +476,7 @@ impl Default for Database {
 impl fmt::Debug for Database {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Database")
-            .field(
-                "stored",
-                &self
-                    .stored
-                    .iter()
-                    .map(|(relation, rows)| (relation.to_string(), rows.len()))
-                    .collect::<BTreeMap<_, _>>(),
-            )
+            .field("trail_relations_enabled", &self.trail_relations_enabled)
             .field(
                 "derived",
                 &self
@@ -535,13 +521,13 @@ impl Database {
         fact_visible: impl Fn(&FactIdentity) -> bool,
     ) -> Self {
         let tuples = TupleDb::from_store_with_visibility(store, &fact_visible);
-        let tuple_content = TupleContentIndex::from_tuples(&tuples);
+        let content = ContentIndex::from_tuples(&tuples);
         let hidden_handles = hidden_handles(store, &fact_visible);
         let hidden_content_spans = hidden_content_spans(store, &fact_visible);
         let mut db = Self {
             tuples: Arc::new(tuples),
             tuple_overlay: Arc::new(TupleOverlay::default()),
-            tuple_content: Arc::new(tuple_content),
+            content: Arc::new(content),
             hidden_handles: Arc::new(hidden_handles),
             hidden_content_spans: Arc::new(hidden_content_spans),
             ..Self::default()
@@ -579,14 +565,6 @@ impl Database {
     pub fn with_search_provider(mut self, provider: impl SearchProvider + 'static) -> Self {
         self.search_provider = Some(Arc::new(provider));
         self
-    }
-
-    pub fn insert_stored_rows(
-        &mut self,
-        relation: impl Into<String>,
-        rows: impl IntoIterator<Item = NamedRow>,
-    ) {
-        self.insert_named_rows(&relation.into(), rows);
     }
 
     pub fn with_trail_store(
@@ -652,57 +630,60 @@ impl Database {
         self.tuples.for_each_relation_row(|relation, row| {
             insert_search_tuple_row(&mut search, relation, row);
         });
-        for (relation, rows) in &self.stored {
-            for row in &rows.rows {
-                insert_search_row(&mut search, relation, row);
-            }
-        }
         search
     }
 
     fn insert_trail_entry(&mut self, entry: &TrailEntryRedacted) {
-        self.insert_named_rows(TRAIL_RELATION, [trail_row(entry)]);
-        self.insert_named_rows(
-            TRAIL_REF_RELATION,
-            entry
-                .surfaced_refs
-                .iter()
-                .take(MAX_TRAIL_REFS_PER_ENTRY)
-                .enumerate()
-                .map(|(ordinal, reference)| {
-                    trail_ref_row(entry, TrailRefKind::Surfaced, ordinal, reference)
-                })
-                .chain(
-                    entry
-                        .consumed_refs
-                        .iter()
-                        .take(MAX_TRAIL_REFS_PER_ENTRY)
-                        .enumerate()
-                        .map(|(ordinal, reference)| {
-                            trail_ref_row(entry, TrailRefKind::Consumed, ordinal, reference)
-                        }),
-                ),
-        );
-        self.insert_named_rows(
-            TRAIL_GENERATION_RELATION,
-            entry
-                .source_generations
-                .iter()
-                .take(MAX_TRAIL_GENERATIONS_PER_ENTRY)
-                .map(|generation| trail_generation_row(entry, generation)),
-        );
+        self.insert_runtime_row(TRAIL_RELATION, trail_fields(entry));
+        for (ordinal, reference) in entry
+            .surfaced_refs
+            .iter()
+            .take(MAX_TRAIL_REFS_PER_ENTRY)
+            .enumerate()
+        {
+            self.insert_runtime_row(
+                TRAIL_REF_RELATION,
+                trail_ref_fields(entry, TrailRefKind::Surfaced, ordinal, reference),
+            );
+        }
+        for (ordinal, reference) in entry
+            .consumed_refs
+            .iter()
+            .take(MAX_TRAIL_REFS_PER_ENTRY)
+            .enumerate()
+        {
+            self.insert_runtime_row(
+                TRAIL_REF_RELATION,
+                trail_ref_fields(entry, TrailRefKind::Consumed, ordinal, reference),
+            );
+        }
+        for generation in entry
+            .source_generations
+            .iter()
+            .take(MAX_TRAIL_GENERATIONS_PER_ENTRY)
+        {
+            self.insert_runtime_row(
+                TRAIL_GENERATION_RELATION,
+                trail_generation_fields(entry, generation),
+            );
+        }
     }
 
     fn ensure_trail_relations(&mut self) {
-        for relation in [
-            TRAIL_RELATION,
-            TRAIL_REF_RELATION,
-            TRAIL_GENERATION_RELATION,
-        ] {
-            let relation = Ident::new_unchecked(relation);
-            self.stored
-                .entry(relation.clone())
-                .or_insert_with(|| StoredRelation::new(relation));
+        self.trail_relations_enabled = true;
+    }
+
+    fn insert_runtime_row<const N: usize>(
+        &mut self,
+        relation: &'static str,
+        fields: [(&'static str, Value); N],
+    ) {
+        // Runtime relation descriptors pre-register these schemas.
+        match Arc::make_mut(&mut self.tuples).insert_logical_row(relation, fields) {
+            LogicalRowInsert::Inserted(_) => {}
+            LogicalRowInsert::UnknownRelation | LogicalRowInsert::UnknownField => {
+                panic!("runtime row must match its registered tuple schema");
+            }
         }
     }
 
@@ -894,30 +875,26 @@ impl Database {
         }
         if let Some(span_id) = span_id {
             return self
-                .tuple_content
+                .content
                 .content_spans_for_handle_and_span(&self.tuples, handle, span_id)
                 .into_iter()
-                .filter_map(|span| read_chunk_with_budget_from_tuple(span, budget))
+                .filter_map(|span| read_chunk_with_budget(span, budget))
                 .collect();
         }
         let mut used = 0_i64;
         let mut out = Vec::new();
-        for span in self
-            .tuple_content
-            .content_spans_for_handle(&self.tuples, handle)
-        {
+        for span in self.content.content_spans_for_handle(&self.tuples, handle) {
             let next = used.saturating_add(span.tokens);
             if next > budget {
                 if out.is_empty()
-                    && let Some(chunk) =
-                        read_chunk_with_budget_from_tuple(span, budget.saturating_sub(used))
+                    && let Some(chunk) = read_chunk_with_budget(span, budget.saturating_sub(used))
                 {
                     out.push(chunk);
                 }
                 break;
             }
             used = next;
-            out.push(read_chunk_from_tuple(span));
+            out.push(read_chunk(span));
         }
         out
     }
@@ -928,10 +905,7 @@ impl Database {
     ) -> Result<Option<ReadFullContent>, EvalError> {
         let mut tokens = 0_i64;
         let mut content = String::new();
-        for span in self
-            .tuple_content
-            .content_spans_for_handle(&self.tuples, handle)
-        {
+        for span in self.content.content_spans_for_handle(&self.tuples, handle) {
             tokens = tokens.saturating_add(span.tokens);
             if tokens > token_limit {
                 return Err(EvalError::ReadFullBudgetExceeded {
@@ -966,10 +940,7 @@ impl Database {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for span in self
-            .tuple_content
-            .content_spans_for_handle(&self.tuples, &handle)
-        {
+        for span in self.content.content_spans_for_handle(&self.tuples, &handle) {
             for (line_offset, line) in span.text.lines().enumerate() {
                 if !regex.is_match(line) {
                     continue;
@@ -1042,12 +1013,16 @@ impl Database {
     }
 
     fn stored_relation_summaries(&self) -> Vec<StoredRelationSummary> {
-        self.stored
+        TRAIL_RELATION_DESCRIPTORS
             .iter()
-            .filter(|(name, _)| !is_static_stored_relation(name.as_str()))
-            .map(|(name, relation)| StoredRelationSummary {
-                name: name.to_string(),
-                fields: relation.field_names(),
+            .filter(|_| self.trail_relations_enabled)
+            .map(|relation| StoredRelationSummary {
+                name: relation.name.to_string(),
+                fields: relation
+                    .fields
+                    .iter()
+                    .map(|field| (*field).to_string())
+                    .collect(),
             })
             .collect()
     }
@@ -1138,31 +1113,6 @@ impl Database {
                 .and_then(|row| row.string(TRAIL_VISIBILITY_FIELD)),
             options,
         )
-    }
-
-    fn insert_named_rows(&mut self, relation: &str, rows: impl IntoIterator<Item = NamedRow>) {
-        let relation = Ident::new_unchecked(relation);
-        let stored = self
-            .stored
-            .entry(relation.clone())
-            .or_insert_with(|| StoredRelation::new(relation.clone()));
-        for row in rows {
-            match Arc::make_mut(&mut self.tuples).insert_logical_row(
-                relation.as_str(),
-                row.iter().map(|(field, value)| (field.as_str(), value)),
-            ) {
-                LogicalRowInsert::Inserted(_) | LogicalRowInsert::UnknownRelation => {}
-                LogicalRowInsert::UnknownField => {
-                    panic!("runtime row for known tuple relation used an unknown field");
-                }
-            }
-            Arc::make_mut(&mut self.graph).insert_row(&relation, &row);
-            Arc::make_mut(&mut self.content).insert_row(&relation, &row);
-            if let Some(search) = Arc::make_mut(&mut self.search).get_mut() {
-                insert_search_row(search, &relation, &row);
-            }
-            stored.push(row);
-        }
     }
 
     pub(crate) fn scoped_to_time_ref(
@@ -1308,18 +1258,13 @@ impl Database {
     }
 
     fn clone_shell_for_time_scope(&self) -> Self {
-        self.clone_for_time_scope_with_stored(BTreeMap::new())
-    }
-
-    fn clone_for_time_scope_with_stored(&self, stored: BTreeMap<Ident, StoredRelation>) -> Self {
         Self {
-            stored,
             tuples: Arc::clone(&self.tuples),
             tuple_overlay: Arc::new(TupleOverlay::default()),
-            tuple_content: Arc::clone(&self.tuple_content),
+            content: Arc::clone(&self.content),
             derived: BTreeMap::new(),
             graph: Arc::clone(&self.graph),
-            content: Arc::clone(&self.content),
+            trail_relations_enabled: self.trail_relations_enabled,
             search: Arc::clone(&self.search),
             hidden_handles: Arc::clone(&self.hidden_handles),
             hidden_content_spans: Arc::clone(&self.hidden_content_spans),
@@ -1389,62 +1334,8 @@ fn snapshot_partial_history_warning(
     }
 }
 
-pub type NamedRow = BTreeMap<Ident, Value>;
-
-#[derive(Clone, Debug)]
-struct StoredRelation {
-    relation: Ident,
-    rows: Vec<NamedRow>,
-    indexes: BTreeMap<Ident, BTreeMap<Value, Vec<usize>>>,
-}
-
-impl StoredRelation {
-    fn new(relation: Ident) -> Self {
-        Self {
-            relation,
-            rows: Vec::new(),
-            indexes: BTreeMap::new(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.rows.len()
-    }
-
-    fn push(&mut self, row: NamedRow) {
-        let idx = self.rows.len();
-        for (field, value) in &row {
-            if !should_index_stored_field(&self.relation, field) {
-                continue;
-            }
-            self.indexes
-                .entry(field.clone())
-                .or_default()
-                .entry(value.clone())
-                .or_default()
-                .push(idx);
-        }
-        self.rows.push(row);
-    }
-
-    fn field_names(&self) -> Vec<String> {
-        let mut fields = BTreeSet::new();
-        for row in &self.rows {
-            fields.extend(row.keys().map(ToString::to_string));
-        }
-        fields.into_iter().collect()
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 struct ContentIndex {
-    content: BTreeMap<ContentKey, ContentPayload>,
-    spans: BTreeMap<ContentKey, SpanPayload>,
-    span_keys_by_handle_span: BTreeMap<(HandleId, String), BTreeSet<ContentKey>>,
-    span_order_by_handle: BTreeMap<HandleId, BTreeSet<OrderedSpanKey>>,
-}
-#[derive(Clone, Debug, Default)]
-struct TupleContentIndex {
     content_rows: BTreeMap<ContentKey, RowId>,
     spans: BTreeMap<ContentKey, SpanPayload>,
     span_keys_by_handle_span: BTreeMap<(HandleId, String), BTreeSet<ContentKey>>,
@@ -1496,12 +1387,6 @@ impl PartialOrd for ContentKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ContentPayload {
-    text: String,
-    tokens: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct SpanPayload {
     start_line: i64,
     end_line: i64,
@@ -1545,12 +1430,6 @@ impl PartialOrd for OrderedSpanKey {
 #[derive(Clone, Copy, Debug)]
 struct ContentSpan<'a> {
     key: &'a ContentKey,
-    content: &'a ContentPayload,
-    span: &'a SpanPayload,
-}
-#[derive(Clone, Copy, Debug)]
-struct TupleContentSpan<'a> {
-    key: &'a ContentKey,
     text: &'a str,
     tokens: i64,
     span: &'a SpanPayload,
@@ -1558,137 +1437,9 @@ struct TupleContentSpan<'a> {
 
 impl ContentIndex {
     fn len(&self) -> usize {
-        self.content.len()
+        self.content_rows.len()
     }
 
-    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
-        match relation.as_str() {
-            CONTENT_RELATION => self.insert_content(row),
-            SPAN_RELATION => self.insert_span(row),
-            _ => {}
-        }
-    }
-
-    fn insert_content(&mut self, row: &NamedRow) {
-        let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text), Some(tokens)) = (
-            row_string(row, CORPUS_FIELD),
-            row_string(row, SOURCE_FIELD),
-            row_string(row, HANDLE_FIELD),
-            row_string(row, SPAN_ID_FIELD),
-            row_string(row, TEXT_FIELD),
-            row_i64(row, TOKENS_FIELD),
-        ) else {
-            return;
-        };
-        let Some(key) = ContentKey::from_runtime(corpus, source, handle, span_id) else {
-            return;
-        };
-        let payload = ContentPayload {
-            text: text.to_owned(),
-            tokens,
-        };
-        self.content.insert(key, payload);
-    }
-
-    fn insert_span(&mut self, row: &NamedRow) {
-        let (
-            Some(corpus),
-            Some(source),
-            Some(handle),
-            Some(span_id),
-            Some(start_line),
-            Some(end_line),
-        ) = (
-            row_string(row, CORPUS_FIELD),
-            row_string(row, SOURCE_FIELD),
-            row_string(row, HANDLE_FIELD),
-            row_string(row, ID_FIELD),
-            row_i64(row, START_LINE_FIELD),
-            row_i64(row, END_LINE_FIELD),
-        )
-        else {
-            return;
-        };
-        let Some(key) = ContentKey::from_runtime(corpus, source, handle, span_id) else {
-            return;
-        };
-        let payload = SpanPayload {
-            start_line,
-            end_line,
-        };
-        self.span_order_by_handle
-            .entry(key.handle.clone())
-            .or_default()
-            .insert(OrderedSpanKey::new(corpus, source, span_id, start_line));
-        self.span_keys_by_handle_span
-            .entry((key.handle.clone(), span_id.to_owned()))
-            .or_default()
-            .insert(key.clone());
-        self.spans.insert(key, payload);
-    }
-
-    fn content_span(&self, key: &ContentKey) -> Option<ContentSpan<'_>> {
-        let (key, content) = self.content.get_key_value(key)?;
-        let span = self.spans.get(key)?;
-        Some(ContentSpan { key, content, span })
-    }
-
-    fn content_spans_for_handle(&self, handle: &HandleId) -> impl Iterator<Item = ContentSpan<'_>> {
-        self.span_order_by_handle
-            .get(handle)
-            .into_iter()
-            .flat_map(move |ordered_keys| {
-                ordered_keys.iter().filter_map(move |ordered_key| {
-                    self.content_span(&ContentKey::new(
-                        &ordered_key.corpus,
-                        &ordered_key.source,
-                        handle.clone(),
-                        &ordered_key.span_id,
-                    ))
-                })
-            })
-    }
-
-    fn content_spans_for_handle_and_span<'a>(
-        &'a self,
-        handle: &'a HandleId,
-        span_id: &'a str,
-    ) -> impl Iterator<Item = ContentSpan<'a>> + 'a {
-        self.span_keys_by_handle_span
-            .get(&(handle.clone(), span_id.to_owned()))
-            .into_iter()
-            .flat_map(|keys| keys.iter().filter_map(|key| self.content_span(key)))
-    }
-
-    fn full_content_under_limit(
-        &self,
-        handle: &HandleId,
-        token_limit: i64,
-    ) -> Result<Option<ReadFullContent>, ReadError> {
-        let mut tokens = 0_i64;
-        let mut content = String::new();
-        for span in self.content_spans_for_handle(handle) {
-            tokens = tokens.saturating_add(span.content.tokens);
-            if tokens > token_limit {
-                return Err(ReadError::BudgetExceeded {
-                    handle: handle.clone(),
-                    tokens,
-                    limit: token_limit,
-                });
-            }
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(&span.content.text);
-        }
-        if content.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(ReadFullContent::new(handle.clone(), content, tokens)))
-        }
-    }
-}
-impl TupleContentIndex {
     fn from_tuples(tuples: &TupleDb) -> Self {
         let mut index = Self::default();
         tuples.for_each_tuple_row_id(CONTENT_RELATION, |row_id, row| {
@@ -1755,10 +1506,10 @@ impl TupleContentIndex {
         &'a self,
         tuples: &'a TupleDb,
         key: &'a ContentKey,
-    ) -> Option<TupleContentSpan<'a>> {
+    ) -> Option<ContentSpan<'a>> {
         let span = self.spans.get(key)?;
         let row = tuples.tuple_row(CONTENT_RELATION, *self.content_rows.get(key)?)?;
-        Some(TupleContentSpan {
+        Some(ContentSpan {
             key,
             text: row.string(TEXT_FIELD)?,
             tokens: row.i64(TOKENS_FIELD)?,
@@ -1771,7 +1522,7 @@ impl TupleContentIndex {
         tuples: &'a TupleDb,
         handle: &HandleId,
         ordered_key: &OrderedSpanKey,
-    ) -> Option<TupleContentSpan<'a>> {
+    ) -> Option<ContentSpan<'a>> {
         let lookup = ContentKey::new(
             &ordered_key.corpus,
             &ordered_key.source,
@@ -1786,7 +1537,7 @@ impl TupleContentIndex {
         &'a self,
         tuples: &'a TupleDb,
         handle: &'a HandleId,
-    ) -> Vec<TupleContentSpan<'a>> {
+    ) -> Vec<ContentSpan<'a>> {
         self.span_order_by_handle
             .get(handle)
             .into_iter()
@@ -1803,7 +1554,7 @@ impl TupleContentIndex {
         tuples: &'a TupleDb,
         handle: &'a HandleId,
         span_id: &'a str,
-    ) -> Vec<TupleContentSpan<'a>> {
+    ) -> Vec<ContentSpan<'a>> {
         self.span_keys_by_handle_span
             .get(&(handle.clone(), span_id.to_owned()))
             .into_iter()
@@ -1812,77 +1563,7 @@ impl TupleContentIndex {
     }
 }
 
-impl ContentProvider for ContentIndex {
-    fn read(
-        &self,
-        request: ReadRequest<'_>,
-        _ctx: &ReadContext<'_>,
-    ) -> Result<Vec<ReadChunk>, ReadError> {
-        if request.budget() < 0 {
-            return Ok(Vec::new());
-        }
-        if let Some(span_id) = request.span_id() {
-            return Ok(self
-                .content_spans_for_handle_and_span(request.handle(), span_id)
-                .filter_map(|span| read_chunk_with_budget(span, request.budget()))
-                .collect());
-        }
-        let mut used = 0_i64;
-        let mut out = Vec::new();
-        for span in self.content_spans_for_handle(request.handle()) {
-            let next = used.saturating_add(span.content.tokens);
-            if next > request.budget() {
-                if out.is_empty()
-                    && let Some(chunk) =
-                        read_chunk_with_budget(span, request.budget().saturating_sub(used))
-                {
-                    out.push(chunk);
-                }
-                break;
-            }
-            used = next;
-            out.push(read_chunk(span));
-        }
-        Ok(out)
-    }
-
-    fn read_full(
-        &self,
-        request: ReadFullRequest<'_>,
-        _ctx: &ReadContext<'_>,
-    ) -> Result<Option<ReadFullContent>, ReadError> {
-        self.full_content_under_limit(request.handle(), request.token_limit())
-    }
-}
-
 fn read_chunk(span: ContentSpan<'_>) -> ReadChunk {
-    ReadChunk::new(
-        span.key.handle.clone(),
-        &span.key.span_id,
-        span.content.text.clone(),
-        span.span.start_line,
-        span.span.end_line,
-        span.content.tokens,
-    )
-}
-
-fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
-    if budget <= 0 {
-        return None;
-    }
-    if span.content.tokens <= budget {
-        return Some(read_chunk(span));
-    }
-    Some(ReadChunk::new(
-        span.key.handle.clone(),
-        &span.key.span_id,
-        clip_text_to_budget(&span.content.text, budget),
-        span.span.start_line,
-        span.span.end_line,
-        budget,
-    ))
-}
-fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
     ReadChunk::new(
         span.key.handle.clone(),
         &span.key.span_id,
@@ -1892,12 +1573,12 @@ fn read_chunk_from_tuple(span: TupleContentSpan<'_>) -> ReadChunk {
         span.tokens,
     )
 }
-fn read_chunk_with_budget_from_tuple(span: TupleContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
+fn read_chunk_with_budget(span: ContentSpan<'_>, budget: i64) -> Option<ReadChunk> {
     if budget <= 0 {
         return None;
     }
     if span.tokens <= budget {
-        return Some(read_chunk_from_tuple(span));
+        return Some(read_chunk(span));
     }
     Some(ReadChunk::new(
         span.key.handle.clone(),
@@ -1997,88 +1678,6 @@ fn optional_string_constraint(constraints: &[(usize, Value)], position: usize) -
     }
 }
 
-fn insert_search_row(search: &mut SearchIndex, relation: &Ident, row: &NamedRow) {
-    match relation.as_str() {
-        HANDLE_RELATION => {
-            let (Some(corpus), Some(source), Some(handle)) = (
-                row_string(row, CORPUS_FIELD),
-                row_string(row, SOURCE_FIELD),
-                row_string(row, ID_FIELD),
-            ) else {
-                return;
-            };
-            let file = row_string(row, FILE_FIELD).unwrap_or(handle);
-            search.insert_handle(SearchHandleDocument {
-                corpus,
-                source,
-                handle,
-                file,
-                summary: row_string(row, SUMMARY_FIELD),
-                status: row_string(row, STATUS_FIELD),
-                namespace: row_string(row, NAMESPACE_FIELD),
-                area: row_string(row, AREA_FIELD),
-                kind: row_string(row, KIND_FIELD),
-            });
-        }
-        EDGE_RELATION => {
-            let (Some(corpus), Some(source), Some(from), Some(to), Some(kind)) = (
-                row_string(row, CORPUS_FIELD),
-                row_string(row, SOURCE_FIELD),
-                row_string(row, FROM_FIELD),
-                row_string(row, TO_FIELD),
-                row_string(row, KIND_FIELD),
-            ) else {
-                return;
-            };
-            search.insert_edge(corpus, source, from, to, kind);
-        }
-        META_RELATION => {
-            let (Some(corpus), Some(source), Some(handle), Some(key), Some(value)) = (
-                row_string(row, CORPUS_FIELD),
-                row_string(row, SOURCE_FIELD),
-                row_string(row, HANDLE_FIELD),
-                row_string(row, KEY_FIELD),
-                row_string(row, VALUE_FIELD),
-            ) else {
-                return;
-            };
-            search.insert_meta(corpus, source, handle, key, value);
-        }
-        CONFIG_RELATION => {
-            let (Some(key), Some(value)) =
-                (row_string(row, KEY_FIELD), row_string(row, VALUE_FIELD))
-            else {
-                return;
-            };
-            search.insert_config(key, value);
-        }
-        CONTENT_RELATION => {
-            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(text)) = (
-                row_string(row, CORPUS_FIELD),
-                row_string(row, SOURCE_FIELD),
-                row_string(row, HANDLE_FIELD),
-                row_string(row, SPAN_ID_FIELD),
-                row_string(row, TEXT_FIELD),
-            ) else {
-                return;
-            };
-            search.insert_content(corpus, source, handle, span_id, text);
-        }
-        SPAN_RELATION => {
-            let (Some(corpus), Some(source), Some(handle), Some(span_id), Some(summary)) = (
-                row_string(row, CORPUS_FIELD),
-                row_string(row, SOURCE_FIELD),
-                row_string(row, HANDLE_FIELD),
-                row_string(row, ID_FIELD),
-                row_string(row, SUMMARY_FIELD),
-            ) else {
-                return;
-            };
-            search.insert_span_summary(corpus, source, handle, span_id, summary);
-        }
-        _ => {}
-    }
-}
 fn insert_search_tuple_row(search: &mut SearchIndex, relation: &str, row: TupleRow<'_>) {
     match relation {
         HANDLE_RELATION => {
@@ -2220,72 +1819,6 @@ struct SnapshotStatus {
 }
 
 impl GraphIndex {
-    fn insert_row(&mut self, relation: &Ident, row: &NamedRow) {
-        match relation.as_str() {
-            HANDLE_RELATION => {
-                if let Some(id) = row_string(row, ID_FIELD) {
-                    self.insert_handle(
-                        id,
-                        HandleState {
-                            kind: row_string(row, KIND_FIELD).unwrap_or_default().to_owned(),
-                            status: row_string(row, STATUS_FIELD).map(str::to_owned),
-                            namespace: row_string(row, NAMESPACE_FIELD)
-                                .unwrap_or_default()
-                                .to_owned(),
-                            file: row_string(row, FILE_FIELD).unwrap_or_default().to_owned(),
-                            date: row_string(row, DATE_FIELD).and_then(iso_days_since_epoch),
-                        },
-                    );
-                }
-            }
-            EDGE_RELATION => {
-                let (Some(from), Some(to)) =
-                    (row_string(row, FROM_FIELD), row_string(row, TO_FIELD))
-                else {
-                    return;
-                };
-                self.insert_edge(from, to, row_string(row, KIND_FIELD));
-            }
-            CONFIG_RELATION => self.insert_config(row),
-            CONTENT_RELATION => {
-                let (Some(handle), Some(tokens)) =
-                    (row_string(row, HANDLE_FIELD), row_i64(row, TOKENS_FIELD))
-                else {
-                    return;
-                };
-                self.insert_content_tokens(handle, tokens);
-            }
-            SNAPSHOT_RELATION => {
-                let (Some(id), Some(key), Some(status), Some(at)) = (
-                    row_string(row, ID_FIELD),
-                    row_string(row, KEY_FIELD),
-                    row_string(row, VALUE_FIELD),
-                    row_string(row, AT_FIELD),
-                ) else {
-                    return;
-                };
-                let Some(day) = snapshot_days_since_epoch(at) else {
-                    return;
-                };
-                if key == STATUS_FIELD {
-                    self.insert_status_snapshot(
-                        id,
-                        SnapshotStatus {
-                            day,
-                            sort_at: at.to_owned(),
-                            status: status.to_owned(),
-                        },
-                    );
-                }
-            }
-            LINEAR_NAMESPACE_RELATION => {
-                if let Some(namespace) = row_string(row, NAMESPACE_FIELD) {
-                    self.linear_namespaces.insert(namespace.to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
     fn insert_tuple_row(&mut self, relation: &str, row: TupleRow<'_>) {
         match relation {
             HANDLE_RELATION => {
@@ -2446,14 +1979,6 @@ impl GraphIndex {
         }
     }
 
-    fn insert_config(&mut self, row: &NamedRow) {
-        let (Some(key), Some(value)) = (row_string(row, KEY_FIELD), row_string(row, VALUE_FIELD))
-        else {
-            return;
-        };
-        let ordinal = row_i64(row, ORDINAL_FIELD);
-        self.insert_config_values(key, value, ordinal);
-    }
     fn insert_config_tuple(&mut self, row: TupleRow<'_>) {
         let (Some(key), Some(value)) = (row.string(KEY_FIELD), row.string(VALUE_FIELD)) else {
             return;
@@ -3344,22 +2869,6 @@ enum DepthLimit {
     Impossible,
 }
 
-fn row_string<'a>(row: &'a NamedRow, field: &str) -> Option<&'a str> {
-    let field = Ident::new_unchecked(field);
-    let Some(Value::String(value)) = row.get(&field) else {
-        return None;
-    };
-    Some(value)
-}
-
-fn row_i64(row: &NamedRow, field: &str) -> Option<i64> {
-    let field = Ident::new_unchecked(field);
-    let Some(Value::Number(NumberValue::Int(value))) = row.get(&field) else {
-        return None;
-    };
-    Some(*value)
-}
-
 const LINEAR_NAMESPACE_RELATION: &str = "linear_namespace";
 const CORPUS_FIELD: &str = "corpus";
 const SOURCE_FIELD: &str = "source";
@@ -3460,34 +2969,6 @@ fn int_value(value: i64) -> Value {
 
 fn float_value(value: f64) -> Value {
     Value::Number(NumberValue::Float(value))
-}
-
-fn should_index_stored_field(relation: &Ident, field: &Ident) -> bool {
-    match (relation.as_str(), field.as_str()) {
-        (
-            TRAIL_RELATION,
-            SESSION_ID_FIELD
-            | STEP_FIELD
-            | ACTOR_FIELD
-            | CORPUS_FIELD
-            | VERB_FIELD
-            | TRAIL_VISIBILITY_FIELD,
-        )
-        | (
-            TRAIL_REF_RELATION,
-            SESSION_ID_FIELD | STEP_FIELD | KIND_FIELD | CORPUS_FIELD | SOURCE_FIELD | HANDLE_FIELD
-            | SPAN_ID_FIELD,
-        )
-        | (
-            TRAIL_GENERATION_RELATION,
-            SESSION_ID_FIELD | STEP_FIELD | CORPUS_FIELD | SOURCE_FIELD | GENERATION_FIELD,
-        ) => true,
-        (TRAIL_RELATION | TRAIL_REF_RELATION | TRAIL_GENERATION_RELATION, _)
-        | ("content", "text")
-        | ("span" | "handle", "summary")
-        | ("meta" | "config" | "snapshot", "value") => false,
-        _ => true,
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3878,35 +3359,6 @@ fn explain_field_visible(relation: &str, field: &str) -> bool {
         }
 }
 
-fn named_row(entries: impl IntoIterator<Item = (&'static str, Value)>) -> NamedRow {
-    entries
-        .into_iter()
-        .map(|(key, value)| (Ident::new_unchecked(key), value))
-        .collect()
-}
-
-#[cfg(test)]
-fn source_fact_row(
-    identity: &FactIdentity,
-    entries: impl IntoIterator<Item = (&'static str, Value)>,
-) -> NamedRow {
-    let mut row = identity_row(identity);
-    row.extend(named_row(entries));
-    row
-}
-
-#[cfg(test)]
-fn identity_row(identity: &FactIdentity) -> NamedRow {
-    named_row([
-        ("corpus", Value::String(identity.corpus.to_string())),
-        ("source", Value::String(identity.source.to_string())),
-        ("native_id", Value::String(identity.native_id.to_string())),
-        ("origin_uri", Value::String(identity.origin_uri.to_string())),
-        ("revision", Value::String(identity.revision.to_string())),
-        ("generation", generation_value(identity.generation)),
-    ])
-}
-
 fn opt_string(value: Option<&String>) -> Value {
     value.cloned().map_or(Value::Null, Value::String)
 }
@@ -3929,8 +3381,8 @@ fn score_value(score: Option<f32>) -> Value {
     })
 }
 
-fn trail_row(entry: &TrailEntryRedacted) -> NamedRow {
-    named_row([
+fn trail_fields(entry: &TrailEntryRedacted) -> [(&'static str, Value); 11] {
+    [
         ("session_id", Value::String(entry.session_id.to_string())),
         ("step", u64_value(entry.step)),
         ("timestamp", Value::String(entry.timestamp.clone())),
@@ -3945,16 +3397,16 @@ fn trail_row(entry: &TrailEntryRedacted) -> NamedRow {
             Value::String(entry.visibility.as_str().to_string()),
         ),
         ("retention", opt_string(entry.retention.as_ref())),
-    ])
+    ]
 }
 
-fn trail_ref_row(
+fn trail_ref_fields(
     entry: &TrailEntryRedacted,
     kind: TrailRefKind,
     ordinal: usize,
     reference: &TrailReference,
-) -> NamedRow {
-    named_row([
+) -> [(&'static str, Value); 9] {
+    [
         ("session_id", Value::String(entry.session_id.to_string())),
         ("step", u64_value(entry.step)),
         ("kind", Value::String(kind.as_str().to_string())),
@@ -3964,124 +3416,20 @@ fn trail_ref_row(
         ("handle", Value::String(reference.handle.to_string())),
         ("span_id", opt_string(reference.span_id.as_ref())),
         ("score", score_value(reference.score)),
-    ])
+    ]
 }
 
-fn trail_generation_row(entry: &TrailEntryRedacted, generation: &TrailGeneration) -> NamedRow {
-    named_row([
+fn trail_generation_fields(
+    entry: &TrailEntryRedacted,
+    generation: &TrailGeneration,
+) -> [(&'static str, Value); 5] {
+    [
         ("session_id", Value::String(entry.session_id.to_string())),
         ("step", u64_value(entry.step)),
         ("corpus", Value::String(generation.corpus.to_string())),
         ("source", Value::String(generation.source.to_string())),
         ("generation", generation_value(generation.generation)),
-    ])
-}
-
-#[cfg(test)]
-fn handle_row(fact: &HandleFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("id", Value::String(fact.id.to_string())),
-            ("kind", Value::String(fact.kind.clone())),
-            ("status", opt_string(fact.status.as_ref())),
-            ("namespace", Value::String(fact.namespace.clone())),
-            ("file", Value::String(fact.file.clone())),
-            (
-                "line",
-                Value::Number(NumberValue::Int(i64::from(fact.line))),
-            ),
-            ("date", opt_string(fact.date.as_ref())),
-            ("area", Value::String(fact.area.clone())),
-            ("summary", Value::String(fact.summary.clone())),
-        ],
-    )
-}
-
-#[cfg(test)]
-fn edge_row(fact: &EdgeFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("from", Value::String(fact.from.to_string())),
-            ("to", Value::String(fact.to.to_string())),
-            ("kind", Value::String(fact.kind.clone())),
-            ("file", Value::String(fact.file.clone())),
-            (
-                "line",
-                Value::Number(NumberValue::Int(i64::from(fact.line))),
-            ),
-            ("assertion_date", opt_string(fact.assertion_date.as_ref())),
-            (
-                "assertion_revision",
-                opt_string(fact.assertion_revision.as_ref()),
-            ),
-        ],
-    )
-}
-
-#[cfg(test)]
-fn meta_row(fact: &MetaFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("handle", Value::String(fact.handle.to_string())),
-            ("key", Value::String(fact.key.clone())),
-            ("value", Value::String(fact.value.clone())),
-            ("role", Value::String(fact.role.as_str().to_string())),
-        ],
-    )
-}
-
-#[cfg(test)]
-fn content_row(fact: &ContentFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("handle", Value::String(fact.handle.to_string())),
-            ("span_id", Value::String(fact.span_id.clone())),
-            (
-                "lines",
-                Value::Number(NumberValue::Int(i64::from(fact.lines))),
-            ),
-            ("text", Value::String(fact.text.clone())),
-            (
-                "tokens",
-                Value::Number(NumberValue::Int(i64::from(fact.tokens))),
-            ),
-        ],
-    )
-}
-
-#[cfg(test)]
-fn span_row(fact: &SpanFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("id", Value::String(fact.id.clone())),
-            ("handle", Value::String(fact.handle.to_string())),
-            (
-                "start_line",
-                Value::Number(NumberValue::Int(i64::from(fact.start_line))),
-            ),
-            (
-                "end_line",
-                Value::Number(NumberValue::Int(i64::from(fact.end_line))),
-            ),
-            ("summary", Value::String(fact.summary.clone())),
-        ],
-    )
-}
-
-#[cfg(test)]
-fn concern_row(fact: &ConcernFact) -> NamedRow {
-    source_fact_row(
-        &fact.identity,
-        [
-            ("name", Value::String(fact.name.clone())),
-            ("member", Value::String(fact.member.to_string())),
-        ],
-    )
+    ]
 }
 
 fn hidden_content_spans<F>(
@@ -4119,33 +3467,6 @@ fn hidden_content_span_count(
     spans_by_handle.values().map(BTreeSet::len).sum()
 }
 
-#[cfg(test)]
-fn config_row(fact: &ConfigFact) -> NamedRow {
-    named_row([
-        ("corpus", Value::String(fact.corpus.to_string())),
-        ("key", Value::String(fact.key.clone())),
-        ("value", Value::String(fact.value.clone())),
-        (
-            "ordinal",
-            fact.ordinal.map_or(Value::Null, |ordinal| {
-                Value::Number(NumberValue::Int(i64::from(ordinal)))
-            }),
-        ),
-    ])
-}
-
-#[cfg(test)]
-fn snapshot_row(fact: &SnapshotFact) -> NamedRow {
-    named_row([
-        ("corpus", Value::String(fact.corpus.to_string())),
-        ("snapshot", Value::String(fact.snapshot.clone())),
-        ("at", Value::String(fact.at.to_string())),
-        ("id", Value::String(fact.id.to_string())),
-        ("key", Value::String(fact.key.clone())),
-        ("value", Value::String(fact.value.clone())),
-    ])
-}
-
 fn generation_value(generation: Generation) -> Value {
     Value::Number(NumberValue::Int(
         i64::try_from(generation.get()).unwrap_or(i64::MAX),
@@ -4178,7 +3499,6 @@ mod tests {
         summarize_trail_session,
     };
     use crate::visibility::FactVisibility;
-    use crate::{facts::STORED_RELATION_DESCRIPTORS, vm::store::TupleDb};
 
     #[test]
     fn graph_index_config_inputs_are_declared_in_the_runtime_schema() {
@@ -4407,28 +3727,17 @@ mod tests {
                 ],
             )
             .expect("lifecycle config replace");
+        store
+            .replace_snapshots(
+                &CorpusId::from("test"),
+                vec![
+                    snapshot_fact("s1", "1970-01-01", "draft.md", "status", "raw"),
+                    snapshot_fact("s2", "1970-01-02", "draft.md", "status", "draft"),
+                ],
+            )
+            .expect("lifecycle snapshots replace");
 
-        let mut database = Database::from_store(&store);
-        database.insert_stored_rows(
-            "snapshot",
-            [
-                named_row([
-                    ("id", s("draft.md")),
-                    ("key", s("status")),
-                    ("value", s("raw")),
-                    ("at", s("1970-01-01")),
-                    ("corpus", s("test")),
-                ]),
-                named_row([
-                    ("id", s("draft.md")),
-                    ("key", s("status")),
-                    ("value", s("draft")),
-                    ("at", s("1970-01-02")),
-                    ("corpus", s("test")),
-                ]),
-            ],
-        );
-        database
+        Database::from_store(&store)
     }
 
     fn content_database() -> Database {
@@ -4583,161 +3892,6 @@ mod tests {
             .expect("visibility snapshot fixture");
         store
     }
-    #[test]
-    fn tuple_db_lowering_matches_named_database_rows() {
-        let mut batch = FactBatch::new(
-            CorpusId::from("test"),
-            SourceName::from("fixture"),
-            FactBatchMode::FullSnapshot,
-            Generation::initial(),
-        );
-        batch.handles = vec![
-            handle_with_summary(
-                "b.md",
-                "file",
-                "draft",
-                "",
-                "core",
-                "second handle sorts after a.md",
-            ),
-            handle_with_summary(
-                "a.md",
-                "file",
-                "stable",
-                "",
-                "core",
-                "first handle after canonicalization",
-            ),
-        ];
-        batch.edges = vec![edge("a.md", "b.md", "DependsOn")];
-        batch.meta = vec![meta("a.md", "external_class", "code")];
-        batch.content = vec![content_with_text("a.md", "body", "body text", 2)];
-        batch.spans = vec![span("a.md", "body", 3, 4)];
-        batch.concerns = vec![ConcernFact {
-            identity: identity("concern:C-core:a.md"),
-            name: "C-core".to_string(),
-            member: handle_id("a.md"),
-        }];
-
-        let mut store = FactStore::default();
-        store.merge(batch).expect("fixture merge");
-        store
-            .replace_configs(
-                &CorpusId::from("test"),
-                vec![
-                    ordered_config("convergence.ordering", "draft", 0),
-                    config("convergence.active", "draft"),
-                ],
-            )
-            .expect("config rows");
-        store
-            .replace_snapshots(
-                &CorpusId::from("test"),
-                vec![snapshot_fact("s1", "2026-06-02", "a.md", "status", "draft")],
-            )
-            .expect("snapshot rows");
-
-        let named = named_projection_database_from_store(&store);
-        let tuple = TupleDb::from_store_with_visibility(&store, |_| true);
-
-        let named_relations = named
-            .stored
-            .keys()
-            .map(ToString::to_string)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(tuple.relation_names(), named_relations);
-
-        for descriptor in STORED_RELATION_DESCRIPTORS {
-            let relation = Ident::new_unchecked(descriptor.name);
-            let expected = named
-                .stored
-                .get(&relation)
-                .expect("named relation exists")
-                .rows
-                .iter()
-                .map(named_row_to_string_map)
-                .collect::<Vec<_>>();
-            let actual = tuple.projected_rows(descriptor.name);
-            assert_eq!(
-                actual, expected,
-                "tuple lowering must preserve values and canonical row order for {}",
-                descriptor.name
-            );
-        }
-    }
-    fn named_row_to_string_map(row: &NamedRow) -> BTreeMap<String, Value> {
-        row.iter()
-            .map(|(field, value)| (field.to_string(), value.clone()))
-            .collect()
-    }
-    fn named_projection_database_from_store(store: &FactStore) -> Database {
-        let mut db = Database::default();
-        let hidden_handles = hidden_handles(store, &|_| true);
-        db.insert_named_rows("handle", store.handles().iter().map(handle_row));
-        db.insert_named_rows(
-            "edge",
-            store
-                .edges()
-                .iter()
-                .filter(|fact| {
-                    !hidden_handles.contains(&fact.from) && !hidden_handles.contains(&fact.to)
-                })
-                .map(edge_row),
-        );
-        db.insert_named_rows(
-            "meta",
-            store
-                .meta()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.handle))
-                .map(meta_row),
-        );
-        db.insert_named_rows(
-            "content",
-            store
-                .content()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.handle))
-                .map(content_row),
-        );
-        db.insert_named_rows(
-            "span",
-            store
-                .spans()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.handle))
-                .map(span_row),
-        );
-        db.insert_named_rows(
-            "concern",
-            store
-                .concerns()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.member))
-                .map(concern_row),
-        );
-        db.insert_named_rows("config", store.configs().iter().map(config_row));
-        db.insert_named_rows(
-            "snapshot",
-            store
-                .snapshots()
-                .iter()
-                .filter(|fact| !hidden_handles.contains(&fact.id))
-                .map(snapshot_row),
-        );
-        db.insert_named_rows(
-            "generation",
-            store.generations().iter().map(|row| {
-                named_row([
-                    ("corpus", Value::String(row.corpus.to_string())),
-                    ("source", Value::String(row.source.to_string())),
-                    ("current", generation_value(row.current)),
-                ])
-            }),
-        );
-        db
-    }
-
     fn restricted_actor() -> ActorContext {
         ActorContext {
             actor: "restricted".to_string(),
@@ -7514,26 +6668,6 @@ release_blocker(code) := issue(code, "error").
         assert_query_rows(&outputs[3], vec![row([("score", Value::Null)])]);
         assert_query_rows(&outputs[4], vec![row([("score", Value::Null)])]);
         assert_query_rows(&outputs[5], vec![row([("score", f(0.5))])]);
-    }
-
-    #[test]
-    fn trail_relations_index_only_queryable_identity_fields() {
-        assert!(should_index_stored_field(
-            &Ident::new_unchecked(TRAIL_RELATION),
-            &Ident::new_unchecked(SESSION_ID_FIELD),
-        ));
-        assert!(should_index_stored_field(
-            &Ident::new_unchecked(TRAIL_REF_RELATION),
-            &Ident::new_unchecked(HANDLE_FIELD),
-        ));
-        assert!(!should_index_stored_field(
-            &Ident::new_unchecked(TRAIL_RELATION),
-            &Ident::new_unchecked("redacted_expr"),
-        ));
-        assert!(!should_index_stored_field(
-            &Ident::new_unchecked(TRAIL_REF_RELATION),
-            &Ident::new_unchecked("score"),
-        ));
     }
 
     #[test]

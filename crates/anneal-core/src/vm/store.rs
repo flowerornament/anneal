@@ -1,8 +1,6 @@
 //! Tuple-backed relation storage for the physical runtime.
 
 use std::collections::BTreeMap;
-#[cfg(test)]
-use std::collections::BTreeSet;
 
 use crate::facts::{
     ConcernFact, ConfigFact, ContentFact, EdgeFact, FactIdentity, HandleFact, MetaFact,
@@ -314,7 +312,7 @@ impl TupleDb {
     pub(crate) fn insert_logical_row<'a>(
         &mut self,
         relation: &str,
-        fields: impl IntoIterator<Item = (&'a str, &'a Value)>,
+        fields: impl IntoIterator<Item = (&'a str, Value)>,
     ) -> LogicalRowInsert {
         let Some(relation_name) = self.interner.lookup(relation) else {
             return LogicalRowInsert::UnknownRelation;
@@ -331,7 +329,7 @@ impl TupleDb {
                 return LogicalRowInsert::UnknownField;
             };
             values[field.index()] =
-                PhysicalValue::from_logical(value, &mut self.interner, &mut self.lists);
+                PhysicalValue::from_logical(&value, &mut self.interner, &mut self.lists);
         }
         let store = self
             .relations
@@ -700,15 +698,6 @@ impl TupleDb {
             *slot = *value;
         }
         Some(Tuple::new(values))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn relation_names(&self) -> BTreeSet<String> {
-        self.relations
-            .keys()
-            .filter_map(|relation| self.schemas.relation(*relation))
-            .filter_map(|schema| self.interner.resolve(schema.name()).map(str::to_owned))
-            .collect()
     }
 
     #[cfg(test)]

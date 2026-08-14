@@ -1,8 +1,6 @@
 //! Runtime schema and predicate introspection.
 
-use crate::facts::STORED_RELATION_DESCRIPTORS;
 use crate::source::SourceInfo;
-use crate::trail::TRAIL_RELATION_DESCRIPTORS;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
 use super::eval::{Tuple, Value};
@@ -210,14 +208,6 @@ impl IntrospectionIndex {
         entries.sort();
         entries.into_iter().map(|entry| entry.tuple).collect()
     }
-}
-
-/// Returns whether a stored relation belongs to anneal's static schema authority.
-pub(crate) fn is_static_stored_relation(name: &str) -> bool {
-    STORED_RELATION_DESCRIPTORS
-        .iter()
-        .chain(TRAIL_RELATION_DESCRIPTORS)
-        .any(|relation| relation.name == name)
 }
 
 #[derive(Clone, Debug, Default)]

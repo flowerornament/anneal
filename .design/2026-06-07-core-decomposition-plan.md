@@ -193,6 +193,15 @@ scheduler (`vm/fixpoint`), and coordinator (`runtime/evaluator`) are separated;
 the executor owns its tests; param-sprawl, `Rank` recompute, and stale wording are
 cleaned. The §12 backend boundary held and is grep-evidenced at every step.
 
+**Tuple-authority checkpoint (2026-08-14):** the compatibility `NamedRow` store
+and its parallel content, graph, and search insertion paths are retired.
+`TupleDb` is the only stored-row authority, including optional trail relations;
+relation enablement retained for introspection is metadata, not a second row
+representation. `check-arch` rejects any reintroduction of `NamedRow`. The next
+separate seam is the misnamed `GraphIndex`: it is one primitive-oracle index,
+not independent graph/lifecycle/time stores, and should be extracted around
+that shared representation secret rather than split by subject.
+
 Remaining (deferred — own arcs, not blocking feature work):
 - `plan.rs` split (catalog/lower/stages/certificate/support — the second monolith);
 - residual type relocation (`Value`/`ExplainOptions`/`DbView` → boundary modules)

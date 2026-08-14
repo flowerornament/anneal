@@ -106,6 +106,20 @@ def check_vm_imports() -> None:
         fail("\n" + "\n".join(violations))
 
 
+def check_single_stored_row_representation() -> None:
+    violations = []
+    for path in sorted(CORE_SRC.rglob("*.rs")):
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            if re.search(r"\bNamedRow\b", line):
+                violations.append(
+                    f"{path.relative_to(ROOT)}:{line_number}: "
+                    "stored rows must use the tuple substrate"
+                )
+
+    if violations:
+        fail("\n" + "\n".join(violations))
+
+
 def cargo_metadata() -> dict:
     result = subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--no-deps"],
@@ -222,6 +236,7 @@ def check_core_facades() -> None:
 
 def main() -> None:
     check_vm_imports()
+    check_single_stored_row_representation()
     check_workspace_dag()
     check_core_facades()
     print("check-arch: ok")
