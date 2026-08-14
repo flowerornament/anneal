@@ -25,6 +25,7 @@ pub(crate) enum PrimitivePredicate {
     Flux,
     GitMtime,
     ChangedWithin,
+    RepositoryOperationCapability,
     TokenEstimate,
     Search,
     Read,
@@ -80,6 +81,7 @@ impl PrimitivePredicate {
         Self::Flux,
         Self::GitMtime,
         Self::ChangedWithin,
+        Self::RepositoryOperationCapability,
         Self::TokenEstimate,
         Self::Search,
         Self::Read,
@@ -120,6 +122,7 @@ impl PrimitivePredicate {
             "flux" => Some(Self::Flux),
             "git_mtime" => Some(Self::GitMtime),
             "changed_within" => Some(Self::ChangedWithin),
+            "repository_operation_capability" => Some(Self::RepositoryOperationCapability),
             "token_estimate" => Some(Self::TokenEstimate),
             "search" => Some(Self::Search),
             "read" => Some(Self::Read),
@@ -159,6 +162,7 @@ impl PrimitivePredicate {
             Self::Flux => "flux",
             Self::GitMtime => "git_mtime",
             Self::ChangedWithin => "changed_within",
+            Self::RepositoryOperationCapability => "repository_operation_capability",
             Self::TokenEstimate => "token_estimate",
             Self::Search => "search",
             Self::Read => "read",
@@ -231,6 +235,10 @@ impl PrimitivePredicate {
             },
             Self::GitMtime => PrimitiveSignature {
                 parameters: &["file", "instant"],
+                sealed: true,
+            },
+            Self::RepositoryOperationCapability => PrimitiveSignature {
+                parameters: &["operation", "availability", "provider", "reason"],
                 sealed: true,
             },
             Self::Search => PrimitiveSignature {
@@ -323,6 +331,7 @@ impl PrimitivePredicate {
             | Self::Flux
             | Self::GitMtime
             | Self::ChangedWithin
+            | Self::RepositoryOperationCapability
             | Self::TokenEstimate
             | Self::Search
             | Self::Read
@@ -393,6 +402,7 @@ impl PrimitivePredicate {
             | Self::Flux
             | Self::TokenEstimate
             | Self::GitMtime
+            | Self::RepositoryOperationCapability
             | Self::Schema
             | Self::Predicates
             | Self::Verbs

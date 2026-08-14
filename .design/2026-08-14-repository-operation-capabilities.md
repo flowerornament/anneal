@@ -94,8 +94,10 @@ repository_operation_capability(operation, availability, provider, reason)
 
 It emits one row for each of the four operations. `availability` is
 `available` or `unavailable`; `provider` is `git`, `jj`, or `none`. `reason`
-names the observed state, initially `direct-git-worktree`,
-`jj-history-not-implemented`, or `no-vcs-workspace`.
+names the observed state per operation. Direct Git uses
+`direct-git-worktree`; jj distinguishes unavailable change history, assertion
+blame, target history, and workspace index semantics; a non-VCS workspace uses
+`no-vcs-workspace`.
 
 This relation is the machine-readable distinction missing from the 0.25.1
 surfaces. An empty `git_mtime` relation no longer has to carry both "no files
@@ -127,6 +129,9 @@ The dash is unknown, never zero. The Diagnostics line uses `observed` rather
 than `total` while a diagnostic-producing capability is unavailable. The
 `check` adjacent-set hint likewise says `observed non-error diagnostic rows`
 and names W006 as unavailable; the error gate and exit status do not change.
+Convergence cells whose membership can move when W006 evidence appears
+(`blocked`, `open`, `holding`, and `drifting`) likewise render `-`; `broken`
+and snapshot-derived `advancing` retain their earned counts.
 
 An empty query that reaches `git_mtime` or `changed_within` replaces the generic
 zero-result adjacency with:

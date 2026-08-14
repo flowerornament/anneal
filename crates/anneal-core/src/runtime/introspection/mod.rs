@@ -188,6 +188,7 @@ impl IntrospectionIndex {
             | PrimitivePredicate::Flux
             | PrimitivePredicate::GitMtime
             | PrimitivePredicate::ChangedWithin
+            | PrimitivePredicate::RepositoryOperationCapability
             | PrimitivePredicate::TokenEstimate
             | PrimitivePredicate::Search
             | PrimitivePredicate::Read

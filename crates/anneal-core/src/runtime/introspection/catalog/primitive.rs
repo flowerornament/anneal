@@ -72,6 +72,9 @@ pub(in crate::runtime::introspection) fn primitive_doc(
         PrimitivePredicate::ChangedWithin => {
             "Return handles whose backing file changed within a bound number of days according to git history."
         }
+        PrimitivePredicate::RepositoryOperationCapability => {
+            "Report whether this workspace can answer each repository-backed operation, with its provider and reason."
+        }
         PrimitivePredicate::TokenEstimate => {
             "Return the estimated number of stored content tokens for a handle."
         }
@@ -145,6 +148,7 @@ pub(in crate::runtime::introspection) fn primitive_requires(
         | PrimitivePredicate::OutDegree
         | PrimitivePredicate::DischargeCount
         | PrimitivePredicate::Freshness
+        | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::Search
         | PrimitivePredicate::Read
@@ -175,6 +179,9 @@ pub(in crate::runtime::introspection) fn primitive_relationship(
         PrimitivePredicate::GitMtime => Some(
             "Raw git timestamp primitive used by `changed_within`; compose it directly when you need exact commit times. Bulk commits can make this a degraded change oracle, so it is not authored age.",
         ),
+        PrimitivePredicate::RepositoryOperationCapability => Some(
+            "This is concrete workspace availability, not actor permission or a promise that an available operation has result rows.",
+        ),
         PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
         PrimitivePredicate::Verbs => {
             Some("Use `schema` for the verb catalog and `describe NAME` for a verb teaching card.")
@@ -204,7 +211,10 @@ pub(in crate::runtime::introspection) fn primitive_see_also(
         PrimitivePredicate::Describe => &["schema", "examples"],
         PrimitivePredicate::Examples => &["describe", "schema"],
         PrimitivePredicate::GitMtime | PrimitivePredicate::ChangedWithin => {
-            &["*handle", "freshness"]
+            &["*handle", "freshness", "repository_operation_capability"]
+        }
+        PrimitivePredicate::RepositoryOperationCapability => {
+            &["git_mtime", "changed_within", "spec_code_drift", "*edge"]
         }
         PrimitivePredicate::Upstream
         | PrimitivePredicate::Downstream
@@ -257,6 +267,9 @@ pub(in crate::runtime::introspection) fn primitive_example(
         PrimitivePredicate::Examples => Some(r#"? examples("search", example)."#),
         PrimitivePredicate::GitMtime => Some("? git_mtime(file, instant)."),
         PrimitivePredicate::ChangedWithin => Some("? changed_within(h, 7)."),
+        PrimitivePredicate::RepositoryOperationCapability => {
+            Some("? repository_operation_capability(operation, availability, provider, reason).")
+        }
         PrimitivePredicate::Terminal
         | PrimitivePredicate::Active
         | PrimitivePredicate::Settled

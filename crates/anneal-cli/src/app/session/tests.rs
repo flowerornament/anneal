@@ -57,6 +57,131 @@ fn check_gate_roots_are_structurally_protected_from_project_shadowing() {
 }
 
 #[test]
+fn jj_workspace_projects_repository_capabilities_and_teaches_missing_evidence() {
+    let dir = tempdir().expect("tempdir");
+    let ancestor = Utf8PathBuf::from_path_buf(dir.path().join("ancestor")).expect("utf8 tempdir");
+    let root = ancestor.join("desk/.design");
+    fs::create_dir_all(root.parent().expect("desk parent").join(".jj")).expect("create jj marker");
+    fs::create_dir_all(&root).expect("create corpus root");
+    git(&ancestor, &["init"]);
+    fs::write(
+        root.join("anneal.dl"),
+        r#"config frontmatter { field("references", "Cites", "forward"). }"#,
+    )
+    .expect("write project rules");
+    fs::write(root.join("a.md"), "---\nreferences: b.md\n---\n# A\n").expect("write source");
+    fs::write(root.join("b.md"), "# B\n").expect("write target");
+
+    let session = RuntimeSession::load_for_test(&root).expect("session loads");
+    let capabilities = session
+        .run(RuntimeCommand::Eval {
+            query: "? repository_operation_capability(operation, availability, provider, reason)."
+                .to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        })
+        .expect("capability query runs");
+    let CommandOutput::Rows { rows, .. } = capabilities else {
+        panic!("capability query should emit rows");
+    };
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| {
+        required_string(row, "availability").is_ok_and(|value| value == "unavailable")
+            && required_string(row, "provider").is_ok_and(|value| value == "jj")
+    }));
+    let operation_reasons = rows
+        .iter()
+        .map(|row| {
+            (
+                required_string(row, "operation")
+                    .expect("operation")
+                    .to_string(),
+                required_string(row, "reason").expect("reason").to_string(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        operation_reasons,
+        BTreeSet::from([
+            (
+                "assertion_blame".to_string(),
+                "jj-assertion-blame-not-implemented".to_string(),
+            ),
+            (
+                "change_history".to_string(),
+                "jj-change-history-not-implemented".to_string(),
+            ),
+            (
+                "ignore_index".to_string(),
+                "jj-workspace-index-unavailable".to_string(),
+            ),
+            (
+                "target_history".to_string(),
+                "jj-target-history-not-implemented".to_string(),
+            ),
+        ])
+    );
+
+    let history = session
+        .run(RuntimeCommand::Eval {
+            query: "? git_mtime(file, instant).".to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        })
+        .expect("history query runs");
+    let CommandOutput::Rows {
+        rows,
+        zero_result_hint,
+        ..
+    } = history
+    else {
+        panic!("history query should emit rows");
+    };
+    assert!(rows.is_empty());
+    assert_eq!(
+        zero_result_hint.as_deref(),
+        Some(
+            "hint: Git change history is unavailable in this jj workspace; query `repository_operation_capability` for runtime availability."
+        )
+    );
+
+    let assertions = session
+        .run(RuntimeCommand::Eval {
+            query: "? *edge{assertion_date: date, assertion_revision: revision}.".to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        })
+        .expect("assertion query runs");
+    let CommandOutput::Rows { rows, warnings, .. } = assertions else {
+        panic!("assertion query should emit rows");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].fields.get("date"),
+        Some(&anneal_core::runtime::Value::Null)
+    );
+    assert_eq!(
+        rows[0].fields.get("revision"),
+        Some(&anneal_core::runtime::Value::Null)
+    );
+    assert_eq!(
+        warnings,
+        vec!["hint: assertion provenance is unavailable in this jj workspace; null fields may mean unavailable provenance or no per-edge assertion evidence. Query `repository_operation_capability`.".to_string()]
+    );
+
+    let check = session.run_check_gate().expect("check runs");
+    let CommandOutput::Rows {
+        zero_result_hint, ..
+    } = check
+    else {
+        panic!("check should emit rows");
+    };
+    assert!(zero_result_hint.as_deref().is_some_and(|hint| {
+        hint.contains("observed non-error diagnostic rows; W006 is unavailable")
+    }));
+}
+
+#[test]
 fn project_discovery_facts_affect_markdown_extraction() {
     let dir = tempdir().expect("tempdir");
     let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");

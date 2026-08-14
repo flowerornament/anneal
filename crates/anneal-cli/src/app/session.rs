@@ -31,14 +31,14 @@ use crate::{ContextCommand, DescribeCommand, ReadCommand, SearchCommand};
 use super::command::{DynamicVerbInvocation, RuntimeCommand, render_dynamic_verb_query};
 use super::navigation::{handle_impact_rows, handle_lineage_rows};
 use super::output::{
-    CommandOutput, RankedAnchorEnrichment, RankedAnchorSignal, RowView, StatusOutput,
-    partition_check_diagnostics, render_dynamic_verb_help, required_string,
+    CommandOutput, RankedAnchorEnrichment, RankedAnchorSignal, RepositoryDisclosure, RowView,
+    StatusOutput, partition_check_diagnostics, render_dynamic_verb_help, required_string,
     search_zero_result_hint,
 };
 use super::query_guidance::{
-    authored_age_days, currency_disposition, empty_binding_example, ranked_anchor_handle_field,
-    retired_section_kind_warning, warning_applies_to_query, warning_texts,
-    zero_result_hint_for_query,
+    authored_age_days, currency_disposition, empty_binding_example, query_demands_change_history,
+    query_demands_edge_assertions, ranked_anchor_handle_field, retired_section_kind_warning,
+    warning_applies_to_query, warning_texts, zero_result_hint_for_query,
 };
 
 #[cfg(test)]
@@ -145,6 +145,7 @@ pub(super) struct RuntimeSession {
     sources: Vec<SourceInfo>,
     prelude_hash: String,
     git_mtimes: BTreeMap<String, String>,
+    repository: RepositoryContext,
 }
 
 struct CurrencyHitAnnotation {
@@ -373,6 +374,7 @@ impl RuntimeSession {
             sources,
             prelude_hash: loaded_prelude.set().hash().to_string(),
             git_mtimes,
+            repository,
         })
     }
 
@@ -488,18 +490,24 @@ impl RuntimeSession {
                     output.rows.truncate(limit);
                 }
                 let empty_binding_hint = self.empty_binding_hint_for_query(&query, &output.rows);
-                let zero_result_hint = zero_result_hint_for_query(&query, &output.rows);
+                let zero_result_hint = self.repository_zero_result_hint(
+                    &query,
+                    &output.rows,
+                    zero_result_hint_for_query(&query, &output.rows),
+                );
                 let ranked_anchor = self.ranked_anchor_enrichment(&query, &output.rows)?;
                 let view = ranked_anchor.as_ref().map_or(RowView::Eval, |enrichment| {
                     RowView::RankedAnchor {
                         handle_field: enrichment.handle_field.clone(),
                     }
                 });
+                let mut warnings = warning_texts(&output.warnings);
+                warnings.extend(self.repository_query_warnings(&query));
                 Ok(CommandOutput::rows_with_ranked_anchor_enrichment(
                     output.rows,
                     view,
                     empty_binding_hint,
-                    warning_texts(&output.warnings),
+                    warnings,
                     ranked_anchor,
                 )
                 .with_zero_result_hint(zero_result_hint))
@@ -572,8 +580,14 @@ impl RuntimeSession {
         let zero_result_hint = if gate_failed {
             None
         } else {
+            let observed =
+                if self.repository_operation_unavailable(RepositoryOperation::TargetHistory) {
+                    "observed non-error diagnostic rows; W006 is unavailable"
+                } else {
+                    "non-error diagnostic rows"
+                };
             Some(format!(
-                "hint: check filters to error severity; {non_error_count} non-error diagnostic rows remain. Run `anneal -e '{CHECK_DIAGNOSTIC_QUERY}'`"
+                "hint: check filters to error severity; {non_error_count} {observed} remain. Run `anneal -e '{CHECK_DIAGNOSTIC_QUERY}'`"
             ))
         };
         Ok(
@@ -621,13 +635,17 @@ impl RuntimeSession {
                 handle_field: enrichment.handle_field.clone(),
             },
         );
+        let mut warnings = warning_texts(&output.warnings);
+        warnings.extend(self.repository_query_warnings(&query));
+        let zero_result_hint = self.repository_zero_result_hint(&query, &output.rows, None);
         Ok(CommandOutput::rows_with_ranked_anchor_enrichment(
             output.rows,
             view,
             empty_binding_hint,
-            warning_texts(&output.warnings),
+            warnings,
             ranked_anchor,
-        ))
+        )
+        .with_zero_result_hint(zero_result_hint))
     }
 
     /// Evaluates and renders the built-in status plan.
@@ -649,6 +667,7 @@ impl RuntimeSession {
         Ok(CommandOutput::Status(StatusOutput {
             rows: output.rows,
             flow_baseline_ready,
+            repository: RepositoryDisclosure::from_context(&self.repository),
         }))
     }
 }
@@ -705,11 +724,43 @@ impl RuntimeSession {
         view: RowView,
     ) -> Result<CommandOutput> {
         let output = self.eval(query, explain)?;
+        let mut warnings = warning_texts(&output.warnings);
+        warnings.extend(self.repository_query_warnings(query));
         Ok(CommandOutput::rows_with_warnings(
             output.rows,
             view,
-            warning_texts(&output.warnings),
+            warnings,
         ))
+    }
+
+    fn repository_query_warnings(&self, query: &str) -> Vec<String> {
+        if self.repository_operation_unavailable(RepositoryOperation::AssertionBlame)
+            && query_demands_edge_assertions(query)
+        {
+            vec!["hint: assertion provenance is unavailable in this jj workspace; null fields may mean unavailable provenance or no per-edge assertion evidence. Query `repository_operation_capability`.".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn repository_zero_result_hint(
+        &self,
+        query: &str,
+        rows: &[Row],
+        fallback: Option<String>,
+    ) -> Option<String> {
+        if rows.is_empty()
+            && self.repository_operation_unavailable(RepositoryOperation::ChangeHistory)
+            && query_demands_change_history(query)
+        {
+            Some("hint: Git change history is unavailable in this jj workspace; query `repository_operation_capability` for runtime availability.".to_string())
+        } else {
+            fallback
+        }
+    }
+
+    fn repository_operation_unavailable(&self, operation: RepositoryOperation) -> bool {
+        self.repository.is_jj_workspace() && !self.repository.operation_available(operation)
     }
 
     fn annotate_search_rows(&self, rows: &mut [Row]) {
@@ -880,7 +931,8 @@ impl RuntimeSession {
         }
         let database = Database::from_store_for_options(&self.store, &options)
             .with_sources(self.sources.clone())
-            .with_git_mtimes(self.git_mtimes.clone());
+            .with_git_mtimes(self.git_mtimes.clone())
+            .with_repository_context(self.repository.clone());
         let mut evaluator = Evaluator::with_options(analyzed, database, options);
         evaluator
             .run_fixpoint_for_query(&query)

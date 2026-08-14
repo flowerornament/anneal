@@ -3308,6 +3308,13 @@ Filesystem provenance has three coordinates that MUST NOT be collapsed:
    existing blame and revision capability. A jj added workspace does not gain
    Git history semantics merely because its backing store is Git-backed.
 
+The sealed
+`repository_operation_capability(operation, availability, provider, reason)`
+relation projects concrete workspace availability independently for change
+history, assertion blame, target history, and ignore-index classification.
+Unavailable operations yield no derived evidence and surfaces MUST distinguish
+that state from an earned empty population or zero count.
+
 For a jj added workspace, containment and external handle keying use the desk
 boundary, while the resolved Git directory is backing evidence only. This
 keeps logical handle ids byte-identical between the desk and its colocated

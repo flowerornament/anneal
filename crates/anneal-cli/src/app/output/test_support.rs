@@ -4,7 +4,7 @@ use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::{Row, Value};
 
 use super::value::{required_number, required_string};
-use super::{CommandOutput, StatusOutput};
+use super::{CommandOutput, RepositoryDisclosure, StatusOutput};
 
 pub(super) fn row(fields: &[(&str, Value)]) -> Row {
     Row {
@@ -27,6 +27,7 @@ pub(super) fn status_output_with_baseline(
     CommandOutput::Status(StatusOutput {
         rows,
         flow_baseline_ready,
+        repository: RepositoryDisclosure::direct_git(),
     })
 }
 

@@ -14,6 +14,8 @@ use crate::app::output::test_support::{
 use crate::app::output::value::required_string;
 use crate::app::session::RuntimeSession;
 
+use super::RepositoryDisclosure;
+
 #[test]
 fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     let output = status_output(vec![
@@ -87,6 +89,56 @@ fn status_human_render_shows_aggregate_dashboard_and_pointers() {
     assert!(rendered.contains("diagnostic{code: code, severity: severity"));
     assert!(!rendered.contains("bad.md"));
     assert_dashboard_summary_separator_contract(&rendered);
+}
+
+#[test]
+fn jj_status_names_unavailable_repository_operations_without_false_zeros() {
+    let output = CommandOutput::Status(super::StatusOutput {
+        rows: vec![
+            status_metric("scale", "handles", 1),
+            status_metric("scale", "file_handles", 1),
+            status_metric("scale", "file_handles_with_status", 0),
+            status_metric("scale", "statusless_file_handles", 1),
+            status_metric("health", "errors", 0),
+            status_metric("health", "blockers", 0),
+            status_metric("health", "spec_code_drift", 0),
+            status_metric("diagnostics", "total", 1),
+            status_metric("diagnostics", "error", 0),
+            status_metric("diagnostics", "warning", 1),
+            status_metric("diagnostics", "suggestion", 0),
+            status_metric("diagnostics", "info", 0),
+        ],
+        flow_baseline_ready: true,
+        repository: RepositoryDisclosure {
+            jj_workspace: true,
+            target_history_available: false,
+            ignore_index_available: false,
+        },
+    });
+    let mut rendered = Vec::new();
+
+    output
+        .write(&mut rendered, OutputMode::Human)
+        .expect("render jj status");
+    let rendered = String::from_utf8(rendered).expect("utf8");
+
+    assert!(rendered.contains("Scope        Git ignore-index classification unavailable"));
+    assert!(rendered.contains(
+        "History      jj workspace, Git-derived recency, W006, and assertion provenance unavailable"
+    ));
+    assert!(
+        rendered.contains(
+            "Convergence  broken=0, blocked=-, open=-, advancing=0, holding=-, drifting=-"
+        )
+    );
+    assert!(
+        rendered.contains(
+            "Health       errors=0, blockers=0, spec_code_drift=- distinct source handles"
+        )
+    );
+    assert!(rendered.contains("Diagnostics  1 observed, 0 error, 1 warning, 0 suggestion, 0 info"));
+    assert!(!rendered.contains("spec_code_drift=0"));
+    assert!(!rendered.contains("holding=0"));
 }
 
 #[test]

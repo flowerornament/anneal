@@ -4,6 +4,16 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- jj added workspaces no longer inherit Git history, blame, or ignore-index
+  answers from an unrelated ancestor repository. Status and query guidance name
+  unavailable Git-derived recency, W006, assertion provenance, and ignore-index
+  classification instead of rendering false zeros, unearned convergence-flow
+  counts, ambiguous nulls, or false `gitignored_scanned_file` rows. The sealed
+  `repository_operation_capability` relation reports availability per operation;
+  real jj history semantics remain deferred.
+
 ### Changed
 
 - Drift-evidence cache validation uses one batched Git process rather than one

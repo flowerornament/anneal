@@ -14,12 +14,45 @@ pub enum RepositoryOperation {
 }
 
 impl RepositoryOperation {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::ChangeHistory,
+        Self::AssertionBlame,
+        Self::TargetHistory,
+        Self::IgnoreIndex,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChangeHistory => "change_history",
+            Self::AssertionBlame => "assertion_blame",
+            Self::TargetHistory => "target_history",
+            Self::IgnoreIndex => "ignore_index",
+        }
+    }
+
     const fn index(self) -> usize {
         match self {
             Self::ChangeHistory => 0,
             Self::AssertionBlame => 1,
             Self::TargetHistory => 2,
             Self::IgnoreIndex => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepositoryProvider {
+    Git,
+    Jj,
+    None,
+}
+
+impl RepositoryProvider {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Git => "git",
+            Self::Jj => "jj",
+            Self::None => "none",
         }
     }
 }
@@ -32,6 +65,13 @@ pub(crate) enum RepositoryAvailability {
 }
 
 impl RepositoryAvailability {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
     pub(crate) const fn is_available(self) -> bool {
         matches!(self, Self::Available)
     }
@@ -45,7 +85,9 @@ impl RepositoryAvailability {
 pub struct RepositoryContext {
     discovery_root: Utf8PathBuf,
     direct_git_root: Option<Utf8PathBuf>,
+    provider: RepositoryProvider,
     availability: [RepositoryAvailability; 4],
+    reasons: [&'static str; 4],
 }
 
 impl RepositoryContext {
@@ -68,26 +110,64 @@ impl RepositoryContext {
                 return Self {
                     discovery_root,
                     direct_git_root,
+                    provider: RepositoryProvider::Git,
                     availability,
+                    reasons: [if availability[0].is_available() {
+                        "direct-git-worktree"
+                    } else {
+                        "git-worktree-unavailable"
+                    }; 4],
                 };
             }
             if boundary.join(".jj").exists() {
                 return Self {
                     discovery_root,
                     direct_git_root: None,
+                    provider: RepositoryProvider::Jj,
                     availability: [RepositoryAvailability::Unavailable; 4],
+                    reasons: [
+                        "jj-change-history-not-implemented",
+                        "jj-assertion-blame-not-implemented",
+                        "jj-target-history-not-implemented",
+                        "jj-workspace-index-unavailable",
+                    ],
                 };
             }
         }
         Self {
             discovery_root,
             direct_git_root: None,
+            provider: RepositoryProvider::None,
             availability: [RepositoryAvailability::Unavailable; 4],
+            reasons: ["no-vcs-workspace"; 4],
         }
     }
 
     pub(crate) const fn is_available(&self, operation: RepositoryOperation) -> bool {
         self.availability[operation.index()].is_available()
+    }
+
+    pub(crate) fn capability_rows(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &'static str, &'static str, &'static str)> + '_ {
+        RepositoryOperation::ALL.into_iter().map(|operation| {
+            (
+                operation.as_str(),
+                self.availability[operation.index()].as_str(),
+                self.provider.as_str(),
+                self.reasons[operation.index()],
+            )
+        })
+    }
+
+    /// Whether the nearest VCS boundary is a jj-only added workspace.
+    pub const fn is_jj_workspace(&self) -> bool {
+        matches!(self.provider, RepositoryProvider::Jj)
+    }
+
+    /// Whether one operation is available in this concrete workspace.
+    pub const fn operation_available(&self, operation: RepositoryOperation) -> bool {
+        self.is_available(operation)
     }
 
     /// Whether this context was discovered for this extraction root.

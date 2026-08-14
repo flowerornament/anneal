@@ -5,6 +5,7 @@ use std::io::Write;
 
 use anneal_core::runtime::NumberValue;
 use anneal_core::runtime::Row;
+use anneal_core::{RepositoryContext, RepositoryOperation};
 use anyhow::Result;
 
 use super::EMPTY_ROWS_DIAGNOSTIC;
@@ -19,6 +20,34 @@ mod tests;
 pub(in crate::app) struct StatusOutput {
     pub(in crate::app) rows: Vec<Row>,
     pub(in crate::app) flow_baseline_ready: bool,
+    pub(in crate::app) repository: RepositoryDisclosure,
+}
+
+/// Consequence-scoped repository availability for the human dashboard.
+pub(in crate::app) struct RepositoryDisclosure {
+    jj_workspace: bool,
+    target_history_available: bool,
+    ignore_index_available: bool,
+}
+
+impl RepositoryDisclosure {
+    pub(in crate::app) fn from_context(context: &RepositoryContext) -> Self {
+        Self {
+            jj_workspace: context.is_jj_workspace(),
+            target_history_available: context
+                .operation_available(RepositoryOperation::TargetHistory),
+            ignore_index_available: context.operation_available(RepositoryOperation::IgnoreIndex),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) const fn direct_git() -> Self {
+        Self {
+            jj_workspace: false,
+            target_history_available: true,
+            ignore_index_available: true,
+        }
+    }
 }
 
 /// Render the complete human status dashboard from one evaluated row set.
@@ -26,6 +55,7 @@ pub(super) fn write_status_text<W: Write>(
     mut writer: W,
     rows: &[Row],
     flow_baseline_ready: bool,
+    repository: &RepositoryDisclosure,
 ) -> Result<()> {
     writeln!(writer, "Status")?;
     if rows.is_empty() {
@@ -62,7 +92,12 @@ pub(super) fn write_status_text<W: Write>(
         "Scale        {total_handles} handles, {file_handles} files, {coverage}% lifecycle coverage ({statusless_files} statusless files)"
     )?;
     let gitignored_files = metric_count(&metrics, "scope", "gitignored_markdown_file_handles");
-    if gitignored_files > 0 {
+    if repository.jj_workspace && !repository.ignore_index_available {
+        writeln!(
+            writer,
+            "Scope        Git ignore-index classification unavailable"
+        )?;
+    } else if gitignored_files > 0 {
         let unit = if gitignored_files == 1 {
             "file handle"
         } else {
@@ -83,6 +118,12 @@ pub(super) fn write_status_text<W: Write>(
         writer,
         "Coverage     {coverage}% of file handles carry lifecycle status; orientation is graph+recency-led"
     )?;
+    if repository.jj_workspace && !repository.target_history_available {
+        writeln!(
+            writer,
+            "History      jj workspace, Git-derived recency, W006, and assertion provenance unavailable"
+        )?;
+    }
 
     if !pipeline.is_empty() {
         pipeline.sort_by(|left, right| left.name.cmp(right.name));
@@ -94,7 +135,14 @@ pub(super) fn write_status_text<W: Write>(
         writeln!(writer, "Pipeline     {parts}")?;
     }
 
-    if flow_baseline_ready {
+    if repository.jj_workspace && !repository.target_history_available {
+        writeln!(
+            writer,
+            "Convergence  broken={}, blocked=-, open=-, advancing={}, holding=-, drifting=-",
+            metric_count(&metrics, "convergence", "broken"),
+            metric_count(&metrics, "convergence", "advancing")
+        )?;
+    } else if flow_baseline_ready {
         writeln!(
             writer,
             "Convergence  broken={}, blocked={}, open={}, advancing={}, holding={}, drifting={}",
@@ -120,16 +168,25 @@ pub(super) fn write_status_text<W: Write>(
         writeln!(writer, "      Run `anneal status` again to populate.")?;
     }
 
+    let drift_count = if repository.jj_workspace && !repository.target_history_available {
+        "-".to_string()
+    } else {
+        metric_count(&metrics, "health", "spec_code_drift").to_string()
+    };
     writeln!(
         writer,
-        "Health       errors={}, blockers={}, spec_code_drift={} distinct source handles",
+        "Health       errors={}, blockers={}, spec_code_drift={drift_count} distinct source handles",
         metric_count(&metrics, "health", "errors"),
-        metric_count(&metrics, "health", "blockers"),
-        metric_count(&metrics, "health", "spec_code_drift")
+        metric_count(&metrics, "health", "blockers")
     )?;
+    let diagnostic_extent = if repository.jj_workspace && !repository.target_history_available {
+        "observed"
+    } else {
+        "total"
+    };
     writeln!(
         writer,
-        "Diagnostics  {} total, {} error, {} warning, {} suggestion, {} info",
+        "Diagnostics  {} {diagnostic_extent}, {} error, {} warning, {} suggestion, {} info",
         metric_count(&metrics, "diagnostics", "total"),
         metric_count(&metrics, "diagnostics", "error"),
         metric_count(&metrics, "diagnostics", "warning"),

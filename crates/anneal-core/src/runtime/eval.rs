@@ -37,6 +37,7 @@ use crate::ranking::{
     DEFAULT_LOW_CONFIDENCE_THRESHOLD, DefaultRanker, Ranker, RankingContext, SearchHandleDocument,
     SearchIndex, SearchQuery, rank_search_hits,
 };
+use crate::repository::RepositoryContext;
 use crate::retrieval::{
     ContentProvider, ReadChunk, ReadContext, ReadError, ReadFullContent, ReadFullRequest,
     ReadRequest, SearchContext, SearchError, SearchProvider, SearchRequest, SearchSpanScope,
@@ -548,6 +549,13 @@ impl Database {
         Arc::make_mut(&mut self.primitive_index).apply_context(PrimitiveIndexContext::GitMtimes(
             mtimes.into_iter().collect(),
         ));
+        self
+    }
+
+    #[must_use]
+    pub fn with_repository_context(mut self, repository: RepositoryContext) -> Self {
+        Arc::make_mut(&mut self.primitive_index)
+            .apply_context(PrimitiveIndexContext::Repository(repository));
         self
     }
 
@@ -2125,6 +2133,7 @@ fn primitive_tuples(
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
         | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate => {
             Ok(database.primitive_index.tuples(primitive, constraints))
         }

@@ -266,6 +266,13 @@ pub(super) fn query_demands_edge_assertions(query: &str) -> bool {
         .any(|needle| query_contains_identifier(query, needle))
 }
 
+/// Detect Git change-history primitives without accepting identifier substrings.
+pub(super) fn query_demands_change_history(query: &str) -> bool {
+    ["git_mtime", "changed_within"]
+        .iter()
+        .any(|needle| query_contains_identifier(query, needle))
+}
+
 fn query_contains_identifier(query: &str, needle: &str) -> bool {
     let mut start = 0;
     while let Some(offset) = query[start..].find(needle) {

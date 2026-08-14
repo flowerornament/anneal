@@ -154,7 +154,7 @@ fn predicate_requires(name: &str, family: Option<PredicateFamily>) -> &'static [
             "snapshot history and configured lifecycle ordering. On a corpus with no snapshots, these predicates return no rows.",
         ],
         "recent_frontier" => &[
-            "date-backed authored_age is the dominant clock, with git-backed changed_recently only as a coarse lower-authority no-date fallback. Terminal and superseded files are excluded; statusless files remain eligible.",
+            "date-backed authored_age is the dominant clock, with git-backed changed_recently only as a coarse lower-authority no-date fallback when repository_operation_capability reports change_history available. Terminal and superseded files are excluded; statusless files remain eligible.",
         ],
         "anchor" => &[
             "file handles plus authority, curated-name, incoming-edge, and weak recency signals. Terminal files need an explicit authoritative-style status to remain eligible.",
@@ -188,7 +188,7 @@ fn predicate_relationship(name: &str, family: Option<PredicateFamily>) -> Option
             "Canonical global convergence frontier; paired with `area_frontier` for area-scoped work.",
         ),
         "recent_frontier" => Some(
-            "Goal-less orientation frontier: date-backed authored-recent files a cold agent should inspect first, with only coarse lower-authority git change bands for undated files. Unlike `frontier`, this is about reading orientation, not potential work energy.",
+            "Goal-less orientation frontier: date-backed authored-recent files a cold agent should inspect first, with coarse lower-authority git change bands for undated files only when change_history is available. Unlike `frontier`, this is about reading orientation, not potential work energy.",
         ),
         "anchor" => Some(
             "Goal-less orientation anchors: durable read-first files such as authoritative models, living READMEs, curated indexes, and high-inbound references.",

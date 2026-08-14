@@ -33,8 +33,8 @@ pub(super) use rows::{RankedAnchorEnrichment, RankedAnchorSignal};
 use rows::{
     round_search_row_score, write_describe_text, write_ranked_anchor_ndjson, write_rows_text,
 };
-pub(super) use status::StatusOutput;
 use status::write_status_text;
+pub(super) use status::{RepositoryDisclosure, StatusOutput};
 pub(super) use value::required_string;
 
 /// Compact marker rendered when the selected relation has no rows.
@@ -212,7 +212,12 @@ impl CommandOutput {
     pub(super) fn write<W: Write>(self, writer: W, mode: OutputMode) -> Result<()> {
         match (mode, self) {
             (OutputMode::Human, Self::Status(output)) => {
-                write_status_text(writer, &output.rows, output.flow_baseline_ready)?;
+                write_status_text(
+                    writer,
+                    &output.rows,
+                    output.flow_baseline_ready,
+                    &output.repository,
+                )?;
             }
             (OutputMode::Human, Self::Context(output)) => write_context_text(writer, &output)?,
             (

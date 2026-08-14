@@ -20,6 +20,7 @@ use crate::lifecycle::{
     CANONICAL_PIPELINE_ORDERING, CANONICAL_SETTLED_STATUSES, TERMINAL_STATUS_HEURISTICS,
     canonical_pipeline_position, is_canonical_settled_status, is_terminal_status,
 };
+use crate::repository::RepositoryContext;
 use crate::runtime::primitives::PrimitivePredicate;
 use crate::time::{current_days_since_epoch, iso_days_since_epoch, snapshot_days_since_epoch};
 use crate::vm::store::{TupleDb, TupleRow};
@@ -62,11 +63,13 @@ pub(super) struct PrimitiveIndex {
     linear_namespaces: BTreeSet<String>,
     status_snapshots: BTreeMap<HandleId, Vec<SnapshotStatus>>,
     git_mtimes: BTreeMap<String, String>,
+    repository: Option<RepositoryContext>,
     evaluation_day: Option<i64>,
 }
 
 pub(super) enum PrimitiveIndexContext {
     GitMtimes(BTreeMap<String, String>),
+    Repository(RepositoryContext),
     EvaluationDay(i64),
 }
 
@@ -103,6 +106,7 @@ impl PrimitiveIndex {
     pub(super) fn apply_context(&mut self, context: PrimitiveIndexContext) {
         match context {
             PrimitiveIndexContext::GitMtimes(mtimes) => self.git_mtimes = mtimes,
+            PrimitiveIndexContext::Repository(repository) => self.repository = Some(repository),
             PrimitiveIndexContext::EvaluationDay(day) => self.evaluation_day = Some(day),
         }
     }
@@ -356,6 +360,9 @@ impl PrimitiveIndex {
             PrimitivePredicate::Flux => self.flux_tuples(constraints),
             PrimitivePredicate::GitMtime => self.git_mtime_tuples(constraints),
             PrimitivePredicate::ChangedWithin => self.changed_within_tuples(constraints),
+            PrimitivePredicate::RepositoryOperationCapability => {
+                self.repository_operation_capability_tuples(constraints)
+            }
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
@@ -784,6 +791,22 @@ impl PrimitiveIndex {
                 .filter(|tuple| tuple_matches_constraints(tuple, constraints))
                 .collect(),
         }
+    }
+
+    fn repository_operation_capability_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {
+        self.repository
+            .iter()
+            .flat_map(RepositoryContext::capability_rows)
+            .map(|(operation, availability, provider, reason)| {
+                Tuple(vec![
+                    string_value(operation),
+                    string_value(availability),
+                    string_value(provider),
+                    string_value(reason),
+                ])
+            })
+            .filter(|tuple| tuple_matches_constraints(tuple, constraints))
+            .collect()
     }
 
     fn changed_within_tuples(&self, constraints: &[(usize, Value)]) -> Vec<Tuple> {

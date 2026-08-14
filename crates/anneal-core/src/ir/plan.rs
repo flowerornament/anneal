@@ -1941,6 +1941,7 @@ fn provider_for_primitive(primitive: PrimitivePredicate) -> ProviderRef {
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
         | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate => ProviderRef::Graph,
     }
 }
@@ -1972,6 +1973,7 @@ fn capability_for_primitive(primitive: PrimitivePredicate) -> CapabilityAction {
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
         | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
@@ -2017,6 +2019,7 @@ fn demand_for_primitive(primitive: PrimitivePredicate) -> DemandPolicy {
         | PrimitivePredicate::Flux
         | PrimitivePredicate::GitMtime
         | PrimitivePredicate::ChangedWithin
+        | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate => DemandPolicy::Eager,
     }
 }
