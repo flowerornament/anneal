@@ -62,11 +62,14 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Render release notes
+        run: python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           files: anneal-*.tar.gz
-          generate_release_notes: true
+          body_path: release-notes.md
 
       - name: Installer smoke test
         run: |

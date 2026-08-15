@@ -166,22 +166,37 @@ def changelog_text_has_entry(text: str, version: str) -> bool:
     return re.search(pattern, text) is not None
 
 
-def changelog_entry(version: str) -> str:
-    text = changelog_text()
+def changelog_release_notes_text(text: str, version: str) -> str:
     heading = re.search(
         rf"(?m)^## v?{re.escape(version)} - \d{{4}}-\d{{2}}-\d{{2}}$",
         text,
     )
     if heading is None:
-        fail(f"CHANGELOG.md is missing an entry for {version}")
+        raise ValueError(f"CHANGELOG.md is missing an entry for {version}")
 
     next_heading = re.search(
         r"(?m)^## v?\d+\.\d+\.\d+ - \d{4}-\d{2}-\d{2}$",
         text[heading.end() :],
     )
-    if next_heading is None:
-        return text[heading.end() :]
-    return text[heading.end() : heading.end() + next_heading.start()]
+    end = len(text) if next_heading is None else heading.end() + next_heading.start()
+    notes = text[heading.end() : end].strip()
+    if not notes or re.search(r"(?m)^- ", notes) is None:
+        raise ValueError(f"CHANGELOG.md entry for {version} has no release notes")
+    return f"{notes}\n"
+
+
+def changelog_entry(version: str) -> str:
+    try:
+        return changelog_release_notes_text(changelog_text(), version)
+    except ValueError as error:
+        fail(str(error))
+
+
+def print_release_notes(version_or_tag: str) -> None:
+    version = version_or_tag.removeprefix("v")
+    if SEMVER_RE.fullmatch(version) is None:
+        fail("version must be semver like 0.2.1 or a tag like v0.2.1")
+    print(changelog_entry(version), end="")
 
 
 def changelog_scaffold(version: str, today: str) -> str:
@@ -656,6 +671,11 @@ def main() -> None:
     tag_parser = subparsers.add_parser("tag", help="create and push a release tag")
     tag_parser.add_argument("version")
 
+    notes_parser = subparsers.add_parser(
+        "notes", help="render one CHANGELOG section as GitHub release notes"
+    )
+    notes_parser.add_argument("version")
+
     cache_publish_parser = subparsers.add_parser(
         "cache-publish", help="build and publish one native Nix package output"
     )
@@ -677,6 +697,8 @@ def main() -> None:
         verify()
     elif args.command == "tag":
         tag(args.version)
+    elif args.command == "notes":
+        print_release_notes(args.version)
     elif args.command == "cache-publish":
         publish_nix_cache(args.system)
     elif args.command == "cache-consume":

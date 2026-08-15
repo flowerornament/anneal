@@ -19,6 +19,45 @@ INTRO = (
 
 
 class ChangelogBumpTests(unittest.TestCase):
+    def test_release_notes_are_exactly_one_version_section(self) -> None:
+        text = (
+            INTRO
+            + "## Unreleased\n\n"
+            + "### Changed\n\n"
+            + "- Future work.\n\n"
+            + "## v0.2.0 - 2026-02-01\n\n"
+            + "### Added\n\n"
+            + "- A release note with a\n"
+            + "  wrapped continuation.\n\n"
+            + "### Fixed\n\n"
+            + "- A second note.\n\n"
+            + "## v0.1.0 - 2026-01-01\n\n"
+            + "### Added\n\n"
+            + "- First release.\n"
+        )
+
+        notes = release.changelog_release_notes_text(text, "0.2.0")
+
+        self.assertEqual(
+            notes,
+            "### Added\n\n"
+            "- A release note with a\n"
+            "  wrapped continuation.\n\n"
+            "### Fixed\n\n"
+            "- A second note.\n",
+        )
+        self.assertNotIn("Unreleased", notes)
+        self.assertNotIn("First release", notes)
+
+    def test_release_notes_reject_missing_or_empty_sections(self) -> None:
+        with self.assertRaisesRegex(ValueError, "missing an entry"):
+            release.changelog_release_notes_text(INTRO, "0.2.0")
+        with self.assertRaisesRegex(ValueError, "has no release notes"):
+            release.changelog_release_notes_text(
+                INTRO + "## v0.2.0 - 2026-02-01\n\n",
+                "0.2.0",
+            )
+
     def test_repeated_bumps_keep_unreleased_above_newest_release(self) -> None:
         original = (
             INTRO
@@ -188,6 +227,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertNotIn(smoke, ci)
         self.assertLess(workflow.index("name: Create release"), workflow.index(smoke))
+
+    def test_release_body_comes_from_the_versioned_changelog_section(self) -> None:
+        workflow = (release.ROOT / ".github/workflows/release.yml").read_text()
+
+        self.assertIn(
+            'python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md',
+            workflow,
+        )
+        self.assertIn("body_path: release-notes.md", workflow)
+        self.assertNotIn("generate_release_notes:", workflow)
+        self.assertLess(
+            workflow.index("name: Render release notes"),
+            workflow.index("name: Create release"),
+        )
 
 
 if __name__ == "__main__":
