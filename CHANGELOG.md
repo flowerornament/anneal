@@ -4,15 +4,7 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
-### Fixed
-
-- jj added workspaces no longer inherit Git history, blame, or ignore-index
-  answers from an unrelated ancestor repository. Status and query guidance name
-  unavailable Git-derived recency, W006, assertion provenance, and ignore-index
-  classification instead of rendering false zeros, unearned convergence-flow
-  counts, ambiguous nulls, or false `gitignored_scanned_file` rows. The sealed
-  `repository_operation_capability` relation reports availability per operation;
-  real jj history semantics remain deferred.
+## v0.26.0 - 2026-08-14
 
 ### Changed
 
@@ -27,6 +19,27 @@ All notable changes to `anneal` are documented in this file.
   exclude retired material from orientation rankings. Explicit status weights
   contribute only when the corpus gives that status the lifecycle meaning
   required by the ranking policy.
+
+### Removed
+
+- `Database::insert_stored_rows` is no longer part of the `anneal-core` public
+  API. Vendored and path consumers should add facts through `FactStore` and
+  construct the runtime database with `Database::from_store`; the runtime now
+  uses its tuple store as the sole stored-row authority. `anneal-core` remains
+  unpublished with `publish = false`.
+
+### Fixed
+
+- jj added workspaces no longer inherit Git history, blame, or ignore-index
+  answers from an unrelated ancestor repository. Status and query guidance name
+  unavailable Git-derived recency, W006, assertion provenance, and ignore-index
+  classification instead of rendering false zeros, unearned convergence-flow
+  counts, ambiguous nulls, or false `gitignored_scanned_file` rows. The sealed
+  `repository_operation_capability` relation reports availability per operation;
+  real jj history semantics remain deferred.
+- `anyhow` 1.0.104 resolves RUSTSEC-2026-0190, an unsoundness in
+  `Error::downcast_mut`; the advisory gate now runs on every default quality
+  check and in CI.
 
 ## v0.25.1 - 2026-08-13
 
