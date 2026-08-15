@@ -1,0 +1,42 @@
+name: Advisories
+
+# Security advisories are time-dependent, not commit-dependent: a new CVE is
+# published against dependencies we have not touched. A push-triggered check
+# would therefore miss exactly the case that matters — nobody pushes, nobody
+# learns. `just check` deliberately runs `cargo deny check bans licenses
+# sources` and omits advisories to stay offline and fast; this workflow is the
+# other half, and without it `just audit` exists, is correct, and is wired to
+# nothing.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Advisories
+        run: cargo deny check advisories
+
+      - name: Unused dependencies
+        run: |
+          cargo install cargo-machete --locked
+          cargo machete

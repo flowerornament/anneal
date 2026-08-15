@@ -32,8 +32,13 @@ check:
     _t install bash -n install.sh
     _t release env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release.py
     _t arch    just check-arch
-    _t clippy  cargo clippy --all-targets
+    _t clippy  cargo clippy --all-targets -- -D warnings
     _t test    cargo test
+    # Dogfood: the corpus consistency tool we ship, run against the corpus we
+    # ship it from. Errors only — warnings do not block a commit. Previously
+    # this ran in release-verify alone, so a broken spec reference surfaced
+    # days later at release time rather than at the commit that introduced it.
+    _t corpus  cargo run -q -- check --root .design
     # Architecture fitness functions (offline, fast): unused deps + crate-DAG /
     # license / source bans. Guarded so a tool-less env degrades gracefully —
     # run `just audit` for the full check incl. security advisories.
@@ -73,7 +78,7 @@ fmt-check:
 # Clippy with workspace lints
 [group('check')]
 lint:
-    cargo clippy --all-targets
+    cargo clippy --all-targets -- -D warnings
 
 # Run tests
 [group('check')]
