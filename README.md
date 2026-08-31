@@ -1,3 +1,5 @@
+
+
 # anneal
 
 Convergence assistant for knowledge corpora.
@@ -467,9 +469,9 @@ config convergence {
   settled(["approved"]).
   terminal(["published", "archived", "superseded"]).
   asserts_code(["draft", "review", "approved"]).
-  description("draft", "Under construction; may change substantially").
-  description("approved", "Settled primary artifact; changes require review").
-  description("archived", "Superseded or retired; no further changes expected").
+  description("draft", "Under construction; may change substantially"),
+  description("approved", "Settled primary artifact; changes require review"),
+  description("archived", "Superseded or retired; no further changes expected"),
 }
 
 config dependency {
@@ -687,6 +689,7 @@ crates/
   anneal-lang/     private parser, AST, source spans, loader (publish = false)
   anneal-core/     runtime, facts, store, evaluator, prelude, verbs, trails
   anneal-md/       markdown Source adapter
+  anneal-code/     code Source adapter
   anneal-cli/      CLI surface over core + adapters
   anneal-mcp/      MCP library surface over core + adapters
 ```
