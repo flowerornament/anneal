@@ -205,6 +205,7 @@ fn extract_markdown_facts_from_anneal_config(
     let external_roots = resolve_external_scan_roots(root, &options.external_roots)?;
     let mut result =
         parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?;
+    let asset_targets = resolve_asset_targets(root, &external_roots, &mut result)?;
     crate::extract::resolve::resolve_all(
         &mut result.graph,
         &result.resolution.label_candidates,
@@ -247,6 +248,7 @@ fn extract_markdown_facts_from_anneal_config(
             emit_scan_git_disposition_meta(&mut batch, &mut revisions, handle);
         }
     }
+    emit_asset_target_meta(&mut batch, &mut revisions, &asset_targets);
 
     let edge_order_context = EdgeOrderContext {
         root,
@@ -1381,6 +1383,104 @@ fn git_command(root: &Utf8Path) -> Command {
         .arg("-C")
         .arg(root.as_str());
     command
+}
+
+struct AssetTarget {
+    handle: String,
+    path: String,
+    resolved_path: Utf8PathBuf,
+    source_file: String,
+}
+
+fn resolve_asset_targets(
+    root: &Utf8Path,
+    external_roots: &[parse::ExternalScanRoot],
+    result: &mut parse::BuildResult,
+) -> Result<Vec<AssetTarget>> {
+    let corpus_root = root.canonicalize_utf8()?;
+    let mut assets = Vec::new();
+    let mut known = crate::extract::resolve::build_node_index(&result.graph);
+    for edge in &mut result.resolution.pending_edges {
+        let target = Utf8Path::new(&edge.target_identity);
+        if target.is_absolute()
+            || target
+                .extension()
+                .is_none_or(|ext| ext.eq_ignore_ascii_case("md"))
+            || known.contains_key(&edge.target_identity)
+        {
+            continue;
+        }
+        let Some(source_file) = result.graph.node(edge.source).file_path.as_ref() else {
+            continue;
+        };
+        let source_file = source_file.to_string();
+        let source_origin = result.files.file_origins.get(&source_file);
+        let relative_candidate = source_origin
+            .and_then(|origin| origin.parent())
+            .map(|parent| parent.join(target));
+        let candidates = [relative_candidate, Some(root.join(target))];
+        let found = candidates.into_iter().flatten().find_map(|candidate| {
+            let physical = candidate.canonicalize_utf8().ok()?;
+            if !physical.is_file() {
+                return None;
+            }
+            if let Ok(relative) = physical.strip_prefix(&corpus_root) {
+                return Some((relative.to_path_buf(), physical));
+            }
+            external_roots.iter().find_map(|mount| {
+                physical
+                    .strip_prefix(&mount.physical_root)
+                    .ok()
+                    .map(|relative| (mount.handle_prefix.join(relative), physical.clone()))
+            })
+        });
+        let Some((logical, physical)) = found else {
+            continue;
+        };
+        let handle = format!("external:asset:{logical}");
+        if !known.contains_key(&handle) {
+            let node = result.graph.add_node(Handle::external(
+                handle.clone(),
+                Some(Utf8PathBuf::from(&source_file)),
+            ));
+            known.insert(handle.clone(), node);
+            assets.push(AssetTarget {
+                handle: handle.clone(),
+                path: logical.to_string(),
+                resolved_path: physical,
+                source_file,
+            });
+        }
+        edge.target_identity = handle;
+    }
+    Ok(assets)
+}
+
+fn emit_asset_target_meta(
+    batch: &mut FactBatch,
+    revisions: &mut RevisionCache<'_>,
+    assets: &[AssetTarget],
+) {
+    for asset in assets {
+        let identity = identity_for(batch, revisions, &asset.source_file, &asset.source_file);
+        for (key, value) in [
+            (CodeTargetMeta::EXTERNAL_CLASS, "asset"),
+            (CodeTargetMeta::TARGET_PATH, asset.path.as_str()),
+            (CodeTargetMeta::TARGET_EXISTS, "true"),
+            (
+                CodeTargetMeta::TARGET_RESOLVED_PATH,
+                asset.resolved_path.as_str(),
+            ),
+        ] {
+            batch.meta.push(MetaFact {
+                identity: identity.clone(),
+                handle: handle_id(&asset.handle),
+                key: key.to_string(),
+                value: value.to_string(),
+                role: MetaRole::Derived,
+            });
+        }
+    }
 }
 
 fn handle_fact(
@@ -3267,6 +3367,70 @@ mod tests {
             }),
             "frontmatter code path must not emit a raw corpus-gated edge: {:?}",
             batch.edges
+        );
+    }
+
+    #[test]
+    fn existing_non_markdown_links_resolve_to_asset_handles() {
+        let temp = tempdir().expect("tempdir");
+        let corpus = temp.path().join("corpus");
+        std::fs::create_dir_all(&corpus).expect("create corpus");
+        let root = Utf8Path::from_path(&corpus).expect("utf8 corpus");
+        std::fs::create_dir_all(root.join("specs")).expect("create specs");
+        std::fs::write(root.join("specs/census.tsv"), "id\n1\n").expect("write tsv");
+        std::fs::write(root.join("specs/data.csv"), "id\n1\n").expect("write csv");
+        std::fs::write(root.join("specs/other.md"), "# Other\n").expect("write markdown");
+        std::fs::write(
+            root.join("specs/census.md"),
+            "# Census\n\n[t](census.tsv) [c](specs/data.csv) [m](other.md) [missing](missing.tsv)\n",
+        )
+        .expect("write census");
+        let batch = extract_markdown_facts(
+            root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract facts");
+        for path in ["specs/census.tsv", "specs/data.csv"] {
+            let handle = format!("external:asset:{path}");
+            assert!(
+                batch
+                    .handles
+                    .iter()
+                    .any(|fact| fact.id.as_str() == handle && fact.kind == "external"),
+                "handles: {:?}; edges: {:?}",
+                batch.handles,
+                batch.edges
+            );
+            assert!(
+                batch
+                    .edges
+                    .iter()
+                    .any(|edge| edge.from.as_str() == "specs/census.md"
+                        && edge.to.as_str() == handle)
+            );
+            assert!(batch.meta.iter().any(|meta| meta.handle.as_str() == handle
+                && meta.key == CodeTargetMeta::TARGET_EXISTS
+                && meta.value == "true"));
+        }
+        assert!(
+            batch
+                .edges
+                .iter()
+                .any(|edge| edge.to.as_str() == "specs/other.md")
+        );
+        assert!(
+            batch
+                .edges
+                .iter()
+                .any(|edge| edge.to.as_str() == "missing.tsv")
+        );
+        assert!(
+            !batch
+                .handles
+                .iter()
+                .any(|fact| fact.id.as_str() == "missing.tsv")
         );
     }
 
