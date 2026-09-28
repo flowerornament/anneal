@@ -293,7 +293,8 @@ the built-in prelude into a project.
 
 - `handle`: file, label, version, or external reference; headings are `*span`
   rows, and in-repo code refs are external handles with `external_class="code"`,
-  `target_exists`, and `target_history_status`
+  `target_exists`, and `target_history_status`; links to other existing
+  in-corpus files are external handles with `external_class="asset"`
 - `asserts_code`: lifecycle statuses whose specs claim facts about this
   corpus's current code; W006 uses it to avoid warning on plans or research notes
 - `source`: adapter such as markdown, code, host runtime, or issue tracker

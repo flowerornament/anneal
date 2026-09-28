@@ -31,7 +31,7 @@ CR-* labels are referenced from bd issues and commit messages — search the spe
 
 For low-context corpus orientation, prefer:
 - `anneal context "<goal>"`
-- `anneal status`
+- `anneal status` (~16 KB; run once on arrival, not per turn)
 - `anneal search "<text>" --limit 25`
 - `anneal read <handle> --budget 4000`
 - `anneal handle <handle> --impact`
@@ -107,6 +107,7 @@ Three traps, each of which has produced a wrong claim here:
 ```bash
 # orient
 bd show --current --short
+bd show <id> --short          # plain `bd show` prints the whole comment thread — only when you need it
 bd query "status=in_progress"
 bd ready --explain
 

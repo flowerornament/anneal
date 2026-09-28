@@ -219,7 +219,8 @@ writing it with `anneal init`.
 The graph unit of knowledge. A handle may be a file, label, version, or
 external reference. Headings are content spans (`*span`) attached to file
 handles. In-repo code references such as `lib/app.ex:10-20` use external
-handles with `external_class = "code"` metadata.
+handles with `external_class = "code"` metadata; links to other existing
+in-corpus files (tables, data) use `external_class = "asset"`.
 
 **Edge**  
 A typed relationship between handles. Common edges include `Cites`,

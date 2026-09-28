@@ -4,6 +4,15 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.26.1 - 2026-09-28
+
+### Fixed
+
+- A link to an existing non-Markdown file inside the corpus (for example a
+  `.tsv` or `.csv` table) resolves to an external handle with
+  `external_class = "asset"` and `target_exists = "true"` instead of reporting
+  `E001 broken_ref`. Links to missing files still report `E001`.
+
 ## v0.26.0 - 2026-08-14
 
 ### Changed
