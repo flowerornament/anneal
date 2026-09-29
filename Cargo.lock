@@ -83,6 +83,7 @@ version = "0.26.1"
 dependencies = [
  "anneal-lang",
  "camino",
+ "dhat",
  "rayon",
  "regex",
  "serde",

@@ -6,6 +6,10 @@ license = "MIT"
 description = "Substrate runtime types for anneal"
 publish = false
 
+[[example]]
+name = "measure_code_population"
+path = "../../scripts/measure_code_population.rs"
+
 [lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"
@@ -31,6 +35,7 @@ struct_excessive_bools = "allow"
 [dependencies]
 anneal-lang = { version = "0.26.1", path = "../anneal-lang" }
 camino = { version = "1.2.2", features = ["serde1"] }
+dhat = { version = "0.3.3", optional = true }
 rayon = "1.12.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -39,3 +44,6 @@ thiserror = "2.0.18"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+dhat = ["dep:dhat"]
