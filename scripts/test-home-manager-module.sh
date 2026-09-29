@@ -40,7 +40,7 @@ root_json="$(json_quote "$ROOT")"
 cat > "$eval_module" <<'EOF'
 { root, mode }:
 let
-  flake = builtins.getFlake "git+file://${root}";
+  flake = builtins.getFlake "git+file://${root}?shallow=1";
   pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
   consumerPkgs = pkgs // {
     rustPlatform = pkgs.rustPlatform // {
