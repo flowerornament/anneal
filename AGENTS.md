@@ -48,7 +48,7 @@ Avoid broad default dumps like raw `check --json`, empty search queries, or full
 - Use `just`. `just check` is the default gate (fmt + `install.sh` syntax + clippy + test, each step timed). Inspect `justfile` or run `just --list` for the full command surface.
 - `just build` for a release binary; `just release-verify` for release-readiness gates.
 - `just audit` = architecture fitness functions: `cargo-machete` (unused deps) + `cargo-deny` (advisories/bans/licenses/sources, configured in `deny.toml`). `just check` runs the offline subset (machete + deny bans/licenses/sources), guarded to skip if the tools aren't installed.
-- Do NOT run `just check`/the test suite inside a git worktree (bug anneal-re9h): a git-fixture test writes `core.bare=true` into the shared `.git/config` and bricks git repo-wide. Recover with `git config core.bare false`.
+- Do NOT run `just check`/the test suite inside a git worktree. anneal-re9h (fixed) once wrote `core.bare=true` into a shared `.git/config`; recover with `git config core.bare false`. jj workspaces are safe (see Version Control).
 - Add dependencies with `cargo add`; never hand-write version strings.
 - `ast-grep run -p 'PATTERN' -l rust` for AST-aware code search (no config needed). Useful patterns: `$X.unwrap()`, `todo!($$$)`, `#[allow($$$)]`. Add `-r 'REPLACEMENT'` for structural refactoring; `--json` for machine-readable output.
 
@@ -127,9 +127,9 @@ Prefer plain-text views for orientation. Avoid raw `bd --json` by default. Full 
 
 Release automation is local-first and tag-driven:
 
-- day-to-day work lands on `dev`
-- merge `dev` into `master` for release prep
-- cut and push release tags from `master`
+- day-to-day work lands on `master` through `just land`
+- release prep is an ordinary landed change
+- release tags are cut from `master` in the colocated checkout `~/code/anneal`
 
 Before bumping, verify all shipped features are reflected in docs. CLI help strings are authoritative, but these must match:
 
@@ -140,10 +140,12 @@ Before bumping, verify all shipped features are reflected in docs. CLI help stri
 Write docs as if they were always correct — no "added" or "updated" language.
 
 ```bash
+# in your jj workspace
 just release-bump 0.2.1
 just release-verify
-git add -A && git commit -m "release: prepare v0.2.1"
-git push origin master
+jj describe -m "release: prepare v0.2.1" && just land
+# then in ~/code/anneal, the colocated checkout
+jj git fetch && jj new master
 just release-tag 0.2.1
 ```
 
@@ -170,15 +172,60 @@ then smoke-tests the installer against that exact published tag for:
 
 Primary smoke corpus: a real-world external markdown corpus, when available locally. Useful for smoke-checking `status`, `context`, `search`, `read`, `handle --impact`, `check`, and focused `anneal -e` predicates. Integration tests may skip if the external corpus is unavailable.
 
-## Hooks And Completion
+## Version Control
 
-- `.git/hooks/pre-commit` runs `just check` after the beads integration block.
+anneal uses jj, colocated with git. All agents share one commit graph, and
+`master` is the only published bookmark. Each writing agent works in its own
+jj workspace; jj runs with stock configuration and records edits continuously,
+so there is nothing to stage.
+
+```text
+~/code/anneal      colocated checkout: .git + .jj, the bd home, releases.
+                   No agent edits code here.
+~/code/anneal-1a   jj workspace, coordinator (claude)
+~/code/anneal-1b   jj workspace, implementer (codex)
+```
+
+- Work: `jj new master`, edit, `jj describe -m "area: subject (anneal-xxxx)"`.
+  Pick up others' landings with `jj rebase -d master`.
+- Publish: `just land` runs `just check` on exactly the described change, then
+  moves `master` to it and pushes. It refuses undescribed work, a stale
+  parent, and any edit made while the check ran. Then `bd dolt push`. The
+  implementer lands after the coordinator's GO. A raw `jj git push` skips the
+  gate; never run one. jj runs no git hooks, so nothing gates a commit except
+  `just land`.
+- Every description gains `Jj-Workspace:`, `Agent:` and `Session:` trailers
+  from `scripts/jj-identity`, which a SessionStart hook runs. Do not type or
+  strip them.
+- Git runs only in `~/code/anneal`. A jj workspace has no `.git`, and `~/.git`
+  exists, so git in a workspace silently answers about the home directory.
+  Never run a mutating git command, with one exception: releases run from
+  `~/code/anneal` after `jj git fetch && jj new master` (see Release Flow;
+  `scripts/release.py` tags and pushes with git there).
+- anneal run inside a jj workspace reports Git-derived recency, W006 and
+  assertion provenance as unavailable until anneal-qao9 lands. Run
+  provenance-dependent checks from `~/code/anneal`.
+- The git-fixture tests (anneal-re9h, fixed) strip `GIT_DIR` and work in their
+  own tempdir repositories, so `just check` is safe in a jj workspace.
+- New jj workspace: `jj workspace add --name anneal-<pair><letter>
+  ../anneal-<pair><letter>`, write `../anneal/.beads` into its
+  `.beads/redirect`, and link Claude's memory:
+  `ln -s ~/.claude/projects/-Users-morgan-code-anneal/memory
+  ~/.claude/projects/-Users-morgan-code-anneal-<x>/memory` (create the parent
+  directory first). `jj workspace list` is the roster.
+- Staleness: when another agent rewrites a commit under your `@`, every jj
+  command refuses until `jj workspace update-stale`. Never `jj edit` a change
+  that is an ancestor of another workspace's `@`.
+- Recovery starts at `jj op log`, `jj undo` and `jj op restore`, before any
+  destructive file operation. The `jj-ops` skill holds the jj model.
+
+## Completion
+
 - Before ending a session:
-  1. Run `just check` if code changed.
-  2. Commit with a clear message.
-  3. `bd dolt push`.
-  4. `git push`.
-- Work is not complete until `git push` succeeds.
+  1. `jj describe -m "area: subject (anneal-xxxx)"`, then `just land` (it runs
+     `just check`).
+  2. `bd dolt push`.
+- Work is not complete until `just land` succeeds.
 
 ## Reminders
 

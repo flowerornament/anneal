@@ -7,7 +7,12 @@ scorecard.png
 
 # anneal local derived state
 .design/.anneal/
-.claude/
+.claude/*
+!.claude/settings.json
+.codex/*
+!.codex/config.toml
+# jj store of the colocated checkout (jj also ignores it via .jj/.gitignore)
+.jj/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

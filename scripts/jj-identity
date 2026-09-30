@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Record who writes in this jj workspace, at session start.
+#
+# Usage: scripts/jj-identity [<harness>]   (claude-code | codex; the hook payload
+#                                        decides when the argument is absent)
+#
+# Wired as a SessionStart hook for Claude Code and codex. It writes the jj
+# workspace's `templates.commit_trailers`, so every description gains
+# `Jj-Workspace:`, `Agent:` and `Session:` trailers naming the session that
+# FIRST described the change. Each key is added only when the description
+# lacks it, so a later re-describe never adds a second line. The trailers join
+# commits to peat and to the session transcripts.
+#
+# The session id is the top-level `session_id` of the hook's JSON payload on
+# stdin. An absent or malformed id leaves `Session:` out rather than borrowing
+# a previous session's id, because the whole template is rewritten each run.
+# The harness comes from the payload's transcript path; the argument only
+# overrides it. Values outside a plain identifier alphabet are refused rather
+# than escaped into jj's template language. Workspace config lives outside the
+# repository, so the repository keeps zero jj config.
+#
+# Outside a jj repository this does nothing. A hook must never block a
+# session: failures warn on stderr and exit 0. JJ_IDENTITY_DRY_RUN=1 prints
+# the template instead of writing it.
+#
+# Adapted from murail's scripts/seat.sh. The trailer key is `Jj-Workspace`,
+# naming the jj mechanism rather than a role.
+harness="${1:-}"
+command -v jj >/dev/null 2>&1 || exit 0
+root="$(jj workspace root 2>/dev/null)" || exit 0
+workspace="${root##*/}"
+plain() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
+
+session=""
+payload_harness=""
+if [ ! -t 0 ] && command -v python3 >/dev/null 2>&1; then
+    read -r session payload_harness < <(python3 -c '
+import json, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+session = payload.get("session_id")
+transcript = payload.get("transcript_path") or ""
+harness = ""
+if "/.claude/" in transcript:
+    harness = "claude-code"
+elif "/.codex/" in transcript:
+    harness = "codex"
+print(session if isinstance(session, str) and session else "-", harness or "-")
+' 2>/dev/null)
+    [ "$session" = "-" ] && session=""
+    [ "$payload_harness" = "-" ] && payload_harness=""
+fi
+[ -n "$harness" ] || harness="$payload_harness"
+# A codex session started from a Claude pane inherits CLAUDE_CODE_SESSION_ID,
+# so the variable identifies Claude only when the payload names no other
+# session.
+if [ -z "$harness" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] \
+    && { [ -z "$session" ] || [ "$session" = "$CLAUDE_CODE_SESSION_ID" ]; }; then
+    harness=claude-code
+fi
+[ -n "$harness" ] || harness=unknown
+[ -n "$session" ] || [ "$harness" != claude-code ] || session="${CLAUDE_CODE_SESSION_ID:-}"
+
+if ! plain "$workspace"; then
+    echo "jj-identity: workspace name is not a plain identifier; commit trailers not configured" >&2
+    exit 0
+fi
+plain "$harness" || harness=unknown
+template="if(!trailers.contains_key(\"Jj-Workspace\"), \"Jj-Workspace: $workspace\n\")"
+template="$template ++ if(!trailers.contains_key(\"Agent\"), \"Agent: $harness\n\")"
+if plain "$session"; then
+    template="$template ++ if(!trailers.contains_key(\"Session\"), \"Session: $session\n\")"
+fi
+if [ -n "${JJ_IDENTITY_DRY_RUN:-}" ]; then
+    printf '%s\n' "$template"
+    exit 0
+fi
+jj config set --workspace templates.commit_trailers "'$template'" >/dev/null 2>&1 \
+    || echo "jj-identity: could not set jj commit trailers for $workspace" >&2
+
+# Name the tmux pane and its hail label after the jj workspace, so other
+# agents can address this session by workspace name.
+[ -n "${TMUX_PANE:-}" ] || exit 0
+tmux select-pane -t "$TMUX_PANE" -T "$workspace" 2>/dev/null || true
+command -v hail >/dev/null 2>&1 && hail name "$TMUX_PANE" "$workspace" >/dev/null 2>&1
+exit 0

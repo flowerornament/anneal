@@ -1,0 +1,5 @@
+# Project-layer codex config. At session start, scripts/jj-identity writes this
+# jj workspace's commit trailers (Jj-Workspace, Agent, Session) and names the
+# tmux pane after the workspace; outside a jj repository it does nothing.
+[[hooks.SessionStart]]
+hooks = [{ type = "command", command = "bash \"$(jj workspace root 2>/dev/null || pwd)/scripts/jj-identity\" codex" }]

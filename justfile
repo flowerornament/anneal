@@ -5,6 +5,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+# Publish the described jj change: run `just check` on exactly that commit, then push it
+[group('check')]
+land *args:
+    scripts/jj-land.sh {{args}}
+
 # All checks: fmt + clippy + test (with timing)
 [group('check')]
 check:
