@@ -364,6 +364,11 @@ fn predicate_extra_lines(name: &str, family: Option<PredicateFamily>) -> Vec<Str
 /// Returns evidence-shape details for diagnostic code cards.
 pub(in crate::runtime::introspection) fn diagnostic_code_extra_lines(code: &str) -> Vec<String> {
     match code {
+        "W008" => vec![
+            "One observation per top-level key; scalar elements of mixed lists remain represented.".to_string(),
+            "Location is in the JSON evidence; diagnostic.line is null. line_exact=false names the opening frontmatter fence rather than a guessed key line.".to_string(),
+            "Maps are not encoded as authored scalar strings. Inspect the source or provide a scalar representation for rules that consume scalar metadata.".to_string(),
+        ],
         "W005" => lifecycle_config_gap_variant_lines(),
         "W007" => frontmatter_mapping_gap_lines(),
         "S006" => dependency_config_gap_lines(),

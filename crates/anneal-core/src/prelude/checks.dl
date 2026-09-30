@@ -63,6 +63,21 @@ diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
   implausible_ref(h, file, value).
 
 @doc(
+  name: "unmodeled_frontmatter_shape",
+  doc: "Return authored frontmatter keys containing mappings omitted by the scalar metadata projection. Evidence is JSON with key, shape, line and line_exact. A rule claiming authorial absence over *meta must also consult this evidence; no scalar row does not mean no assertion."
+).
+@predicate(
+  name: "unmodeled_frontmatter_shape",
+  args: ["h", "file", "evidence"]
+).
+unmodeled_frontmatter_shape(h, file, evidence) :=
+  *meta{handle: h, key: "md.unmodeled_frontmatter_shape", value: evidence, role: "derived", corpus: corpus, source: source},
+  *handle{id: h, file: file, corpus: corpus, source: source}.
+
+diagnostic("W008", "warning", h, file, null, ("unmodeled_frontmatter_shape", evidence)) :=
+  unmodeled_frontmatter_shape(h, file, evidence).
+
+@doc(
   name: "stale_reference",
   doc: "Return active handles that depend on terminal handles whose status is classified as dead for dependency validity."
 ).

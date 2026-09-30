@@ -226,26 +226,94 @@ fn yaml_scalar_values(value: &serde_yaml_ng::Value) -> Vec<String> {
     }
 }
 
-fn frontmatter_scalars(yaml: Option<&str>) -> Vec<(String, String)> {
+#[derive(Default)]
+struct FrontmatterValues {
+    scalars: Vec<(String, String)>,
+    unmodeled_shapes: Vec<UnmodeledFrontmatterShape>,
+}
+
+/// Adapter evidence for authored values omitted by the scalar projection.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct UnmodeledFrontmatterShape {
+    pub(crate) key: String,
+    pub(crate) shape: &'static str,
+    pub(crate) line: u32,
+    pub(crate) line_exact: bool,
+}
+
+fn contains_frontmatter_mapping(value: &serde_yaml_ng::Value) -> bool {
+    match value {
+        serde_yaml_ng::Value::Mapping(_) => true,
+        serde_yaml_ng::Value::Sequence(values) => values.iter().any(contains_frontmatter_mapping),
+        serde_yaml_ng::Value::Tagged(value) => contains_frontmatter_mapping(&value.value),
+        _ => false,
+    }
+}
+
+/// Block-mapping keys start at column zero. Other layouts use an honest fallback.
+fn frontmatter_key_line(yaml: &str, key: &str) -> (u32, bool) {
+    let first_content = yaml.lines().find(|line| {
+        let line = line.trim();
+        !line.is_empty() && !line.starts_with('#')
+    });
+    if first_content.is_some_and(|line| line.trim_start().starts_with('{')) {
+        return (1, false);
+    }
+    for (index, line) in yaml.lines().enumerate() {
+        if line.starts_with(char::is_whitespace) || line.starts_with('#') {
+            continue;
+        }
+        let bare_key = line
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'));
+        let quoted_key = (line.starts_with('\'') || line.starts_with('"'))
+            && line.match_indices(':').any(|(colon, _)| {
+                serde_yaml_ng::from_str::<String>(line[..colon].trim_end())
+                    .is_ok_and(|candidate| candidate == key)
+            });
+        if bare_key || quoted_key {
+            return (
+                u32::try_from(index).unwrap_or(u32::MAX).saturating_add(2),
+                true,
+            );
+        }
+    }
+    (1, false)
+}
+
+fn frontmatter_values(yaml: Option<&str>) -> FrontmatterValues {
     let Some(yaml) = yaml else {
-        return Vec::new();
+        return FrontmatterValues::default();
     };
     let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
-        return Vec::new();
+        return FrontmatterValues::default();
     };
     let Some(mapping) = value.as_mapping() else {
-        return Vec::new();
+        return FrontmatterValues::default();
     };
-    let mut scalars = Vec::new();
+    let mut values = FrontmatterValues::default();
     for (key, value) in mapping {
         let Some(key) = key.as_str() else {
             continue;
         };
         for scalar in yaml_scalar_values(value) {
-            scalars.push((key.to_string(), scalar));
+            values.scalars.push((key.to_string(), scalar));
+        }
+        if contains_frontmatter_mapping(value) {
+            let (line, line_exact) = frontmatter_key_line(yaml, key);
+            values.unmodeled_shapes.push(UnmodeledFrontmatterShape {
+                key: key.to_string(),
+                shape: if matches!(value, serde_yaml_ng::Value::Sequence(_)) {
+                    "sequence_containing_mapping"
+                } else {
+                    "mapping"
+                },
+                line,
+                line_exact,
+            });
         }
     }
-    scalars
+    values
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +466,7 @@ pub(crate) struct ParsedMarkdownFile {
     pub(crate) body: String,
     pub(crate) body_start_line: u32,
     pub(crate) frontmatter_scalars: Vec<(String, String)>,
+    pub(crate) unmodeled_frontmatter_shapes: Vec<UnmodeledFrontmatterShape>,
     pub(crate) revision: String,
 }
 
@@ -407,6 +476,7 @@ struct ParsedMarkdownFileScan {
     body: String,
     body_start_line: u32,
     frontmatter_scalars: Vec<(String, String)>,
+    unmodeled_frontmatter_shapes: Vec<UnmodeledFrontmatterShape>,
     revision: String,
     frontmatter: FrontmatterParseResult,
     file_date: Option<chrono::NaiveDate>,
@@ -484,7 +554,10 @@ fn parse_markdown_file(
     } else {
         frontmatter_line_count.saturating_add(2)
     };
-    let frontmatter_scalars = frontmatter_scalars(frontmatter_yaml);
+    let FrontmatterValues {
+        scalars: frontmatter_scalars,
+        unmodeled_shapes: unmodeled_frontmatter_shapes,
+    } = frontmatter_values(frontmatter_yaml);
     let revision = format!("{:016x}", anneal_core::fnv1a_64(content.as_bytes()));
 
     // D-05: table-driven frontmatter parsing with extensible field mapping
@@ -512,6 +585,7 @@ fn parse_markdown_file(
         body,
         body_start_line,
         frontmatter_scalars,
+        unmodeled_frontmatter_shapes,
         revision,
         frontmatter,
         file_date,
@@ -594,6 +668,7 @@ impl GraphBuilder<'_> {
             body,
             body_start_line,
             frontmatter_scalars,
+            unmodeled_frontmatter_shapes,
             revision,
             frontmatter,
             file_date,
@@ -721,6 +796,7 @@ impl GraphBuilder<'_> {
                 body,
                 body_start_line,
                 frontmatter_scalars,
+                unmodeled_frontmatter_shapes,
                 revision,
             },
         );
@@ -1846,6 +1922,94 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    #[test]
+    fn structured_frontmatter_reports_each_key_and_preserves_mixed_scalars() {
+        let yaml = "status: draft\ndies: [{id: x, why: y}]\nwork: {x: y}\nempty: {}\nmixed: [keep, {id: z}, [also, {why: nested}]]\n";
+        let values = frontmatter_values(Some(yaml));
+        assert_eq!(
+            values.scalars,
+            vec![
+                ("status".to_string(), "draft".to_string()),
+                ("mixed".to_string(), "keep".to_string()),
+                ("mixed".to_string(), "also".to_string()),
+            ]
+        );
+        let shapes = values
+            .unmodeled_shapes
+            .iter()
+            .map(|shape| {
+                (
+                    shape.key.as_str(),
+                    shape.shape,
+                    shape.line,
+                    shape.line_exact,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shapes,
+            vec![
+                ("dies", "sequence_containing_mapping", 3, true),
+                ("work", "mapping", 4, true),
+                ("empty", "mapping", 5, true),
+                ("mixed", "sequence_containing_mapping", 6, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn frontmatter_shape_key_locations_ignore_nested_keys_comments_and_scalar_text() {
+        let yaml = "# work: ignored\nother:\n  work: nested\ntext: |\n  work: prose\n'work' : {x: y}\n\"complex:key\": {z: y}\n\"escaped\\\"key\": {z: y}\n";
+        for content in [yaml.to_string(), yaml.replace('\n', "\r\n")] {
+            let values = frontmatter_values(Some(&content));
+            for (key, line) in [
+                ("other", 3),
+                ("work", 7),
+                ("complex:key", 8),
+                ("escaped\"key", 9),
+            ] {
+                let shape = values
+                    .unmodeled_shapes
+                    .iter()
+                    .find(|shape| shape.key == key)
+                    .expect("structured root key");
+                assert_eq!((shape.line, shape.line_exact), (line, true), "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn frontmatter_shape_flow_root_uses_explicit_inexact_fallback() {
+        for yaml in ["{work: {x: y}}", "# comment\n{\nwork: {x: y}\n}"] {
+            let values = frontmatter_values(Some(yaml));
+            assert_eq!(values.unmodeled_shapes.len(), 1);
+            let shape = &values.unmodeled_shapes[0];
+            assert_eq!((shape.line, shape.line_exact), (1, false));
+        }
+    }
+
+    #[test]
+    fn scalar_frontmatter_projection_retains_values_roles_and_flattening() {
+        let values = frontmatter_values(Some(
+            "status: draft\nnumber: 7\nflag: true\nauthors: [Ada, Grace]\nnested: [[one, two], three]\nref: other.md (annotation)\n",
+        ));
+        assert!(values.unmodeled_shapes.is_empty());
+        assert_eq!(
+            values.scalars,
+            vec![
+                ("status".to_string(), "draft".to_string()),
+                ("number".to_string(), "7".to_string()),
+                ("flag".to_string(), "true".to_string()),
+                ("authors".to_string(), "Ada".to_string()),
+                ("authors".to_string(), "Grace".to_string()),
+                ("nested".to_string(), "one".to_string()),
+                ("nested".to_string(), "two".to_string()),
+                ("nested".to_string(), "three".to_string()),
+                ("ref".to_string(), "other.md".to_string()),
+            ]
+        );
+    }
+
     // split_frontmatter
     // -------------------------------------------------------------------
 

@@ -426,6 +426,24 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
         ],
     },
     DiagnosticCodeCard {
+        code: "W008",
+        severity: "warning",
+        summary: "Unmodeled frontmatter shape: an authored key contains a mapping that the scalar metadata projection does not represent. A rule claiming authorial absence over *meta must also consult this evidence.",
+        rule: "unmodeled_frontmatter_shape",
+        evidence: r#"("unmodeled_frontmatter_shape", JSON {key, shape, line, line_exact}); line is 1-based, with line_exact=false for a frontmatter-start fallback"#,
+        common_joins: &[
+            "`unmodeled_frontmatter_shape(h, file, evidence), read{handle: h, budget: 1200, text: text}` to inspect the authored structure",
+        ],
+        example: r#"? diagnostic{code: "W008", subject: h, file: file, evidence: evidence}."#,
+        see_also: &[
+            "diagnostic",
+            "unmodeled_frontmatter_shape",
+            "*meta",
+            "W004",
+            "W007",
+        ],
+    },
+    DiagnosticCodeCard {
         code: "I001",
         severity: "info",
         summary: "Section references present: section-reference placeholders exist and are counted separately from broken handles.",

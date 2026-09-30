@@ -889,3 +889,79 @@ fn run_git(root: &Path, args: &[&str]) {
         text(&output.stderr)
     );
 }
+
+#[test]
+fn structured_frontmatter_warns_with_queryable_evidence_and_preserves_scalars() {
+    let dir = tempdir();
+    write_config(dir.path(), "");
+    write_file(
+        dir.path(),
+        "a.md",
+        "---\nwork: {owner: Ada}\nmixed: [keep, {owner: Grace}, also]\n---\n# A\n",
+    );
+    write_file(
+        dir.path(),
+        "flow.md",
+        "---\n{work: {owner: Ada}}\n---\n# Flow\n",
+    );
+    let root = dir.path().to_str().expect("utf8 tempdir");
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic{code: "W008", severity: severity, subject: h, file: file, line: line, evidence: evidence}."#,
+    ]));
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    let mut locations = BTreeMap::new();
+    for row in &rows {
+        assert_eq!(row["severity"], "warning");
+        assert!(row["line"].is_null());
+        let evidence = row["evidence"].as_array().expect("evidence tuple");
+        assert_eq!(evidence[0], "unmodeled_frontmatter_shape");
+        let shape: Value = serde_json::from_str(evidence[1].as_str().expect("JSON string"))
+            .expect("shape evidence");
+        locations.insert(
+            (
+                row["file"].as_str().expect("file").to_owned(),
+                shape["key"].as_str().expect("key").to_owned(),
+            ),
+            (
+                shape["line"].as_u64().expect("line"),
+                shape["line_exact"].as_bool().expect("exact"),
+            ),
+        );
+    }
+    assert_eq!(
+        locations,
+        BTreeMap::from([
+            (("a.md".to_owned(), "work".to_owned()), (2, true)),
+            (("a.md".to_owned(), "mixed".to_owned()), (3, true)),
+            (("flow.md".to_owned(), "work".to_owned()), (1, false)),
+        ])
+    );
+    let scalars = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? *meta{key: "mixed", value: value, role: role}."#,
+    ]));
+    assert_eq!(scalars.len(), 2);
+    assert_eq!(
+        scalars
+            .iter()
+            .map(|row| row["value"].as_str().expect("scalar"))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["keep", "also"])
+    );
+    assert!(
+        scalars
+            .iter()
+            .all(|row| row["role"] == "authored_unmodeled")
+    );
+    assert_success(&run(&["--root", root, "--json", "check"]));
+    let card = run(&["describe", "W008"]);
+    assert_success(&card);
+    assert!(text(&card.stdout).contains("authorial absence"));
+}

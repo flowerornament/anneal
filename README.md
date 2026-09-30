@@ -670,6 +670,7 @@ The diagnostic catalog tracks local consistency and convergence health.
 | W005 | Warning | Lifecycle status has no effective builtin or project classification, or ordering cannot terminate |
 | W006 | Warning | Code-authoritative spec cites missing code |
 | W007 | Warning | Reference-like frontmatter key has no configured edge mapping |
+| W008 | Warning | Frontmatter key contains a mapping omitted by the scalar metadata projection |
 | I001 | Info | Section reference summary |
 | I002 | Info | Multiple discharges on one obligation |
 | S001 | Suggestion | Orphaned label/version handle; `file` is its declaring file, not an orphaned document |

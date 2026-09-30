@@ -2511,6 +2511,19 @@ The v2.0 markdown adapter defines:
 
 *meta{
   handle: <file handle>,
+  key: "md.unmodeled_frontmatter_shape",
+  role: "derived",
+  value: JSON.stringify({
+    key,         // top-level frontmatter key containing a mapping
+    shape,       // "mapping" | "sequence_containing_mapping"
+    line,        // key line, or opening frontmatter fence (line 1)
+    line_exact   // false for layouts without a column-zero key match
+  }),
+  ...
+}
+
+*meta{
+  handle: <file handle>,
   key: "md.parent_dir",
   value: <parent directory relative to corpus root, or "">,
   ...
@@ -2523,6 +2536,12 @@ The v2.0 markdown adapter defines:
   ...
 }
 ```
+
+W008 derives from `md.unmodeled_frontmatter_shape`, once per top-level key
+containing a mapping at any depth. Scalar members of mixed sequences retain
+their authored rows; mappings do not become authored scalar strings. Rules
+claiming authorial absence over `*meta` must consult this evidence. The
+location remains in JSON evidence; `diagnostic.line` is null.
 
 Rationale: W004 and similar parse-filter diagnostics must be
 reconstructible from stored facts without re-running a format-specific

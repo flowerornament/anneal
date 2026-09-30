@@ -282,7 +282,7 @@ fn extract_markdown_facts_from_anneal_config(
             config,
             &result,
             &extraction.file,
-        );
+        )?;
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
     emit_code_ref_meta(
@@ -2036,9 +2036,9 @@ fn emit_frontmatter_meta(
     config: &config::AnnealConfig,
     result: &parse::BuildResult,
     file: &str,
-) {
+) -> Result<()> {
     let Some(payload) = result.files.file_payloads.get(file) else {
-        return;
+        return Ok(());
     };
     let identity = identity_for(batch, revisions, file, file);
     for (key, value) in &payload.frontmatter_scalars {
@@ -2050,6 +2050,16 @@ fn emit_frontmatter_meta(
             role: frontmatter_meta_role(&config.frontmatter, key),
         });
     }
+    for shape in &payload.unmodeled_frontmatter_shapes {
+        batch.meta.push(MetaFact {
+            identity: identity.clone(),
+            handle: handle_id(file),
+            key: "md.unmodeled_frontmatter_shape".to_string(),
+            value: serde_json::to_string(shape)?,
+            role: MetaRole::Derived,
+        });
+    }
+    Ok(())
 }
 
 fn frontmatter_meta_role(config: &config::FrontmatterConfig, key: &str) -> MetaRole {
@@ -2629,6 +2639,61 @@ mod tests {
             2,
             "frontmatter list values retain one role per emitted scalar"
         );
+    }
+
+    #[test]
+    fn unmodeled_frontmatter_shapes_are_derived_evidence_not_authored_values() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 root");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::write(root.join("spec.md"),
+            "---\nstatus: draft\ndies: [{id: x, why: y}]\nwork: {x: y}\nmixed: [keep, {id: z}, also]\n---\n# Spec\n")
+            .expect("write fixture");
+        let batch = extract_markdown_facts(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract fixture");
+        let shapes = batch
+            .meta
+            .iter()
+            .filter(|fact| fact.key == "md.unmodeled_frontmatter_shape")
+            .collect::<Vec<_>>();
+        assert_eq!(shapes.len(), 3);
+        for fact in shapes {
+            assert_eq!(fact.handle.as_str(), "spec.md");
+            assert_eq!(fact.role, MetaRole::Derived);
+            let evidence: serde_json::Value =
+                serde_json::from_str(&fact.value).expect("JSON evidence");
+            assert_eq!(evidence["line_exact"], true);
+            assert!(
+                evidence["line"]
+                    .as_u64()
+                    .is_some_and(|line| (3..=5).contains(&line))
+            );
+        }
+        assert!(
+            !batch
+                .meta
+                .iter()
+                .any(|fact| fact.key == "dies" || fact.key == "work")
+        );
+        let mixed = batch
+            .meta
+            .iter()
+            .filter(|fact| fact.key == "mixed")
+            .map(|fact| (fact.value.as_str(), fact.role))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mixed,
+            vec![
+                ("keep", MetaRole::AuthoredUnmodeled),
+                ("also", MetaRole::AuthoredUnmodeled)
+            ]
+        );
+        assert!(batch.edges.is_empty(), "nested values must not infer edges");
     }
 
     #[test]

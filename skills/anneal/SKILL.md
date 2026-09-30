@@ -286,6 +286,9 @@ the built-in prelude into a project.
   much; filter inside the query rather than reaching for retired global flags.
 - Read disposition, status, and age on retrieval hits before acting on rank.
 - Run `anneal check` or the error diagnostic query after editing corpus files.
+- Inspect `anneal describe W008` when frontmatter contains maps or lists of
+  maps. Missing scalar `*meta` rows do not establish authorial absence; consult
+  `unmodeled_frontmatter_shape(h, file, evidence)` as well.
 - Extend the corpus vocabulary when a goal needs a distinction it does not
   carry; do not work around a missing predicate in your head.
 

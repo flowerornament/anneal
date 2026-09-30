@@ -161,6 +161,7 @@ axis_of("hit_currency_disposition_known", "currency").
 axis_of("holding", "convergence").
 axis_of("hub", "importance").
 axis_of("implausible_ref", "diagnostic").
+axis_of("unmodeled_frontmatter_shape", "diagnostic").
 axis_of("incident", "structure").
 axis_of("incoming_edge", "importance").
 axis_of("lifecycle_config_gap", "diagnostic").

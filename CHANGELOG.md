@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Frontmatter mappings and lists containing mappings produce `W008` warnings
+  with the authored key, file and source location in derived adapter evidence.
+  Scalar metadata and scalar lists retain their existing projection. Locations
+  that use the frontmatter opening fence carry `line_exact: false`.
+
 ## v0.26.1 - 2026-09-28
 
 ### Fixed
