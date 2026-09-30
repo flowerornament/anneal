@@ -81,8 +81,14 @@ jj config set --workspace templates.commit_trailers "'$template'" >/dev/null 2>&
     || echo "jj-identity: could not set jj commit trailers for $workspace" >&2
 
 # Name the tmux pane and its hail label after the jj workspace, so other
-# agents can address this session by workspace name.
-[ -n "${TMUX_PANE:-}" ] || exit 0
-tmux select-pane -t "$TMUX_PANE" -T "$workspace" 2>/dev/null || true
-command -v hail >/dev/null 2>&1 && hail name "$TMUX_PANE" "$workspace" >/dev/null 2>&1
+# agents can address this session by workspace name. The pane is the one
+# whose current directory is this workspace root, not $TMUX_PANE: codex runs
+# hooks from a shared daemon whose TMUX_PANE names whichever pane started it,
+# which would rename an unrelated pane. Zero or several matches: skip.
+command -v tmux >/dev/null 2>&1 || exit 0
+panes="$(tmux list-panes -a -F '#{pane_id}	#{pane_current_path}' 2>/dev/null |
+    awk -F '\t' -v root="$root" '$2 == root {print $1}')"
+[ "$(printf '%s\n' "$panes" | grep -c .)" = 1 ] || exit 0
+tmux select-pane -t "$panes" -T "$workspace" 2>/dev/null || true
+command -v hail >/dev/null 2>&1 && hail name "$panes" "$workspace" >/dev/null 2>&1
 exit 0
