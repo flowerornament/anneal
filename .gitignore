@@ -7,6 +7,8 @@ scorecard.png
 
 # anneal local derived state
 .design/.anneal/
+# bd mirror for the derived work graph (scripts/bd-mirror.py; regenerated, never authored)
+.design/issues/
 .claude/*
 !.claude/settings.json
 .codex/*

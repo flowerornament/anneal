@@ -24,3 +24,41 @@ config convergence {
 source code {
   source_root("..").
 }
+
+# Derived work graph over the bd mirror (design thread anneal-iiqt).
+# Base facts: mirrored issues, and scalar lists of bead ids in a successor
+# document's frontmatter (supersedes-work, moves, absorbs, dies).
+# Supersession flags an issue; only an assertion removes it.
+bead(h, id) := *meta{handle: h, key: "bead", value: id}.
+work_open(h) := bead(h, id), *handle{id: h, status: "open"}.
+work_open(h) := bead(h, id), *handle{id: h, status: "in_progress"}.
+work_asserted(h, verdict) := bead(h, id), *meta{key: verdict, value: id}, verdict = "absorbs".
+work_asserted(h, verdict) := bead(h, id), *meta{key: verdict, value: id}, verdict = "dies".
+work_asserted(h, verdict) := bead(h, id), *meta{key: verdict, value: id}, verdict = "moves".
+work_gone(h) := work_asserted(h, "absorbs").
+work_gone(h) := work_asserted(h, "dies").
+work_live(h) := work_open(h), not work_gone(h).
+work_under(h, p) := *meta{handle: h, key: "parent", value: p}.
+work_under(h, a) := *meta{handle: h, key: "parent", value: p}, work_under(p, a).
+work_suspect(h, root, by) := work_under(h, root), bead(root, rid), *meta{handle: by, key: "supersedes-work", value: rid}.
+work_orphan(h, root, by) := work_live(h), work_suspect(h, root, by), not work_asserted(h, "moves").
+work_blocked(h) := *edge{from: h, to: d, kind: "DependsOn"}, work_live(d).
+work_ready(h) := work_live(h), not work_blocked(h).
+
+@verb(
+  name: "work-ready",
+  query: "? work_ready(h), *meta{handle: h, key: \"bead\", value: bead}, *meta{handle: h, key: \"priority\", value: priority}, *meta{handle: h, key: \"title\", value: title} order by priority asc.",
+  doc: "Live issues with no live dependency, from the bd mirror. Run `bd export | scripts/bd-mirror.py .design` first; an empty answer with no mirror means unknown, not zero.",
+  output_schema: "{\"h\":\"HandleId\",\"bead\":\"String\",\"priority\":\"String\",\"title\":\"String\"}",
+  args: [],
+  capabilities: ["read"]
+).
+
+@verb(
+  name: "work-orphans",
+  query: "? work_orphan(h, root, by), *meta{handle: h, key: \"bead\", value: bead}.",
+  doc: "Live issues under a root that a document supersedes, with no moves, absorbs or dies assertion. A flag for judgment: orphans stay workable until someone asserts a verdict.",
+  output_schema: "{\"h\":\"HandleId\",\"root\":\"HandleId\",\"by\":\"HandleId\",\"bead\":\"String\"}",
+  args: [],
+  capabilities: ["read"]
+).
