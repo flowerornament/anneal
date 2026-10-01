@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.26.2 - 2026-09-30
+
 ### Fixed
 
 - jj added workspaces read recency and code-target history from their recorded

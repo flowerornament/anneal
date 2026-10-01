@@ -1,6 +1,6 @@
 [package]
 name = "anneal-core"
-version = "0.26.1"
+version = "0.26.2"
 edition = "2024"
 license = "MIT"
 description = "Substrate runtime types for anneal"
@@ -33,7 +33,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
-anneal-lang = { version = "0.26.1", path = "../anneal-lang" }
+anneal-lang = { version = "0.26.2", path = "../anneal-lang" }
 camino = { version = "1.2.2", features = ["serde1"] }
 dhat = { version = "0.3.3", optional = true }
 rayon = "1.12.0"
