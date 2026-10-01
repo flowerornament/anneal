@@ -3341,8 +3341,56 @@ anchor even when a mount crosses from `.design` into a source subtree. Direct
 Git/root disagreement without valid jj metadata remains a provenance
 disagreement; no boundary or backing remains provenance absence. No caller
 flag selects among these states: requiring an agent to carry repository mode
-would violate CR-D4. Real jj history, currency, and blame semantics require a
-separate decision.
+would violate CR-D4. History semantics for a jj workspace are CR-D113.
+
+**Definition CR-D113 (History semantics in a jj workspace).**
+A jj workspace's working copy is itself a commit, `@`. Every history operation
+in a jj workspace is answered against the workspace's own recorded `@`, through
+the Git directory resolved by CR-D111. The colocated anchor's checkout and
+index are never consulted: an anchor only has to exist, not to be current.
+
+Anneal reads `@` without snapshotting the working copy and performs no VCS
+write. History therefore describes the workspace's last recorded snapshot,
+exactly as history in a direct Git checkout describes `HEAD` and not
+uncommitted edits. The commit id is read once, validated as a commit in the
+resolved store, and pinned for the generation; no helper resolves `@`, `HEAD`
+or a bookmark again. At the end of extraction the pin is re-read. If it is
+unreadable or has moved, every operation that depended on it is unavailable
+for that generation: evidence gathered against the old pin is discarded
+rather than merged, and no history cache is written. A conflicted `@` or a
+stale workspace makes the history operations unavailable with that reason.
+
+A change in jj carries three times that move independently under rewrite:
+the author time of the change, the committer time of the commit that currently
+carries it, and the modification time of the file in one workspace. Committer
+time equals the wall-clock of the last operation that carried the change, so a
+rebase re-dates every file it carries unedited. File modification time is true
+to content but differs between workspaces at the same commit. Author time is
+portable and survives rewrite. It dates the creation of the change that last
+altered the file, not the last edit of its bytes: a long-lived change keeps
+its time while it is amended. Each operation names what it uses:
+
+| Operation (CR-D111) | Answer in a jj workspace |
+|---|---|
+| change history | Author time of the commit that the direct-Git traversal selects for the file, walked from the pin instead of `HEAD`. Same path-limited traversal, author time in place of committer time. |
+| target history | Existence of the cited target in the workspace, and its path history along the pin. This earns W006 for missing, gone and ambiguously moved targets. A rewrite that carries a file unchanged is not a change. Counts of change since citation need an assertion premise and stay unknown; a cached assertion date never substitutes for one. |
+| assertion blame | No answer. `assertion_date` and `assertion_revision` are null, because no VCS time records verification. |
+| ignore-index classification | Ignore rules from the ignore files in the workspace tree, with tracked-ness read from the tree of the pin. Repository-private and user-global exclude files are outside `@` and are not consulted. |
+
+`git_mtime`, `changed_within`, and the undated fallback of `recent_frontier`
+consume change history and inherit its time. Predicates whose oracle is the
+document's own date (`authored_age`, `currency_suspect`, date-backed
+`freshness`) are unaffected: their answer does not depend on the VCS in any
+checkout. Committer time is used by no operation in a jj workspace.
+
+Capability remains earned per operation (CR-D111): resolving the backing Git
+directory proves backing, and an operation becomes available only when its own
+probe against the pin succeeds. A failed probe makes that operation
+unavailable and leaves the others standing. A history helper MUST name the
+resolved Git directory explicitly and MUST NOT discover a repository by
+walking up from the workspace, since an unrelated ancestor repository would
+answer instead. Direct Git checkouts and colocated checkouts keep their
+existing behavior unchanged, including the timestamp field they read.
 
 ### §43 Introspection
 
@@ -4007,6 +4055,7 @@ config key.
 - CR-D109: Gate-output shadow protection (§26)
 - CR-D110: Markdown scan population disclosure (§42)
 - CR-D111: Project boundary, backing, and history capability (§42)
+- CR-D113: History semantics in a jj workspace (§42)
 - CR-D112: Lifecycle-derived orientation policy (§11)
 
 ### CR-R (Rules)
