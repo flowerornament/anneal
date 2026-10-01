@@ -33,6 +33,8 @@ fn handle_id(value: impl Into<String>) -> HandleId {
     HandleId::new(value).expect("markdown handle identities are nonempty after extraction")
 }
 
+pub(crate) type PendingHistory = Arc<Mutex<Vec<(RepositoryContext, CodeDriftEvidenceCache)>>>;
+
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
     pub scan_roots: Vec<Utf8PathBuf>,
@@ -46,6 +48,8 @@ pub struct MarkdownExtractionOptions {
     pub edge_assertion_refresh_progress: Option<EdgeAssertionRefreshProgressSink>,
     pub probe_edge_assertions: bool,
     pub(crate) repository: Option<RepositoryContext>,
+    pub(crate) history_times: Option<Arc<Mutex<BTreeMap<String, String>>>>,
+    pub(crate) pending_history: Option<PendingHistory>,
 }
 
 #[derive(Clone, Debug)]
@@ -285,7 +289,7 @@ fn extract_markdown_facts_from_anneal_config(
         )?;
     }
     emit_implausible_ref_meta(&mut batch, &mut revisions, &result)?;
-    emit_code_ref_meta(
+    let drift_cache = emit_code_ref_meta(
         &mut batch,
         &mut revisions,
         &mut edge_assertions,
@@ -293,7 +297,7 @@ fn extract_markdown_facts_from_anneal_config(
         &result,
         options,
         &repository,
-    )?;
+    );
     let file_payloads = std::mem::take(&mut result.files.file_payloads);
     let heading_spans = std::mem::take(&mut result.files.heading_spans);
     emit_content_spans(
@@ -304,7 +308,30 @@ fn extract_markdown_facts_from_anneal_config(
         heading_spans,
     );
     emit_concerns(&mut batch, &mut revisions, config, &result);
-
+    if let Some(times) = &options.history_times {
+        let mut times = times
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (logical, origin) in result.files.file_origins.iter() {
+            if let Some(instant) = repository.jj_file_time(origin) {
+                times.insert(logical.clone(), instant);
+            }
+        }
+    }
+    if let Some(pending) = &options.pending_history {
+        pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((repository, drift_cache));
+    } else {
+        let valid = repository.finish_jj_generation();
+        if repository.is_jj_workspace() {
+            discard_jj_history(&mut batch, &repository);
+        }
+        if valid {
+            drift_cache.save()?;
+        }
+    }
     Ok(batch)
 }
 
@@ -1138,69 +1165,14 @@ fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
     Utf8PathBuf::from_path_buf(path).ok()
 }
 
-fn resolve_jj_pointer(pointer_path: &Utf8Path, label: &str) -> Result<Utf8PathBuf> {
-    let pointer = std::fs::read_to_string(pointer_path).with_context(|| {
-        format!(
-            "anneal could not read jj {label} metadata at {pointer_path}; jj's internal metadata layout may have changed"
-        )
-    })?;
-    let pointer = pointer.trim();
-    if pointer.is_empty() {
-        anyhow::bail!(
-            "anneal found an empty jj {label} pointer at {pointer_path}; jj's internal metadata layout may have changed"
-        );
-    }
-    pointer_path
-        .parent()
-        .expect("jj pointer metadata has a parent directory")
-        .join(pointer)
-        .canonicalize_utf8()
-        .with_context(|| {
-            format!(
-                "anneal could not resolve jj {label} pointer {pointer:?} from {pointer_path}; jj's internal metadata layout may have changed"
-            )
-        })
-}
-
-/// Validate backing without exposing its path: the workspace boundary, not
-/// jj's shared Git store, owns containment and handle identity.
+/// Backing validation establishes containment only, never operation capability.
 fn validate_jj_git_backing(project_root: &Utf8Path) -> Result<bool> {
-    let jj_dir = project_root.join(".jj");
-    if !jj_dir.try_exists().with_context(|| {
-        format!(
-            "anneal could not inspect jj workspace metadata at {jj_dir}; jj's internal metadata layout may have changed"
-        )
-    })? {
+    if !project_root.join(".jj").exists() {
         return Ok(false);
     }
-
-    let repo_marker = jj_dir.join("repo");
-    let repo_dir = if repo_marker.is_dir() {
-        repo_marker
-            .canonicalize_utf8()
-            .context("failed to resolve jj repository metadata")?
-    } else {
-        resolve_jj_pointer(&repo_marker, "repository")?
-    };
-
-    let git_target = repo_dir.join("store/git_target");
-    let git_dir = resolve_jj_pointer(&git_target, "Git-backing")?;
-    let valid = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .args(["--git-dir", git_dir.as_str(), "rev-parse", "--git-dir"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !valid {
-        anyhow::bail!(
-            "anneal resolved jj Git-backing metadata to {git_dir}, but Git did not recognize it; jj's internal metadata layout may have changed"
-        );
-    }
-    Ok(true)
+    RepositoryContext::jj_git_backing(project_root)
+        .map(|_| true)
+        .map_err(|err| anyhow::anyhow!("{err}; jj's internal metadata layout may have changed"))
 }
 
 fn external_root_project_boundary(corpus_root: &Utf8Path) -> Result<Utf8PathBuf> {
@@ -1236,6 +1208,9 @@ fn gitignored_scanned_files(
     file_origins: &HashMap<String, Utf8PathBuf>,
     repository: &RepositoryContext,
 ) -> BTreeSet<String> {
+    if repository.is_jj_workspace() {
+        return jj_ignored_scanned_files(file_origins, repository);
+    }
     if repository
         .direct_git_root(RepositoryOperation::IgnoreIndex)
         .is_none()
@@ -1367,6 +1342,91 @@ fn resolve_external_scan_roots(
     }
     mounts.sort_by(|left, right| left.handle_prefix.cmp(&right.handle_prefix));
     Ok(mounts)
+}
+
+fn jj_ignored_scanned_files(
+    file_origins: &HashMap<String, Utf8PathBuf>,
+    repository: &RepositoryContext,
+) -> BTreeSet<String> {
+    let (Some(root), Some(tracked)) = (
+        repository.jj_workspace_root(),
+        repository.jj_tracked_paths(),
+    ) else {
+        return BTreeSet::new();
+    };
+    let mut matchers = BTreeMap::new();
+    let mut ignored = BTreeSet::new();
+    for (logical, origin) in file_origins {
+        let Ok(origin) = origin.canonicalize_utf8() else {
+            repository.fail_jj_operation(
+                RepositoryOperation::IgnoreIndex,
+                "jj-scanned-origin-unreadable",
+            );
+            return BTreeSet::new();
+        };
+        let Ok(relative) = origin.strip_prefix(root) else {
+            continue;
+        };
+        if tracked.contains(relative.as_str()) {
+            continue;
+        }
+        let Some(parent) = origin.parent() else {
+            continue;
+        };
+        if !matchers.contains_key(parent) {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+            let mut ancestors = parent
+                .ancestors()
+                .take_while(|path| path.starts_with(root))
+                .collect::<Vec<_>>();
+            ancestors.reverse();
+            for directory in ancestors {
+                let file = directory.join(".gitignore");
+                if file.exists() && builder.add(file).is_some() {
+                    repository.fail_jj_operation(
+                        RepositoryOperation::IgnoreIndex,
+                        "jj-ignore-rules-unreadable",
+                    );
+                    return BTreeSet::new();
+                }
+            }
+            let Ok(matcher) = builder.build() else {
+                repository
+                    .fail_jj_operation(RepositoryOperation::IgnoreIndex, "jj-ignore-rules-invalid");
+                return BTreeSet::new();
+            };
+            matchers.insert(parent.to_path_buf(), matcher);
+        }
+        if matchers.get(parent).is_some_and(|matcher| {
+            matcher
+                .matched_path_or_any_parents(&origin, false)
+                .is_ignore()
+        }) {
+            ignored.insert(logical.clone());
+        }
+    }
+    ignored
+}
+
+/// Drop evidence from a moved pin, including missing-target confidence that feeds W006.
+pub(crate) fn discard_jj_history(batch: &mut FactBatch, repository: &RepositoryContext) {
+    let target_unavailable = !repository.operation_available(RepositoryOperation::TargetHistory);
+    let ignore_unavailable = !repository.operation_available(RepositoryOperation::IgnoreIndex);
+    batch.meta.retain(|meta| {
+        !(target_unavailable && meta.key.starts_with("code.referent_")
+            || ignore_unavailable && meta.key == "md.scan_git_disposition")
+    });
+    if !target_unavailable {
+        return;
+    }
+    for meta in &mut batch.meta {
+        if meta.key == CodeTargetMeta::TARGET_HISTORY_STATUS {
+            meta.value = "unavailable".to_string();
+        }
+        if meta.key == CodeTargetMeta::TARGET_EXISTS && meta.value == "false" {
+            meta.value = "unknown".to_string();
+        }
+    }
 }
 
 fn paths_overlap(left: &Utf8Path, right: &Utf8Path) -> bool {
@@ -2102,7 +2162,7 @@ fn emit_code_ref_meta(
     result: &parse::BuildResult,
     options: &MarkdownExtractionOptions,
     repository: &RepositoryContext,
-) -> Result<()> {
+) -> CodeDriftEvidenceCache {
     let mut seen = HashSet::new();
     let mut probe_cache = CodeTargetProbeCache::new();
     let drift_mode = match (
@@ -2209,8 +2269,6 @@ fn emit_code_ref_meta(
         }
     }
     drift_cache
-        .save()
-        .context("failed to write drift evidence cache")
 }
 
 fn emit_code_drift_evidence_meta(

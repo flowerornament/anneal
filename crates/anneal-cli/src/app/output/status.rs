@@ -27,6 +27,8 @@ pub(in crate::app) struct StatusOutput {
 pub(in crate::app) struct RepositoryDisclosure {
     jj_workspace: bool,
     target_history_available: bool,
+    change_history_available: bool,
+    assertion_blame_available: bool,
     ignore_index_available: bool,
 }
 
@@ -34,6 +36,10 @@ impl RepositoryDisclosure {
     pub(in crate::app) fn from_context(context: &RepositoryContext) -> Self {
         Self {
             jj_workspace: context.is_jj_workspace(),
+            change_history_available: context
+                .operation_available(RepositoryOperation::ChangeHistory),
+            assertion_blame_available: context
+                .operation_available(RepositoryOperation::AssertionBlame),
             target_history_available: context
                 .operation_available(RepositoryOperation::TargetHistory),
             ignore_index_available: context.operation_available(RepositoryOperation::IgnoreIndex),
@@ -45,6 +51,8 @@ impl RepositoryDisclosure {
         Self {
             jj_workspace: false,
             target_history_available: true,
+            change_history_available: true,
+            assertion_blame_available: true,
             ignore_index_available: true,
         }
     }
@@ -92,12 +100,7 @@ pub(super) fn write_status_text<W: Write>(
         "Scale        {total_handles} handles, {file_handles} files, {coverage}% lifecycle coverage ({statusless_files} statusless files)"
     )?;
     let gitignored_files = metric_count(&metrics, "scope", "gitignored_markdown_file_handles");
-    if repository.jj_workspace && !repository.ignore_index_available {
-        writeln!(
-            writer,
-            "Scope        Git ignore-index classification unavailable"
-        )?;
-    } else if gitignored_files > 0 {
+    if gitignored_files > 0 && (!repository.jj_workspace || repository.ignore_index_available) {
         let unit = if gitignored_files == 1 {
             "file handle"
         } else {
@@ -118,10 +121,19 @@ pub(super) fn write_status_text<W: Write>(
         writer,
         "Coverage     {coverage}% of file handles carry lifecycle status; orientation is graph+recency-led"
     )?;
-    if repository.jj_workspace && !repository.target_history_available {
+    if repository.jj_workspace {
+        let available = |value| if value { "available" } else { "unavailable" };
         writeln!(
             writer,
-            "History      jj workspace, Git-derived recency, W006, and assertion provenance unavailable"
+            "History      jj recorded @: recency {} (change author time), W006 {}, assertion provenance {}",
+            available(repository.change_history_available),
+            available(repository.target_history_available),
+            available(repository.assertion_blame_available)
+        )?;
+        writeln!(
+            writer,
+            "Scope        jj workspace ignore classification {}",
+            available(repository.ignore_index_available)
         )?;
     }
 

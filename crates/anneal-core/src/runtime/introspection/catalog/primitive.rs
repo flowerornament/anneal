@@ -177,7 +177,7 @@ pub(in crate::runtime::introspection) fn primitive_relationship(
             "Lower-authority change-recency primitive over git file mtimes. Join `*handle{kind: \"file\"}` when you want one row per changed file; use `authored_age` when you need date-backed age.",
         ),
         PrimitivePredicate::GitMtime => Some(
-            "Raw git timestamp primitive used by `changed_within`; compose it directly when you need exact commit times. Bulk commits can make this a degraded change oracle, so it is not authored age.",
+            "Raw history timestamp used by `changed_within`. Direct Git reads committer time at HEAD; a jj desk reads author time along its recorded @ without snapshotting, ignoring unsnapshotted edits. This dates creation of the change that last touched the file, not the latest edit of bytes in a long-lived change. Conflicted or stale jj workspaces cannot answer. Re-read pins protect each extraction from movement. It is not document-date authored_age.",
         ),
         PrimitivePredicate::RepositoryOperationCapability => Some(
             "This is concrete workspace availability, not actor permission or a promise that an available operation has result rows.",

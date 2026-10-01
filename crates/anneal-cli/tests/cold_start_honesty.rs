@@ -965,3 +965,209 @@ fn structured_frontmatter_warns_with_queryable_evidence_and_preserves_scalars() 
     assert_success(&card);
     assert!(text(&card.stdout).contains("authorial absence"));
 }
+
+fn fixture_vcs(root: &Path, program: &str, args: &[&str]) -> String {
+    let mut command = Command::new(program);
+    command
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR");
+    if program == "git" {
+        command
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z");
+    } else {
+        command.args([
+            "--config",
+            "user.name='Test'",
+            "--config",
+            "user.email='test@example.com'",
+        ]);
+    }
+    let output = command.args(args).output().expect("fixture vcs command");
+    assert_success(&output);
+    text(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn real_jj_desk_uses_own_pin_mount_origins_and_ignore_rules_with_null_provenance() {
+    if Command::new("jj").arg("--version").output().is_err() {
+        eprintln!("real jj fixture skipped: jj executable unavailable");
+        return;
+    }
+    let dir = tempdir();
+    let ancestor = dir.path().join("ancestor");
+    std::fs::create_dir_all(&ancestor).expect("mkdir");
+    fixture_vcs(&ancestor, "git", &["init", "--quiet"]);
+    write_file(&ancestor, ".git/info/exclude", "*.md\n");
+    let anchor = ancestor.join("anchor");
+    std::fs::create_dir_all(&anchor).expect("mkdir");
+    fixture_vcs(&anchor, "git", &["init", "--quiet"]);
+    write_file(
+        &anchor,
+        ".gitignore",
+        ".design/ignored.md\n.design/tracked.md\n",
+    );
+    write_file(
+        &anchor,
+        ".design/anneal.dl",
+        "source md { file_extension(\".md\"). scan_root(\".\"). external_root(\"../docs\"). }\n",
+    );
+    write_file(
+        &anchor,
+        ".design/spec.md",
+        "---\nstatus: active\n---\n# Spec\n\nSee `lib/old.rs`.\n",
+    );
+    write_file(
+        &anchor,
+        ".design/tracked.md",
+        "# Tracked despite ignore rule\n",
+    );
+    write_file(&anchor, "docs/external.md", "# External\n");
+    write_file(&anchor, "lib/old.rs", "pub fn old() {}\n");
+    fixture_vcs(&anchor, "git", &["add", "-f", "."]);
+    fixture_vcs(&anchor, "git", &["commit", "--quiet", "-m", "baseline"]);
+    fixture_vcs(&anchor, "jj", &["git", "init", "--colocate"]);
+    let desk = ancestor.join("desk");
+    fixture_vcs(
+        &anchor,
+        "jj",
+        &["workspace", "add", desk.to_str().expect("utf8")],
+    );
+    std::fs::remove_file(desk.join("lib/old.rs")).expect("remove target only at desk");
+    fixture_vcs(&desk, "jj", &["describe", "-m", "remove target"]);
+    // These are unsnapshotted: the pin still supplies tracked-ness and history.
+    write_file(&desk, ".design/ignored.md", "# Ignored\n");
+    write_file(
+        &desk,
+        ".design/private.md",
+        "# Private excludes must not apply\n",
+    );
+    write_file(&anchor, ".git/info/exclude", ".design/private.md\n");
+    let root = desk.join(".design");
+    let root = root.to_str().expect("utf8");
+    let capabilities = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? repository_operation_capability(operation, availability, provider, reason).",
+    ]));
+    for operation in ["change_history", "target_history", "ignore_index"] {
+        assert!(
+            capabilities
+                .iter()
+                .any(|row| row["operation"] == operation && row["availability"] == "available"),
+            "{capabilities:#?}"
+        );
+    }
+    assert!(
+        capabilities.iter().any(
+            |row| row["operation"] == "assertion_blame" && row["availability"] == "unavailable"
+        )
+    );
+    let recency = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? git_mtime(file, instant).",
+    ]));
+    assert!(
+        recency.iter().any(
+            |row| row["file"] == "docs/external.md" && row["instant"] == "2001-01-01T00:00:00Z"
+        ),
+        "{recency:#?}"
+    );
+    let ignored = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? *meta{key: "md.scan_git_disposition", handle: h, value: value}."#,
+    ]));
+    assert_eq!(ignored.len(), 1, "{ignored:#?}");
+    assert_eq!(ignored[0]["h"], "ignored.md");
+    let target = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? *meta{key: "target_exists", value: value}."#,
+    ]));
+    assert!(
+        target.iter().any(|row| row["value"] == "false"),
+        "{target:#?}"
+    );
+    assert!(
+        anchor.join("lib/old.rs").exists(),
+        "anchor must disagree with desk"
+    );
+    let edges = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? *edge{assertion_date: date, assertion_revision: revision}.",
+    ]));
+    assert!(!edges.is_empty());
+    assert!(
+        edges
+            .iter()
+            .all(|row| row["date"].is_null() && row["revision"].is_null())
+    );
+    let status = run(&["--root", root, "--format=text", "status"]);
+    assert_success(&status);
+    assert!(text(&status.stdout).contains(
+        "recency available (change author time), W006 available, assertion provenance unavailable"
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.path().join("fault-bin");
+        std::fs::create_dir_all(&bin).expect("wrapper directory");
+        let wrapper = bin.join("git");
+        std::fs::write(&wrapper, "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = '--format=%x00%aI' ]; then exit 1; fi\ndone\nexec \"$ANNEAL_TEST_REAL_GIT\" \"$@\"\n").expect("fault wrapper");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .expect("executable wrapper");
+        let real_git = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("resolve Git");
+        assert_success(&real_git);
+        let path = std::env::var_os("PATH").expect("PATH");
+        let paths = std::iter::once(bin).chain(std::env::split_paths(&path));
+        let fault = Command::new(anneal_bin())
+            .current_dir(&desk)
+            .env("PATH", std::env::join_paths(paths).expect("joined PATH"))
+            .env("ANNEAL_TEST_REAL_GIT", text(&real_git.stdout).trim())
+            .args([
+                "--root",
+                root,
+                "--json",
+                "-e",
+                "? repository_operation_capability(operation, availability, provider, reason).",
+            ])
+            .output()
+            .expect("fault probe");
+        let rows = json_rows(&fault);
+        assert!(
+            rows.iter().any(|row| row["operation"] == "change_history"
+                && row["availability"] == "unavailable"
+                && row["reason"] == "jj-change-history-probe-failed"),
+            "{rows:#?}"
+        );
+        for operation in ["target_history", "ignore_index"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row["operation"] == operation && row["availability"] == "available"),
+                "{rows:#?}"
+            );
+        }
+    }
+}

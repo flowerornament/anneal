@@ -150,6 +150,7 @@ pub struct CodeDriftEvidenceCache {
     head: Option<String>,
     entries: BTreeMap<String, CachedCodeDriftEvidence>,
     changed: bool,
+    jj: Option<RepositoryContext>,
 }
 
 impl CodeDriftEvidenceCache {
@@ -162,6 +163,18 @@ impl CodeDriftEvidenceCache {
         let repo_root =
             enclosing_project_root(corpus_root).unwrap_or_else(|| corpus_root.to_path_buf());
         let cache_path = repo_root.join(DRIFT_CACHE_RELATIVE_PATH);
+        let jj = repository.is_jj_workspace().then(|| repository.clone());
+        if let Some(repository) = &jj {
+            return Self {
+                mode,
+                repo_root,
+                cache_path,
+                head: repository.jj_pin().map(str::to_string),
+                entries: BTreeMap::new(),
+                changed: false,
+                jj,
+            };
+        }
         let head = repository
             .direct_git_root(RepositoryOperation::TargetHistory)
             .and_then(|_| git_head(&repo_root));
@@ -182,6 +195,7 @@ impl CodeDriftEvidenceCache {
             head,
             entries,
             changed,
+            jj,
         }
     }
 
@@ -204,6 +218,9 @@ impl CodeDriftEvidenceCache {
         requests: &[CodeDriftEvidenceRequest],
         progress: Option<&CodeDriftRefreshProgressSink>,
     ) -> Vec<Option<CodeDriftEvidence>> {
+        if let Some(repository) = &self.jj {
+            return self.jj_evidence_for_batch(repository, requests, progress);
+        }
         let progress = matches!(self.mode, CodeDriftEvidenceMode::Refresh)
             .then_some(progress)
             .flatten();
@@ -288,8 +305,89 @@ impl CodeDriftEvidenceCache {
         results
     }
 
+    fn jj_evidence_for_batch(
+        &self,
+        repository: &RepositoryContext,
+        requests: &[CodeDriftEvidenceRequest],
+        progress: Option<&CodeDriftRefreshProgressSink>,
+    ) -> Vec<Option<CodeDriftEvidence>> {
+        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh)
+            || !repository.operation_available(RepositoryOperation::TargetHistory)
+        {
+            return vec![None; requests.len()];
+        }
+        let (Some(pin), Some(root)) = (repository.jj_pin(), repository.jj_workspace_root()) else {
+            return vec![None; requests.len()];
+        };
+        let targets = requests
+            .iter()
+            .filter_map(|request| normalize_probe_target(root, &request.target_path))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        if let Some(sink) = progress {
+            sink.report(CodeDriftRefreshProgress {
+                completed: 0,
+                total: targets.len(),
+                elapsed: Duration::ZERO,
+            });
+        }
+        let reporter = BatchProgress::new(progress, targets.len(), started);
+        let memo = MoveShowMemo::for_jj(root, repository);
+        let compute = |target: &Utf8PathBuf| {
+            let began = Instant::now();
+            let (disposition, candidates) = if root.join(target).is_file() {
+                ("referent-present-undated", Vec::new())
+            } else if repository.jj_target_history(root, target) == Some(true) {
+                let candidates = find_jj_move_candidates(repository, pin, target, &memo);
+                let disposition = match candidates.len() {
+                    0 => "referent-gone",
+                    1 => "referent-moved",
+                    _ => "referent-moved-ambiguous",
+                };
+                (disposition, candidates)
+            } else {
+                ("referent-unknown", Vec::new())
+            };
+            let evidence = CodeDriftEvidence {
+                disposition: disposition.to_string(),
+                commits_since_assertion: None,
+                moved_to: (candidates.len() == 1).then(|| candidates[0].clone()),
+                move_candidates: candidates,
+                evidence_head: pin.to_string(),
+                assertion_premise: "assertion_date_unknown".to_string(),
+                cost_ms: began.elapsed().as_millis(),
+            };
+            reporter.advance();
+            (target.clone(), evidence)
+        };
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(8)
+            .min(targets.len())
+            .max(1);
+        let results: BTreeMap<_, _> =
+            if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(workers).build() {
+                pool.install(|| targets.par_iter().map(compute).collect())
+            } else {
+                targets.iter().map(compute).collect()
+            };
+        requests
+            .iter()
+            .map(|request| {
+                results
+                    .get(&normalize_probe_target(root, &request.target_path)?)
+                    .cloned()
+            })
+            .collect()
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
-        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh) || !self.changed {
+        if self.jj.is_some()
+            || !matches!(self.mode, CodeDriftEvidenceMode::Refresh)
+            || !self.changed
+        {
             return Ok(());
         }
         if let Some(parent) = self.cache_path.parent() {
@@ -353,6 +451,7 @@ type MoveShowSlot = Arc<OnceLock<Option<Arc<str>>>>;
 
 struct MoveShowMemo<'a> {
     repo_root: &'a Utf8Path,
+    repository: Option<&'a RepositoryContext>,
     entries: Mutex<BTreeMap<String, MoveShowSlot>>,
     #[cfg(test)]
     show_invocations: std::sync::atomic::AtomicUsize,
@@ -362,9 +461,17 @@ impl<'a> MoveShowMemo<'a> {
     fn new(repo_root: &'a Utf8Path) -> Self {
         Self {
             repo_root,
+            repository: None,
             entries: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             show_invocations: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn for_jj(repo_root: &'a Utf8Path, repository: &'a RepositoryContext) -> Self {
+        Self {
+            repository: Some(repository),
+            ..Self::new(repo_root)
         }
     }
 
@@ -383,18 +490,20 @@ impl<'a> MoveShowMemo<'a> {
             #[cfg(test)]
             self.show_invocations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            git_output(
-                self.repo_root,
-                &[
-                    "show",
-                    "--name-status",
-                    "--find-renames",
-                    "--find-copies",
-                    "--format=",
-                    commit,
-                ],
-            )
-            .map(Arc::<str>::from)
+            let args = &[
+                "show",
+                "--name-status",
+                "--find-renames",
+                "--find-copies",
+                "--format=",
+                commit,
+            ];
+            self.repository
+                .map_or_else(
+                    || git_output(self.repo_root, args),
+                    |repository| jj_git_output(repository, args),
+                )
+                .map(Arc::<str>::from)
         })
         .clone()
     }
@@ -468,6 +577,7 @@ impl CodeTargetProbe {
 #[derive(Default)]
 pub struct CodeTargetProbeCache {
     history_by_base: BTreeMap<Utf8PathBuf, Option<BTreeSet<String>>>,
+    jj: Option<RepositoryContext>,
 }
 
 impl CodeTargetProbeCache {
@@ -482,6 +592,7 @@ impl CodeTargetProbeCache {
         target_path: &str,
         repository: &RepositoryContext,
     ) -> CodeTargetProbe {
+        self.jj = repository.is_jj_workspace().then(|| repository.clone());
         probe_code_target_with_cache(corpus_root, target_path, repository, self)
     }
 
@@ -501,6 +612,9 @@ impl CodeTargetProbeCache {
     ) -> Option<bool> {
         if !available {
             return None;
+        }
+        if let Some(repository) = &self.jj {
+            return repository.jj_target_history(base, target);
         }
         let history = self
             .history_by_base
@@ -979,6 +1093,54 @@ fn find_move_candidates(
     ) else {
         return Vec::new();
     };
+    parse_move_candidates(target, &deleting_commits, show_memo)
+}
+
+fn jj_git_output(repository: &RepositoryContext, args: &[&str]) -> Option<String> {
+    let output = repository.jj_git_command()?.args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn find_jj_move_candidates(
+    repository: &RepositoryContext,
+    pin: &str,
+    target: &Utf8Path,
+    memo: &MoveShowMemo<'_>,
+) -> Vec<String> {
+    let Some(commits) = jj_git_output(
+        repository,
+        &[
+            "log",
+            "--format=%H",
+            "--diff-filter=D",
+            pin,
+            "--",
+            target.as_str(),
+        ],
+    ) else {
+        repository.fail_jj_operation(
+            RepositoryOperation::TargetHistory,
+            "jj-move-history-probe-failed",
+        );
+        return Vec::new();
+    };
+    let Some(root) = repository.jj_workspace_root() else {
+        return Vec::new();
+    };
+    parse_move_candidates(target, &commits, memo)
+        .into_iter()
+        .filter(|path| root.join(path).is_file())
+        .collect()
+}
+
+fn parse_move_candidates(
+    target: &Utf8Path,
+    deleting_commits: &str,
+    show_memo: &MoveShowMemo<'_>,
+) -> Vec<String> {
     let mut candidates = BTreeSet::new();
     for commit in deleting_commits
         .lines()
@@ -986,6 +1148,12 @@ fn find_move_candidates(
         .filter(|line| !line.is_empty())
     {
         let Some(show) = show_memo.show(commit) else {
+            if let Some(repository) = show_memo.repository {
+                repository.fail_jj_operation(
+                    RepositoryOperation::TargetHistory,
+                    "jj-move-content-probe-failed",
+                );
+            }
             continue;
         };
         let mut deleted_in_commit = false;
@@ -1061,7 +1229,7 @@ fn nonempty_line_count(output: &str) -> u32 {
 pub fn probe_code_target(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
     let mut cache = CodeTargetProbeCache::new();
     let repository = RepositoryContext::discover(corpus_root);
-    probe_code_target_with_cache(corpus_root, target_path, &repository, &mut cache)
+    cache.probe(corpus_root, target_path, &repository)
 }
 
 fn probe_code_target_with_cache(

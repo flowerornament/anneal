@@ -6,6 +6,12 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- jj added workspaces read recency and code-target history from their recorded
+  `@`, with change-author timestamps that survive rebase. Workspace ignore rules
+  use the pinned tracked tree rather than the anchor's index. Availability is
+  disclosed per operation; assertion provenance stays null. Reads do not
+  snapshot or change the workspace, and a moving pin discards dependent evidence.
+
 - Frontmatter mappings and lists containing mappings produce `W008` warnings
   with the authored key, file and source location in derived adapter evidence.
   Scalar metadata and scalar lists retain their existing projection. Locations

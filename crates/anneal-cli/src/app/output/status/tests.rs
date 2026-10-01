@@ -112,6 +112,8 @@ fn jj_status_names_unavailable_repository_operations_without_false_zeros() {
         repository: RepositoryDisclosure {
             jj_workspace: true,
             target_history_available: false,
+            change_history_available: false,
+            assertion_blame_available: false,
             ignore_index_available: false,
         },
     });
@@ -122,9 +124,9 @@ fn jj_status_names_unavailable_repository_operations_without_false_zeros() {
         .expect("render jj status");
     let rendered = String::from_utf8(rendered).expect("utf8");
 
-    assert!(rendered.contains("Scope        Git ignore-index classification unavailable"));
+    assert!(rendered.contains("Scope        jj workspace ignore classification unavailable"));
     assert!(rendered.contains(
-        "History      jj workspace, Git-derived recency, W006, and assertion provenance unavailable"
+        "History      jj recorded @: recency unavailable (change author time), W006 unavailable, assertion provenance unavailable"
     ));
     assert!(
         rendered.contains(

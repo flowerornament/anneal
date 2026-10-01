@@ -337,20 +337,28 @@ impl RuntimeSession {
             actor: actor.clone(),
             cancellation: CancellationToken::new(),
         };
-        let markdown_batch = markdown_source
-            .extract(&context)
+        let (mut markdown_batch, mut jj_mtimes) = markdown_source
+            .extract_with_recency(&context)
             .map_err(|err| anyhow!("markdown extraction failed: {err}"))?;
+        let code_batch = if CodeSource::is_configured(&config_facts) {
+            Some(
+                code_source
+                    .extract(&context)
+                    .map_err(|err| anyhow!("code extraction failed: {err}"))?,
+            )
+        } else {
+            None
+        };
+        if repository.is_jj_workspace() && !repository.finish_jj_generation() {
+            MarkdownSource::discard_unavailable_history(&mut markdown_batch, &repository);
+            jj_mtimes.clear();
+        }
         let mut store = FactStore::default();
         store
             .merge(markdown_batch)
             .context("failed to merge markdown facts")?;
-        if CodeSource::is_configured(&config_facts) {
-            let code_batch = code_source
-                .extract(&context)
-                .map_err(|err| anyhow!("code extraction failed: {err}"))?;
-            store
-                .merge(code_batch)
-                .context("failed to merge code facts")?;
+        if let Some(batch) = code_batch {
+            store.merge(batch).context("failed to merge code facts")?;
         }
         let configs = runtime_config_facts(project.as_ref(), &corpus);
         if !configs.is_empty() {
@@ -358,11 +366,15 @@ impl RuntimeSession {
                 .replace_configs(&corpus, configs)
                 .context("failed to merge runtime config facts")?;
         }
-        let git_mtimes = git_mtimes_for_files(
-            root,
-            &repository,
-            store.handles().iter().map(|handle| handle.file.as_str()),
-        );
+        let git_mtimes = if repository.is_jj_workspace() {
+            jj_mtimes
+        } else {
+            git_mtimes_for_files(
+                root,
+                &repository,
+                store.handles().iter().map(|handle| handle.file.as_str()),
+            )
+        };
         let history = read_snapshot_history(root).context("failed to read snapshot history")?;
         replace_snapshot_history(&mut store, &history);
         Ok(Self {

@@ -202,9 +202,11 @@ so there is nothing to stage.
   Never run a mutating git command, with one exception: releases run from
   `~/code/anneal` after `jj git fetch && jj new master` (see Release Flow;
   `scripts/release.py` tags and pushes with git there).
-- anneal run inside a jj workspace reports Git-derived recency, W006 and
-  assertion provenance as unavailable until anneal-qao9 lands. Run
-  provenance-dependent checks from `~/code/anneal`.
+- anneal in a jj added workspace reads recency and W006 against recorded `@`,
+  without snapshotting, and uses workspace ignore rules with the pinned tracked
+  tree. Assertion provenance remains unavailable (anneal-t4kb); inspect
+  `repository_operation_capability` for each operation. Stale, conflicted, or
+  moving pins make dependent operations unavailable. See CR-D113.
 - The git-fixture tests (anneal-re9h, fixed) strip `GIT_DIR` and work in their
   own tempdir repositories, so `just check` is safe in a jj workspace.
 - New jj workspace: `jj workspace add --name anneal-<pair><letter>

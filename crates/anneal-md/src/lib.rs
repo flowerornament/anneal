@@ -1,7 +1,8 @@
 //! Markdown adapter for anneal.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anneal_core::{
@@ -155,6 +156,23 @@ impl Source for MarkdownSource {
     }
 
     fn extract(&self, cx: &SourceContext<'_>) -> Result<FactBatch, SourceError> {
+        self.extract_with_recency(cx).map(|(batch, _)| batch)
+    }
+}
+
+impl MarkdownSource {
+    /// Discard history-derived adapter evidence when a generation's pin loses capability.
+    pub fn discard_unavailable_history(batch: &mut FactBatch, repository: &RepositoryContext) {
+        if repository.is_jj_workspace() {
+            extract::adapter::discard_jj_history(batch, repository);
+        }
+    }
+
+    /// Extract with an extraction-local recency map; physical origins never become stored facts.
+    pub fn extract_with_recency(
+        &self,
+        cx: &SourceContext<'_>,
+    ) -> Result<(FactBatch, BTreeMap<String, String>), SourceError> {
         if cx.time_ref.is_some() {
             return Err(SourceError::UnsupportedTimeRef(
                 cx.time_ref.clone().expect("checked above"),
@@ -168,6 +186,10 @@ impl Source for MarkdownSource {
         discovery.options.read_code_drift_evidence = cx.read_code_drift_evidence;
         discovery.options.refresh_code_drift_evidence = cx.refresh_code_drift_evidence;
         discovery.options.repository.clone_from(&self.repository);
+        let history_times = Arc::new(Mutex::new(BTreeMap::new()));
+        discovery.options.history_times = Some(Arc::clone(&history_times));
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        discovery.options.pending_history = Some(Arc::clone(&pending));
         discovery
             .options
             .drift_refresh_progress
@@ -205,7 +227,46 @@ impl Source for MarkdownSource {
             .map_err(|err| SourceError::Other(err.to_string()))?;
             combined.append(batch);
         }
-        Ok(combined)
+        let pending = std::mem::take(
+            &mut *pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let mut valid = true;
+        for (repository, _) in &pending {
+            valid &= repository.finish_jj_generation();
+        }
+        for (repository, _) in &pending {
+            if repository.is_jj_workspace() {
+                extract::adapter::discard_jj_history(&mut combined, repository);
+            }
+        }
+        if valid {
+            for (_, cache) in pending {
+                cache
+                    .save()
+                    .map_err(|err| SourceError::Other(err.to_string()))?;
+            }
+        } else {
+            history_times
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        if self.repository.as_ref().is_some_and(|repository| {
+            !repository.operation_available(anneal_core::RepositoryOperation::ChangeHistory)
+        }) {
+            history_times
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        let times = std::mem::take(
+            &mut *history_times
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        Ok((combined, times))
     }
 }
 
@@ -252,6 +313,8 @@ impl MarkdownDiscoveryConfig {
                 edge_assertion_refresh_progress: None,
                 probe_edge_assertions: false,
                 repository: None,
+                history_times: None,
+                pending_history: None,
             },
         })
     }
@@ -551,5 +614,99 @@ mod tests {
                 .iter()
                 .any(|fact| fact.handle.as_str() == "a.md" && fact.value == "New")
         );
+    }
+    #[test]
+    fn moved_jj_pin_discards_extraction_evidence_and_does_not_write_cache() {
+        use std::process::Command;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        if Command::new("jj").arg("--version").output().is_err() {
+            eprintln!("real jj movement fixture skipped: jj executable unavailable");
+            return;
+        }
+        let temp = tempdir().expect("tempdir");
+        let anchor = Utf8PathBuf::from_path_buf(temp.path().join("anchor")).expect("utf8");
+        let desk = Utf8PathBuf::from_path_buf(temp.path().join("desk")).expect("utf8");
+        fs::create_dir_all(anchor.join(".design")).expect("mkdir");
+        fs::create_dir_all(anchor.join("lib")).expect("mkdir");
+        fs::write(
+            anchor.join(".design/doc.md"),
+            "---\nstatus: active\n---\n# Doc\nSee `lib/old.rs`.\n",
+        )
+        .expect("doc");
+        fs::write(anchor.join("lib/old.rs"), "pub fn old() {}\n").expect("code");
+        let vcs = |root: &camino::Utf8Path, program: &str, args: &[&str]| {
+            let mut command = Command::new(program);
+            command
+                .current_dir(root)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR");
+            if program == "git" {
+                command.args(["-c", "user.name=Test", "-c", "user.email=test@example.com"]);
+            } else {
+                command.args([
+                    "--config",
+                    "user.name='Test'",
+                    "--config",
+                    "user.email='test@example.com'",
+                ]);
+            }
+            let output = command.args(args).output().expect("fixture command");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        vcs(&anchor, "git", &["init", "--quiet"]);
+        vcs(&anchor, "git", &["add", "."]);
+        vcs(&anchor, "git", &["commit", "--quiet", "-m", "baseline"]);
+        vcs(&anchor, "jj", &["git", "init", "--colocate"]);
+        vcs(&anchor, "jj", &["workspace", "add", desk.as_str()]);
+        fs::remove_file(desk.join("lib/old.rs")).expect("remove target");
+        vcs(&desk, "jj", &["describe", "-m", "remove"]);
+        let root = desk.join(".design");
+        let repository = RepositoryContext::discover(&root);
+        let moved = Arc::new(AtomicBool::new(false));
+        let moved_clone = Arc::clone(&moved);
+        let progress_root = desk.clone();
+        let sink = CodeDriftRefreshProgressSink::new(move |_| {
+            if !moved_clone.swap(true, Ordering::SeqCst) {
+                vcs(&progress_root, "jj", &["new"]);
+            }
+        });
+        let source = MarkdownSource::default()
+            .with_repository_context(repository.clone())
+            .with_drift_refresh_progress(sink);
+        let config = ConfigFacts::default();
+        let mut cx = context(&root, &config, None);
+        cx.probe_code_target_history = true;
+        cx.refresh_code_drift_evidence = true;
+        let (batch, times) = source.extract_with_recency(&cx).expect("extract");
+        assert!(
+            moved.load(Ordering::SeqCst),
+            "fixture must actually move @ during the probe"
+        );
+        assert!(times.is_empty());
+        assert!(!repository.operation_available(anneal_core::RepositoryOperation::TargetHistory));
+        assert!(
+            batch
+                .meta
+                .iter()
+                .any(|meta| meta.key == "target_history_status" && meta.value == "unavailable")
+        );
+        assert!(
+            batch
+                .meta
+                .iter()
+                .any(|meta| meta.key == "target_exists" && meta.value == "unknown")
+        );
+        assert!(
+            !batch
+                .meta
+                .iter()
+                .any(|meta| meta.key.starts_with("code.referent_"))
+        );
+        assert!(!desk.join(".anneal/drift-evidence.json").exists());
     }
 }

@@ -1,6 +1,9 @@
 //! Runtime repository provider and operation availability.
 
 use std::process::Command;
+use std::sync::Arc;
+
+mod jj;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -65,13 +68,6 @@ pub(crate) enum RepositoryAvailability {
 }
 
 impl RepositoryAvailability {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Unavailable => "unavailable",
-        }
-    }
-
     pub(crate) const fn is_available(self) -> bool {
         matches!(self, Self::Available)
     }
@@ -88,6 +84,7 @@ pub struct RepositoryContext {
     provider: RepositoryProvider,
     availability: [RepositoryAvailability; 4],
     reasons: [&'static str; 4],
+    jj: Option<Arc<jj::JjEvidence>>,
 }
 
 impl RepositoryContext {
@@ -109,6 +106,7 @@ impl RepositoryContext {
                 };
                 return Self {
                     discovery_root,
+                    jj: None,
                     direct_git_root,
                     provider: RepositoryProvider::Git,
                     availability,
@@ -122,6 +120,7 @@ impl RepositoryContext {
             if boundary.join(".jj").exists() {
                 return Self {
                     discovery_root,
+                    jj: Some(Arc::new(jj::JjEvidence::discover(boundary))),
                     direct_git_root: None,
                     provider: RepositoryProvider::Jj,
                     availability: [RepositoryAvailability::Unavailable; 4],
@@ -136,6 +135,7 @@ impl RepositoryContext {
         }
         Self {
             discovery_root,
+            jj: None,
             direct_git_root: None,
             provider: RepositoryProvider::None,
             availability: [RepositoryAvailability::Unavailable; 4],
@@ -143,8 +143,11 @@ impl RepositoryContext {
         }
     }
 
-    pub(crate) const fn is_available(&self, operation: RepositoryOperation) -> bool {
-        self.availability[operation.index()].is_available()
+    pub(crate) fn is_available(&self, operation: RepositoryOperation) -> bool {
+        self.jj.as_ref().map_or_else(
+            || self.availability[operation.index()].is_available(),
+            |jj| jj.available(operation),
+        )
     }
 
     pub(crate) fn capability_rows(
@@ -153,9 +156,15 @@ impl RepositoryContext {
         RepositoryOperation::ALL.into_iter().map(|operation| {
             (
                 operation.as_str(),
-                self.availability[operation.index()].as_str(),
+                if self.is_available(operation) {
+                    "available"
+                } else {
+                    "unavailable"
+                },
                 self.provider.as_str(),
-                self.reasons[operation.index()],
+                self.jj
+                    .as_ref()
+                    .map_or(self.reasons[operation.index()], |jj| jj.reason(operation)),
             )
         })
     }
@@ -166,8 +175,67 @@ impl RepositoryContext {
     }
 
     /// Whether one operation is available in this concrete workspace.
-    pub const fn operation_available(&self, operation: RepositoryOperation) -> bool {
+    pub fn operation_available(&self, operation: RepositoryOperation) -> bool {
         self.is_available(operation)
+    }
+
+    /// Resolve jj backing for containment only; this earns no operation capability.
+    pub fn jj_git_backing(project_root: &Utf8Path) -> Result<Utf8PathBuf, String> {
+        jj::resolve_backing(project_root)
+    }
+
+    /// Read-only Git command bound to a jj workspace, never its anchor checkout.
+    pub fn jj_git_command(&self) -> Option<Command> {
+        self.jj.as_ref()?.command()
+    }
+
+    pub fn jj_pin(&self) -> Option<&str> {
+        self.jj.as_ref()?.pin.as_deref()
+    }
+
+    pub fn jj_workspace_root(&self) -> Option<&Utf8Path> {
+        self.jj.as_ref().map(|jj| jj.root.as_path())
+    }
+
+    /// Last selected file-change author timestamp, keyed by physical origin.
+    pub fn jj_file_time(&self, origin: &Utf8Path) -> Option<String> {
+        let jj = self.jj.as_ref()?;
+        if !jj.available(RepositoryOperation::ChangeHistory) {
+            return None;
+        }
+        let origin = origin
+            .canonicalize_utf8()
+            .unwrap_or_else(|_| origin.to_path_buf());
+        let path = origin.strip_prefix(&jj.root).ok()?;
+        jj.times.get(path.as_str()).cloned()
+    }
+
+    pub fn jj_tracked_paths(&self) -> Option<&std::collections::BTreeSet<String>> {
+        let jj = self.jj.as_ref()?;
+        jj.available(RepositoryOperation::IgnoreIndex)
+            .then_some(&jj.tracked)
+    }
+
+    pub fn jj_target_history(&self, base: &Utf8Path, target: &Utf8Path) -> Option<bool> {
+        let jj = self.jj.as_ref()?;
+        if !jj.available(RepositoryOperation::TargetHistory) {
+            return None;
+        }
+        let path = base.canonicalize_utf8().ok()?.join(target);
+        let relative = path.strip_prefix(&jj.root).ok()?;
+        Some(jj.history.contains(relative.as_str()))
+    }
+
+    /// Invalidate just the failed operation; clones share this generation's result.
+    pub fn fail_jj_operation(&self, operation: RepositoryOperation, reason: &'static str) {
+        if let Some(jj) = &self.jj {
+            jj.fail(operation, reason);
+        }
+    }
+
+    /// Re-read recorded @ without snapshotting. Movement invalidates dependent evidence.
+    pub fn finish_jj_generation(&self) -> bool {
+        self.jj.as_ref().is_none_or(|jj| jj.finish())
     }
 
     /// Whether this context was discovered for this extraction root.

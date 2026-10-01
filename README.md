@@ -366,7 +366,15 @@ handle is stalled. `flow` classifies active movement as advancing, holding, or
 drifting; settled handles are outside flow by design. `authored_age` is the
 date-backed authored-age oracle used by recency ranking. `changed_recently`,
 `changed_within`, and `git_mtime` are lower-authority git-backed change
-signals for "what changed?" questions.
+signals for "what changed?" questions. In a jj added workspace they use author
+time along the recorded `@`, read without snapshotting; unsnapshotted edits are
+outside this history. Author time dates creation of the change, not its latest
+amendment. Direct Git and colocated checkouts retain their existing timestamps.
+`repository_operation_capability(operation, availability, provider, reason)`
+reports availability separately for recency, target history, assertion provenance,
+and ignore classification. jj assertion dates and revisions remain null.
+Conflicted, stale, or moving jj pins make dependent operations unavailable;
+missing capability is distinct from an available query with no rows.
 The convergence vocabulary lives in the prelude — use `describe convergence`,
 `describe potential`, `describe entropy`, `describe blocker`,
 `describe recency`, `describe authored_age`, `describe changed_recently`,

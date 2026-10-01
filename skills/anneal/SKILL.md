@@ -175,6 +175,12 @@ Predicate families, each with a `describe` card:
   `currency_suspect`, `topic_sibling`
 - convergence: `entropy`, `potential`, `frontier`, `blocker`, `flow`
 - change history: `changed_within`, `git_mtime`, `at("snapshot:last")`
+  - jj added workspaces read author time along recorded `@`, without snapshotting;
+    unsnapshotted edits are outside the history and long-lived changes retain
+    their creation time. Inspect `repository_operation_capability` for each
+    operation; assertion provenance is unavailable, while recency, W006 and
+    workspace ignore classification can be available. Document-date age is
+    unchanged.
 - checks: `diagnostic`
 
 ## Convergence
