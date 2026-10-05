@@ -25,8 +25,9 @@ use serde_json::Value as JsonValue;
 
 use super::config::{ArtifactManifest, CodeDiscoveryConfig};
 use super::emit::{
-    ContentBudgetReport, area_for, code_identity, first_paragraph, handle_id, item_kind_name,
-    package_root_file, push_meta_fact, token_count, truncate_at_char_boundary, visibility_name,
+    CodeFactIds, ContentBudgetReport, area_for, code_identity, first_paragraph, handle_id,
+    item_kind_name, package_root_file, push_meta_fact, token_count, truncate_at_char_boundary,
+    visibility_name,
 };
 use super::vocab::{SOURCE_NAME, edge_kind, meta_key, relation_value};
 
@@ -36,6 +37,7 @@ pub(super) fn extract_rustdoc(
     config: &CodeDiscoveryConfig,
     manifest: Option<&ArtifactManifest>,
     artifact: &Utf8Path,
+    identities: &mut CodeFactIds,
 ) -> Result<FactBatch, SourceError> {
     let artifact_path = root.join(artifact);
     let artifact_file =
@@ -71,7 +73,7 @@ pub(super) fn extract_rustdoc(
         member_doc_budget_bytes: config.member_doc_budget_bytes,
         rustdoc: &rustdoc,
     });
-    projector.project(&mut batch)?;
+    projector.project(&mut batch, identities)?;
     Ok(batch)
 }
 
@@ -128,15 +130,19 @@ impl<'a> RustdocProjector<'a> {
         }
     }
 
-    pub(super) fn project(&mut self, batch: &mut FactBatch) -> Result<(), SourceError> {
+    pub(super) fn project(
+        &mut self,
+        batch: &mut FactBatch,
+        identities: &mut CodeFactIds,
+    ) -> Result<(), SourceError> {
         self.index_handles();
         self.emit_file_handles(batch);
         self.emit_package_meta(batch);
         self.emit_item_handles(batch);
-        self.emit_structure_edges(batch);
-        self.emit_type_edges(batch)?;
-        self.emit_doc_link_edges(batch);
-        self.emit_impl_edges(batch);
+        self.emit_structure_edges(batch, identities);
+        self.emit_type_edges(batch, identities)?;
+        self.emit_doc_link_edges(batch, identities);
+        self.emit_impl_edges(batch, identities);
         self.emit_content(batch);
         self.emit_budget_meta(batch);
         Ok(())
@@ -360,23 +366,30 @@ impl<'a> RustdocProjector<'a> {
         }
     }
 
-    pub(super) fn emit_structure_edges(&self, batch: &mut FactBatch) {
-        let mut ordinal = 0usize;
+    pub(super) fn emit_structure_edges(&self, batch: &mut FactBatch, identities: &mut CodeFactIds) {
         for (parent_id, item) in self.local_items() {
             let Some(parent) = self.local_handles.get(parent_id) else {
                 continue;
             };
             for child_id in direct_children(&item.inner) {
                 if let Some(child) = self.local_handles.get(&child_id) {
-                    self.push_edge(batch, parent, child, edge_kind::CONTAINS, item, ordinal);
-                    ordinal += 1;
+                    self.push_edge(
+                        batch,
+                        (parent, edge_kind::CONTAINS, child),
+                        item,
+                        identities,
+                        ("", ""),
+                    );
                 }
             }
         }
     }
 
-    pub(super) fn emit_type_edges(&mut self, batch: &mut FactBatch) -> Result<(), SourceError> {
-        let mut ordinal = 0usize;
+    pub(super) fn emit_type_edges(
+        &mut self,
+        batch: &mut FactBatch,
+        identities: &mut CodeFactIds,
+    ) -> Result<(), SourceError> {
         let ids = self.local_handles.keys().copied().collect::<Vec<_>>();
         for id in ids {
             let Some(from) = self.local_handles.get(&id).cloned() else {
@@ -394,15 +407,23 @@ impl<'a> RustdocProjector<'a> {
                     continue;
                 }
                 let target = self.handle_for_target(batch, target_id);
-                self.push_edge(batch, &from, &target, edge_kind::USES_TYPE, item, ordinal);
-                ordinal += 1;
+                self.push_edge(
+                    batch,
+                    (&from, edge_kind::USES_TYPE, &target),
+                    item,
+                    identities,
+                    ("", ""),
+                );
             }
         }
         Ok(())
     }
 
-    pub(super) fn emit_doc_link_edges(&mut self, batch: &mut FactBatch) {
-        let mut ordinal = 0usize;
+    pub(super) fn emit_doc_link_edges(
+        &mut self,
+        batch: &mut FactBatch,
+        identities: &mut CodeFactIds,
+    ) {
         let ids = self.local_handles.keys().copied().collect::<Vec<_>>();
         for id in ids {
             let Some(from) = self.local_handles.get(&id).cloned() else {
@@ -415,14 +436,18 @@ impl<'a> RustdocProjector<'a> {
                 .expect("indexed local item exists");
             for target_id in item.links.values().copied() {
                 let target = self.handle_for_target(batch, target_id);
-                self.push_edge(batch, &from, &target, edge_kind::CITES, item, ordinal);
-                ordinal += 1;
+                self.push_edge(
+                    batch,
+                    (&from, edge_kind::CITES, &target),
+                    item,
+                    identities,
+                    ("", ""),
+                );
             }
         }
     }
 
-    pub(super) fn emit_impl_edges(&mut self, batch: &mut FactBatch) {
-        let mut ordinal = 0usize;
+    pub(super) fn emit_impl_edges(&mut self, batch: &mut FactBatch, identities: &mut CodeFactIds) {
         let impls = self
             .local_items()
             .filter_map(|(_, item)| match &item.inner {
@@ -438,7 +463,14 @@ impl<'a> RustdocProjector<'a> {
             };
             let from = self.handle_for_impl_type(batch, &impl_.for_);
             let to = self.handle_for_target(batch, trait_.id);
-            let edge = self.push_edge(batch, &from, &to, edge_kind::IMPLEMENTS, &item, ordinal);
+            let signature = impl_signature(&impl_);
+            let edge = self.push_edge(
+                batch,
+                (&from, edge_kind::IMPLEMENTS, &to),
+                &item,
+                identities,
+                (impl_kind(&impl_), &signature),
+            );
             let file = self.item_file(&item).unwrap_or_default();
             let identity = self.identity_for(batch, &edge, &file);
             Self::push_meta(
@@ -453,9 +485,8 @@ impl<'a> RustdocProjector<'a> {
                 &identity,
                 &edge,
                 meta_key::IMPLEMENTS_SIGNATURE,
-                &impl_signature(&impl_),
+                &signature,
             );
-            ordinal += 1;
         }
     }
 
@@ -703,19 +734,19 @@ impl<'a> RustdocProjector<'a> {
     pub(super) fn push_edge(
         &self,
         batch: &mut FactBatch,
-        from: &str,
-        to: &str,
-        kind: &str,
+        endpoints: (&str, &str, &str),
         item: &Item,
-        ordinal: usize,
+        identities: &mut CodeFactIds,
+        evidence: (&str, &str),
     ) -> String {
+        let (from, kind, to) = endpoints;
         let file = self.item_file(item).unwrap_or_default();
         let line = item
             .span
             .as_ref()
             .and_then(|span| u32::try_from(span.begin.0).ok())
             .unwrap_or(0);
-        let native_id = format!("{from}::edge::{ordinal}::{kind}::{to}::{line}");
+        let native_id = identities.edge((from, kind, to), (&file, line), evidence);
         batch.edges.push(EdgeFact {
             identity: self.identity_for(batch, &native_id, &file),
             from: handle_id(from),
@@ -1113,8 +1144,8 @@ pub(super) fn is_member_item(kind: ItemKind) -> bool {
 fn member_impl_contexts(
     rustdoc: &RustdocCrate,
     tied_ids: &BTreeSet<Id>,
-) -> BTreeMap<Id, Vec<(String, String)>> {
-    let mut contexts = BTreeMap::<Id, Vec<(String, String)>>::new();
+) -> BTreeMap<Id, Vec<(Option<String>, String)>> {
+    let mut contexts = BTreeMap::<Id, Vec<(Option<String>, String)>>::new();
     if tied_ids.is_empty() {
         return contexts;
     }
@@ -1131,10 +1162,7 @@ fn member_impl_contexts(
             continue;
         }
         let context = (
-            impl_
-                .trait_
-                .as_ref()
-                .map_or_else(|| "inherent".to_string(), |path| path.path.clone()),
+            impl_.trait_.as_ref().map(|path| path.path.clone()),
             type_label(&impl_.for_),
         );
         for member in members {
@@ -1150,7 +1178,7 @@ fn member_impl_contexts(
 fn semantic_member_key(
     rustdoc: &RustdocCrate,
     id: Id,
-    contexts: &BTreeMap<Id, Vec<(String, String)>>,
+    contexts: &BTreeMap<Id, Vec<(Option<String>, String)>>,
 ) -> impl Ord + use<> {
     let item = &rustdoc.index[&id];
     let qualified = qualified_name(rustdoc, id)

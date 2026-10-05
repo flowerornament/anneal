@@ -6,6 +6,18 @@ use std::fmt;
 use serde::de;
 use serde::{Deserialize, Serialize};
 
+/// Encode adapter identity components without losing their boundaries.
+///
+/// The family is an adapter-owned relation discriminator. Components use JSON
+/// so authored delimiters, quotes, Unicode and numeric fields remain distinct.
+pub fn encode_native_id<T: Serialize>(
+    family: &str,
+    components: &T,
+) -> Result<String, serde_json::Error> {
+    let tuple = serde_json::to_string(components)?;
+    Ok(format!("{family}:{tuple}"))
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

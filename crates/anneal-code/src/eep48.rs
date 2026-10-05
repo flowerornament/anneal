@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    ArtifactManifest, CodeDiscoveryConfig, ContentBudgetReport, ContentFact, Cursor, EdgeFact,
-    EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,
+    ArtifactManifest, CodeDiscoveryConfig, CodeFactIds, ContentBudgetReport, ContentFact, Cursor,
+    EdgeFact, EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,
     SOURCE_NAME, SourceContext, SourceError, SourceName, SpanFact, Utf8Path, Utf8PathBuf, area_for,
     code_identity, content_text, edge_kind, emit_content_budget_meta, ensure_external_code_handle,
     first_paragraph, fs, handle_id, markdown_links, meta_key, normalize_code_source_path,
@@ -24,6 +24,7 @@ pub(super) fn extract_eep48_set(
     cx: &SourceContext<'_>,
     config: &CodeDiscoveryConfig,
     manifest: Option<&ArtifactManifest>,
+    identities: &mut CodeFactIds,
 ) -> Result<FactBatch, SourceError> {
     let package = config
         .package
@@ -97,7 +98,7 @@ pub(super) fn extract_eep48_set(
         })
         .collect::<BTreeMap<_, _>>();
     for projector in &mut projectors {
-        projector.project(&mut batch, &member_targets);
+        projector.project(&mut batch, &member_targets, identities);
     }
     emit_content_budget_meta(
         &mut batch,
@@ -584,14 +585,15 @@ impl Eep48Projector {
         &mut self,
         batch: &mut FactBatch,
         member_targets: &BTreeMap<String, String>,
+        identities: &mut CodeFactIds,
     ) {
         self.emit_file_handle(batch);
         self.emit_module_handle(batch);
         self.emit_member_handles(batch);
         self.emit_package_meta(batch);
-        self.emit_structure_edges(batch);
-        self.emit_behaviour_edges(batch);
-        self.emit_doc_link_edges(batch, member_targets);
+        self.emit_structure_edges(batch, identities);
+        self.emit_behaviour_edges(batch, identities);
+        self.emit_doc_link_edges(batch, member_targets, identities);
         self.emit_content(batch);
         if self.budget_override.is_none() {
             self.emit_budget_meta(batch);
@@ -786,40 +788,39 @@ impl Eep48Projector {
         }
     }
 
-    pub(super) fn emit_structure_edges(&self, batch: &mut FactBatch) {
-        let mut ordinal = 0usize;
+    pub(super) fn emit_structure_edges(&self, batch: &mut FactBatch, identities: &mut CodeFactIds) {
         self.push_edge(
             batch,
-            &self.module_file,
-            &self.module_handle,
-            edge_kind::CONTAINS,
+            (&self.module_file, edge_kind::CONTAINS, &self.module_handle),
             1,
-            ordinal,
+            identities,
+            ("", ""),
         );
-        ordinal += 1;
         for entry in &self.parsed.entries {
             self.push_edge(
                 batch,
-                &self.module_handle,
-                &self.member_handle(entry),
-                edge_kind::CONTAINS,
+                (
+                    &self.module_handle,
+                    edge_kind::CONTAINS,
+                    &self.member_handle(entry),
+                ),
                 entry.line,
-                ordinal,
+                identities,
+                ("", ""),
             );
-            ordinal += 1;
         }
     }
 
-    pub(super) fn emit_behaviour_edges(&self, batch: &mut FactBatch) {
-        for (ordinal, behaviour) in self.parsed.metadata.behaviours.iter().enumerate() {
+    pub(super) fn emit_behaviour_edges(&self, batch: &mut FactBatch, identities: &mut CodeFactIds) {
+        for behaviour in &self.parsed.metadata.behaviours {
             let target = self.external_handle(batch, behaviour);
+            let signature = format!("@behaviour {behaviour}");
             let edge = self.push_edge(
                 batch,
-                &self.module_handle,
-                &target,
-                edge_kind::IMPLEMENTS,
+                (&self.module_handle, edge_kind::IMPLEMENTS, &target),
                 1,
-                ordinal,
+                identities,
+                ("behaviour", &signature),
             );
             let identity = self.identity_for(batch, &edge, &self.module_file);
             Self::push_meta(
@@ -834,7 +835,7 @@ impl Eep48Projector {
                 &identity,
                 &edge,
                 meta_key::IMPLEMENTS_SIGNATURE,
-                &format!("@behaviour {behaviour}"),
+                &signature,
             );
         }
     }
@@ -843,19 +844,17 @@ impl Eep48Projector {
         &self,
         batch: &mut FactBatch,
         member_targets: &BTreeMap<String, String>,
+        identities: &mut CodeFactIds,
     ) {
-        let mut ordinal = 0usize;
         for target in markdown_links(&self.parsed.module_doc.text) {
             let external = self.doc_link_target(batch, &target, member_targets);
             self.push_edge(
                 batch,
-                &self.module_handle,
-                &external,
-                edge_kind::CITES,
+                (&self.module_handle, edge_kind::CITES, &external),
                 1,
-                ordinal,
+                identities,
+                ("", ""),
             );
-            ordinal += 1;
         }
         for entry in &self.parsed.entries {
             let from = self.member_handle(entry);
@@ -863,25 +862,21 @@ impl Eep48Projector {
                 let external = self.doc_link_target(batch, &target, member_targets);
                 self.push_edge(
                     batch,
-                    &from,
-                    &external,
-                    edge_kind::CITES,
+                    (&from, edge_kind::CITES, &external),
                     entry.line,
-                    ordinal,
+                    identities,
+                    ("", ""),
                 );
-                ordinal += 1;
             }
             for target in signature_type_refs(&entry.signatures) {
                 let external = self.external_handle(batch, &target);
                 self.push_edge(
                     batch,
-                    &from,
-                    &external,
-                    edge_kind::USES_TYPE,
+                    (&from, edge_kind::USES_TYPE, &external),
                     entry.line,
-                    ordinal,
+                    identities,
+                    ("", ""),
                 );
-                ordinal += 1;
             }
         }
     }
@@ -1132,13 +1127,13 @@ impl Eep48Projector {
     pub(super) fn push_edge(
         &self,
         batch: &mut FactBatch,
-        from: &str,
-        to: &str,
-        kind: &str,
+        endpoints: (&str, &str, &str),
         line: u32,
-        ordinal: usize,
+        identities: &mut CodeFactIds,
+        evidence: (&str, &str),
     ) -> String {
-        let native_id = format!("{from}::edge::{ordinal}::{kind}::{to}::{line}");
+        let (from, kind, to) = endpoints;
+        let native_id = identities.edge((from, kind, to), (&self.module_file, line), evidence);
         batch.edges.push(EdgeFact {
             identity: self.identity_for(batch, &native_id, &self.module_file),
             from: handle_id(from),

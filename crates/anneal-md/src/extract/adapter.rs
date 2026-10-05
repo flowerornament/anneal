@@ -1680,9 +1680,11 @@ fn native_id_for_edge(
 ) -> String {
     // JSON encodes component boundaries, including authored quotes and delimiters.
     // Use the actual source identity: labels sharing a file are distinct handles.
-    let tuple = serde_json::to_string(&(source_handle.id.as_str(), kind, target, line, occurrence))
-        .expect("edge identity tuples contain only serializable strings and integers");
-    format!("edge:{tuple}")
+    anneal_core::encode_native_id(
+        "edge",
+        &(source_handle.id.as_str(), kind, target, line, occurrence),
+    )
+    .expect("edge identity tuples contain only serializable strings and integers")
 }
 
 #[derive(Clone)]
@@ -2633,6 +2635,15 @@ mod tests {
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
+
+    #[test]
+    fn released_markdown_edge_identity_bytes_are_pinned() {
+        let source = super::Handle::label("OQ".to_string(), 1, None);
+        assert_eq!(
+            super::native_id_for_edge(&source, "Cites", "target", 2, 0),
+            "edge:[\"OQ-1\",\"Cites\",\"target\",2,0]"
+        );
+    }
 
     #[test]
     fn edge_identity_distinguishes_source_handles_and_component_boundaries() {

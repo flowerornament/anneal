@@ -590,6 +590,25 @@ fn rustdoc_source_projects_git_version_tags_as_package_metadata() {
             && edge.to.as_str() == "code-version:demo-0.1.0"
             && edge.kind == edge_kind::CONTAINS
     }));
+    let tag_edge = batch
+        .edges
+        .iter()
+        .find(|edge| edge.to.as_str() == "code-version:demo-0.1.0")
+        .expect("old tag edge");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["tag", "aaa-unrelated"])
+        .output()
+        .expect("new tag");
+    assert!(output.status.success());
+    let expanded = CodeSource
+        .extract(&context(&root, &config))
+        .expect("new snapshot");
+    assert!(
+        expanded.edges.contains(tag_edge),
+        "an earlier unrelated tag must not rename an existing version edge"
+    );
 }
 
 #[test]
@@ -886,6 +905,201 @@ fn rustdoc_same_location_member_bindings_follow_semantic_tie_order() {
             assert_eq!(
                 &rows, expected,
                 "raw item ids and HashMap encounter order must not bind method payloads"
+            );
+        } else {
+            baseline = Some(rows);
+        }
+    }
+}
+
+#[test]
+fn code_fact_identity_uses_own_fields_and_local_multiplicity() {
+    let mut before = CodeFactIds::default();
+    let mut after = CodeFactIds::default();
+    let first = before.edge(
+        ("a", "Implements", "b"),
+        ("impl.rs", 4),
+        ("trait_impl", "impl B for A"),
+    );
+    let duplicate = before.edge(
+        ("a", "Implements", "b"),
+        ("impl.rs", 4),
+        ("trait_impl", "impl B for A"),
+    );
+    after.edge(("unrelated", "Contains", "new"), ("first.rs", 1), ("", ""));
+    assert_eq!(
+        first,
+        after.edge(
+            ("a", "Implements", "b"),
+            ("impl.rs", 4),
+            ("trait_impl", "impl B for A")
+        )
+    );
+    assert_eq!(
+        duplicate,
+        after.edge(
+            ("a", "Implements", "b"),
+            ("impl.rs", 4),
+            ("trait_impl", "impl B for A")
+        )
+    );
+    assert_ne!(first, duplicate);
+    assert_ne!(
+        first,
+        after.edge(
+            ("a", "Implements", "b"),
+            ("other.rs", 4),
+            ("trait_impl", "impl B for A")
+        )
+    );
+    assert_ne!(
+        first,
+        after.edge(
+            ("a", "Implements", "b"),
+            ("impl.rs", 4),
+            ("trait_impl", "impl B for A where T: Bound")
+        )
+    );
+    let mut ids = CodeFactIds::default();
+    assert_ne!(
+        ids.edge(("a::b", "Cites", "c"), ("x", 1), ("", "")),
+        ids.edge(("a", "b::Cites", "c"), ("x", 1), ("", ""))
+    );
+}
+
+#[test]
+fn code_source_unrelated_impl_and_fixme_preserve_existing_id_bindings() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("root");
+    fs::create_dir_all(&root).expect("mkdir");
+    fs::write(root.join("mix.exs"), "defmodule Demo.MixProject do\nend\n").expect("mix");
+    fs::write(
+        root.join("b.ex"),
+        "\n# TODO: old\n# TODO: second\ndefimpl Existing, for: Target do\nend\n",
+    )
+    .expect("source");
+    let config =
+        ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+            .expect("config");
+    let old = CodeSource
+        .extract(&context(&root, &config))
+        .expect("before");
+    fs::write(root.join("a.ex"), "defimpl First, for: Other do\nend\n").expect("new file");
+    fs::write(
+        root.join("b.ex"),
+        "# FIXME: new\n# TODO: old\n# TODO: second\ndefimpl Existing, for: Target do\nend\n",
+    )
+    .expect("same old lines");
+    let new = CodeSource.extract(&context(&root, &config)).expect("after");
+    for edge in &old.edges {
+        assert!(
+            new.edges.contains(edge),
+            "existing implementation id and payload stay identical"
+        );
+    }
+    for meta in old.meta.iter().filter(|row| {
+        row.key == meta_key::OBLIGATION
+            || row.key == meta_key::IMPLEMENTS_KIND
+            || row.key == meta_key::IMPLEMENTS_SIGNATURE
+    }) {
+        assert!(
+            new.meta.contains(meta),
+            "existing evidence id and owner stay identical"
+        );
+    }
+    for concern in &old.concerns {
+        assert!(
+            new.concerns.contains(concern),
+            "TODO identities do not move when FIXME arrives"
+        );
+    }
+    assert_eq!(new.edges.len(), old.edges.len() + 1);
+    assert_eq!(new.concerns.len(), old.concerns.len() + 1);
+    let mut legacy = old;
+    let mut old_to_legacy = BTreeMap::new();
+    for (index, edge) in legacy.edges.iter_mut().enumerate() {
+        let replacement = format!("legacy-{index}");
+        old_to_legacy.insert(
+            edge.identity.native_id.as_str().to_string(),
+            replacement.clone(),
+        );
+        edge.identity.native_id = NativeId::from(replacement);
+    }
+    for meta in &mut legacy.meta {
+        if let Some(replacement) = old_to_legacy.get(meta.identity.native_id.as_str()) {
+            meta.identity.native_id = NativeId::from(replacement.clone());
+            meta.handle = handle_id(replacement);
+        }
+    }
+    let mut store = anneal_core::FactStore::default();
+    store.merge(legacy).expect("legacy snapshot");
+    store.merge(new).expect("fresh full snapshot");
+    assert!(
+        store
+            .edges()
+            .iter()
+            .all(|row| !row.identity.native_id.as_str().starts_with("legacy-"))
+    );
+    assert!(store.meta().iter().all(
+        |row| !row.identity.native_id.as_str().starts_with("legacy-")
+            && !row.handle.as_str().starts_with("legacy-")
+    ));
+}
+
+#[test]
+fn rustdoc_same_line_impl_evidence_permutations_keep_full_bytes() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("root");
+    fs::create_dir_all(root.join("target/doc")).expect("artifact dir");
+    write_fixture(&root);
+    let path = root.join("target/doc/demo.json");
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("fixture")).expect("json");
+    for (id, blanket) in [(4, "A"), (5, "B")] {
+        artifact["index"][id.to_string()] = json!({"id":id,"crate_id":0,"name":null,
+            "span":{"filename":"src/lib.rs","begin":[4,1],"end":[4,20]},
+            "visibility":"public","docs":null,"links":{},"attrs":[],"deprecation":null,
+            "inner":{"impl":{"is_unsafe":false,"generics":{"params":[],"where_predicates":[]},
+                "provided_trait_methods":[],"trait":{"path":"demo::Other","id":2,"args":null},
+                "for":{"resolved_path":{"path":"demo::Widget","id":1,"args":null}},
+                "items":[],"is_negative":false,"is_synthetic":false,"blanket_impl":{"generic":blanket}}}});
+    }
+    let config = ConfigFacts::try_from_entries(vec![
+        ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+        ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+    ])
+    .expect("config");
+    let mut baseline = None;
+    for iteration in 0..16 {
+        if iteration % 2 == 1 {
+            let mut left = artifact["index"]["4"].clone();
+            let mut right = artifact["index"]["5"].clone();
+            left["id"] = json!(5);
+            right["id"] = json!(4);
+            artifact["index"]["4"] = right;
+            artifact["index"]["5"] = left;
+        }
+        fs::write(&path, serde_json::to_vec(&artifact).expect("encode")).expect("write");
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("extract");
+        let mut edges = batch
+            .edges
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("row"))
+            .collect::<Vec<_>>();
+        edges.sort();
+        let mut meta = batch
+            .meta
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("row"))
+            .collect::<Vec<_>>();
+        meta.sort();
+        let rows = (edges, meta);
+        if let Some(expected) = &baseline {
+            assert_eq!(
+                &rows, expected,
+                "owned signatures bind to the same edge ids under permutation"
             );
         } else {
             baseline = Some(rows);

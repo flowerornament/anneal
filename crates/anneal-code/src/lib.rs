@@ -36,7 +36,7 @@ use config::{
 };
 use eep48::extract_eep48_set;
 use emit::{
-    ContentBudgetReport, area_for, code_identity, emit_content_budget_meta,
+    CodeFactIds, ContentBudgetReport, area_for, code_identity, emit_content_budget_meta,
     ensure_external_code_handle, first_paragraph, git_version_tags, handle_id, meta_values,
     normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact, token_count,
     truncate_at_char_boundary, version_handle_id,
@@ -116,6 +116,7 @@ impl Source for CodeSource {
             return Ok(combined);
         }
 
+        let mut identities = CodeFactIds::default();
         for root in cx.roots {
             cx.cancellation.check()?;
             let mut root_batch = FactBatch::new(
@@ -149,14 +150,22 @@ impl Source for CodeSource {
                 &config.source_extensions,
             )?;
             for artifact in &config.artifacts {
-                let batch = extract_rustdoc(root, cx, &config, manifest.as_ref(), artifact)?;
+                let batch = extract_rustdoc(
+                    root,
+                    cx,
+                    &config,
+                    manifest.as_ref(),
+                    artifact,
+                    &mut identities,
+                )?;
                 root_batch.append(batch);
             }
             if !config.eep48_beams.is_empty()
                 || !config.eep48_beam_dirs.is_empty()
                 || !config.eep48_doc_chunks.is_empty()
             {
-                let batch = extract_eep48_set(root, cx, &config, manifest.as_ref())?;
+                let batch =
+                    extract_eep48_set(root, cx, &config, manifest.as_ref(), &mut identities)?;
                 root_batch.append(batch);
             }
             classification.project(
@@ -164,6 +173,7 @@ impl Source for CodeSource {
                 root,
                 &config.source_root,
                 classification_revision,
+                &mut identities,
             );
             combined.append(root_batch);
         }

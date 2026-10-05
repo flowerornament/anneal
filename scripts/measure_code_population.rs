@@ -1,9 +1,10 @@
 //! Synthetic code-population benchmark for anneal-u865.
 //!
 //! Run with `cargo run --release -p anneal-core --example measure_code_population -- 10000`.
+//! Pass `old-code` or `tuple-code` as the second argument for paired identity costs.
 //! Measure peak RSS externally with `/usr/bin/time -l` (macOS) or `time -v` (Linux).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -53,7 +54,8 @@ fn handle_name(index: usize) -> String {
     format!("h{index:04}")
 }
 
-fn generate(edge_count: usize) -> FactBatch {
+fn generate(edge_count: usize, mode: &str) -> FactBatch {
+    let mut occurrences = HashMap::<String, usize>::new();
     let mut batch = FactBatch::new(
         CorpusId::from("synthetic"),
         SourceName::from("code-population"),
@@ -93,10 +95,28 @@ fn generate(edge_count: usize) -> FactBatch {
             let offset = index - calls;
             (offset % HANDLES, offset / HANDLES % HANDLES, "resolves")
         };
+        let from = handle_name(source);
+        let to = handle_name(target);
+        let native_id = match mode {
+            "old-code" => format!("{from}::edge::{index}::{kind}::{to}::1"),
+            "tuple-code" => {
+                // Same tuple, local sequence and JSON wrapping as CodeFactIds.
+                use std::fmt::Write;
+                let fields = (&from, kind, &to, "synthetic.rs", 1, "", "");
+                let mut key = anneal_core::encode_native_id("edge", &fields)
+                    .expect("primitive identity components");
+                let occurrence = occurrences.entry(key.clone()).or_default();
+                key.insert("edge:".len(), '[');
+                write!(&mut key, ",{occurrence}]").expect("String write");
+                *occurrence += 1;
+                key
+            }
+            _ => format!("edge-{index}"),
+        };
         batch.edges.push(EdgeFact {
-            identity: identity(format!("edge-{index}")),
-            from: HandleId::new(handle_name(source)).expect("nonempty source"),
-            to: HandleId::new(handle_name(target)).expect("nonempty target"),
+            identity: identity(native_id),
+            from: HandleId::new(from).expect("nonempty source"),
+            to: HandleId::new(to).expect("nonempty target"),
             kind: kind.to_string(),
             file: "synthetic.rs".to_string(),
             line: 1,
@@ -309,6 +329,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argument = std::env::args()
         .nth(1)
         .ok_or("pass edge count or --real DIR")?;
+    let mode = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "ordinal".to_string());
+    if argument != "--real" && !["ordinal", "old-code", "tuple-code"].contains(&mode.as_str()) {
+        return Err("identity mode must be ordinal, old-code or tuple-code".into());
+    }
     let (batch, reach_source, calls, resolves, refs) = if argument == "--real" {
         let directory = std::env::args().nth(2).ok_or("pass NDJSON directory")?;
         let real = generate_real(Path::new(&directory))?;
@@ -324,13 +350,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("edge count must be at least 10000 and divisible by 8".into());
         }
         (
-            generate(edge_count),
+            generate(edge_count, &mode),
             REACH_QUERY.to_string(),
             edge_count / 8,
             edge_count - edge_count / 8,
             0,
         )
     };
+    let id_bytes: usize = batch
+        .edges
+        .iter()
+        .map(|row| row.identity.native_id.as_str().len())
+        .sum();
     let mut store = FactStore::default();
     store.merge(batch)?;
     let database = Database::from_store(&store);
@@ -346,7 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("unexpected query result: reach={reach_rows}, reach_count={reach_count}, phase={phase_rows}, resolves={phase_count_sum}").into());
     }
     println!(
-        "edges={} calls={calls} resolves={resolves} refs={refs} handles={} extraction_s={:.3} reach_s={:.3} reach_rows={reach_rows} reach_count={reach_count} phase_s={:.3} phase_rows={phase_rows} phase_count_sum={phase_count_sum}",
+        "identity_mode={mode} edge_id_bytes={id_bytes} edges={} calls={calls} resolves={resolves} refs={refs} handles={} extraction_s={:.3} reach_s={:.3} reach_rows={reach_rows} reach_count={reach_count} phase_s={:.3} phase_rows={phase_rows} phase_count_sum={phase_count_sum}",
         calls + resolves + refs,
         store.handles().len(),
         extraction.as_secs_f64(),

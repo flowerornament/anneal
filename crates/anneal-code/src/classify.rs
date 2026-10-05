@@ -8,11 +8,12 @@
 //! boundary in CR-D4 and stored-fact contract in CR-D8.
 
 use super::{
-    BTreeMap, BTreeSet, Command, ConcernFact, EdgeFact, FactBatch, HandleFact, Revision,
-    SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity, concern_name,
-    edge_kind, ensure_external_code_handle, fs, git_version_tags, handle_id, meta_key, meta_values,
-    normalize_path_inside_root, normalize_relative_path, package_root_file, push_code_meta,
-    push_meta_fact, relation_value, stable_fragment, truncate_at_char_boundary, version_handle_id,
+    BTreeMap, BTreeSet, CodeFactIds, Command, ConcernFact, EdgeFact, FactBatch, HandleFact,
+    Revision, SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity,
+    concern_name, edge_kind, ensure_external_code_handle, fs, git_version_tags, handle_id,
+    meta_key, meta_values, normalize_path_inside_root, normalize_relative_path, package_root_file,
+    push_code_meta, push_meta_fact, relation_value, stable_fragment, truncate_at_char_boundary,
+    version_handle_id,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -81,6 +82,7 @@ impl SourceTreeClassification {
         root: &Utf8Path,
         source_root: &Utf8Path,
         revision: Option<&str>,
+        identities: &mut CodeFactIds,
     ) {
         let revision = Revision::from(
             revision
@@ -131,9 +133,9 @@ impl SourceTreeClassification {
             );
         }
 
-        self.emit_obligations(batch, root, &revision);
-        self.emit_protocol_impls(batch, root, &revision);
-        self.emit_version_tags(batch, root, &revision, &package_handle);
+        self.emit_obligations(batch, root, &revision, identities);
+        self.emit_protocol_impls(batch, root, &revision, identities);
+        self.emit_version_tags(batch, root, &revision, &package_handle, identities);
     }
 
     pub(super) fn ensure_source_file_handles(
@@ -204,6 +206,7 @@ impl SourceTreeClassification {
         batch: &mut FactBatch,
         root: &Utf8Path,
         revision: &Revision,
+        identities: &mut CodeFactIds,
     ) {
         for (file, scan) in &self.files {
             if scan.obligations.is_empty() {
@@ -218,29 +221,25 @@ impl SourceTreeClassification {
                 meta_key::OBLIGATION_COUNT,
                 &scan.obligations.len().to_string(),
             );
-            for (idx, obligation) in scan.obligations.iter().enumerate() {
-                let native_id = format!("{file}::code-obligation::{idx}");
-                let identity = code_identity(batch, root, revision, &native_id, file);
+            for obligation in &scan.obligations {
                 let concern = if obligation.kind == "TODO" {
                     concern_name::CODE_TODO
                 } else {
                     concern_name::CODE_FIXME
                 };
+                let concern_id = identities.concern(concern, file);
                 batch.concerns.push(ConcernFact {
-                    identity: identity.clone(),
+                    identity: code_identity(batch, root, revision, &concern_id, file),
                     name: concern.to_string(),
                     member: handle_id(file),
                 });
-                push_meta_fact(
-                    batch,
-                    &identity,
-                    file,
-                    meta_key::OBLIGATION,
-                    &format!(
-                        "{}:{}:{}",
-                        obligation.kind, obligation.line, obligation.text
-                    ),
+                let value = format!(
+                    "{}:{}:{}",
+                    obligation.kind, obligation.line, obligation.text
                 );
+                let native_id = identities.obligation(file, &value);
+                let identity = code_identity(batch, root, revision, &native_id, file);
+                push_meta_fact(batch, &identity, file, meta_key::OBLIGATION, &value);
             }
         }
     }
@@ -250,8 +249,9 @@ impl SourceTreeClassification {
         batch: &mut FactBatch,
         root: &Utf8Path,
         revision: &Revision,
+        identities: &mut CodeFactIds,
     ) {
-        for (idx, impl_) in self.protocol_impls.iter().enumerate() {
+        for impl_ in &self.protocol_impls {
             let from = impl_.target.as_ref().map_or_else(
                 || impl_.file.clone(),
                 |target| format!("elixir://{}", stable_fragment(target)),
@@ -266,9 +266,14 @@ impl SourceTreeClassification {
             );
             let to = format!("elixir://{}", stable_fragment(&impl_.protocol));
             ensure_external_code_handle(batch, root, revision, &impl_.file, &to, &impl_.protocol);
-            let native_id = format!(
-                "{}::edge::protocol_impl::{idx}::{}::{}",
-                impl_.file, from, to
+            let signature = impl_.target.as_ref().map_or_else(
+                || format!("defimpl {}", impl_.protocol),
+                |target| format!("defimpl {}, for: {target}", impl_.protocol),
+            );
+            let native_id = identities.edge(
+                (&from, edge_kind::IMPLEMENTS, &to),
+                (&impl_.file, impl_.line),
+                ("protocol_impl", &signature),
             );
             let identity = code_identity(batch, root, revision, &native_id, &impl_.file);
             batch.edges.push(EdgeFact {
@@ -288,10 +293,6 @@ impl SourceTreeClassification {
                 meta_key::IMPLEMENTS_KIND,
                 "protocol_impl",
             );
-            let signature = impl_.target.as_ref().map_or_else(
-                || format!("defimpl {}", impl_.protocol),
-                |target| format!("defimpl {}, for: {target}", impl_.protocol),
-            );
             push_meta_fact(
                 batch,
                 &identity,
@@ -308,8 +309,9 @@ impl SourceTreeClassification {
         root: &Utf8Path,
         revision: &Revision,
         package_handle: &str,
+        identities: &mut CodeFactIds,
     ) {
-        for (idx, tag) in self.tags.iter().enumerate() {
+        for tag in &self.tags {
             let tag_handle = version_handle_id(tag);
             if !batch
                 .handles
@@ -338,7 +340,11 @@ impl SourceTreeClassification {
                 meta_key::VERSION_TAG,
                 tag,
             );
-            let native_id = format!("{package_handle}::edge::version::{idx}::{tag}");
+            let native_id = identities.edge(
+                (package_handle, edge_kind::CONTAINS, &tag_handle),
+                (package_handle, 1),
+                ("", ""),
+            );
             batch.edges.push(EdgeFact {
                 identity: code_identity(batch, root, revision, &native_id, package_handle),
                 from: handle_id(package_handle),

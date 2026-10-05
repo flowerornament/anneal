@@ -62,6 +62,7 @@ pub use facts::{
 pub use hash::fnv1a_64;
 pub use ids::{
     CorpusId, Generation, HandleId, HandleIdError, NativeId, OriginUri, Revision, SourceName,
+    encode_native_id,
 };
 pub use impact::ImpactTraversalPolicy;
 pub use lifecycle::is_terminal_status;

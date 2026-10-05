@@ -6,6 +6,13 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Code edge identities depend on source, kind, target, file, line, owned
+  implementation evidence and occurrence within that tuple. Concern and
+  obligation metadata identities use their own fields and local occurrences;
+  unrelated assertions preserve existing IDs. Code edge, concern and obligation
+  IDs change once, without aliases; stable-owner metadata grouping and
+  config/history/trail formats retain their existing behavior.
+
 - Rustdoc members sharing a file, name, kind and line keep deterministic
   base/`~2`/`~3` handle bindings, ordered by enclosing implementation and
   semantic payload. Raw rustdoc item IDs do not determine handle suffixes.
