@@ -788,25 +788,6 @@ pub(super) fn crate_name_from_root(rustdoc: &RustdocCrate) -> Option<String> {
     })
 }
 
-pub(super) fn markdown_links(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find("](") {
-        let after = &rest[open + 2..];
-        let Some(close) = after.find(')') else {
-            break;
-        };
-        let target = after[..close].trim();
-        if !target.is_empty() {
-            out.push(target.to_string());
-        }
-        rest = &after[close + 1..];
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
 pub(super) fn signature_type_refs(signatures: &[String]) -> Vec<String> {
     let mut refs = BTreeSet::new();
     for signature in signatures {

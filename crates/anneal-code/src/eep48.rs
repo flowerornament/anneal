@@ -14,7 +14,7 @@ use super::{
     EdgeFact, EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,
     SOURCE_NAME, SourceContext, SourceError, SourceName, SpanFact, Utf8Path, Utf8PathBuf, area_for,
     code_identity, content_text, edge_kind, emit_content_budget_meta, ensure_external_code_handle,
-    first_paragraph, fs, handle_id, markdown_links, meta_key, normalize_code_source_path,
+    first_paragraph, fs, handle_id, meta_key, normalize_code_source_path,
     normalize_path_inside_root, package_root_file, push_meta_fact, relation_value,
     signature_type_refs, stable_fragment, token_count, truncate_at_char_boundary,
 };
@@ -91,19 +91,12 @@ pub(super) fn extract_eep48_set(
     let member_targets = projectors
         .iter()
         .flat_map(|projector| {
-            projector
-                .parsed
-                .entries
-                .iter()
-                .filter(|entry| {
-                    matches!(entry.kind.as_str(), "callback" | "macrocallback" | "type")
-                })
-                .map(|entry| {
-                    (
-                        projector.member_qualified_name(entry),
-                        projector.member_handle(entry),
-                    )
-                })
+            projector.parsed.entries.iter().map(|entry| {
+                (
+                    projector.member_qualified_name(entry),
+                    projector.member_handle(entry),
+                )
+            })
         })
         .collect::<BTreeMap<_, _>>();
     for projector in &mut projectors {
@@ -603,7 +596,7 @@ impl Eep48Projector {
         self.emit_package_meta(batch);
         self.emit_structure_edges(batch, identities);
         self.emit_behaviour_edges(batch, module_targets, identities);
-        self.emit_doc_link_edges(batch, member_targets, identities);
+        self.emit_doc_link_edges(batch, module_targets, member_targets, identities);
         self.emit_content(batch);
         if self.budget_override.is_none() {
             self.emit_budget_meta(batch);
@@ -862,11 +855,12 @@ impl Eep48Projector {
     pub(super) fn emit_doc_link_edges(
         &self,
         batch: &mut FactBatch,
+        module_targets: &BTreeMap<String, String>,
         member_targets: &BTreeMap<String, String>,
         identities: &mut CodeFactIds,
     ) {
         for target in markdown_links(&self.parsed.module_doc.text) {
-            let external = self.doc_link_target(batch, &target, member_targets);
+            let external = self.doc_link_target(batch, &target, module_targets, member_targets);
             self.push_edge(
                 batch,
                 (&self.module_handle, edge_kind::CITES, &external),
@@ -878,7 +872,7 @@ impl Eep48Projector {
         for entry in &self.parsed.entries {
             let from = self.member_handle(entry);
             for target in markdown_links(&entry.doc.text) {
-                let external = self.doc_link_target(batch, &target, member_targets);
+                let external = self.doc_link_target(batch, &target, module_targets, member_targets);
                 self.push_edge(
                     batch,
                     (&from, edge_kind::CITES, &external),
@@ -1103,15 +1097,25 @@ impl Eep48Projector {
         &self,
         batch: &mut FactBatch,
         target: &str,
+        module_targets: &BTreeMap<String, String>,
         member_targets: &BTreeMap<String, String>,
     ) -> String {
+        let target = target.strip_prefix("m:").unwrap_or(target);
+        if !target.contains('/') {
+            let canonical = target.strip_prefix("Elixir.").unwrap_or(target);
+            return module_targets
+                .get(canonical)
+                .cloned()
+                .unwrap_or_else(|| self.external_handle(batch, target));
+        }
         let (prefix, member) = if let Some(member) = target.strip_prefix("c:") {
             ("c:", member)
         } else if let Some(member) = target.strip_prefix("t:") {
             ("t:", member)
         } else {
-            return self.external_handle(batch, target);
+            ("", target)
         };
+        let member = member.strip_prefix("Elixir.").unwrap_or(member);
         let qualified = if member.contains('.') {
             format!("{prefix}{member}")
         } else {
@@ -1184,4 +1188,103 @@ impl Eep48Projector {
     ) -> FactIdentity {
         code_identity(batch, &self.root, &self.revision, native_id, file)
     }
+}
+
+pub(super) fn markdown_links(text: &str) -> Vec<String> {
+    use pulldown_cmark::{Event, Parser, Tag};
+    let mut out = Parser::new(text)
+        .filter_map(|event| match event {
+            Event::Start(Tag::Link { dest_url, .. }) => explicit_code_reference(&dest_url),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn explicit_code_reference(destination: &str) -> Option<String> {
+    // ExDoc custom links wrap their destination in one pair of backticks.
+    // Bare inline code never reaches this function: it is not a Link event.
+    let destination = destination.trim();
+    let reference = destination
+        .strip_prefix('`')
+        .and_then(|rest| rest.strip_suffix('`'))
+        .unwrap_or(destination);
+    let reference = reference.split('#').next().unwrap_or_default();
+    let (prefix, name) = reference
+        .strip_prefix("c:")
+        .map(|v| ("c:", v))
+        .or_else(|| reference.strip_prefix("t:").map(|v| ("t:", v)))
+        .or_else(|| reference.strip_prefix("m:").map(|v| ("m:", v)))
+        .unwrap_or(("", reference));
+    let valid = if let Some((member, arity)) = name.rsplit_once('/') {
+        prefix != "m:"
+            && !arity.is_empty()
+            && arity.bytes().all(|b| b.is_ascii_digit())
+            && member.rsplit_once('.').map_or_else(
+                || code_function_name(member),
+                |(module, function)| code_module_name(module) && code_function_name(function),
+            )
+    } else {
+        matches!(prefix, "" | "m:") && code_module_name(name)
+    };
+    valid.then(|| reference.to_string())
+}
+
+fn code_module_name(name: &str) -> bool {
+    if let Some(atom) = name.strip_prefix(':') {
+        return code_identifier(atom);
+    }
+    name.split('.').all(|part| {
+        part.chars().next().is_some_and(char::is_uppercase)
+            && part.chars().all(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+fn code_identifier(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_lowercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '?' | '!'))
+}
+
+fn code_function_name(name: &str) -> bool {
+    code_identifier(name)
+        || matches!(
+            name,
+            "+" | "-"
+                | "*"
+                | "/"
+                | "++"
+                | "--"
+                | "<>"
+                | "=="
+                | "!="
+                | "==="
+                | "!=="
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "=~"
+                | "|>"
+                | ".."
+                | "..//"
+                | "."
+                | "%"
+                | "!"
+                | "&&"
+                | "||"
+                | "&&&"
+                | "|||"
+                | "^^^"
+                | "~~~"
+                | "<<<"
+                | ">>>"
+                | "<-"
+                | "\\"
+        )
 }

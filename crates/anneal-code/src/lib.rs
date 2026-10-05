@@ -41,9 +41,7 @@ use emit::{
     normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact, token_count,
     truncate_at_char_boundary, version_handle_id,
 };
-use rustdoc::{
-    content_text, extract_rustdoc, markdown_links, signature_type_refs, stable_fragment,
-};
+use rustdoc::{content_text, extract_rustdoc, signature_type_refs, stable_fragment};
 use vocab::{
     DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, DEFAULT_SOURCE_EXTENSIONS,
     SOURCE_NAME, concern_name, config_key, edge_kind, meta_key, relation_value,

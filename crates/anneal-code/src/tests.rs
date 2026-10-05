@@ -701,11 +701,18 @@ fn eep48_source_projects_elixir_docs_and_metadata() {
             && edge.kind == edge_kind::IMPLEMENTS
             && edge.to.as_str().contains("Herald.AgentBehaviour")
     }));
-    assert!(batch.edges.iter().any(|edge| {
-        edge.from.as_str() == member
-            && edge.kind == edge_kind::CITES
-            && edge.to.as_str().contains("guides")
-    }));
+    assert!(
+        !batch
+            .edges
+            .iter()
+            .any(|edge| edge.from.as_str() == member && edge.kind == edge_kind::CITES)
+    );
+    assert!(
+        !batch
+            .handles
+            .iter()
+            .any(|handle| handle.id.as_str().contains("guides"))
+    );
     assert!(batch.edges.iter().any(|edge| {
         edge.from.as_str() == member
             && edge.kind == edge_kind::USES_TYPE
@@ -752,7 +759,7 @@ fn eep48_member_namespaces_merge_and_resolve_documented_links() {
         atom("elixir"),
         atom("markdown"),
         doc(
-            "[callback](c:run/2) [type](t:Herald.Agent.run/2) [remote](c:Herald.Other.run/2) [missing](t:unknown/0)",
+            "[callback](c:run/2) [type](t:Herald.Agent.run/2) [remote](c:Herald.Other.run/2) [missing](t:unknown/0) [function](`Herald.Agent.run/2`) [module](`m:Herald.Agent`)",
         ),
         metadata(vec![("source_path", binary("lib/herald/agent.ex"))]),
         list(entries),
@@ -815,11 +822,15 @@ fn eep48_member_namespaces_merge_and_resolve_documented_links() {
                 .any(|row| row.handle.as_str() == handle)
         );
     }
-    for member in &expected[1..3] {
+    for member in &expected[..3] {
         assert!(batch.edges.iter().any(
             |row| row.kind == edge_kind::CITES && row.to.as_str() == format!("{base}{member}")
         ));
     }
+    assert!(
+        batch.edges.iter().any(|row| row.kind == edge_kind::CITES
+            && row.to.as_str() == "lib/herald/agent.ex#Herald.Agent")
+    );
     assert!(batch.edges.iter().any(|row| row.kind == edge_kind::CITES
         && row.to.as_str() == "lib/herald/other.ex#c:Herald.Other.run/2"));
     assert!(batch.edges.iter().any(|row| row.kind == edge_kind::CITES
@@ -1218,5 +1229,26 @@ fn source_protocol_names_exclude_implicit_for_do_token() {
             .meta
             .iter()
             .any(|m| m.key == meta_key::IMPLEMENTS_SIGNATURE && m.value.contains("do"))
+    );
+}
+
+#[test]
+fn explicit_markdown_links_only_keep_code_destinations() {
+    let text = r"[http](https://example.com) [anchor](#section) [mail](mailto:x@y) [ftp](ftp://example.com) [file](guide.md) [extras](`e:elixir:writing.md`) [module](`m:Herald.Agent`) [function](`Herald.Agent.run/2`) [callback](`c:Herald.Agent.run/2`) [type](t:run/2) [erlang](`:ets.new/2`)
+`[literal](Wrong.Module)`
+
+~~~
+[example](Another.Module)
+~~~
+";
+    assert_eq!(
+        eep48::markdown_links(text),
+        vec![
+            ":ets.new/2",
+            "Herald.Agent.run/2",
+            "c:Herald.Agent.run/2",
+            "m:Herald.Agent",
+            "t:run/2"
+        ]
     );
 }

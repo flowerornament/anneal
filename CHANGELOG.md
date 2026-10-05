@@ -6,6 +6,11 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- EEP-48 explicit citations come from Markdown links to code references,
+  including ExDoc custom destinations. URLs, extras, files, anchors and
+  literal code examples do not mint code handles; known modules and members
+  resolve internally. Bare inline code remains outside citation extraction.
+
 - Bare-source `defimpl` edges name the protocol without the `do` token
   when the implementation uses its enclosing module as the implicit target.
 
