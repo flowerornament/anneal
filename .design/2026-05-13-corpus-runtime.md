@@ -494,6 +494,46 @@ This applies from v2.0, not v2.2, because adding fields later forces
 a query-breaking schema migration. Federation UI can defer; the
 schema cannot.
 
+**Rule CR-R13 (Identity is a function of the fact).** A stored fact's
+`native_id`, and the id of any handle an adapter mints, is determined
+by that fact's own content: its semantic fields, including evidence the
+fact owns (an implementation's kind and signature are part of an
+`Implements` assertion; a different constraint is a different fact).
+It never depends on the fact's position in an enumeration of other
+facts. Adding, removing, or reordering unrelated facts leaves every
+existing identity unchanged, and two extractions of the same source
+produce the same identity for every fact, with the same payload bound
+to it.
+
+Facts that agree on every semantic field are distinguished by an
+occurrence index local to that exact tuple. A local index is sound in
+exactly two cases: the tied facts are indistinguishable in everything
+the adapter emits, so any assignment yields the same rows; or the
+encounter order is itself a function of the source (document order).
+An index assigned in hash-map or directory iteration order over
+distinguishable facts violates the rule even when the resulting id set
+is stable, because the binding of payload to id is not. Multiplicity is
+preserved: repeated assertions remain distinct facts.
+
+The rule forbids position dependence; it does not require re-keying.
+An id that is already a function of its own fact (a stable owner key
+shared by a handle's ordinary metadata) satisfies it. Identity
+components are encoded so their boundaries survive authored delimiters
+and quotes. An adapter may not shorten an id by hashing unless a
+collision can neither alias two facts nor couple their occurrence
+indices.
+
+Rationale: delta retraction, visibility, provenance, and every
+byte-identical differential key on `(corpus, source, native_id)`. An
+identity that moves when an unrelated fact appears makes each of them
+report change where there is none. Evidence (2026-10-05): with a
+corpus-global ordinal in the id, one link added to an early file
+renamed 12,272 of 21,830 edge occurrences in a real markdown corpus,
+and unordered version-family iteration renamed 13 of 14 synthetic
+edges between two runs of one binary; with tuple-derived ids the same
+edit changes exactly one identity and repeated runs are byte-identical
+(anneal-zbq8, anneal-3izp, anneal-f7st).
+
 ### §10 Stored relations [CR-D8]
 
 **Definition CR-D8 (Stored primitives).** The relations every adapter
@@ -4070,6 +4110,7 @@ config key.
 - CR-R9: Language API stabilization gate (§8.1)
 - CR-R10: Visibility before derivation (§16)
 - CR-R11: Stored field validation (§10)
+- CR-R13: Identity is a function of the fact (§9)
 
 ### CR-Su (Surfaces)
 - CR-Su1: Starter verbs (§33)
