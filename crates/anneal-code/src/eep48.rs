@@ -79,6 +79,15 @@ pub(super) fn extract_eep48_set(
         });
         projectors.push(projector);
     }
+    let module_targets = projectors
+        .iter()
+        .map(|projector| {
+            (
+                projector.docs.module.clone(),
+                projector.module_handle.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let member_targets = projectors
         .iter()
         .flat_map(|projector| {
@@ -98,7 +107,7 @@ pub(super) fn extract_eep48_set(
         })
         .collect::<BTreeMap<_, _>>();
     for projector in &mut projectors {
-        projector.project(&mut batch, &member_targets, identities);
+        projector.project(&mut batch, &module_targets, &member_targets, identities);
     }
     emit_content_budget_meta(
         &mut batch,
@@ -584,6 +593,7 @@ impl Eep48Projector {
     pub(super) fn project(
         &mut self,
         batch: &mut FactBatch,
+        module_targets: &BTreeMap<String, String>,
         member_targets: &BTreeMap<String, String>,
         identities: &mut CodeFactIds,
     ) {
@@ -592,7 +602,7 @@ impl Eep48Projector {
         self.emit_member_handles(batch);
         self.emit_package_meta(batch);
         self.emit_structure_edges(batch, identities);
-        self.emit_behaviour_edges(batch, identities);
+        self.emit_behaviour_edges(batch, module_targets, identities);
         self.emit_doc_link_edges(batch, member_targets, identities);
         self.emit_content(batch);
         if self.budget_override.is_none() {
@@ -811,9 +821,18 @@ impl Eep48Projector {
         }
     }
 
-    pub(super) fn emit_behaviour_edges(&self, batch: &mut FactBatch, identities: &mut CodeFactIds) {
+    pub(super) fn emit_behaviour_edges(
+        &self,
+        batch: &mut FactBatch,
+        module_targets: &BTreeMap<String, String>,
+        identities: &mut CodeFactIds,
+    ) {
         for behaviour in &self.parsed.metadata.behaviours {
-            let target = self.external_handle(batch, behaviour);
+            let canonical = behaviour.strip_prefix("Elixir.").unwrap_or(behaviour);
+            let target = module_targets
+                .get(canonical)
+                .cloned()
+                .unwrap_or_else(|| self.external_handle(batch, behaviour));
             let signature = format!("@behaviour {behaviour}");
             let edge = self.push_edge(
                 batch,

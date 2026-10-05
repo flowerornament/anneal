@@ -6,6 +6,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- EEP-48 behaviour edges resolve modules emitted by the same artifact set,
+  including Elixir atom names, without external stand-ins for internal targets.
+
 - Code edge identities depend on source, kind, target, file, line, owned
   implementation evidence and occurrence within that tuple. Concern and
   obligation metadata identities use their own fields and local occurrences;

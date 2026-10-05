@@ -1106,3 +1106,83 @@ fn rustdoc_same_line_impl_evidence_permutations_keep_full_bytes() {
         }
     }
 }
+
+#[test]
+fn eep48_behaviours_resolve_modules_before_emission() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 root");
+    fs::create_dir_all(root.join("lib")).expect("source directory");
+    for (module, file, behaviours) in [
+        (
+            "Herald.Agent",
+            "agent.ex",
+            vec![
+                atom("Elixir.Herald.Internal"),
+                atom("Elixir.Dependency.Missing"),
+            ],
+        ),
+        ("Herald.Internal", "internal.ex", vec![]),
+    ] {
+        fs::write(
+            root.join(format!("lib/{file}")),
+            format!("defmodule {module} do\nend\n"),
+        )
+        .expect("source");
+        let term = tuple(vec![
+            atom("docs_v1"),
+            int(1),
+            atom("elixir"),
+            atom("markdown"),
+            doc("Docs."),
+            metadata(vec![
+                ("source_path", binary(&format!("lib/{file}"))),
+                ("behaviours", list(behaviours)),
+            ]),
+            list(vec![]),
+        ]);
+        let mut bytes = Vec::new();
+        term.encode(&mut bytes).expect("encode");
+        fs::write(root.join(format!("Elixir.{module}.chunk")), bytes).expect("artifact");
+    }
+    let config = ConfigFacts::try_from_entries(vec![
+        ConfigEntry::scalar(config_key::EEP48_DOC_CHUNK, "Elixir.Herald.Agent.chunk"),
+        ConfigEntry::scalar(config_key::EEP48_DOC_CHUNK, "Elixir.Herald.Internal.chunk"),
+        ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+    ])
+    .expect("config");
+    let batch = CodeSource
+        .extract(&context(&root, &config))
+        .expect("extract");
+    let internal = batch
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == edge_kind::IMPLEMENTS && e.to.as_str() == "lib/internal.ex#Herald.Internal"
+        })
+        .expect("internal module target");
+    assert_eq!(
+        code_meta(
+            &batch,
+            internal.identity.native_id.as_str(),
+            meta_key::IMPLEMENTS_SIGNATURE
+        ),
+        vec!["@behaviour Elixir.Herald.Internal"]
+    );
+    assert!(batch.edges.iter().any(|e| e.kind == edge_kind::IMPLEMENTS
+        && e.to.as_str() == "elixir://Elixir.Dependency.Missing"));
+    assert!(
+        !batch
+            .handles
+            .iter()
+            .any(|h| h.id.as_str() == "elixir://Elixir.Herald.Internal")
+    );
+    assert!(
+        !batch
+            .meta
+            .iter()
+            .any(|m| m.handle.as_str() == "elixir://Elixir.Herald.Internal")
+    );
+    anneal_core::FactStore::default()
+        .merge(batch)
+        .expect("merge");
+}
