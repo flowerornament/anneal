@@ -6,6 +6,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Bare-source `defimpl` edges name the protocol without the `do` token
+  when the implementation uses its enclosing module as the implicit target.
+
 - EEP-48 behaviour edges resolve modules emitted by the same artifact set,
   including Elixir atom names, without external stand-ins for internal targets.
 

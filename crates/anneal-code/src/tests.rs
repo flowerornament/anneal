@@ -1186,3 +1186,37 @@ fn eep48_behaviours_resolve_modules_before_emission() {
         .merge(batch)
         .expect("merge");
 }
+
+#[test]
+fn source_protocol_names_exclude_implicit_for_do_token() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 root");
+    fs::create_dir_all(root.join("lib")).expect("source directory");
+    fs::write(root.join("lib/item.ex"), "defmodule Demo.Item do\n  defimpl String.Chars do\n  end\n  defimpl Inspect   do # comment\n  end\nend\ndefimpl Jason.Encoder, for: Demo.Item do\nend\n").expect("source");
+    let config =
+        ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+            .expect("config");
+    let batch = CodeSource
+        .extract(&context(&root, &config))
+        .expect("extract");
+    let targets = batch
+        .edges
+        .iter()
+        .filter(|e| e.kind == edge_kind::IMPLEMENTS)
+        .map(|e| e.to.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        targets,
+        BTreeSet::from([
+            "elixir://String.Chars",
+            "elixir://Inspect",
+            "elixir://Jason.Encoder"
+        ])
+    );
+    assert!(
+        !batch
+            .meta
+            .iter()
+            .any(|m| m.key == meta_key::IMPLEMENTS_SIGNATURE && m.value.contains("do"))
+    );
+}

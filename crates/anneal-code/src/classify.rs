@@ -535,8 +535,7 @@ pub(super) fn protocol_impls(file: &str, text: &str) -> Vec<ProtocolImpl> {
         let mut parts = after.splitn(2, ',');
         let protocol = parts
             .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .and_then(|name| name.split_whitespace().next())
             .unwrap_or_default()
             .to_string();
         if protocol.is_empty() {
