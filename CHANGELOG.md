@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- EEP-48 callback and type handles use Elixir documentation namespaces (`c:`
+  and `t:`), including their docs spans and link targets. Functions and macros
+  retain their existing handles; same-MFA functions and callbacks load together.
+
 - Markdown edge identities depend on the actual source handle, kind, target,
   line and occurrence within that tuple. Unrelated links and version-family
   discovery order preserve existing identities; repeated same-line links remain

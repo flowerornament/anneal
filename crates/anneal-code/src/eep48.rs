@@ -7,6 +7,8 @@
 //! `emit` and `vocab`. See CR-D4, CR-D8, and
 //! `.design/2026-06-10-anneal-code-adapter.md`.
 
+use std::collections::BTreeMap;
+
 use super::{
     ArtifactManifest, CodeDiscoveryConfig, ContentBudgetReport, ContentFact, Cursor, EdgeFact,
     EetfTerm, FactBatch, FactBatchMode, FactIdentity, HandleFact, RawBeamFile, Revision,
@@ -55,13 +57,14 @@ pub(super) fn extract_eep48_set(
         FactBatchMode::FullSnapshot,
         cx.next_generation(),
     );
+    let mut projectors = Vec::with_capacity(docs.len());
     for Eep48ArtifactDocs {
         artifact,
         docs,
         parsed,
     } in docs
     {
-        let mut projector = Eep48Projector::new(Eep48ProjectorInput {
+        let projector = Eep48Projector::new(Eep48ProjectorInput {
             root,
             source_root: &config.source_root,
             artifact: &artifact,
@@ -73,7 +76,28 @@ pub(super) fn extract_eep48_set(
             parsed,
             budget_override: Some(budget.clone()),
         });
-        projector.project(&mut batch);
+        projectors.push(projector);
+    }
+    let member_targets = projectors
+        .iter()
+        .flat_map(|projector| {
+            projector
+                .parsed
+                .entries
+                .iter()
+                .filter(|entry| {
+                    matches!(entry.kind.as_str(), "callback" | "macrocallback" | "type")
+                })
+                .map(|entry| {
+                    (
+                        projector.member_qualified_name(entry),
+                        projector.member_handle(entry),
+                    )
+                })
+        })
+        .collect::<BTreeMap<_, _>>();
+    for projector in &mut projectors {
+        projector.project(&mut batch, &member_targets);
     }
     emit_content_budget_meta(
         &mut batch,
@@ -556,14 +580,18 @@ impl Eep48Projector {
         }
     }
 
-    pub(super) fn project(&mut self, batch: &mut FactBatch) {
+    pub(super) fn project(
+        &mut self,
+        batch: &mut FactBatch,
+        member_targets: &BTreeMap<String, String>,
+    ) {
         self.emit_file_handle(batch);
         self.emit_module_handle(batch);
         self.emit_member_handles(batch);
         self.emit_package_meta(batch);
         self.emit_structure_edges(batch);
         self.emit_behaviour_edges(batch);
-        self.emit_doc_link_edges(batch);
+        self.emit_doc_link_edges(batch, member_targets);
         self.emit_content(batch);
         if self.budget_override.is_none() {
             self.emit_budget_meta(batch);
@@ -811,10 +839,14 @@ impl Eep48Projector {
         }
     }
 
-    pub(super) fn emit_doc_link_edges(&self, batch: &mut FactBatch) {
+    pub(super) fn emit_doc_link_edges(
+        &self,
+        batch: &mut FactBatch,
+        member_targets: &BTreeMap<String, String>,
+    ) {
         let mut ordinal = 0usize;
         for target in markdown_links(&self.parsed.module_doc.text) {
-            let external = self.external_handle(batch, &target);
+            let external = self.doc_link_target(batch, &target, member_targets);
             self.push_edge(
                 batch,
                 &self.module_handle,
@@ -828,7 +860,7 @@ impl Eep48Projector {
         for entry in &self.parsed.entries {
             let from = self.member_handle(entry);
             for target in markdown_links(&entry.doc.text) {
-                let external = self.external_handle(batch, &target);
+                let external = self.doc_link_target(batch, &target, member_targets);
                 self.push_edge(
                     batch,
                     &from,
@@ -1038,14 +1070,43 @@ impl Eep48Projector {
     }
 
     pub(super) fn member_handle(&self, entry: &Eep48Entry) -> String {
-        format!(
-            "{}#{}.{}/{}",
-            self.module_file, self.docs.module, entry.name, entry.arity
-        )
+        format!("{}#{}", self.module_file, self.member_qualified_name(entry))
     }
 
     pub(super) fn member_qualified_name(&self, entry: &Eep48Entry) -> String {
-        format!("{}.{}/{}", self.docs.module, entry.name, entry.arity)
+        let prefix = match entry.kind.as_str() {
+            "callback" | "macrocallback" => "c:",
+            "type" => "t:",
+            _ => "",
+        };
+        format!(
+            "{prefix}{}.{}/{}",
+            self.docs.module, entry.name, entry.arity
+        )
+    }
+
+    fn doc_link_target(
+        &self,
+        batch: &mut FactBatch,
+        target: &str,
+        member_targets: &BTreeMap<String, String>,
+    ) -> String {
+        let (prefix, member) = if let Some(member) = target.strip_prefix("c:") {
+            ("c:", member)
+        } else if let Some(member) = target.strip_prefix("t:") {
+            ("t:", member)
+        } else {
+            return self.external_handle(batch, target);
+        };
+        let qualified = if member.contains('.') {
+            format!("{prefix}{member}")
+        } else {
+            format!("{prefix}{}.{member}", self.docs.module)
+        };
+        member_targets
+            .get(&qualified)
+            .cloned()
+            .unwrap_or_else(|| self.external_handle(batch, target))
     }
 
     pub(super) fn member_signature(entry: &Eep48Entry) -> String {

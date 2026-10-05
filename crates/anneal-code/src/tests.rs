@@ -703,6 +703,112 @@ fn eep48_source_projects_elixir_docs_and_metadata() {
 }
 
 #[test]
+fn eep48_member_namespaces_merge_and_resolve_documented_links() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
+    write_eep48_fixture(&root);
+    let entries = ["function", "callback", "type", "macrocallback", "macro"]
+        .into_iter()
+        .map(|kind| {
+            tuple(vec![
+                tuple(vec![
+                    atom(kind),
+                    atom(if matches!(kind, "macro" | "macrocallback") {
+                        "other"
+                    } else {
+                        "run"
+                    }),
+                    int(2),
+                ]),
+                int(12),
+                list(vec![binary("run(x, y)")]),
+                doc("Member docs."),
+                metadata(vec![]),
+            ])
+        })
+        .collect();
+    let term = tuple(vec![
+        atom("docs_v1"),
+        int(1),
+        atom("elixir"),
+        atom("markdown"),
+        doc(
+            "[callback](c:run/2) [type](t:Herald.Agent.run/2) [remote](c:Herald.Other.run/2) [missing](t:unknown/0)",
+        ),
+        metadata(vec![("source_path", binary("lib/herald/agent.ex"))]),
+        list(entries),
+    ]);
+    let mut bytes = Vec::new();
+    term.encode(&mut bytes).expect("encode docs");
+    fs::write(root.join("Elixir.Herald.Agent.chunk"), bytes).expect("write docs");
+    fs::write(
+        root.join("lib/herald/other.ex"),
+        "defmodule Herald.Other do\nend\n",
+    )
+    .expect("other source");
+    let other = tuple(vec![
+        atom("docs_v1"),
+        int(1),
+        atom("elixir"),
+        atom("markdown"),
+        doc("Other docs."),
+        metadata(vec![("source_path", binary("lib/herald/other.ex"))]),
+        list(vec![tuple(vec![
+            tuple(vec![atom("callback"), atom("run"), int(2)]),
+            int(1),
+            list(vec![]),
+            doc("Other callback."),
+            metadata(vec![]),
+        ])]),
+    ]);
+    let mut bytes = Vec::new();
+    other.encode(&mut bytes).expect("encode other docs");
+    fs::write(root.join("Elixir.Herald.Other.chunk"), bytes).expect("write other docs");
+    let config = ConfigFacts::try_from_entries(vec![
+        ConfigEntry::scalar(config_key::EEP48_DOC_CHUNK, "Elixir.Herald.Other.chunk"),
+        ConfigEntry::scalar(config_key::EEP48_DOC_CHUNK, "Elixir.Herald.Agent.chunk"),
+        ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+    ])
+    .expect("config");
+    let batch = CodeSource
+        .extract(&context(&root, &config))
+        .expect("extract");
+    anneal_core::FactStore::default()
+        .merge(batch.clone())
+        .expect("distinct member namespaces merge");
+    let base = "lib/herald/agent.ex#";
+    let expected = [
+        "Herald.Agent.run/2",
+        "c:Herald.Agent.run/2",
+        "t:Herald.Agent.run/2",
+        "c:Herald.Agent.other/2",
+        "Herald.Agent.other/2",
+    ];
+    for member in expected {
+        let handle = format!("{base}{member}");
+        assert!(batch.handles.iter().any(|row| row.id.as_str() == handle));
+        assert!(batch.spans.iter().any(|row| row.handle.as_str() == handle
+            && row.identity.native_id.as_str() == format!("{handle}#docs")));
+        assert!(
+            batch
+                .content
+                .iter()
+                .any(|row| row.handle.as_str() == handle)
+        );
+    }
+    for member in &expected[1..3] {
+        assert!(batch.edges.iter().any(
+            |row| row.kind == edge_kind::CITES && row.to.as_str() == format!("{base}{member}")
+        ));
+    }
+    assert!(batch.edges.iter().any(|row| row.kind == edge_kind::CITES
+        && row.to.as_str() == "lib/herald/other.ex#c:Herald.Other.run/2"));
+    assert!(batch.edges.iter().any(|row| row.kind == edge_kind::CITES
+        && row.to.as_str().starts_with("elixir://")
+        && row.to.as_str().contains("unknown")));
+}
+
+#[test]
 fn eep48_source_declares_member_doc_budget_truncation() {
     let dir = tempdir().expect("tempdir");
     let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
