@@ -34,7 +34,7 @@ check:
     rm -f /tmp/anneal-check-times.$$
     echo "--- quality gate ---" >&2
     _t fmt     cargo fmt --check
-    _t install bash -n install.sh
+    _t install bash scripts/test-installer.sh
     _t release env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release.py
     _t arch    just check-arch
     _t clippy  cargo clippy --all-targets -- -D warnings

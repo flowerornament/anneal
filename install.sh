@@ -42,6 +42,7 @@ Options:
 Environment:
   INSTALL_DIR          Install directory override
   BIN_DIR              Alias for INSTALL_DIR
+  ANNEAL_GITHUB_TOKEN  Opt-in token for the latest-release GitHub API lookup
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/flowerornament/anneal/master/install.sh | bash
@@ -63,6 +64,26 @@ Install from source:
   cargo install --path anneal --locked
 EOF
     exit 1
+}
+
+latest_release() {
+    if [ -n "${ANNEAL_GITHUB_TOKEN:+set}" ]; then
+        # This runs in TAG's command substitution. Disable tracing there so
+        # credentials stay private even when the caller enables bash -x.
+        set +x
+        local token="$ANNEAL_GITHUB_TOKEN"
+        case "$token" in
+            *$'\n'*|*$'\r'*) error "ANNEAL_GITHUB_TOKEN must be one line" ;;
+        esac
+        token="${token//\\/\\\\}"
+        token="${token//\"/\\\"}"
+        # Credentials live on stdin, never in argv. Ignore curl config and
+        # redirects for this fixed API request; downloads remain anonymous.
+        printf 'header = "Authorization: Bearer %s"\n' "$token" |
+            curl -q -fsS --config - "https://api.github.com/repos/$REPO/releases/latest"
+    else
+        curl -fsSL "https://api.github.com/repos/$REPO/releases/latest"
+    fi
 }
 
 while [ "$#" -gt 0 ]; do
@@ -145,7 +166,7 @@ if [ -n "$REQUESTED_TAG" ]; then
     TAG="$REQUESTED_TAG"
 else
     info "Finding latest release..."
-    TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    TAG=$(latest_release | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 fi
 
 if [ -z "$TAG" ]; then
