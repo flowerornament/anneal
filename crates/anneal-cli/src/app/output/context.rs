@@ -146,7 +146,11 @@ pub(super) fn write_context_text<W: Write>(mut writer: W, output: &ContextOutput
                     if let Some(age_days) = neighbor.age_days {
                         write!(writer, " age_days={age_days}")?;
                     }
-                    write!(writer, " degree={}", neighbor.degree)?;
+                    write!(
+                        writer,
+                        " in={} out={}",
+                        neighbor.in_degree, neighbor.out_degree
+                    )?;
                 }
                 if omitted == 0 {
                     writeln!(writer)?;
@@ -200,7 +204,8 @@ enum ContextEvent<'a> {
         status: Option<&'a str>,
         disposition: &'a str,
         age_days: Option<i64>,
-        degree: i64,
+        in_degree: i64,
+        out_degree: i64,
         group: &'a str,
     },
 }
@@ -242,7 +247,8 @@ pub(super) fn write_context_ndjson<W: Write>(writer: W, output: &ContextOutput) 
                 status: neighbor.status.as_deref(),
                 disposition: neighbor.disposition.as_str(),
                 age_days: neighbor.age_days,
-                degree: neighbor.degree,
+                in_degree: neighbor.in_degree,
+                out_degree: neighbor.out_degree,
                 group: neighbor.group.as_str(),
             }),
     );

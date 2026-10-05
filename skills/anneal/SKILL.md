@@ -123,6 +123,10 @@ Use `context` once you can name a goal: ranked span hits, compact span
 metadata, and graph neighborhood in one call. Add `--read-spans` only when
 inline matched bodies are worth the output.
 
+Neighborhood counts `in_degree` and `out_degree` (text: `in` and `out`) are
+incoming and outgoing stored edges of all kinds across the loaded corpus.
+The hub penalty uses `out_degree` only.
+
 ## Retrieval
 
 ```bash

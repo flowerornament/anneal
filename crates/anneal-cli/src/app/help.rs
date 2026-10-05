@@ -106,6 +106,9 @@ Usage: anneal [OPTIONS] context [OPTIONS] <GOAL>
 Cold-agent orientation in one response. Composes summary-bearing span search,
 bounded span metadata, and graph neighborhood. Use --read-spans to include matched
 span bodies.
+Neighborhood counts in_degree and out_degree (text: in and out) are
+incoming and outgoing stored edges of all kinds across the loaded corpus.
+The hub penalty uses out_degree only.
 
 Arguments:
   <GOAL>                         Natural-language goal/query

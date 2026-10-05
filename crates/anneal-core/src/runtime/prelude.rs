@@ -15,8 +15,8 @@ pub const ANNEAL_PRELUDE_PATH_ENV: &str = "ANNEAL_PRELUDE_PATH";
 pub const STANDARD_PRELUDE_VERSION: &str = "v2.0";
 pub const CONTEXT_VERB_NAME: &str = "context";
 #[cfg(test)]
-pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked summary-bearing span hits, span metadata, and nearby handles in one call. Use the CLI --read-spans flag to include matched span bodies.";
-pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","summary":"String|null","status":"String|null","disposition":"String","age_days":"Number|null","topic_signal":"String","newer_topic_sibling_count":"Number","top_newer_topic_sibling":"HandleId|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","degree":"Number","group":"String"}]}"#;
+pub const CONTEXT_VERB_DOC: &str = "Orient a cold agent around a goal: ranked summary-bearing span hits, span metadata, and nearby handles in one call. Neighborhood in_degree and out_degree count incoming and outgoing stored edges of all kinds across the loaded corpus; text shows in and out. Ranking penalizes out_degree only. Use the CLI --read-spans flag to include matched span bodies.";
+pub const CONTEXT_OUTPUT_SCHEMA: &str = r#"{"goal":"String","hits":[{"handle":"HandleId","span_id":"String|null","score":"Number","reason":"String","field":"String","summary":"String|null","status":"String|null","disposition":"String","age_days":"Number|null","topic_signal":"String","newer_topic_sibling_count":"Number","top_newer_topic_sibling":"HandleId|null"}],"spans":[{"handle":"HandleId","span_id":"String","start_line":"Number","end_line":"Number","tokens":"Number","text":"String|null; present with --read-spans"}],"neighborhood":[{"handle":"HandleId","neighbor":"HandleId","status":"String|null","disposition":"String","age_days":"Number|null","in_degree":"Number","out_degree":"Number","group":"String"}]}"#;
 pub const GRAPH_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/graph.dl";
 pub const CONVERGENCE_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/convergence.dl";
 pub const CHECKS_PRELUDE_SOURCE: &str = "crates/anneal-core/src/prelude/checks.dl";
@@ -900,7 +900,8 @@ mod tests {
                         "age_days",
                         "neighbor",
                         "neighbor_age_days",
-                        "neighbor_degree",
+                        "neighbor_in_degree",
+                        "neighbor_out_degree",
                         "neighbor_disposition",
                         "neighbor_group",
                         "neighbor_status",

@@ -333,6 +333,10 @@ hub degree, and currency: current operative successors outrank superseded
 predecessors, while superseded material stays reachable. Search and context
 hits include disposition, status, and age so you can tell current framing from
 stale-but-relevant history.
+Neighborhood counts `in_degree` and `out_degree` (text: `in` and `out`) are
+incoming and outgoing stored edges of all kinds across the loaded corpus.
+The hub penalty uses `out_degree` only.
+
 `read` retrieves bounded content spans for one handle; use `--span-id` when a
 search hit already identified the section you need.
 `handle` shows incoming and outgoing edges grouped by kind and separates

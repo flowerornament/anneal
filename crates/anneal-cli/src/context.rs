@@ -171,7 +171,8 @@ impl ContextOutput {
                         status: optional_string_field(row, "neighbor_status")?,
                         disposition: string_field(row, "neighbor_disposition")?,
                         age_days: optional_int_field(row, "neighbor_age_days")?,
-                        degree: int_field(row, "neighbor_degree")?,
+                        in_degree: int_field(row, "neighbor_in_degree")?,
+                        out_degree: int_field(row, "neighbor_out_degree")?,
                         group: string_field(row, "neighbor_group")?,
                     };
                     if neighborhood_keys
@@ -348,7 +349,8 @@ pub struct ContextNeighbor {
     pub status: Option<String>,
     pub disposition: String,
     pub age_days: Option<i64>,
-    pub degree: i64,
+    pub in_degree: i64,
+    pub out_degree: i64,
     pub group: String,
 }
 
@@ -357,7 +359,7 @@ impl ContextNeighbor {
         neighbor_score(
             self.group.as_str(),
             self.disposition.as_str(),
-            self.degree,
+            self.out_degree,
             self.handle == self.neighbor,
         )
     }
@@ -526,7 +528,9 @@ mod tests {
         assert_eq!(schema["neighborhood"][0]["status"], "String|null");
         assert_eq!(schema["neighborhood"][0]["disposition"], "String");
         assert_eq!(schema["neighborhood"][0]["age_days"], "Number|null");
-        assert_eq!(schema["neighborhood"][0]["degree"], "Number");
+        assert_eq!(schema["neighborhood"][0]["in_degree"], "Number");
+        assert_eq!(schema["neighborhood"][0]["out_degree"], "Number");
+        assert!(schema["neighborhood"][0].get("degree").is_none());
         assert_eq!(schema["neighborhood"][0]["group"], "String");
         assert!(schema["hits"][0].get("h").is_none());
         assert!(schema["hits"][0].get("hit_span_id").is_none());
@@ -584,7 +588,8 @@ mod tests {
                 status: Some("current".to_string()),
                 disposition: "current".to_string(),
                 age_days: None,
-                degree: 0,
+                in_degree: 0,
+                out_degree: 0,
                 group: "current".to_string(),
             }]
         );
@@ -671,7 +676,8 @@ mod tests {
                     status: Some("current".to_string()),
                     disposition: "current".to_string(),
                     age_days: None,
-                    degree: 0,
+                    in_degree: 0,
+                    out_degree: 0,
                     group: "current".to_string(),
                 },
                 ContextNeighbor {
@@ -680,7 +686,8 @@ mod tests {
                     status: Some("current".to_string()),
                     disposition: "current".to_string(),
                     age_days: None,
-                    degree: 0,
+                    in_degree: 0,
+                    out_degree: 0,
                     group: "current".to_string(),
                 },
             ]
@@ -854,7 +861,7 @@ mod tests {
                     neighbor.neighbor.as_str(),
                     neighbor.disposition.as_str(),
                     neighbor.group.as_str(),
-                    neighbor.degree,
+                    neighbor.out_degree,
                 )
             })
             .collect::<Vec<_>>();
@@ -981,6 +988,43 @@ mod tests {
                 .statements,
         );
         analyze(program).expect("query analyzes");
+    }
+
+    #[test]
+    fn context_cited_label_reports_both_edge_directions() {
+        let mut batch = FactBatch::new(
+            "test".into(),
+            SourceName::from("fixture"),
+            FactBatchMode::FullSnapshot,
+            Generation::initial(),
+        );
+        batch.handles = vec![
+            handle("a.md", "needle"),
+            handle("b.md", "other"),
+            handle_in_file("CLAIM-1", "a.md", "claim"),
+        ];
+        batch.content = vec![content("a.md", "body", "needle", 1)];
+        batch.spans = vec![span("a.md", "body", 1, 1)];
+        batch.edges = vec![
+            edge("a.md", "CLAIM-1", "Cites"),
+            edge("b.md", "CLAIM-1", "Cites"),
+        ];
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge two-file citation fixture");
+        let output = evaluate_context(
+            &ContextCommand::new("needle").with_hits(1),
+            Database::from_store(&store),
+            EvalOptions::default(),
+        );
+        let label = output
+            .neighborhood
+            .iter()
+            .find(|n| n.neighbor == "CLAIM-1")
+            .expect("cited label is in neighborhood");
+        let value = serde_json::to_value(label).expect("serialize neighbor");
+        assert_eq!(value["in_degree"], 2);
+        assert_eq!(value["out_degree"], 0);
+        assert!(value.get("degree").is_none());
     }
 
     fn context_database() -> Database {
@@ -1247,7 +1291,8 @@ mod tests {
                 ("neighbor_status".to_string(), s("current")),
                 ("neighbor_disposition".to_string(), s("current")),
                 ("neighbor_age_days".to_string(), Value::Null),
-                ("neighbor_degree".to_string(), n(0)),
+                ("neighbor_in_degree".to_string(), n(0)),
+                ("neighbor_out_degree".to_string(), n(0)),
                 ("neighbor_group".to_string(), s("current")),
             ]),
             derivation: None,

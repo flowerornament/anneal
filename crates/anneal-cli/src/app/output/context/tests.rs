@@ -30,11 +30,12 @@ fn context_human_render_is_readable() {
         }],
         neighborhood: vec![crate::ContextNeighbor {
             handle: "plan.md".to_string(),
-            neighbor: "dep.md".to_string(),
+            neighbor: "CLAIM-1".to_string(),
             status: Some("active".to_string()),
             disposition: "current".to_string(),
             age_days: Some(3),
-            degree: 4,
+            in_degree: 2,
+            out_degree: 0,
             group: "current".to_string(),
         }],
     });
@@ -51,7 +52,7 @@ fn context_human_render_is_readable() {
     assert!(rendered.contains("2 unmarked newer topical siblings (top: next.md; follow-up: anneal -e '? currency_suspect(\"plan.md\", newer).')"));
     assert!(rendered.contains("summary=Release"));
     assert!(rendered.contains("Read\nplan.md span=body lines=10-12 tokens=12"));
-    assert!(rendered.contains("Neighborhood\nplan.md:\n  current: dep.md disposition=current status=active age_days=3 degree=4"));
+    assert!(rendered.contains("Neighborhood\nplan.md:\n  current: CLAIM-1 disposition=current status=active age_days=3 in=2 out=0"));
 }
 
 #[test]
@@ -86,7 +87,8 @@ fn context_json_render_streams_event_rows() {
             status: Some("active".to_string()),
             disposition: "current".to_string(),
             age_days: Some(3),
-            degree: 4,
+            in_degree: 2,
+            out_degree: 4,
             group: "current".to_string(),
         }],
     });
@@ -121,6 +123,8 @@ fn context_json_render_streams_event_rows() {
     assert_eq!(rows[3]["disposition"], "current");
     assert_eq!(rows[3]["status"], "active");
     assert_eq!(rows[3]["age_days"], 3);
-    assert_eq!(rows[3]["degree"], 4);
+    assert_eq!(rows[3]["in_degree"], 2);
+    assert_eq!(rows[3]["out_degree"], 4);
+    assert!(rows[3].get("degree").is_none());
     assert_eq!(rows[3]["group"], "current");
 }
