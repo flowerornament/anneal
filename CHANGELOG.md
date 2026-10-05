@@ -4,6 +4,14 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Markdown edge identities depend on the actual source handle, kind, target,
+  line and occurrence within that tuple. Unrelated links and version-family
+  discovery order preserve existing identities; repeated same-line links remain
+  distinct. Every Markdown edge native ID changes once to this encoding, without
+  aliases for the previous IDs. Config, history and trail formats are unchanged.
+
 ## v0.26.2 - 2026-09-30
 
 ### Fixed

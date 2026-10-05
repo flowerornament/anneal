@@ -275,8 +275,9 @@ fn extract_markdown_facts_from_anneal_config(
         &mut revisions,
         &mut edge_assertions,
         &edge_order_context,
-        planned_edges,
+        &planned_edges,
     );
+    drop(planned_edges);
 
     for extraction in &result.files.extractions {
         emit_file_parent_meta(&mut batch, &mut revisions, &extraction.file);
@@ -1636,7 +1637,7 @@ struct EdgeFactInput<'a> {
     to: String,
     kind: &'a str,
     line: u32,
-    ordinal: usize,
+    occurrence: usize,
 }
 
 fn edge_fact(
@@ -1655,7 +1656,7 @@ fn edge_fact(
         input.kind,
         &input.to,
         input.line,
-        input.ordinal,
+        input.occurrence,
     );
     let assertion = assertions.assertion_for(&file, input.line);
     EdgeFact {
@@ -1675,12 +1676,13 @@ fn native_id_for_edge(
     kind: &str,
     target: &str,
     line: u32,
-    ordinal: usize,
+    occurrence: usize,
 ) -> String {
-    format!(
-        "{}::edge::{ordinal}::{kind}::{target}::{line}",
-        native_id_for(source_handle)
-    )
+    // JSON encodes component boundaries, including authored quotes and delimiters.
+    // Use the actual source identity: labels sharing a file are distinct handles.
+    let tuple = serde_json::to_string(&(source_handle.id.as_str(), kind, target, line, occurrence))
+        .expect("edge identity tuples contain only serializable strings and integers");
+    format!("edge:{tuple}")
 }
 
 #[derive(Clone)]
@@ -1771,7 +1773,6 @@ struct PlannedEdge {
     to: String,
     kind: EdgeKind,
     line: u32,
-    ordinal: usize,
 }
 
 fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
@@ -1805,19 +1806,17 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
 
     let mut planned =
         Vec::with_capacity(ordered.len() + context.result.resolution.pending_edges.len());
-    for (ordinal, edge) in ordered.into_iter().enumerate() {
+    for edge in ordered {
         let target_handle = context.result.graph.node(edge.target);
         planned.push(PlannedEdge {
             source: edge.source,
             to: target_handle.id.clone(),
             kind: edge.kind,
             line: edge.line,
-            ordinal,
         });
     }
 
-    let ordered_count = planned.len();
-    for (idx, edge) in context.result.resolution.pending_edges.iter().enumerate() {
+    for edge in &context.result.resolution.pending_edges {
         if context.node_index.contains_key(&edge.target_identity) {
             continue;
         }
@@ -1831,7 +1830,6 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
             to: edge.target_identity.clone(),
             kind: edge.kind.clone(),
             line: edge.line.unwrap_or(0),
-            ordinal: ordered_count + idx,
         });
     }
     planned
@@ -1872,22 +1870,35 @@ fn emit_ordered_edges(
     revisions: &mut RevisionCache<'_>,
     assertions: &mut EdgeAssertionCache<'_>,
     context: &EdgeOrderContext<'_>,
-    planned_edges: Vec<PlannedEdge>,
+    planned_edges: &[PlannedEdge],
 ) {
+    // Counts are local to an exact semantic tuple. Unrelated edges and version
+    // family iteration order cannot rename an edge; repeated references still
+    // have distinct identities in their existing encounter order.
+    let mut occurrences = HashMap::new();
     for edge in planned_edges {
         let source_handle = context.result.graph.node(edge.source);
+        let occurrence = occurrences
+            .entry((
+                source_handle.id.as_str(),
+                edge.kind.as_str(),
+                edge.to.as_str(),
+                edge.line,
+            ))
+            .or_insert(0);
         batch.edges.push(edge_fact(
             batch,
             revisions,
             assertions,
             source_handle,
             EdgeFactInput {
-                to: edge.to,
+                to: edge.to.clone(),
                 kind: edge.kind.as_str(),
                 line: edge.line,
-                ordinal: edge.ordinal,
+                occurrence: *occurrence,
             },
         ));
+        *occurrence += 1;
     }
 }
 
@@ -2622,6 +2633,117 @@ mod tests {
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
+
+    #[test]
+    fn edge_identity_distinguishes_source_handles_and_component_boundaries() {
+        let first = super::Handle::label("OQ".to_string(), 1, Some(Utf8PathBuf::from("shared.md")));
+        let second = super::Handle::label("OQ".to_string(), 2, first.file_path.clone());
+        let id = |source, kind, target, line, occurrence| {
+            super::native_id_for_edge(source, kind, target, line, occurrence)
+        };
+        assert_ne!(
+            id(&first, "Cites", "target", 2, 0),
+            id(&second, "Cites", "target", 2, 0)
+        );
+        assert_ne!(id(&first, "A::B", "C", 2, 0), id(&first, "A", "B::C", 2, 0));
+        assert_ne!(
+            id(&first, "Cites", "target", 2, 0),
+            id(&first, "Cites", "target", 2, 1)
+        );
+        assert_ne!(
+            id(&first, "Cites", "target", 2, 0),
+            id(&first, "Cites", "target", 3, 0)
+        );
+        let encoded = id(&first, "custom\"kind", "target\\path\"", 2, 10);
+        let decoded: (String, String, String, u32, usize) =
+            serde_json::from_str(encoded.strip_prefix("edge:").expect("identity prefix"))
+                .expect("unambiguous tuple");
+        assert_eq!(
+            decoded,
+            (
+                "OQ-1".to_string(),
+                "custom\"kind".to_string(),
+                "target\\path\"".to_string(),
+                2,
+                10
+            )
+        );
+    }
+
+    #[test]
+    fn edge_ids_survive_unrelated_insertions_and_preserve_same_line_duplicates() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 root");
+        std::fs::create_dir(&root).expect("create corpus");
+        std::fs::write(
+            root.join("b.md"),
+            "# B\n[first](target.md) [second](target.md)\n[missing](missing.md)\n",
+        )
+        .expect("write source");
+        std::fs::write(root.join("target.md"), "# Target\n").expect("write target");
+        // Exercise synthetic edges as well as resolved and unresolved authored edges.
+        for name in ["alpha-v1.md", "alpha-v2.md", "beta-v1.md", "beta-v2.md"] {
+            std::fs::write(root.join(name), "# Version\n").expect("write version");
+        }
+        let extract = || {
+            extract_markdown_facts(
+                &root,
+                CorpusId::from("test"),
+                SourceName::from("markdown"),
+                Generation::initial(),
+            )
+            .expect("extract")
+        };
+        let before = extract();
+        let ids = |batch: &FactBatch| {
+            batch
+                .edges
+                .iter()
+                .map(|edge| edge.identity.native_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let before_ids = ids(&before);
+        assert_eq!(
+            before_ids.len(),
+            before.edges.len(),
+            "duplicate references need distinct identities"
+        );
+        assert_eq!(
+            before
+                .edges
+                .iter()
+                .filter(|edge| edge.from.as_str() == "b.md"
+                    && edge.to.as_str() == "target.md"
+                    && edge.line == 2)
+                .count(),
+            2,
+            "{:#?}",
+            before.edges
+        );
+        assert_eq!(
+            before
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "Supersedes" && edge.file.is_empty())
+                .count(),
+            2
+        );
+        std::fs::write(root.join("a.md"), "# A\n[new](target.md)\n")
+            .expect("insert unrelated edge");
+        let after = extract();
+        let after_ids = ids(&after);
+        assert_eq!(after.edges.len(), before.edges.len() + 1);
+        assert!(
+            before_ids.is_subset(&after_ids),
+            "unrelated insertion must not rename existing edges"
+        );
+        assert_eq!(after_ids.difference(&before_ids).count(), 1);
+        assert_eq!(
+            ids(&extract()),
+            after_ids,
+            "fresh extraction must reproduce every id"
+        );
+    }
 
     #[test]
     fn area_for_groups_root_files_under_root_area() {

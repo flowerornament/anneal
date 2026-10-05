@@ -563,6 +563,51 @@ mod tests {
     }
 
     #[test]
+    fn full_snapshot_reextract_replaces_legacy_edge_identities() {
+        let dir = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 root");
+        fs::create_dir(&root).expect("create corpus");
+        fs::write(root.join("a.md"), "# A\n[first](b.md) [second](b.md)\n").expect("write source");
+        fs::write(root.join("b.md"), "# B\n").expect("write target");
+        let config = ConfigFacts::default();
+        let source = MarkdownSource::default();
+        let mut legacy = source
+            .extract(&context(&root, &config, None))
+            .expect("extract");
+        assert_eq!(legacy.edges.len(), 2);
+        for (ordinal, edge) in legacy.edges.iter_mut().enumerate() {
+            edge.identity.native_id =
+                anneal_core::NativeId::from(format!("a.md::edge::{ordinal}::Cites::b.md::2"));
+        }
+        let old_ids = legacy
+            .edges
+            .iter()
+            .map(|edge| edge.identity.native_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut store = FactStore::default();
+        store.merge(legacy).expect("merge legacy snapshot");
+        let current = source
+            .extract(&context(&root, &config, Some(Generation::initial())))
+            .expect("reextract");
+        let current_ids = current
+            .edges
+            .iter()
+            .map(|edge| edge.identity.native_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert!(current_ids.is_disjoint(&old_ids));
+        store.merge(current).expect("replace snapshot");
+        assert_eq!(store.edges().len(), 2);
+        assert_eq!(
+            store
+                .edges()
+                .iter()
+                .map(|edge| edge.identity.native_id.clone())
+                .collect::<BTreeSet<_>>(),
+            current_ids
+        );
+    }
+
+    #[test]
     fn full_snapshot_reextract_retracts_edited_file_facts() {
         let dir = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
