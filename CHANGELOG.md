@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Rustdoc members sharing a file, name, kind and line keep deterministic
+  base/`~2`/`~3` handle bindings, ordered by enclosing implementation and
+  semantic payload. Raw rustdoc item IDs do not determine handle suffixes.
+
 - EEP-48 callback and type handles use Elixir documentation namespaces (`c:`
   and `t:`), including their docs spans and link targets. Functions and macros
   retain their existing handles; same-MFA functions and callbacks load together.

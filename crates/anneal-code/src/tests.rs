@@ -838,3 +838,57 @@ fn eep48_source_declares_member_doc_budget_truncation() {
             && meta.value == relation_value::PER_ITEM_CAP
     }));
 }
+
+#[test]
+fn rustdoc_same_location_member_bindings_follow_semantic_tie_order() {
+    let dir = tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 root");
+    fs::create_dir_all(root.join("target/doc")).expect("artifact directory");
+    write_fixture(&root);
+    let path = root.join("target/doc/demo.json");
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("fixture")).expect("json");
+    artifact["paths"]
+        .as_object_mut()
+        .expect("paths")
+        .remove("3");
+    let mut twin = artifact["index"]["3"].clone();
+    twin["id"] = json!(4);
+    twin["inner"]["function"]["sig"]["inputs"] = json!([["different", {"primitive":"u64"}]]);
+    artifact["index"]["4"] = twin;
+    artifact["index"]["0"]["inner"]["module"]["items"] = json!([1, 2, 3, 4]);
+    let config = ConfigFacts::try_from_entries(vec![
+        ConfigEntry::scalar(config_key::RUSTDOC_JSON, "target/doc/demo.json"),
+        ConfigEntry::scalar(config_key::SOURCE_ROOT, "."),
+    ])
+    .expect("config");
+    let mut baseline = None;
+    for iteration in 0..24 {
+        if iteration % 2 == 1 {
+            let mut left = artifact["index"]["3"].clone();
+            let mut right = artifact["index"]["4"].clone();
+            left["id"] = json!(4);
+            right["id"] = json!(3);
+            artifact["index"]["3"] = right;
+            artifact["index"]["4"] = left;
+        }
+        fs::write(&path, serde_json::to_vec(&artifact).expect("encode")).expect("write");
+        let batch = CodeSource
+            .extract(&context(&root, &config))
+            .expect("extract");
+        let mut rows = batch
+            .content
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("row"))
+            .collect::<Vec<_>>();
+        rows.sort();
+        if let Some(expected) = &baseline {
+            assert_eq!(
+                &rows, expected,
+                "raw item ids and HashMap encounter order must not bind method payloads"
+            );
+        } else {
+            baseline = Some(rows);
+        }
+    }
+}

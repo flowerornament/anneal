@@ -144,19 +144,43 @@ impl<'a> RustdocProjector<'a> {
 
     pub(super) fn index_handles(&mut self) {
         self.file_handles.insert(self.package_handle.clone());
-        let mut items = self.local_items().map(|(id, _)| *id).collect::<Vec<_>>();
-        items.sort_by_key(|id| {
-            let item = self.rustdoc.index.get(id).expect("local item exists");
-            (
-                self.item_file(item)
-                    .unwrap_or_else(|| self.package_handle.clone()),
-                qualified_name(self.rustdoc, *id).unwrap_or_default(),
-                item_kind_name(item.inner.item_kind()),
-                item.span.as_ref().map_or(0, |span| span.begin.0),
-            )
-        });
+        let mut items = self
+            .local_items()
+            .filter(|(_, item)| !matches!(item.inner, ItemEnum::Impl(_)))
+            .map(|(id, item)| {
+                (
+                    (
+                        self.item_file(item)
+                            .unwrap_or_else(|| self.package_handle.clone()),
+                        qualified_name(self.rustdoc, *id).unwrap_or_default(),
+                        item_kind_name(item.inner.item_kind()),
+                        item.span.as_ref().map_or(0, |span| span.begin.0),
+                    ),
+                    *id,
+                )
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let mut groups = Vec::new();
+        let mut tied_ids = BTreeSet::new();
+        let mut begin = 0;
+        while begin < items.len() {
+            let end = begin + items[begin..].partition_point(|(key, _)| *key == items[begin].0);
+            if end - begin > 1 {
+                groups.push(begin..end);
+                tied_ids.extend(items[begin..end].iter().map(|(_, id)| *id));
+            }
+            begin = end;
+        }
+        // Only tied handle candidates pay for the typed semantic extension.
+        // Implementations themselves do not emit handles and never need sorting.
+        let contexts = member_impl_contexts(self.rustdoc, &tied_ids);
+        for group in groups {
+            items[group]
+                .sort_by_cached_key(|(_, id)| semantic_member_key(self.rustdoc, *id, &contexts));
+        }
 
-        for id in items {
+        for (_, id) in items {
             let item = self.rustdoc.index.get(&id).expect("local item exists");
             if matches!(item.inner, ItemEnum::Impl(_)) {
                 continue;
@@ -1081,5 +1105,65 @@ pub(super) fn is_member_item(kind: ItemKind) -> bool {
             | ItemKind::Static
             | ItemKind::AssocConst
             | ItemKind::AssocType
+    )
+}
+
+/// The tied members' distinguishing fields are typed artifact facts, never
+/// numeric item IDs. Missing links do not participate in this ordering.
+fn member_impl_contexts(
+    rustdoc: &RustdocCrate,
+    tied_ids: &BTreeSet<Id>,
+) -> BTreeMap<Id, Vec<(String, String)>> {
+    let mut contexts = BTreeMap::<Id, Vec<(String, String)>>::new();
+    if tied_ids.is_empty() {
+        return contexts;
+    }
+    for parent in rustdoc.index.values() {
+        let ItemEnum::Impl(impl_) = &parent.inner else {
+            continue;
+        };
+        let members = impl_
+            .items
+            .iter()
+            .filter(|id| tied_ids.contains(id))
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            continue;
+        }
+        let context = (
+            impl_
+                .trait_
+                .as_ref()
+                .map_or_else(|| "inherent".to_string(), |path| path.path.clone()),
+            type_label(&impl_.for_),
+        );
+        for member in members {
+            contexts.entry(*member).or_default().push(context.clone());
+        }
+    }
+    for values in contexts.values_mut() {
+        values.sort();
+    }
+    contexts
+}
+
+fn semantic_member_key(
+    rustdoc: &RustdocCrate,
+    id: Id,
+    contexts: &BTreeMap<Id, Vec<(String, String)>>,
+) -> impl Ord + use<> {
+    let item = &rustdoc.index[&id];
+    let qualified = qualified_name(rustdoc, id)
+        .or_else(|| item.name.clone())
+        .unwrap_or_default();
+    let span = item
+        .span
+        .as_ref()
+        .map(|span| (span.filename.clone(), span.begin, span.end));
+    (
+        contexts.get(&id).cloned().unwrap_or_default(),
+        item_signature(item, &qualified),
+        item.docs.clone(),
+        span,
     )
 }
