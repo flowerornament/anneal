@@ -1,7 +1,6 @@
 //! Corpus session construction, evidence loading, and command execution.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -312,7 +311,7 @@ impl RuntimeSession {
             });
         let config_facts = ConfigFacts::from_entries(discovery);
         let evidence_demands = command.evidence_demands(&program, &registry);
-        let repository = RepositoryContext::discover(root);
+        let mut repository = RepositoryContext::discover(root);
         let mut markdown_source = MarkdownSource::with_runtime_config(&runtime_config)
             .map_err(|err| anyhow!("markdown config failed: {err}"))?;
         markdown_source = markdown_source.with_repository_context(repository.clone());
@@ -376,7 +375,7 @@ impl RuntimeSession {
         } else {
             git_mtimes_for_files(
                 root,
-                &repository,
+                &mut repository,
                 store.handles().iter().map(|handle| handle.file.as_str()),
             )
         };
@@ -1002,7 +1001,7 @@ fn runtime_config_facts(
 
 fn git_mtimes_for_files<'a>(
     root: &camino::Utf8Path,
-    repository: &RepositoryContext,
+    repository: &mut RepositoryContext,
     files: impl IntoIterator<Item = &'a str>,
 ) -> BTreeMap<String, String> {
     if repository
@@ -1020,25 +1019,13 @@ fn git_mtimes_for_files<'a>(
         return BTreeMap::new();
     }
 
-    let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(root.as_std_path())
-        .args(["log", "--relative", "--format=%cI", "--name-only", "--"])
-        .arg(".")
-        .output()
-    else {
+    let Ok(Some(history)) = repository.direct_file_history(root) else {
         return BTreeMap::new();
     };
-    if !output.status.success() {
-        return BTreeMap::new();
-    }
 
     let mut mtimes = BTreeMap::new();
     let mut current_instant = None::<String>;
-    for line in String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-    {
+    for line in history.lines().map(str::trim) {
         if line.is_empty() {
             continue;
         }

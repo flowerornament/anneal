@@ -1963,3 +1963,131 @@ fn project_diagnostic_imports_empty_populations_and_refused_grades() {
     );
     assert_success(&run(&["--root", root, "check"]));
 }
+
+fn committed_git_fixture(root: &Path, committer_date: &str) {
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.name", "Fixture"],
+        vec!["config", "user.email", "fixture@example.test"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "fixture"],
+    ] {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env("GIT_AUTHOR_DATE", "2019-05-20T12:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", committer_date)
+            .output()
+            .expect("fixture Git");
+        assert_success(&output);
+    }
+}
+
+#[test]
+fn direct_git_history_ignores_inherited_roots_and_keeps_committer_dates() {
+    let dir = tempdir();
+    let root = dir.path().join("repo");
+    let foreign = dir.path().join("foreign");
+    for path in [&root, &foreign] {
+        write_file(
+            path,
+            ".design/a.md",
+            "---\nstatus: draft\nreferences: code.rs\n---\n# A\n",
+        );
+        write_file(path, "code.rs", "fn target() {}\n");
+    }
+    committed_git_fixture(&root, "2020-05-20T12:00:00+00:00");
+    committed_git_fixture(&foreign, "2025-05-20T12:00:00+00:00");
+    let corpus = root.join(".design");
+    let corpus = corpus.to_str().expect("root");
+    for query in [
+        "? git_mtime(file, instant).",
+        "? repository_operation_capability(operation, availability, provider, reason).",
+        "? *meta{handle: h, key: key, value: value}.",
+    ] {
+        let args = ["--root", corpus, "--json", "-e", query];
+        let neutral = Command::new(anneal_bin())
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .output()
+            .expect("neutral query");
+        assert_success(&neutral);
+        let expected = json_rows(&neutral);
+        assert!(!expected.is_empty(), "{query} must exercise a population");
+        if query.contains("git_mtime") {
+            assert_eq!(
+                expected,
+                vec![serde_json::json!({"file":"a.md", "instant":"2020-05-20T12:00:00Z"})]
+            );
+        }
+        for (git_dir, work_tree, common_dir) in [
+            (
+                PathBuf::from("/does/not/exist"),
+                PathBuf::from("/wrong/worktree"),
+                PathBuf::from("/wrong/common"),
+            ),
+            (foreign.join(".git"), root.clone(), foreign.join(".git")),
+        ] {
+            let actual = Command::new(anneal_bin())
+                .args(args)
+                .env("GIT_DIR", git_dir)
+                .env("GIT_WORK_TREE", work_tree)
+                .env("GIT_COMMON_DIR", common_dir)
+                .output()
+                .expect("injected query");
+            assert_success(&actual);
+            assert_eq!(json_rows(&actual), expected, "{query}");
+        }
+    }
+}
+
+#[test]
+fn unborn_git_history_reports_only_change_history_unavailable() {
+    let corpus = tempdir();
+    write_file(corpus.path(), "a.md", "# A\n");
+    let output = Command::new("git")
+        .current_dir(corpus.path())
+        .args(["init", "--quiet"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .output()
+        .expect("init");
+    assert_success(&output);
+    let root = corpus.path().to_str().expect("root");
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? repository_operation_capability(operation, availability, provider, reason).",
+    ]));
+    assert_eq!(rows.len(), 5);
+    let history = rows
+        .iter()
+        .find(|row| row["operation"] == "change_history")
+        .expect("history row");
+    assert_eq!(history["availability"], "unavailable");
+    assert_eq!(history["reason"], "git-change-history-probe-failed");
+    for operation in ["assertion_blame", "target_history", "ignore_index"] {
+        assert!(
+            rows.iter()
+                .any(|row| row["operation"] == operation && row["availability"] == "available")
+        );
+    }
+    assert!(
+        json_rows(&run(&[
+            "--root",
+            root,
+            "--json",
+            "-e",
+            "? git_mtime(file, instant)."
+        ]))
+        .is_empty()
+    );
+}

@@ -67,7 +67,7 @@ pub(in crate::runtime::introspection) fn primitive_doc(
             "Count status changes for a handle over a recent day window, using snapshot history."
         }
         PrimitivePredicate::GitMtime => {
-            "Return the latest git commit timestamp observed for a tracked corpus file."
+            "Return the latest Git timestamp observed for a tracked corpus file: committer time in direct Git, selected author time in a pinned jj workspace. Failed direct history probes emit no rows and report change_history unavailable with a reason in repository_operation_capability."
         }
         PrimitivePredicate::ChangedWithin => {
             "Return handles whose backing file changed within a bound number of days according to git history."

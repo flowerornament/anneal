@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::HandleId;
 use crate::path_policy::{RelativePathPolicy, normalize_relative_path};
-use crate::repository::{RepositoryContext, RepositoryOperation};
+use crate::repository::{RepositoryContext, RepositoryOperation, git_command};
 
 const DRIFT_CACHE_SCHEMA_VERSION: u32 = 1;
 const PATH_POLICY_VERSION: u32 = 1;
@@ -737,10 +737,7 @@ fn existing_revisions<'a>(
         return BTreeSet::new();
     }
 
-    let Ok(mut child) = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(repo_root.as_std_path())
+    let Ok(mut child) = git_command(repo_root)
         .args(["cat-file", "--batch-check=%(objectname)"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -986,9 +983,7 @@ fn git_head(repo_root: &Utf8Path) -> Option<String> {
 }
 
 fn revision_exists(repo_root: &Utf8Path, revision: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo_root.as_std_path())
+    git_command(repo_root)
         .args(["cat-file", "-e", revision])
         .status()
         .is_ok_and(|status| status.success())
@@ -1205,13 +1200,7 @@ fn looks_like_split_candidate(old_path: &str, new_path: &str) -> bool {
 }
 
 fn git_output(repo_root: &Utf8Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(repo_root.as_std_path())
-        .args(args)
-        .output()
-        .ok()?;
+    let output = git_command(repo_root).args(args).output().ok()?;
     output
         .status
         .success()
@@ -1376,9 +1365,7 @@ fn existing_target(base: &Utf8Path, target: &Utf8Path) -> Option<Utf8PathBuf> {
 }
 
 fn read_head_history_paths(base: &Utf8Path) -> Option<BTreeSet<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(base.as_std_path())
+    let output = git_command(base)
         .args(["log", "--name-only", "--format="])
         .output()
         .ok()?;

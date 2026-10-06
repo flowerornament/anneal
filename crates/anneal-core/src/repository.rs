@@ -287,6 +287,68 @@ impl RepositoryContext {
         Ok(Some(selected))
     }
 
+    /// Read direct-Git committer timestamps and paths relative to a contained subtree.
+    ///
+    /// A successful empty log is distinct from an unavailable probe. Failure
+    /// invalidates only change history on this session's context; the CLI keeps
+    /// timestamp parsing and file selection. jj uses its pinned history path.
+    pub fn direct_file_history(
+        &mut self,
+        subtree: &Utf8Path,
+    ) -> Result<Option<String>, &'static str> {
+        if self.provider == RepositoryProvider::None {
+            return Ok(None);
+        }
+        if self.is_jj_workspace() {
+            return Err("direct-git-history-unavailable-in-jj");
+        }
+        if !self.operation_available(RepositoryOperation::ChangeHistory) {
+            return Err(self.operation_reason(RepositoryOperation::ChangeHistory));
+        }
+        let result = (|| {
+            let root = self
+                .direct_git_root
+                .as_deref()
+                .ok_or("git-worktree-unavailable")?;
+            let subtree = subtree
+                .canonicalize_utf8()
+                .map_err(|_| "change-history-root-unreadable")?;
+            let prefix = subtree
+                .strip_prefix(root)
+                .map_err(|_| "change-history-root-outside-repository")?;
+            // Run at the validated boundary, not a subtree that may contain a
+            // nested repository. Keep the old subtree-relative path population.
+            let relative = if prefix.as_str().is_empty() {
+                "--relative".to_owned()
+            } else {
+                format!("--relative={prefix}")
+            };
+            let pathspec = if prefix.as_str().is_empty() {
+                ".".to_owned()
+            } else {
+                format!(":(literal){prefix}")
+            };
+            command_stdout(git_command(root).args([
+                "log",
+                &relative,
+                "--format=%cI",
+                "--name-only",
+                "--",
+                &pathspec,
+            ]))
+            .ok_or("git-change-history-probe-failed")
+        })();
+        match result {
+            Ok(history) => Ok(Some(history)),
+            Err(reason) => {
+                self.availability[RepositoryOperation::ChangeHistory.index()] =
+                    RepositoryAvailability::Unavailable;
+                self.reasons[RepositoryOperation::ChangeHistory.index()] = reason;
+                Err(reason)
+            }
+        }
+    }
+
     /// Resolve jj backing for containment only; this earns no operation capability.
     pub fn jj_git_backing(project_root: &Utf8Path) -> Result<Utf8PathBuf, String> {
         jj::resolve_backing(project_root)
@@ -363,7 +425,7 @@ impl RepositoryContext {
     }
 }
 
-fn git_command(root: &Utf8Path) -> Command {
+pub(crate) fn git_command(root: &Utf8Path) -> Command {
     let mut command = Command::new("git");
     command
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -449,6 +511,54 @@ mod tests {
                 .all(|&op| context.operation_available(op))
         );
         assert!(!context.operation_available(RepositoryOperation::VersionTags));
+    }
+
+    #[test]
+    fn direct_file_history_refuses_outside_roots_and_distinguishes_empty_success() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        init_git(&repo);
+        let committed = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "empty",
+            ])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .status()
+            .expect("empty commit");
+        assert!(committed.success());
+        let corpus = repo.join(".design");
+        fs::create_dir(&corpus).expect("corpus");
+        let mut context = RepositoryContext::discover(&corpus);
+        assert_eq!(
+            context.direct_file_history(&corpus),
+            Ok(Some(String::new()))
+        );
+        assert!(context.operation_available(RepositoryOperation::ChangeHistory));
+        let outside = utf8(dir.path().join("outside"));
+        fs::create_dir(&outside).expect("outside");
+        assert_eq!(
+            context.direct_file_history(&outside),
+            Err("change-history-root-outside-repository")
+        );
+        assert!(!context.operation_available(RepositoryOperation::ChangeHistory));
+        assert_eq!(
+            context.operation_reason(RepositoryOperation::ChangeHistory),
+            "change-history-root-outside-repository"
+        );
+        assert!(context.operation_available(RepositoryOperation::IgnoreIndex));
+        let mut none = RepositoryContext::discover(&outside);
+        assert_eq!(none.direct_file_history(&outside), Ok(None));
     }
 
     #[test]

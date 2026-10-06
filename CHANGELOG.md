@@ -18,6 +18,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Legacy direct-Git recency and target probes bind the selected repository and
+  discard inherited Git root overrides. Timestamp-history failures report only
+  change history unavailable; successful empty history remains distinct.
+
 - Per-instance diagnostic suppression matches the exact subject identity and
   affects the shared diagnostic stream and check exit. Blanket `suppress.code`
   declarations refuse with a per-instance remedy.
