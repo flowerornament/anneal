@@ -3583,11 +3583,42 @@ or missing arguments are load errors. It contributes `describe(name, doc)` and
 location. When the same name is also a rule-defined predicate, the
 `@doc` text is the predicate documentation and the predicate's rule
 locations remain visible through `predicates(...)` and `source_of(...)`.
-Later `@doc` declarations for the same name replace earlier
-declarations by load order. Rationale: source-backed topic
+Optional `intents: ["Goal sentence?", "Another goal sentence."]` supplies
+cold-agent goal phrasings for the card. The same optional field is available
+on `@verb`. A supplied list is nonempty and contains literal strings. Each
+entry is single-line, contains letters and at least two whitespace-separated
+words, and ends in `?` or `.`. Control characters and duplicates after trim,
+collapsed whitespace and full non-Turkic Unicode case folding refuse with a
+source location. This is syntactic sentence validation, not a grammar oracle.
+Absent goals produce no Intents heading. Authors teach two to four goals,
+including the capability's boundary; the loader does not enforce that count.
+
+Later `@doc` declarations for the same name replace the whole documentation
+and intent unit by load order; an override without intents clears earlier
+goals. Verb goals belong only to the verb card. Documentation goals for
+sealed primitives, stored relations and diagnostic codes extend their
+teaching without replacing their canonical summary or definition provenance.
+Rendered cards retain their kind and append an Intents heading with bullets. Rationale: source-backed topic
 documentation lets agents jump from runtime vocabulary such as
 `convergence` to the canonical prelude source without creating dummy
 relations.
+
+`card_intents(name, kind, intent)` enumerates validated goal declarations from
+the finalized effective teaching registry. Verb goals belong only to the verb
+card; documentation goals belong to the corresponding non-verb cards, including
+declared diagnostic codes with no emitted instances. It emits one trimmed goal
+sentence per card name and kind, with no inference from spelling or corpus
+content. Cards without an effective intents declaration emit no goal rows.
+Query-local predicates do not add goals. No teaching facts enter corpus graph
+relations or checks.
+
+`anneal intents` is a saved `@verb` over that primitive, with no arguments or
+default truncation. It prints the complete authored goal list grouped by card
+kind and name; goals within a group are ordered lexically. The reading agent
+matches its intent by reading, then checks the selected contract through
+`describe NAME`. There is no semantic search, ranking, score or cutoff claim.
+NDJSON has `name`, `kind`, `intent`; text has one card heading followed by its
+goal bullets. Selection belongs to the saved query, grouping to the surface.
 
 ```
 # 1. Counts by kind

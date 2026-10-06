@@ -653,6 +653,7 @@ mod tests {
         "predicates",
         "describe",
         "source-of",
+        "intents",
     ];
 
     #[test]
@@ -1048,6 +1049,7 @@ mod tests {
                 bind_parameter_fact(&mut program, ParameterBinding::string("query", "ticket"));
                 bind_parameter_fact(&mut program, ParameterBinding::int("limit", 10));
             }
+
             CONTEXT_VERB_NAME => {
                 bind_parameter_fact(&mut program, ParameterBinding::string("goal", "ticket"));
                 bind_parameter_fact(&mut program, ParameterBinding::int("hits", 3));
@@ -1192,6 +1194,10 @@ mod tests {
     fn assert_schema_type(field: &str, value: &Value, expected: &str) {
         match expected {
             "Bool" => assert!(matches!(value, Value::Bool(_)), "{field} should be bool"),
+            "Bool|null" => assert!(
+                matches!(value, Value::Bool(_) | Value::Null),
+                "{field} should be bool or null"
+            ),
             "HandleId" | "String" => {
                 assert!(
                     matches!(value, Value::String(_)),

@@ -17,6 +17,9 @@ pub(in crate::runtime::introspection) fn primitive_doc(
     primitive: PrimitivePredicate,
 ) -> &'static str {
     match primitive {
+        PrimitivePredicate::CardIntents => {
+            "Enumerate declared goal phrasings by teaching-card name and kind. The list contains finalized program metadata, not scored matches, corpus content or query-local definitions."
+        }
         PrimitivePredicate::Upstream => {
             "Find handles that the starting handle depends on, following incoming dependency-style edges through the graph."
         }
@@ -151,6 +154,7 @@ pub(in crate::runtime::introspection) fn primitive_requires(
         | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate
         | PrimitivePredicate::Search
+        | PrimitivePredicate::CardIntents
         | PrimitivePredicate::Read
         | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
@@ -234,6 +238,7 @@ pub(in crate::runtime::introspection) fn primitive_example(
     primitive: PrimitivePredicate,
 ) -> Option<&'static str> {
     match primitive {
+        PrimitivePredicate::CardIntents => Some("? card_intents(name, kind, intent)."),
         PrimitivePredicate::Obligation => Some("? obligation(h)."),
         PrimitivePredicate::Discharged => Some("? discharged(h)."),
         PrimitivePredicate::Undischarged => Some("? undischarged(h)."),

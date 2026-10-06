@@ -85,6 +85,7 @@ Do not memorize the surface. Ask the binary:
 anneal help
 anneal help agent
 anneal schema --format=text
+anneal intents --format=text
 anneal describe runtime --format=text
 ```
 
@@ -93,6 +94,16 @@ card. `anneal describe <name>` gives signatures, examples, common joins, and
 output columns for any predicate, axis, diagnostic code, or verb. Reach for
 these instead of guessing names — the runtime is self-describing, and that is
 the intended way to use it.
+
+Before building or writing a query, read `anneal intents --format=text`.
+It prints every authored goal phrasing grouped by card name and kind, including
+project cards and declared diagnostic codes with no instances. Match your goal
+by reading the list, then read the chosen contract with `describe NAME`. Check
+its kind, since verbs and primitives may share a name. The list is unranked and
+retrieves teaching metadata, not corpus evidence. `@doc` and `@verb` authors can
+supply an optional intents list of two to four goal sentences, including a
+boundary; malformed or duplicate sentences refuse. Overrides replace the whole
+doc and goals unit, so an override without intents clears earlier goals.
 
 Commands render readable text at a terminal and JSON/NDJSON when piped; add
 `--format=text` in pipe-only harnesses when you want to read the answer

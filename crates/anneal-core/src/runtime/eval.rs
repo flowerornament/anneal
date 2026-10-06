@@ -2114,7 +2114,8 @@ fn primitive_tuples(
                 .expect("regex was inserted before lookup");
             Ok(database.match_tuples_from_tuples(constraints, regex))
         }
-        PrimitivePredicate::Schema
+        PrimitivePredicate::CardIntents
+        | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
         | PrimitivePredicate::Verbs
         | PrimitivePredicate::Describe
@@ -5582,6 +5583,76 @@ release_blocker(code) := issue(code, "error").
         assert_query_rows(&outputs[3], vec![row([("score", Value::Null)])]);
         assert_query_rows(&outputs[4], vec![row([("score", Value::Null)])]);
         assert_query_rows(&outputs[5], vec![row([("score", f(0.5))])]);
+    }
+
+    #[test]
+    fn docs_without_intents_keep_legacy_topic_and_source_rows() {
+        let outputs = evaluate_queries(
+            r#"@doc(name: "search", doc: "Legacy quokka topic.").
+? describe("search", doc).
+? source_of("search", file, lines)."#,
+            Database::default(),
+        );
+        assert_eq!(outputs[0].len(), 2);
+        assert!(outputs[0].iter().any(|row| matches!(&row["doc"], Value::String(doc) if doc.starts_with("Legacy quokka topic."))));
+        assert_eq!(outputs[1].len(), 2);
+    }
+
+    #[test]
+    fn intent_teaching_on_definition_lines_preserves_grouped_source_rows() {
+        let before = evaluate_queries(
+            "elephant(\"a\").\nelephant(\"b\").\n? source_of(\"elephant\", file, lines).",
+            Database::default(),
+        );
+        let after = evaluate_queries(
+            r#"@doc(name: "elephant", doc: "Rule-defined predicate elephant.", intents: ["Find elephant facts."]). elephant("a").
+elephant("b").
+? source_of("elephant", file, lines)."#,
+            Database::default(),
+        );
+        assert_eq!(before, after);
+        assert!(!before[0].is_empty());
+    }
+
+    #[test]
+    fn intent_overrides_clear_goals_and_verb_names_stay_separate() {
+        let outputs = evaluate_queries(
+            r#"
+@doc(name: "elephant", doc: "Old contract.", intents: ["Find vanished goals."]).
+@doc(name: "elephant", doc: "New contract.").
+elephant("a").
+@doc(name: "search", doc: "Ignored primitive summary.", intents: ["Find corpus evidence."]).
+@verb(name: "search", query: "? elephant(x).", doc: "Verb contract.", output_schema: "{\"x\":\"String\"}", args: [], capabilities: [], intents: ["Find verb evidence."]).
+? describe("elephant", doc).
+? describe("search", doc).
+? where transient_zebra(x) := elephant(x). card_intents("transient_zebra", kind, intent).
+? card_intents("transient_zebra", kind, intent).
+"#,
+            Database::default(),
+        );
+        let Value::String(doc) = &outputs[0][0]["doc"] else {
+            panic!("doc string");
+        };
+        assert!(doc.starts_with("New contract."));
+        assert!(!doc.contains("Intents:"));
+        let docs = outputs[1]
+            .iter()
+            .map(|row| {
+                let Value::String(doc) = &row["doc"] else {
+                    panic!("doc string");
+                };
+                doc
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(docs.len(), 2);
+        assert!(docs.iter().any(
+            |doc| doc.contains("Find corpus evidence.") && !doc.contains("Find verb evidence.")
+        ));
+        assert!(docs.iter().any(
+            |doc| doc.contains("Find verb evidence.") && !doc.contains("Find corpus evidence.")
+        ));
+        assert!(outputs[2].is_empty());
+        assert!(outputs[3].is_empty());
     }
 
     #[test]

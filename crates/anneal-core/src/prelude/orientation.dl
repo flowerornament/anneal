@@ -9,12 +9,12 @@ orientation_file(h, file) :=
   *handle{id: h, kind: "file", file: file},
   file != "".
 
-orientation_replaced(h) :=
+@doc(name: "orientation_replaced", doc: "Rule-defined predicate orientation_replaced.", intents: ["Which handles are displaced or retired for orientation?", "Find handles with outgoing supersession or terminal lifecycle status.", "This orientation gate includes retirement as well as replacement."]). orientation_replaced(h) :=
   *edge{from: h, kind: "Supersedes"}.
 
 @doc(
   name: "operative",
-  doc: "Return file handles whose status is effectively classified settled, regardless of builtin or project origin. Declaring a project status settled grants eligibility for the +110 current_head anchor signal and standing to report currency_suspect; it never asserts a Supersedes edge."
+  doc: "Return file handles whose status is effectively classified settled, regardless of builtin or project origin. Declaring a project status settled grants eligibility for the +110 current_head anchor signal and standing to report currency_suspect; it never asserts a Supersedes edge.", intents: ["Which settled files can serve as current operational context?", "Find files eligible for current-head anchor signals and currency hints.", "Settled standing never invents a supersession edge."]
 ).
 @predicate(
   name: "operative",
@@ -29,7 +29,7 @@ currency_superseded(h) :=
   orientation_file(h, file),
   *edge{from: h, kind: "Supersedes"}.
 
-currency_successor(h) :=
+@doc(name: "currency_successor", doc: "Rule-defined predicate currency_successor.", intents: ["Which files replaced an earlier document?", "Find file handles with incoming supersession edges.", "A successor may itself have a later replacement."]). currency_successor(h) :=
   orientation_file(h, file),
   *edge{to: h, kind: "Supersedes"}.
 
@@ -37,11 +37,11 @@ currency_current(h) :=
   orientation_file(h, file),
   not currency_superseded(h).
 
-currency_current_head(h) :=
+@doc(name: "currency_current_head", doc: "Rule-defined predicate currency_current_head.", intents: ["Which replacement documents are the latest marked heads?", "Find successor files with no outgoing supersession edge.", "Require marked replacement history rather than merely a recent date."]). currency_current_head(h) :=
   currency_successor(h),
   not currency_superseded(h).
 
-currency_disposition(h, "superseded") :=
+@doc(name: "currency_disposition", doc: "Rule-defined predicate currency_disposition.", intents: ["Has this document been superseded or is it a current head?", "Inspect replacement status independently of lifecycle status.", "Use marked supersession edges rather than guessing from dates."]). currency_disposition(h, "superseded") :=
   currency_superseded(h).
 
 currency_disposition(h, "current_head") :=
@@ -364,7 +364,7 @@ anchor(h, 1, "superseded") :=
 
 @doc(
   name: "ranked_anchor",
-  doc: "Return anchors with a dense rank by score for bounded read-first lists; anchor itself remains uncapped for composition."
+  doc: "Return anchors with a dense rank by score for bounded read-first lists; anchor itself remains uncapped for composition.", intents: ["Which durable documents should I read first when arriving?", "Rank read-first anchors and inspect their contributing signals.", "Dense ranks may tie rather than establishing a total authority order."]
 ).
 @predicate(
   name: "ranked_anchor",

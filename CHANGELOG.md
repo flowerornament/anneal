@@ -6,6 +6,11 @@ All notable changes to `anneal` are documented in this file.
 
 ### Added
 
+- `intents` lists all authored goal phrasings grouped by teaching-card name and
+  kind, including project declarations. Optional validated `@doc` and `@verb`
+  intents teach goal sentences; 80 standard cards carry bounded phrasings. The
+  reading agent matches goals without a semantic ranking claim.
+
 - Projects contribute P-code diagnostics through `project_diagnostic/6` with
   mandatory `@diagnostic` teaching metadata and declared severity. The sealed
   union applies shared promotion and exact subject acceptance; E003 reports

@@ -147,6 +147,7 @@ fn predicate_decl_parameters(decl: &PredicateDecl) -> Option<Vec<ParameterName>>
 /// Latest documentation text plus every source location that declared it.
 pub(super) struct DocInfo {
     doc: String,
+    intents: Option<Vec<String>>,
     source_lines: SourceLines,
 }
 
@@ -154,6 +155,7 @@ impl DocInfo {
     fn from_decl(decl: &DocDecl) -> Self {
         let mut info = Self {
             doc: decl.doc().to_string(),
+            intents: decl.intents().map(<[String]>::to_vec),
             source_lines: SourceLines::default(),
         };
         info.add_source(decl.location());
@@ -162,6 +164,7 @@ impl DocInfo {
 
     fn replace_from_decl(&mut self, decl: &DocDecl) {
         self.doc = decl.doc().to_string();
+        self.intents = decl.intents().map(<[String]>::to_vec);
         self.source_lines.replace_with(decl.location());
     }
 
@@ -172,6 +175,10 @@ impl DocInfo {
     /// Returns the latest documentation declaration.
     pub(super) fn doc(&self) -> &str {
         &self.doc
+    }
+
+    pub(super) fn intents(&self) -> Option<&[String]> {
+        self.intents.as_deref()
     }
 
     /// Returns every source location that declared the topic.
@@ -185,6 +192,15 @@ impl DocInfo {
 pub(super) struct SourceLines(BTreeMap<String, BTreeSet<usize>>);
 
 impl SourceLines {
+    /// Whether the existing definition rows already carry every annotation line.
+    pub(super) fn covers(&self, other: &Self) -> bool {
+        other.0.iter().all(|(file, lines)| {
+            self.0
+                .get(file)
+                .is_some_and(|existing| lines.is_subset(existing))
+        })
+    }
+
     fn add(&mut self, location: &SourceLocation) {
         if location.line > 0 {
             self.0

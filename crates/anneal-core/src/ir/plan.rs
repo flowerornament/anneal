@@ -1913,7 +1913,8 @@ fn provider_for_primitive(primitive: PrimitivePredicate) -> ProviderRef {
         PrimitivePredicate::Read | PrimitivePredicate::ReadFull | PrimitivePredicate::Match => {
             ProviderRef::Content
         }
-        PrimitivePredicate::Schema
+        PrimitivePredicate::CardIntents
+        | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
         | PrimitivePredicate::Verbs
         | PrimitivePredicate::Describe
@@ -1975,6 +1976,7 @@ fn capability_for_primitive(primitive: PrimitivePredicate) -> CapabilityAction {
         | PrimitivePredicate::ChangedWithin
         | PrimitivePredicate::RepositoryOperationCapability
         | PrimitivePredicate::TokenEstimate
+        | PrimitivePredicate::CardIntents
         | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
         | PrimitivePredicate::Verbs
@@ -1991,6 +1993,7 @@ fn demand_for_primitive(primitive: PrimitivePredicate) -> DemandPolicy {
         | PrimitivePredicate::Read
         | PrimitivePredicate::ReadFull
         | PrimitivePredicate::Match
+        | PrimitivePredicate::CardIntents
         | PrimitivePredicate::Schema
         | PrimitivePredicate::Predicates
         | PrimitivePredicate::Verbs

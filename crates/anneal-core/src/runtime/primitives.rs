@@ -28,6 +28,7 @@ pub(crate) enum PrimitivePredicate {
     RepositoryOperationCapability,
     TokenEstimate,
     Search,
+    CardIntents,
     Read,
     ReadFull,
     Match,
@@ -84,6 +85,7 @@ impl PrimitivePredicate {
         Self::RepositoryOperationCapability,
         Self::TokenEstimate,
         Self::Search,
+        Self::CardIntents,
         Self::Read,
         Self::ReadFull,
         Self::Match,
@@ -124,6 +126,7 @@ impl PrimitivePredicate {
             "changed_within" => Some(Self::ChangedWithin),
             "repository_operation_capability" => Some(Self::RepositoryOperationCapability),
             "token_estimate" => Some(Self::TokenEstimate),
+            "card_intents" => Some(Self::CardIntents),
             "search" => Some(Self::Search),
             "read" => Some(Self::Read),
             "read_full" => Some(Self::ReadFull),
@@ -165,6 +168,7 @@ impl PrimitivePredicate {
             Self::RepositoryOperationCapability => "repository_operation_capability",
             Self::TokenEstimate => "token_estimate",
             Self::Search => "search",
+            Self::CardIntents => "card_intents",
             Self::Read => "read",
             Self::ReadFull => "read_full",
             Self::Match => "match",
@@ -239,6 +243,10 @@ impl PrimitivePredicate {
             },
             Self::RepositoryOperationCapability => PrimitiveSignature {
                 parameters: &["operation", "availability", "provider", "reason"],
+                sealed: true,
+            },
+            Self::CardIntents => PrimitiveSignature {
+                parameters: &["name", "kind", "intent"],
                 sealed: true,
             },
             Self::Search => PrimitiveSignature {
@@ -334,6 +342,7 @@ impl PrimitivePredicate {
             | Self::RepositoryOperationCapability
             | Self::TokenEstimate
             | Self::Search
+            | Self::CardIntents
             | Self::Read
             | Self::ReadFull
             | Self::Match
@@ -409,7 +418,8 @@ impl PrimitivePredicate {
             | Self::Describe
             | Self::SourceOf
             | Self::Examples
-            | Self::Sources => &[],
+            | Self::Sources
+            | Self::CardIntents => &[],
         }
     }
 }

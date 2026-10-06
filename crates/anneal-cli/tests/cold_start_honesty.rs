@@ -2091,3 +2091,104 @@ fn unborn_git_history_reports_only_change_history_unavailable() {
         .is_empty()
     );
 }
+
+#[test]
+fn intents_enumerates_all_declared_goals_and_project_cards_without_scores() {
+    let dir = tempdir();
+    write_file(dir.path(), "a.md", "# A\nCorpusquokkaonly evidence.\n");
+    write_config(
+        dir.path(),
+        r#"
+@diagnostic(code: "P991", severity: "warning", doc: "A declared project check.", rule: project_diagnostic, evidence: ["custom", "value"]).
+@doc(name: "P991", doc: "Cannot replace sealed summary.", intents: ["Find marmot governance."]).
+project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{handle: h, key: "nonexistent", value: value}, *handle{id: h, file: file}.
+@verb(name: "project-card", query: "? sources(name, recognizes, capabilities, doc).", doc: "A project command.", output_schema: "{\"name\":\"String\",\"recognizes\":\"List<String>\",\"capabilities\":\"List<String>\",\"doc\":\"String\"}", args: [], capabilities: [], intents: ["Find marmot commands."]).
+"#,
+    );
+    let rows = json_rows(&run_in(dir.path(), &["intents", "--json"]));
+    assert_eq!(rows.len(), 257);
+    let cards = rows
+        .iter()
+        .map(|row| {
+            (
+                row["name"].clone().to_string(),
+                row["kind"].clone().to_string(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(cards.len(), 82);
+    assert!(rows.iter().all(|row| {
+        row.as_object()
+            .expect("row")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            == BTreeSet::from(["name", "kind", "intent"])
+    }));
+    assert!(
+        rows.iter()
+            .any(|row| row["name"] == "P991" && row["kind"] == "runtime topic")
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["name"] == "project-card" && row["kind"] == "verb")
+    );
+    assert!(rows.iter().all(|row| {
+        !row["intent"]
+            .as_str()
+            .expect("intent")
+            .contains("Corpusquokkaonly")
+    }));
+    assert_eq!(rows, json_rows(&run_in(dir.path(), &["intents", "--json"])));
+    assert!(
+        json_rows(&run_in(
+            dir.path(),
+            &[
+                "--json",
+                "-e",
+                "? diagnostic(\"P991\", severity, h, file, line, evidence)."
+            ]
+        ))
+        .is_empty()
+    );
+    let rendered = run_in(dir.path(), &["intents", "--format=text"]);
+    assert_success(&rendered);
+    let rendered = text(&rendered.stdout);
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .count(),
+        257
+    );
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| !line.starts_with("- "))
+            .count(),
+        82
+    );
+    assert_eq!(rendered.matches("P991 [runtime topic]").count(), 1);
+    assert!(!rendered.contains("score="));
+    let removed = run_in(
+        dir.path(),
+        &["--json", "-e", "? card_search(\"goal\", n, k, d, s, l, r)."],
+    );
+    assert!(!removed.status.success());
+}
+
+#[test]
+fn project_intents_override_keeps_generic_rendering() {
+    let dir = tempdir();
+    write_config(
+        dir.path(),
+        r#"@verb(name: "intents", query: "? sources(name, recognizes, capabilities, doc).", doc: "Project source list.", output_schema: "{\"name\":\"String\",\"recognizes\":\"List<String>\",\"capabilities\":\"List<String>\",\"doc\":\"String\"}", args: [], capabilities: [])."#,
+    );
+    let output = run_in(dir.path(), &["intents", "--format=text"]);
+    assert_success(&output);
+    assert!(
+        text(&output.stdout).contains("name=markdown"),
+        "{}",
+        text(&output.stdout)
+    );
+}

@@ -306,6 +306,7 @@ pub(super) enum RowView {
     },
     Broken,
     Describe,
+    Intents,
     Schema,
     Eval,
     Verb {
@@ -320,7 +321,7 @@ impl RowView {
             Self::Read { .. } => format!("Read ({count})"),
             Self::Handle { handle, .. } => format!("Handle {handle} ({count} edges)"),
             Self::Broken => format!("Broken ({count})"),
-            Self::Describe => return None,
+            Self::Describe | Self::Intents => return None,
             Self::Schema => format!("Schema ({count})"),
             Self::RankedAnchor { .. } | Self::Eval => format!("Results ({count})"),
             Self::Verb { name } => format!("{name} ({count})"),

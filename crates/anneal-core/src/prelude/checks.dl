@@ -7,7 +7,7 @@
 
 @doc(
   name: "diagnostic",
-  doc: "Return every standard and declared project diagnostic as data: code, effective severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; contribute project observations through project_diagnostic/6 with @diagnostic teaching metadata."
+  doc: "Return every standard and declared project diagnostic as data: code, effective severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; contribute project observations through project_diagnostic/6 with @diagnostic teaching metadata.", intents: ["What errors warnings suggestions and explanations does the corpus emit?", "Inspect effective diagnostic severity subjects locations and evidence.", "Use the sealed diagnostic stream rather than replacing the gate with a project rule."]
 ).
 
 @predicate(
@@ -80,7 +80,7 @@ project_diagnostic_escalation(code, declared, effective) :=
 
 @doc(
   name: "diagnostic_policy",
-  doc: "Return the effective diagnostic grading for every builtin and declared project code, even when no instance is emitted. Origin is project only for an actual promotion; equal-severity declarations are accepted stdlib no-ops. Config diagnostics escalate(CODE, SEVERITY) permits upward re-grading only; unknown codes, classes, downgrades and conflicting declarations refuse at load. Instance suppression does not remove policy rows."
+  doc: "Return the effective diagnostic grading for every builtin and declared project code, even when no instance is emitted. Origin is project only for an actual promotion; equal-severity declarations are accepted stdlib no-ops. Config diagnostics escalate(CODE, SEVERITY) permits upward re-grading only; unknown codes, classes, downgrades and conflicting declarations refuse at load. Instance suppression does not remove policy rows.", intents: ["How are diagnostic codes graded in this project?", "Inspect declared codes even when no instance was emitted.", "Equal severity declarations remain builtin no-ops and suppression keeps policy rows.", "Can the project turn warnings into errors through explicit severity promotion?"]
 ).
 @predicate(
   name: "diagnostic_policy",
@@ -175,7 +175,7 @@ diagnostic("W008", effective, subject, file, line, evidence) :=
 diagnostic_declaration(code, severity, key) := builtin_diagnostic_policy(code, severity, key).
 diagnostic_declaration(code, severity, key) := project_diagnostic_declaration(code, severity, key, _).
 
-@doc(name: "project_diagnostic", doc: "Contribute project diagnostic rows under P followed by digits, with mandatory @diagnostic(code, severity, doc, rule, evidence) teaching metadata. Rows use declared severity; policy promotes them and exact subject suppression accepts instances. Invalid or undeclared dynamic codes and severity mismatches emit E003 naming the producing clause. Search returns matching spans, including ancestors: Herald NothingToBless has four spans for two occurrences; a deepest-matching-span filter selects the two children. This is span selection, not occurrence counting: when both parent prose and child match, it drops the parent's own occurrence. Keep handle and term equal in descendant comparisons; require strict prefix plus line containment.").
+@doc(name: "project_diagnostic", doc: "Contribute project diagnostic rows under P followed by digits, with mandatory @diagnostic(code, severity, doc, rule, evidence) teaching metadata. Rows use declared severity; policy promotes them and exact subject suppression accepts instances. Invalid or undeclared dynamic codes and severity mismatches emit E003 naming the producing clause. Search returns matching spans, including ancestors: Herald NothingToBless has four spans for two occurrences; a deepest-matching-span filter selects the two children. This is span selection, not occurrence counting: when both parent prose and child match, it drops the parent's own occurrence. Keep handle and term equal in descendant comparisons; require strict prefix plus line containment.", intents: ["How can a project contribute its own consistency checks?", "Emit declared project observations through the generic diagnostic rule.", "Require teaching metadata and matching severity for every project code.", "How can we add our own checks for retired vocabulary using declared project diagnostics?"]).
 @predicate(name: "project_diagnostic", args: ["code", "severity", "subject", "file", "line", "evidence"]).
 @predicate(name: "project_diagnostic_producer", args: ["code", "severity", "subject", "file", "line", "evidence", "producer"], shadow: "forbid").
 @predicate(name: "project_diagnostic_declaration", args: ["code", "severity", "escalation_key", "suppression_key"], shadow: "forbid").
@@ -188,7 +188,7 @@ validated_project_diagnostic(code, effective, subject, file, line, evidence) :=
   project_diagnostic_declaration(code, declared, _, suppression_key),
   diagnostic_policy(code, declared, effective, _),
   not diagnostic_subject_suppressed(suppression_key, subject).
-project_diagnostic_contract_failure(subject, file, line, ("invalid_or_undeclared_code", producer, code)) :=
+@doc(name: "project_diagnostic_contract_failure", doc: "Rule-defined predicate project_diagnostic_contract_failure.", intents: ["Why did my custom diagnostic fail its declaration contract?", "Find undeclared project codes and severity mismatches.", "Report producer contract failures rather than hiding invalid observations."]). project_diagnostic_contract_failure(subject, file, line, ("invalid_or_undeclared_code", producer, code)) :=
   project_diagnostic_producer(code, _, subject, file, line, _, producer),
   not project_diagnostic_declaration(code, _, _, _).
 project_diagnostic_contract_failure(subject, file, line, ("severity_mismatch", producer, code, actual, declared)) :=
@@ -228,7 +228,7 @@ section_ref(target) :=
 
 @doc(
   name: "broken_reference",
-  doc: "Return references whose target handle does not exist, excluding section-reference placeholders."
+  doc: "Return references whose target handle does not exist, excluding section-reference placeholders.", intents: ["Which document references point to missing handles?", "Find dangling links that need repair.", "Exclude section placeholders from missing handle errors."]
 ).
 @predicate(
   name: "broken_reference",
@@ -247,7 +247,7 @@ section_ref_edge(edge_id) :=
   *edge{native_id: edge_id, to: target},
   section_ref(target).
 
-section_ref_total(count) :=
+@doc(name: "section_ref_total", doc: "Rule-defined predicate section_ref_total.", intents: ["How many section-reference placeholders does this corpus contain?", "Count section references separately from broken links.", "Count stored reference edges rather than validating section contents."]). section_ref_total(count) :=
   count = Count{ edge_id : section_ref_edge(edge_id) },
   count > 0.
 
@@ -257,7 +257,7 @@ builtin_diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)
 
 @doc(
   name: "implausible_ref",
-  doc: "Return body references that were detected but rejected as implausible links."
+  doc: "Return body references that were detected but rejected as implausible links.", intents: ["Which reference tokens did the Markdown adapter reject?", "Inspect link candidates that failed the plausibility filter.", "Report extraction evidence rather than inventing broken edges."]
 ).
 @predicate(
   name: "implausible_ref",
@@ -273,7 +273,7 @@ builtin_diagnostic("W004", "warning", h, file, null, ("implausible_ref", value))
 
 @doc(
   name: "unmodeled_frontmatter_shape",
-  doc: "Return authored frontmatter keys containing mappings omitted by the scalar metadata projection. Evidence is JSON with key, shape, line and line_exact. A rule claiming authorial absence over *meta must also consult this evidence; no scalar row does not mean no assertion."
+  doc: "Return authored frontmatter keys containing mappings omitted by the scalar metadata projection. Evidence is JSON with key, shape, line and line_exact. A rule claiming authorial absence over *meta must also consult this evidence; no scalar row does not mean no assertion.", intents: ["Did nested frontmatter contain an assertion that scalar metadata dropped?", "Find mapping-valued keys omitted from scalar projection.", "Consult shape evidence before claiming an authored key is absent."]
 ).
 @predicate(
   name: "unmodeled_frontmatter_shape",
@@ -289,7 +289,7 @@ builtin_diagnostic("W008", "warning", h, file, null, ("unmodeled_frontmatter_sha
 
 @doc(
   name: "stale_reference",
-  doc: "Return active handles that depend on terminal handles whose status is classified as dead for dependency validity."
+  doc: "Return active handles that depend on terminal handles whose status is classified as dead for dependency validity.", intents: ["Which active work depends on a dead completed target?", "Find dependencies that are no longer valid.", "Warn only when the terminal target status is classified dead.", "Are any requirements still relying on a retired decision whose terminal status is classified dead?"]
 ).
 @predicate(
   name: "stale_reference",
@@ -331,7 +331,7 @@ configured_dependency_status(status) := configured_dependency_valid_status(statu
 
 @doc(
   name: "dependency_status_classification",
-  doc: "Return each effective dependency-validity status classification and whether it came from a project override or the conservative builtin set."
+  doc: "Return each effective dependency-validity status classification and whether it came from a project override or the conservative builtin set.", intents: ["What counts as a valid or dead dependency in this project?", "Inspect effective dependency policy and its project or builtin origin.", "Classify dependency validity rather than universal normativity.", "How do I model normativity for dependency statuses?"]
 ).
 @predicate(
   name: "dependency_status_classification",
@@ -375,7 +375,7 @@ dependency_valid_status(status) :=
 
 @doc(
   name: "spec_code_drift",
-  doc: "Return live spec files that cite code paths the extractor could confidently resolve as missing on disk."
+  doc: "Return live spec files that cite code paths the extractor could confidently resolve as missing on disk.", intents: ["Which specifications still cite code paths that have disappeared?", "Find claims about current code whose cited files are missing.", "Check historical existence and current path absence rather than arbitrary code edits.", "Which specs cite code that has changed by disappearing from its historically existing path?"]
 ).
 @predicate(
   name: "spec_code_drift",
@@ -501,14 +501,14 @@ configured_asserts_code_status(status) :=
 configured_asserts_code_present("yes") :=
   configured_asserts_code_status(status).
 
-aspirational_code_status("plan").
+@doc(name: "aspirational_code_status", doc: "Rule-defined predicate aspirational_code_status.", intents: ["Which planning statuses are excluded from current-code assertions?", "Identify research and exploratory lifecycle values.", "Inspect the conservative aspirational status set rather than all active work."]). aspirational_code_status("plan").
 aspirational_code_status("research").
 aspirational_code_status("reference").
 aspirational_code_status("exploratory").
 
 @doc(
   name: "asserts_code",
-  doc: "Return lifecycle statuses that claim facts about this corpus's current code and should participate in spec-code drift checks."
+  doc: "Return lifecycle statuses that claim facts about this corpus's current code and should participate in spec-code drift checks.", intents: ["Which statuses claim that a specification describes current code?", "Determine whether a lifecycle status participates in code drift checks.", "Separate current implementation claims from aspirational plans.", "Which designs promise what the software does today rather than a future idea, according to their lifecycle status?"]
 ).
 @predicate(
   name: "asserts_code",
@@ -558,7 +558,7 @@ max_pipeline_status(status) :=
 
 @doc(
   name: "lifecycle_config_gap",
-  doc: "Return lifecycle statuses that corpus data or ordering config use without an effective builtin or project classification, plus orderings that cannot terminate."
+  doc: "Return lifecycle statuses that corpus data or ordering config use without an effective builtin or project classification, plus orderings that cannot terminate.", intents: ["Which status values does our lifecycle policy fail to model?", "Find unknown lifecycle vocabulary or an ordering that cannot terminate.", "Check effective project and builtin classifications together."]
 ).
 @predicate(
   name: "lifecycle_config_gap",
@@ -585,7 +585,7 @@ builtin_diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap
 
 @doc(
   name: "frontmatter_mapping_alias",
-  doc: "Return the finite exact frontmatter alias vocabulary behind W007 and the conventional field, edge kind, and direction each alias suggests."
+  doc: "Return the finite exact frontmatter alias vocabulary behind W007 and the conventional field, edge kind, and direction each alias suggests.", intents: ["What frontmatter reference aliases can Anneal suggest mappings for?", "Inspect conventional field edge kind and direction proposals.", "Use an exact finite alias table rather than fuzzy key inference."]
 ).
 @predicate(
   name: "frontmatter_mapping_alias",
@@ -709,7 +709,7 @@ frontmatter_unmapped_alias_use(key, h) :=
 
 @doc(
   name: "frontmatter_mapping_gap",
-  doc: "Return exact reference-like markdown frontmatter aliases that have no configured edge mapping, aggregated by distinct file handle, with the conventional field, edge kind, and direction to configure."
+  doc: "Return exact reference-like markdown frontmatter aliases that have no configured edge mapping, aggregated by distinct file handle, with the conventional field, edge kind, and direction to configure.", intents: ["Which reference-like frontmatter keys need an edge mapping?", "Find conventional aliases that the project has not modeled.", "Suggest mappings only for the finite exact alias vocabulary."]
 ).
 @predicate(
   name: "frontmatter_mapping_gap",
@@ -779,7 +779,7 @@ unmodeled_frontmatter_rank_weight(key, key, 1) :=
 
 @doc(
   name: "unmodeled_frontmatter_key",
-  doc: "Rank authored markdown frontmatter keys that no typed projection consumes and W007 does not already cover. Counts are distinct file handles; reference_name_signal only breaks equal-count ties and never suggests an edge kind."
+  doc: "Rank authored markdown frontmatter keys that no typed projection consumes and W007 does not already cover. Counts are distinct file handles; reference_name_signal only breaks equal-count ties and never suggests an edge kind.", intents: ["Which authored metadata keys does the typed projection ignore?", "Rank unconsumed frontmatter vocabulary by distinct file usage.", "Exclude keys already covered by the reference alias warning.", "Which metadata fields might contain links that we are ignoring because no typed projection consumes them?"]
 ).
 @predicate(
   name: "unmodeled_frontmatter_key",
@@ -802,7 +802,7 @@ terminal_status_handle_count(status, count) :=
 
 @doc(
   name: "dependency_config_gap",
-  doc: "Return terminal statuses whose dependency validity is unknown, aggregated by status. Classify one with config dependency { dead([\"status\"]). } or valid([\"status\"]). }."
+  doc: "Return terminal statuses whose dependency validity is unknown, aggregated by status. Classify one with config dependency { dead([\"status\"]). } or valid([\"status\"]). }.", intents: ["Which terminal statuses have unknown dependency validity?", "Find lifecycle values that need a dead or valid dependency classification.", "Count distinct direct active dependents without changing suggestion severity.", "Which project-specific statuses does the checker not understand as terminal dependencies?"]
 ).
 @predicate(
   name: "dependency_config_gap",
@@ -840,7 +840,7 @@ handle_file(h, file) :=
 
 @doc(
   name: "confidence_gap",
-  doc: "Return dependency edges where the source handle is more than one pipeline step ahead of its target."
+  doc: "Return dependency edges where the source handle is more than one pipeline step ahead of its target.", intents: ["Which dependency is too far behind its source in lifecycle progress?", "Find a source more than one pipeline step ahead of its target.", "Compare configured lifecycle positions rather than document age."]
 ).
 @predicate(
   name: "confidence_gap",
@@ -860,7 +860,7 @@ builtin_diagnostic("W002", "warning", src, file, null, ("confidence_gap", source
 
 @doc(
   name: "undischarged_obligation",
-  doc: "Return live obligation handles that have no Discharges edge."
+  doc: "Return live obligation handles that have no Discharges edge.", intents: ["Which live promises still need evidence of completion?", "Find obligations with no discharge edge.", "Require configured linear namespaces before treating labels as obligations."]
 ).
 @predicate(
   name: "undischarged_obligation",
@@ -878,7 +878,7 @@ builtin_diagnostic("E002", "error", h, file, null, "undischarged") :=
 
 @doc(
   name: "multiple_discharge",
-  doc: "Return obligation handles with multiple Discharges edges so agents can check whether the redundancy is intentional."
+  doc: "Return obligation handles with multiple Discharges edges so agents can check whether the redundancy is intentional.", intents: ["Which obligation has been discharged more than once?", "Find redundant completion evidence for review.", "Multiple discharges may be intentional rather than an error."]
 ).
 @predicate(
   name: "multiple_discharge",
@@ -918,7 +918,7 @@ frontmatter_adoption_high(dir, with_frontmatter, total) :=
 
 @doc(
   name: "missing_frontmatter_file",
-  doc: "Return files missing status frontmatter in directories where frontmatter adoption is already high."
+  doc: "Return files missing status frontmatter in directories where frontmatter adoption is already high.", intents: ["Which files forgot status where neighboring files normally declare it?", "Find inconsistent frontmatter adoption within directories.", "Require established local adoption before reporting missing status."]
 ).
 @predicate(
   name: "missing_frontmatter_file",
@@ -935,7 +935,7 @@ builtin_diagnostic("W003", "warning", h, file, null, null) :=
 
 @doc(
   name: "orphaned_handle",
-  doc: "Return label and version handles that have no incoming references and may be cleanup candidates."
+  doc: "Return label and version handles that have no incoming references and may be cleanup candidates.", intents: ["Which labels or versions are never referenced?", "Find unused graph handles that may need cleanup.", "An orphaned label does not mean its declaring document is orphaned."]
 ).
 orphaned_handle(h) :=
   *handle{id: h, kind: "label"},
@@ -998,7 +998,7 @@ s003_pipeline_stall(status, count, next_status, true) :=
 
 @doc(
   name: "pipeline_stall",
-  doc: "Return lifecycle statuses whose population is not decreasing across automatic status snapshots."
+  doc: "Return lifecycle statuses whose population is not decreasing across automatic status snapshots.", intents: ["Where is work accumulating without lifecycle progress?", "Find status populations that have stalled across snapshots.", "Require automatic history before claiming a pipeline stall."]
 ).
 @predicate(
   name: "pipeline_stall",
@@ -1050,7 +1050,7 @@ s004_abandoned_namespace(namespace, total, terminal_count, stale_count) :=
 
 @doc(
   name: "abandoned_namespace",
-  doc: "Return active label namespaces where every member is terminal or stale."
+  doc: "Return active label namespaces where every member is terminal or stale.", intents: ["Which active label namespace has no live fresh members?", "Find namespaces whose members are all terminal or stale.", "Inspect namespace membership rather than treating every old file as abandoned."]
 ).
 @predicate(
   name: "abandoned_namespace",
@@ -1106,7 +1106,7 @@ s005_top_pair(left_prefix, right_prefix, count) :=
 
 @doc(
   name: "top_pair",
-  doc: "Return the strongest namespace-prefix pairs that often co-occur and may deserve a configured concern group."
+  doc: "Return the strongest namespace-prefix pairs that often co-occur and may deserve a configured concern group.", intents: ["Which label families frequently occur together?", "Find candidates for a configured concern group.", "Suggest namespace co-occurrence without asserting semantic equivalence."]
 ).
 @predicate(
   name: "top_pair",

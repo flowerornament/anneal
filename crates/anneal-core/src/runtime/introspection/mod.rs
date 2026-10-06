@@ -20,7 +20,7 @@ use builder::IntrospectionBuilder;
 use render::{DescribeCard, describe_card};
 use source::{source_capability_names, source_tuple};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum DescribeKind {
     RuntimeTopic,
     SourceAdapter,
@@ -57,6 +57,7 @@ impl DescribeKind {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct DescribeEntry {
     rank: u8,
+    kind: DescribeKind,
     name: String,
     tuple: Tuple,
 }
@@ -70,6 +71,7 @@ impl DescribeEntry {
 fn describe_entry(name: &str, kind: DescribeKind, doc: &str) -> DescribeEntry {
     DescribeEntry {
         rank: kind.rank(),
+        kind,
         name: name.to_string(),
         tuple: Tuple(vec![string_value(name), string_value(doc)]),
     }
@@ -138,10 +140,12 @@ impl IntrospectionIndex {
         dynamic_stored: Vec<StoredRelationSummary>,
         diagnostic_config: &BTreeMap<String, String>,
     ) -> Self {
+        let teaching =
+            ProgramIntrospection::from_program(program, dynamic_stored, diagnostic_config);
         Self {
             source_descriptions: self.source_descriptions.clone(),
             source_rows: self.source_rows.clone(),
-            program: ProgramIntrospection::from_program(program, dynamic_stored, diagnostic_config),
+            program: teaching,
         }
     }
 
@@ -161,6 +165,9 @@ impl IntrospectionIndex {
         constraints: &[(usize, Value)],
     ) -> Vec<Tuple> {
         match primitive {
+            PrimitivePredicate::CardIntents => {
+                matching_tuples(&self.program.card_intents, constraints)
+            }
             PrimitivePredicate::Schema => matching_tuples(&self.program.schema, constraints),
             PrimitivePredicate::Predicates => {
                 matching_tuples(&self.program.predicates, constraints)
@@ -216,6 +223,7 @@ impl IntrospectionIndex {
 
 #[derive(Clone, Debug, Default)]
 struct ProgramIntrospection {
+    card_intents: Vec<Tuple>,
     schema: Vec<Tuple>,
     predicates: Vec<Tuple>,
     verbs: Vec<Tuple>,
@@ -236,6 +244,7 @@ impl ProgramIntrospection {
         builder.add_primitives();
         builder.add_program(program.program());
         builder.add_diagnostic_codes(program.program(), diagnostic_config);
+        builder.add_intents(program.program());
         builder.finish()
     }
 

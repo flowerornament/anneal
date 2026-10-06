@@ -7,7 +7,7 @@ use serde_json::Value as JsonValue;
 
 use crate::runtime::ast::{
     Atom, Body, CallArg, Expr, Ident, Literal, NumberLiteral, Program, Query, Rule, SourceLocation,
-    Statement, VerbDecl,
+    Statement, VerbDecl, annotation_intents,
 };
 use crate::runtime::parser::{ParseError, parse_program};
 use crate::runtime::prelude::datalog_string_literal;
@@ -286,6 +286,7 @@ pub struct VerbEntry {
     query_source: String,
     query: Query,
     doc: String,
+    intents: Option<Vec<String>>,
     output_schema: JsonValue,
     args: Vec<VerbArg>,
     capabilities: Vec<VerbCapability>,
@@ -309,6 +310,10 @@ impl VerbEntry {
 
     pub fn doc(&self) -> &str {
         &self.doc
+    }
+
+    pub fn intents(&self) -> Option<&[String]> {
+        self.intents.as_deref()
     }
 
     pub fn output_schema(&self) -> &JsonValue {
@@ -531,6 +536,7 @@ impl VerbEntry {
             query_source: spec.query_source,
             query: spec.query,
             doc: spec.doc,
+            intents: spec.intents,
             output_schema: spec.output_schema,
             args: spec.args,
             capabilities: spec.capabilities,
@@ -566,6 +572,7 @@ struct ParsedVerbDecl {
     query_program: Program,
     query: Query,
     doc: String,
+    intents: Option<Vec<String>>,
     output_schema: JsonValue,
     args: Vec<VerbArg>,
     capabilities: Vec<VerbCapability>,
@@ -585,6 +592,12 @@ fn parse_verb_decl(
         .map_err(|err| err.with_location(verb.location().clone()))?;
     let query_source = required_string(verb, "query")?.to_string();
     let doc = required_string(verb, "doc")?.to_string();
+    let intents = annotation_intents(&verb.annotation.args).map_err(|message| {
+        VerbRegistryError::InvalidIntents {
+            location: verb.location().clone(),
+            message,
+        }
+    })?;
     let output_schema = parse_output_schema(verb)?;
     let args = parse_args(verb)?;
     let capabilities = required_string_list(verb, "capabilities")?
@@ -607,6 +620,7 @@ fn parse_verb_decl(
         query_program,
         query,
         doc,
+        intents,
         output_schema,
         args,
         capabilities,
@@ -1015,6 +1029,11 @@ pub enum VerbDispatchError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerbRegistryError {
+    #[error("{location}: @verb {message}")]
+    InvalidIntents {
+        location: SourceLocation,
+        message: String,
+    },
     #[error("{location}: @verb missing string field '{field}'")]
     MissingField {
         field: String,

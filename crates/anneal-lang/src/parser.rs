@@ -20,7 +20,7 @@ use crate::ast::{
     ImportDirective, IncludeDirective, Literal, NamedArg, NegatedAtom, Negation, NumberLiteral,
     OrderDirection, OrderKey, PredicateDecl, PredicateRef, Program, Query, Rule, RuleLayer,
     RuleOrigin, SourceBlock, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
-    named_string_arg,
+    annotation_intents, named_string_arg,
 };
 
 /// Parses one complete program or query using the grammar in master-spec §17.
@@ -135,7 +135,12 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             self.eat(&TokenKind::Dot);
             return match annotation.as_str() {
-                "verb" => Ok(Statement::Verb(VerbDecl::new(args, location))),
+                "verb" => {
+                    annotation_intents(&args).map_err(|message| {
+                        ParseError::new(&self.source, &statement_start, message)
+                    })?;
+                    Ok(Statement::Verb(VerbDecl::new(args, location)))
+                }
                 "doc" => self
                     .parse_doc_annotation(&args, location, &statement_start)
                     .map(Statement::Doc),
@@ -248,7 +253,11 @@ impl Parser {
                 "@doc requires string argument doc",
             )
         })?;
-        Ok(DocDecl::new(name, doc, location))
+        let intents = annotation_intents(args)
+            .map_err(|message| ParseError::new(&self.source, annotation_start, message))?;
+        DocDecl::new(name, doc, location)
+            .with_intents(intents)
+            .map_err(|message| ParseError::new(&self.source, annotation_start, message))
     }
 
     fn parse_query(&mut self, location: SourceLocation) -> Result<Query, ParseError> {
@@ -1613,6 +1622,52 @@ mod tests {
             &source.declarations[1].args[1],
             CallArg::Named { name, .. } if name.as_str() == "regex"
         ));
+    }
+
+    #[test]
+    fn intent_metadata_validates_both_declaration_shapes() {
+        for annotation in ["doc", "verb"] {
+            let parsed = parse_program("goals.dl", &format!(r#"@{annotation}(name: "x", doc: "Contract.", intents: ["Find open blockers.", "Which work is ready?"])."#)).expect("valid goals");
+            assert_eq!(parsed.statements.len(), 1);
+            for value in [
+                r"[]",
+                r#""Find open blockers.""#,
+                r"[1]",
+                r#"[" "]"#,
+                r#"["keyword"]"#,
+                r#"["Find blockers"]"#,
+                r#"["Find blockers.\n"]"#,
+                r#"["Find blockers.", " FIND   BLOCKERS."]"#,
+                r#"["Find Straße.", "find STRASSE."]"#,
+            ] {
+                let error = parse_program(
+                    "goals.dl",
+                    &format!(r#"@{annotation}(name: "x", doc: "Contract.", intents: {value})."#),
+                )
+                .expect_err("malformed goal refused");
+                assert_eq!(error.location.source_name, "goals.dl");
+                assert_eq!(error.location.line, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn doc_intents_serde_preserves_absent_shape_and_refuses_invalid_values() {
+        let doc = DocDecl::new("x", "Contract.", SourceLocation::unknown());
+        let json = serde_json::to_value(&doc).expect("serialize doc");
+        assert!(json.get("intents").is_none());
+        assert_eq!(
+            serde_json::from_value::<DocDecl>(json)
+                .expect("old shape")
+                .intents(),
+            None
+        );
+        assert!(
+            serde_json::from_value::<DocDecl>(
+                serde_json::json!({"name":"x", "doc":"Contract.", "intents":[]})
+            )
+            .is_err()
+        );
     }
 
     #[test]

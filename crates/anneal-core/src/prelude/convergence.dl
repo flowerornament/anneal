@@ -211,7 +211,7 @@ blocked(h) :=
 
 @doc(
   name: "blocker",
-  doc: "Return blocked handles with total energy and the unsettled signal that explains the block."
+  doc: "Return blocked handles with total energy and the unsettled signal that explains the block.", intents: ["Why is this work blocked and which unsettled signal explains it?", "Find blocked handles with total energy and causes.", "Use configured activity and recent flux rather than a manually set blocked flag.", "Which decisions are holding this plan up, as indicated by its unsettled blocker signals?"]
 ).
 @predicate(
   name: "blocker",
@@ -232,7 +232,7 @@ advancing(h) :=
 
 @doc(
   name: "snapshot_history_present",
-  doc: "Return the number of saved snapshots when the corpus has history available for flow and advancement queries."
+  doc: "Return the number of saved snapshots when the corpus has history available for flow and advancement queries.", intents: ["Is there saved history to support flow and advancement queries?", "Count available snapshots before interpreting trends.", "No rows indicate unavailable history rather than proof of no change."]
 ).
 snapshot_history_present(count) :=
   count = Count{ snapshot : *snapshot{snapshot: snapshot} },

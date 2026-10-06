@@ -5,6 +5,7 @@ use super::DescribeKind;
 #[derive(Default)]
 /// Structured teaching-card inputs before their canonical prose projection.
 pub(super) struct DescribeCard<'a> {
+    pub(super) intents: Option<&'a [String]>,
     pub(super) summary: &'a str,
     pub(super) kind: Option<DescribeKind>,
     pub(super) signature: Option<&'a str>,
@@ -47,7 +48,22 @@ pub(super) fn describe_card(card: DescribeCard<'_>) -> String {
     for example in card.examples {
         lines.push(format!("Example: {}", with_output_shape(example)));
     }
-    lines.join("\n")
+    let doc = lines.join("\n");
+    with_intents(&doc, card.intents)
+}
+
+pub(super) fn with_intents(doc: &str, intents: Option<&[String]>) -> String {
+    let Some(intents) = intents else {
+        return doc.to_owned();
+    };
+    format!(
+        "{doc}\nIntents:\n{}",
+        intents
+            .iter()
+            .map(|intent| format!("- {}", intent.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 fn with_output_shape(text: &str) -> String {

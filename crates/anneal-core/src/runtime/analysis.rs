@@ -88,7 +88,32 @@ impl fmt::Display for StoredFieldSet {
 }
 
 pub fn analyze(program: Program) -> Result<AnalyzedProgram, StaticError> {
+    validate_intent_metadata(&program.statements)?;
     Analyzer::new(program).analyze()
+}
+
+fn validate_intent_metadata(statements: &[Statement]) -> Result<(), StaticError> {
+    for statement in statements {
+        let validation = match statement {
+            Statement::Doc(doc) => doc
+                .intents()
+                .map_or(Ok(()), crate::runtime::ast::validate_intents)
+                .map_err(|message| StaticError::InvalidIntents {
+                    location: doc.location().clone(),
+                    message,
+                }),
+            Statement::Verb(verb) => crate::runtime::ast::annotation_intents(&verb.annotation.args)
+                .map(|_| ())
+                .map_err(|message| StaticError::InvalidIntents {
+                    location: verb.location().clone(),
+                    message,
+                }),
+            Statement::AtBlock { statements, .. } => validate_intent_metadata(statements),
+            _ => Ok(()),
+        };
+        validation?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -275,6 +300,11 @@ pub struct Stratum {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StaticError {
+    #[error("{location}: invalid intents: {message}")]
+    InvalidIntents {
+        location: SourceLocation,
+        message: String,
+    },
     #[error("{location}: unknown predicate '{predicate}/{arity}'{suggestion}")]
     UnknownPredicate {
         predicate: PredicateRef,

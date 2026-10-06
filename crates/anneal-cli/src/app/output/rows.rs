@@ -117,6 +117,10 @@ pub(super) fn write_rows_text<W: Write>(
         return write_handle_text(writer, handle, *impact, *lineage, *missing, rows);
     }
 
+    if *view == RowView::Intents {
+        return write_intents_text(writer, rows);
+    }
+
     if *view == RowView::Describe {
         return write_describe_text(writer, rows);
     }
@@ -155,6 +159,23 @@ pub(super) fn write_rows_text<W: Write>(
             writer,
             "Follow-up: anneal -e '? anchor_signal(h, s, prio, why).'"
         )?;
+    }
+    Ok(())
+}
+
+fn write_intents_text<W: Write>(mut writer: W, rows: &[Row]) -> Result<()> {
+    let mut previous = None;
+    for row in rows {
+        let name = required_string(row, "name")?;
+        let kind = required_string(row, "kind")?;
+        if previous != Some((name, kind)) {
+            writeln!(writer, "{name} [{kind}]")?;
+            previous = Some((name, kind));
+        }
+        writeln!(writer, "- {}", required_string(row, "intent")?)?;
+    }
+    if rows.is_empty() {
+        writeln!(writer, "No authored intents are declared in this registry.")?;
     }
     Ok(())
 }

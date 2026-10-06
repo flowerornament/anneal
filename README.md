@@ -291,6 +291,19 @@ Useful `context` flags:
 
 ### Program The Corpus
 
+Read the authored goals before choosing a capability:
+
+```bash
+anneal intents
+anneal describe spec_code_drift
+```
+
+The complete intents list groups declared goal sentences by card name and kind,
+including project predicates, verbs and declared diagnostic codes. The reading
+agent matches its goal to these sentences; the surface makes no semantic
+ranking claim. `--json` emits one `name`, `kind`, `intent` row per goal. Read the
+chosen card with `describe NAME` before writing a query.
+
 ```bash
 anneal schema
 anneal describe search
@@ -589,6 +602,15 @@ shared diagnostic stream and check exit omit the accepted instance.
 teaches the matching unit.
 
 ### Project Rules And Verbs
+
+`@doc` and `@verb` accept optional `intents: ["Goal sentence?", "Another goal sentence."]`.
+Teach two to four goal phrasings, including the capability's boundary. A supplied
+list must be nonempty, single-line sentences ending in `?` or `.`, with letters
+and at least two words; duplicate phrasings after whitespace and Unicode case
+folding refuse. Cards render the goals under Intents. A later documentation
+override replaces the goals too, so omitting intents clears older phrasings.
+Same-name verbs and primitives retain separate cards.
+
 
 `anneal.dl` can also declare rules and project verbs.
 

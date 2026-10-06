@@ -643,8 +643,16 @@ impl RuntimeSession {
         };
         let view = ranked_anchor.as_ref().map_or_else(
             || {
-                view.unwrap_or_else(|| RowView::Verb {
-                    name: plan.name().to_string(),
+                view.unwrap_or_else(|| {
+                    if plan.name().as_str() == "intents"
+                        && entry.source().layer() == VerbLayer::Prelude
+                    {
+                        RowView::Intents
+                    } else {
+                        RowView::Verb {
+                            name: plan.name().to_string(),
+                        }
+                    }
                 })
             },
             |enrichment| RowView::RankedAnchor {

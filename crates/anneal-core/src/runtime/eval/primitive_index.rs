@@ -366,7 +366,8 @@ impl PrimitiveIndex {
             PrimitivePredicate::TokenEstimate => {
                 self.handle_count_tuples(constraints, &self.content_tokens)
             }
-            PrimitivePredicate::Search
+            PrimitivePredicate::CardIntents
+            | PrimitivePredicate::Search
             | PrimitivePredicate::Read
             | PrimitivePredicate::ReadFull
             | PrimitivePredicate::Match

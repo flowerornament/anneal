@@ -768,6 +768,11 @@ fn collect_verb_query_programs(
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectLoadError {
+    #[error("{location}: @verb {message}")]
+    InvalidVerbIntents {
+        location: crate::runtime::ast::SourceLocation,
+        message: String,
+    },
     #[error(transparent)]
     Load(#[from] LoadError),
     #[error(transparent)]
@@ -965,6 +970,9 @@ impl From<RuntimeConfigEntryError> for ProjectLoadError {
 impl From<VerbRegistryError> for ProjectLoadError {
     fn from(value: VerbRegistryError) -> Self {
         match value {
+            VerbRegistryError::InvalidIntents { location, message } => {
+                Self::InvalidVerbIntents { location, message }
+            }
             VerbRegistryError::MissingField { field, location } => {
                 Self::MissingVerbField { field, location }
             }

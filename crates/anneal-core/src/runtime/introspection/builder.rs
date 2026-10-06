@@ -17,6 +17,7 @@ use super::{
 #[derive(Default)]
 /// Accumulates each introspection relation as a sorted set before final projection.
 pub(super) struct IntrospectionBuilder {
+    card_intents: BTreeSet<Tuple>,
     schema: BTreeSet<Tuple>,
     predicates: BTreeSet<Tuple>,
     verbs: BTreeSet<Tuple>,
@@ -29,6 +30,7 @@ impl IntrospectionBuilder {
     /// Seeds query-local construction from an immutable program-level index.
     pub(super) fn from_existing(existing: &ProgramIntrospection) -> Self {
         Self {
+            card_intents: existing.card_intents.iter().cloned().collect(),
             schema: existing.schema.iter().cloned().collect(),
             predicates: existing.predicates.iter().cloned().collect(),
             verbs: existing.verbs.iter().cloned().collect(),
@@ -163,6 +165,7 @@ impl IntrospectionBuilder {
                     see_also: catalog::primitive_see_also(*primitive),
                     examples: catalog::primitive_example(*primitive).into_iter().collect(),
                     extra_lines: teaching.extra_lines,
+                    ..render::DescribeCard::default()
                 }),
             ));
             self.source_of.insert(Tuple(vec![
@@ -185,10 +188,35 @@ impl IntrospectionBuilder {
         let (docs, predicates) = scanned.into_parts();
         let predicate_names = predicates.keys().cloned().collect::<BTreeSet<_>>();
         self.add_predicates(predicates, &docs);
-        self.add_docs(&docs, &predicate_names);
+        let mut owned_names = predicate_names.clone();
+        owned_names.extend(self.describe.iter().filter(|entry| matches!(entry.rank, rank if rank == DescribeKind::EnginePrimitive.rank() || rank == DescribeKind::StoredRelation.rank())).map(|entry| entry.name.clone()));
+        owned_names.extend(
+            crate::diagnostics::DiagnosticCatalog::from_program(program)
+                .declarations
+                .keys()
+                .cloned(),
+        );
+        owned_names.extend(
+            crate::diagnostics::project_cards(program)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|card| card.code),
+        );
+        owned_names.retain(|name| {
+            predicate_names.contains(name)
+                || docs.get(name).is_some_and(|doc| doc.intents().is_some())
+        });
+        self.add_docs(&docs, &owned_names);
 
         let registry = VerbRegistry::from_ordered_program(program).unwrap_or_default();
         for entry in registry.iter() {
+            for intent in entry.intents().unwrap_or_default() {
+                self.card_intents.insert(Tuple(vec![
+                    string_value(entry.name().as_str()),
+                    string_value(DescribeKind::Verb.label()),
+                    string_value(intent.trim()),
+                ]));
+            }
             let teaching = catalog::runtime_teaching(entry.name().as_str());
             self.verbs.insert(Tuple(vec![
                 string_value(entry.name().as_str()),
@@ -201,6 +229,7 @@ impl IntrospectionBuilder {
                 DescribeKind::Verb,
                 &render::describe_card(render::DescribeCard {
                     summary: entry.doc(),
+                    intents: entry.intents(),
                     kind: Some(DescribeKind::Verb),
                     signature: Some(&format!("anneal {}", entry.name())),
                     relationship: Some(catalog::verb_relationship(entry.name().as_str())),
@@ -400,7 +429,12 @@ impl IntrospectionBuilder {
                     string_value(&line_text),
                 ]));
             }
-            if let Some(doc_info) = docs.get(&name) {
+            if let Some(doc_info) = docs.get(&name)
+                && !(doc_info.intents().is_some()
+                    && info.source_lines().covers(doc_info.source_lines()))
+            {
+                // Intent teaching on an existing definition line does not create a
+                // second, differently grouped source row for the same locations.
                 for (file, line_text) in doc_info.source_lines().iter_line_text() {
                     self.source_of.insert(Tuple(vec![
                         string_value(&name),
@@ -427,6 +461,7 @@ impl IntrospectionBuilder {
                     see_also: teaching.see_also,
                     examples: teaching.example.into_iter().collect(),
                     extra_lines: teaching.extra_lines,
+                    ..render::DescribeCard::default()
                 }),
             ));
         }
@@ -434,9 +469,33 @@ impl IntrospectionBuilder {
 }
 
 impl IntrospectionBuilder {
+    pub(super) fn add_intents(&mut self, program: &Program) {
+        let (docs, _) = program::ProgramScanner::scan(program).into_parts();
+        self.describe = std::mem::take(&mut self.describe)
+            .into_iter()
+            .map(|mut entry| {
+                if entry.rank != DescribeKind::Verb.rank()
+                    && let Some(intents) = docs.get(&entry.name).and_then(program::DocInfo::intents)
+                    && let Some(super::super::eval::Value::String(doc)) = entry.tuple.0.get_mut(1)
+                {
+                    *doc = render::with_intents(doc, Some(intents));
+                    for intent in intents {
+                        self.card_intents.insert(Tuple(vec![
+                            string_value(&entry.name),
+                            string_value(entry.kind.label()),
+                            string_value(intent.trim()),
+                        ]));
+                    }
+                }
+                entry
+            })
+            .collect();
+    }
+
     /// Converts sorted sets into the stable vectors consumed by runtime primitives.
     pub(super) fn finish(self) -> ProgramIntrospection {
         ProgramIntrospection {
+            card_intents: self.card_intents.into_iter().collect(),
             schema: self.schema.into_iter().collect(),
             predicates: self.predicates.into_iter().collect(),
             verbs: self.verbs.into_iter().collect(),

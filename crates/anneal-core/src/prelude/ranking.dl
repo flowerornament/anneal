@@ -7,7 +7,7 @@
 
 @doc(
   name: "frontier",
-  doc: "Return the highest-potential work handles, capped to the default status list size."
+  doc: "Return the highest-potential work handles, capped to the default status list size.", intents: ["What unsettled work has the highest potential next?", "Find the bounded global convergence work list.", "Use the default status cap rather than assuming every candidate is returned.", "What should we tackle next to settle these designs using convergence potential?"]
 ).
 frontier(h, energy) :=
   (h, energy) = TopK{ k: 25, key: energy :

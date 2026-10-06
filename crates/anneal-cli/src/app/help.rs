@@ -408,6 +408,7 @@ Commands by intent:
     anneal read <handle>          Budgeted evidence for one handle
     anneal handle <handle>        Relationships, impact, and lineage
   Discover and program
+    anneal intents               Read all declared teaching goals
     anneal schema                 Callable runtime vocabulary and signatures
     anneal describe <name>        Purpose, joins, examples, and requirements
     anneal -e '? predicate(args).' Compose a precise Datalog question

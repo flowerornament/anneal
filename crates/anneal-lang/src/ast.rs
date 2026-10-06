@@ -1,5 +1,7 @@
 //! Abstract syntax tree types for anneal language programs and queries.
 
+use unicode_casefold::UnicodeCaseFold;
+
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -294,6 +296,12 @@ impl VerbDecl {
 pub struct DocDecl {
     pub name: String,
     pub doc: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_intents"
+    )]
+    pub intents: Option<Vec<String>>,
     #[serde(default, skip_serializing)]
     pub location: SourceLocation,
 }
@@ -303,6 +311,7 @@ impl DocDecl {
         Self {
             name: name.into(),
             doc: doc.into(),
+            intents: None,
             location,
         }
     }
@@ -315,9 +324,88 @@ impl DocDecl {
         &self.doc
     }
 
+    /// Attaches validated goal sentences to this declaration.
+    pub fn with_intents(mut self, intents: Option<Vec<String>>) -> Result<Self, String> {
+        if let Some(values) = &intents {
+            validate_intents(values)?;
+        }
+        self.intents = intents;
+        Ok(self)
+    }
+
+    pub fn intents(&self) -> Option<&[String]> {
+        self.intents.as_deref()
+    }
+
     pub fn location(&self) -> &SourceLocation {
         &self.location
     }
+}
+
+/// Validates sentence shape without claiming semantic grammar validation.
+pub fn validate_intents(values: &[String]) -> Result<(), String> {
+    if values.is_empty() {
+        return Err("intents must be a nonempty list of goal sentences".to_owned());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        let text = value.trim();
+        if value
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+            || text.split_whitespace().count() < 2
+            || !text.ends_with(['?', '.'])
+            || !text.chars().any(char::is_alphabetic)
+        {
+            return Err("each intent must be a single-line goal sentence with at least two words, letters, and a final ? or .".to_owned());
+        }
+        let normalized = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .case_fold()
+            .collect::<String>();
+        if !seen.insert(normalized) {
+            return Err("duplicate intent after whitespace and case normalization".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Reads optional goal metadata, rejecting malformed or repeated fields.
+pub fn annotation_intents(args: &[NamedArg]) -> Result<Option<Vec<String>>, String> {
+    let fields = args
+        .iter()
+        .filter(|arg| arg.name.as_str() == "intents")
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    if fields.len() != 1 {
+        return Err("duplicate intents field".to_owned());
+    }
+    let Expr::Literal(Literal::List(items)) = &fields[0].expr else {
+        return Err("intents must be a literal list of strings".to_owned());
+    };
+    let values = items
+        .iter()
+        .map(|item| match item {
+            Literal::String(value) => Ok(value.clone()),
+            _ => Err("intents must be a literal list of strings".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_intents(&values)?;
+    Ok(Some(values))
+}
+
+fn deserialize_intents<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    let values = Option::<Vec<String>>::deserialize(deserializer)?;
+    if let Some(values) = &values {
+        validate_intents(values).map_err(serde::de::Error::custom)?;
+    }
+    Ok(values)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

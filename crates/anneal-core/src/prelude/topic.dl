@@ -74,7 +74,7 @@ topic_pair(left, right, shared) :=
 
 @doc(
   name: "topic_sibling",
-  doc: "Return a symmetric report-level topic-sibling view over topic_pair."
+  doc: "Return a symmetric report-level topic-sibling view over topic_pair.", intents: ["Which documents share distinctive cited topics?", "Find related files through discriminative citation overlap.", "Use shared citations rather than semantic text similarity.", "Show me the related plans I would otherwise re-invent through shared discriminative citations."]
 ).
 topic_sibling(a, b, shared) :=
   topic_pair(a, b, shared).
@@ -84,7 +84,7 @@ topic_sibling(a, b, shared) :=
 
 @doc(
   name: "currency_suspect",
-  doc: "Return unmarked newer topical siblings for a stale file. This is a report-level hint for possible unmarked displacement; it never asserts Supersedes."
+  doc: "Return unmarked newer topical siblings for a stale file. This is a report-level hint for possible unmarked displacement; it never asserts Supersedes.", intents: ["Is there a newer document about the same topic that I should inspect?", "Find possible unmarked replacements for stale settled documents.", "Treat newer topical siblings as hints rather than proven supersession.", "Is there a newer document on this topic that may signal unmarked displacement?"]
 ).
 currency_suspect(stale, newer) :=
   topic_sibling(stale, newer, shared),
