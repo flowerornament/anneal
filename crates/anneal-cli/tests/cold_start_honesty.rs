@@ -324,12 +324,12 @@ fn frontmatter_mapping_gap_works_without_config_and_mapping_closes_it() {
     write_file(
         dir.path(),
         "a.md",
-        "---\nstatus: draft\nreferences:\n  - target.md\n  - second.md\n---\n# A\n",
+        "---\nstatus: draft\nrefs:\n  - target.md\n  - second.md\n---\n# A\n",
     );
     write_file(
         dir.path(),
         "b.md",
-        "---\nstatus: draft\nreferences: target.md\n---\n# B\n",
+        "---\nstatus: draft\nrefs: target.md\n---\n# B\n",
     );
     write_markdown(dir.path(), "target.md", "done", "# Target\n");
     write_markdown(dir.path(), "second.md", "done", "# Second\n");
@@ -344,7 +344,7 @@ fn frontmatter_mapping_gap_works_without_config_and_mapping_closes_it() {
     ]);
     let rows = json_rows(&gap);
     assert_eq!(rows.len(), 1, "{rows:#?}");
-    assert_eq!(rows[0]["key"], "references");
+    assert_eq!(rows[0]["key"], "refs");
     assert_eq!(rows[0]["distinct_handle_count"], 2);
     assert_eq!(rows[0]["suggested_field"], "references");
     assert_eq!(rows[0]["edge_kind"], "Cites");
@@ -379,7 +379,7 @@ fn frontmatter_mapping_gap_works_without_config_and_mapping_closes_it() {
         dir.path(),
         &format!(
             r#"config frontmatter {{
-  field("references", "Cites", "forward").
+  field("refs", "Cites", "forward").
 }}
 
 {lifecycle}"#

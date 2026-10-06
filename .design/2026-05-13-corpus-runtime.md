@@ -2177,8 +2177,19 @@ reference-like markdown frontmatter aliases with no effective edge mapping
 produce one W007 `frontmatter_mapping_gap` warning per key, counted by distinct
 file handle. The warning carries the conventional field, edge kind, and
 direction and teaches a `*meta` drill-down; its finite alias vocabulary remains
-active when no `config frontmatter` block exists. Generic `source`/`sources`
-remain deliberately unclassified pending a coherent built-in mapping policy.
+active when no `config frontmatter` block exists. Markdown defaults map
+`references`, `cites`, `source` and `sources` to forward Cites; `depends-on`
+and `based-on` to forward DependsOn; `supersedes` to inverse Supersedes;
+`superseded-by` to forward Supersedes; `discharges` and `verifies` to their
+forward kinds; and `affects` to inverse DependsOn. Explicit `field` entries
+override individual keys. Aliases require an explicit project mapping.
+`config frontmatter { unmapped("KEY"). }` preserves a key as metadata on
+purpose, removing its built-in mapping and suppressing W007. The intention
+is visible in `frontmatter_intentionally_unmapped(key)` and `*config`;
+authored values and shape evidence remain. An explicit field and unmapped
+entry for the same key are a load error in either declaration order. Init
+uses the same canonical policy and preserves explicit mappings and intentions;
+its finite alias proposals remain gated by three observed occurrences.
 The adjacent `unmodeled_frontmatter_key(key, distinct_file_handles,
 reference_name_signal, rank)` relation inventories every other
 `authored_unmodeled` markdown key. It excludes the W007 alias population,

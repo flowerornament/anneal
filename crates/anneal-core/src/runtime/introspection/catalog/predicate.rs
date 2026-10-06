@@ -401,7 +401,7 @@ fn frontmatter_mapping_gap_lines() -> Vec<String> {
         "The count is distinct markdown file handles, not scalar values.".to_string(),
         "Drill down with `? frontmatter_mapping_gap(key, count, field, kind, direction), *meta{handle: h, key: key}, *meta{handle: h, key: \"md.parent_dir\"}.`.".to_string(),
         "Configure the reported mapping with `config frontmatter { field(\"KEY\", \"EDGE_KIND\", \"DIRECTION\"). }`; a project mapping suppresses W007 for that key.".to_string(),
-        "The finite alias vocabulary is active even when the corpus has no `config frontmatter` block. Generic source/sources remain unclassified pending a deliberate built-in mapping policy.".to_string(),
+        "The finite alias vocabulary is active even when the corpus has no `config frontmatter` block. Canonical references/cites/source/sources are built-in Cites, and based-on is built-in DependsOn. Retain metadata intentionally with `config frontmatter { unmapped(\"KEY\"). }`; inspect `frontmatter_intentionally_unmapped(key)`.".to_string(),
     ]
 }
 

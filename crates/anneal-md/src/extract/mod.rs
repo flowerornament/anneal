@@ -4,6 +4,7 @@ pub(crate) mod area;
 pub(crate) mod body_scan;
 pub(crate) mod config;
 pub(crate) mod extraction;
+mod frontmatter_policy;
 pub(crate) mod graph;
 pub(crate) mod handle;
 pub(crate) mod parse;

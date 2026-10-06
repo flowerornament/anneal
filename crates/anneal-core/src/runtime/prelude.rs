@@ -2611,7 +2611,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 25, "exact W007 alias vocabulary changed");
+        assert_eq!(keys.len(), 29, "exact W007 alias vocabulary changed");
 
         for key in keys {
             let query = format!(r#"? configured_frontmatter_alias("{key}")."#);

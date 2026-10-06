@@ -40,6 +40,7 @@ pub enum RuntimeConfigKey {
     HandlesLinear,
     HandlesConfirmed,
     FrontmatterField,
+    FrontmatterUnmapped,
     FreshnessWarn,
     FreshnessError,
     StateHistoryMode,
@@ -155,6 +156,10 @@ impl RuntimeConfigDeclaration {
                     ConfigEntry::scalar(format!("frontmatter.field.{field}.edge_kind"), edge_kind),
                     ConfigEntry::scalar(format!("frontmatter.field.{field}.direction"), direction),
                 ])
+            }
+            RuntimeConfigKey::FrontmatterUnmapped => {
+                let [key]: [String; 1] = expect_exact_tuple(self, values, "exactly one key")?;
+                Ok(vec![ConfigEntry::scalar("frontmatter.unmapped", key)])
             }
             RuntimeConfigKey::SuppressRule => {
                 let [code, target]: [String; 2] =
@@ -380,6 +385,15 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         RuntimeConfigValueMode::Tuple {
             expected: "field, edge kind, and direction",
             arity: 3,
+        },
+    ),
+    runtime_config_declaration(
+        RuntimeConfigKey::FrontmatterUnmapped,
+        "frontmatter",
+        "unmapped",
+        RuntimeConfigValueMode::Tuple {
+            expected: "exactly one key",
+            arity: 1,
         },
     ),
     runtime_config_declaration(

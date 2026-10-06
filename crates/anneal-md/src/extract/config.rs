@@ -1,6 +1,6 @@
 //! Markdown adapter configuration and migration parsing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anneal_core::runtime::{CallArg, Expr, Literal, NumberLiteral, Statement, parse_program};
@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Direction of an edge created from a frontmatter field.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Direction {
     /// Source file -> referenced target (e.g., "depends-on: X" means this file `DependsOn` X).
@@ -35,54 +35,18 @@ pub(crate) struct FrontmatterFieldMapping {
 #[serde(default)]
 pub(crate) struct FrontmatterConfig {
     pub(crate) fields: HashMap<String, FrontmatterFieldMapping>,
+    pub(crate) unmapped: BTreeSet<String>,
 }
 
 impl Default for FrontmatterConfig {
     fn default() -> Self {
-        let mut fields = HashMap::new();
-        fields.insert(
-            "superseded-by".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "Supersedes".to_string(),
-                direction: Direction::Forward,
-            },
-        );
-        fields.insert(
-            "depends-on".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "DependsOn".to_string(),
-                direction: Direction::Forward,
-            },
-        );
-        fields.insert(
-            "discharges".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "Discharges".to_string(),
-                direction: Direction::Forward,
-            },
-        );
-        fields.insert(
-            "verifies".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "Verifies".to_string(),
-                direction: Direction::Forward,
-            },
-        );
-        fields.insert(
-            "supersedes".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "Supersedes".to_string(),
-                direction: Direction::Inverse,
-            },
-        );
-        fields.insert(
-            "affects".to_string(),
-            FrontmatterFieldMapping {
-                edge_kind: "DependsOn".to_string(),
-                direction: Direction::Inverse,
-            },
-        );
-        Self { fields }
+        Self {
+            fields: super::frontmatter_policy::CANONICAL
+                .iter()
+                .map(|entry| (entry.key.to_string(), entry.mapping()))
+                .collect(),
+            unmapped: BTreeSet::new(),
+        }
     }
 }
 
@@ -673,6 +637,18 @@ fn apply_frontmatter_fields(config: &mut AnnealConfig, facts: &ConfigFacts) -> R
         }
     }
 
+    let unmapped = facts
+        .values("frontmatter.unmapped")
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    for key in &unmapped {
+        if key.is_empty() {
+            anyhow::bail!("frontmatter.unmapped key must not be empty");
+        }
+        if fields.contains_key(key) {
+            anyhow::bail!("frontmatter key {key:?} has both field and unmapped declarations");
+        }
+    }
     for (field, (edge_kind, direction)) in fields {
         let Some(edge_kind) = edge_kind else {
             anyhow::bail!("frontmatter.field.{field} is missing edge_kind");
@@ -696,6 +672,10 @@ fn apply_frontmatter_fields(config: &mut AnnealConfig, facts: &ConfigFacts) -> R
         );
     }
 
+    for key in &unmapped {
+        config.frontmatter.fields.remove(key);
+    }
+    config.frontmatter.unmapped = unmapped;
     Ok(())
 }
 
@@ -804,6 +784,39 @@ default_filter = "all"
         assert!(config.suppress.rules.is_empty());
         assert_eq!(config.state.history_mode, None);
         assert_eq!(config.state.history_dir, None);
+    }
+
+    #[test]
+    fn frontmatter_unmapped_validates_and_preserves_per_key_overrides() {
+        for body in [
+            "unmapped(\"refs\"). field(\"refs\", \"Cites\", \"forward\").",
+            "field(\"refs\", \"Cites\", \"forward\"). unmapped(\"refs\").",
+        ] {
+            let error = parse_unified_config("test", &format!("config frontmatter {{ {body} }}"))
+                .expect_err("conflict");
+            assert!(error.to_string().contains("both field and unmapped"));
+        }
+        for call in [
+            "unmapped().",
+            "unmapped(\"refs\", \"sources\").",
+            "unmapped(\"\").",
+        ] {
+            assert!(
+                parse_unified_config("test", &format!("config frontmatter {{ {call} }}")).is_err()
+            );
+        }
+        let config = parse_unified_config("test", "config frontmatter { unmapped(\"sources\"). unmapped(\"sources\"). field(\"references\", \"DependsOn\", \"inverse\"). }").expect("config");
+        assert_eq!(config.frontmatter.unmapped.len(), 1);
+        assert!(!config.frontmatter.fields.contains_key("sources"));
+        assert_eq!(
+            config.frontmatter.fields["references"].edge_kind,
+            "DependsOn"
+        );
+        assert_eq!(
+            config.frontmatter.fields["references"].direction,
+            Direction::Inverse
+        );
+        assert_eq!(config.frontmatter.fields["source"].edge_kind, "Cites");
     }
 
     #[test]

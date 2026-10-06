@@ -406,6 +406,11 @@ frontmatter_mapping_alias("replaced_by", "superseded-by", "Supersedes", "forward
 frontmatter_mapping_alias("replaces", "supersedes", "Supersedes", "inverse").
 frontmatter_mapping_alias("obsoletes", "supersedes", "Supersedes", "inverse").
 
+frontmatter_mapping_alias("impacts", "affects", "DependsOn", "inverse").
+frontmatter_mapping_alias("resolves", "discharges", "Discharges", "forward").
+frontmatter_mapping_alias("addresses", "discharges", "Discharges", "forward").
+frontmatter_mapping_alias("parent", "depends-on", "DependsOn", "forward").
+
 @doc(
   name: "configured_frontmatter_alias",
   doc: "Return W007 aliases that have an explicit project frontmatter edge mapping and are therefore suppressed."
@@ -465,11 +470,29 @@ configured_frontmatter_alias("replaces") :=
 configured_frontmatter_alias("obsoletes") :=
   *config{key: "frontmatter.field.obsoletes.edge_kind", value: kind}.
 
+configured_frontmatter_alias("impacts") :=
+  *config{key: "frontmatter.field.impacts.edge_kind", value: kind}.
+configured_frontmatter_alias("resolves") :=
+  *config{key: "frontmatter.field.resolves.edge_kind", value: kind}.
+configured_frontmatter_alias("addresses") :=
+  *config{key: "frontmatter.field.addresses.edge_kind", value: kind}.
+configured_frontmatter_alias("parent") :=
+  *config{key: "frontmatter.field.parent.edge_kind", value: kind}.
+
+@doc(
+  name: "frontmatter_intentionally_unmapped",
+  doc: "Return frontmatter keys explicitly retained as metadata by config frontmatter unmapped. These keys suppress built-in edge projection and W007 without removing authored metadata or shape evidence."
+).
+@predicate(name: "frontmatter_intentionally_unmapped", args: ["key"]).
+frontmatter_intentionally_unmapped(key) :=
+  *config{key: "frontmatter.unmapped", value: key}.
+
 frontmatter_unmapped_alias_use(key, h) :=
   frontmatter_mapping_alias(key, suggested_field, edge_kind, direction),
   *meta{handle: h, key: key, value: value, role: "authored_unmodeled"},
   *meta{handle: h, key: "md.parent_dir", value: parent_dir},
-  not configured_frontmatter_alias(key).
+  not configured_frontmatter_alias(key),
+  not frontmatter_intentionally_unmapped(key).
 
 @doc(
   name: "frontmatter_mapping_gap",

@@ -150,7 +150,12 @@ pub fn render_or_write_init(root: &Utf8Path, mode: InitMode) -> Result<InitOutpu
             "stable".to_string(),
         ];
     }
-    config.frontmatter.fields = inferred_frontmatter_fields(&result.init.observed_frontmatter_keys);
+    let mut inferred = inferred_frontmatter_fields(&result.init.observed_frontmatter_keys);
+    inferred.extend(config.frontmatter.fields);
+    for key in &config.frontmatter.unmapped {
+        inferred.remove(key);
+    }
+    config.frontmatter.fields = inferred;
     render_or_write_init_from_config(root, config, mode)
 }
 
@@ -413,30 +418,7 @@ fn inferred_frontmatter_fields(
 }
 
 fn propose_mapping(field_name: &str) -> Option<config::FrontmatterFieldMapping> {
-    let lower = field_name.to_lowercase();
-    match lower.as_str() {
-        "affects" | "impacts" => Some(config::FrontmatterFieldMapping {
-            edge_kind: "DependsOn".to_string(),
-            direction: config::Direction::Inverse,
-        }),
-        "source" | "sources" | "based-on" | "builds-on" | "extends" | "parent" => {
-            Some(config::FrontmatterFieldMapping {
-                edge_kind: "DependsOn".to_string(),
-                direction: config::Direction::Forward,
-            })
-        }
-        "resolves" | "addresses" => Some(config::FrontmatterFieldMapping {
-            edge_kind: "Discharges".to_string(),
-            direction: config::Direction::Forward,
-        }),
-        "references" | "refs" | "related" | "see-also" | "cites" => {
-            Some(config::FrontmatterFieldMapping {
-                edge_kind: "Cites".to_string(),
-                direction: config::Direction::Forward,
-            })
-        }
-        _ => None,
-    }
+    super::frontmatter_policy::proposed_mapping(field_name)
 }
 
 fn render_or_write_init_from_config(
@@ -624,6 +606,9 @@ fn render_unified_config(config: &config::AnnealConfig) -> String {
             RuntimeConfigKey::FrontmatterField,
             &[field, mapping.edge_kind.as_str(), direction],
         );
+    }
+    for key in &config.frontmatter.unmapped {
+        line_config_call(&mut out, RuntimeConfigKey::FrontmatterUnmapped, &[key]);
     }
     out.push_str("}\n\n");
 
@@ -3455,6 +3440,44 @@ mod tests {
         )
         .expect_err("symlink escape rejects");
         assert!(error.to_string().contains("outside the project boundary"));
+    }
+
+    #[test]
+    fn init_roundtrips_intentions_overrides_and_proposal_threshold() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8");
+        std::fs::create_dir(&root).expect("corpus");
+        let body = "config frontmatter { unmapped(\"sources\"). unmapped(\"refs\"). field(\"references\", \"DependsOn\", \"inverse\"). }";
+        std::fs::write(root.join("anneal.dl"), body).expect("config");
+        let loaded = crate::extract::config::load_config(root.as_std_path()).expect("load");
+        let rendered = super::render_unified_config(&loaded);
+        std::fs::write(root.join("anneal.dl"), &rendered).expect("rendered config");
+        let after = crate::extract::config::load_config(root.as_std_path()).expect("reload");
+        assert_eq!(after.frontmatter.unmapped, loaded.frontmatter.unmapped);
+        assert!(!after.frontmatter.fields.contains_key("sources"));
+        assert!(!after.frontmatter.fields.contains_key("refs"));
+        assert_eq!(
+            after.frontmatter.fields["references"].edge_kind,
+            "DependsOn"
+        );
+        assert_eq!(
+            after.frontmatter.fields["references"].direction,
+            crate::extract::config::Direction::Inverse
+        );
+        let forced =
+            render_or_write_init(&root, InitMode::Write { force: true }).expect("force init");
+        assert_eq!(forced.body, rendered);
+        let observed = HashMap::from([
+            ("refs".to_string(), 2),
+            ("related".to_string(), 3),
+            ("tracked_by".to_string(), 3),
+            ("sources".to_string(), 1),
+        ]);
+        let inferred = super::inferred_frontmatter_fields(&observed);
+        assert!(!inferred.contains_key("refs"));
+        assert!(!inferred.contains_key("tracked_by"));
+        assert_eq!(inferred["related"].edge_kind, "Cites");
+        assert_eq!(inferred["sources"].edge_kind, "Cites");
     }
 
     #[test]

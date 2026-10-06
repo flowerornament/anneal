@@ -519,6 +519,20 @@ config state {
 }
 ```
 
+Markdown frontmatter has built-in mappings: `references`, `cites`, `source`
+and `sources` are forward Cites; `depends-on` and `based-on` are forward
+DependsOn; `supersedes` is inverse Supersedes; `superseded-by` is forward
+Supersedes; `discharges` and `verifies` are forward Discharges and Verifies;
+`affects` is inverse DependsOn. A project `field` entry overrides one key.
+Aliases such as `related`, `refs` and `tracked_by` require explicit mappings;
+W007 teaches their conventional meaning without projecting edges.
+
+Use `config frontmatter { unmapped("sources"). }` when a key is metadata on
+purpose. Its values remain queryable, its default edge mapping and W007 are
+suppressed, and `frontmatter_intentionally_unmapped(key)` exposes that choice.
+A key cannot have both explicit `field` and `unmapped` declarations. Unresolved
+values of a mapped key produce E001; use the opt-out to express metadata intent.
+
 Markdown discovery follows configured filesystem mounts rather than Git
 tracking. When a mounted Markdown file is Git-ignored, `status` conditionally
 names the included count and `gitignored_scanned_file(h, file)` lists the

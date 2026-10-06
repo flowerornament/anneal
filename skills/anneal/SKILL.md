@@ -270,6 +270,16 @@ terminal, dependency validity is separate from lifecycle convergence,
 `gitignored_scanned_file` exists because discovery follows configured mounts
 rather than Git tracking — untracked drafts are not treated as ignored.
 
+Markdown defaults map `references`, `cites`, `source` and `sources` to
+forward Cites; `depends-on` and `based-on` to forward DependsOn; `supersedes`
+to inverse Supersedes; `superseded-by` to forward Supersedes; `discharges`
+and `verifies` to their forward kinds; `affects` to inverse DependsOn.
+Explicit `field` entries override one key. W007 aliases require project mappings.
+For metadata intent use `config frontmatter { unmapped("KEY"). }` and inspect
+`frontmatter_intentionally_unmapped(key)`: authored values remain, default
+projection and W007 are suppressed. A field and unmapped declaration for the
+same key conflict. Init preserves both overrides and intentional opt-outs.
+
 `external_root` additively mounts a sibling directory outside the corpus root
 but inside the same Git-backed project boundary. External files use
 project-relative handles such as `formal/models/prism.md`, so references

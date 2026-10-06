@@ -6,6 +6,15 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Markdown frontmatter defaults include forward Cites for `references`, `cites`,
+  `source` and `sources`, and forward DependsOn for `based-on`. This changes
+  graph shape for corpora using these keys without explicit mappings; unresolved
+  mapped values produce E001. Existing per-key mappings retain their meaning.
+  `config frontmatter { unmapped("KEY"). }` retains metadata intentionally,
+  suppressing default projection and W007. Init preserves overrides and opt-outs;
+  its source/sources scaffold uses Cites. W007 also teaches impacts, resolves,
+  addresses and parent without broadening init's alias proposal population.
+
 - CI and Nix package tests require the jj version locked by `flake.lock`.
   Working-copy parser fixtures cover locked jj 0.39.0 and desk jj 0.45.1;
   incompatible debug layouts fail closed with `jj-workspace-state-incompatible`.
