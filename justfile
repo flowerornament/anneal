@@ -36,6 +36,7 @@ check:
     _t fmt     cargo fmt --check
     _t install bash scripts/test-installer.sh
     _t release env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release.py
+    _t diff    env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-differential.py
     _t arch    just check-arch
     _t clippy  cargo clippy --all-targets -- -D warnings
     _t test    cargo test
@@ -127,3 +128,8 @@ release-verify:
 [confirm("This will verify cached Nix outputs, tag, force-update origin/release, and trigger binary publication. Continue?")]
 release-tag version:
     python3 scripts/release.py tag {{quote(version)}}
+
+# Compare two binaries against content-pinned corpus inputs; emits a review receipt
+[group('check')]
+differential *args:
+    python3 scripts/differential.py {{args}}
