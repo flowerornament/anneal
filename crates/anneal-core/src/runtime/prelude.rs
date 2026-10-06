@@ -3069,7 +3069,8 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                         string("dependency_config_gap"),
                         string("incorporated"),
                         int(2),
-                        string("terminal_status_unclassified")
+                        string("terminal_status_unclassified"),
+                        int(2)
                     ])
                 )
             ]
@@ -3250,6 +3251,143 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 ("status", string("complete")),
                 ("variant", string("ordering_status_unpartitioned")),
             ],
+        ));
+    }
+
+    #[test]
+    fn dependency_gap_reach_counts_distinct_direct_active_sources_including_zero() {
+        let corpus = CorpusId::from("dependency-gap-reach");
+        let source = SourceName::from("host");
+        let scope = FixtureScope {
+            corpus: &corpus,
+            source: &source,
+            generation: Generation::initial(),
+        };
+        let mut batch = FactBatch::new(
+            corpus.clone(),
+            source.clone(),
+            FactBatchMode::FullSnapshot,
+            scope.generation,
+        );
+        batch.handles = [
+            ("active-a.md", Some("draft")),
+            ("active-b.md", Some("draft")),
+            ("transitive.md", Some("draft")),
+            ("inactive.md", Some("authoritative")),
+            ("null-status.md", None),
+            ("cites-only.md", Some("draft")),
+            ("target-x-a.md", Some("gap-x")),
+            ("target-x-b.md", Some("gap-x")),
+            ("target-y.md", Some("gap-y")),
+            ("target-zero.md", Some("gap-zero")),
+            ("nonterminal.md", Some("draft")),
+            ("dead.md", Some("archived")),
+            ("valid.md", Some("complete")),
+        ]
+        .into_iter()
+        .map(|(id, status)| handle(&scope, id, "file", status, "", ""))
+        .collect();
+        batch.edges = [
+            ("active-a.md", "target-x-a.md", "DependsOn"),
+            ("active-a.md", "target-x-b.md", "DependsOn"),
+            ("active-b.md", "target-x-a.md", "DependsOn"),
+            ("active-a.md", "target-y.md", "DependsOn"),
+            ("transitive.md", "active-a.md", "DependsOn"),
+            ("inactive.md", "target-x-a.md", "DependsOn"),
+            ("null-status.md", "target-x-a.md", "DependsOn"),
+            ("cites-only.md", "target-x-a.md", "Cites"),
+            ("active-a.md", "nonterminal.md", "DependsOn"),
+            ("active-a.md", "dead.md", "DependsOn"),
+            ("active-a.md", "valid.md", "DependsOn"),
+        ]
+        .into_iter()
+        .map(|(from, to, kind)| edge(&scope, from, to, kind, 1))
+        .collect();
+        let mut repeated = edge(&scope, "active-a.md", "target-x-a.md", "DependsOn", 2);
+        repeated.identity = identity(&scope, "repeated-dependency");
+        batch.edges.push(repeated);
+        let mut store = FactStore::default();
+        store.merge(batch).expect("merge reach fixture");
+        store
+            .replace_configs(
+                &corpus,
+                ["gap-x", "gap-y", "gap-zero", "unused-gap"]
+                    .into_iter()
+                    .map(|status| config(&corpus, "convergence.terminal", status, None))
+                    .collect(),
+            )
+            .expect("configure reach fixture");
+        // Override active with draft sources plus an explicitly active null-status
+        // source, so omitting the stale_reference non-null guard is observable.
+        let outputs = evaluate_standard_prelude_cases(
+            &[
+                (
+                    "members",
+                    "active(h) := *handle{id: h, status: \"draft\"}. active(\"null-status.md\"). ? dependency_config_gap_dependent(status, src).",
+                ),
+                ("gaps", "? dependency_config_gap(status, count, variant)."),
+                (
+                    "S006",
+                    "? diagnostic(\"S006\", severity, subject, file, line, evidence).",
+                ),
+                (
+                    "W001",
+                    "? stale_reference(src, target, file, source_status, target_status).",
+                ),
+            ],
+            Database::from_store(&store),
+        );
+        let members = output(&outputs, "members");
+        assert_eq!(members.rows.len(), 3);
+        for (status, src) in [
+            ("gap-x", "active-a.md"),
+            ("gap-x", "active-b.md"),
+            ("gap-y", "active-a.md"),
+        ] {
+            assert!(has_row(
+                members,
+                &[("status", string(status)), ("src", string(src))]
+            ));
+        }
+        let gaps = output(&outputs, "gaps");
+        let suggestions = output(&outputs, "S006");
+        assert_eq!(gaps.rows.len(), 3);
+        assert_eq!(suggestions.rows.len(), 3);
+        for (status, terminal_count, active_dependents) in
+            [("gap-x", 2, 2), ("gap-y", 1, 1), ("gap-zero", 1, 0)]
+        {
+            assert!(has_row(
+                gaps,
+                &[("status", string(status)), ("count", int(terminal_count))]
+            ));
+            assert!(has_row(
+                suggestions,
+                &[
+                    ("severity", string("suggestion")),
+                    ("subject", string(status)),
+                    ("file", Value::Null),
+                    ("line", Value::Null),
+                    (
+                        "evidence",
+                        list(vec![
+                            string("dependency_config_gap"),
+                            string(status),
+                            int(terminal_count),
+                            string("terminal_status_unclassified"),
+                            int(active_dependents)
+                        ])
+                    ),
+                ]
+            ));
+        }
+        let stale = output(&outputs, "W001");
+        assert_eq!(stale.rows.len(), 1);
+        assert!(has_row(
+            stale,
+            &[
+                ("src", string("active-a.md")),
+                ("target", string("dead.md"))
+            ]
         ));
     }
 

@@ -599,8 +599,22 @@ dependency_config_gap(status, count, "terminal_status_unclassified") :=
   not dependency_dead_status(status),
   not dependency_valid_status(status).
 
-diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant)) :=
-  dependency_config_gap(status, count, variant).
+dependency_config_gap_dependent(status, src) :=
+  dependency_config_gap(status, count, variant),
+  *edge{from: src, to: target, kind: "DependsOn"},
+  *handle{id: src, status: source_status},
+  source_status != null,
+  active(src),
+  *handle{id: target, status: status},
+  terminal(target).
+
+dependency_config_gap_reach(status, active_dependents) :=
+  dependency_config_gap(status, count, variant),
+  active_dependents = Count{ src : dependency_config_gap_dependent(status, src) }.
+
+diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant, active_dependents)) :=
+  dependency_config_gap(status, count, variant),
+  dependency_config_gap_reach(status, active_dependents).
 
 handle_file(h, file) :=
   *handle{id: h, file: file},

@@ -391,6 +391,8 @@ fn lifecycle_config_gap_variant_lines() -> Vec<String> {
 fn dependency_config_gap_lines() -> Vec<String> {
     vec![
         "Variant: terminal_status_unclassified = actual terminal handles use a status whose dependency validity is unknown.".to_string(),
+        "S006 evidence: (\"dependency_config_gap\", status, count, \"terminal_status_unclassified\", active_dependents). Count is distinct terminal handles with this status; active_dependents is distinct active source handles with a non-null status and a direct DependsOn edge to those targets, including zero. Repeated edges and multiple targets with the same status count a source once; transitive dependents and Cites do not count.".to_string(),
+        "Drill down to distinct source handles with `? dependency_config_gap(status, count, variant), *edge{from: src, to: target, kind: \"DependsOn\"}, *handle{id: src, status: source_status}, source_status != null, active(src), *handle{id: target, status: status}, terminal(target).`.".to_string(),
         "Classify a dead target with `config dependency { dead([\"custom-retired\"]). }`, or a still-valid target with `config dependency { valid([\"custom-current\"]). }`.".to_string(),
         "W001 remains silent until the status is classified dead; the aggregate suggestion preserves the unknown instead of guessing.".to_string(),
     ]

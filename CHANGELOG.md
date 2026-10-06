@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- S006 evidence includes the number of distinct active handles that directly
+  depend on targets with an unclassified terminal status, including zero.
+  Suggestion severity and the terminal-handle count retain their meanings.
+
 - Code source discovery in jj workspaces uses the pinned tracked tree and repository-bound version tags; ancestor Git indexes and tags cannot supply code facts. Version-tag availability is reported independently.
 
 - The local corpus gate uses the debug executable built by the test step,

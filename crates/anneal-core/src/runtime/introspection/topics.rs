@@ -537,7 +537,7 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
         severity: "suggestion",
         summary: "Dependency config gap: a terminal status is not classified as dead or valid for dependency checks.",
         rule: "dependency_config_gap",
-        evidence: r#"("dependency_config_gap", status, count, "terminal_status_unclassified")"#,
+        evidence: r#"("dependency_config_gap", status, count, "terminal_status_unclassified", active_dependents)"#,
         common_joins: &[
             "`diagnostic{code: \"S006\", subject: status}, dependency_config_gap(status, count, variant)` to inspect each unclassified terminal status",
             "`dependency_status_classification(status, classification, origin)` to inspect effective builtin and project classifications",

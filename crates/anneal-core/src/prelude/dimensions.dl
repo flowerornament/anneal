@@ -131,6 +131,8 @@ axis_of("currency_successor", "currency").
 axis_of("currency_superseded", "currency").
 axis_of("diagnostic", "diagnostic").
 axis_of("dependency_config_gap", "diagnostic").
+axis_of("dependency_config_gap_dependent", "diagnostic").
+axis_of("dependency_config_gap_reach", "diagnostic").
 axis_of("dependency_dead_status", "dependency-validity").
 axis_of("dependency_status_classification", "dependency-validity").
 axis_of("dependency_valid_status", "dependency-validity").

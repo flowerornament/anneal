@@ -2172,9 +2172,18 @@ builtins remain. A status declared in both sets is a project-load error.
 `dependency_status_classification(status, classification, origin)` exposes the
 effective set and whether each row is builtin or project. Unknown terminal
 statuses do not earn W001 warning authority; S006 instead emits one aggregate
-`dependency_config_gap` suggestion per actually used terminal status. Exact
-reference-like markdown frontmatter aliases with no effective edge mapping
-produce one W007 `frontmatter_mapping_gap` warning per key, counted by distinct
+`dependency_config_gap` suggestion per actually used terminal status. Its evidence
+is `("dependency_config_gap", status, count, "terminal_status_unclassified",
+active_dependents)`: `count` is distinct terminal handles with that status, and
+`active_dependents` counts distinct active source handles with a non-null status
+and a direct DependsOn edge to those targets. Repeated edges and multiple targets
+of the same status count a source once; Cites and transitive dependents do not
+count. Zero reach remains visible, and unused configured vocabulary does not
+produce S006 rows. Reach describes the instance without changing suggestion
+severity or granting W001 authority. The public
+`dependency_config_gap(status, count, variant)` signature retains its terminal
+handle count. Exact reference-like markdown frontmatter aliases with no effective
+edge mapping produce one W007 `frontmatter_mapping_gap` warning per key, counted by distinct
 file handle. The warning carries the conventional field, edge kind, and
 direction and teaches a `*meta` drill-down; its finite alias vocabulary remains
 active when no `config frontmatter` block exists. Markdown defaults map

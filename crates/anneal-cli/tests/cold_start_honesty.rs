@@ -1171,3 +1171,26 @@ fn real_jj_desk_uses_own_pin_mount_origins_and_ignore_rules_with_null_provenance
         }
     }
 }
+
+#[test]
+fn dependency_gap_cards_teach_distinct_direct_reach_and_zero() {
+    for name in ["S006", "dependency_config_gap"] {
+        let result = run(&["describe", name]);
+        assert_success(&result);
+        let card = text(&result.stdout);
+        for teaching in [
+            "active_dependents",
+            "distinct active source handles",
+            "non-null status",
+            "direct DependsOn",
+            "including zero",
+            "transitive dependents",
+            "Cites",
+        ] {
+            assert!(
+                card.contains(teaching),
+                "{name} must teach {teaching}: {card}"
+            );
+        }
+    }
+}
