@@ -1198,8 +1198,9 @@ fn expanded_query_terms(original_terms: &[String]) -> Vec<QueryTerm> {
                 insert_term_weight(&mut weights, "oq", 2.0);
             }
         }
+        let architecture = canonical_search_token("architecture");
         for window in original_terms.windows(3) {
-            if window[0] == "architecture" && window[1] == "decision" && window[2] == "record" {
+            if window[0] == architecture && window[1] == "decision" && window[2] == "record" {
                 insert_term_weight(&mut weights, "adr", 3.0);
             } else if window[0] == "request" && window[1] == "for" && window[2] == "comment" {
                 insert_term_weight(&mut weights, "rfc", 3.0);
@@ -2019,6 +2020,72 @@ mod tests {
                 .parent_file,
             None
         );
+    }
+
+    #[test]
+    fn abbreviation_expansion_reaches_planted_targets_in_both_directions() {
+        for (abbreviation, phrase) in [
+            ("oq", "open question"),
+            ("adr", "architecture decision record"),
+            ("rfc", "request for comment"),
+        ] {
+            for (query, summary) in [(abbreviation, phrase), (phrase, abbreviation)] {
+                let mut index = SearchIndex::default();
+                insert_handle(&mut index, "target.md", "target.md", summary);
+                assert_eq!(
+                    ranked_test_handles(&index, query),
+                    ["target.md"],
+                    "enabled expansion reaches planted target for {query}"
+                );
+                let removed = benchmark_ablation::with(
+                    benchmark_ablation::Ablation::AbbreviationExpansion,
+                    || ranked_test_handles(&index, query),
+                );
+                assert!(removed.is_empty(), "disabled expansion misses {query}");
+            }
+        }
+    }
+
+    #[test]
+    fn reverse_adr_expansion_follows_the_current_tokenization() {
+        benchmark_ablation::with(benchmark_ablation::Ablation::Stemming, || {
+            let mut index = SearchIndex::default();
+            insert_handle(&mut index, "target.md", "target.md", "adr");
+            assert_eq!(
+                ranked_test_handles(&index, "architecture decision record"),
+                ["target.md"]
+            );
+        });
+    }
+
+    #[test]
+    fn specificity_distinguishes_rare_terms_from_frequent_terms() {
+        let mut index = SearchIndex::default();
+        insert_handle(&mut index, "aa-common.md", "aa-common.md", "shared");
+        insert_handle(&mut index, "zz-rare.md", "zz-rare.md", "raremark");
+        for ordinal in 0..20 {
+            let handle = format!("filler-{ordinal}.md");
+            insert_handle(&mut index, &handle, &handle, "shared");
+        }
+        let baseline = ranked_test_handles(&index, "shared raremark");
+        let removed = benchmark_ablation::with(benchmark_ablation::Ablation::Specificity, || {
+            ranked_test_handles(&index, "shared raremark")
+        });
+        assert_eq!(baseline.first().map(String::as_str), Some("zz-rare.md"));
+        assert_ne!(removed.first().map(String::as_str), Some("zz-rare.md"));
+    }
+
+    fn ranked_test_handles(index: &SearchIndex, query: &str) -> Vec<String> {
+        let query = SearchQuery::parse(query).expect("fixture query parses");
+        let hits = index.search_hits(&query, None, SearchSpanScope::Any, None, None);
+        rank_search_hits(
+            hits,
+            &RankingContext::new(query.original(), DEFAULT_LOW_CONFIDENCE_THRESHOLD),
+            &DefaultRanker,
+        )
+        .into_iter()
+        .map(|hit| hit.hit().handle().to_string())
+        .collect()
     }
 
     fn insert_handle(index: &mut SearchIndex, handle: &str, file: &str, summary: &str) {

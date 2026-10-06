@@ -18,6 +18,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Search expands `architecture decision record` to `adr` using the same token
+  canonicalization as the query, preserving reverse abbreviation matches.
+
 - Corpus-relative code targets query Git history with their selected base prefix,
   matching jj history membership without changing filesystem lookup policy.
 
