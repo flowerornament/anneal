@@ -6,6 +6,11 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Query-limited evaluation follows rules that replace soft lifecycle defaults,
+  including their transitive dependencies. Project, inline and saved-verb queries
+  no longer silently omit those rules from counts, negation or diagnostics;
+  extraction evidence demand follows the same effective definitions.
+
 - S006 evidence includes the number of distinct active handles that directly
   depend on targets with an unclassified terminal status, including zero.
   Suggestion severity and the terminal-handle count retain their meanings.

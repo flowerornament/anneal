@@ -762,7 +762,11 @@ prelude, project, include, or inline layer defines the same
 unqualified predicate, CR-D21 shadowing applies and the rule
 definition replaces the default. Module-qualified imports do not
 shadow unqualified soft defaults unless a project explicitly re-exports
-them under the unqualified name. Rationale: code, host, issue, and
+them under the unqualified name. Query-limited evaluation and extraction
+evidence demand follow the effective replacement rules and their transitive
+dependencies; recognizing a primitive name does not exclude a rule-defined
+replacement from the dependency closure. Unshadowed defaults remain leaves,
+and unrelated global rules remain unevaluated. Rationale: code, host, issue, and
 markdown corpora need a common lifecycle vocabulary without forcing
 markdown's status model into every adapter.
 

@@ -7175,6 +7175,108 @@ release_blocker(code) := issue(code, "error").
     }
 
     #[test]
+    fn query_scoped_fixpoint_honors_all_soft_lifecycle_rule_replacements() {
+        let mut cases = Vec::new();
+        for name in [
+            "terminal",
+            "active",
+            "settled",
+            "pipeline_position",
+            "pipeline_position_for",
+            "obligation",
+            "discharged",
+            "undischarged",
+        ] {
+            let two_args = name.starts_with("pipeline_position");
+            let head = if two_args { "h, 77" } else { "h" };
+            let args = if two_args { "h, n" } else { "h" };
+            let expected = if two_args {
+                row([("h", s("custom")), ("n", n(77))])
+            } else {
+                row([("h", s("custom"))])
+            };
+            cases.push((
+                name.to_string(),
+                format!("seed(\"custom\"). {name}({head}) := seed(h). ? {name}({args})."),
+                vec![expected],
+            ));
+        }
+        for (name, source, expected) in [
+            (
+                "mixed",
+                "seed(\"rule\"). active(\"fact\"). active(h) := seed(h). ? active(h).",
+                vec![row([("h", s("fact"))]), row([("h", s("rule"))])],
+            ),
+            (
+                "indirect",
+                "seed(\"custom\"). active(h) := seed(h). selected(h) := active(h). ? selected(h).",
+                vec![row([("h", s("custom"))])],
+            ),
+            (
+                "count",
+                "seed(\"custom\"). active(h) := seed(h). ? n = Count{ h : active(h) }.",
+                vec![row([("n", n(1))])],
+            ),
+            (
+                "negation",
+                "seed(\"custom\"). active(h) := seed(h). selected(h) := seed(h), not active(h). ? selected(h).",
+                vec![],
+            ),
+            (
+                "local",
+                "seed(\"custom\"). active(h) := seed(h). ? where selected(h) := active(h). selected(h).",
+                vec![row([("h", s("custom"))])],
+            ),
+            (
+                "chain",
+                "seed(\"custom\"). active(h) := terminal(h). terminal(h) := selected(h). selected(h) := seed(h). ? active(h).",
+                vec![row([("h", s("custom"))])],
+            ),
+            (
+                "fact-only",
+                "active(\"custom\"). ? active(h).",
+                vec![row([("h", s("custom"))])],
+            ),
+            (
+                "ordinary",
+                "seed(\"custom\"). selected(h) := seed(h). ? selected(h).",
+                vec![row([("h", s("custom"))])],
+            ),
+        ] {
+            cases.push((name.to_string(), source.to_string(), expected));
+        }
+        let mut mismatches = Vec::new();
+        for (name, source, expected) in cases {
+            let analyzed =
+                analyze(parse_program("soft-replacement", &source).expect("case parses"))
+                    .expect("case analyzes");
+            let query = analyzed.queries().next().cloned().expect("case query");
+            let mut full = Evaluator::new(analyzed.clone(), Database::default());
+            full.run_fixpoint().expect("full fixpoint");
+            let full = full.eval_query(&query).expect("full query");
+            assert_query_rows(
+                &full
+                    .rows
+                    .iter()
+                    .map(|row| row.fields.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+            let mut scoped = Evaluator::new(analyzed, Database::default());
+            scoped
+                .run_fixpoint_for_query(&query)
+                .expect("scoped fixpoint");
+            if scoped.eval_query(&query).expect("scoped query").rows != full.rows {
+                mismatches.push(name);
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "scoped/full mismatches: {mismatches:?}"
+        );
+    }
+
+    #[test]
     fn query_scoped_fixpoint_skips_unneeded_global_rules() {
         let program = parse_program(
             "fixture",

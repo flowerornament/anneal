@@ -178,16 +178,22 @@ impl AnalyzedQuery {
 ///
 /// The dependency closure is fact-independent, so hosts can use it before
 /// source extraction to provision evidence required by the active program.
+/// Rule-defined soft lifecycle replacements participate like other global rules;
+/// only unresolved primitive defaults are leaves of this closure.
 pub fn query_dependencies(program: &Program, query: &Query) -> BTreeSet<PredicateRef> {
     let local_predicates = query
         .local_rules
         .iter()
         .map(|rule| rule.head.predicate.clone())
         .collect::<BTreeSet<_>>();
+    let global_rules = program
+        .rules()
+        .map(|rule| rule.head.predicate.clone())
+        .collect::<BTreeSet<_>>();
     let mut needed = BTreeSet::new();
-    collect_body_global_predicates(&query.body, &local_predicates, &mut needed);
+    collect_body_global_predicates(&query.body, &local_predicates, &global_rules, &mut needed);
     for rule in &query.local_rules {
-        collect_body_global_predicates(&rule.body, &local_predicates, &mut needed);
+        collect_body_global_predicates(&rule.body, &local_predicates, &global_rules, &mut needed);
     }
 
     let mut changed = true;
@@ -198,7 +204,12 @@ pub fn query_dependencies(program: &Program, query: &Query) -> BTreeSet<Predicat
                 continue;
             }
             let before = needed.len();
-            collect_body_global_predicates(&rule.body, &local_predicates, &mut needed);
+            collect_body_global_predicates(
+                &rule.body,
+                &local_predicates,
+                &global_rules,
+                &mut needed,
+            );
             changed |= needed.len() != before;
         }
     }
@@ -208,32 +219,34 @@ pub fn query_dependencies(program: &Program, query: &Query) -> BTreeSet<Predicat
 fn collect_body_global_predicates(
     body: &Body,
     local_predicates: &BTreeSet<PredicateRef>,
+    global_rules: &BTreeSet<PredicateRef>,
     out: &mut BTreeSet<PredicateRef>,
 ) {
     for atom in &body.atoms {
-        collect_atom_global_predicates(atom, local_predicates, out);
+        collect_atom_global_predicates(atom, local_predicates, global_rules, out);
     }
 }
 
 fn collect_atom_global_predicates(
     atom: &Atom,
     local_predicates: &BTreeSet<PredicateRef>,
+    global_rules: &BTreeSet<PredicateRef>,
     out: &mut BTreeSet<PredicateRef>,
 ) {
     match atom {
         Atom::Derived(derived) => {
-            collect_global_predicate(&derived.predicate, local_predicates, out);
+            collect_global_predicate(&derived.predicate, local_predicates, global_rules, out);
         }
         Atom::Aggregation(aggregate) => {
-            collect_body_global_predicates(&aggregate.body, local_predicates, out);
+            collect_body_global_predicates(&aggregate.body, local_predicates, global_rules, out);
         }
         Atom::Negation(negation) => {
             if let NegatedAtom::Derived(derived) = &negation.atom {
-                collect_global_predicate(&derived.predicate, local_predicates, out);
+                collect_global_predicate(&derived.predicate, local_predicates, global_rules, out);
             }
         }
         Atom::TimeBlock(time_block) => {
-            collect_body_global_predicates(&time_block.body, local_predicates, out);
+            collect_body_global_predicates(&time_block.body, local_predicates, global_rules, out);
         }
         Atom::Stored(_) | Atom::Comparison(_) => {}
     }
@@ -242,10 +255,12 @@ fn collect_atom_global_predicates(
 fn collect_global_predicate(
     predicate: &PredicateRef,
     local_predicates: &BTreeSet<PredicateRef>,
+    global_rules: &BTreeSet<PredicateRef>,
     out: &mut BTreeSet<PredicateRef>,
 ) {
-    if PrimitivePredicate::from_predicate(predicate).is_some()
-        || local_predicates.contains(predicate)
+    if local_predicates.contains(predicate)
+        || (PrimitivePredicate::from_predicate(predicate).is_some()
+            && !global_rules.contains(predicate))
     {
         return;
     }
@@ -2772,6 +2787,55 @@ mod tests {
             .map(PredicateRef::display_name)
             .collect::<Vec<_>>();
         assert!(names.iter().any(|name| name == "total"));
+    }
+
+    #[test]
+    fn query_dependency_closure_resolves_soft_replacements_and_preserves_scope() {
+        for (source, expected) in [
+            (
+                r#"seed("x"). leaf(h) := seed(h). active(h) := leaf(h). ? active(h)."#,
+                vec!["active", "leaf", "seed"],
+            ),
+            (
+                r#"seed("x"). leaf(h) := seed(h). active(h) := leaf(h). ? *handle{id: h}, not active(h)."#,
+                vec!["active", "leaf", "seed"],
+            ),
+            (
+                r#"seed("x"). leaf(h) := seed(h). active(h) := leaf(h). ? n = Count{ h : active(h) }."#,
+                vec!["active", "leaf", "seed"],
+            ),
+            (
+                r#"seed("x"). leaf(h) := seed(h). active(h) := leaf(h). ? at("2026-01-01") { active(h) }."#,
+                vec!["active", "leaf", "seed"],
+            ),
+            (
+                r#"seed("x"). active(h) := seed(h). ? where active(h) := *handle{id: h}. active(h)."#,
+                vec![],
+            ),
+            (r#"seed("x"). m.active(h) := seed(h). ? active(h)."#, vec![]),
+            (
+                r#"seed("x"). m.active(h) := seed(h). ? m.active(h)."#,
+                vec!["m.active", "seed"],
+            ),
+            (
+                r#"seed("x"). m.active(h) := seed(h). active(h) := m.active(h). ? active(h)."#,
+                vec!["active", "m.active", "seed"],
+            ),
+            (
+                r#"seed("x"). active(h) := seed(h). selected(h) := *handle{id: h}. ? selected(h)."#,
+                vec!["selected"],
+            ),
+            (r#"active("x"). ? active(h)."#, vec![]),
+        ] {
+            let program = parse_program("dependency-scope", source).expect("case parses");
+            let query = program.queries().next().expect("case query");
+            let mut actual = query_dependencies(&program, query)
+                .iter()
+                .map(PredicateRef::display_name)
+                .collect::<Vec<_>>();
+            actual.sort();
+            assert_eq!(actual, expected, "{source}");
+        }
     }
 
     #[test]

@@ -1194,3 +1194,104 @@ fn dependency_gap_cards_teach_distinct_direct_reach_and_zero() {
         }
     }
 }
+
+#[test]
+fn soft_lifecycle_replacements_reach_cli_queries_verbs_and_diagnostics() {
+    let dir = tempdir();
+    write_file(
+        dir.path(),
+        "a.md",
+        "---\nstatus: draft\ndepends-on: c.md\n---\n# A\n",
+    );
+    write_file(dir.path(), "b.md", "# B\n");
+    write_file(dir.path(), "c.md", "---\nstatus: archived\n---\n# C\n");
+    let config = r#"config convergence { active(["draft"]). terminal(["archived"]). }"#;
+    let project = format!(
+        r#"{config}
+        active(h) := eligible(h).
+        eligible(h) := *handle{{id: h}}, h != "c.md".
+        selected(h) := active(h).
+        @verb(name: "census_active", query: "? active(h).", doc: "Active override",
+          output_schema: "{{\"h\":\"String\"}}", args: [], capabilities: ["read"]).
+    "#
+    );
+    write_file(dir.path(), "anneal.dl", &project);
+    let selected = vec![
+        serde_json::json!({"h": "a.md"}),
+        serde_json::json!({"h": "b.md"}),
+    ];
+    for (query, expected) in [
+        ("? active(h).", selected.clone()),
+        ("? selected(h).", selected.clone()),
+        (
+            "? n = Count{ h : active(h) }.",
+            vec![serde_json::json!({"n": 2})],
+        ),
+        (
+            "? *handle{id: h}, not active(h).",
+            vec![serde_json::json!({"h": "c.md"})],
+        ),
+        (
+            "? where selected(h) := active(h). selected(h).",
+            selected.clone(),
+        ),
+    ] {
+        assert_eq!(
+            json_rows(&run_in(dir.path(), &["--json", "-e", query])),
+            expected,
+            "{query}"
+        );
+    }
+    assert_eq!(
+        json_rows(&run_in(dir.path(), &["--json", "census_active"])),
+        selected
+    );
+    let warnings = json_rows(&run_in(
+        dir.path(),
+        &[
+            "--json",
+            "-e",
+            r#"? diagnostic("W001", severity, subject, file, line, evidence)."#,
+        ],
+    ));
+    assert_eq!(
+        warnings,
+        vec![
+            serde_json::json!({"severity":"warning", "subject":"a.md", "file":"a.md", "line":null, "evidence":["stale_ref","draft","archived"]})
+        ]
+    );
+
+    write_file(dir.path(), "anneal.dl", config);
+    assert_eq!(
+        json_rows(&run_in(dir.path(), &["--json", "-e", "? active(h)."])),
+        selected
+    );
+    assert_eq!(
+        json_rows(&run_in(
+            dir.path(),
+            &[
+                "--json",
+                "-e",
+                r#"active(h) := *handle{id: h}, h != "c.md". ? active(h)."#
+            ]
+        )),
+        selected
+    );
+    write_file(
+        dir.path(),
+        "anneal.dl",
+        &format!("{config} active(\"b.md\")."),
+    );
+    assert_eq!(
+        json_rows(&run_in(dir.path(), &["--json", "-e", "? active(h)."])),
+        vec![serde_json::json!({"h":"b.md"})]
+    );
+    write_file(
+        dir.path(),
+        "anneal.dl",
+        &format!("{config} upstream(h,t) := *edge{{from:h,to:t}}."),
+    );
+    let sealed = run_in(dir.path(), &["--json", "-e", "? upstream(h,t)."]);
+    assert!(!sealed.status.success());
+    assert!(text(&sealed.stderr).contains("cannot be defined by corpus rules"));
+}

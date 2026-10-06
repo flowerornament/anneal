@@ -240,3 +240,63 @@ fn project_verb_derives_drift_evidence_demand_from_its_query() {
 
     assert!(demands.code_drift);
 }
+
+#[test]
+fn soft_lifecycle_replacements_provision_transitive_evidence_for_eval_and_verbs() {
+    let mut program = standard_prelude_program().expect("prelude parses");
+    let project = anneal_core::runtime::parse_program(
+        "project",
+        r#"
+        active(h) := history_source(h).
+        history_source(h) := spec_code_drift(h, path, file, line, status).
+        terminal(h) := drift_source(h).
+        drift_source(h) := referent_disposition(h, disposition).
+        @verb(name: "soft-history", query: "? active(h).", doc: "History demand",
+          output_schema: "{\"h\":\"String\"}", args: [], capabilities: ["read"]).
+        @verb(name: "soft-drift", query: "? terminal(h).", doc: "Drift demand",
+          output_schema: "{\"h\":\"String\"}", args: [], capabilities: ["read"]).
+    "#,
+    )
+    .expect("project parses");
+    let registry = VerbRegistry::from_layers(&[
+        (VerbLayer::Prelude, &program),
+        (VerbLayer::Project, &project),
+    ])
+    .expect("registry builds");
+    program.statements.extend(project.statements);
+    for command in [
+        RuntimeCommand::Eval {
+            query: "? active(h).".to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        },
+        RuntimeCommand::Eval {
+            query: "active(h) := history_source(h). ? active(h).".to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        },
+        RuntimeCommand::Verb {
+            name: "soft-history".to_string(),
+            args: vec![],
+        },
+    ] {
+        assert!(
+            command
+                .evidence_demands(&program, &registry)
+                .code_target_history
+        );
+    }
+    for command in [
+        RuntimeCommand::Eval {
+            query: "? terminal(h).".to_string(),
+            explain: ExplainOptions::disabled(),
+            limit: None,
+        },
+        RuntimeCommand::Verb {
+            name: "soft-drift".to_string(),
+            args: vec![],
+        },
+    ] {
+        assert!(command.evidence_demands(&program, &registry).code_drift);
+    }
+}
