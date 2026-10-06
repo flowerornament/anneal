@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- The local corpus gate uses the debug executable built by the test step,
+  retaining its own timing. Missing executable, missing corpus or empty corpus
+  fails the selected check instead of rebuilding or accepting an empty input.
+
 - Markdown frontmatter defaults include forward Cites for `references`, `cites`,
   `source` and `sources`, and forward DependsOn for `based-on`. This changes
   graph shape for corpora using these keys without explicit mappings; unresolved

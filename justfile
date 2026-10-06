@@ -10,7 +10,7 @@ default:
 land *args:
     scripts/jj-land.sh {{args}}
 
-# All checks: fmt + clippy + test (with timing)
+# All checks: fmt + clippy + test + corpus (with timing)
 [group('check')]
 check:
     #!/usr/bin/env bash
@@ -44,7 +44,7 @@ check:
     # ship it from. Errors only — warnings do not block a commit. Previously
     # this ran in release-verify alone, so a broken spec reference surfaced
     # days later at release time rather than at the commit that introduced it.
-    _t corpus  cargo run -q -- check --root .design
+    _t corpus  just check-corpus
     # Architecture fitness functions (offline, fast): unused deps + crate-DAG /
     # license / source bans. Guarded so a tool-less env degrades gracefully —
     # run `just audit` for the full check incl. security advisories.
@@ -59,6 +59,23 @@ check:
     while read -r _ ms; do total=$((total + ms)); done < /tmp/anneal-check-times.$$
     printf "  %-12s %d.%02ds\n" "total:" "$((total / 1000))" "$(( (total % 1000) / 10 ))" >&2
     rm -f /tmp/anneal-check-times.$$
+
+# Check the authored corpus using the debug executable built by the test step.
+# Missing preconditions are failures, including an empty corpus directory.
+[group('check')]
+check-corpus:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    binary="${CARGO_TARGET_DIR:-target}/debug/anneal"
+    if [[ ! -x "$binary" ]]; then
+        echo "corpus: required debug executable missing: $binary; run cargo test" >&2
+        exit 1
+    fi
+    if [[ ! -d .design ]] || [[ -z "$(find .design -type f -name '*.md' -print -quit)" ]]; then
+        echo "corpus: required Markdown corpus missing or empty: .design" >&2
+        exit 1
+    fi
+    "$binary" --root .design check
 
 # Architecture fitness functions: unused deps + crate-DAG/license/source/advisory bans
 [group('check')]
