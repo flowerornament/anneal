@@ -1252,3 +1252,181 @@ fn explicit_markdown_links_only_keep_code_destinations() {
         ]
     );
 }
+
+struct RepositoryFixture {
+    _temp: tempfile::TempDir,
+    anchor: Utf8PathBuf,
+    desk: Utf8PathBuf,
+}
+
+fn repository_command(root: &Utf8Path, program: &str, args: &[&str]) -> String {
+    let output = Command::new(program)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.test")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.test")
+        .args(args)
+        .output()
+        .expect("repository fixture command");
+    assert!(
+        output.status.success(),
+        "{program} {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("UTF-8 fixture output")
+        .trim()
+        .to_owned()
+}
+
+fn repository_fixture() -> Option<RepositoryFixture> {
+    if !Command::new("jj")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        assert!(
+            std::env::var_os("ANNEAL_REQUIRE_JJ").is_none(),
+            "jj source fixture requires jj (ANNEAL_REQUIRE_JJ)"
+        );
+        eprintln!("jj source fixture skipped: jj executable unavailable");
+        return None;
+    }
+    let temp = tempdir().expect("tempdir");
+    let outer = Utf8PathBuf::from_path_buf(temp.path().join("outer")).expect("UTF-8");
+    let anchor = outer.join("anchor");
+    let desk = outer.join("desk");
+    fs::create_dir_all(&anchor).expect("anchor");
+    repository_command(&outer, "git", &["init", "--quiet"]);
+    repository_command(&anchor, "git", &["init", "--quiet"]);
+    for path in ["alpha.rs", "beta.rs"] {
+        fs::write(anchor.join(path), "pub fn fixture() {}\n").expect("source");
+    }
+    repository_command(&anchor, "git", &["add", "."]);
+    repository_command(&anchor, "git", &["commit", "--quiet", "-m", "project"]);
+    repository_command(&anchor, "git", &["tag", "parent-tag"]);
+    repository_command(&anchor, "jj", &["git", "init", "--colocate"]);
+    repository_command(&anchor, "jj", &["workspace", "add", desk.as_str()]);
+    fs::write(desk.join("home-only.rs"), "pub fn unrelated() {}\n").expect("unrelated file");
+    repository_command(
+        &outer,
+        "git",
+        &["add", "desk/alpha.rs", "desk/home-only.rs"],
+    );
+    repository_command(&outer, "git", &["commit", "--quiet", "-m", "ancestor"]);
+    repository_command(&outer, "git", &["tag", "outer-tag"]);
+    Some(RepositoryFixture {
+        _temp: temp,
+        anchor,
+        desk,
+    })
+}
+
+#[test]
+fn jj_source_uses_pinned_tree_and_tags_instead_of_ancestor_git() {
+    let Some(fixture) = repository_fixture() else {
+        return;
+    };
+    let before = repository_command(
+        &fixture.desk,
+        "jj",
+        &["--ignore-working-copy", "debug", "working-copy"],
+    );
+    let repository = anneal_core::RepositoryContext::discover(&fixture.desk);
+    let pin = repository.jj_pin().expect("pin");
+    repository_command(&fixture.anchor, "git", &["tag", "pin-tag", pin]);
+    let repository = anneal_core::RepositoryContext::discover(&fixture.desk);
+    let config =
+        ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+            .expect("config");
+    let batch = CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository)
+        .expect("code extraction");
+    let files = batch
+        .handles
+        .iter()
+        .filter(|h| h.kind == "file")
+        .map(|h| h.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(files, BTreeSet::from(["alpha.rs", "beta.rs"]));
+    let versions = batch
+        .handles
+        .iter()
+        .filter(|h| h.kind == "version")
+        .map(|h| h.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(versions, ["code-version:pin-tag"]);
+    assert!(repository.finish_jj_generation());
+    assert_eq!(
+        before,
+        repository_command(
+            &fixture.desk,
+            "jj",
+            &["--ignore-working-copy", "debug", "working-copy"]
+        )
+    );
+}
+
+#[test]
+fn jj_tag_failure_leaves_tracked_file_discovery_available() {
+    let Some(fixture) = repository_fixture() else {
+        return;
+    };
+    let repository = anneal_core::RepositoryContext::discover(&fixture.desk);
+    repository.fail_jj_operation(
+        anneal_core::RepositoryOperation::VersionTags,
+        "fixture-tag-probe-failed",
+    );
+    let config =
+        ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+            .expect("config");
+    let batch = CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository)
+        .expect("files remain available");
+    assert_eq!(batch.handles.iter().filter(|h| h.kind == "file").count(), 2);
+    assert!(!batch.handles.iter().any(|h| h.kind == "version"));
+    assert!(!repository.operation_available(anneal_core::RepositoryOperation::VersionTags));
+    assert_eq!(
+        repository.operation_reason(anneal_core::RepositoryOperation::VersionTags),
+        "fixture-tag-probe-failed"
+    );
+    assert!(repository.operation_available(anneal_core::RepositoryOperation::ChangeHistory));
+    assert!(repository.operation_available(anneal_core::RepositoryOperation::TargetHistory));
+    assert!(repository.operation_available(anneal_core::RepositoryOperation::IgnoreIndex));
+    assert!(repository.finish_jj_generation());
+    repository.fail_jj_operation(
+        anneal_core::RepositoryOperation::IgnoreIndex,
+        "fixture-tracked-probe-failed",
+    );
+    assert!(
+        CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository)
+            .expect_err("unavailable VCS must not walk files")
+            .to_string()
+            .contains("fixture-tracked-probe-failed")
+    );
+}
+
+#[test]
+fn jj_code_batch_cannot_be_merged_after_its_pin_moves() {
+    let Some(fixture) = repository_fixture() else {
+        return;
+    };
+    let repository = anneal_core::RepositoryContext::discover(&fixture.desk);
+    let config =
+        ConfigFacts::try_from_entries(vec![ConfigEntry::scalar(config_key::SOURCE_ROOT, ".")])
+            .expect("config");
+    let batch = CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository)
+        .expect("initial batch");
+    assert!(!batch.handles.is_empty());
+    repository_command(&fixture.desk, "jj", &["new"]);
+    assert!(
+        !repository.finish_jj_generation(),
+        "driver must reject old-pin facts"
+    );
+    assert!(!repository.operation_available(anneal_core::RepositoryOperation::VersionTags));
+    assert!(
+        CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository).is_err()
+    );
+}

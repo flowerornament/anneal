@@ -6,6 +6,8 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Code source discovery in jj workspaces uses the pinned tracked tree and repository-bound version tags; ancestor Git indexes and tags cannot supply code facts. Version-tag availability is reported independently.
+
 - The local corpus gate uses the debug executable built by the test step,
   retaining its own timing. Missing executable, missing corpus or empty corpus
   fails the selected check instead of rebuilding or accepting an empty input.

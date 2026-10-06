@@ -15,7 +15,8 @@ pub(super) struct JjEvidence {
     pub(super) times: BTreeMap<String, String>,
     pub(super) history: BTreeSet<String>,
     pub(super) tracked: BTreeSet<String>,
-    failures: [OnceLock<&'static str>; 4],
+    pub(super) tags: Vec<String>,
+    failures: [OnceLock<&'static str>; 5],
 }
 
 fn jj_command(root: &Utf8Path) -> Command {
@@ -153,6 +154,7 @@ impl JjEvidence {
             times: BTreeMap::new(),
             history: BTreeSet::new(),
             tracked: BTreeSet::new(),
+            tags: Vec::new(),
             failures: std::array::from_fn(|_| OnceLock::new()),
         };
         evidence.fail(
@@ -243,6 +245,14 @@ impl JjEvidence {
                 "jj-tracked-tree-probe-failed",
             );
         }
+        if let Some(raw) = evidence.output(&["tag", "--points-at", &pin, "--sort=refname"]) {
+            evidence.tags = super::parse_tags(&raw);
+        } else {
+            evidence.fail(
+                RepositoryOperation::VersionTags,
+                "jj-version-tags-probe-failed",
+            );
+        }
         evidence
     }
 
@@ -264,6 +274,7 @@ impl JjEvidence {
                 RepositoryOperation::TargetHistory => "jj-pinned-target-history",
                 RepositoryOperation::IgnoreIndex => "jj-workspace-ignore-and-tree",
                 RepositoryOperation::AssertionBlame => "jj-assertion-blame-not-defined",
+                RepositoryOperation::VersionTags => "jj-pinned-version-tags",
             })
     }
     pub(super) fn fail(&self, operation: RepositoryOperation, reason: &'static str) {
@@ -274,6 +285,7 @@ impl JjEvidence {
             RepositoryOperation::ChangeHistory,
             RepositoryOperation::TargetHistory,
             RepositoryOperation::IgnoreIndex,
+            RepositoryOperation::VersionTags,
         ] {
             self.fail(operation, reason);
         }
@@ -285,6 +297,7 @@ impl JjEvidence {
                 self.available(RepositoryOperation::TargetHistory)
                     || self.available(RepositoryOperation::ChangeHistory)
                     || self.available(RepositoryOperation::IgnoreIndex)
+                    || self.available(RepositoryOperation::VersionTags)
             }
             Ok(_) => {
                 self.fail_dependent("jj-pin-moved-during-extraction");
@@ -544,6 +557,7 @@ mod tests {
             RepositoryOperation::ChangeHistory,
             RepositoryOperation::TargetHistory,
             RepositoryOperation::IgnoreIndex,
+            RepositoryOperation::VersionTags,
         ] {
             assert!(!clone.operation_available(operation));
         }

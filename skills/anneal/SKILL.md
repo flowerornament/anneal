@@ -181,7 +181,10 @@ Predicate families, each with a `describe` card:
 - change history: `changed_within`, `git_mtime`, `at("snapshot:last")`
   - jj added workspaces read author time along recorded `@`, without snapshotting;
     unsnapshotted edits are outside the history and long-lived changes retain
-    their creation time. Inspect `repository_operation_capability` for each
+    their creation time. Code discovery uses the pinned tracked tree, never
+    an ancestor Git index. `version_tags` reports tags at the exact pin; a
+    failed tag probe is unavailable, not proof of no tags. Inspect
+    `repository_operation_capability` for each
     operation; assertion provenance is unavailable, while recency, W006 and
     workspace ignore classification can be available. Document-date age is
     unchanged.

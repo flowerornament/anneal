@@ -3385,7 +3385,8 @@ Filesystem provenance has three coordinates that MUST NOT be collapsed:
 The sealed
 `repository_operation_capability(operation, availability, provider, reason)`
 relation projects concrete workspace availability independently for change
-history, assertion blame, target history, and ignore-index classification.
+history, assertion blame, target history, ignore-index classification, and
+version tags.
 Unavailable operations yield no derived evidence and surfaces MUST distinguish
 that state from an earned empty population or zero count.
 
@@ -3431,6 +3432,17 @@ its time while it is amended. Each operation names what it uses:
 | target history | Existence of the cited target in the workspace, and its path history along the pin. This earns W006 for missing, gone and ambiguously moved targets. A rewrite that carries a file unchanged is not a change. Counts of change since citation need an assertion premise and stay unknown; a cached assertion date never substitutes for one. |
 | assertion blame | No answer. `assertion_date` and `assertion_revision` are null with reason `jj-assertion-blame-not-defined`: pinned-workspace line blame is not defined. Commit timestamps alone do not identify the commit that last changed the asserting line. |
 | ignore-index classification | Ignore rules from the ignore files in the workspace tree, with tracked-ness read from the tree of the pin. Repository-private and user-global exclude files are outside `@` and are not consulted. |
+| version tags | Tags selecting the exact pinned `@`, read through the explicit backing Git directory; never tags of anchor `HEAD`. A successful empty tag stream earns the capability; probe failure reports unavailable with a reason and emits no version handles, without refusing code extraction or invalidating another operation. |
+
+Code source-tree discovery consumes ignore-index capability: direct Git reads
+its validated index, and jj reads tracked paths from the pinned tree. Paths
+are restricted to the configured source subtree. An unavailable VCS operation
+refuses discovery instead of returning an empty population or walking another
+repository; a genuinely non-VCS source root uses filesystem discovery. Code
+version handles consume version-tags capability (direct Git tags at `HEAD`,
+jj tags at the exact pin). Code facts depending on a moving or invalid pin
+cannot merge. Standalone code extraction validates its own generation; the
+CLI shares its repository context and validates after all adapters complete.
 
 `git_mtime`, `changed_within`, and the undated fallback of `recent_frontier`
 consume change history and inherit its time. Predicates whose oracle is the

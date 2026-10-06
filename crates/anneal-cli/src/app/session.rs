@@ -321,7 +321,6 @@ impl RuntimeSession {
         if let Some(progress) = edge_assertion_refresh_progress_for(command) {
             markdown_source = markdown_source.with_edge_assertion_refresh_progress(progress);
         }
-        let code_source = CodeSource;
         let roots = vec![root.to_path_buf()];
         let context = SourceContext {
             corpus: corpus.clone(),
@@ -342,14 +341,19 @@ impl RuntimeSession {
             .map_err(|err| anyhow!("markdown extraction failed: {err}"))?;
         let code_batch = if CodeSource::is_configured(&config_facts) {
             Some(
-                code_source
-                    .extract(&context)
+                CodeSource::extract_with_repository(&context, &repository)
                     .map_err(|err| anyhow!("code extraction failed: {err}"))?,
             )
         } else {
             None
         };
         if repository.is_jj_workspace() && !repository.finish_jj_generation() {
+            if code_batch.is_some() {
+                return Err(anyhow!(
+                    "code source repository pin invalid at generation completion: {}",
+                    repository.operation_reason(anneal_core::RepositoryOperation::IgnoreIndex)
+                ));
+            }
             MarkdownSource::discard_unavailable_history(&mut markdown_batch, &repository);
             jj_mtimes.clear();
         }

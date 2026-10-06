@@ -9,7 +9,7 @@
 use rustdoc_types::{ItemKind, Visibility};
 
 use super::{
-    BTreeMap, Command, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, FactBatch,
+    BTreeMap, DEFAULT_CONTENT_BUDGET_BYTES, DEFAULT_MEMBER_DOC_BUDGET_BYTES, FactBatch,
     FactIdentity, HandleFact, HandleId, MetaFact, MetaRole, NativeId, OriginUri, Revision,
     SOURCE_NAME, Utf8Path, Utf8PathBuf, meta_key, normalize_path_inside_root,
     normalize_relative_path, relation_value,
@@ -119,26 +119,6 @@ pub(super) fn package_root_file(root: &Utf8Path, source_root: &Utf8Path) -> Stri
         .map_or_else(|| path.to_string(), |path| path.to_string());
     }
     "Cargo.toml".to_string()
-}
-
-pub(super) fn git_version_tags(source_abs: &Utf8Path) -> Vec<String> {
-    let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(source_abs)
-        .args(["tag", "--points-at", "HEAD", "--sort=refname"])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 pub(super) fn version_handle_id(tag: &str) -> String {

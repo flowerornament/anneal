@@ -84,7 +84,7 @@ fn jj_workspace_projects_repository_capabilities_and_teaches_missing_evidence() 
     let CommandOutput::Rows { rows, .. } = capabilities else {
         panic!("capability query should emit rows");
     };
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
     assert!(rows.iter().all(|row| {
         required_string(row, "availability").is_ok_and(|value| value == "unavailable")
             && required_string(row, "provider").is_ok_and(|value| value == "jj")
@@ -118,6 +118,10 @@ fn jj_workspace_projects_repository_capabilities_and_teaches_missing_evidence() 
             (
                 "target_history".to_string(),
                 "jj-backing-unavailable".to_string(),
+            ),
+            (
+                "version_tags".to_string(),
+                "jj-backing-unavailable".to_string()
             ),
         ])
     );

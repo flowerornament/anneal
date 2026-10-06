@@ -180,7 +180,7 @@ pub(in crate::runtime::introspection) fn primitive_relationship(
             "Raw history timestamp used by `changed_within`. Direct Git reads committer time at HEAD; a jj desk reads author time along its recorded @ without snapshotting, ignoring unsnapshotted edits. This dates creation of the change that last touched the file, not the latest edit of bytes in a long-lived change. Conflicted or stale jj workspaces cannot answer. Re-read pins protect each extraction from movement. It is not document-date authored_age.",
         ),
         PrimitivePredicate::RepositoryOperationCapability => Some(
-            "This is concrete workspace availability, not actor permission or a promise that an available operation has result rows.",
+            "Operations are change_history, assertion_blame, target_history, ignore_index and version_tags. Version tags are earned at Git HEAD or exact recorded jj @; a failed tag probe reports unavailable and yields no version handles while other operations remain independent. Tracked code files use ignore_index, never an ancestor Git index. This is concrete workspace availability, not actor permission or a promise that an available operation has result rows.",
         ),
         PrimitivePredicate::Schema => Some("The `schema` verb projects this primitive directly."),
         PrimitivePredicate::Verbs => {

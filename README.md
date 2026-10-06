@@ -376,7 +376,11 @@ outside this history. Author time dates creation of the change, not its latest
 amendment. Direct Git and colocated checkouts retain their existing timestamps.
 `repository_operation_capability(operation, availability, provider, reason)`
 reports availability separately for recency, target history, assertion provenance,
-and ignore classification. jj assertion dates and revisions remain null.
+ignore classification, and version tags. jj assertion dates and revisions remain null.
+Version tags select Git `HEAD` or exact recorded jj `@`; a failed probe yields
+no version handles and reports unavailable without disabling other operations.
+Code file discovery uses the validated Git index or the pinned jj tree, and
+refuses an unavailable VCS discovery operation.
 Conflicted, stale, or moving jj pins make dependent operations unavailable;
 missing capability is distinct from an available query with no rows.
 The convergence vocabulary lives in the prelude — use `describe convergence`,

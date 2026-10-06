@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Cursor;
+#[cfg(test)]
 use std::process::Command;
 
 use anneal_core::{
@@ -37,7 +38,7 @@ use config::{
 use eep48::extract_eep48_set;
 use emit::{
     CodeFactIds, ContentBudgetReport, area_for, code_identity, emit_content_budget_meta,
-    ensure_external_code_handle, first_paragraph, git_version_tags, handle_id, meta_values,
+    ensure_external_code_handle, first_paragraph, handle_id, meta_values,
     normalize_code_source_path, package_root_file, push_code_meta, push_meta_fact, token_count,
     truncate_at_char_boundary, version_handle_id,
 };
@@ -63,6 +64,119 @@ impl CodeSource {
             || config.values(config_key::EEP48_BEAM_DIR).next().is_some()
             || config.values(config_key::EEP48_DOC_CHUNK).next().is_some()
             || config.first(config_key::SOURCE_ROOT).is_some()
+    }
+    /// Extract with the caller's generation-pinned repository context.
+    ///
+    /// The caller must validate the context with `finish_jj_generation` before
+    /// merging these facts. Standalone `Source::extract` validates its own context.
+    pub fn extract_with_repository(
+        cx: &SourceContext<'_>,
+        repository: &anneal_core::RepositoryContext,
+    ) -> Result<FactBatch, SourceError> {
+        Self::extract_in_repository(cx, Some(repository))
+    }
+
+    fn extract_in_repository(
+        cx: &SourceContext<'_>,
+        shared_repository: Option<&anneal_core::RepositoryContext>,
+    ) -> Result<FactBatch, SourceError> {
+        if cx.time_ref.is_some() {
+            return Err(SourceError::UnsupportedTimeRef(
+                cx.time_ref.clone().expect("checked above"),
+            ));
+        }
+
+        let config = CodeDiscoveryConfig::from_facts(cx.config_facts)?;
+        let generation = cx.next_generation();
+        let mut combined = FactBatch::new(
+            cx.corpus.clone(),
+            SourceName::from(SOURCE_NAME),
+            FactBatchMode::FullSnapshot,
+            generation,
+        );
+        if !Self::is_configured(cx.config_facts) {
+            return Ok(combined);
+        }
+
+        let mut identities = CodeFactIds::default();
+        for root in cx.roots {
+            cx.cancellation.check()?;
+            let repository = match shared_repository {
+                Some(repository) if repository.applies_to(root) => repository.clone(),
+                Some(_) => {
+                    return Err(SourceError::Other(
+                        "code source repository context belongs to another extraction root"
+                            .to_string(),
+                    ));
+                }
+                None => anneal_core::RepositoryContext::discover(root),
+            };
+            let mut root_batch = FactBatch::new(
+                cx.corpus.clone(),
+                SourceName::from(SOURCE_NAME),
+                FactBatchMode::FullSnapshot,
+                generation,
+            );
+            let manifest = config
+                .manifest
+                .as_ref()
+                .map(|path| read_manifest(root, path))
+                .transpose()?;
+            let manifest_revision = manifest
+                .as_ref()
+                .and_then(ArtifactManifest::source_revision);
+            let classification_revision = config
+                .artifact_revision
+                .as_deref()
+                .or(manifest_revision.as_deref());
+            if config
+                .source_root
+                .components()
+                .any(|component| component.as_str() == "..")
+            {
+                ensure_source_root_within_project(root, &config.source_root)?;
+            }
+            let classification = SourceTreeClassification::scan(
+                root,
+                &config.source_root,
+                &config.source_extensions,
+                &repository,
+            )?;
+            for artifact in &config.artifacts {
+                let batch = extract_rustdoc(
+                    root,
+                    cx,
+                    &config,
+                    manifest.as_ref(),
+                    artifact,
+                    &mut identities,
+                )?;
+                root_batch.append(batch);
+            }
+            if !config.eep48_beams.is_empty()
+                || !config.eep48_beam_dirs.is_empty()
+                || !config.eep48_doc_chunks.is_empty()
+            {
+                let batch =
+                    extract_eep48_set(root, cx, &config, manifest.as_ref(), &mut identities)?;
+                root_batch.append(batch);
+            }
+            classification.project(
+                &mut root_batch,
+                root,
+                &config.source_root,
+                classification_revision,
+                &mut identities,
+            );
+            if shared_repository.is_none() && !repository.finish_jj_generation() {
+                return Err(SourceError::Other(format!(
+                    "code source repository pin invalid at extraction completion: {}",
+                    repository.operation_reason(anneal_core::RepositoryOperation::IgnoreIndex)
+                )));
+            }
+            combined.append(root_batch);
+        }
+        Ok(combined)
     }
 }
 
@@ -96,86 +210,7 @@ impl Source for CodeSource {
     }
 
     fn extract(&self, cx: &SourceContext<'_>) -> Result<FactBatch, SourceError> {
-        if cx.time_ref.is_some() {
-            return Err(SourceError::UnsupportedTimeRef(
-                cx.time_ref.clone().expect("checked above"),
-            ));
-        }
-
-        let config = CodeDiscoveryConfig::from_facts(cx.config_facts)?;
-        let generation = cx.next_generation();
-        let mut combined = FactBatch::new(
-            cx.corpus.clone(),
-            SourceName::from(SOURCE_NAME),
-            FactBatchMode::FullSnapshot,
-            generation,
-        );
-        if !Self::is_configured(cx.config_facts) {
-            return Ok(combined);
-        }
-
-        let mut identities = CodeFactIds::default();
-        for root in cx.roots {
-            cx.cancellation.check()?;
-            let mut root_batch = FactBatch::new(
-                cx.corpus.clone(),
-                SourceName::from(SOURCE_NAME),
-                FactBatchMode::FullSnapshot,
-                generation,
-            );
-            let manifest = config
-                .manifest
-                .as_ref()
-                .map(|path| read_manifest(root, path))
-                .transpose()?;
-            let manifest_revision = manifest
-                .as_ref()
-                .and_then(ArtifactManifest::source_revision);
-            let classification_revision = config
-                .artifact_revision
-                .as_deref()
-                .or(manifest_revision.as_deref());
-            if config
-                .source_root
-                .components()
-                .any(|component| component.as_str() == "..")
-            {
-                ensure_source_root_within_project(root, &config.source_root)?;
-            }
-            let classification = SourceTreeClassification::scan(
-                root,
-                &config.source_root,
-                &config.source_extensions,
-            )?;
-            for artifact in &config.artifacts {
-                let batch = extract_rustdoc(
-                    root,
-                    cx,
-                    &config,
-                    manifest.as_ref(),
-                    artifact,
-                    &mut identities,
-                )?;
-                root_batch.append(batch);
-            }
-            if !config.eep48_beams.is_empty()
-                || !config.eep48_beam_dirs.is_empty()
-                || !config.eep48_doc_chunks.is_empty()
-            {
-                let batch =
-                    extract_eep48_set(root, cx, &config, manifest.as_ref(), &mut identities)?;
-                root_batch.append(batch);
-            }
-            classification.project(
-                &mut root_batch,
-                root,
-                &config.source_root,
-                classification_revision,
-                &mut identities,
-            );
-            combined.append(root_batch);
-        }
-        Ok(combined)
+        Self::extract_in_repository(cx, None)
     }
 }
 

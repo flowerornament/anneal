@@ -8,12 +8,11 @@
 //! boundary in CR-D4 and stored-fact contract in CR-D8.
 
 use super::{
-    BTreeMap, BTreeSet, CodeFactIds, Command, ConcernFact, EdgeFact, FactBatch, HandleFact,
-    Revision, SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity,
-    concern_name, edge_kind, ensure_external_code_handle, fs, git_version_tags, handle_id,
-    meta_key, meta_values, normalize_path_inside_root, normalize_relative_path, package_root_file,
-    push_code_meta, push_meta_fact, relation_value, stable_fragment, truncate_at_char_boundary,
-    version_handle_id,
+    BTreeMap, BTreeSet, CodeFactIds, ConcernFact, EdgeFact, FactBatch, HandleFact, Revision,
+    SOURCE_NAME, SourceError, Utf8Path, Utf8PathBuf, area_for, code_identity, concern_name,
+    edge_kind, ensure_external_code_handle, fs, handle_id, meta_key, meta_values,
+    normalize_path_inside_root, normalize_relative_path, package_root_file, push_code_meta,
+    push_meta_fact, relation_value, stable_fragment, truncate_at_char_boundary, version_handle_id,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -50,6 +49,7 @@ impl SourceTreeClassification {
         root: &Utf8Path,
         source_root: &Utf8Path,
         extensions: &[String],
+        repository: &anneal_core::RepositoryContext,
     ) -> Result<Self, SourceError> {
         let joined = root.join(source_root);
         // Canonicalize so a climbing source root ("..") yields a stable base;
@@ -58,16 +58,26 @@ impl SourceTreeClassification {
         let mut out = Self {
             files: BTreeMap::new(),
             protocol_impls: Vec::new(),
-            tags: git_version_tags(&source_abs),
+            tags: repository.version_tags().unwrap_or_default().to_vec(),
         };
         // Prefer git-tracked files: on a real repo the working tree can carry
         // gigabytes of ignored assets/build output (herald's priv/ is 7.9G),
         // and a raw recursive walk drowns in it. Tracked files ARE the source,
         // and drift already reasons over git history, so this is the honest
-        // boundary. Fall back to a filesystem walk when git can't answer.
-        match git_tracked_files(&source_abs, extensions) {
+        // boundary. Only a genuinely non-VCS root uses filesystem discovery.
+        match repository
+            .tracked_files_under(&source_abs)
+            .map_err(|reason| {
+                SourceError::Other(format!(
+                    "code source tracked-file discovery unavailable (ignore_index): {reason}"
+                ))
+            })? {
             Some(files) => {
-                for relative in files {
+                for relative in files.into_iter().filter(|path| {
+                    Utf8Path::new(path)
+                        .extension()
+                        .is_some_and(|ext| extensions.iter().any(|allowed| allowed == ext))
+                }) {
                     classify_source_path(&source_abs, &relative, &mut out)?;
                 }
             }
@@ -424,34 +434,7 @@ pub(super) fn classify_source_path(
     Ok(())
 }
 
-/// Git-tracked source files under `base`, filtered to the configured
-/// extensions and sorted. `None` when `base` is not a git working tree (or
-/// git is unavailable) — the caller falls back to a filesystem walk.
-pub(super) fn git_tracked_files(base: &Utf8Path, extensions: &[String]) -> Option<Vec<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(base)
-        .args(["ls-files", "-z", "--cached", "--exclude-standard"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .filter(|entry| {
-            Utf8Path::new(entry)
-                .extension()
-                .is_some_and(|ext| extensions.iter().any(|allowed| allowed == ext))
-        })
-        .map(ToOwned::to_owned)
-        .collect();
-    files.sort();
-    files.dedup();
-    Some(files)
-}
-
+/// Build/VCS directories excluded from intentional non-VCS filesystem discovery.
 pub(super) fn should_skip_source_dir(name: &str) -> bool {
     matches!(
         name,
