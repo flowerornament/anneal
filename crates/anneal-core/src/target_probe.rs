@@ -615,13 +615,22 @@ impl CodeTargetProbeCache {
             return repository.jj_target_history(base, target);
         }
         let inventory_base = direct_history_inventory_base(base, repository).unwrap_or(base);
+        let history_target = if inventory_base == base {
+            target.to_path_buf()
+        } else {
+            base.canonicalize_utf8()
+                .ok()?
+                .strip_prefix(inventory_base)
+                .ok()?
+                .join(target)
+        };
         let history = self
             .history_by_base
             .entry(inventory_base.to_path_buf())
             .or_insert_with(|| read_head_history_paths(inventory_base));
         history
             .as_ref()
-            .map(|paths| paths.contains(target.as_str()))
+            .map(|paths| paths.contains(history_target.as_str()))
     }
 
     fn target_history_status(
@@ -1344,7 +1353,7 @@ fn existing_target(base: &Utf8Path, target: &Utf8Path) -> Option<Utf8PathBuf> {
     candidate.exists().then_some(candidate)
 }
 
-/// Reuse a validated repository inventory without changing target membership keys.
+/// Select a validated repository-relative history inventory.
 /// A nearer VCS boundary or an unverified base retains the per-base probe.
 fn direct_history_inventory_base<'a>(
     base: &Utf8Path,
@@ -1476,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn history_inventory_is_shared_without_changing_probe_membership() {
+    fn shared_history_membership_uses_each_probe_base() {
         let dir = tempdir().expect("tempdir");
         let repo = utf8(dir.path().join("repo"));
         let corpus = repo.join(".design");
@@ -1485,6 +1494,7 @@ mod tests {
         fs::write(repo.join("lib/live.rs"), "").expect("write live");
         fs::write(repo.join("lib/deleted.rs"), "").expect("write deleted");
         fs::write(corpus.join("local.css"), "").expect("write local");
+        fs::write(repo.join("root_only.css"), "").expect("write root-only target");
         run_git(&repo, &["init"]);
         run_git(&repo, &["add", "."]);
         run_git(&repo, &["commit", "-m", "add targets"]);
@@ -1499,8 +1509,16 @@ mod tests {
         assert_eq!(live.history_status, TargetHistoryStatus::Present);
         assert_eq!(live.probe_base.as_deref(), Some(repo.as_path()));
         assert_eq!(local.exists, TargetExistence::True);
-        // anneal-1xjp is a separate semantic change: membership stays unprefixed.
-        assert_eq!(local.history_status, TargetHistoryStatus::Absent);
+        assert_eq!(local.history_status, TargetHistoryStatus::Present);
+        assert_eq!(
+            cache.history_contains_target(&corpus, Utf8Path::new("root_only.css"), &repository),
+            Some(false),
+            "a root-relative history match must not stand in for a nested target"
+        );
+        assert_eq!(
+            cache.history_contains_target(&repo, Utf8Path::new("root_only.css"), &repository),
+            Some(true)
+        );
         assert_eq!(local.probe_base.as_deref(), Some(corpus.as_path()));
         assert_eq!(local.resolved_path, Some(corpus.join("local.css")));
         assert_eq!(deleted.exists, TargetExistence::False);

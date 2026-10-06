@@ -18,6 +18,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Corpus-relative code targets query Git history with their selected base prefix,
+  matching jj history membership without changing filesystem lookup policy.
+
 - Direct-Git code-target probes share one whole-history inventory per validated
   repository during extraction, preserving target membership and probe paths.
 

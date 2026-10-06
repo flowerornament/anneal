@@ -515,6 +515,16 @@ mod tests {
             after.jj_target_history(&desk.root, Utf8Path::new(".design/edited.md")),
             Some(true)
         );
+        assert_eq!(
+            after.jj_target_history(&desk.root.join(".design"), Utf8Path::new("edited.md")),
+            Some(true),
+            "nested and root-prefixed paths name the same recorded target"
+        );
+        assert_eq!(
+            after.jj_target_history(&desk.root, Utf8Path::new("edited.md")),
+            Some(false),
+            "the selected base remains part of history membership"
+        );
         assert!(!desk.anchor.join(".design/edited.md").exists());
         assert!(!after.operation_available(RepositoryOperation::AssertionBlame));
         assert!(after.finish_jj_generation());
