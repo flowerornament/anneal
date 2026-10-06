@@ -1464,3 +1464,172 @@ fn label_diagnostic_suppression_does_not_match_its_file_location() {
     assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
     assert_success(&run(&["--root", root, "check"]));
 }
+
+#[test]
+fn diagnostic_escalation_regrades_gate_and_teaches_effective_policy() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    write_file(corpus.path(), "a.md", "---\nstatus: unfamiliar\n---\n# A\n");
+    let query = "? diagnostic(code, severity, subject, file, line, evidence).";
+    let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert!(baseline.iter().any(|row| row["code"] == "W005"));
+    assert_success(&run(&["--root", root, "check"]));
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config diagnostics { escalate("W005", "error"). escalate("W005", "error"). }"#,
+    );
+    let after = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    let expected = baseline
+        .into_iter()
+        .map(|mut row| {
+            if row["code"] == "W005" {
+                row["severity"] = "error".into();
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(after, expected);
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    let policy = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? diagnostic_policy(code, declared_severity, effective_severity, origin).",
+    ]));
+    assert_eq!(policy.len(), 17);
+    assert!(policy.iter().any(|row| row["code"] == "W005"
+        && row["declared_severity"] == "warning"
+        && row["effective_severity"] == "error"
+        && row["origin"] == "project"));
+    let status = run(&["--root", root, "status", "--format=text"]);
+    assert_success(&status);
+    assert!(text(&status.stdout).contains("1 codes escalated by project"));
+    let card = run(&["--root", root, "describe", "W005"]);
+    assert_success(&card);
+    assert!(text(&card.stdout).contains("Declared severity: warning."));
+    assert!(text(&card.stdout).contains("Effective severity: error."));
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? describe("W005", doc)."#,
+    ]));
+    assert!(rows.iter().any(|row| {
+        row["doc"]
+            .as_str()
+            .is_some_and(|doc| doc.contains("Effective severity: error."))
+    }));
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config diagnostics { escalate("W005", "error"). } config suppress { rule("W005", "unfamiliar"). }"#,
+    );
+    assert_success(&run(&["--root", root, "check"]));
+    let status = run(&["--root", root, "status", "--format=text"]);
+    assert_success(&status);
+    assert!(text(&status.stdout).contains("1 codes escalated by project"));
+}
+
+#[test]
+fn diagnostic_escalation_refuses_unknown_downgrade_and_conflicting_codes() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    write_file(corpus.path(), "a.md", "# A\n");
+    for body in [
+        r#"escalate("P001", "error")."#,
+        r#"escalate("W005", "banana")."#,
+        r#"escalate("E001", "warning")."#,
+        r#"escalate("W005", "suggestion")."#,
+        r#"escalate("I001", "suggestion")."#,
+        r#"escalate("S001", "info")."#,
+        r#"escalate("S001", "warning"). escalate("S001", "error")."#,
+        r#"escalate("S001", "error"). escalate("S001", "warning")."#,
+    ] {
+        write_file(
+            corpus.path(),
+            "anneal.dl",
+            &format!("config diagnostics {{ {body} }}"),
+        );
+        let output = run(&["--root", root, "check"]);
+        assert!(!output.status.success(), "{body}");
+        assert!(
+            text(&output.stderr).contains("diagnostics.escalate"),
+            "{}",
+            text(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn diagnostic_policy_handles_noops_absent_instances_and_each_promotion() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    write_file(corpus.path(), "a.md", "---\nstatus: draft\n---\n# A\n");
+    let query = "? diagnostic_policy(code, declared_severity, effective_severity, origin).";
+    let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert_eq!(baseline.len(), 17);
+    assert!(
+        baseline.iter().all(|row| row["origin"] == "stdlib"
+            && row["declared_severity"] == row["effective_severity"])
+    );
+    for (code, declared, effective) in [
+        ("I001", "info", "warning"),
+        ("I001", "info", "error"),
+        ("S006", "suggestion", "warning"),
+        ("S006", "suggestion", "error"),
+        ("W006", "warning", "error"),
+        ("I001", "info", "info"),
+        ("S006", "suggestion", "suggestion"),
+        ("W006", "warning", "warning"),
+        ("E001", "error", "error"),
+    ] {
+        write_file(
+            corpus.path(),
+            "policy.dl",
+            &format!(r#"config diagnostics {{ escalate("{code}", "{effective}"). }}"#),
+        );
+        write_file(corpus.path(), "anneal.dl", "include \"policy.dl\".\n");
+        let rows = json_rows(&run(&["--root", root, "--json", "-e", query]));
+        assert_eq!(rows.len(), 17);
+        let policy = rows
+            .iter()
+            .find(|row| row["code"] == code)
+            .expect("policy row");
+        assert_eq!(policy["declared_severity"], declared);
+        assert_eq!(policy["effective_severity"], effective);
+        assert_eq!(
+            policy["origin"],
+            if declared == effective {
+                "stdlib"
+            } else {
+                "project"
+            }
+        );
+        let status = run(&["--root", root, "status", "--format=text"]);
+        assert_success(&status);
+        assert_eq!(
+            text(&status.stdout).contains("codes escalated by project"),
+            declared != effective
+        );
+        assert_success(&run(&["--root", root, "check"]));
+    }
+    for head in [
+        r#"diagnostic_policy("W005", "warning", "info", "project")."#,
+        r#"builtin_diagnostic("W005", "info", "project", null, null, null)."#,
+        r#"builtin_diagnostic_policy("W005", "info", "diagnostics.escalate.W005")."#,
+        r#"diagnostic_severity_promotion("error", "info")."#,
+        r#"project_diagnostic_escalation("E001", "error", "info")."#,
+    ] {
+        write_file(corpus.path(), "anneal.dl", head);
+        let output = run(&["--root", root, "check"]);
+        assert!(!output.status.success());
+        assert!(
+            text(&output.stderr).contains("protected standard-library relation"),
+            "{}",
+            text(&output.stderr)
+        );
+    }
+}

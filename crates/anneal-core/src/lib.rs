@@ -21,6 +21,7 @@
 //! This crate must not depend on any adapter.
 
 mod config_schema;
+mod diagnostics;
 mod driver;
 mod facts;
 mod hash;

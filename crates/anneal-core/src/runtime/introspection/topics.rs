@@ -10,7 +10,6 @@ use super::{DescribeEntry, DescribeKind, Tuple, describe_entry, string_value};
 /// Static fields required to render one diagnostic code's teaching card.
 pub(super) struct DiagnosticCodeCard {
     pub(super) code: &'static str,
-    pub(super) severity: &'static str,
     pub(super) summary: &'static str,
     pub(super) rule: &'static str,
     pub(super) evidence: &'static str,
@@ -277,7 +276,6 @@ pub(super) fn convergence_topic_card() -> String {
 pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
         code: "E001",
-        severity: "error",
         summary: "Broken reference: a corpus edge points at a handle that does not exist.",
         rule: "broken_reference",
         evidence: r#"("broken_ref", target)"#,
@@ -290,7 +288,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "E002",
-        severity: "error",
         summary: "Undischarged obligation: a live obligation handle has no Discharges edge.",
         rule: "undischarged_obligation",
         evidence: r#""undischarged""#,
@@ -308,7 +305,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W001",
-        severity: "warning",
         summary: "Stale reference: an active handle depends on a terminal target whose status is classified dead.",
         rule: "stale_reference",
         evidence: r#"("stale_ref", source_status, target_status)"#,
@@ -321,7 +317,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W002",
-        severity: "warning",
         summary: "Confidence gap: a dependency target is behind its source in the configured lifecycle order.",
         rule: "confidence_gap",
         evidence: r#"("confidence_gap", source_status, source_level, target_status, target_level)"#,
@@ -339,7 +334,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W003",
-        severity: "warning",
         summary: "Missing frontmatter: a file lacks status frontmatter in a directory where frontmatter is otherwise established.",
         rule: "missing_frontmatter_file",
         evidence: "null",
@@ -352,7 +346,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W004",
-        severity: "warning",
         summary: "Implausible reference: markdown extraction saw a reference-like token that was rejected as implausible.",
         rule: "implausible_ref",
         evidence: r#"("implausible_ref", value)"#,
@@ -365,7 +358,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W005",
-        severity: "warning",
         summary: "Lifecycle config gap: a status appears in handles or ordering without an effective builtin or project classification, or the ordering cannot terminate.",
         rule: "lifecycle_config_gap",
         evidence: r#"("lifecycle_config_gap", status, count, variant)"#,
@@ -384,7 +376,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W006",
-        severity: "warning",
         summary: "Spec-code drift: a spec that asserts current code cites a path that existed in HEAD history but is now missing on disk.",
         rule: "spec_code_drift",
         evidence: r#"("spec_code_drift", target_path, source_status)"#,
@@ -406,7 +397,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W007",
-        severity: "warning",
         summary: "Frontmatter mapping gap: an exact reference-like markdown key appears on one or more handles but has no configured edge mapping.",
         rule: "frontmatter_mapping_gap",
         evidence: r#"("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)"#,
@@ -427,7 +417,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "W008",
-        severity: "warning",
         summary: "Unmodeled frontmatter shape: an authored key contains a mapping that the scalar metadata projection does not represent. A rule claiming authorial absence over *meta must also consult this evidence.",
         rule: "unmodeled_frontmatter_shape",
         evidence: r#"("unmodeled_frontmatter_shape", JSON {key, shape, line, line_exact}); line is 1-based, with line_exact=false for a frontmatter-start fallback"#,
@@ -445,7 +434,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "I001",
-        severity: "info",
         summary: "Section references present: section-reference placeholders exist and are counted separately from broken handles.",
         rule: "section_ref_total",
         evidence: r#"("section_refs", count)"#,
@@ -458,7 +446,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "I002",
-        severity: "info",
         summary: "Multiple discharges: a live obligation has more than one Discharges edge.",
         rule: "multiple_discharge",
         evidence: r#"("multiple_discharges", count)"#,
@@ -476,7 +463,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "S001",
-        severity: "suggestion",
         summary: "Orphaned handle: the subject is a label or version handle with no incoming references. The file is its declaring file, not a claim that the document is orphaned.",
         rule: "orphaned_handle",
         evidence: r#"("orphaned_handle", kind, h)"#,
@@ -489,7 +475,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "S003",
-        severity: "suggestion",
         summary: "Pipeline stall: snapshot history shows a lifecycle status accumulating without movement to the next configured status.",
         rule: "pipeline_stall",
         evidence: r#"("pipeline_stall", status, count, next_status, based_on_history)"#,
@@ -508,7 +493,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "S004",
-        severity: "suggestion",
         summary: "Abandoned namespace: an active namespace's members are all terminal or stale.",
         rule: "abandoned_namespace",
         evidence: r#"("abandoned_namespace", namespace, total, terminal_count, stale_count)"#,
@@ -521,7 +505,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "S005",
-        severity: "suggestion",
         summary: "Concern-group candidate: two label namespaces frequently co-occur and may deserve a configured concern group.",
         rule: "top_pair",
         evidence: r#"("concern_group_candidate", left_prefix, right_prefix, count)"#,
@@ -534,7 +517,6 @@ pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     },
     DiagnosticCodeCard {
         code: "S006",
-        severity: "suggestion",
         summary: "Dependency config gap: a terminal status is not classified as dead or valid for dependency checks.",
         rule: "dependency_config_gap",
         evidence: r#"("dependency_config_gap", status, count, "terminal_status_unclassified", active_dependents)"#,

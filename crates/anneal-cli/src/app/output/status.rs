@@ -205,6 +205,13 @@ pub(super) fn write_status_text<W: Write>(
         metric_count(&metrics, "diagnostics", "suggestion"),
         metric_count(&metrics, "diagnostics", "info")
     )?;
+    let escalated = metric_count(&metrics, "diagnostic_policy", "escalated");
+    if escalated > 0 {
+        writeln!(
+            writer,
+            "Policy       {escalated} codes escalated by project"
+        )?;
+    }
     if !vocabulary.is_empty() {
         vocabulary.sort_by(|left, right| {
             number_to_i64(right.count)

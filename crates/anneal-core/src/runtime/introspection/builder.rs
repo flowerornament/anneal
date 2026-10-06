@@ -230,14 +230,30 @@ impl IntrospectionBuilder {
 
 impl IntrospectionBuilder {
     /// Adds the static diagnostic-code cards owned by anneal's checks vocabulary.
-    pub(super) fn add_diagnostic_codes(&mut self) {
+    pub(super) fn add_diagnostic_codes(
+        &mut self,
+        program: &Program,
+        config: &BTreeMap<String, String>,
+    ) {
+        let catalog = crate::diagnostics::DiagnosticCatalog::from_program(program);
         for code in topics::DIAGNOSTIC_CODE_CARDS {
+            let Some(declaration) = catalog.declarations.get(code.code) else {
+                continue;
+            };
+            let configured = config.get(&declaration.config_key);
+            let effective = configured
+                .filter(|value| catalog.is_promotion(&declaration.severity, value))
+                .unwrap_or(&declaration.severity);
             let mut extra_lines = vec![
                 format!("Diagnostic code: {}.", code.code),
-                format!("Severity: {}.", code.severity),
+                format!("Severity: {effective}."),
                 format!("Rule predicate: {}.", code.rule),
                 format!("Evidence: {}.", code.evidence),
             ];
+            if *effective != declaration.severity {
+                extra_lines.push(format!("Declared severity: {}.", declaration.severity));
+                extra_lines.push(format!("Effective severity: {effective}."));
+            }
             extra_lines.extend(catalog::diagnostic_code_extra_lines(code.code));
             self.describe.insert(describe_entry(
                 code.code,
@@ -394,5 +410,27 @@ impl IntrospectionBuilder {
             source_of: self.source_of.into_iter().collect(),
             examples: self.examples.into_iter().collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_cards_cover_the_source_backed_registry() {
+        let program = crate::runtime::prelude::standard_prelude_program().expect("prelude");
+        let catalog = crate::diagnostics::DiagnosticCatalog::from_program(&program);
+        let declared = catalog
+            .declarations
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let cards = topics::DIAGNOSTIC_CODE_CARDS
+            .iter()
+            .map(|card| card.code)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(cards.len(), topics::DIAGNOSTIC_CODE_CARDS.len());
+        assert_eq!(cards, declared);
     }
 }

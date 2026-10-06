@@ -1,5 +1,7 @@
 //! Runtime schema and predicate introspection.
 
+use std::collections::BTreeMap;
+
 use crate::source::SourceInfo;
 
 use super::analysis::{AnalyzedProgram, AnalyzedQuery};
@@ -134,11 +136,12 @@ impl IntrospectionIndex {
         &self,
         program: &AnalyzedProgram,
         dynamic_stored: Vec<StoredRelationSummary>,
+        diagnostic_config: &BTreeMap<String, String>,
     ) -> Self {
         Self {
             source_descriptions: self.source_descriptions.clone(),
             source_rows: self.source_rows.clone(),
-            program: ProgramIntrospection::from_program(program, dynamic_stored),
+            program: ProgramIntrospection::from_program(program, dynamic_stored, diagnostic_config),
         }
     }
 
@@ -222,13 +225,17 @@ struct ProgramIntrospection {
 }
 
 impl ProgramIntrospection {
-    fn from_program(program: &AnalyzedProgram, dynamic_stored: Vec<StoredRelationSummary>) -> Self {
+    fn from_program(
+        program: &AnalyzedProgram,
+        dynamic_stored: Vec<StoredRelationSummary>,
+        diagnostic_config: &BTreeMap<String, String>,
+    ) -> Self {
         let mut builder = IntrospectionBuilder::default();
         builder.add_runtime_overview();
         builder.add_stored_relations(dynamic_stored);
         builder.add_primitives();
         builder.add_program(program.program());
-        builder.add_diagnostic_codes();
+        builder.add_diagnostic_codes(program.program(), diagnostic_config);
         builder.finish()
     }
 

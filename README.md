@@ -554,6 +554,16 @@ match. Use exact status names for lifecycle boosts and `hub(...)` for the
 bounded per-incoming-edge boost; `anneal describe search_boost` shows the
 queryable config rows.
 
+Use `config diagnostics { escalate("W006", "error"). }` to promote a builtin
+code for this corpus. Info and suggestion may each promote to warning or error;
+warning may promote to error. Info and suggestion do not convert into each
+other. Unknown codes/classes, downgrades and conflicting grades refuse at load;
+identical repeats and equal grades are no-ops. `diagnostic` carries effective
+severity, so check exits and status use it. `diagnostic_policy(code,
+declared_severity, effective_severity, origin)` includes all builtin codes;
+no-ops keep origin `stdlib`. Status names actual promoted codes, and
+`anneal describe CODE` teaches declared and effective severity when different.
+
 Use `config suppress { rule("E001", "path/to/source.md"). }` to accept one
 code at an exact diagnostic subject identity. Aggregate rows use their status,
 namespace or corpus subject instead. Referenced evidence targets, file-location

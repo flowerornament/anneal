@@ -7,7 +7,7 @@
 
 @doc(
   name: "diagnostic",
-  doc: "Return every standard diagnostic as data: code, severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; use a separately named predicate for project observations."
+  doc: "Return every standard diagnostic as data: code, effective severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; use a separately named predicate for project observations."
 ).
 
 @predicate(
@@ -15,6 +15,159 @@
   args: ["code", "severity", "subject", "file", "line", "evidence"],
   shadow: "forbid"
 ).
+
+@doc(
+  name: "builtin_diagnostic_policy",
+  doc: "Return the declared builtin diagnostic class and its exact escalation config key. This catalog is sealed because it supplies the check process result."
+).
+@predicate(
+  name: "builtin_diagnostic_policy",
+  args: ["code", "declared_severity", "config_key"],
+  shadow: "forbid"
+).
+builtin_diagnostic_policy("E001", "error", "diagnostics.escalate.E001").
+builtin_diagnostic_policy("E002", "error", "diagnostics.escalate.E002").
+builtin_diagnostic_policy("I001", "info", "diagnostics.escalate.I001").
+builtin_diagnostic_policy("I002", "info", "diagnostics.escalate.I002").
+builtin_diagnostic_policy("S001", "suggestion", "diagnostics.escalate.S001").
+builtin_diagnostic_policy("S003", "suggestion", "diagnostics.escalate.S003").
+builtin_diagnostic_policy("S004", "suggestion", "diagnostics.escalate.S004").
+builtin_diagnostic_policy("S005", "suggestion", "diagnostics.escalate.S005").
+builtin_diagnostic_policy("S006", "suggestion", "diagnostics.escalate.S006").
+builtin_diagnostic_policy("W001", "warning", "diagnostics.escalate.W001").
+builtin_diagnostic_policy("W002", "warning", "diagnostics.escalate.W002").
+builtin_diagnostic_policy("W003", "warning", "diagnostics.escalate.W003").
+builtin_diagnostic_policy("W004", "warning", "diagnostics.escalate.W004").
+builtin_diagnostic_policy("W005", "warning", "diagnostics.escalate.W005").
+builtin_diagnostic_policy("W006", "warning", "diagnostics.escalate.W006").
+builtin_diagnostic_policy("W007", "warning", "diagnostics.escalate.W007").
+builtin_diagnostic_policy("W008", "warning", "diagnostics.escalate.W008").
+
+@doc(
+  name: "diagnostic_severity_promotion",
+  doc: "Return allowed upward diagnostic class promotions. Info and suggestion each promote to warning or error; they never convert into each other."
+).
+@predicate(
+  name: "diagnostic_severity_promotion",
+  args: ["declared_severity", "effective_severity"],
+  shadow: "forbid"
+).
+diagnostic_severity_promotion("info", "warning").
+diagnostic_severity_promotion("info", "error").
+diagnostic_severity_promotion("suggestion", "warning").
+diagnostic_severity_promotion("suggestion", "error").
+diagnostic_severity_promotion("warning", "error").
+
+@doc(
+  name: "project_diagnostic_escalation",
+  doc: "Return actual configured promotions, excluding equal-severity no-ops."
+).
+@predicate(
+  name: "project_diagnostic_escalation",
+  args: ["code", "declared_severity", "effective_severity"],
+  shadow: "forbid"
+).
+project_diagnostic_escalation(code, declared, effective) :=
+  builtin_diagnostic_policy(code, declared, key),
+  *config{key: key, value: effective},
+  diagnostic_severity_promotion(declared, effective).
+
+@doc(
+  name: "diagnostics",
+  doc: "Configure builtin grading with config diagnostics { escalate(CODE, SEVERITY). }. Only upward promotions are allowed; identical repeats and equal grades are stdlib no-ops. Query diagnostic_policy for declared and effective classes and origin, and describe CODE for the effective teaching card. Unknown codes/classes, downgrades and conflicting grades refuse at load. Acceptance remains per subject instance through config suppress."
+).
+
+@doc(
+  name: "diagnostic_policy",
+  doc: "Return the effective diagnostic grading for every builtin code, even when no instance is emitted. Origin is project only for an actual promotion; equal-severity declarations are accepted stdlib no-ops. Config diagnostics escalate(CODE, SEVERITY) permits upward re-grading only; unknown codes, classes, downgrades and conflicting declarations refuse at load. Instance suppression does not remove policy rows."
+).
+@predicate(
+  name: "diagnostic_policy",
+  args: ["code", "declared_severity", "effective_severity", "origin"],
+  shadow: "forbid"
+).
+diagnostic_policy(code, declared, effective, "project") :=
+  project_diagnostic_escalation(code, declared, effective).
+diagnostic_policy(code, declared, declared, "stdlib") :=
+  builtin_diagnostic_policy(code, declared, key),
+  not project_diagnostic_escalation(code, declared, _).
+
+@doc(
+  name: "builtin_diagnostic",
+  doc: "Return builtin findings at their declared severity after exact instance acceptance. Query diagnostic for the effective severity that check and status use. This input stream is sealed against project replacement."
+).
+@predicate(
+  name: "builtin_diagnostic",
+  args: ["code", "declared_severity", "subject", "file", "line", "evidence"],
+  shadow: "forbid"
+).
+diagnostic("E001", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("E001", declared, subject, file, line, evidence),
+  diagnostic_policy("E001", declared, effective, origin).
+
+diagnostic("E002", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("E002", declared, subject, file, line, evidence),
+  diagnostic_policy("E002", declared, effective, origin).
+
+diagnostic("I001", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("I001", declared, subject, file, line, evidence),
+  diagnostic_policy("I001", declared, effective, origin).
+
+diagnostic("I002", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("I002", declared, subject, file, line, evidence),
+  diagnostic_policy("I002", declared, effective, origin).
+
+diagnostic("S001", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("S001", declared, subject, file, line, evidence),
+  diagnostic_policy("S001", declared, effective, origin).
+
+diagnostic("S003", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("S003", declared, subject, file, line, evidence),
+  diagnostic_policy("S003", declared, effective, origin).
+
+diagnostic("S004", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("S004", declared, subject, file, line, evidence),
+  diagnostic_policy("S004", declared, effective, origin).
+
+diagnostic("S005", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("S005", declared, subject, file, line, evidence),
+  diagnostic_policy("S005", declared, effective, origin).
+
+diagnostic("S006", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("S006", declared, subject, file, line, evidence),
+  diagnostic_policy("S006", declared, effective, origin).
+
+diagnostic("W001", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W001", declared, subject, file, line, evidence),
+  diagnostic_policy("W001", declared, effective, origin).
+
+diagnostic("W002", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W002", declared, subject, file, line, evidence),
+  diagnostic_policy("W002", declared, effective, origin).
+
+diagnostic("W003", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W003", declared, subject, file, line, evidence),
+  diagnostic_policy("W003", declared, effective, origin).
+
+diagnostic("W004", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W004", declared, subject, file, line, evidence),
+  diagnostic_policy("W004", declared, effective, origin).
+
+diagnostic("W005", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W005", declared, subject, file, line, evidence),
+  diagnostic_policy("W005", declared, effective, origin).
+
+diagnostic("W006", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W006", declared, subject, file, line, evidence),
+  diagnostic_policy("W006", declared, effective, origin).
+
+diagnostic("W007", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W007", declared, subject, file, line, evidence),
+  diagnostic_policy("W007", declared, effective, origin).
+
+diagnostic("W008", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("W008", declared, subject, file, line, evidence),
+  diagnostic_policy("W008", declared, effective, origin).
 
 @doc(
   name: "suppress",
@@ -50,7 +203,7 @@ broken_reference(src, target, file, line) :=
   not *handle{id: target},
   not section_ref(target).
 
-diagnostic("E001", "error", src, file, line, ("broken_ref", target)) :=
+builtin_diagnostic("E001", "error", src, file, line, ("broken_ref", target)) :=
   broken_reference(src, target, file, line),
   not diagnostic_subject_suppressed("suppress.rule.E001", src).
 
@@ -62,7 +215,7 @@ section_ref_total(count) :=
   count = Count{ edge_id : section_ref_edge(edge_id) },
   count > 0.
 
-diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)) :=
+builtin_diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)) :=
   section_ref_total(count),
   not diagnostic_subject_suppressed("suppress.rule.I001", "corpus").
 
@@ -78,7 +231,7 @@ implausible_ref(h, file, value) :=
   *meta{handle: h, key: "md.implausible_ref", value: value},
   *handle{id: h, file: file}.
 
-diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
+builtin_diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
   implausible_ref(h, file, value),
   not diagnostic_subject_suppressed("suppress.rule.W004", h).
 
@@ -94,7 +247,7 @@ unmodeled_frontmatter_shape(h, file, evidence) :=
   *meta{handle: h, key: "md.unmodeled_frontmatter_shape", value: evidence, role: "derived", corpus: corpus, source: source},
   *handle{id: h, file: file, corpus: corpus, source: source}.
 
-diagnostic("W008", "warning", h, file, null, ("unmodeled_frontmatter_shape", evidence)) :=
+builtin_diagnostic("W008", "warning", h, file, null, ("unmodeled_frontmatter_shape", evidence)) :=
   unmodeled_frontmatter_shape(h, file, evidence),
   not diagnostic_subject_suppressed("suppress.rule.W008", h).
 
@@ -115,7 +268,7 @@ stale_reference(src, target, file, source_status, target_status) :=
   terminal(target),
   dependency_dead_status(target_status).
 
-diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
+builtin_diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
   stale_reference(src, target, file, source_status, target_status),
   not diagnostic_subject_suppressed("suppress.rule.W001", src).
 
@@ -217,7 +370,7 @@ spec_code_drift(src, target_path, file, line, source_status) :=
   referent_disposition(ref, disposition),
   referent_warning_disposition(disposition).
 
-diagnostic("W006", "warning", src, file, line, ("spec_code_drift", target_path, source_status)) :=
+builtin_diagnostic("W006", "warning", src, file, line, ("spec_code_drift", target_path, source_status)) :=
   spec_code_drift(src, target_path, file, line, source_status),
   not diagnostic_subject_suppressed("suppress.rule.W006", src).
 
@@ -390,7 +543,7 @@ lifecycle_config_gap(status, count, "ordering_not_terminal") :=
   status_handle_count(status, count),
   not modeled_terminal_status(status).
 
-diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
+builtin_diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
   lifecycle_config_gap(status, count, variant),
   not diagnostic_subject_suppressed("suppress.rule.W005", status).
 
@@ -531,7 +684,7 @@ frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, 
   frontmatter_unmapped_alias_use(key, sample),
   distinct_handle_count = Count{ h : frontmatter_unmapped_alias_use(key, h) }.
 
-diagnostic("W007", "warning", key, null, null, ("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)) :=
+builtin_diagnostic("W007", "warning", key, null, null, ("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)) :=
   frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction),
   not diagnostic_subject_suppressed("suppress.rule.W007", key).
 
@@ -637,7 +790,7 @@ dependency_config_gap_reach(status, active_dependents) :=
   dependency_config_gap(status, count, variant),
   active_dependents = Count{ src : dependency_config_gap_dependent(status, src) }.
 
-diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant, active_dependents)) :=
+builtin_diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant, active_dependents)) :=
   dependency_config_gap(status, count, variant),
   dependency_config_gap_reach(status, active_dependents),
   not diagnostic_subject_suppressed("suppress.rule.S006", status).
@@ -665,7 +818,7 @@ confidence_gap(src, target, file, source_status, source_level, target_status, ta
   pipeline_position(target, target_level),
   source_level > target_level + 1.
 
-diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
+builtin_diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
   confidence_gap(src, target, file, source_status, source_level, target_status, target_level),
   not diagnostic_subject_suppressed("suppress.rule.W002", src).
 
@@ -683,7 +836,7 @@ undischarged_obligation(h, file) :=
   discharge_count(h, 0),
   handle_file(h, file).
 
-diagnostic("E002", "error", h, file, null, "undischarged") :=
+builtin_diagnostic("E002", "error", h, file, null, "undischarged") :=
   undischarged_obligation(h, file),
   not diagnostic_subject_suppressed("suppress.rule.E002", h).
 
@@ -702,7 +855,7 @@ multiple_discharge(h, file, count) :=
   count >= 2,
   handle_file(h, file).
 
-diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
+builtin_diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
   multiple_discharge(h, file, count),
   not diagnostic_subject_suppressed("suppress.rule.I002", h).
 
@@ -740,7 +893,7 @@ missing_frontmatter_file(h, dir, file) :=
   file_parent_dir(h, dir),
   frontmatter_adoption_high(dir, with_frontmatter, total).
 
-diagnostic("W003", "warning", h, file, null, null) :=
+builtin_diagnostic("W003", "warning", h, file, null, null) :=
   missing_frontmatter_file(h, dir, file),
   not diagnostic_subject_suppressed("suppress.rule.W003", h).
 
@@ -757,7 +910,7 @@ orphaned_handle(h) :=
   in_degree(h, 0),
   *edge{from: h, kind: "Supersedes"}.
 
-diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", kind, h)) :=
+builtin_diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", kind, h)) :=
   orphaned_handle(h),
   *handle{id: h, kind: kind},
   handle_file(h, file),
@@ -818,7 +971,7 @@ s003_pipeline_stall(status, count, next_status, true) :=
 pipeline_stall(status, count, next_status, based_on_history) :=
   s003_pipeline_stall(status, count, next_status, based_on_history).
 
-diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
+builtin_diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
   pipeline_stall(status, count, next_status, based_on_history),
   not diagnostic_subject_suppressed("suppress.rule.S003", status).
 
@@ -874,7 +1027,7 @@ active_namespace_representative_file(namespace, file) :=
   active_namespace_size(namespace, total),
   file = Min{ f : active_namespace_member(namespace, h), handle_file(h, f) }.
 
-diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
+builtin_diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
   abandoned_namespace(namespace, total, terminal_count, stale_count),
   active_namespace_representative_file(namespace, file),
   not diagnostic_subject_suppressed("suppress.rule.S004", namespace).
@@ -926,6 +1079,6 @@ s005_top_pair(left_prefix, right_prefix, count) :=
 top_pair(left_prefix, right_prefix, count) :=
   s005_top_pair(left_prefix, right_prefix, count).
 
-diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
+builtin_diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
   top_pair(left_prefix, right_prefix, count),
   not diagnostic_subject_suppressed("suppress.rule.S005", left_prefix).

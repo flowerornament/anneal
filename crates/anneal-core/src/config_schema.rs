@@ -47,6 +47,7 @@ pub enum RuntimeConfigKey {
     CheckDefaultFilter,
     SuppressCode,
     SuppressRule,
+    DiagnosticsEscalate,
     ConcernsGroup,
     ImpactTraverse,
     AreasOrphanThreshold,
@@ -163,6 +164,14 @@ impl RuntimeConfigDeclaration {
             RuntimeConfigKey::FrontmatterUnmapped => {
                 let [key]: [String; 1] = expect_exact_tuple(self, values, "exactly one key")?;
                 Ok(vec![ConfigEntry::scalar("frontmatter.unmapped", key)])
+            }
+            RuntimeConfigKey::DiagnosticsEscalate => {
+                let [code, severity]: [String; 2] =
+                    expect_exact_tuple(self, values, "code and severity")?;
+                Ok(vec![ConfigEntry::scalar(
+                    format!("diagnostics.escalate.{code}"),
+                    severity,
+                )])
             }
             RuntimeConfigKey::SuppressRule => {
                 let [code, target]: [String; 2] =
@@ -426,6 +435,15 @@ pub const RUNTIME_CONFIG_DECLARATIONS: &[RuntimeConfigDeclaration] = &[
         "check",
         "default_filter",
         RuntimeConfigValueMode::Scalar,
+    ),
+    runtime_config_declaration(
+        RuntimeConfigKey::DiagnosticsEscalate,
+        "diagnostics",
+        "escalate",
+        RuntimeConfigValueMode::Tuple {
+            expected: "code and severity",
+            arity: 2,
+        },
     ),
     runtime_config_declaration(
         RuntimeConfigKey::SuppressCode,

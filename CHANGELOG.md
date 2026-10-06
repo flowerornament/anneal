@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Projects can promote diagnostic severity with `config diagnostics { escalate("W006", "error"). }`.
+  The shared diagnostic stream carries effective severity; `diagnostic_policy` exposes declared
+  and effective classes and origin. Status counts actual promoted codes, and describe cards
+  teach both classes when different. Unknown codes, downgrades and conflicting grades refuse.
+
 ### Fixed
 
 - Per-instance diagnostic suppression matches the exact subject identity and

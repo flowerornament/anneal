@@ -259,3 +259,9 @@ axis_of("topic_sibling", "topic").
 axis_of("topic_target_citation_count", "topic").
 axis_of("undischarged_obligation", "obligations").
 axis_of("used_lifecycle_status", "infrastructure").
+
+axis_of("builtin_diagnostic_policy", "diagnostic").
+axis_of("diagnostic_severity_promotion", "diagnostic").
+axis_of("project_diagnostic_escalation", "diagnostic").
+axis_of("diagnostic_policy", "diagnostic").
+axis_of("builtin_diagnostic", "diagnostic").

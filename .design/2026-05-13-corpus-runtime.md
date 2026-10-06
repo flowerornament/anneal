@@ -770,6 +770,20 @@ and unrelated global rules remain unevaluated. Rationale: code, host, issue, and
 markdown corpora need a common lifecycle vocabulary without forcing
 markdown's status model into every adapter.
 
+Projects re-grade builtin diagnostics upward with
+`config diagnostics { escalate("W006", "error"). }`. Info and suggestion may
+each promote to warning or error; warning may promote to error. Info and
+suggestion do not convert into each other, and downgrades refuse at load.
+Unknown codes or severities and conflicting declarations for one code also
+refuse; identical repeats and equal-severity declarations are accepted no-ops.
+`diagnostic/6` carries effective severity, which check exits, status and
+baselines consume. `diagnostic_policy(code, declared_severity,
+effective_severity, origin)` includes every builtin code, even with no emitted
+instance. Origin is `project` only for an actual promotion, otherwise `stdlib`.
+Status prints `N codes escalated by project` only for actual promotions;
+`describe CODE` shows both severities when they differ. Per-instance acceptance
+still applies to promoted rows without changing the policy catalog.
+
 Diagnostic acceptance is per instance: `config suppress { rule(CODE, target). }`
 filters the shared `diagnostic/6` stream by code and exact subject identity.
 For file subjects, target is the subject's file path; aggregate subjects use

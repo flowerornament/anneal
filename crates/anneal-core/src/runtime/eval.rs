@@ -1007,10 +1007,19 @@ impl Database {
     }
 
     pub(crate) fn install_program_introspection(&mut self, program: &AnalyzedProgram) {
-        self.introspection = Arc::new(
-            self.introspection
-                .for_program(program, self.stored_relation_summaries()),
-        );
+        let mut diagnostic_config = BTreeMap::new();
+        self.tuples.for_each_tuple_row("config", |row| {
+            if let (Some(key), Some(value)) = (row.string("key"), row.string("value"))
+                && key.starts_with(crate::diagnostics::ESCALATION_PREFIX)
+            {
+                diagnostic_config.insert(key.to_owned(), value.to_owned());
+            }
+        });
+        self.introspection = Arc::new(self.introspection.for_program(
+            program,
+            self.stored_relation_summaries(),
+            &diagnostic_config,
+        ));
     }
 
     pub(crate) fn install_query_introspection(&mut self, query: &AnalyzedQuery) {

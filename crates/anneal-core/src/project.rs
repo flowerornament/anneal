@@ -108,6 +108,7 @@ pub fn load_project_extension(
     validate_no_verb_arg_definitions(&program)?;
     validate_program_layer_merge(base_program, &program)?;
     validate_verbs(&program, base_program)?;
+    validate_diagnostic_escalations(base_program, &runtime_config)?;
     Ok(ProjectExtension {
         discovery,
         runtime_config,
@@ -346,6 +347,36 @@ fn split_project_program(
     let runtime_config = ConfigFacts::try_from_entries(runtime_config)
         .map_err(ProjectLoadError::DuplicateRuntimeConfigOrdinal)?;
     Ok((discovery, runtime_config, Program::new(statements)))
+}
+
+fn validate_diagnostic_escalations(
+    base: &Program,
+    config: &ConfigFacts,
+) -> Result<(), ProjectLoadError> {
+    let catalog = crate::diagnostics::DiagnosticCatalog::from_program(base);
+    let mut configured = BTreeMap::new();
+    for entry in config.entries() {
+        let Some(code) = entry
+            .key
+            .strip_prefix(crate::diagnostics::ESCALATION_PREFIX)
+        else {
+            continue;
+        };
+        catalog
+            .validate(code, &entry.value)
+            .map_err(|reason| ProjectLoadError::InvalidDiagnosticEscalation { reason })?;
+        if let Some(previous) = configured.insert(code, entry.value.as_str())
+            && previous != entry.value
+        {
+            return Err(ProjectLoadError::InvalidDiagnosticEscalation {
+                reason: format!(
+                    "conflicting severities for '{code}': {previous} and {}",
+                    entry.value
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_dependency_classifications(entries: &[ConfigEntry]) -> Result<(), ProjectLoadError> {
@@ -775,6 +806,8 @@ pub enum ProjectLoadError {
         "suppress.code cannot silence diagnostics by code; use config suppress {{ rule(CODE, target). }} per instance, where target is the exact diagnostic subject identity"
     )]
     BlanketSuppression,
+    #[error("diagnostics.escalate: {reason}")]
+    InvalidDiagnosticEscalation { reason: String },
     #[error("{location}: declaration '{name}' values must be static literals")]
     NonLiteralDeclarationValue {
         name: String,
