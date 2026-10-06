@@ -1038,6 +1038,9 @@ fn commits_since_assertion(
         )
         .map(|output| nonempty_line_count(&output));
     }
+    // Date-only fallback: an assertion's author-calendar date bounds Git's
+    // committer-time --since filter over target history. This is not a count
+    // filtered by target author dates; a valid revision uses ancestry above.
     request
         .assertion_date
         .as_deref()

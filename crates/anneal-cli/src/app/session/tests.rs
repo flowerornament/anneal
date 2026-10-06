@@ -105,7 +105,7 @@ fn jj_workspace_projects_repository_capabilities_and_teaches_missing_evidence() 
         BTreeSet::from([
             (
                 "assertion_blame".to_string(),
-                "jj-assertion-verification-not-defined".to_string(),
+                "jj-assertion-blame-not-defined".to_string(),
             ),
             (
                 "change_history".to_string(),

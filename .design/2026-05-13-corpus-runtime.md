@@ -564,8 +564,8 @@ populates and every rule may join on.
   kind,                 // typed relationship name
   file,                 // file/locator containing the assertion, if any
   line,                 // line containing the assertion; 0 if not applicable
-  assertion_date,       // verified ISO date for the asserting line; may be null
-  assertion_revision,   // verified revision for the asserting line; may be null
+  assertion_date,       // author-calendar date of the line-change commit; may be null
+  assertion_revision,   // commit that last changed the asserting line; may be null
   corpus, source, native_id, origin_uri, revision, generation
 }
 
@@ -620,10 +620,14 @@ host prefix under CR-D31, while source-neutral standard metadata such as
 For `*edge`, `revision` remains the source fact identity revision: it
 answers "which adapter source revision emitted this edge row?"
 `assertion_date` and `assertion_revision` answer the separate CR-D8
-question "when was the line that asserted this relationship last
-verified?" Adapters populate assertion fields only from direct
-assertion-time evidence such as VCS blame for the cited line. They stay
-null rather than falling back to handle dates or generation timestamps.
+question "which commit last changed the asserting line, and what is that
+commit's author-calendar date?" The markdown adapter selects the commit with
+VCS blame (`-w -M -C`) for the cited line and reads its author date. Blame
+accounts for whitespace, moves and copies; it does not verify the assertion's
+meaning. An amended long-lived commit retains its author timestamp, so the
+date records commit authorship rather than the last byte-edit wall clock.
+Fields stay null when line-change evidence is unavailable, rather than
+falling back to handle dates or generation timestamps.
 
 Every source-derived stored relation is **adapter-populated and
 generation-tracked**. `*config` is runtime-populated but still
@@ -3414,7 +3418,7 @@ its time while it is amended. Each operation names what it uses:
 |---|---|
 | change history | Author time of the commit that the direct-Git traversal selects for the file, walked from the pin instead of `HEAD`. Same path-limited traversal, author time in place of committer time. |
 | target history | Existence of the cited target in the workspace, and its path history along the pin. This earns W006 for missing, gone and ambiguously moved targets. A rewrite that carries a file unchanged is not a change. Counts of change since citation need an assertion premise and stay unknown; a cached assertion date never substitutes for one. |
-| assertion blame | No answer. `assertion_date` and `assertion_revision` are null, because no VCS time records verification. |
+| assertion blame | No answer. `assertion_date` and `assertion_revision` are null with reason `jj-assertion-blame-not-defined`: pinned-workspace line blame is not defined. Commit timestamps alone do not identify the commit that last changed the asserting line. |
 | ignore-index classification | Ignore rules from the ignore files in the workspace tree, with tracked-ness read from the tree of the pin. Repository-private and user-global exclude files are outside `@` and are not consulted. |
 
 `git_mtime`, `changed_within`, and the undated fallback of `recent_frontier`

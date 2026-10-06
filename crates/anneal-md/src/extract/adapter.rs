@@ -923,7 +923,7 @@ impl EdgeAssertionShowMemo {
             self.show_invocations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let output = git_command(repo_root)
-                .args(["show", "-s", "--format=%cI", revision])
+                .args(["show", "-s", "--format=%aI", revision])
                 .output()
                 .ok()?;
             if !output.status.success() || output.stdout.is_empty() {
@@ -3188,7 +3188,7 @@ mod tests {
             .next()
             .expect("blame revision")
             .trim_start_matches('^');
-        let date = git_stdout(&repo, &["show", "-s", "--format=%cI", revision]);
+        let date = git_stdout(&repo, &["show", "-s", "--format=%aI", revision]);
         assert_eq!(code_edge.assertion_revision.as_deref(), Some(revision));
         assert_eq!(code_edge.assertion_date.as_deref(), date.get(..10));
     }
@@ -3826,7 +3826,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_assertion_probe_is_verified_or_null() {
+    fn edge_assertion_probe_is_authored_commit_or_null() {
         let temp = tempdir().expect("tempdir");
         let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
         std::fs::create_dir_all(root.join("src")).expect("create src");
@@ -3877,9 +3877,114 @@ mod tests {
             .next()
             .expect("blame revision")
             .trim_start_matches('^');
-        let date = git_stdout(&root, &["show", "-s", "--format=%cI", revision]);
+        let date = git_stdout(&root, &["show", "-s", "--format=%aI", revision]);
         assert_eq!(edge.assertion_date.as_deref(), date.get(..10));
         assert_eq!(edge.assertion_revision.as_deref(), Some(revision));
+    }
+
+    #[test]
+    fn edge_assertion_author_date_survives_rebase_and_cherry_pick() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 tempdir");
+        std::fs::create_dir_all(root.join("src")).expect("create src");
+        run_git(&root, &["init"]);
+        std::fs::write(root.join("base.txt"), "base\n").expect("write base");
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "base"]);
+        run_git(&root, &["branch", "base"]);
+        run_git(&root, &["checkout", "-b", "citation"]);
+        std::fs::write(root.join("src/lib.rs"), "pub fn target() {}\n").expect("write code");
+        std::fs::write(root.join("doc.md"), "# Doc\n\nSee `src/lib.rs:1`.\n").expect("write doc");
+        run_git(&root, &["add", "."]);
+        run_git_at(
+            &root,
+            &["commit", "-m", "citation"],
+            "2026-02-01T12:00:00Z",
+            "2026-03-01T12:00:00Z",
+        );
+        let original_revision = git_stdout(&root, &["rev-parse", "HEAD"]);
+
+        let assertion = || {
+            let batch = extract_markdown_facts_with_options(
+                &root,
+                CorpusId::from("test"),
+                SourceName::from("markdown"),
+                Generation::initial(),
+                &MarkdownExtractionOptions {
+                    probe_edge_assertions: true,
+                    ..MarkdownExtractionOptions::default()
+                },
+            )
+            .expect("extract assertions");
+            let edge = cited_edge(&batch, "doc.md", "external:code:doc.md:3:src/lib.rs:1");
+            (edge.assertion_date.clone(), edge.assertion_revision.clone())
+        };
+        assert_eq!(assertion().0.as_deref(), Some("2026-02-01"));
+        run_git(&root, &["checkout", "base"]);
+        std::fs::write(root.join("unrelated.txt"), "unrelated\n").expect("write unrelated");
+        run_git(&root, &["add", "."]);
+        run_git(&root, &["commit", "-m", "advance base"]);
+        run_git(&root, &["checkout", "citation"]);
+        run_git_at(
+            &root,
+            &["rebase", "base"],
+            "2026-04-01T12:00:00Z",
+            "2026-04-02T12:00:00Z",
+        );
+        assert_ne!(git_stdout(&root, &["rev-parse", "HEAD"]), original_revision);
+        assert_eq!(assertion().0.as_deref(), Some("2026-02-01"));
+        run_git(&root, &["checkout", "base"]);
+        run_git_at(
+            &root,
+            &["cherry-pick", &original_revision],
+            "2026-05-01T12:00:00Z",
+            "2026-05-02T12:00:00Z",
+        );
+        assert_ne!(git_stdout(&root, &["rev-parse", "HEAD"]), original_revision);
+        assert_eq!(assertion().0.as_deref(), Some("2026-02-01"));
+
+        std::fs::write(
+            root.join("doc.md"),
+            "# Doc\n\nRevised assertion cites `src/lib.rs:1`.\n",
+        )
+        .expect("edit asserting line");
+        assert_eq!(assertion(), (None, None));
+        run_git(&root, &["add", "doc.md"]);
+        run_git_at(
+            &root,
+            &["commit", "-m", "edit assertion"],
+            "2026-06-01T12:00:00Z",
+            "2026-07-01T12:00:00Z",
+        );
+        let (date, revision) = assertion();
+        assert_eq!(date.as_deref(), Some("2026-06-01"));
+        assert!(
+            git_stdout(&root, &["rev-parse", "HEAD"])
+                .starts_with(revision.as_deref().expect("blame revision"))
+        );
+    }
+
+    fn run_git_at(root: &Utf8Path, args: &[&str], author_date: &str, committer_date: &str) {
+        let status = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env("GIT_CONFIG_GLOBAL", root.join(".anneal-test-gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_DATE", author_date)
+            .env("GIT_COMMITTER_DATE", committer_date)
+            .args([
+                "-c",
+                "user.name=Anneal Test",
+                "-c",
+                "user.email=anneal@example.test",
+                "-C",
+            ])
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?} failed: {status}");
     }
 
     #[test]

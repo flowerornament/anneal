@@ -214,7 +214,9 @@ the distinction.
       corpus, source, generation}        # identity still carries revision
 ```
 
-- Populated **verified-or-null**. The markdown adapter populates from the
+- Populated **blame-derived-or-null**: the commit that last changed the
+  asserting line and its author-calendar date, without claiming semantic
+  verification. The markdown adapter populates from the
   out-of-band blame pass (903i: 100% coverage, ~28ms median); population
   mode (eager / generation-incremental) is an extraction option, default
   incremental; decoration happens inside the markdown batch (§4).

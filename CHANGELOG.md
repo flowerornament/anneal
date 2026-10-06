@@ -6,6 +6,12 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Assertion provenance records the author-calendar date of the commit that
+  blame selects for the asserting line, instead of its committer date. Rebases
+  and cherry-picks retain that date; line-change evidence does not claim
+  semantic verification. Field names stay unchanged; jj workspaces still
+  report unavailable blame with reason `jj-assertion-blame-not-defined`.
+
 - EEP-48 explicit citations come from Markdown links to code references,
   including ExDoc custom destinations. URLs, extras, files, anchors and
   literal code examples do not mint code handles; known modules and members

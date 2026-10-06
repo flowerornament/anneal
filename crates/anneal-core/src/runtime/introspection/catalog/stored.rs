@@ -17,8 +17,8 @@ pub(in crate::runtime::introspection) fn stored_signature(
 pub(in crate::runtime::introspection) fn stored_relation_extra_lines(name: &str) -> Vec<String> {
     match name {
         "edge" => vec![
-            "assertion_date and assertion_revision describe the cited line that asserted the edge; revision describes the source fact identity.".to_string(),
-            "Adapters leave assertion_* null when assertion-time evidence is not verified.".to_string(),
+            "assertion_revision identifies the commit that last changed the asserting line; assertion_date is that commit's author-calendar date. revision describes the source fact identity.".to_string(),
+            "Blame-derived authorship does not verify the assertion. Adapters leave assertion_* null when line-change evidence is unavailable.".to_string(),
         ],
         "meta" => vec![
             "Open metadata extension on handles. role is derived, authored_modeled, or authored_unmodeled; adapters assign it at emission from source authorship and effective configuration.".to_string(),

@@ -142,7 +142,7 @@ impl JjEvidence {
         };
         evidence.fail(
             RepositoryOperation::AssertionBlame,
-            "jj-assertion-verification-not-defined",
+            "jj-assertion-blame-not-defined",
         );
         let Ok(git_dir) = resolve_backing(&evidence.root) else {
             evidence.fail_dependent("jj-backing-unavailable");
@@ -248,7 +248,7 @@ impl JjEvidence {
                 RepositoryOperation::ChangeHistory => "jj-author-history",
                 RepositoryOperation::TargetHistory => "jj-pinned-target-history",
                 RepositoryOperation::IgnoreIndex => "jj-workspace-ignore-and-tree",
-                RepositoryOperation::AssertionBlame => "jj-assertion-verification-not-defined",
+                RepositoryOperation::AssertionBlame => "jj-assertion-blame-not-defined",
             })
     }
     pub(super) fn fail(&self, operation: RepositoryOperation, reason: &'static str) {

@@ -83,13 +83,12 @@ time*." The assertion time is modeled, not assumed:
 
 - **`*edge` gains nullable `date` + `revision` (CR-D8 amendment candidate).**
   The edge already carries `file` + `line`, so `git blame` (`-w -M -C`) on
-  the citing line yields a **machine-verified timestamp + revision for the
-  exact assertion** — better provenance than any handle-level date, with the
-  right semantics: the line's last substantive edit is the last time an
-  author re-asserted the claim. Population is verified-or-null — the field
-  carries only earned authority. (Accepted second-order noise: a mechanical
-  sweep re-dates a line without re-verifying it; an author still touched the
-  claim.)
+  the citing line identifies **the commit that last changed the asserting
+  line**; its author-calendar date records that commit's authorship. Population
+  is blame-derived-or-null. Blame accounts for whitespace, moves and copies,
+  but does not verify the assertion's meaning. A mechanical sweep can re-date
+  the line without validating the claim, while an amended long-lived commit
+  retains its author timestamp.
 - **Fallback ladder** when the edge date is null: the citing handle's `date`
   (weaker — frontmatter dates can be editorial, copied, or absent), else an
   explicit **`assertion_date_unknown`** disposition. "A date exists
