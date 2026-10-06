@@ -265,6 +265,7 @@ fn described_program_names(program: &Program) -> BTreeSet<String> {
                 | Statement::Query(_)
                 | Statement::Include(_)
                 | Statement::Import(_)
+                | Statement::Diagnostic(_)
                 | Statement::Verb(_) => {}
             }
         }

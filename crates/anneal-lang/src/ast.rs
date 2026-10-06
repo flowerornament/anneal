@@ -164,6 +164,7 @@ impl Statement {
             | Self::Import(_)
             | Self::Verb(_)
             | Self::Doc(_)
+            | Self::Diagnostic(_)
             | Self::Predicate(_) => {}
         }
     }
@@ -186,6 +187,7 @@ pub enum Statement {
     Verb(VerbDecl),
     Doc(DocDecl),
     Predicate(PredicateDecl),
+    Diagnostic(AnnotationDecl),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -446,6 +448,14 @@ pub struct Head {
 }
 
 impl Head {
+    pub fn new(predicate: PredicateRef, terms: Vec<Term>, location: SourceLocation) -> Self {
+        Self {
+            predicate,
+            terms,
+            location,
+        }
+    }
+
     pub fn arity(&self) -> usize {
         self.terms.len()
     }

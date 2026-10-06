@@ -770,7 +770,7 @@ and unrelated global rules remain unevaluated. Rationale: code, host, issue, and
 markdown corpora need a common lifecycle vocabulary without forcing
 markdown's status model into every adapter.
 
-Projects re-grade builtin diagnostics upward with
+Projects re-grade declared builtin and project diagnostics upward with
 `config diagnostics { escalate("W006", "error"). }`. Info and suggestion may
 each promote to warning or error; warning may promote to error. Info and
 suggestion do not convert into each other, and downgrades refuse at load.
@@ -778,11 +778,19 @@ Unknown codes or severities and conflicting declarations for one code also
 refuse; identical repeats and equal-severity declarations are accepted no-ops.
 `diagnostic/6` carries effective severity, which check exits, status and
 baselines consume. `diagnostic_policy(code, declared_severity,
-effective_severity, origin)` includes every builtin code, even with no emitted
+effective_severity, origin)` includes every builtin and declared project code, even with no emitted
 instance. Origin is `project` only for an actual promotion, otherwise `stdlib`.
 Status prints `N codes escalated by project` only for actual promotions;
 `describe CODE` shows both severities when they differ. Per-instance acceptance
 still applies to promoted rows without changing the policy catalog.
+
+Project diagnostics contribute through `project_diagnostic/6`, never by
+shadowing `diagnostic/6`. Each P+digits code requires @diagnostic teaching
+metadata with mandatory declared severity, doc, rule and evidence names.
+Literal contract violations refuse at load; invalid dynamic rows derive E003
+with the original producing clause. The sealed stdlib applies the same grading
+and instance acceptance to project rows. Declaration ownership is distinct from
+grading origin; see CR-D49 for the full extension contract.
 
 Diagnostic acceptance is per instance: `config suppress { rule(CODE, target). }`
 filters the shared `diagnostic/6` stream by code and exact subject identity.
@@ -2254,7 +2262,7 @@ language rather than an accretion.
 violation.
 
 The v2.0 relational check catalog includes E001 (broken refs), E002
-(undischarged), W001-W007 (warnings), I001-I002 (info), and S001-S006
+(undischarged), E003 (project diagnostic contract failures), W001-W008 (warnings), I001-I002 (info), and S001-S006
 (suggestions) — as Horn clauses in `checks.dl`. The substrate has no
 hard-coded check logic. E001 is the minimal executable anchor required
 by the convergence vocabulary; the remaining catalog must land before
@@ -2299,6 +2307,46 @@ Rationale: v1.x diagnostic records include rendered prose, hashed IDs,
 JSON evidence decoding, and resolution-cascade candidate formatting.
 Those are output concerns; the standard library should remain
 queryable Horn clauses over stored relations.
+
+Projects contribute `project_diagnostic(code, severity, subject, file, line,
+evidence)` rows to the sealed `diagnostic/6` stream through one standard-library
+union. Codes are `P` followed by one or more digits. Each code requires:
+
+```dl
+@diagnostic(code: "P001", severity: "warning", doc: "Project finding.",
+  rule: project_diagnostic, evidence: ["kind", "value"]).
+```
+
+`severity` is one declared class per code; it does not depend on whether a row
+is currently emitted. `doc` and evidence names are nonempty; `rule` names a
+known predicate (a bare name or a string for a qualified name). Duplicate or
+malformed declarations, invalid literal producer codes and literal declared
+severity mismatches refuse at load. Dynamic invalid/undeclared codes and severity
+mismatches derive E003 with tagged evidence naming the original producing clause
+and the offending value. Rows remain queryable through `project_diagnostic`;
+invalid rows cannot silently disappear from `anneal check`.
+
+The project input is author-owned; its tagged producer relation, validated
+catalog, contract failures and union are sealed. Imported qualified producers
+contribute through an explicit unqualified project input rule; included rules
+contribute directly. Query-local rules do not change the check population.
+`diagnostic_policy` includes declared project codes even with no emitted rows.
+Project codes use the same upward promotions and exact subject acceptance as
+builtins. Equal severity retains grading origin `stdlib`; actual promotion has
+origin `project`. Declaration ownership remains `project` on each code card and
+is distinct from grading origin.
+
+The analyzer requires literal codes on project/inline `diagnostic` heads. Its
+only dynamic-head allowance is the trusted prelude's sealed single-clause
+forward from `validated_project_diagnostic/6` to `diagnostic/6`.
+
+Search evidence counts matching spans, including ancestors. In Herald's
+`NothingToBless` example two occurrences yield four matching spans; a deepest
+matching span filter selects two children. This filter is not an occurrence
+counter: if parent prose and a child both match, it drops the parent's own
+occurrence. Descendant comparisons retain the same handle and query term and
+require a strict span-id prefix plus line containment. The `project_diagnostic`
+card teaches this boundary.
 
 ### §28.2 Corpus-scoped diagnostic locations [CR-D69]
 

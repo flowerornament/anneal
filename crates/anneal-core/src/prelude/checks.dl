@@ -7,7 +7,7 @@
 
 @doc(
   name: "diagnostic",
-  doc: "Return every standard diagnostic as data: code, effective severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; use a separately named predicate for project observations."
+  doc: "Return every standard and declared project diagnostic as data: code, effective severity, subject handle, location, and evidence. Commands render these rows as errors, warnings, suggestions, and explanations. This gate-output relation cannot be shadowed from anneal.dl because replacing it could make a broken corpus pass anneal check; contribute project observations through project_diagnostic/6 with @diagnostic teaching metadata."
 ).
 
 @predicate(
@@ -27,6 +27,7 @@
 ).
 builtin_diagnostic_policy("E001", "error", "diagnostics.escalate.E001").
 builtin_diagnostic_policy("E002", "error", "diagnostics.escalate.E002").
+builtin_diagnostic_policy("E003", "error", "diagnostics.escalate.E003").
 builtin_diagnostic_policy("I001", "info", "diagnostics.escalate.I001").
 builtin_diagnostic_policy("I002", "info", "diagnostics.escalate.I002").
 builtin_diagnostic_policy("S001", "suggestion", "diagnostics.escalate.S001").
@@ -68,18 +69,18 @@ diagnostic_severity_promotion("warning", "error").
   shadow: "forbid"
 ).
 project_diagnostic_escalation(code, declared, effective) :=
-  builtin_diagnostic_policy(code, declared, key),
+  diagnostic_declaration(code, declared, key),
   *config{key: key, value: effective},
   diagnostic_severity_promotion(declared, effective).
 
 @doc(
   name: "diagnostics",
-  doc: "Configure builtin grading with config diagnostics { escalate(CODE, SEVERITY). }. Only upward promotions are allowed; identical repeats and equal grades are stdlib no-ops. Query diagnostic_policy for declared and effective classes and origin, and describe CODE for the effective teaching card. Unknown codes/classes, downgrades and conflicting grades refuse at load. Acceptance remains per subject instance through config suppress."
+  doc: "Configure declared diagnostic grading with config diagnostics { escalate(CODE, SEVERITY). }. Only upward promotions are allowed; identical repeats and equal grades are stdlib no-ops. Query diagnostic_policy for declared and effective classes and origin, and describe CODE for the effective teaching card. Unknown codes/classes, downgrades and conflicting grades refuse at load. Acceptance remains per subject instance through config suppress."
 ).
 
 @doc(
   name: "diagnostic_policy",
-  doc: "Return the effective diagnostic grading for every builtin code, even when no instance is emitted. Origin is project only for an actual promotion; equal-severity declarations are accepted stdlib no-ops. Config diagnostics escalate(CODE, SEVERITY) permits upward re-grading only; unknown codes, classes, downgrades and conflicting declarations refuse at load. Instance suppression does not remove policy rows."
+  doc: "Return the effective diagnostic grading for every builtin and declared project code, even when no instance is emitted. Origin is project only for an actual promotion; equal-severity declarations are accepted stdlib no-ops. Config diagnostics escalate(CODE, SEVERITY) permits upward re-grading only; unknown codes, classes, downgrades and conflicting declarations refuse at load. Instance suppression does not remove policy rows."
 ).
 @predicate(
   name: "diagnostic_policy",
@@ -89,7 +90,7 @@ project_diagnostic_escalation(code, declared, effective) :=
 diagnostic_policy(code, declared, effective, "project") :=
   project_diagnostic_escalation(code, declared, effective).
 diagnostic_policy(code, declared, declared, "stdlib") :=
-  builtin_diagnostic_policy(code, declared, key),
+  diagnostic_declaration(code, declared, key),
   not project_diagnostic_escalation(code, declared, _).
 
 @doc(
@@ -168,6 +169,41 @@ diagnostic("W007", effective, subject, file, line, evidence) :=
 diagnostic("W008", effective, subject, file, line, evidence) :=
   builtin_diagnostic("W008", declared, subject, file, line, evidence),
   diagnostic_policy("W008", declared, effective, origin).
+
+
+@predicate(name: "diagnostic_declaration", args: ["code", "declared_severity", "config_key"], shadow: "forbid").
+diagnostic_declaration(code, severity, key) := builtin_diagnostic_policy(code, severity, key).
+diagnostic_declaration(code, severity, key) := project_diagnostic_declaration(code, severity, key, _).
+
+@doc(name: "project_diagnostic", doc: "Contribute project diagnostic rows under P followed by digits, with mandatory @diagnostic(code, severity, doc, rule, evidence) teaching metadata. Rows use declared severity; policy promotes them and exact subject suppression accepts instances. Invalid or undeclared dynamic codes and severity mismatches emit E003 naming the producing clause. Search returns matching spans, including ancestors: Herald NothingToBless has four spans for two occurrences; a deepest-matching-span filter selects the two children. This is span selection, not occurrence counting: when both parent prose and child match, it drops the parent's own occurrence. Keep handle and term equal in descendant comparisons; require strict prefix plus line containment.").
+@predicate(name: "project_diagnostic", args: ["code", "severity", "subject", "file", "line", "evidence"]).
+@predicate(name: "project_diagnostic_producer", args: ["code", "severity", "subject", "file", "line", "evidence", "producer"], shadow: "forbid").
+@predicate(name: "project_diagnostic_declaration", args: ["code", "severity", "escalation_key", "suppression_key"], shadow: "forbid").
+@predicate(name: "validated_project_diagnostic", args: ["code", "severity", "subject", "file", "line", "evidence"], shadow: "forbid").
+@predicate(name: "project_diagnostic_contract_failure", args: ["subject", "file", "line", "evidence"], shadow: "forbid").
+project_diagnostic(code, severity, subject, file, line, evidence) :=
+  project_diagnostic_producer(code, severity, subject, file, line, evidence, _).
+validated_project_diagnostic(code, effective, subject, file, line, evidence) :=
+  project_diagnostic_producer(code, declared, subject, file, line, evidence, _),
+  project_diagnostic_declaration(code, declared, _, suppression_key),
+  diagnostic_policy(code, declared, effective, _),
+  not diagnostic_subject_suppressed(suppression_key, subject).
+project_diagnostic_contract_failure(subject, file, line, ("invalid_or_undeclared_code", producer, code)) :=
+  project_diagnostic_producer(code, _, subject, file, line, _, producer),
+  not project_diagnostic_declaration(code, _, _, _).
+project_diagnostic_contract_failure(subject, file, line, ("severity_mismatch", producer, code, actual, declared)) :=
+  project_diagnostic_producer(code, actual, subject, file, line, _, producer),
+  project_diagnostic_declaration(code, declared, _, _),
+  actual != declared.
+builtin_diagnostic("E003", "error", subject, file, line, evidence) :=
+  project_diagnostic_contract_failure(subject, file, line, evidence),
+  not diagnostic_subject_suppressed("suppress.rule.E003", subject).
+diagnostic("E003", effective, subject, file, line, evidence) :=
+  builtin_diagnostic("E003", declared, subject, file, line, evidence),
+  diagnostic_policy("E003", declared, effective, _).
+# The only trusted dynamic diagnostic head: projects cannot replace either relation.
+diagnostic(code, severity, subject, file, line, evidence) :=
+  validated_project_diagnostic(code, severity, subject, file, line, evidence).
 
 @doc(
   name: "suppress",

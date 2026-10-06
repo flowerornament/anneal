@@ -618,6 +618,7 @@ fn check_no_optional_discovery_fact(statement: &Statement) -> Result<(), StaticE
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
+        | Statement::Diagnostic(_)
         | Statement::Predicate(_) => Ok(()),
     }
 }
@@ -641,6 +642,7 @@ fn collect_explicit_predicate_signatures(
             | Statement::Include(_)
             | Statement::Import(_)
             | Statement::Verb(_)
+            | Statement::Diagnostic(_)
             | Statement::Doc(_) => {}
         }
     }
@@ -943,6 +945,7 @@ fn normalize_global_statement_named_calls(
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
+        | Statement::Diagnostic(_)
         | Statement::Predicate(_) => Ok(()),
     }
 }
@@ -1386,6 +1389,18 @@ fn check_diagnostic_rule(
         return Ok(());
     }
 
+    // Only the sealed prelude union may forward dynamically named project codes.
+    if rule.origin().layer() == RuleLayer::Prelude
+        && rule.head.predicate.module.is_none()
+        && rule.head.terms.len() == 6
+        && rule.body.atoms.len() == 1
+        && matches!(&rule.body.atoms[0], Atom::Derived(atom)
+            if atom.predicate.display_name() == "validated_project_diagnostic"
+                && atom.args.len() == rule.head.terms.len()
+                && atom.args.iter().zip(&rule.head.terms).all(|(arg, term)| matches!(arg, CallArg::Positional { .. }) && arg.expr() == term.expr()))
+    {
+        return Ok(());
+    }
     let location = rule.origin().location().clone();
     let Some(Term::Expr(Expr::Literal(Literal::String(id)))) = rule.head.terms.first() else {
         return Err(StaticError::DiagnosticIdMustBeLiteral {
@@ -2554,6 +2569,18 @@ mod tests {
         .unwrap();
         let err = analyze(program).expect_err("diagnostic id rejected");
         assert!(matches!(err, StaticError::DiagnosticIdMustBeLiteral { .. }));
+    }
+
+    #[test]
+    fn dynamic_project_union_is_not_granted_to_authored_rules() {
+        let program = parse_program("project-union.dl", r#"
+          validated_project_diagnostic(code, severity, subject, file, line, evidence) := *handle{id: subject}, code = "P001", severity = "warning", file = null, line = null, evidence = null.
+          diagnostic(code, severity, subject, file, line, evidence) := validated_project_diagnostic(code, severity, subject, file, line, evidence).
+        "#).expect("parse union-shaped project rule");
+        assert!(matches!(
+            analyze(program),
+            Err(StaticError::DiagnosticIdMustBeLiteral { .. })
+        ));
     }
 
     #[test]

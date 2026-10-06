@@ -6,6 +6,11 @@ All notable changes to `anneal` are documented in this file.
 
 ### Added
 
+- Projects contribute P-code diagnostics through `project_diagnostic/6` with
+  mandatory `@diagnostic` teaching metadata and declared severity. The sealed
+  union applies shared promotion and exact subject acceptance; E003 reports
+  invalid dynamic codes and class mismatches with the producing clause.
+
 - Projects can promote diagnostic severity with `config diagnostics { escalate("W006", "error"). }`.
   The shared diagnostic stream carries effective severity; `diagnostic_policy` exposes declared
   and effective classes and origin. Status counts actual promoted codes, and describe cards

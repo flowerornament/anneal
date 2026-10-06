@@ -275,6 +275,17 @@ pub(super) fn convergence_topic_card() -> String {
 /// Canonical diagnostic-code vocabulary projected into `describe` and examples.
 pub(super) const DIAGNOSTIC_CODE_CARDS: &[DiagnosticCodeCard] = &[
     DiagnosticCodeCard {
+        code: "E003",
+        summary: "Project diagnostic contract failure: a producer emitted an invalid or undeclared code, or a severity different from its declaration.",
+        rule: "project_diagnostic_contract_failure",
+        evidence: "(invalid_or_undeclared_code, producing_clause, code) or (severity_mismatch, producing_clause, code, actual, declared)",
+        common_joins: &[
+            "`project_diagnostic(code, severity, subject, file, line, evidence)` retains the authored row; `project_diagnostic_contract_failure(subject, file, line, evidence)` explains its refusal",
+        ],
+        example: r#"? diagnostic{code: "E003", subject: subject, evidence: evidence}."#,
+        see_also: &["project_diagnostic", "diagnostic_policy", "diagnostic"],
+    },
+    DiagnosticCodeCard {
         code: "E001",
         summary: "Broken reference: a corpus edge points at a handle that does not exist.",
         rule: "broken_reference",

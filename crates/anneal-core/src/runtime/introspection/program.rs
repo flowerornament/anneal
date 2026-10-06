@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::ast::{
-    DocDecl, Expr, Head, PredicateDecl, Program, RuleLayer, SourceLocation, Statement, Term,
+    DocDecl, Expr, Head, PredicateDecl, PredicateRef, Program, RuleLayer, SourceLocation,
+    Statement, Term,
 };
 use super::projection;
 
@@ -292,6 +293,7 @@ impl ProgramScanner {
                 Statement::Query(_)
                 | Statement::ConfigBlock(_)
                 | Statement::SourceBlock(_)
+                | Statement::Diagnostic(_)
                 | Statement::Verb(_)
                 | Statement::Include(_)
                 | Statement::Import(_)
@@ -309,6 +311,13 @@ pub(super) fn add_predicate_head(
     location: &SourceLocation,
 ) {
     let name = head.predicate.display_name();
+    if name == "project_diagnostic_producer" {
+        let mut authored = head.clone();
+        authored.predicate =
+            PredicateRef::parse("project_diagnostic").expect("fixed predicate name");
+        authored.terms.truncate(6);
+        add_predicate_head(out, &authored, layer, location);
+    }
     out.entry(name)
         .and_modify(|info| info.add_head(head, layer, location))
         .or_insert_with(|| PredicateInfo::new(head, layer, location));

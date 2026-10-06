@@ -108,7 +108,14 @@ pub fn load_project_extension(
     validate_no_verb_arg_definitions(&program)?;
     validate_program_layer_merge(base_program, &program)?;
     validate_verbs(&program, base_program)?;
-    validate_diagnostic_escalations(base_program, &runtime_config)?;
+    let mut validation_program = program.clone();
+    crate::diagnostics::lower_project(&mut validation_program)
+        .map_err(|reason| ProjectLoadError::InvalidProjectDiagnostic { reason })?;
+    let mut catalog_program = base_program.clone();
+    catalog_program
+        .statements
+        .extend(validation_program.statements);
+    validate_diagnostic_escalations(&catalog_program, &runtime_config)?;
     Ok(ProjectExtension {
         discovery,
         runtime_config,
@@ -169,10 +176,15 @@ struct DeclaredShadowPolicy {
 
 pub fn merge_program_layers(
     base: Program,
-    extension: Program,
+    mut extension: Program,
 ) -> Result<(Program, Vec<ShadowWarning>), ProgramLayerError> {
     validate_program_layer_merge(&base, &extension)?;
-    let shadowed = shadowed_predicates(&extension);
+    crate::diagnostics::lower_project(&mut extension)
+        .map_err(|message| ProgramLayerError { message })?;
+    let mut shadowed = shadowed_predicates(&extension);
+    shadowed.remove("project_diagnostic_declaration");
+    shadowed.remove("project_diagnostic_producer");
+    shadowed.remove("project_diagnostic");
     if shadowed.is_empty() {
         let mut statements = base.statements;
         statements.extend(extension.statements);
@@ -309,6 +321,7 @@ fn statement_definition(statement: &Statement) -> Option<(String, SourceLocation
         | Statement::Import(_)
         | Statement::AtBlock { .. }
         | Statement::Verb(_)
+        | Statement::Diagnostic(_)
         | Statement::Predicate(_) => None,
     }
 }
@@ -808,6 +821,8 @@ pub enum ProjectLoadError {
     BlanketSuppression,
     #[error("diagnostics.escalate: {reason}")]
     InvalidDiagnosticEscalation { reason: String },
+    #[error("{reason}")]
+    InvalidProjectDiagnostic { reason: String },
     #[error("{location}: declaration '{name}' values must be static literals")]
     NonLiteralDeclarationValue {
         name: String,

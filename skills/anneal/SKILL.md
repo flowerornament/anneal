@@ -283,15 +283,31 @@ For metadata intent use `config frontmatter { unmapped("KEY"). }` and inspect
 projection and W007 are suppressed. A field and unmapped declaration for the
 same key conflict. Init preserves both overrides and intentional opt-outs.
 
-Use `config diagnostics { escalate("W006", "error"). }` to promote a builtin
+Use `config diagnostics { escalate("W006", "error"). }` to promote a declared
 code for this corpus. Info and suggestion may each promote to warning or error;
 warning may promote to error. Info and suggestion do not convert into each
 other. Unknown codes/classes, downgrades and conflicting grades refuse at load;
 identical repeats and equal grades are no-ops. `diagnostic` carries effective
 severity, so check exits and status use it. `diagnostic_policy(code,
-declared_severity, effective_severity, origin)` includes all builtin codes;
+declared_severity, effective_severity, origin)` includes all builtin and declared project codes;
 no-ops keep origin `stdlib`. Status names actual promoted codes, and
 `anneal describe CODE` teaches declared and effective severity when different.
+
+Contribute project findings through `project_diagnostic(code, severity, subject,
+file, line, evidence)` with codes `P` followed by digits. Declare each card in
+`anneal.dl`: `@diagnostic(code: "P001", severity: "warning", doc: "...",
+rule: producer, evidence: ["kind", "value"]).` The severity is mandatory and
+rows use that declared class before policy promotion. Malformed declarations,
+invalid literal codes and literal class mismatches refuse at load. Dynamic
+invalid/undeclared codes and mismatches emit E003 naming the producing clause.
+Project rows compose with builtin findings; they cannot replace the gate stream.
+`anneal describe P001` records project declaration ownership separately from
+grading origin. Declared codes retain cards and policy even with no rows.
+
+Search matches spans and their ancestors. A deepest-span filter selects deepest
+matching spans, not textual occurrences; it can drop a match in parent prose
+when a child also matches. `anneal describe project_diagnostic` teaches the
+worked example and this boundary.
 
 Use `config suppress { rule("E001", "path/to/source.md"). }` to accept one
 code at an exact diagnostic subject identity. Aggregate rows use their status,

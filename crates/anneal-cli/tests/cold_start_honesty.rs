@@ -1498,7 +1498,7 @@ fn diagnostic_escalation_regrades_gate_and_teaches_effective_policy() {
         "-e",
         "? diagnostic_policy(code, declared_severity, effective_severity, origin).",
     ]));
-    assert_eq!(policy.len(), 17);
+    assert_eq!(policy.len(), 18);
     assert!(policy.iter().any(|row| row["code"] == "W005"
         && row["declared_severity"] == "warning"
         && row["effective_severity"] == "error"
@@ -1570,7 +1570,7 @@ fn diagnostic_policy_handles_noops_absent_instances_and_each_promotion() {
     write_file(corpus.path(), "a.md", "---\nstatus: draft\n---\n# A\n");
     let query = "? diagnostic_policy(code, declared_severity, effective_severity, origin).";
     let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
-    assert_eq!(baseline.len(), 17);
+    assert_eq!(baseline.len(), 18);
     assert!(
         baseline.iter().all(|row| row["origin"] == "stdlib"
             && row["declared_severity"] == row["effective_severity"])
@@ -1593,7 +1593,7 @@ fn diagnostic_policy_handles_noops_absent_instances_and_each_promotion() {
         );
         write_file(corpus.path(), "anneal.dl", "include \"policy.dl\".\n");
         let rows = json_rows(&run(&["--root", root, "--json", "-e", query]));
-        assert_eq!(rows.len(), 17);
+        assert_eq!(rows.len(), 18);
         let policy = rows
             .iter()
             .find(|row| row["code"] == code)
@@ -1632,4 +1632,334 @@ fn diagnostic_policy_handles_noops_absent_instances_and_each_promotion() {
             text(&output.stderr)
         );
     }
+}
+
+fn project_card(severity: &str) -> String {
+    format!(
+        r#"@diagnostic(code: "P001", severity: "{severity}", doc: "Synthetic project finding.", rule: project_diagnostic, evidence: ["tag", "value"])."#
+    )
+}
+
+#[test]
+fn project_diagnostic_policy_composes_with_builtins_and_cards() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("root");
+    write_file(corpus.path(), "a.md", "---\nstatus: unknown\n---\n# A\n");
+    let query = "? diagnostic(code, severity, subject, file, line, evidence).";
+    let builtin = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert!(!builtin.is_empty());
+    for (declared, effective) in [
+        ("info", "warning"),
+        ("info", "error"),
+        ("suggestion", "warning"),
+        ("suggestion", "error"),
+        ("warning", "error"),
+        ("warning", "warning"),
+    ] {
+        let rules = format!(
+            r#"{} project_diagnostic("P001", "{declared}", "a.md", "a.md", 4, ("tag", "value")). config diagnostics {{ escalate("P001", "{effective}"). }}"#,
+            project_card(declared)
+        );
+        write_file(corpus.path(), "anneal.dl", &rules);
+        let rows = json_rows(&run(&["--root", root, "--json", "-e", query]));
+        let project = rows
+            .iter()
+            .filter(|row| row["code"] == "P001")
+            .collect::<Vec<_>>();
+        assert_eq!(project.len(), 1);
+        assert_eq!(project[0]["severity"], effective);
+        assert_eq!(
+            rows.into_iter()
+                .filter(|row| row["code"] != "P001")
+                .collect::<Vec<_>>(),
+            builtin
+        );
+        assert_eq!(
+            run(&["--root", root, "check"]).status.code(),
+            Some(i32::from(effective == "error"))
+        );
+        let card = run(&["--root", root, "describe", "P001"]);
+        assert_success(&card);
+        assert!(text(&card.stdout).contains(&format!("Severity: {effective}.")));
+        assert!(text(&card.stdout).contains("Declaration ownership: project."));
+        let policy = json_rows(&run(&[
+            "--root",
+            root,
+            "--json",
+            "-e",
+            r#"? diagnostic_policy("P001", declared, effective, origin)."#,
+        ]));
+        assert_eq!(policy.len(), 1);
+        assert_eq!(
+            policy[0]["origin"],
+            if declared == effective {
+                "stdlib"
+            } else {
+                "project"
+            }
+        );
+        for target in ["a*", "value", "a.md"] {
+            write_file(
+                corpus.path(),
+                "anneal.dl",
+                &format!(r#"{rules} config suppress {{ rule("P001", "{target}"). }}"#),
+            );
+            let rows = json_rows(&run(&["--root", root, "--json", "-e", query]));
+            assert_eq!(
+                rows.iter().filter(|row| row["code"] == "P001").count(),
+                usize::from(target != "a.md")
+            );
+            assert_eq!(
+                json_rows(&run(&[
+                    "--root",
+                    root,
+                    "--json",
+                    "-e",
+                    r"? project_diagnostic(code, severity, subject, file, line, evidence)."
+                ]))
+                .len(),
+                1
+            );
+            assert_success(&run(&["--root", root, "describe", "P001"]));
+        }
+    }
+}
+
+#[test]
+fn project_diagnostic_dynamic_contract_errors_name_each_clause() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("root");
+    write_file(corpus.path(), "a.md", "# A\n");
+    let rules = format!(
+        r#"{}
+input("W001", "warning").
+input("P999", "warning").
+input(42, "warning").
+input("P001", "error").
+project_diagnostic(code, severity, "a.md", null, null, null) := input(code, severity).
+project_diagnostic(code, severity, "a.md", null, null, null) := input(code, severity).
+"#,
+        project_card("warning")
+    );
+    write_file(corpus.path(), "anneal.dl", &rules);
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic("E003", severity, subject, file, line, evidence)."#,
+    ]));
+    assert_eq!(rows.len(), 8, "four failures from each of two clauses");
+    let origins = rows
+        .iter()
+        .map(|row| row["evidence"][1].as_str().expect("producer"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(origins.len(), 2);
+    assert!(
+        origins
+            .iter()
+            .all(|origin| origin.contains("anneal.dl:6:") || origin.contains("anneal.dl:7:"))
+    );
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    assert!(
+        json_rows(&run(&[
+            "--root",
+            root,
+            "--json",
+            "-e",
+            r#"? diagnostic("P001", severity, subject, file, line, evidence)."#
+        ]))
+        .is_empty()
+    );
+}
+
+#[test]
+fn project_diagnostic_declarations_and_internal_relations_are_guarded() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("root");
+    write_file(corpus.path(), "a.md", "# A\n");
+    let card = project_card("warning");
+    for rules in [
+        format!(r#"{card} project_diagnostic("W001", "warning", "a", null, null, null)."#),
+        format!(r#"{card} project_diagnostic(42, "warning", "a", null, null, null)."#),
+        format!(r#"{card} project_diagnostic("P001", "error", "a", null, null, null)."#),
+        format!(r#"{card} project_diagnostic("P001", 42, "a", null, null, null)."#),
+        format!(r#"{card} {card} project_diagnostic("P001", "warning", "a", null, null, null)."#),
+        card.replace("rule: project_diagnostic", "rule: missing"),
+        card.replace("severity: \"warning\",", ""),
+        card.replace("evidence: [\"tag\", \"value\"]", "evidence: []"),
+        r#"project_diagnostic_producer("P001", "warning", "a", null, null, null, "forged")."#.to_owned(),
+        r#"project_diagnostic_declaration("P001", "warning", "key", "key")."#.to_owned(),
+        r#"validated_project_diagnostic("P001", "warning", "a", null, null, null)."#.to_owned(),
+        r#"project_diagnostic_contract_failure("a", null, null, null)."#.to_owned(),
+        r#"diagnostic_declaration("P001", "warning", "key")."#.to_owned(),
+        r"diagnostic(code, severity, subject, file, line, evidence) := project_diagnostic(code, severity, subject, file, line, evidence).".to_owned(),
+    ] {
+        write_file(corpus.path(), "anneal.dl", &rules);
+        let result = run(&["--root", root, "check"]);
+        assert!(!result.status.success(), "accepted {rules}");
+        assert!(!text(&result.stderr).is_empty());
+    }
+    // Literal P codes without a declaration are emitted contract errors, not dropped.
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"project_diagnostic("P999", "warning", "a", null, null, null)."#,
+    );
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic("E003", severity, subject, file, line, evidence)."#,
+    ]));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+}
+
+#[test]
+fn project_diagnostic_frontmatter_vocabulary_fixture_selects_deepest_spans() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("root");
+    write_file(
+        corpus.path(),
+        "stale.md",
+        "---\nstatus: draft\nretired_terms: [RatioUpdate]\n---\n# Contract\n\n## Carrier\n\n### Old table\n\n| Name | Value |\n| --- | --- |\n| RatioUpdate | stale |\n",
+    );
+    write_file(
+        corpus.path(),
+        "clean.md",
+        "---\nstatus: draft\nretired_terms: [RatioUpdate]\n---\n# Clean\n\nParentRatios only.\n",
+    );
+    write_file(
+        corpus.path(),
+        "unscoped.md",
+        "---\nstatus: draft\n---\n# Unscoped\n\nRatioUpdate is permitted without a local declaration.\n",
+    );
+    write_file(
+        corpus.path(),
+        "mixed.md",
+        "---\nstatus: draft\nretired_terms: [MixedTerm]\n---\n# Parent\n\nMixedTerm in parent prose.\n\n## Child\n\nMixedTerm in child prose.\n",
+    );
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        include_str!("fixtures/project-diagnostic-vocabulary.dl"),
+    );
+    let raw = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? retired_hit(h, term, span, start, end).",
+    ]));
+    assert_eq!(
+        raw.len(),
+        5,
+        "three ancestors for stale and two mixed spans"
+    );
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic("P001", severity, subject, file, line, evidence)."#,
+    ]));
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["severity"] == "error"));
+    assert!(rows.iter().any(|row| row["subject"] == "stale.md"));
+    assert!(rows.iter().any(|row| row["subject"] == "mixed.md"));
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    // Remove the deliberately stale table row; only mixed's deepest child remains.
+    write_file(
+        corpus.path(),
+        "stale.md",
+        "---\nstatus: draft\nretired_terms: [RatioUpdate]\n---\n# Contract\n\nParentRatios.\n",
+    );
+    let after = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic("P001", severity, subject, file, line, evidence)."#,
+    ]));
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0]["subject"], "mixed.md");
+}
+
+#[test]
+fn project_diagnostic_imports_empty_populations_and_refused_grades() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("root");
+    write_file(corpus.path(), "a.md", "---\nstatus: draft\n---\n# A\n");
+    write_file(
+        corpus.path(),
+        "library.dl",
+        &format!(
+            r#"{} project_diagnostic("P001", "warning", "a.md", null, null, null)."#,
+            project_card("warning")
+        ),
+    );
+    let import = "import library from \"library.dl\".";
+    write_file(corpus.path(), "anneal.dl", import);
+    assert_success(&run(&["--root", root, "check"]));
+    assert!(
+        json_rows(&run(&[
+            "--root",
+            root,
+            "--json",
+            "-e",
+            r#"? diagnostic("P001", severity, subject, file, line, evidence)."#
+        ]))
+        .is_empty()
+    );
+    let card = run(&["--root", root, "describe", "P001"]);
+    assert_success(&card);
+    assert!(text(&card.stdout).contains("Rule predicate: library.project_diagnostic."));
+    let policy = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic_policy("P001", declared, effective, origin)."#,
+    ]));
+    assert_eq!(policy.len(), 1);
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        &format!(
+            "{import}\nproject_diagnostic(code, severity, subject, file, line, evidence) := library.project_diagnostic(code, severity, subject, file, line, evidence)."
+        ),
+    );
+    let rows = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        r#"? diagnostic("P001", severity, subject, file, line, evidence)."#,
+    ]));
+    assert_eq!(rows.len(), 1);
+    for grade in [
+        r#"escalate("P001", "info")."#,
+        r#"escalate("P001", "suggestion")."#,
+        r#"escalate("P001", "banana")."#,
+        r#"escalate("P001", "warning"). escalate("P001", "error")."#,
+    ] {
+        write_file(
+            corpus.path(),
+            "anneal.dl",
+            &format!("{import} config diagnostics {{ {grade} }}"),
+        );
+        let output = run(&["--root", root, "check"]);
+        assert!(!output.status.success());
+        assert!(text(&output.stderr).contains("diagnostics.escalate"));
+    }
+    // Query-local input rules affect that query only, never a later check.
+    write_file(corpus.path(), "anneal.dl", import);
+    let query = r"project_diagnostic(code, severity, subject, file, line, evidence) := library.project_diagnostic(code, severity, subject, file, line, evidence). ? project_diagnostic(code, severity, subject, file, line, evidence).";
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])).len(),
+        1
+    );
+    assert_success(&run(&["--root", root, "check"]));
 }

@@ -2824,6 +2824,7 @@ at("snapshot:last") { historical(h) := *handle{id: h}. }
                 | Statement::Import(_)
                 | Statement::Verb(_)
                 | Statement::Doc(_)
+                | Statement::Diagnostic(_)
                 | Statement::Predicate(_) => {}
             }
         }

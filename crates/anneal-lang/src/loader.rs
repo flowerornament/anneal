@@ -305,6 +305,7 @@ fn collect_statement_definitions(statement: &Statement, definitions: &mut BTreeS
         | Statement::Import(_)
         | Statement::Verb(_)
         | Statement::Doc(_)
+        | Statement::Diagnostic(_)
         | Statement::Predicate(_) => {}
     }
 }
@@ -340,6 +341,19 @@ fn qualify_statement(
             qualify_statements(statements, module, local_definitions);
         }
         Statement::Predicate(decl) => qualify_predicate_decl(decl, module, local_definitions),
+        Statement::Diagnostic(decl) => {
+            if let Some(arg) = decl.args.iter_mut().find(|arg| arg.name.as_str() == "rule") {
+                let name = match &arg.expr {
+                    Expr::Var(name) => Some(name.as_str()),
+                    Expr::Literal(Literal::String(name)) => Some(name.as_str()),
+                    _ => None,
+                };
+                if let Some(Ok(mut predicate)) = name.map(PredicateRef::parse) {
+                    qualify_predicate(&mut predicate, module, local_definitions);
+                    arg.expr = Expr::Literal(Literal::String(predicate.display_name()));
+                }
+            }
+        }
         Statement::ConfigBlock(_)
         | Statement::SourceBlock(_)
         | Statement::Include(_)

@@ -265,3 +265,9 @@ axis_of("diagnostic_severity_promotion", "diagnostic").
 axis_of("project_diagnostic_escalation", "diagnostic").
 axis_of("diagnostic_policy", "diagnostic").
 axis_of("builtin_diagnostic", "diagnostic").
+axis_of("diagnostic_declaration", "diagnostic").
+axis_of("project_diagnostic", "diagnostic").
+axis_of("project_diagnostic_producer", "diagnostic").
+axis_of("project_diagnostic_declaration", "diagnostic").
+axis_of("validated_project_diagnostic", "diagnostic").
+axis_of("project_diagnostic_contract_failure", "diagnostic").

@@ -1,0 +1,21 @@
+# Synthetic adaptation of the banked frontmatter vocabulary consumer.
+# The declaration belongs to each document; this rule has no document content.
+@diagnostic(code: "P001", severity: "error",
+  doc: "A document-declared retired term survives in a deepest matching body span. Repair the stale occurrence; retain the declaration that makes the check possible.",
+  rule: retired_hit, evidence: ["retired_term_survives", "term"]).
+
+retired_hit(h, term, span, start, end) :=
+  *meta{handle: h, key: "retired_terms", value: term},
+  search(term, h, span, _, _, _, _),
+  *span{handle: h, id: span, start_line: start, end_line: end}.
+covered_by_deeper(h, term, span) :=
+  retired_hit(h, term, span, start, end),
+  retired_hit(h, term, deeper, child_start, child_end),
+  deeper starts_with span, deeper != span,
+  child_start >= start, child_end <= end.
+# Deepest matching spans are not occurrence counts: a parent with its own match
+# is dropped when a child also matches. This fixture includes that counterexample.
+project_diagnostic("P001", "error", h, file, line, ("retired_term_survives", term)) :=
+  retired_hit(h, term, span, line, _),
+  not covered_by_deeper(h, term, span),
+  *handle{id: h, file: file}.

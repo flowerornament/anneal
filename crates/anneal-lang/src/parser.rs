@@ -139,6 +139,9 @@ impl Parser {
                 "doc" => self
                     .parse_doc_annotation(&args, location, &statement_start)
                     .map(Statement::Doc),
+                "diagnostic" => Ok(Statement::Diagnostic(crate::ast::AnnotationDecl::new(
+                    args, location,
+                ))),
                 "predicate" => Ok(Statement::Predicate(PredicateDecl::new(args, location))),
                 "cookbook" => Err(ParseError::new(
                     &self.source,

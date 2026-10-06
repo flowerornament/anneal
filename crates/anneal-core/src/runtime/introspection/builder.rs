@@ -279,6 +279,40 @@ impl IntrospectionBuilder {
                 string_value("unknown"),
             ]));
         }
+        for card in crate::diagnostics::project_cards(program).unwrap_or_default() {
+            let key = format!("{}{}", crate::diagnostics::ESCALATION_PREFIX, card.code);
+            let effective = config
+                .get(&key)
+                .filter(|value| catalog.is_promotion(&card.severity, value))
+                .unwrap_or(&card.severity);
+            let mut extra_lines = vec![
+                format!("Diagnostic code: {}.", card.code),
+                format!("Severity: {effective}."),
+                format!("Rule predicate: {}.", card.rule),
+                format!("Evidence: {}.", card.evidence.join(", ")),
+                "Declaration ownership: project.".to_owned(),
+            ];
+            if *effective != card.severity {
+                extra_lines.push(format!("Declared severity: {}.", card.severity));
+                extra_lines.push(format!("Effective severity: {effective}."));
+            }
+            self.describe.insert(describe_entry(
+                &card.code,
+                DescribeKind::RuntimeTopic,
+                &render::describe_card(render::DescribeCard {
+                    summary: &card.doc,
+                    kind: Some(DescribeKind::RuntimeTopic),
+                    see_also: &["project_diagnostic", "diagnostic_policy", "diagnostic"],
+                    extra_lines,
+                    ..render::DescribeCard::default()
+                }),
+            ));
+            self.source_of.insert(Tuple(vec![
+                string_value(&card.code),
+                string_value(&card.location.source_name),
+                string_value("project"),
+            ]));
+        }
     }
 }
 
