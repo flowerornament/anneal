@@ -18,6 +18,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Direct-Git code-target probes share one whole-history inventory per validated
+  repository during extraction, preserving target membership and probe paths.
+
 - Legacy direct-Git recency and target probes bind the selected repository and
   discard inherited Git root overrides. Timestamp-history failures report only
   change history unavailable; successful empty history remains distinct.

@@ -577,7 +577,6 @@ impl CodeTargetProbe {
 #[derive(Default)]
 pub struct CodeTargetProbeCache {
     history_by_base: BTreeMap<Utf8PathBuf, Option<BTreeSet<String>>>,
-    jj: Option<RepositoryContext>,
 }
 
 impl CodeTargetProbeCache {
@@ -592,7 +591,6 @@ impl CodeTargetProbeCache {
         target_path: &str,
         repository: &RepositoryContext,
     ) -> CodeTargetProbe {
-        self.jj = repository.is_jj_workspace().then(|| repository.clone());
         probe_code_target_with_cache(corpus_root, target_path, repository, self)
     }
 
@@ -608,18 +606,19 @@ impl CodeTargetProbeCache {
         &mut self,
         base: &Utf8Path,
         target: &Utf8Path,
-        available: bool,
+        repository: &RepositoryContext,
     ) -> Option<bool> {
-        if !available {
+        if !repository.is_available(RepositoryOperation::TargetHistory) {
             return None;
         }
-        if let Some(repository) = &self.jj {
+        if repository.is_jj_workspace() {
             return repository.jj_target_history(base, target);
         }
+        let inventory_base = direct_history_inventory_base(base, repository).unwrap_or(base);
         let history = self
             .history_by_base
-            .entry(base.to_path_buf())
-            .or_insert_with(|| read_head_history_paths(base));
+            .entry(inventory_base.to_path_buf())
+            .or_insert_with(|| read_head_history_paths(inventory_base));
         history
             .as_ref()
             .map(|paths| paths.contains(target.as_str()))
@@ -629,9 +628,9 @@ impl CodeTargetProbeCache {
         &mut self,
         base: &Utf8Path,
         target: &Utf8Path,
-        available: bool,
+        repository: &RepositoryContext,
     ) -> TargetHistoryStatus {
-        match self.history_contains_target(base, target, available) {
+        match self.history_contains_target(base, target, repository) {
             Some(true) => TargetHistoryStatus::Present,
             Some(false) => TargetHistoryStatus::Absent,
             None => TargetHistoryStatus::Unavailable,
@@ -1236,17 +1235,11 @@ fn probe_code_target_with_cache(
         return CodeTargetProbe::unknown();
     };
 
-    let history_available = repository.is_available(RepositoryOperation::TargetHistory);
-
     if let Some(project_root) = enclosing_project_root(corpus_root) {
         if let Some(found) = existing_target(&project_root, &normalized) {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                history_status: cache.target_history_status(
-                    &project_root,
-                    &normalized,
-                    history_available,
-                ),
+                history_status: cache.target_history_status(&project_root, &normalized, repository),
                 probe_base: Some(project_root),
                 resolved_path: Some(found),
             };
@@ -1256,36 +1249,23 @@ fn probe_code_target_with_cache(
         {
             return CodeTargetProbe {
                 exists: TargetExistence::True,
-                history_status: cache.target_history_status(
-                    corpus_root,
-                    &normalized,
-                    history_available,
-                ),
+                history_status: cache.target_history_status(corpus_root, &normalized, repository),
                 probe_base: Some(corpus_root.to_path_buf()),
                 resolved_path: Some(found),
             };
         }
-        return missing_target_probe(cache, project_root, &normalized, history_available);
+        return missing_target_probe(cache, project_root, &normalized, repository);
     }
 
     if let Some(found) = existing_target(corpus_root, &normalized) {
         return CodeTargetProbe {
             exists: TargetExistence::True,
-            history_status: cache.target_history_status(
-                corpus_root,
-                &normalized,
-                history_available,
-            ),
+            history_status: cache.target_history_status(corpus_root, &normalized, repository),
             probe_base: Some(corpus_root.to_path_buf()),
             resolved_path: Some(found),
         };
     }
-    missing_target_probe(
-        cache,
-        corpus_root.to_path_buf(),
-        &normalized,
-        history_available,
-    )
+    missing_target_probe(cache, corpus_root.to_path_buf(), &normalized, repository)
 }
 
 fn probe_code_target_without_history(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
@@ -1335,9 +1315,9 @@ fn missing_target_probe(
     cache: &mut CodeTargetProbeCache,
     base: Utf8PathBuf,
     normalized: &Utf8Path,
-    history_available: bool,
+    repository: &RepositoryContext,
 ) -> CodeTargetProbe {
-    match cache.history_contains_target(&base, normalized, history_available) {
+    match cache.history_contains_target(&base, normalized, repository) {
         Some(true) => CodeTargetProbe {
             exists: TargetExistence::False,
             history_status: TargetHistoryStatus::Present,
@@ -1362,6 +1342,29 @@ fn missing_target_probe(
 fn existing_target(base: &Utf8Path, target: &Utf8Path) -> Option<Utf8PathBuf> {
     let candidate = base.join(target);
     candidate.exists().then_some(candidate)
+}
+
+/// Reuse a validated repository inventory without changing target membership keys.
+/// A nearer VCS boundary or an unverified base retains the per-base probe.
+fn direct_history_inventory_base<'a>(
+    base: &Utf8Path,
+    repository: &'a RepositoryContext,
+) -> Option<&'a Utf8Path> {
+    let root = repository.direct_git_root(RepositoryOperation::TargetHistory)?;
+    if base == root {
+        return Some(root);
+    }
+    let canonical = base.canonicalize_utf8().ok()?;
+    canonical.strip_prefix(root).ok()?;
+    for ancestor in canonical.ancestors() {
+        if ancestor == root {
+            return Some(root);
+        }
+        if ancestor.join(".git").exists() || ancestor.join(".jj").exists() {
+            return None;
+        }
+    }
+    None
 }
 
 fn read_head_history_paths(base: &Utf8Path) -> Option<BTreeSet<String>> {
@@ -1470,6 +1473,105 @@ mod tests {
         ));
         assert!(!is_full_object_id("deadbeef missing"));
         assert!(!is_full_object_id("deadbeef ambiguous"));
+    }
+
+    #[test]
+    fn history_inventory_is_shared_without_changing_probe_membership() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(repo.join("lib")).expect("create lib");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join("lib/live.rs"), "").expect("write live");
+        fs::write(repo.join("lib/deleted.rs"), "").expect("write deleted");
+        fs::write(corpus.join("local.css"), "").expect("write local");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "add targets"]);
+        fs::remove_file(repo.join("lib/deleted.rs")).expect("remove target");
+
+        let repository = RepositoryContext::discover(&corpus);
+        let mut cache = CodeTargetProbeCache::new();
+        let live = cache.probe(&corpus, "lib/live.rs", &repository);
+        let local = cache.probe(&corpus, "local.css", &repository);
+        let deleted = cache.probe(&corpus, "lib/deleted.rs", &repository);
+        assert_eq!(live.exists, TargetExistence::True);
+        assert_eq!(live.history_status, TargetHistoryStatus::Present);
+        assert_eq!(live.probe_base.as_deref(), Some(repo.as_path()));
+        assert_eq!(local.exists, TargetExistence::True);
+        // anneal-1xjp is a separate semantic change: membership stays unprefixed.
+        assert_eq!(local.history_status, TargetHistoryStatus::Absent);
+        assert_eq!(local.probe_base.as_deref(), Some(corpus.as_path()));
+        assert_eq!(local.resolved_path, Some(corpus.join("local.css")));
+        assert_eq!(deleted.exists, TargetExistence::False);
+        assert_eq!(deleted.history_status, TargetHistoryStatus::Present);
+        assert_eq!(cache.history_by_base.len(), 1);
+        assert!(
+            cache.history_by_base.contains_key(
+                repository
+                    .direct_git_root(RepositoryOperation::TargetHistory)
+                    .expect("validated root")
+            )
+        );
+    }
+
+    #[test]
+    fn history_inventory_does_not_cross_repository_boundaries() {
+        let dir = tempdir().expect("tempdir");
+        let mut cache = CodeTargetProbeCache::new();
+        let mut roots = Vec::new();
+        for name in ["one", "two"] {
+            let root = utf8(dir.path().join(name));
+            fs::create_dir_all(root.join(".design")).expect("create corpus");
+            fs::write(root.join("live.rs"), "").expect("write target");
+            run_git(&root, &["init"]);
+            run_git(&root, &["add", "."]);
+            run_git(&root, &["commit", "-m", "add target"]);
+            let corpus = root.join(".design");
+            let repository = RepositoryContext::discover(&corpus);
+            let probe = cache.probe(&corpus, "live.rs", &repository);
+            assert_eq!(probe.history_status, TargetHistoryStatus::Present);
+            roots.push(root);
+        }
+        assert_eq!(cache.history_by_base.len(), 2);
+        let repository = RepositoryContext::discover(&roots[0]);
+        assert_eq!(direct_history_inventory_base(&roots[1], &repository), None);
+        for marker in [".git", ".jj"] {
+            let nested = roots[0].join(marker.trim_start_matches('.'));
+            fs::create_dir_all(nested.join(marker)).expect("create VCS boundary");
+            assert_eq!(direct_history_inventory_base(&nested, &repository), None);
+        }
+        assert_eq!(
+            direct_history_inventory_base(&roots[0].join("missing"), &repository),
+            None
+        );
+    }
+
+    #[test]
+    fn failed_shared_inventory_stays_unavailable() {
+        let dir = tempdir().expect("tempdir");
+        let repo = utf8(dir.path().join("repo"));
+        let corpus = repo.join(".design");
+        fs::create_dir_all(&corpus).expect("create corpus");
+        fs::write(repo.join("live.rs"), "").expect("write live");
+        fs::write(corpus.join("local.css"), "").expect("write local");
+        run_git(&repo, &["init"]);
+        let repository = RepositoryContext::discover(&corpus);
+        let mut cache = CodeTargetProbeCache::new();
+        for target in ["live.rs", "local.css"] {
+            let probe = cache.probe(&corpus, target, &repository);
+            assert_eq!(probe.exists, TargetExistence::True);
+            assert_eq!(probe.history_status, TargetHistoryStatus::Unavailable);
+        }
+        assert_eq!(cache.history_by_base.len(), 1);
+        assert_eq!(
+            cache.history_by_base.get(
+                repository
+                    .direct_git_root(RepositoryOperation::TargetHistory)
+                    .expect("validated root")
+            ),
+            Some(&None)
+        );
     }
 
     #[test]
