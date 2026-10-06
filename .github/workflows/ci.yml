@@ -21,6 +21,9 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
       - name: Format
         run: cargo fmt --check
 
@@ -36,14 +39,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (jj from flake.lock)
         env:
+          ANNEAL_REQUIRE_JJ: "1"
           # Force console-crate ANSI emission so attribute leaks on
           # color-disabled paths can't be silently neutered by GitHub
           # Actions' non-TTY detection. This mirrors what Nix build
           # sandboxes see and caught once.
           CLICOLOR_FORCE: 1
-        run: cargo test
+        run: |
+          nix shell --inputs-from . nixpkgs#jujutsu --command bash -c 'jj --version; cargo test'
 
       - name: Build
         run: cargo build --release

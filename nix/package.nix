@@ -3,7 +3,8 @@ pkgs.rustPlatform.buildRustPackage {
   pname = "anneal";
   inherit version src;
   cargoLock.lockFile = src + /Cargo.lock;
-  nativeCheckInputs = [ pkgs.git ];
+  nativeCheckInputs = [ pkgs.git pkgs.jujutsu ];
+  ANNEAL_REQUIRE_JJ = "1";
   meta = {
     description = "Convergence assistant for knowledge corpora";
     license = pkgs.lib.licenses.mit;

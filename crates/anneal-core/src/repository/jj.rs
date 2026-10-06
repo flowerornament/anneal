@@ -63,13 +63,7 @@ fn read_pin(root: &Utf8Path) -> Result<String, &'static str> {
     // Debug metadata is read-only; unsupported layouts fail closed.
     let working = stdout(jj_command(root).args(["debug", "working-copy"]))
         .ok_or("jj-workspace-state-unreadable")?;
-    let operation = working
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("Current operation: OperationId(\"")?
-                .strip_suffix("\")")
-        })
-        .ok_or("jj-workspace-state-unreadable")?;
+    let operation = working_copy_operation(&working)?;
     let recorded = stdout(jj_command(root).args([
         "--at-operation",
         operation,
@@ -85,6 +79,27 @@ fn read_pin(root: &Utf8Path) -> Result<String, &'static str> {
         return Err("jj-stale-working-copy");
     }
     Ok(pin.to_string())
+}
+
+// jj debug output is unstable. Accept only the operation field exercised by
+// our captured layouts and real fixtures; do not guess after a format change.
+fn working_copy_operation(working: &str) -> Result<&str, &'static str> {
+    let incompatible = "jj-workspace-state-incompatible";
+    let mut fields = working
+        .lines()
+        .filter_map(|line| line.strip_prefix("Current operation:"));
+    let field = fields.next().ok_or(incompatible)?;
+    if fields.next().is_some() {
+        return Err(incompatible);
+    }
+    let operation = field
+        .strip_prefix(" OperationId(\"")
+        .and_then(|value| value.strip_suffix("\")"))
+        .ok_or(incompatible)?;
+    if operation.len() != 128 || !operation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(incompatible);
+    }
+    Ok(operation)
 }
 
 fn resolve_pointer(path: &Utf8Path) -> Result<Utf8PathBuf, String> {
@@ -331,7 +346,15 @@ mod tests {
     }
 
     fn desk() -> Option<Desk> {
-        if Command::new("jj").arg("--version").output().is_err() {
+        let available = Command::new("jj")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !available {
+            assert!(
+                std::env::var_os("ANNEAL_REQUIRE_JJ").is_none(),
+                "real jj history fixture requires a working jj executable (ANNEAL_REQUIRE_JJ)"
+            );
             eprintln!("real jj history fixture skipped: jj executable unavailable");
             return None;
         }
@@ -353,6 +376,74 @@ mod tests {
             root,
             base,
         })
+    }
+
+    #[test]
+    fn working_copy_layouts_for_locked_and_desk_jj_are_compatible() {
+        for layout in [
+            include_str!("../../tests/fixtures/jj/working-copy-0.39.0.txt"),
+            include_str!("../../tests/fixtures/jj/working-copy-0.45.1.txt"),
+        ] {
+            assert_eq!(
+                working_copy_operation(layout)
+                    .expect("supported layout")
+                    .len(),
+                128
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_working_copy_layouts_fail_closed() {
+        let valid = include_str!("../../tests/fixtures/jj/working-copy-0.39.0.txt");
+        let line = valid
+            .lines()
+            .find(|line| line.starts_with("Current operation: "))
+            .expect("operation line");
+        for layout in [
+            String::new(),
+            valid.replace("Current operation:", "Recorded operation:"),
+            format!("{valid}\n{line}\n"),
+            format!("{valid}\nCurrent operation:garbled\n"),
+            valid.replace("OperationId(\"", "OperationId("),
+            "Current operation: OperationId(\"\")".to_string(),
+            "Current operation: OperationId(\"abc123\")".to_string(),
+            format!("Current operation: OperationId(\"{}\")", "z".repeat(128)),
+        ] {
+            assert_eq!(
+                working_copy_operation(&layout),
+                Err("jj-workspace-state-incompatible"),
+                "{layout}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_jj_cannot_skip_a_missing_executable() {
+        let empty_path = tempfile::tempdir().expect("empty executable search path");
+        let fixture = format!(
+            "{}::pinned_author_history_survives_real_rebase_and_does_not_read_anchor",
+            module_path!()
+                .split_once("::")
+                .expect("crate-qualified module path")
+                .1
+        );
+        let output = Command::new(std::env::current_exe().expect("test binary"))
+            .env("PATH", empty_path.path())
+            .env("ANNEAL_REQUIRE_JJ", "1")
+            .args(["--exact", fixture.as_str(), "--nocapture"])
+            .output()
+            .expect("child fixture runs");
+        assert!(!output.status.success(), "missing required jj must fail");
+        let diagnostic = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            diagnostic.contains("real jj history fixture requires a working jj executable"),
+            "{diagnostic}"
+        );
     }
 
     #[test]

@@ -6,6 +6,11 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- CI and Nix package tests require the jj version locked by `flake.lock`.
+  Working-copy parser fixtures cover locked jj 0.39.0 and desk jj 0.45.1;
+  incompatible debug layouts fail closed with `jj-workspace-state-incompatible`.
+  Stale and moving pins remain unavailable without snapshotting pending edits.
+
 - Assertion provenance records the author-calendar date of the commit that
   blame selects for the asserting line, instead of its committer date. Rebases
   and cherry-picks retain that date; line-change evidence does not claim
