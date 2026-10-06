@@ -178,11 +178,12 @@ pub(crate) fn non_test_loc(text: &str) -> usize {
     TestRegions::of(text).non_test_loc()
 }
 
-/// The file modules (`mod name;`) a file declares under a test-implying gate.
+/// The file modules (`mod name;`) a file declares under a test-implying gate,
+/// paired with any explicit `#[path = "..."]` attribute.
 /// Their whole file is test code, which no single-file scan can know — the
 /// atlas resolves these against the crate's file list.
 #[cfg(test)]
-pub(crate) fn test_module_declarations(text: &str) -> Vec<String> {
+pub(crate) fn test_module_declarations(text: &str) -> Vec<(String, Option<String>)> {
     RustSourceProjection::of(text.to_owned()).test_module_declarations()
 }
 
@@ -227,6 +228,17 @@ fn strip_call<'a>(predicate: &'a str, name: &str) -> Option<&'a str> {
 /// stack (`#[cfg(test)] #[allow(..)] mod tests {`).
 fn declaration_after_attributes(lines: &[&str], index: usize) -> Option<usize> {
     (index..lines.len()).find(|&next| !lines[next].starts_with("#["))
+}
+
+fn module_path_attribute(line: &str) -> Option<&str> {
+    line.strip_prefix("#[path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim()
+        .strip_suffix(']')?
+        .trim()
+        .strip_prefix('"')?
+        .strip_suffix('"')
 }
 
 fn opens_inline_module(line: &str) -> bool {
@@ -425,13 +437,23 @@ impl RustSourceProjection {
         TestRegions::from_projection(self)
     }
 
-    pub(crate) fn test_module_declarations(&self) -> Vec<String> {
+    pub(crate) fn test_module_declarations(&self) -> Vec<(String, Option<String>)> {
         let lines: Vec<_> = self.text.lines().collect();
         (0..lines.len())
             .filter(|&index| self.lines[index].starts_in_code && gates_test(lines[index]))
-            .filter_map(|index| declaration_after_attributes(&lines, index))
-            .filter_map(|start| declares_file_module(lines[start]))
-            .map(str::to_owned)
+            .filter_map(|index| {
+                let start = declaration_after_attributes(&lines, index)?;
+                let name = declares_file_module(lines[start])?.to_owned();
+                let mut attribute_start = index;
+                while attribute_start > 0 && lines[attribute_start - 1].starts_with("#[") {
+                    attribute_start -= 1;
+                }
+                let path = lines[attribute_start..start]
+                    .iter()
+                    .find_map(|line| module_path_attribute(line))
+                    .map(str::to_owned);
+                Some((name, path))
+            })
             .collect()
     }
 
@@ -1411,8 +1433,26 @@ mod tests {
 ";
         assert_eq!(
             test_module_declarations(source),
-            vec!["finite_interior_tests".to_owned()]
+            vec![("finite_interior_tests".to_owned(), None)]
         );
+    }
+
+    #[test]
+    fn test_module_declarations_carry_explicit_paths() {
+        let source = "#[path = \"../tests/support/check.rs\"]\n#[cfg(test)]\nmod checks;\n";
+        assert_eq!(
+            test_module_declarations(source),
+            vec![(
+                "checks".to_owned(),
+                Some("../tests/support/check.rs".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn explicit_path_without_a_test_gate_is_production() {
+        let source = "#[path = \"production.rs\"]\nmod production;\n";
+        assert!(test_module_declarations(source).is_empty());
     }
 
     #[test]

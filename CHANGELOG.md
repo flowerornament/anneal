@@ -18,6 +18,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Atlas honors explicit paths on test-only file modules relative to the declaring
+  file, keeping those files out of production counts.
+
 - Search expands `architecture decision record` to `adr` using the same token
   canonicalization as the query, preserving reverse abbreviation matches.
 

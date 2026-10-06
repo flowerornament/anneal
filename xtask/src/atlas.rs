@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use cargo_metadata::MetadataCommand;
 use serde::Serialize;
@@ -341,26 +341,41 @@ fn git(root: &Path, arguments: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).map_err(|err| format!("git output not UTF-8: {err}"))
 }
 
+fn resolve_module_path(declaring_file: &str, explicit_path: &str) -> String {
+    let directory = Path::new(declaring_file)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let mut normalized = PathBuf::new();
+    for component in directory.join(explicit_path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized.to_string_lossy().replace('\\', "/")
+}
+
 /// Resolve `#[cfg(test)] mod name;` declarations against the crate's files:
 /// the declared module's whole file is test code. Derived from the source's
 /// own module graph rather than from filename conventions, so a fixture file
 /// counts as tests wherever it lives and whatever it is called.
 fn mark_test_files(files: &mut [FileMap]) {
-    let declared: BTreeSet<String> = files
-        .iter()
-        .flat_map(|file| {
-            let directory = child_directory(&file.rel);
-            file.projection
-                .test_module_declarations()
-                .into_iter()
-                .flat_map(move |name| {
-                    [
-                        format!("{directory}/{name}.rs"),
-                        format!("{directory}/{name}/mod.rs"),
-                    ]
-                })
-        })
-        .collect();
+    let mut declared = BTreeSet::new();
+    for file in files.iter() {
+        let directory = child_directory(&file.rel);
+        for (name, explicit_path) in file.projection.test_module_declarations() {
+            if let Some(path) = explicit_path {
+                declared.insert(resolve_module_path(&file.rel, &path));
+            } else {
+                declared.insert(format!("{directory}/{name}.rs"));
+                declared.insert(format!("{directory}/{name}/mod.rs"));
+            }
+        }
+    }
     for file in files {
         file.test_file = declared.contains(&file.rel);
     }
@@ -2406,6 +2421,38 @@ mod tests {
         assert!(files[1].test_file, "the declared child is all tests");
         assert_eq!(files[1].nontest_loc(), 0);
         assert_eq!(files[1].production_items().count(), 0);
+    }
+
+    #[test]
+    fn test_files_resolve_through_explicit_module_paths() {
+        let mut files = vec![
+            fixture_file(
+                "crates/x/src/lib.rs",
+                "#[cfg(test)]\n#[path = \"../tests/support/hash_equivalence.rs\"]\nmod hash_equivalence_tests;\n",
+            ),
+            fixture_file(
+                "crates/x/tests/support/hash_equivalence.rs",
+                "fn only_a_test() {}\n",
+            ),
+        ];
+        mark_test_files(&mut files);
+        assert!(files[1].test_file, "the explicit module path is all tests");
+        assert_eq!(files[1].nontest_loc(), 0);
+    }
+
+    #[test]
+    fn explicit_test_paths_normalize_components_and_do_not_use_the_named_fallback() {
+        let mut files = vec![
+            fixture_file(
+                "crates/x/src/ranking.rs",
+                "#[path = \"./support/../ranking_benchmark.rs\"]\n#[cfg(test)]\nmod benchmark;\n",
+            ),
+            fixture_file("crates/x/src/ranking_benchmark.rs", "fn only_a_test() {}\n"),
+            fixture_file("crates/x/src/ranking/benchmark.rs", "fn production() {}\n"),
+        ];
+        mark_test_files(&mut files);
+        assert!(files[1].test_file);
+        assert!(!files[2].test_file);
     }
 
     #[test]
