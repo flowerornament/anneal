@@ -847,7 +847,6 @@ default_filter = "all"
             }
 
             config suppress {
-              code(["I001"]).
               rule("E001", "synthesis/v17.md").
             }
 
@@ -881,7 +880,7 @@ default_filter = "all"
             .expect("frontmatter field");
         assert_eq!(frontmatter.edge_kind, "Cites");
         assert!(matches!(frontmatter.direction, Direction::Forward));
-        assert_eq!(config.suppress.codes, ["I001"]);
+        assert!(config.suppress.codes.is_empty());
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");
         assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");

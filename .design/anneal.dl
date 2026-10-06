@@ -4,10 +4,6 @@ source md {
   scan_exclude(["feedback"]).
 }
 
-config suppress {
-  rule("E001", "synthesis/v17.md").
-}
-
 config convergence {
   settled(["locked"]).
 }

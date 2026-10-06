@@ -107,6 +107,9 @@ impl RuntimeConfigDeclaration {
     }
 
     pub fn validate_values(self, values: &[String]) -> Result<(), RuntimeConfigEntryError> {
+        if self.key == RuntimeConfigKey::SuppressCode {
+            return Err(RuntimeConfigEntryError::BlanketSuppression);
+        }
         if self.lifecycle != RuntimeConfigLifecycle::Active {
             return Err(RuntimeConfigEntryError::Obsolete(self.key));
         }
@@ -236,6 +239,10 @@ impl RuntimeConfigDeclaration {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RuntimeConfigEntryError {
+    #[error(
+        "suppress.code cannot silence diagnostics by code; use config suppress {{ rule(CODE, target). }} per instance, where target is the exact diagnostic subject identity"
+    )]
+    BlanketSuppression,
     #[error("config declaration '{key}' expects {expected}; got {actual} values")]
     InvalidArity {
         key: String,

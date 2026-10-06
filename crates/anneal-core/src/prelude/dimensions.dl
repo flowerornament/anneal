@@ -130,6 +130,7 @@ axis_of("currency_suspect", "composition").
 axis_of("currency_successor", "currency").
 axis_of("currency_superseded", "currency").
 axis_of("diagnostic", "diagnostic").
+axis_of("diagnostic_subject_suppressed", "diagnostic").
 axis_of("dependency_config_gap", "diagnostic").
 axis_of("dependency_config_gap_dependent", "diagnostic").
 axis_of("dependency_config_gap_reach", "diagnostic").

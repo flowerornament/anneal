@@ -771,6 +771,10 @@ pub enum ProjectLoadError {
     ObsoleteConfirmedNamespaceConfig {
         location: crate::runtime::ast::SourceLocation,
     },
+    #[error(
+        "suppress.code cannot silence diagnostics by code; use config suppress {{ rule(CODE, target). }} per instance, where target is the exact diagnostic subject identity"
+    )]
+    BlanketSuppression,
     #[error("{location}: declaration '{name}' values must be static literals")]
     NonLiteralDeclarationValue {
         name: String,
@@ -885,6 +889,7 @@ pub enum ProjectLoadError {
 impl From<RuntimeConfigEntryError> for ProjectLoadError {
     fn from(source: RuntimeConfigEntryError) -> Self {
         match source {
+            RuntimeConfigEntryError::BlanketSuppression => Self::BlanketSuppression,
             RuntimeConfigEntryError::InvalidArity {
                 key,
                 expected,

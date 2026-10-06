@@ -770,6 +770,15 @@ and unrelated global rules remain unevaluated. Rationale: code, host, issue, and
 markdown corpora need a common lifecycle vocabulary without forcing
 markdown's status model into every adapter.
 
+Diagnostic acceptance is per instance: `config suppress { rule(CODE, target). }`
+filters the shared `diagnostic/6` stream by code and exact subject identity.
+For file subjects, target is the subject's file path; aggregate subjects use
+that row's status, namespace or corpus identity. Evidence targets, file-location
+fallbacks and globs do not match. The underlying finding remains queryable.
+Blanket `suppress.code` declarations refuse at load with the per-instance remedy.
+The standard suppression helper is sealed against project replacement, like
+`diagnostic/6`, because it supplies the check process result.
+
 **Definition CR-D75 (Primitive lifecycle classes).** CR-D9 primitives
 are classified by lifecycle, not by call syntax:
 

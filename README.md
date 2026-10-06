@@ -554,6 +554,14 @@ match. Use exact status names for lifecycle boosts and `hub(...)` for the
 bounded per-incoming-edge boost; `anneal describe search_boost` shows the
 queryable config rows.
 
+Use `config suppress { rule("E001", "path/to/source.md"). }` to accept one
+code at an exact diagnostic subject identity. Aggregate rows use their status,
+namespace or corpus subject instead. Referenced evidence targets, file-location
+fallbacks and globs do not match. Underlying findings remain queryable; the
+shared diagnostic stream and check exit omit the accepted instance.
+`config suppress { code([...]). }` refuses at load. `anneal describe suppress`
+teaches the matching unit.
+
 ### Project Rules And Verbs
 
 `anneal.dl` can also declare rules and project verbs.

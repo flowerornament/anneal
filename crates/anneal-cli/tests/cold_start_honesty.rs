@@ -1295,3 +1295,172 @@ fn soft_lifecycle_replacements_reach_cli_queries_verbs_and_diagnostics() {
     assert!(!sealed.status.success());
     assert!(text(&sealed.stderr).contains("cannot be defined by corpus rules"));
 }
+
+#[test]
+fn diagnostic_suppression_matches_only_code_and_exact_subject() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    for path in ["a.md", "b.md"] {
+        write_file(
+            corpus.path(),
+            path,
+            "---\nstatus: draft\nreferences: missing.md\n---\n# Document\n",
+        );
+    }
+    let query = r#"? diagnostic("E001", severity, subject, file, line, evidence)."#;
+    let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert_eq!(baseline.len(), 2);
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+
+    for rule in [
+        r#"rule("E001", "missing.md")."#,
+        r#"rule("E001", "*.md")."#,
+        r#"rule("W001", "a.md")."#,
+    ] {
+        write_file(
+            corpus.path(),
+            "anneal.dl",
+            &format!("config suppress {{ {rule} }}"),
+        );
+        assert_eq!(
+            json_rows(&run(&["--root", root, "--json", "-e", query])),
+            baseline
+        );
+        assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    }
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config suppress { rule("E001", "a.md"). }"#,
+    );
+    let remaining = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert_eq!(
+        remaining,
+        baseline
+            .iter()
+            .filter(|row| row["subject"] == "b.md")
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config suppress { rule("E001", "a.md"). rule("E001", "b.md"). }"#,
+    );
+    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    assert_success(&run(&["--root", root, "check"]));
+    assert_eq!(
+        json_rows(&run(&[
+            "--root",
+            root,
+            "--json",
+            "-e",
+            "? broken_reference(src, target, file, line)."
+        ]))
+        .len(),
+        2
+    );
+}
+
+#[test]
+fn blanket_diagnostic_suppression_refuses_with_instance_remedy() {
+    let corpus = tempdir();
+    write_file(corpus.path(), "a.md", "# A\n");
+    for declaration in [r#"code(["E001"])."#, "code([])."] {
+        write_file(
+            corpus.path(),
+            "anneal.dl",
+            &format!("config suppress {{ {declaration} }}"),
+        );
+        let output = run(&[
+            "--root",
+            corpus.path().to_str().expect("UTF-8 temp path"),
+            "check",
+        ]);
+        assert!(!output.status.success());
+        let stderr = text(&output.stderr);
+        assert!(stderr.contains("suppress.code"), "{stderr}");
+        assert!(stderr.contains("rule(CODE, target)"), "{stderr}");
+    }
+}
+
+#[test]
+fn aggregate_diagnostic_suppression_uses_subject_not_file_location() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    write_file(
+        corpus.path(),
+        "a.md",
+        "---\nstatus: unmapped-test-status\n---\n# A\n",
+    );
+    let query = r#"? diagnostic("W005", severity, subject, file, line, evidence)."#;
+    let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert!(!baseline.is_empty());
+    assert!(
+        baseline
+            .iter()
+            .all(|row| row["subject"] == "unmapped-test-status")
+    );
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config suppress { rule("W005", "a.md"). }"#,
+    );
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])),
+        baseline
+    );
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"config suppress { rule("W005", "unmapped-test-status"). }"#,
+    );
+    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    let card = run(&["--root", root, "describe", "suppress"]);
+    assert_success(&card);
+    assert!(text(&card.stdout).contains("subject identity exactly"));
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        r#"diagnostic_subject_suppressed(key, subject) := *handle{id: subject}, key = "suppress.rule.E001"."#,
+    );
+    let output = run(&["--root", root, "check"]);
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("protected standard-library relation"));
+}
+
+#[test]
+fn label_diagnostic_suppression_does_not_match_its_file_location() {
+    let corpus = tempdir();
+    let root = corpus.path().to_str().expect("UTF-8 temp path");
+    write_file(
+        corpus.path(),
+        "a.md",
+        "---\nstatus: draft\n---\n# A\n## OQ-1 An obligation\n\nWhat is owed?\n",
+    );
+    let handles = r#"config handles { force(["OQ"]). linear(["OQ"]). }"#;
+    let query = r#"? diagnostic("E002", severity, subject, file, line, evidence)."#;
+    write_file(corpus.path(), "anneal.dl", handles);
+    let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
+    assert_eq!(baseline.len(), 1);
+    assert_eq!(baseline[0]["subject"], "OQ-1");
+    assert_eq!(baseline[0]["file"], "a.md");
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        &format!(r#"{handles} config suppress {{ rule("E002", "a.md"). }}"#),
+    );
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])),
+        baseline
+    );
+    assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
+    write_file(
+        corpus.path(),
+        "anneal.dl",
+        &format!(r#"{handles} config suppress {{ rule("E002", "OQ-1"). }}"#),
+    );
+    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    assert_success(&run(&["--root", root, "check"]));
+}

@@ -16,6 +16,23 @@
   shadow: "forbid"
 ).
 
+@doc(
+  name: "suppress",
+  doc: "Accept an individual diagnostic with config suppress { rule(CODE, target). }. The target matches the diagnostic subject identity exactly: file paths for file subjects, and the status, namespace or corpus identity for aggregate subjects. It never matches referenced evidence targets, file locations or globs. The underlying finding remains queryable. Blanket suppress.code declarations refuse at load; use rule(CODE, target) per instance."
+).
+
+@doc(
+  name: "diagnostic_subject_suppressed",
+  doc: "Return subjects accepted by an exact config key such as suppress.rule.E001. Diagnostic producers bind their own full key; this gate helper cannot be replaced by project rules."
+).
+@predicate(
+  name: "diagnostic_subject_suppressed",
+  args: ["config_key", "subject"],
+  shadow: "forbid"
+).
+diagnostic_subject_suppressed(config_key, subject) :=
+  *config{key: config_key, value: subject}.
+
 section_ref(target) :=
   *edge{to: target},
   target starts_with "section:".
@@ -34,7 +51,8 @@ broken_reference(src, target, file, line) :=
   not section_ref(target).
 
 diagnostic("E001", "error", src, file, line, ("broken_ref", target)) :=
-  broken_reference(src, target, file, line).
+  broken_reference(src, target, file, line),
+  not diagnostic_subject_suppressed("suppress.rule.E001", src).
 
 section_ref_edge(edge_id) :=
   *edge{native_id: edge_id, to: target},
@@ -45,7 +63,8 @@ section_ref_total(count) :=
   count > 0.
 
 diagnostic("I001", "info", "corpus", null, null, ("section_refs", count)) :=
-  section_ref_total(count).
+  section_ref_total(count),
+  not diagnostic_subject_suppressed("suppress.rule.I001", "corpus").
 
 @doc(
   name: "implausible_ref",
@@ -60,7 +79,8 @@ implausible_ref(h, file, value) :=
   *handle{id: h, file: file}.
 
 diagnostic("W004", "warning", h, file, null, ("implausible_ref", value)) :=
-  implausible_ref(h, file, value).
+  implausible_ref(h, file, value),
+  not diagnostic_subject_suppressed("suppress.rule.W004", h).
 
 @doc(
   name: "unmodeled_frontmatter_shape",
@@ -75,7 +95,8 @@ unmodeled_frontmatter_shape(h, file, evidence) :=
   *handle{id: h, file: file, corpus: corpus, source: source}.
 
 diagnostic("W008", "warning", h, file, null, ("unmodeled_frontmatter_shape", evidence)) :=
-  unmodeled_frontmatter_shape(h, file, evidence).
+  unmodeled_frontmatter_shape(h, file, evidence),
+  not diagnostic_subject_suppressed("suppress.rule.W008", h).
 
 @doc(
   name: "stale_reference",
@@ -95,7 +116,8 @@ stale_reference(src, target, file, source_status, target_status) :=
   dependency_dead_status(target_status).
 
 diagnostic("W001", "warning", src, file, null, ("stale_ref", source_status, target_status)) :=
-  stale_reference(src, target, file, source_status, target_status).
+  stale_reference(src, target, file, source_status, target_status),
+  not diagnostic_subject_suppressed("suppress.rule.W001", src).
 
 builtin_dependency_dead_status("superseded").
 builtin_dependency_dead_status("retired").
@@ -196,7 +218,8 @@ spec_code_drift(src, target_path, file, line, source_status) :=
   referent_warning_disposition(disposition).
 
 diagnostic("W006", "warning", src, file, line, ("spec_code_drift", target_path, source_status)) :=
-  spec_code_drift(src, target_path, file, line, source_status).
+  spec_code_drift(src, target_path, file, line, source_status),
+  not diagnostic_subject_suppressed("suppress.rule.W006", src).
 
 @doc(
   name: "referent_disposition",
@@ -368,7 +391,8 @@ lifecycle_config_gap(status, count, "ordering_not_terminal") :=
   not modeled_terminal_status(status).
 
 diagnostic("W005", "warning", status, null, null, ("lifecycle_config_gap", status, count, variant)) :=
-  lifecycle_config_gap(status, count, variant).
+  lifecycle_config_gap(status, count, variant),
+  not diagnostic_subject_suppressed("suppress.rule.W005", status).
 
 @doc(
   name: "frontmatter_mapping_alias",
@@ -508,7 +532,8 @@ frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, 
   distinct_handle_count = Count{ h : frontmatter_unmapped_alias_use(key, h) }.
 
 diagnostic("W007", "warning", key, null, null, ("frontmatter_mapping_gap", key, distinct_handle_count, suggested_field, edge_kind, direction)) :=
-  frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction).
+  frontmatter_mapping_gap(key, distinct_handle_count, suggested_field, edge_kind, direction),
+  not diagnostic_subject_suppressed("suppress.rule.W007", key).
 
 @doc(
   name: "frontmatter_reference_name_signal",
@@ -614,7 +639,8 @@ dependency_config_gap_reach(status, active_dependents) :=
 
 diagnostic("S006", "suggestion", status, null, null, ("dependency_config_gap", status, count, variant, active_dependents)) :=
   dependency_config_gap(status, count, variant),
-  dependency_config_gap_reach(status, active_dependents).
+  dependency_config_gap_reach(status, active_dependents),
+  not diagnostic_subject_suppressed("suppress.rule.S006", status).
 
 handle_file(h, file) :=
   *handle{id: h, file: file},
@@ -640,7 +666,8 @@ confidence_gap(src, target, file, source_status, source_level, target_status, ta
   source_level > target_level + 1.
 
 diagnostic("W002", "warning", src, file, null, ("confidence_gap", source_status, source_level, target_status, target_level)) :=
-  confidence_gap(src, target, file, source_status, source_level, target_status, target_level).
+  confidence_gap(src, target, file, source_status, source_level, target_status, target_level),
+  not diagnostic_subject_suppressed("suppress.rule.W002", src).
 
 @doc(
   name: "undischarged_obligation",
@@ -657,7 +684,8 @@ undischarged_obligation(h, file) :=
   handle_file(h, file).
 
 diagnostic("E002", "error", h, file, null, "undischarged") :=
-  undischarged_obligation(h, file).
+  undischarged_obligation(h, file),
+  not diagnostic_subject_suppressed("suppress.rule.E002", h).
 
 @doc(
   name: "multiple_discharge",
@@ -675,7 +703,8 @@ multiple_discharge(h, file, count) :=
   handle_file(h, file).
 
 diagnostic("I002", "info", h, file, null, ("multiple_discharges", count)) :=
-  multiple_discharge(h, file, count).
+  multiple_discharge(h, file, count),
+  not diagnostic_subject_suppressed("suppress.rule.I002", h).
 
 file_parent_dir(h, dir) :=
   *handle{id: h, kind: "file"},
@@ -712,7 +741,8 @@ missing_frontmatter_file(h, dir, file) :=
   frontmatter_adoption_high(dir, with_frontmatter, total).
 
 diagnostic("W003", "warning", h, file, null, null) :=
-  missing_frontmatter_file(h, dir, file).
+  missing_frontmatter_file(h, dir, file),
+  not diagnostic_subject_suppressed("suppress.rule.W003", h).
 
 @doc(
   name: "orphaned_handle",
@@ -730,7 +760,8 @@ orphaned_handle(h) :=
 diagnostic("S001", "suggestion", h, file, null, ("orphaned_handle", kind, h)) :=
   orphaned_handle(h),
   *handle{id: h, kind: kind},
-  handle_file(h, file).
+  handle_file(h, file),
+  not diagnostic_subject_suppressed("suppress.rule.S001", h).
 
 rejected_namespace(namespace) :=
   *config{key: "handles.rejected", value: namespace}.
@@ -788,7 +819,8 @@ pipeline_stall(status, count, next_status, based_on_history) :=
   s003_pipeline_stall(status, count, next_status, based_on_history).
 
 diagnostic("S003", "suggestion", status, null, null, ("pipeline_stall", status, count, next_status, based_on_history)) :=
-  pipeline_stall(status, count, next_status, based_on_history).
+  pipeline_stall(status, count, next_status, based_on_history),
+  not diagnostic_subject_suppressed("suppress.rule.S003", status).
 
 active_namespace(namespace) :=
   namespace_present(namespace),
@@ -844,7 +876,8 @@ active_namespace_representative_file(namespace, file) :=
 
 diagnostic("S004", "suggestion", namespace, file, null, ("abandoned_namespace", namespace, total, terminal_count, stale_count)) :=
   abandoned_namespace(namespace, total, terminal_count, stale_count),
-  active_namespace_representative_file(namespace, file).
+  active_namespace_representative_file(namespace, file),
+  not diagnostic_subject_suppressed("suppress.rule.S004", namespace).
 
 file_prefix(file, prefix) :=
   *handle{id: file, kind: "file"},
@@ -894,4 +927,5 @@ top_pair(left_prefix, right_prefix, count) :=
   s005_top_pair(left_prefix, right_prefix, count).
 
 diagnostic("S005", "suggestion", left_prefix, null, null, ("concern_group_candidate", left_prefix, right_prefix, count)) :=
-  top_pair(left_prefix, right_prefix, count).
+  top_pair(left_prefix, right_prefix, count),
+  not diagnostic_subject_suppressed("suppress.rule.S005", left_prefix).

@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Per-instance diagnostic suppression matches the exact subject identity and
+  affects the shared diagnostic stream and check exit. Blanket `suppress.code`
+  declarations refuse with a per-instance remedy.
+
 - Query-limited evaluation follows rules that replace soft lifecycle defaults,
   including their transitive dependencies. Project, inline and saved-verb queries
   no longer silently omit those rules from counts, negation or diagnostics;

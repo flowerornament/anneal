@@ -283,6 +283,14 @@ For metadata intent use `config frontmatter { unmapped("KEY"). }` and inspect
 projection and W007 are suppressed. A field and unmapped declaration for the
 same key conflict. Init preserves both overrides and intentional opt-outs.
 
+Use `config suppress { rule("E001", "path/to/source.md"). }` to accept one
+code at an exact diagnostic subject identity. Aggregate rows use their status,
+namespace or corpus subject instead. Referenced evidence targets, file-location
+fallbacks and globs do not match. Underlying findings remain queryable; the
+shared diagnostic stream and check exit omit the accepted instance.
+`config suppress { code([...]). }` refuses at load. `anneal describe suppress`
+teaches the matching unit.
+
 `external_root` additively mounts a sibling directory outside the corpus root
 but inside the same Git-backed project boundary. External files use
 project-relative handles such as `formal/models/prism.md`, so references
