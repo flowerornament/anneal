@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.27.0 - 2026-10-06
+
 ### Added
 
 - `intents` lists all authored goal phrasings grouped by teaching-card name and
