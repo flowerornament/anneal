@@ -1,0 +1,630 @@
+[
+  {
+    "name": "scalars-and-order",
+    "projection": {
+      "all_keys": [
+        "status",
+        "updated",
+        "date",
+        "purpose",
+        "note",
+        "number",
+        "hex",
+        "octal",
+        "float",
+        "exponent",
+        "nan",
+        "infinity",
+        "yes-word",
+        "flag",
+        "null-value",
+        "quoted-number"
+      ],
+      "field_edges": [],
+      "frontmatter_date": "2026-10-17",
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": "First line\nSecond line",
+        "purpose": "A: λ",
+        "superseded_by": null,
+        "updated": "2026-10-18",
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "status",
+          "active"
+        ],
+        [
+          "updated",
+          "2026-10-18"
+        ],
+        [
+          "date",
+          "2026-10-17"
+        ],
+        [
+          "purpose",
+          "A: λ"
+        ],
+        [
+          "note",
+          "First line\nSecond line"
+        ],
+        [
+          "number",
+          "-7"
+        ],
+        [
+          "hex",
+          "42"
+        ],
+        [
+          "octal",
+          "15"
+        ],
+        [
+          "float",
+          "1.2"
+        ],
+        [
+          "exponent",
+          "1000.0"
+        ],
+        [
+          "nan",
+          ".nan"
+        ],
+        [
+          "infinity",
+          "-.inf"
+        ],
+        [
+          "yes-word",
+          "yes"
+        ],
+        [
+          "flag",
+          "true"
+        ],
+        [
+          "quoted-number",
+          "001"
+        ]
+      ],
+      "status": "active",
+      "unmodeled_shapes": []
+    },
+    "yaml": "status: active\nupdated: \"2026-10-18\"\ndate: 2026-10-17\npurpose: \"A: λ\"\nnote: |-\n  First line\n  Second line\nnumber: -7\nhex: 0x2a\noctal: 0o17\nfloat: 1.20\nexponent: 1e3\nnan: .nan\ninfinity: -.inf\nyes-word: yes\nflag: true\nnull-value: null\nquoted-number: \"001\"\n"
+  },
+  {
+    "name": "lists-and-edges",
+    "projection": {
+      "all_keys": [
+        "depends-on",
+        "discharges",
+        "verifies",
+        "superseded-by",
+        "authors",
+        "nested"
+      ],
+      "field_edges": [
+        {
+          "inverse": false,
+          "kind": "DependsOn",
+          "targets": [
+            "alpha.md",
+            "beta.md"
+          ]
+        },
+        {
+          "inverse": false,
+          "kind": "Discharges",
+          "targets": [
+            "OQ-1"
+          ]
+        },
+        {
+          "inverse": false,
+          "kind": "Verifies",
+          "targets": [
+            "ADR-2",
+            "7",
+            "false"
+          ]
+        },
+        {
+          "inverse": false,
+          "kind": "Supersedes",
+          "targets": [
+            "future.md"
+          ]
+        }
+      ],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [
+          "alpha.md",
+          "beta.md"
+        ],
+        "discharges": [
+          "OQ-1"
+        ],
+        "note": null,
+        "purpose": null,
+        "superseded_by": "future.md",
+        "updated": null,
+        "verifies": [
+          "ADR-2",
+          "7",
+          "false"
+        ]
+      },
+      "scalars": [
+        [
+          "depends-on",
+          "alpha.md"
+        ],
+        [
+          "depends-on",
+          "beta.md"
+        ],
+        [
+          "discharges",
+          "OQ-1"
+        ],
+        [
+          "verifies",
+          "ADR-2"
+        ],
+        [
+          "verifies",
+          "7"
+        ],
+        [
+          "verifies",
+          "false"
+        ],
+        [
+          "superseded-by",
+          "future.md"
+        ],
+        [
+          "authors",
+          "Ada"
+        ],
+        [
+          "authors",
+          "Grace"
+        ],
+        [
+          "nested",
+          "one"
+        ],
+        [
+          "nested",
+          "two"
+        ],
+        [
+          "nested",
+          "three"
+        ]
+      ],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "depends-on: [alpha.md, \"beta.md (annotation)\"]\ndischarges: OQ-1\nverifies: [ADR-2, 7, false]\nsuperseded-by: future.md\nauthors: [Ada, Grace]\nnested: [one, [two, three]]\n"
+  },
+  {
+    "name": "structures-tags-and-keys",
+    "projection": {
+      "all_keys": [
+        "plain",
+        "work",
+        "mixed"
+      ],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "mixed",
+          "keep"
+        ],
+        [
+          "mixed",
+          "also"
+        ]
+      ],
+      "status": null,
+      "unmodeled_shapes": [
+        {
+          "key": "work",
+          "line": 6,
+          "line_exact": true,
+          "shape": "mapping"
+        },
+        {
+          "key": "mixed",
+          "line": 7,
+          "line_exact": true,
+          "shape": "sequence_containing_mapping"
+        }
+      ]
+    },
+    "yaml": "? [complex, key]\n: ignored\n42: ignored\nplain: !label scalar\nwork: !shape {x: y}\nmixed: [keep, {x: y}, [also, {deep: yes}]]\n"
+  },
+  {
+    "name": "anchors-aliases-merge",
+    "projection": {
+      "all_keys": [
+        "base",
+        "<<",
+        "work",
+        "values",
+        "copy"
+      ],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "values",
+          "one"
+        ],
+        [
+          "values",
+          "two"
+        ],
+        [
+          "copy",
+          "one"
+        ],
+        [
+          "copy",
+          "two"
+        ]
+      ],
+      "status": null,
+      "unmodeled_shapes": [
+        {
+          "key": "base",
+          "line": 2,
+          "line_exact": true,
+          "shape": "mapping"
+        },
+        {
+          "key": "<<",
+          "line": 3,
+          "line_exact": true,
+          "shape": "mapping"
+        },
+        {
+          "key": "work",
+          "line": 4,
+          "line_exact": true,
+          "shape": "mapping"
+        }
+      ]
+    },
+    "yaml": "base: &base {status: draft, date: 2026-10-16}\n<<: *base\nwork: *base\nvalues: &list [one, two]\ncopy: *list\n"
+  },
+  {
+    "name": "flow-root",
+    "projection": {
+      "all_keys": [
+        "status",
+        "complex:key",
+        "flag"
+      ],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "status",
+          "draft"
+        ],
+        [
+          "flag",
+          "false"
+        ]
+      ],
+      "status": "draft",
+      "unmodeled_shapes": [
+        {
+          "key": "complex:key",
+          "line": 1,
+          "line_exact": false,
+          "shape": "mapping"
+        }
+      ]
+    },
+    "yaml": "{status: draft, \"complex:key\": {nested: value}, flag: false}\n"
+  },
+  {
+    "name": "quoted-crlf",
+    "projection": {
+      "all_keys": [
+        "escaped\"key",
+        "complex:key",
+        "status"
+      ],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "status",
+          "draft"
+        ]
+      ],
+      "status": "draft",
+      "unmodeled_shapes": [
+        {
+          "key": "escaped\"key",
+          "line": 2,
+          "line_exact": true,
+          "shape": "mapping"
+        },
+        {
+          "key": "complex:key",
+          "line": 3,
+          "line_exact": true,
+          "shape": "mapping"
+        }
+      ]
+    },
+    "yaml": "\"escaped\\\"key\": {x: y}\r\n'complex:key': {a: b}\r\nstatus: \"draft\"\r\n"
+  },
+  {
+    "name": "empty",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": ""
+  },
+  {
+    "name": "non-map-scalar",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "draft\n"
+  },
+  {
+    "name": "non-map-sequence",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "[one, two]\n"
+  },
+  {
+    "name": "duplicate-keys",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "status: active\nstatus: draft\n"
+  },
+  {
+    "name": "multiple-documents",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "status: active\n---\nstatus: draft\n"
+  },
+  {
+    "name": "explicit-document-end",
+    "projection": {
+      "all_keys": [
+        "status"
+      ],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [
+        [
+          "status",
+          "active"
+        ]
+      ],
+      "status": "active",
+      "unmodeled_shapes": []
+    },
+    "yaml": "---\nstatus: active\n...\n"
+  },
+  {
+    "name": "malformed-flow",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "status: [unterminated\n"
+  },
+  {
+    "name": "malformed-quote",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "purpose: \"unterminated\n"
+  },
+  {
+    "name": "malformed-indent",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "status: draft\n\tbad: value\n"
+  },
+  {
+    "name": "unknown-alias",
+    "projection": {
+      "all_keys": [],
+      "field_edges": [],
+      "frontmatter_date": null,
+      "metadata": {
+        "depends_on": [],
+        "discharges": [],
+        "note": null,
+        "purpose": null,
+        "superseded_by": null,
+        "updated": null,
+        "verifies": []
+      },
+      "scalars": [],
+      "status": null,
+      "unmodeled_shapes": []
+    },
+    "yaml": "value: *missing\n"
+  }
+]

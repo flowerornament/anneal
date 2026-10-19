@@ -83,11 +83,11 @@ pub(crate) struct FrontmatterParseResult {
 
 /// Parse YAML frontmatter into a status, `HandleMetadata`, and extensible field edges (D-05).
 ///
-/// Deserializes as `serde_yaml_ng::Value` to handle arbitrary fields and
+/// Deserializes as `yaml_serde::Value` to handle arbitrary fields and
 /// YAML type coercion. On parse failure, returns an empty extraction.
 /// The `config` parameter drives which frontmatter keys produce edges.
 pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> FrontmatterParseResult {
-    let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
+    let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
         return FrontmatterParseResult::default();
     };
 
@@ -101,7 +101,7 @@ pub(crate) fn parse_frontmatter(yaml: &str, config: &FrontmatterConfig) -> Front
         .filter_map(|k| k.as_str().map(String::from))
         .collect();
 
-    let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_string()));
+    let get = |key: &str| mapping.get(yaml_serde::Value::String(key.to_string()));
 
     // Special fields: status, updated, date, purpose, note (not edge-producing)
     let status = get("status").and_then(yaml_value_to_string);
@@ -183,11 +183,11 @@ fn is_special_frontmatter_key(key: &str) -> bool {
     matches!(key, "status" | "updated" | "date" | "purpose" | "note")
 }
 
-fn yaml_value_to_string(v: &serde_yaml_ng::Value) -> Option<String> {
+fn yaml_value_to_string(v: &yaml_serde::Value) -> Option<String> {
     match v {
-        serde_yaml_ng::Value::String(s) => Some(strip_trailing_parenthetical(s)),
-        serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
-        serde_yaml_ng::Value::Bool(b) => Some(b.to_string()),
+        yaml_serde::Value::String(s) => Some(strip_trailing_parenthetical(s)),
+        yaml_serde::Value::Number(n) => Some(n.to_string()),
+        yaml_serde::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -205,23 +205,19 @@ fn strip_trailing_parenthetical(s: &str) -> String {
     trimmed.to_string()
 }
 
-fn yaml_value_to_string_vec(v: &serde_yaml_ng::Value) -> Vec<String> {
+fn yaml_value_to_string_vec(v: &yaml_serde::Value) -> Vec<String> {
     match v {
-        serde_yaml_ng::Value::Sequence(seq) => {
-            seq.iter().filter_map(yaml_value_to_string).collect()
-        }
+        yaml_serde::Value::Sequence(seq) => seq.iter().filter_map(yaml_value_to_string).collect(),
         other => yaml_value_to_string(other).into_iter().collect(),
     }
 }
 
-fn yaml_scalar_values(value: &serde_yaml_ng::Value) -> Vec<String> {
+fn yaml_scalar_values(value: &yaml_serde::Value) -> Vec<String> {
     match value {
-        serde_yaml_ng::Value::String(value) => vec![strip_trailing_parenthetical(value)],
-        serde_yaml_ng::Value::Number(value) => vec![value.to_string()],
-        serde_yaml_ng::Value::Bool(value) => vec![value.to_string()],
-        serde_yaml_ng::Value::Sequence(values) => {
-            values.iter().flat_map(yaml_scalar_values).collect()
-        }
+        yaml_serde::Value::String(value) => vec![strip_trailing_parenthetical(value)],
+        yaml_serde::Value::Number(value) => vec![value.to_string()],
+        yaml_serde::Value::Bool(value) => vec![value.to_string()],
+        yaml_serde::Value::Sequence(values) => values.iter().flat_map(yaml_scalar_values).collect(),
         _ => Vec::new(),
     }
 }
@@ -241,11 +237,11 @@ pub(crate) struct UnmodeledFrontmatterShape {
     pub(crate) line_exact: bool,
 }
 
-fn contains_frontmatter_mapping(value: &serde_yaml_ng::Value) -> bool {
+fn contains_frontmatter_mapping(value: &yaml_serde::Value) -> bool {
     match value {
-        serde_yaml_ng::Value::Mapping(_) => true,
-        serde_yaml_ng::Value::Sequence(values) => values.iter().any(contains_frontmatter_mapping),
-        serde_yaml_ng::Value::Tagged(value) => contains_frontmatter_mapping(&value.value),
+        yaml_serde::Value::Mapping(_) => true,
+        yaml_serde::Value::Sequence(values) => values.iter().any(contains_frontmatter_mapping),
+        yaml_serde::Value::Tagged(value) => contains_frontmatter_mapping(&value.value),
         _ => false,
     }
 }
@@ -268,7 +264,7 @@ fn frontmatter_key_line(yaml: &str, key: &str) -> (u32, bool) {
             .is_some_and(|rest| rest.trim_start().starts_with(':'));
         let quoted_key = (line.starts_with('\'') || line.starts_with('"'))
             && line.match_indices(':').any(|(colon, _)| {
-                serde_yaml_ng::from_str::<String>(line[..colon].trim_end())
+                yaml_serde::from_str::<String>(line[..colon].trim_end())
                     .is_ok_and(|candidate| candidate == key)
             });
         if bare_key || quoted_key {
@@ -285,7 +281,7 @@ fn frontmatter_values(yaml: Option<&str>) -> FrontmatterValues {
     let Some(yaml) = yaml else {
         return FrontmatterValues::default();
     };
-    let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) else {
+    let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
         return FrontmatterValues::default();
     };
     let Some(mapping) = value.as_mapping() else {
@@ -303,7 +299,7 @@ fn frontmatter_values(yaml: Option<&str>) -> FrontmatterValues {
             let (line, line_exact) = frontmatter_key_line(yaml, key);
             values.unmodeled_shapes.push(UnmodeledFrontmatterShape {
                 key: key.to_string(),
-                shape: if matches!(value, serde_yaml_ng::Value::Sequence(_)) {
+                shape: if matches!(value, yaml_serde::Value::Sequence(_)) {
                     "sequence_containing_mapping"
                 } else {
                     "mapping"
@@ -1919,6 +1915,36 @@ mod tests {
             "file date should be extracted from filename"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -------------------------------------------------------------------
+    #[test]
+    fn frontmatter_compatibility_matches_pinned_projection() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/frontmatter-compatibility.json"
+        ))
+        .expect("compatibility fixture JSON");
+        let mut actual = expected.clone();
+        for case in actual.as_array_mut().expect("fixture cases") {
+            let yaml = case["yaml"].as_str().expect("YAML fixture");
+            let parsed = parse_frontmatter(yaml, &FrontmatterConfig::default());
+            let values = frontmatter_values(Some(yaml));
+            case["projection"] = serde_json::json!({
+                "status": parsed.status,
+                "metadata": parsed.metadata,
+                "all_keys": parsed.all_keys,
+                "frontmatter_date": parsed.frontmatter_date.map(|date| date.to_string()),
+                "field_edges": parsed.field_edges.iter().map(|edge| serde_json::json!({
+                    "targets": edge.targets, "kind": edge.edge_kind.as_str(), "inverse": edge.inverse,
+                })).collect::<Vec<_>>(),
+                "scalars": values.scalars,
+                "unmodeled_shapes": values.unmodeled_shapes,
+            });
+        }
+        assert_eq!(
+            actual, expected,
+            "released frontmatter projection must stay identical"
+        );
     }
 
     // -------------------------------------------------------------------

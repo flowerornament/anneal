@@ -6,6 +6,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Frontmatter parsing uses the maintained `yaml_serde` and `libyaml-rs` crates;
+  the unmaintained `unsafe-libyaml` dependency is absent from the dependency graph.
+
 - jj history reads use one explicit operation selector per invocation, including
   the recorded workspace view, with compatibility for jj 0.39 from `flake.lock`.
 
