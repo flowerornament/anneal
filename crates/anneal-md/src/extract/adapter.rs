@@ -253,8 +253,19 @@ fn extract_markdown_facts_from_anneal_config(
         &repository,
     );
 
+    let assets_by_handle: HashMap<_, _> = asset_targets
+        .iter()
+        .map(|asset| (asset.handle.as_str(), asset))
+        .collect();
     for (node_id, handle) in result.graph.nodes() {
-        let fact = handle_fact(&batch, &mut revisions, &result, node_id, handle);
+        let fact = handle_fact(
+            &batch,
+            &mut revisions,
+            &result,
+            node_id,
+            handle,
+            assets_by_handle.get(handle.id.as_str()).copied(),
+        );
         batch.handles.push(fact);
         emit_resolved_file_meta(&mut batch, &mut revisions, &result.graph, handle);
         if gitignored_files.contains(&handle.id) {
@@ -1524,13 +1535,21 @@ fn handle_fact(
     result: &parse::BuildResult,
     node_id: NodeId,
     handle: &Handle,
+    asset: Option<&AssetTarget>,
 ) -> HandleFact {
-    let file = handle
-        .file_path
-        .as_ref()
-        .map_or_else(String::new, ToString::to_string);
-    let native_id = native_id_for(handle);
-    let identity = identity_for(batch, revisions, &native_id, &file);
+    let file = asset.map_or_else(
+        || {
+            handle
+                .file_path
+                .as_ref()
+                .map_or_else(String::new, ToString::to_string)
+        },
+        |asset| asset.path.clone(),
+    );
+    let native_id = asset.map_or_else(|| native_id_for(handle), |asset| asset.path.clone());
+    // CR-R13: an asset originates in its own resolved file, independently of its citers.
+    let identity_file = asset.map_or(file.as_str(), |asset| asset.resolved_path.as_str());
+    let identity = identity_for(batch, revisions, &native_id, identity_file);
     let namespace = match &handle.kind {
         HandleKind::Label { prefix, .. } => prefix.clone(),
         _ => String::new(),
@@ -3830,6 +3849,110 @@ mod tests {
                 .iter()
                 .any(|e| e.to.as_str().contains("absent.md"))
         );
+    }
+
+    #[test]
+    fn asset_handle_rows_are_independent_of_citer_order() {
+        for mounted in [false, true] {
+            let temp = tempdir().expect("tempdir");
+            let base = Utf8Path::from_path(temp.path()).expect("UTF-8 tempdir");
+            let root = base.join("corpus");
+            let physical = if mounted {
+                base.join("mounted/data.tsv")
+            } else {
+                root.join("assets/data.tsv")
+            };
+            std::fs::create_dir_all(physical.parent().expect("asset parent"))
+                .expect("create asset directory");
+            std::fs::write(&physical, "id\nasset-payload\n").expect("write asset");
+            let physical = physical.canonicalize_utf8().expect("canonical asset");
+            let target = if mounted {
+                "../../mounted/data.tsv"
+            } else {
+                "../assets/data.tsv"
+            };
+            for (file, title) in [("left/a.md", "First citer"), ("right/b.md", "Other citer")] {
+                let path = root.join(file);
+                std::fs::create_dir_all(path.parent().expect("citer parent"))
+                    .expect("create citer directory");
+                std::fs::write(path, format!("# {title}\n\n[asset]({target})\n"))
+                    .expect("write citer");
+            }
+            let logical = if mounted {
+                "formal/data.tsv"
+            } else {
+                "assets/data.tsv"
+            };
+            let external_roots = if mounted {
+                vec![super::parse::ExternalScanRoot {
+                    physical_root: physical.parent().expect("mount parent").to_path_buf(),
+                    handle_prefix: Utf8PathBuf::from("formal"),
+                    containment_root: base.canonicalize_utf8().expect("canonical base"),
+                }]
+            } else {
+                Vec::new()
+            };
+            let extract = |reverse| {
+                let config = super::config::AnnealConfig::default();
+                let mut result = super::parse::build_graph_with_external_roots(
+                    &root,
+                    &config,
+                    &[Utf8PathBuf::from(".")],
+                    &external_roots,
+                )
+                .expect("build fixture graph");
+                assert_eq!(result.resolution.pending_edges.len(), 2);
+                if reverse {
+                    result.resolution.pending_edges.reverse();
+                }
+                let mut known = crate::extract::resolve::resolve_nodes(
+                    &mut result.graph,
+                    &result.resolution.label_candidates,
+                    &config,
+                );
+                let assets =
+                    super::resolve_asset_targets(&root, &external_roots, &mut result, &mut known)
+                        .expect("resolve fixture asset");
+                assert_eq!(assets.len(), 1, "two citers must deduplicate to one asset");
+                let asset = &assets[0];
+                let (node, handle) = result
+                    .graph
+                    .nodes()
+                    .find(|(_, handle)| handle.id == asset.handle)
+                    .expect("asset node");
+                let batch = FactBatch::new(
+                    CorpusId::from("test"),
+                    SourceName::from("markdown"),
+                    super::FactBatchMode::FullSnapshot,
+                    Generation::initial(),
+                );
+                let mut revisions = super::RevisionCache::new(&root, &result);
+                let fact =
+                    super::handle_fact(&batch, &mut revisions, &result, node, handle, Some(asset));
+                (fact, asset.source_file.clone())
+            };
+            let (forward, first_citer) = extract(false);
+            let (reversed, other_citer) = extract(true);
+            assert_ne!(
+                first_citer, other_citer,
+                "fixture must change first encounter"
+            );
+            assert_eq!(
+                forward, reversed,
+                "entire asset row must be order independent"
+            );
+            assert_eq!(forward.identity.native_id.as_str(), logical);
+            assert_eq!(forward.file, logical);
+            assert_eq!(
+                forward.identity.origin_uri.as_str(),
+                format!("file://{physical}")
+            );
+            assert_eq!(
+                forward.identity.revision.as_str(),
+                format!("{:016x}", anneal_core::fnv1a_64(b"id\nasset-payload\n"))
+            );
+            assert_eq!(forward.area, area_for(logical));
+        }
     }
 
     #[test]

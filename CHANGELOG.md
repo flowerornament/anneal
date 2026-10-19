@@ -6,6 +6,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- File asset handles derive their native identity, file, origin, revision and area
+  from the asset, independently of which document cites it first.
+
 - Frontmatter parsing uses the maintained `yaml_serde` and `libyaml-rs` crates;
   the unmaintained `unsafe-libyaml` dependency is absent from the dependency graph.
 
