@@ -12,6 +12,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Atlas propagates test boundaries through declared module descendants and path
+  mounts, while shared production mounts and Cargo roots remain production.
+  Historical scans batch immutable source bodies without changing source bytes.
+
 - File asset handles derive their native identity, file, origin, revision and area
   from the asset, independently of which document cites it first.
 

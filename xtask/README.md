@@ -39,3 +39,11 @@ only Murail's formal-model binding enrichment and supplies its own comment
 citation vocabulary. Once both consumers have established the stable seams, the
 shared scanner and views should move to a standalone library rather than evolve
 as two implementations.
+
+File modules inherit test boundaries through declared descendants, including
+explicit path mounts. Shared production mounts and Cargo target roots remain
+production; a directory named `tests` alone is no evidence. Historical scans
+retain current workspace membership and read immutable member blobs in one
+batch through the validated local Git checkout. Source bytes, including terminal
+CR/LF, are preserved. Historical reads from jj-only desks require the colocated
+checkout.

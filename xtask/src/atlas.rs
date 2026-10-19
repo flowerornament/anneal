@@ -28,6 +28,7 @@ use serde_json::json;
 use crate::scan::{self, Item, ItemKind, Visibility};
 
 type Result<T> = std::result::Result<T, String>;
+type GitResult = Result<Vec<u8>>;
 
 const USAGE: &str = "\
 usage: cargo xtask atlas <verb> [--json] [--pub-only]
@@ -164,6 +165,8 @@ struct CrateMap {
     name: String,
     /// Workspace-relative `src` directory, e.g. `crates/anneal-core/src`.
     src_rel: String,
+    /// Current Cargo target roots; historical scans preserve current membership.
+    entry_points: Vec<String>,
     files: Vec<FileMap>,
 }
 
@@ -252,10 +255,16 @@ impl Workspace {
                 .iter()
                 .map(|path| FileMap::load(&root, path))
                 .collect::<Result<Vec<_>>>()?;
-            mark_test_files(&mut files);
+            let entry_points = package
+                .targets
+                .iter()
+                .map(|target| rel_display(&root, target.src_path.as_std_path()))
+                .collect::<Vec<_>>();
+            mark_test_files(&mut files, &entry_points);
             crates.push(CrateMap {
                 name: package.name.to_string(),
                 src_rel: rel_display(&root, &src),
+                entry_points,
                 files,
             });
         }
@@ -268,22 +277,66 @@ impl Workspace {
     /// read), so this reuses cargo's own answer rather than a path pattern.
     fn at_ref(&self, reference: &str) -> Result<Self> {
         let git = git(&self.root)?;
-        let listing = git(&["ls-tree", "-r", "--name-only", reference])?;
+        let revision = String::from_utf8(git(
+            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+            None,
+        )?)
+        .map_err(|error| format!("Git revision not UTF-8: {error}"))?;
+        let revision = revision.trim();
+        let listing = String::from_utf8(git(&["ls-tree", "-r", "-z", revision], None)?)
+            .map_err(|error| format!("Git tree not UTF-8: {error}"))?;
+        let objects = listing
+            .split_terminator('\0')
+            .map(|row| {
+                let (header, path) = row.split_once('\t').ok_or("Git tree row has no path")?;
+                let fields: Vec<_> = header.split_whitespace().collect();
+                let [_, kind, oid] = fields.as_slice() else {
+                    return Err("Git tree row has malformed object fields".to_owned());
+                };
+                Ok((path, *kind, *oid))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Preserve the current manifest's membership and each source population,
+        // including overlapping roots, while transporting immutable bodies once.
+        let member_sources = self
+            .crates
+            .iter()
+            .map(|crate_map| {
+                let prefix = format!("{}/", crate_map.src_rel);
+                let paths = objects
+                    .iter()
+                    .filter(|(path, _, _)| {
+                        path.starts_with(&prefix) && is_rust_source(Path::new(path))
+                    })
+                    .map(|(path, kind, oid)| {
+                        if *kind != "blob" {
+                            return Err(format!("Git tree refused source {path}: {kind}"));
+                        }
+                        Ok(((*path).to_owned(), (*oid).to_owned()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((crate_map, paths))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let requests = member_sources
+            .iter()
+            .flat_map(|(_, paths)| paths.iter().cloned())
+            .collect::<Vec<_>>();
+        let sources = read_blobs(&git, &requests)?;
         let mut crates = Vec::new();
-        for crate_map in &self.crates {
-            let prefix = format!("{}/", crate_map.src_rel);
-            let mut files = listing
-                .lines()
-                .filter(|path| path.starts_with(&prefix) && is_rust_source(Path::new(path)))
-                .map(|path| {
-                    let text = git(&["show", &format!("{reference}:{path}")])?;
-                    Ok(FileMap::of(path.to_owned(), text))
+        for (crate_map, paths) in member_sources {
+            let mut files = paths
+                .into_iter()
+                .map(|(path, _)| {
+                    let text = sources[&path].clone();
+                    FileMap::of(path, text)
                 })
-                .collect::<Result<Vec<_>>>()?;
-            mark_test_files(&mut files);
+                .collect::<Vec<_>>();
+            mark_test_files(&mut files, &crate_map.entry_points);
             crates.push(CrateMap {
                 name: crate_map.name.clone(),
                 src_rel: crate_map.src_rel.clone(),
+                entry_points: crate_map.entry_points.clone(),
                 files,
             });
         }
@@ -326,9 +379,10 @@ fn child_directory(rel: &str) -> String {
 }
 
 /// Independent of the product being measured; validate once before traversing a ref.
-fn git(root: &Path) -> Result<impl Fn(&[&str]) -> Result<String> + '_> {
-    let run = move |arguments: &[&str]| {
-        let output = std::process::Command::new("git")
+fn git(root: &Path) -> Result<impl Fn(&[&str], Option<fs::File>) -> GitResult + '_> {
+    let run = move |arguments: &[&str], input: Option<fs::File>| {
+        let mut command = std::process::Command::new("git");
+        command
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
@@ -337,7 +391,11 @@ fn git(root: &Path) -> Result<impl Fn(&[&str]) -> Result<String> + '_> {
             .arg("-C")
             .arg(root)
             .current_dir(root)
-            .args(arguments)
+            .args(arguments);
+        if let Some(input) = input {
+            command.stdin(input);
+        }
+        let output = command
             .output()
             .map_err(|err| format!("git {}: {err}", arguments.join(" ")))?;
         if !output.status.success() {
@@ -347,15 +405,17 @@ fn git(root: &Path) -> Result<impl Fn(&[&str]) -> Result<String> + '_> {
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        String::from_utf8(output.stdout).map_err(|err| format!("git output not UTF-8: {err}"))
+        Ok(output.stdout)
     };
-    let reported = run(&["rev-parse", "--show-toplevel"]).map_err(|error| {
+    let reported = run(&["rev-parse", "--show-toplevel"], None).map_err(|error| {
         format!(
             "refusing Git at {}; use the colocated checkout (expected .git at {}): {error}",
             root.display(),
             root.display()
         )
     })?;
+    let reported =
+        String::from_utf8(reported).map_err(|error| format!("Git root not UTF-8: {error}"))?;
     if std::fs::canonicalize(reported.trim()).ok() != std::fs::canonicalize(root).ok() {
         return Err(format!(
             "refusing Git at {}: toplevel is {}; use the colocated checkout (expected .git at {})",
@@ -365,6 +425,71 @@ fn git(root: &Path) -> Result<impl Fn(&[&str]) -> Result<String> + '_> {
         ));
     }
     Ok(run)
+}
+
+/// File-backed input avoids deadlock when requests and answers both fill pipes.
+fn read_blobs(
+    git: &impl Fn(&[&str], Option<fs::File>) -> GitResult,
+    requests: &[(String, String)],
+) -> Result<BTreeMap<String, String>> {
+    use std::io::{Seek, Write};
+
+    if requests.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut input =
+        tempfile::tempfile().map_err(|error| format!("create Git batch request: {error}"))?;
+    for (_, oid) in requests {
+        writeln!(input, "{oid}").map_err(|error| format!("write Git batch request: {error}"))?;
+    }
+    input
+        .rewind()
+        .map_err(|error| format!("rewind Git batch request: {error}"))?;
+    blob_answers(requests, &git(&["cat-file", "--batch"], Some(input))?)
+}
+
+/// Decode size-framed blobs, binding each answer to its requested tree object.
+/// Anneal preserves the complete source text, including terminal CR/LF bytes.
+fn blob_answers(
+    requests: &[(String, String)],
+    mut bytes: &[u8],
+) -> Result<BTreeMap<String, String>> {
+    let mut sources = BTreeMap::new();
+    for (path, expected_oid) in requests {
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or_else(|| format!("Git batch missing header for {path}"))?;
+        let header = std::str::from_utf8(&bytes[..end])
+            .map_err(|error| format!("Git batch header for {path}: {error}"))?;
+        let fields = header.split_whitespace().collect::<Vec<_>>();
+        let [oid, "blob", size] = fields.as_slice() else {
+            return Err(format!("Git batch refused {path}: {header}"));
+        };
+        if oid != expected_oid {
+            return Err(format!(
+                "Git batch object for {path}: expected {expected_oid}, found {oid}"
+            ));
+        }
+        let size = size
+            .parse::<usize>()
+            .map_err(|error| format!("Git batch size for {path}: {error}"))?;
+        bytes = &bytes[end + 1..];
+        let body = bytes
+            .get(..size)
+            .ok_or_else(|| format!("Git batch truncated blob for {path}"))?;
+        let text = std::str::from_utf8(body)
+            .map_err(|error| format!("Git batch source for {path}: {error}"))?;
+        sources.insert(path.clone(), text.to_owned());
+        bytes = bytes
+            .get(size..)
+            .and_then(|tail| tail.strip_prefix(b"\n"))
+            .ok_or_else(|| format!("Git batch missing blob terminator for {path}"))?;
+    }
+    if !bytes.is_empty() {
+        return Err("Git batch returned unrequested trailing answers".into());
+    }
+    Ok(sources)
 }
 
 fn resolve_module_path(declaring_file: &str, explicit_path: &str) -> String {
@@ -385,25 +510,113 @@ fn resolve_module_path(declaring_file: &str, explicit_path: &str) -> String {
     normalized.to_string_lossy().replace('\\', "/")
 }
 
-/// Resolve `#[cfg(test)] mod name;` declarations against the crate's files:
-/// the declared module's whole file is test code. Derived from the source's
-/// own module graph rather than from filename conventions, so a fixture file
-/// counts as tests wherever it lives and whatever it is called.
-fn mark_test_files(files: &mut [FileMap]) {
-    let mut declared = BTreeSet::new();
-    for file in files.iter() {
-        let directory = child_directory(&file.rel);
-        for (name, explicit_path) in file.projection.test_module_declarations() {
-            if let Some(path) = explicit_path {
-                declared.insert(resolve_module_path(&file.rel, &path));
+/// One file can be mounted both implicitly and by an explicit path, with
+/// different directories for its ordinary child declarations.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct ModuleMount {
+    file: usize,
+    beside_file: bool,
+}
+
+/// Follow test-gated file declarations and their transitive children. A path
+/// mount changes the child's location, never its inherited test boundary.
+/// Production mounts take precedence when a file has both kinds of parent.
+fn mark_test_files(files: &mut [FileMap], entry_points: &[String]) {
+    let by_path: BTreeMap<_, _> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.rel.clone(), index))
+        .collect();
+    let mut children = BTreeMap::new();
+    let mut mounted = BTreeSet::new();
+    for (index, file) in files.iter().enumerate() {
+        let declarations = file.projection.file_module_declarations();
+        for beside_file in [false, true] {
+            let mount = ModuleMount {
+                file: index,
+                beside_file,
+            };
+            let directory = if beside_file {
+                file.rel
+                    .rsplit_once('/')
+                    .map_or("", |(directory, _)| directory)
+                    .to_owned()
             } else {
-                declared.insert(format!("{directory}/{name}.rs"));
-                declared.insert(format!("{directory}/{name}/mod.rs"));
+                child_directory(&file.rel)
+            };
+            let mut edges = Vec::new();
+            for (name, explicit_path, test_only) in &declarations {
+                let paths = if let Some(path) = explicit_path {
+                    vec![resolve_module_path(&file.rel, path)]
+                } else {
+                    vec![
+                        format!("{directory}/{name}.rs"),
+                        format!("{directory}/{name}/mod.rs"),
+                    ]
+                };
+                for path in paths {
+                    if let Some(&child) = by_path.get(&path) {
+                        mounted.insert(child);
+                        edges.push((
+                            ModuleMount {
+                                file: child,
+                                beside_file: explicit_path.is_some(),
+                            },
+                            *test_only,
+                        ));
+                    }
+                }
             }
+            children.insert(mount, edges);
         }
     }
-    for file in files {
-        file.test_file = declared.contains(&file.rel);
+    // Unmounted files remain production census inputs. Cargo supplies the
+    // actual entry points, including roots also imported by another module.
+    let mut pending: Vec<_> = (0..files.len())
+        .filter(|index| !mounted.contains(index))
+        .map(|file| {
+            (
+                ModuleMount {
+                    file,
+                    beside_file: false,
+                },
+                false,
+            )
+        })
+        .chain(
+            entry_points
+                .iter()
+                .filter_map(|path| by_path.get(path).copied())
+                .map(|file| {
+                    (
+                        ModuleMount {
+                            file,
+                            beside_file: true,
+                        },
+                        false,
+                    )
+                }),
+        )
+        .collect();
+    let mut reached = BTreeSet::new();
+    let mut tests = BTreeSet::new();
+    let mut production = BTreeSet::new();
+    while let Some((mount, in_tests)) = pending.pop() {
+        if reached.insert((mount, in_tests)) {
+            if in_tests {
+                tests.insert(mount.file);
+            } else {
+                production.insert(mount.file);
+            }
+            pending.extend(
+                children[&mount]
+                    .iter()
+                    .map(|(child, gated)| (*child, in_tests || *gated)),
+            );
+        }
+    }
+    for (index, file) in files.iter_mut().enumerate() {
+        file.test_file = tests.contains(&index) && !production.contains(&index);
     }
 }
 
@@ -2416,6 +2629,175 @@ mod tests {
         assert!(span <= file.nontest_loc());
     }
 
+    fn init_git_fixture(root: &Path, relative: &str, contents: &str) {
+        let mut init = std::process::Command::new("git");
+        init.current_dir(root)
+            .args(["init", "--quiet", "--initial-branch=master"]);
+        fixture_command(init, "initialize Git fixture");
+
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture path has parent"))
+            .expect("create fixture source directory");
+        fs::write(&path, contents).expect("write fixture source");
+
+        let mut add = std::process::Command::new("git");
+        add.current_dir(root).args(["add", "."]);
+        fixture_command(add, "stage Git fixture");
+
+        let mut commit = std::process::Command::new("git");
+        commit.current_dir(root).args([
+            "-c",
+            "user.name=Atlas Sentinel",
+            "-c",
+            "user.email=atlas@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ]);
+        fixture_command(commit, "commit Git fixture");
+    }
+
+    fn fixture_command(mut command: std::process::Command, context: &str) -> String {
+        let output = command
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("run fixture command");
+        assert!(
+            output.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("fixture output is UTF-8")
+    }
+
+    #[test]
+    fn batch_framing_preserves_text_and_refuses_wrong_objects_and_frames() {
+        let request = vec![("source.rs".to_owned(), "oid".to_owned())];
+        for bytes in [
+            b"oid blob 1\n\xff\n".as_slice(),
+            b"oid commit 1\na\n",
+            b"oid tree 1\na\n",
+            b"oid blob 9\na\n",
+            b"oid blob 1\naX",
+            b"oid blob 1\na\nextra",
+            b"other blob 1\na\n",
+            b"oid blob no\na\n",
+            b"oid blob 1",
+            b"oid missing\n",
+        ] {
+            assert!(blob_answers(&request, bytes).is_err(), "{bytes:?}");
+        }
+        let requests = vec![
+            ("first.rs".to_owned(), "oid".to_owned()),
+            ("second.rs".to_owned(), "oid".to_owned()),
+        ];
+        let decoded = blob_answers(&requests, b"oid blob 3\na\n\n\noid blob 1\nb\n")
+            .expect("size-framed newlines");
+        assert_eq!(decoded["first.rs"], "a\n\n");
+        assert_eq!(decoded["second.rs"], "b");
+    }
+
+    #[test]
+    fn batched_revision_blobs_equal_single_reads_with_terminal_crlf() {
+        let root = tempfile::tempdir().expect("transport fixture");
+        let path = "src/a spaced.rs";
+        init_git_fixture(root.path(), path, "pub fn alpha() {}\r\n\n");
+        let git = git(root.path()).expect("validated fixture Git");
+        let oid =
+            String::from_utf8(git(&["rev-parse", &format!("HEAD:{path}")], None).expect("blob id"))
+                .expect("UTF-8 id");
+        let batch = read_blobs(&git, &[(path.to_owned(), oid.trim().to_owned())]).expect("batch");
+        assert_eq!(
+            batch[path].as_bytes(),
+            git(&["show", &format!("HEAD:{path}")], None).expect("single read")
+        );
+        assert_eq!(batch[path], "pub fn alpha() {}\r\n\n");
+        assert!(
+            read_blobs(&|_, _| panic!("empty request must not spawn"), &[])
+                .expect("empty batch")
+                .is_empty()
+        );
+        let missing = read_blobs(
+            &git,
+            &[(
+                "missing.rs".into(),
+                "0000000000000000000000000000000000000000".into(),
+            )],
+        )
+        .expect_err("missing refuses");
+        assert!(missing.contains("missing.rs"));
+        let tree = String::from_utf8(git(&["rev-parse", "HEAD:src"], None).expect("tree id"))
+            .expect("UTF-8 id");
+        assert!(read_blobs(&git, &[("src".into(), tree.trim().into())]).is_err());
+    }
+
+    #[test]
+    fn revision_batch_preserves_overlapping_members_and_exact_old_revision() {
+        let root = tempfile::tempdir().expect("member fixture");
+        init_git_fixture(root.path(), "x/src/lib.rs", "pub fn parent() {}\n");
+        init_git_fixture(
+            root.path(),
+            "x/src/nested/src/lib.rs",
+            "pub fn nested() {}\n",
+        );
+        fs::write(root.path().join("outside.rs"), [0xff]).expect("non-text nonmember");
+        init_git_fixture(root.path(), "control.txt", "first\n");
+        let workspace = Workspace {
+            root: root.path().to_owned(),
+            crates: vec![
+                CrateMap {
+                    name: "x".into(),
+                    src_rel: "x/src".into(),
+                    entry_points: Vec::new(),
+                    files: Vec::new(),
+                },
+                CrateMap {
+                    name: "nested".into(),
+                    src_rel: "x/src/nested/src".into(),
+                    entry_points: Vec::new(),
+                    files: Vec::new(),
+                },
+            ],
+        };
+        let old = workspace.at_ref("master").expect("nonmember not read");
+        assert_eq!(old.crates[0].files.len(), 2);
+        assert_eq!(old.crates[1].files.len(), 1);
+        for member in &old.crates {
+            assert!(
+                member
+                    .files
+                    .iter()
+                    .any(|file| file.rel == "x/src/nested/src/lib.rs"
+                        && file.production_items().any(|item| item.name == "nested"))
+            );
+        }
+        let git = git(root.path()).expect("fixture Git");
+        let baseline =
+            String::from_utf8(git(&["rev-parse", "master"], None).expect("exact old revision"))
+                .expect("UTF-8 id");
+        fs::write(root.path().join("x/src/lib.rs"), [0xff]).expect("non-text member");
+        init_git_fixture(root.path(), "control.txt", "second\n");
+        let error = workspace
+            .at_ref("master")
+            .err()
+            .expect("non-text member refuses");
+        assert!(
+            error.contains("Git batch source for x/src/lib.rs"),
+            "{error}"
+        );
+        assert!(
+            workspace.at_ref(baseline.trim()).is_ok(),
+            "exact old commit survives branch advance"
+        );
+    }
+
     #[test]
     fn test_files_resolve_through_the_rust_module_layout() {
         // `session.rs` declares `#[cfg(test)] mod tests;`, and Rust puts that
@@ -2442,7 +2824,7 @@ mod tests {
             ),
             fixture_file("crates/x/src/session/tests.rs", "fn a() {}\nfn b() {}\n"),
         ];
-        mark_test_files(&mut files);
+        mark_test_files(&mut files, &[]);
         assert!(!files[0].test_file, "the parent is production");
         assert!(files[1].test_file, "the declared child is all tests");
         assert_eq!(files[1].nontest_loc(), 0);
@@ -2461,9 +2843,144 @@ mod tests {
                 "fn only_a_test() {}\n",
             ),
         ];
-        mark_test_files(&mut files);
+        mark_test_files(&mut files, &[]);
         assert!(files[1].test_file, "the explicit module path is all tests");
         assert_eq!(files[1].nontest_loc(), 0);
+    }
+
+    #[test]
+    fn test_files_inherit_declared_path_mounted_ancestry() {
+        // Deliberately child-first: ancestry must not depend on scan order.
+        let mut files = vec![
+            fixture_file(
+                "crates/x/src/package/codegen_package/tests/exact_candidates.rs",
+                "pub fn only_a_test() {}\nmod deeper;\n",
+            ),
+            fixture_file(
+                "crates/x/src/package/codegen_package/tests/deeper.rs",
+                "pub fn nested_test() {}\n",
+            ),
+            fixture_file(
+                "crates/x/src/package/codegen_package/tests.rs",
+                "#[path = \"tests/exact_candidates.rs\"]\nmod exact_candidates;\n",
+            ),
+            fixture_file(
+                "crates/x/src/package/codegen_package/construction.rs",
+                "pub fn production() {}\n#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
+            ),
+            fixture_file(
+                "crates/x/src/package/codegen_package/tests/production.rs",
+                "pub fn not_declared_in_tests() {}\n",
+            ),
+        ];
+        mark_test_files(&mut files, &[]);
+        for file in &files[..3] {
+            assert!(file.test_file, "{} inherits the test boundary", file.rel);
+            assert_eq!(file.nontest_loc(), 0);
+            assert_eq!(file.nontest_loc(), 0);
+            assert_eq!(file.production_items().count(), 0);
+        }
+        assert!(!files[3].test_file);
+        assert!(!files[4].test_file, "directory spelling is not ancestry");
+        let production: Vec<_> = files
+            .iter()
+            .filter(|file| !file.test_file)
+            .map(|file| file.rel.as_str())
+            .collect();
+        assert_eq!(
+            production,
+            vec![
+                "crates/x/src/package/codegen_package/construction.rs",
+                "crates/x/src/package/codegen_package/tests/production.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_production_mount_keeps_shared_test_source_in_the_census() {
+        let mut files = vec![
+            fixture_file(
+                "crates/x/src/lib.rs",
+                "mod production;\n#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
+            ),
+            fixture_file(
+                "crates/x/src/tests.rs",
+                "#[path = \"production.rs\"]\nmod mirror;\n",
+            ),
+            fixture_file(
+                "crates/x/src/production.rs",
+                "pub fn live() {}\nmod child;\n",
+            ),
+            fixture_file(
+                "crates/x/src/production/child.rs",
+                "pub fn live_child() {}\n",
+            ),
+            fixture_file(
+                "crates/x/src/child.rs",
+                "pub fn only_in_explicit_test_mount() {}\n",
+            ),
+        ];
+        mark_test_files(&mut files, &[]);
+        assert!(files[1].test_file);
+        assert!(
+            files[4].test_file,
+            "the explicit test mount has its own child directory"
+        );
+        for index in [0, 2, 3] {
+            assert!(
+                !files[index].test_file,
+                "{} is live production",
+                files[index].rel
+            );
+            assert!(files[index].nontest_loc() > 0);
+        }
+    }
+
+    #[test]
+    fn cargo_entry_points_remain_production_when_mounted_by_tests() {
+        let mut files = vec![
+            fixture_file(
+                "crates/x/src/lib.rs",
+                "#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
+            ),
+            fixture_file(
+                "crates/x/src/tests.rs",
+                "#[path = \"bin/custom.rs\"]\nmod mirror;\n#[path = \"bin/child.rs\"]\nmod shared_child;\n",
+            ),
+            fixture_file("crates/x/src/bin/custom.rs", "fn main() {}\nmod child;\n"),
+            fixture_file("crates/x/src/bin/child.rs", "pub fn live_child() {}\n"),
+        ];
+        mark_test_files(
+            &mut files,
+            &[
+                "crates/x/src/lib.rs".into(),
+                "crates/x/src/bin/custom.rs".into(),
+            ],
+        );
+        assert!(files[1].test_file);
+        for index in [0, 2, 3] {
+            assert!(
+                !files[index].test_file,
+                "{} is production through its Cargo target",
+                files[index].rel
+            );
+            assert!(files[index].nontest_loc() > 0);
+        }
+    }
+
+    #[test]
+    fn test_ancestry_terminates_on_declared_cycles() {
+        let mut files = vec![
+            fixture_file(
+                "src/lib.rs",
+                "#[cfg(test)]\n#[path = \"first.rs\"]\nmod tests;\n",
+            ),
+            fixture_file("src/first.rs", "#[path = \"second.rs\"]\nmod second;\n"),
+            fixture_file("src/second.rs", "#[path = \"first.rs\"]\nmod first;\n"),
+        ];
+        mark_test_files(&mut files, &["src/lib.rs".into()]);
+        assert!(!files[0].test_file);
+        assert!(files[1].test_file && files[2].test_file);
     }
 
     #[test]
@@ -2476,7 +2993,7 @@ mod tests {
             fixture_file("crates/x/src/ranking_benchmark.rs", "fn only_a_test() {}\n"),
             fixture_file("crates/x/src/ranking/benchmark.rs", "fn production() {}\n"),
         ];
-        mark_test_files(&mut files);
+        mark_test_files(&mut files, &[]);
         assert!(files[1].test_file);
         assert!(!files[2].test_file);
     }
@@ -2503,6 +3020,7 @@ mod tests {
         let crate_map = CrateMap {
             name: "fixture".to_owned(),
             src_rel: "crates/fixture/src".to_owned(),
+            entry_points: Vec::new(),
             files: vec![
                 fixture_file("crates/fixture/src/consumer.rs", consumer),
                 fixture_file("crates/fixture/src/test_only.rs", test_only),
@@ -2597,6 +3115,7 @@ pub use crate::admit::Tile;
             crates: vec![CrateMap {
                 name: "murail-fix".to_owned(),
                 src_rel: "crates/murail-fix/src".to_owned(),
+                entry_points: Vec::new(),
                 files: vec![
                     fixture_file("crates/murail-fix/src/admit.rs", admit),
                     fixture_file("crates/murail-fix/src/grade.rs", grade),
@@ -2866,6 +3385,7 @@ pub fn use_shared(x: Shared) -> Shared {
         let single_crate = |name: &str, text: &str| CrateMap {
             name: name.to_owned(),
             src_rel: format!("crates/{name}/src"),
+            entry_points: Vec::new(),
             files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
         };
         let ws = Workspace {
@@ -2913,6 +3433,7 @@ pub fn encode(_: Tile) -> Value {
         let workspace_crate = |name: &str, text: &str| CrateMap {
             name: name.to_owned(),
             src_rel: format!("crates/{name}/src"),
+            entry_points: Vec::new(),
             files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
         };
         let ws = Workspace {
@@ -2984,6 +3505,7 @@ pub fn encode() -> Value {
         let workspace_crate = |name: &str, text: &str| CrateMap {
             name: name.to_owned(),
             src_rel: format!("crates/{name}/src"),
+            entry_points: Vec::new(),
             files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
         };
         let ws = Workspace {

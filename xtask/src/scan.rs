@@ -184,7 +184,12 @@ pub(crate) fn non_test_loc(text: &str) -> usize {
 /// atlas resolves these against the crate's file list.
 #[cfg(test)]
 pub(crate) fn test_module_declarations(text: &str) -> Vec<(String, Option<String>)> {
-    RustSourceProjection::of(text.to_owned()).test_module_declarations()
+    RustSourceProjection::of(text.to_owned())
+        .file_module_declarations()
+        .into_iter()
+        .filter(|(_, _, test_only)| *test_only)
+        .map(|(name, path, _)| (name, path))
+        .collect()
 }
 
 /// Whether a line is a top-level attribute whose `cfg` predicate implies
@@ -437,22 +442,27 @@ impl RustSourceProjection {
         TestRegions::from_projection(self)
     }
 
-    pub(crate) fn test_module_declarations(&self) -> Vec<(String, Option<String>)> {
+    /// File children, explicit mounts, and whether the declaration's gate
+    /// implies test. A file may have several mounts; the workspace resolves
+    /// their inherited boundaries together.
+    pub(crate) fn file_module_declarations(&self) -> Vec<(String, Option<String>, bool)> {
         let lines: Vec<_> = self.text.lines().collect();
         (0..lines.len())
-            .filter(|&index| self.lines[index].starts_in_code && gates_test(lines[index]))
+            .filter(|&index| self.lines[index].starts_in_code)
             .filter_map(|index| {
-                let start = declaration_after_attributes(&lines, index)?;
-                let name = declares_file_module(lines[start])?.to_owned();
+                let name = declares_file_module(lines[index])?.to_owned();
                 let mut attribute_start = index;
                 while attribute_start > 0 && lines[attribute_start - 1].starts_with("#[") {
                     attribute_start -= 1;
                 }
-                let path = lines[attribute_start..start]
+                let test_only = lines[attribute_start..index]
+                    .iter()
+                    .any(|line| gates_test(line));
+                let path = lines[attribute_start..index]
                     .iter()
                     .find_map(|line| module_path_attribute(line))
                     .map(str::to_owned);
-                Some((name, path))
+                Some((name, path, test_only))
             })
             .collect()
     }
@@ -1434,6 +1444,27 @@ mod tests {
         assert_eq!(
             test_module_declarations(source),
             vec![("finite_interior_tests".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn file_module_declarations_carry_production_and_test_mounts() {
+        let source = r#"mod production;
+#[path = "shared.rs"]
+mod shared;
+#[cfg(test)]
+mod tests;
+#[cfg(any(test, feature = "live"))]
+mod live;
+"#;
+        assert_eq!(
+            RustSourceProjection::of(source.to_owned()).file_module_declarations(),
+            vec![
+                ("production".into(), None, false),
+                ("shared".into(), Some("shared.rs".into()), false),
+                ("tests".into(), None, true),
+                ("live".into(), None, false),
+            ]
         );
     }
 
