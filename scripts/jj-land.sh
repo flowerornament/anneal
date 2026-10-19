@@ -17,6 +17,7 @@
 #   - a local bookmark that differs from the remote one (fetch first);
 #   - `@-` as candidate while `@` holds uncommitted edits;
 #   - any change to the working copy or the bookmark while the gate ran.
+# If the push fails, the bookmark moves back, so a later land starts clean.
 #
 # The gate command is LAND_GATE (default `just check`). --dry-run runs the
 # gate and every check, then stops before publishing.
@@ -86,5 +87,9 @@ if [ "$dry_run" = 1 ]; then
 fi
 
 jj bookmark move "$bookmark" --to "$pinned_candidate"
-jj git push --remote "$remote" --bookmark "$bookmark"
+if ! jj git push --remote "$remote" --bookmark "$bookmark"; then
+  jj bookmark move "$bookmark" --to "$pinned_target" --allow-backwards ||
+    refuse "push failed, and moving $bookmark back to ${pinned_target:0:12} failed too; inspect: jj op log"
+  refuse "push failed; $bookmark moved back to ${pinned_target:0:12}; land again"
+fi
 echo "land: PUBLISHED ${pinned_candidate:0:12} -> $bookmark"
