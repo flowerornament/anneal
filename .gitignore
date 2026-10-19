@@ -22,3 +22,6 @@ scorecard.png
 .beads-credential-key
 .beads/last_pull
 result
+
+# Python bytecode from scripts/
+__pycache__/

@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.28.0 - 2026-10-19
+
 ### Changed
 
 - Interned text is stored once and shared between the symbol index and the
