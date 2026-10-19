@@ -214,16 +214,20 @@ fn extract_markdown_facts_from_anneal_config(
     let external_roots = resolve_external_scan_roots(root, &options.external_roots)?;
     let mut result =
         parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?;
-    let asset_targets = resolve_asset_targets(root, &external_roots, &mut result)?;
-    crate::extract::resolve::resolve_all(
+    let mut pre_cascade_index = crate::extract::resolve::resolve_nodes(
         &mut result.graph,
         &result.resolution.label_candidates,
-        &result.resolution.pending_edges,
         config,
+    );
+    let asset_targets =
+        resolve_asset_targets(root, &external_roots, &mut result, &mut pre_cascade_index)?;
+    crate::extract::resolve::resolve_pending_edges(
+        &mut result.graph,
+        &result.resolution.pending_edges,
+        &pre_cascade_index,
         root,
         &result.resolution.filename_index,
     );
-    let pre_cascade_index = crate::extract::resolve::build_node_index(&result.graph);
     let root_str = root.to_string();
     let cascade_results = crate::extract::resolve::cascade_unresolved(
         &mut result.graph,
@@ -1442,18 +1446,14 @@ fn resolve_asset_targets(
     root: &Utf8Path,
     external_roots: &[parse::ExternalScanRoot],
     result: &mut parse::BuildResult,
+    known: &mut HashMap<String, NodeId>,
 ) -> Result<Vec<AssetTarget>> {
     let corpus_root = root.canonicalize_utf8()?;
     let mut assets = Vec::new();
-    let mut known = crate::extract::resolve::build_node_index(&result.graph);
-    for edge in &mut result.resolution.pending_edges {
+    for index in 0..result.resolution.pending_edges.len() {
+        let edge = &result.resolution.pending_edges[index];
         let target = Utf8Path::new(&edge.target_identity);
-        if target.is_absolute()
-            || target
-                .extension()
-                .is_none_or(|ext| ext.eq_ignore_ascii_case("md"))
-            || known.contains_key(&edge.target_identity)
-        {
+        if target.is_absolute() || resolve_pending_target(root, result, known, edge).is_some() {
             continue;
         }
         let Some(source_file) = result.graph.node(edge.source).file_path.as_ref() else {
@@ -1483,6 +1483,10 @@ fn resolve_asset_targets(
         let Some((logical, physical)) = found else {
             continue;
         };
+        if known.contains_key(logical.as_str()) {
+            result.resolution.pending_edges[index].target_identity = logical.to_string();
+            continue;
+        }
         let handle = format!("external:asset:{logical}");
         if !known.contains_key(&handle) {
             let node = result.graph.add_node(Handle::external(
@@ -1497,7 +1501,7 @@ fn resolve_asset_targets(
                 source_file,
             });
         }
-        edge.target_identity = handle;
+        result.resolution.pending_edges[index].target_identity = handle;
     }
     Ok(assets)
 }
@@ -3646,6 +3650,192 @@ mod tests {
             }),
             "frontmatter code path must not emit a raw corpus-gated edge: {:?}",
             batch.edges
+        );
+    }
+
+    #[test]
+    fn opaque_file_assets_respect_scan_window_and_document_precedence() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 corpus");
+        std::fs::create_dir_all(root.join("maintained")).expect("create maintained");
+        std::fs::create_dir_all(root.join("evidence")).expect("create evidence");
+        let payload = "---\nstatus: retired\n---\n# OQ-99\n[stale](absent-at-freeze.md)\n";
+        std::fs::write(root.join("evidence/frozen.md"), payload).expect("write payload");
+        std::fs::write(root.join("NOTICE"), payload).expect("write extensionless payload");
+        std::fs::write(
+            root.join("outside.md"),
+            "# Maintained\n[bad](missing-maintained.md)\n",
+        )
+        .expect("write maintained target");
+        std::fs::write(root.join("maintained/doc.md"),
+            "# Doc\n[frozen](../evidence/frozen.md#unchecked) [notice](../NOTICE) [doc](../outside.md)\n")
+            .expect("write links");
+        for out_of_window in [false, true] {
+            let batch = extract_markdown_facts_with_options(
+                &root,
+                CorpusId::from("test"),
+                SourceName::from("markdown"),
+                Generation::initial(),
+                &MarkdownExtractionOptions {
+                    scan_roots: vec![Utf8PathBuf::from(if out_of_window {
+                        "maintained"
+                    } else {
+                        "."
+                    })],
+                    exclude: vec!["evidence/**".to_string()],
+                    ..MarkdownExtractionOptions::default()
+                },
+            )
+            .expect("extract opaque assets");
+            for path in ["evidence/frozen.md", "NOTICE"] {
+                let asset = format!("external:asset:{path}");
+                assert!(batch.handles.iter().any(|h| h.id.as_str() == asset));
+                assert!(batch.edges.iter().any(|e| e.to.as_str() == asset));
+                assert!(!batch.handles.iter().any(|h| h.id.as_str() == path));
+                assert!(!batch.edges.iter().any(|e| e.from.as_str() == asset));
+                assert!(!batch.content.iter().any(|c| c.handle.as_str() == asset));
+                assert!(batch.meta.iter().any(|m| m.handle.as_str() == asset
+                    && m.key == CodeTargetMeta::TARGET_EXISTS
+                    && m.value == "true"));
+                assert!(
+                    !batch
+                        .meta
+                        .iter()
+                        .any(|m| m.handle.as_str() == asset && m.key == "status")
+                );
+            }
+            let outside = if out_of_window {
+                "external:asset:outside.md"
+            } else {
+                "outside.md"
+            };
+            assert!(batch.edges.iter().any(|e| e.to.as_str() == outside));
+            assert_eq!(
+                batch
+                    .edges
+                    .iter()
+                    .any(|e| e.from.as_str() == "outside.md"
+                        && e.to.as_str() == "missing-maintained.md"),
+                !out_of_window
+            );
+            assert!(!batch.handles.iter().any(|h| h.id.as_str() == "OQ-99"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("evidence/frozen.md")).expect("read payload"),
+            payload
+        );
+    }
+
+    #[test]
+    fn extensionless_asset_does_not_preempt_label_resolution() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 corpus");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::write(root.join("doc.md"), "# Doc\n## OQ-1\n[label](OQ-1)\n")
+            .expect("write label link");
+        std::fs::write(root.join("other.md"), "# Other\n## OQ-2\n## OQ-3\n")
+            .expect("write namespace witnesses");
+        std::fs::write(root.join("OQ-1"), "opaque").expect("write colliding file");
+        let batch = extract_markdown_facts(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+        )
+        .expect("extract label");
+        assert!(
+            batch
+                .handles
+                .iter()
+                .any(|h| h.id.as_str() == "OQ-1" && h.kind == "label")
+        );
+        assert!(batch.edges.iter().any(|e| e.to.as_str() == "OQ-1"));
+        assert!(
+            !batch
+                .handles
+                .iter()
+                .any(|h| h.id.as_str() == "external:asset:OQ-1")
+        );
+    }
+
+    #[test]
+    fn opaque_assets_require_existing_bounded_regular_files() {
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8PathBuf::from_path_buf(temp.path().join("corpus")).expect("utf8 corpus");
+        std::fs::create_dir_all(root.join("folder")).expect("create corpus");
+        let outside =
+            Utf8PathBuf::from_path_buf(temp.path().join("outside.md")).expect("utf8 outside");
+        std::fs::write(&outside, "opaque").expect("write outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("folder/escape.md"))
+            .expect("create escaping symlink");
+        std::fs::write(root.join("doc.md"), format!(
+            "# Doc\n[missing](absent.md) [directory](folder) [escape](../outside.md) [absolute]({outside}) [symlink](folder/escape.md)\n"
+        )).expect("write invalid links");
+        let batch = extract_markdown_facts_with_options(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                exclude: vec!["folder/**".to_string()],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract invalid links");
+        assert!(
+            !batch
+                .handles
+                .iter()
+                .any(|h| h.id.as_str().starts_with("external:asset:"))
+        );
+        assert!(batch.edges.iter().any(|e| e.to.as_str() == "absent.md"));
+    }
+
+    #[test]
+    fn excluded_markdown_in_external_mount_is_an_opaque_asset() {
+        let temp = tempdir().expect("tempdir");
+        let project =
+            Utf8PathBuf::from_path_buf(temp.path().join("project")).expect("utf8 project");
+        let root = project.join(".design");
+        std::fs::create_dir_all(&root).expect("create corpus");
+        std::fs::create_dir_all(project.join("formal/private")).expect("create mount");
+        std::fs::write(
+            project.join("formal/private/frozen.md"),
+            "# Frozen\n[bad](absent.md)\n",
+        )
+        .expect("write mounted payload");
+        std::fs::write(
+            root.join("doc.md"),
+            "# Doc\n[payload](../formal/private/frozen.md#unchecked)\n",
+        )
+        .expect("write mounted link");
+        run_git(&project, &["init"]);
+        let batch = extract_markdown_facts_with_options(
+            &root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::initial(),
+            &MarkdownExtractionOptions {
+                external_roots: vec![Utf8PathBuf::from("../formal")],
+                exclude: vec!["formal/private/**".to_string()],
+                ..MarkdownExtractionOptions::default()
+            },
+        )
+        .expect("extract mounted asset");
+        assert!(batch.edges.iter().any(|e| e.from.as_str() == "doc.md"
+            && e.to.as_str() == "external:asset:formal/private/frozen.md"));
+        assert!(
+            !batch
+                .handles
+                .iter()
+                .any(|h| h.id.as_str() == "formal/private/frozen.md")
+        );
+        assert!(
+            !batch
+                .edges
+                .iter()
+                .any(|e| e.to.as_str().contains("absent.md"))
         );
     }
 

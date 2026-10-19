@@ -3421,6 +3421,27 @@ Rationale: discovery configuration changes the extraction window, not
 the identity of already-known corpus objects; the stable project prefix
 prevents cross-root collisions without re-keying the primary corpus.
 
+**Definition CR-D114 (Opaque file assets).** A pending link target that resolves
+to an existing regular file inside the corpus root or a configured external
+mount is a file asset when no extracted document or resolved label/version
+identity already answers the reference. Existence is the seam, independently
+of file extension or asset declarations: excluded and out-of-window Markdown
+and extensionless files follow the same rule as tables and data files
+(anneal-a33v, anneal-frwt). Extracted document and label/version resolution
+always precedes asset fallback.
+
+The handle identity is `external:asset:<logical path>`; its derived metadata
+records `external_class = "asset"`, `target_path`, `target_exists = "true"`, and
+`target_resolved_path`. Payloads are opaque: they contribute no lifecycle,
+labels, sections, content, or outgoing references. Incoming fragments are not
+validated; the current edge model drops them. Nonexistent file-classified
+targets remain unresolved and subject to E001. Existing reference classification
+is unchanged: an absent extensionless symbolic target such as `NOTICE` remains
+an ambiguous external reference without E001, while a present regular file
+at that path becomes an asset. Directories, absolute paths and canonical or
+symlink escapes outside the corpus or configured mounts never become assets.
+Mount containment and source isolation remain those of CR-D70 and CR-D111.
+
 **Definition CR-D110 (Markdown scan population disclosure).** Markdown
 discovery is defined by the configured filesystem mounts from CR-D70, not by
 Git tracking. When Git can classify the physical origins of file handles that
@@ -4240,6 +4261,7 @@ config key.
 - CR-D110: Markdown scan population disclosure (§42)
 - CR-D111: Project boundary, backing, and history capability (§42)
 - CR-D113: History semantics in a jj workspace (§42)
+- CR-D114: Opaque file assets (§42)
 - CR-D112: Lifecycle-derived orientation policy (§11)
 
 ### CR-R (Rules)

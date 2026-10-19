@@ -220,7 +220,12 @@ The graph unit of knowledge. A handle may be a file, label, version, or
 external reference. Headings are content spans (`*span`) attached to file
 handles. In-repo code references such as `lib/app.ex:10-20` use external
 handles with `external_class = "code"` metadata; links to other existing
-in-corpus files (tables, data) use `external_class = "asset"`.
+files inside the corpus or configured external mounts use
+`external_class = "asset"` when no extracted document or resolved label/version
+answers the reference. This includes excluded or out-of-window Markdown and
+extensionless files. Asset payloads stay opaque; their internal references and
+incoming fragments are not checked. Missing targets still produce E001, and
+paths outside the corpus or configured mounts do not become assets.
 
 **Edge**  
 A typed relationship between handles. Common edges include `Cites`,

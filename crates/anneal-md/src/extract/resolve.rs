@@ -347,6 +347,7 @@ pub(crate) fn build_node_index(graph: &DiGraph) -> HashMap<String, NodeId> {
 // ---------------------------------------------------------------------------
 
 /// Resolve all handles: namespace inference, label nodes, version nodes, pending edges.
+#[cfg(test)]
 pub(crate) fn resolve_all(
     graph: &mut DiGraph,
     candidates: &[LabelCandidate],
@@ -355,14 +356,23 @@ pub(crate) fn resolve_all(
     root: &Utf8Path,
     filename_index: &HashMap<String, Vec<Utf8PathBuf>>,
 ) {
+    let node_index = resolve_nodes(graph, candidates, config);
+    resolve_pending_edges(graph, pending, &node_index, root, filename_index);
+}
+
+/// Establish document, label and version identities before file-asset fallback.
+pub(crate) fn resolve_nodes(
+    graph: &mut DiGraph,
+    candidates: &[LabelCandidate],
+    config: &AnnealConfig,
+) -> HashMap<String, NodeId> {
     let namespaces = infer_namespaces(candidates, config);
     let mut node_index = build_node_index(graph);
 
     resolve_labels(graph, candidates, &namespaces, &mut node_index);
     resolve_versions(graph, &mut node_index);
 
-    // node_index already contains label and version nodes (mutated in-place above)
-    resolve_pending_edges(graph, pending, &node_index, root, filename_index);
+    node_index
 }
 
 // ---------------------------------------------------------------------------

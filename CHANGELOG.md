@@ -4,6 +4,12 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Existing excluded or out-of-window Markdown and extensionless link targets
+  resolve as opaque file assets. Extracted documents and label/version identities
+  take precedence; missing or out-of-boundary targets retain existing checks.
+
 ## v0.27.0 - 2026-10-06
 
 ### Added
