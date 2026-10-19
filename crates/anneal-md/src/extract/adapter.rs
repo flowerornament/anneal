@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -878,16 +878,16 @@ struct EdgeAssertion {
 type EdgeAssertionShowSlot = Arc<OnceLock<Option<Arc<str>>>>;
 
 struct EdgeAssertionShowMemo {
-    repo_root: Option<Utf8PathBuf>,
+    repository: RepositoryContext,
     entries: Mutex<HashMap<String, EdgeAssertionShowSlot>>,
     #[cfg(test)]
     show_invocations: std::sync::atomic::AtomicUsize,
 }
 
 impl EdgeAssertionShowMemo {
-    fn new(repo_root: Option<Utf8PathBuf>) -> Self {
+    fn new(repository: RepositoryContext) -> Self {
         Self {
-            repo_root,
+            repository,
             entries: Mutex::new(HashMap::new()),
             #[cfg(test)]
             show_invocations: std::sync::atomic::AtomicUsize::new(0),
@@ -895,7 +895,8 @@ impl EdgeAssertionShowMemo {
     }
 
     fn date_for(&self, revision: &str) -> Option<String> {
-        let repo_root = self.repo_root.as_ref()?;
+        self.repository
+            .direct_git_root(RepositoryOperation::AssertionBlame)?;
         let slot = {
             let mut entries = self
                 .entries
@@ -911,7 +912,9 @@ impl EdgeAssertionShowMemo {
             #[cfg(test)]
             self.show_invocations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let output = git_command(repo_root)
+            let output = self
+                .repository
+                .direct_git_command(RepositoryOperation::AssertionBlame)?
                 .args(["show", "-s", "--format=%aI", revision])
                 .output()
                 .ok()?;
@@ -955,7 +958,7 @@ impl<'a> EdgeAssertionCache<'a> {
                     .map(Utf8Path::to_path_buf)
             })
             .flatten();
-        let show_memo = EdgeAssertionShowMemo::new(repo_root.clone());
+        let show_memo = EdgeAssertionShowMemo::new(repository.clone());
         Self {
             root,
             file_origins: Arc::clone(file_origins),
@@ -1074,7 +1077,10 @@ impl<'a> EdgeAssertionCache<'a> {
         let file_path = Utf8PathBuf::from_path_buf(file_path).ok()?;
         let rel_path = file_path.strip_prefix(repo_root).ok()?;
         let line_arg = format!("{line},{line}");
-        let blame = git_command(repo_root)
+        let blame = self
+            .show_memo
+            .repository
+            .direct_git_command(RepositoryOperation::AssertionBlame)?
             .args(["blame", "-w", "-M", "-C", "-L", line_arg.as_str(), "--"])
             .arg(rel_path.as_str())
             .output()
@@ -1139,20 +1145,9 @@ impl<'a> EdgeAssertionBatchProgress<'a> {
 }
 
 fn git_root_for(root: &Utf8Path) -> Option<Utf8PathBuf> {
-    let output = git_command(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout);
-    let path = path.trim();
-    if path.is_empty() {
-        return None;
-    }
-    let path = std::fs::canonicalize(path).ok()?;
-    Utf8PathBuf::from_path_buf(path).ok()
+    RepositoryContext::discover(root)
+        .direct_git_root(RepositoryOperation::ChangeHistory)
+        .map(Utf8Path::to_path_buf)
 }
 
 /// Backing validation establishes containment only, never operation capability.
@@ -1224,7 +1219,9 @@ fn gitignored_scanned_files(
         return BTreeSet::new();
     }
 
-    let mut command = git_command(&canonical_root);
+    let Some(mut command) = repository.direct_git_command(RepositoryOperation::IgnoreIndex) else {
+        return BTreeSet::new();
+    };
     let Ok(mut child) = command
         .args(["check-ignore", "-z", "--stdin"])
         .stdin(Stdio::piped())
@@ -1421,18 +1418,6 @@ pub(crate) fn discard_jj_history(batch: &mut FactBatch, repository: &RepositoryC
 
 fn paths_overlap(left: &Utf8Path, right: &Utf8Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
-}
-
-fn git_command(root: &Utf8Path) -> Command {
-    let mut command = Command::new("git");
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .arg("-C")
-        .arg(root.as_str());
-    command
 }
 
 struct AssetTarget {
@@ -2613,14 +2598,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use anneal_core::{
-        CodeTargetMeta, CorpusId, FactBatch, Generation, MetaRole, RepositoryContext, SourceName,
+        CodeTargetMeta, CorpusId, FactBatch, Generation, MetaRole, RepositoryContext,
+        RepositoryOperation, SourceName,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
 
     use super::{
         EdgeAssertionCache, InitMode, MarkdownExtractionOptions, area_for, extract_markdown_facts,
-        git_command, gitignored_scanned_files, render_or_write_init, resolve_external_scan_roots,
+        git_root_for, gitignored_scanned_files, render_or_write_init, resolve_external_scan_roots,
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
@@ -2894,6 +2880,11 @@ mod tests {
         run_git(&ancestor, &["commit", "-m", "track document"]);
 
         let repository = RepositoryContext::discover(&root);
+        assert_eq!(
+            git_root_for(&root),
+            None,
+            "jj boundary must stop ancestor Git discovery"
+        );
         let origins = HashMap::from([
             ("doc.md".to_string(), root.join("doc.md")),
             (
@@ -2902,7 +2893,9 @@ mod tests {
             ),
         ]);
         assert!(
-            git_command(&root)
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
                 .args(["check-ignore", "generated/artifact.md"])
                 .status()
                 .expect("ancestor Git can classify the nested ignore rule")
@@ -4261,8 +4254,13 @@ mod tests {
 
     #[test]
     fn markdown_git_commands_disable_optional_locks() {
-        let root = Utf8Path::new(".");
-        let command = git_command(root);
+        let temp = tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(temp.path()).expect("utf8 root");
+        run_git(root, &["init", "--quiet"]);
+        let repository = RepositoryContext::discover(root);
+        let command = repository
+            .direct_git_command(RepositoryOperation::AssertionBlame)
+            .expect("direct Git fixture");
         assert!(command.get_envs().any(|(key, value)| {
             key == OsStr::new("GIT_OPTIONAL_LOCKS") && value == Some(OsStr::new("0"))
         }));

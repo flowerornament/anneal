@@ -38,6 +38,7 @@ check:
     _t release env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-release.py
     _t diff    env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-differential.py
     _t arch    just check-arch
+    _t git     env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-git-repository.py
     _t clippy  cargo clippy --all-targets -- -D warnings
     _t test    cargo test
     # Dogfood: the corpus consistency tool we ship, run against the corpus we
@@ -87,6 +88,7 @@ audit:
 [group('check')]
 check-arch:
     python3 scripts/check-arch.py
+    python3 scripts/check-git-calls.py
 
 # Format source files (modify in place)
 [group('check')]

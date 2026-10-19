@@ -23,6 +23,7 @@ fn jj_command(root: &Utf8Path) -> Command {
     let mut command = Command::new("jj");
     command.args([
         "--ignore-working-copy",
+        "--at-op=@",
         "--color=never",
         "--no-pager",
         "--repository",
@@ -131,14 +132,8 @@ pub(super) fn resolve_backing(root: &Utf8Path) -> Result<Utf8PathBuf, String> {
 }
 
 fn backing_command(root: &Utf8Path, git_dir: &Utf8Path) -> Command {
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .args(["--git-dir", git_dir.as_str(), "--work-tree", root.as_str()]);
+    let mut command = super::git_command(root);
+    command.args(["--git-dir", git_dir.as_str(), "--work-tree", root.as_str()]);
     command
 }
 
@@ -761,6 +756,53 @@ mod tests {
             clone
                 .jj_file_time(&desk.root.join(".design/carried.md"))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn divergent_operation_heads_are_not_merged_by_discovery() {
+        let Some(desk) = desk() else {
+            return;
+        };
+        let base = run(
+            &desk.root,
+            "jj",
+            &["op", "log", "--no-graph", "-T", "id", "--limit", "1"],
+        );
+        let at_base = format!("--at-op={base}");
+        run(&desk.root, "jj", &[&at_base, "describe", "-m", "left"]);
+        run(&desk.root, "jj", &[&at_base, "describe", "-m", "right"]);
+        let heads = desk.anchor.join(".jj/repo/op_heads/heads");
+        let inventory = || {
+            std::fs::read_dir(&heads)
+                .expect("operation heads")
+                .map(|entry| {
+                    let path = entry.expect("head entry").path();
+                    (
+                        path.file_name().expect("head name").to_owned(),
+                        std::fs::read(&path).expect("head bytes"),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let before = inventory();
+        assert_eq!(before.len(), 2, "control must contain divergent operations");
+        let context = RepositoryContext::discover(&desk.root.join(".design"));
+        assert!(!context.operation_available(RepositoryOperation::ChangeHistory));
+        assert!(
+            context
+                .capability_rows()
+                .all(|(operation, _, _, reason)| reason
+                    == if operation == "assertion_blame" {
+                        "jj-assertion-blame-not-defined"
+                    } else {
+                        "jj-pin-unreadable"
+                    })
+        );
+        assert_eq!(
+            inventory(),
+            before,
+            "read path must not reconcile operations"
         );
     }
 

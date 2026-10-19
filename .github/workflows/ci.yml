@@ -39,6 +39,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Repository boundaries
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-git-calls.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-git-repository.py
+
       - name: Test (jj from flake.lock)
         env:
           ANNEAL_REQUIRE_JJ: "1"

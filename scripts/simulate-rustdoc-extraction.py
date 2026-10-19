@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from git_repository import GitCheckout
 
 
 TODO_RE = re.compile(r"\b(TODO|FIXME)\b", re.IGNORECASE)
@@ -326,13 +327,7 @@ def version_tag_key(tag: str) -> tuple[int, int, int]:
 
 
 def run_git(root: Path, args: list[str]) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(root), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    proc = GitCheckout(root).run(args)
     return proc.stdout if proc.returncode == 0 else ""
 
 

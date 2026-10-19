@@ -6,7 +6,7 @@ import io
 import sys
 import unittest
 from contextlib import redirect_stderr
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.dont_write_bytecode = True
 
@@ -183,9 +183,11 @@ class NixCacheReleaseTests(unittest.TestCase):
         clean_result = release.subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
         )
+        checkout = Mock()
+        checkout.run.return_value = clean_result
         with (
             patch.object(release, "cargo_version", return_value="0.25.0"),
-            patch.object(release.subprocess, "run", return_value=clean_result),
+            patch.object(release, "GitCheckout", return_value=checkout),
             patch.object(release, "verify_release_cache", side_effect=SystemExit(1)),
             patch.object(release, "run") as mutate_git,
             self.assertRaises(SystemExit),
@@ -193,6 +195,10 @@ class NixCacheReleaseTests(unittest.TestCase):
             release.tag("0.25.0")
 
         mutate_git.assert_not_called()
+        self.assertEqual(checkout.run.call_args_list, [
+            unittest.mock.call(["status", "--porcelain"], check=True),
+            unittest.mock.call(["tag", "--list", "v0.25.0"], check=True),
+        ])
 
     def test_consumer_build_disables_local_builds(self) -> None:
         with patch.object(release, "capture", return_value="/nix/store/anneal") as run:

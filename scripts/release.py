@@ -11,6 +11,8 @@ import tomllib
 from datetime import date
 from pathlib import Path
 
+from git_repository import GitCheckout, GitCheckoutError
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -463,7 +465,7 @@ def build_nix_output(system: str, *, substitutes_only: bool = False) -> str:
 
 
 def cache_summary(*, system: str, derivation: str, output: str, result: str) -> str:
-    revision = capture(["git", "rev-parse", "HEAD"])
+    revision = GitCheckout(ROOT).run(["rev-parse", "HEAD"], check=True).stdout.strip()
     return "\n".join(
         [
             f"### Anneal Nix cache: {system}",
@@ -622,41 +624,30 @@ def verify() -> None:
 
 
 def tag(version: str) -> None:
+    checkout = GitCheckout(ROOT, colocated=True)
     if SEMVER_RE.fullmatch(version) is None:
         fail("version must be semver like 0.2.1")
     current = cargo_version()
     if current != version:
         fail(f"Cargo.toml version is {current}, expected {version}")
 
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    status = checkout.run(["status", "--porcelain"], check=True)
     if status.stdout.strip():
         fail("git working tree must be clean before tagging")
 
     tag_name = f"v{version}"
-    tags = subprocess.run(
-        ["git", "tag", "--list", tag_name],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    tags = checkout.run(["tag", "--list", tag_name], check=True)
     if tags.stdout.strip():
         fail(f"tag {tag_name} already exists")
 
     verify_release_cache()
 
-    run(["git", "tag", "-a", tag_name, "-m", tag_name])
-    run(["git", "push", "origin", tag_name])
+    checkout.run(["tag", "-a", tag_name, "-m", tag_name], check=True)
+    checkout.run(["push", "origin", tag_name], check=True)
     # Keep the moving release branch pointed at the latest published tag for
     # downstream release-tracking flake inputs.
-    run(["git", "branch", "-f", "release", tag_name])
-    run(["git", "push", "--force-with-lease", "origin", "release"])
+    checkout.run(["branch", "-f", "release", tag_name], check=True)
+    checkout.run(["push", "--force-with-lease", "origin", "release"], check=True)
 
 
 def main() -> None:
@@ -708,4 +699,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except GitCheckoutError as error:
+        fail(str(error))

@@ -423,6 +423,11 @@ impl RepositoryContext {
             None
         }
     }
+
+    /// Build a sanitized Git command at the validated root for an available operation.
+    pub fn direct_git_command(&self, operation: RepositoryOperation) -> Option<Command> {
+        self.direct_git_root(operation).map(git_command)
+    }
 }
 
 pub(crate) fn git_command(root: &Utf8Path) -> Command {
@@ -431,6 +436,7 @@ pub(crate) fn git_command(root: &Utf8Path) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_COMMON_DIR")
         .arg("-C")
         .arg(root)
@@ -489,6 +495,30 @@ mod tests {
             .status()
             .expect("run git init");
         assert!(status.success());
+    }
+
+    #[test]
+    fn git_builder_scrubs_repository_overrides_for_probe_and_commands() {
+        let command = git_command(Utf8Path::new("."));
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(key, value)| key == name && value.is_none()),
+                "{name}"
+            );
+        }
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "GIT_OPTIONAL_LOCKS"
+                    && value == Some(std::ffi::OsStr::new("0")))
+        );
     }
 
     #[test]

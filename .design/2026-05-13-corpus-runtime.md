@@ -3513,7 +3513,9 @@ the Git directory resolved by CR-D111. The colocated anchor's checkout and
 index are never consulted: an anchor only has to exist, not to be current.
 
 Anneal reads `@` without snapshotting the working copy and performs no VCS
-write. History therefore describes the workspace's last recorded snapshot,
+write. jj reads select their operation explicitly; divergent operation heads
+make history unavailable rather than triggering automatic reconciliation.
+History therefore describes the workspace's last recorded snapshot,
 exactly as history in a direct Git checkout describes `HEAD` and not
 uncommitted edits. The commit id is read once, validated as a commit in the
 resolved store, and pinned for the generation; no helper resolves `@`, `HEAD`

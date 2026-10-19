@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from git_repository import GitCheckout, GitCheckoutError
+
 
 QUERY = r'''? *edge{from: src, to: ref, kind: "Cites", file: file, line: line},
   *handle{id: src, status: status, date: date},
@@ -95,7 +97,8 @@ class AuditError(RuntimeError):
 
 class Git:
     def __init__(self, root: Path) -> None:
-        self.root = root
+        self.checkout = GitCheckout(root)
+        self.root = self.checkout.root
         self._history: dict[str, str] = {}
         self._exists: dict[str, bool] = {}
         self._commits_since: dict[tuple[str, str], int] = {}
@@ -103,13 +106,7 @@ class Git:
         self._moves: dict[str, MoveInfo] = {}
 
     def run(self, args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(self.root), *args],
-            check=check,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        return self.checkout.run(args, check=check)
 
     def exists_now(self, rel_path: str) -> bool:
         if rel_path not in self._exists:
@@ -589,16 +586,10 @@ def nonempty_lines(text: str) -> list[str]:
 
 
 def git_root(path: Path) -> Path:
-    proc = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if proc.returncode != 0:
-        raise AuditError(f"{path} is not inside a git repository")
-    return Path(proc.stdout.strip()).resolve()
+    try:
+        return GitCheckout.discover(path).root
+    except GitCheckoutError as error:
+        raise AuditError(str(error)) from error
 
 
 if __name__ == "__main__":

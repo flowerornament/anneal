@@ -6,6 +6,12 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Repository instruments refuse ancestor Git repositories from jj-only desks.
+  Atlas, citation auditing, release tagging and Home Manager smoke checks validate
+  their checkout boundary and discard inherited Git root/index overrides. Release
+  tagging requires a colocated checkout; version bumping remains desk-local.
+  jj history reads select an operation explicitly and never merge divergent heads.
+
 - Drift refresh in a jj-only workspace persists pin-keyed evidence in the desk's
   cache for subsequent status and check runs. Backing-store validation migrates
   untouched targets and discards changed targets; a moved generation never writes.

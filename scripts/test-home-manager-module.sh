@@ -21,7 +21,9 @@ print(json.dumps(sys.argv[1]))
 PY
 }
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ROOT/scripts/git-repository.sh"
+require_git_root "$ROOT"
 TMPDIR="$(python3 - <<'PY'
 import os
 import tempfile

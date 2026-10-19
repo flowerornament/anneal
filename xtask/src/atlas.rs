@@ -267,7 +267,8 @@ impl Workspace {
     /// since the ref has no `before` side, which is exactly how it should
     /// read), so this reuses cargo's own answer rather than a path pattern.
     fn at_ref(&self, reference: &str) -> Result<Self> {
-        let listing = git(&self.root, &["ls-tree", "-r", "--name-only", reference])?;
+        let git = git(&self.root)?;
+        let listing = git(&["ls-tree", "-r", "--name-only", reference])?;
         let mut crates = Vec::new();
         for crate_map in &self.crates {
             let prefix = format!("{}/", crate_map.src_rel);
@@ -275,7 +276,7 @@ impl Workspace {
                 .lines()
                 .filter(|path| path.starts_with(&prefix) && is_rust_source(Path::new(path)))
                 .map(|path| {
-                    let text = git(&self.root, &["show", &format!("{reference}:{path}")])?;
+                    let text = git(&["show", &format!("{reference}:{path}")])?;
                     Ok(FileMap::of(path.to_owned(), text))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -324,21 +325,46 @@ fn child_directory(rel: &str) -> String {
     }
 }
 
-/// Read-only git plumbing for `atlas diff` — one command, trimmed stdout.
-fn git(root: &Path, arguments: &[&str]) -> Result<String> {
-    let output = std::process::Command::new("git")
-        .current_dir(root)
-        .args(arguments)
-        .output()
-        .map_err(|err| format!("git {}: {err}", arguments.join(" ")))?;
-    if !output.status.success() {
+/// Independent of the product being measured; validate once before traversing a ref.
+fn git(root: &Path) -> Result<impl Fn(&[&str]) -> Result<String> + '_> {
+    let run = move |arguments: &[&str]| {
+        let output = std::process::Command::new("git")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(root)
+            .current_dir(root)
+            .args(arguments)
+            .output()
+            .map_err(|err| format!("git {}: {err}", arguments.join(" ")))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git {}: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        String::from_utf8(output.stdout).map_err(|err| format!("git output not UTF-8: {err}"))
+    };
+    let reported = run(&["rev-parse", "--show-toplevel"]).map_err(|error| {
+        format!(
+            "refusing Git at {}; use the colocated checkout (expected .git at {}): {error}",
+            root.display(),
+            root.display()
+        )
+    })?;
+    if std::fs::canonicalize(reported.trim()).ok() != std::fs::canonicalize(root).ok() {
         return Err(format!(
-            "git {}: {}",
-            arguments.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "refusing Git at {}: toplevel is {}; use the colocated checkout (expected .git at {})",
+            root.display(),
+            reported.trim(),
+            root.display()
         ));
     }
-    String::from_utf8(output.stdout).map_err(|err| format!("git output not UTF-8: {err}"))
+    Ok(run)
 }
 
 fn resolve_module_path(declaring_file: &str, explicit_path: &str) -> String {
