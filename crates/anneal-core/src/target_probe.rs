@@ -160,31 +160,31 @@ impl CodeDriftEvidenceCache {
         mode: CodeDriftEvidenceMode,
         repository: &RepositoryContext,
     ) -> Self {
-        let repo_root =
-            enclosing_project_root(corpus_root).unwrap_or_else(|| corpus_root.to_path_buf());
+        let repo_root = repository.jj_workspace_root().map_or_else(
+            || enclosing_project_root(corpus_root).unwrap_or_else(|| corpus_root.to_path_buf()),
+            Utf8Path::to_path_buf,
+        );
         let cache_path = repo_root.join(DRIFT_CACHE_RELATIVE_PATH);
         let jj = repository.is_jj_workspace().then(|| repository.clone());
-        if let Some(repository) = &jj {
-            return Self {
-                mode,
-                repo_root,
-                cache_path,
-                head: repository.jj_pin().map(str::to_string),
-                entries: BTreeMap::new(),
-                changed: false,
-                jj,
-            };
-        }
-        let head = repository
-            .direct_git_root(RepositoryOperation::TargetHistory)
-            .and_then(|_| git_head(&repo_root));
+        let head = if repository.is_jj_workspace() {
+            repository
+                .operation_available(RepositoryOperation::TargetHistory)
+                .then(|| repository.jj_pin().map(str::to_string))
+                .flatten()
+        } else {
+            repository
+                .direct_git_root(RepositoryOperation::TargetHistory)
+                .and_then(|_| git_head(&repo_root))
+        };
         let mut changed = false;
         let entries = if matches!(mode, CodeDriftEvidenceMode::Disabled) {
             BTreeMap::new()
         } else {
-            let loaded = read_drift_cache(&cache_path, head.as_deref(), &repo_root);
+            let loaded = read_drift_cache(&cache_path, head.as_deref(), &repo_root, jj.as_ref());
             match head.as_deref() {
-                Some(head) => migrate_entries_to_head(&repo_root, head, loaded, &mut changed),
+                Some(head) => {
+                    migrate_entries_to_head(&repo_root, head, loaded, &mut changed, jj.as_ref())
+                }
                 None => loaded,
             }
         };
@@ -218,8 +218,8 @@ impl CodeDriftEvidenceCache {
         requests: &[CodeDriftEvidenceRequest],
         progress: Option<&CodeDriftRefreshProgressSink>,
     ) -> Vec<Option<CodeDriftEvidence>> {
-        if let Some(repository) = &self.jj {
-            return self.jj_evidence_for_batch(repository, requests, progress);
+        if let Some(repository) = self.jj.clone() {
+            return self.jj_evidence_for_batch(&repository, requests, progress);
         }
         let progress = matches!(self.mode, CodeDriftEvidenceMode::Refresh)
             .then_some(progress)
@@ -306,21 +306,43 @@ impl CodeDriftEvidenceCache {
     }
 
     fn jj_evidence_for_batch(
-        &self,
+        &mut self,
         repository: &RepositoryContext,
         requests: &[CodeDriftEvidenceRequest],
         progress: Option<&CodeDriftRefreshProgressSink>,
     ) -> Vec<Option<CodeDriftEvidence>> {
-        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh)
-            || !repository.operation_available(RepositoryOperation::TargetHistory)
+        if !self.is_enabled() || !repository.operation_available(RepositoryOperation::TargetHistory)
         {
             return vec![None; requests.len()];
         }
         let (Some(pin), Some(root)) = (repository.jj_pin(), repository.jj_workspace_root()) else {
             return vec![None; requests.len()];
         };
+        let key_for = |request: &CodeDriftEvidenceRequest| {
+            drift_cache_key_from_parts(
+                root,
+                pin,
+                request.ref_handle.as_str(),
+                &request.target_path,
+                "assertion_date_unknown",
+            )
+        };
+        let mut evidence = requests
+            .iter()
+            .map(|request| {
+                self.entries
+                    .get(&key_for(request))
+                    .map(CachedCodeDriftEvidence::to_evidence)
+            })
+            .collect::<Vec<_>>();
+        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh) {
+            return evidence;
+        }
         let targets = requests
             .iter()
+            .zip(&evidence)
+            .filter(|(_, evidence)| evidence.is_none())
+            .map(|(request, _)| request)
             .filter_map(|request| normalize_probe_target(root, &request.target_path))
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -373,21 +395,32 @@ impl CodeDriftEvidenceCache {
             } else {
                 targets.iter().map(compute).collect()
             };
-        requests
-            .iter()
-            .map(|request| {
-                results
-                    .get(&normalize_probe_target(root, &request.target_path)?)
-                    .cloned()
-            })
-            .collect()
+        for (request, evidence) in requests.iter().zip(&mut evidence) {
+            if evidence.is_some() {
+                continue;
+            }
+            *evidence = normalize_probe_target(root, &request.target_path)
+                .and_then(|target| results.get(&target))
+                .cloned();
+            if let Some(evidence) = evidence {
+                self.entries.insert(
+                    key_for(request),
+                    CachedCodeDriftEvidence::from_evidence(root, request, evidence),
+                );
+                self.changed = true;
+            }
+        }
+        evidence
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        if self.jj.is_some()
-            || !matches!(self.mode, CodeDriftEvidenceMode::Refresh)
-            || !self.changed
-        {
+        if !matches!(self.mode, CodeDriftEvidenceMode::Refresh) || !self.changed {
+            return Ok(());
+        }
+        if self.jj.as_ref().is_some_and(|repository| {
+            !repository.finish_jj_generation()
+                || !repository.operation_available(RepositoryOperation::TargetHistory)
+        }) {
             return Ok(());
         }
         if let Some(parent) = self.cache_path.parent() {
@@ -684,6 +717,7 @@ fn read_drift_cache(
     cache_path: &Utf8Path,
     head: Option<&str>,
     repo_root: &Utf8Path,
+    repository: Option<&RepositoryContext>,
 ) -> BTreeMap<String, CachedCodeDriftEvidence> {
     let Some(head) = head else {
         return BTreeMap::new();
@@ -714,7 +748,7 @@ fn read_drift_cache(
             revisions.insert(rev);
         }
     }
-    let existing = existing_revisions(repo_root, &revisions);
+    let existing = existing_revisions(repo_root, &revisions, repository);
     let revision_ok = |rev: &str| existing.contains(rev);
     file.entries
         .iter()
@@ -733,6 +767,7 @@ fn read_drift_cache(
 fn existing_revisions<'a>(
     repo_root: &Utf8Path,
     revisions: &BTreeSet<&'a str>,
+    repository: Option<&RepositoryContext>,
 ) -> BTreeSet<&'a str> {
     let requested = revisions
         .iter()
@@ -745,7 +780,10 @@ fn existing_revisions<'a>(
         return BTreeSet::new();
     }
 
-    let Ok(mut child) = git_command(repo_root)
+    let Some(mut command) = cache_git_command(repo_root, repository) else {
+        return BTreeSet::new();
+    };
+    let Ok(mut child) = command
         .args(["cat-file", "--batch-check=%(objectname)"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -796,6 +834,7 @@ fn migrate_entries_to_head(
     head: &str,
     loaded: BTreeMap<String, CachedCodeDriftEvidence>,
     changed: &mut bool,
+    repository: Option<&RepositoryContext>,
 ) -> BTreeMap<String, CachedCodeDriftEvidence> {
     let mut out = BTreeMap::new();
     let mut touched_by_old_head: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
@@ -806,7 +845,7 @@ fn migrate_entries_to_head(
         }
         let touched = touched_by_old_head
             .entry(entry.head.clone())
-            .or_insert_with(|| git_changed_paths(repo_root, &entry.head, head));
+            .or_insert_with(|| git_changed_paths(repo_root, &entry.head, head, repository));
         let Some(touched) = touched.as_ref() else {
             // Cannot establish the delta (e.g. unrelated history): drop.
             *changed = true;
@@ -841,11 +880,20 @@ fn migrate_entries_to_head(
 
 /// Paths touched between two revisions, including both sides of renames.
 /// `None` when the delta cannot be computed.
-fn git_changed_paths(repo_root: &Utf8Path, from: &str, to: &str) -> Option<BTreeSet<String>> {
-    let output = git_output(
-        repo_root,
-        &["diff", "--name-status", "-M", &format!("{from}..{to}")],
-    )?;
+fn git_changed_paths(
+    repo_root: &Utf8Path,
+    from: &str,
+    to: &str,
+    repository: Option<&RepositoryContext>,
+) -> Option<BTreeSet<String>> {
+    let output = cache_git_command(repo_root, repository)?
+        .args(["diff", "--name-status", "-M", &format!("{from}..{to}")])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output = String::from_utf8(output.stdout).ok()?;
     let mut paths = BTreeSet::new();
     for line in output.lines() {
         let mut columns = line.split('\t');
@@ -859,6 +907,17 @@ fn git_changed_paths(repo_root: &Utf8Path, from: &str, to: &str) -> Option<BTree
         }
     }
     Some(paths)
+}
+
+/// Cache validation uses the selected provider; a jj failure never falls back to Git discovery.
+fn cache_git_command(
+    root: &Utf8Path,
+    repository: Option<&RepositoryContext>,
+) -> Option<std::process::Command> {
+    repository.map_or_else(
+        || Some(git_command(root)),
+        RepositoryContext::jj_git_command,
+    )
 }
 
 fn drift_cache_key(repo_root: &Utf8Path, head: &str, request: &CodeDriftEvidenceRequest) -> String {
@@ -1464,7 +1523,7 @@ mod tests {
         .into_iter()
         .collect::<BTreeSet<_>>();
 
-        let existing = existing_revisions(&repo, &revisions);
+        let existing = existing_revisions(&repo, &revisions, None);
 
         assert_eq!(revisions.len(), 3, "repeated revisions are deduplicated");
         assert!(existing.contains(head.as_str()));

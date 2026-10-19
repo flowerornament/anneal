@@ -401,6 +401,10 @@ Code file discovery uses the validated Git index or the pinned jj tree, and
 refuses an unavailable VCS discovery operation.
 Conflicted, stale, or moving jj pins make dependent operations unavailable;
 missing capability is distinct from an available query with no rows.
+An explicit drift refresh in a jj desk writes that desk's
+`.anneal/drift-evidence.json` for later status and check runs. Cache reads validate
+the pinned backing store; changed targets invalidate on pin movement. A moved
+generation never writes, and the anchor's cache is neither read nor written.
 The convergence vocabulary lives in the prelude — use `describe convergence`,
 `describe potential`, `describe entropy`, `describe blocker`,
 `describe recency`, `describe authored_age`, `describe changed_recently`,

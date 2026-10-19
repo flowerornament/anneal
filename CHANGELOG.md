@@ -6,6 +6,10 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- Drift refresh in a jj-only workspace persists pin-keyed evidence in the desk's
+  cache for subsequent status and check runs. Backing-store validation migrates
+  untouched targets and discards changed targets; a moved generation never writes.
+
 - Existing excluded or out-of-window Markdown and extensionless link targets
   resolve as opaque file assets. Extracted documents and label/version identities
   take precedence; missing or out-of-boundary targets retain existing checks.

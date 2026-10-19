@@ -3523,6 +3523,16 @@ for that generation: evidence gathered against the old pin is discarded
 rather than merged, and no history cache is written. A conflicted `@` or a
 stale workspace makes the history operations unavailable with that reason.
 
+Drift refresh persists its evidence in the workspace's own
+`.anneal/drift-evidence.json`, using the direct-Git cache schema with the desk
+root and recorded pin as identity. A following read validates cached revisions
+through the explicit backing Git directory. On pin movement, entries whose
+target or move-candidate paths changed are discarded; untouched entries are
+re-keyed to the current pin after a backing-store diff. Only an explicit refresh
+writes, after a matching end-of-generation pin re-read. Missing backing yields
+unavailable evidence, never an ancestor-Git fallback. The anchor's cache is
+neither read nor written, and cache reuse does not supply assertion blame.
+
 A change in jj carries three times that move independently under rewrite:
 the author time of the change, the committer time of the commit that currently
 carries it, and the modification time of the file in one workspace. Committer

@@ -534,6 +534,189 @@ mod tests {
     }
 
     #[test]
+    fn jj_drift_cache_persists_locally_and_migrates_only_untouched_targets() {
+        use crate::{
+            CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest, HandleId,
+        };
+        let Some(desk) = desk() else {
+            return;
+        };
+        run(&desk.root, "jj", &["edit", &desk.base]);
+        let requests = [".design/carried.md", "missing.rs"].map(|path| CodeDriftEvidenceRequest {
+            ref_handle: HandleId::new(format!("external:code:{path}")).expect("handle"),
+            target_path: path.to_owned(),
+            edge_file: String::new(),
+            assertion_date: None,
+            assertion_revision: None,
+        });
+        let open = |root: &Utf8Path, mode| {
+            let context = RepositoryContext::discover(root);
+            (CodeDriftEvidenceCache::open(root, mode, &context), context)
+        };
+        let (mut anchor, _) = open(&desk.anchor, CodeDriftEvidenceMode::Refresh);
+        assert!(
+            anchor
+                .evidence_for_batch(&requests, None)
+                .iter()
+                .all(Option::is_some)
+        );
+        anchor.save().expect("save anchor control");
+        let anchor_path = desk.anchor.join(".anneal/drift-evidence.json");
+        let anchor_bytes = std::fs::read(&anchor_path).expect("anchor cache exists");
+        let (mut refresh, context) = open(&desk.root, CodeDriftEvidenceMode::Refresh);
+        assert_eq!(
+            context.jj_pin(),
+            Some(desk.base.as_str()),
+            "layouts must select exactly the same commit"
+        );
+        let computed = refresh.evidence_for_batch(&requests, None);
+        assert!(computed.iter().all(Option::is_some));
+        refresh.save().expect("save desk cache");
+        let path = desk.root.join(".anneal/drift-evidence.json");
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("desk cache")).expect("json");
+        assert_eq!(
+            body["entries"].as_object().expect("entries").len(),
+            requests.len()
+        );
+        for entry in body["entries"].as_object().expect("entries").values() {
+            assert_eq!(
+                entry["repo_root"].as_str(),
+                context.jj_workspace_root().map(Utf8Path::as_str)
+            );
+            assert_eq!(entry["head"], desk.base);
+            assert_eq!(entry["assertion_premise"], "assertion_date_unknown");
+        }
+        let (mut cached, _) = open(&desk.root, CodeDriftEvidenceMode::ReadCache);
+        assert_eq!(
+            cached.evidence_for_batch(&requests, None),
+            computed,
+            "following run must serve both warm rows"
+        );
+        assert!(!context.operation_available(RepositoryOperation::AssertionBlame));
+
+        let saved = std::fs::read(&path).expect("cache bytes");
+        for (field, value) in [
+            ("repo_root", desk.anchor.as_str()),
+            ("head", "0123456789012345678901234567890123456789"),
+        ] {
+            let mut invalid = body.clone();
+            for entry in invalid["entries"]
+                .as_object_mut()
+                .expect("entries")
+                .values_mut()
+            {
+                entry[field] = serde_json::Value::String(value.to_owned());
+            }
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&invalid).expect("invalid cache json"),
+            )
+            .expect("invalid cache");
+            let (mut rejected, _) = open(&desk.root, CodeDriftEvidenceMode::ReadCache);
+            assert!(
+                rejected
+                    .evidence_for_batch(&requests, None)
+                    .iter()
+                    .all(Option::is_none),
+                "reject {field} from a foreign root or missing revision"
+            );
+        }
+        std::fs::write(&path, saved).expect("restore cache");
+
+        run(&desk.root, "jj", &["new"]);
+        std::fs::write(desk.root.join("churn.txt"), "unrelated\n").expect("churn");
+        run(&desk.root, "jj", &["describe", "-m", "unrelated change"]);
+        let (mut migrated, newer) = open(&desk.root, CodeDriftEvidenceMode::ReadCache);
+        let rows = migrated.evidence_for_batch(&requests, None);
+        assert!(
+            rows.iter().all(Option::is_some),
+            "untouched rows migrate through backing-store diff"
+        );
+        assert!(
+            rows.iter()
+                .flatten()
+                .all(|row| Some(row.evidence_head.as_str()) == newer.jj_pin())
+        );
+        std::fs::write(desk.root.join(".design/carried.md"), "# Changed target\n")
+            .expect("edit target");
+        run(&desk.root, "jj", &["describe", "-m", "target changed"]);
+        let (mut invalidated, _) = open(&desk.root, CodeDriftEvidenceMode::ReadCache);
+        let rows = invalidated.evidence_for_batch(&requests, None);
+        assert!(
+            rows[0].is_none(),
+            "changed target must never reuse stale evidence"
+        );
+        assert!(rows[1].is_some(), "unaffected target remains warm");
+        let (mut refreshed, _) = open(&desk.root, CodeDriftEvidenceMode::Refresh);
+        assert!(
+            refreshed
+                .evidence_for_batch(&requests, None)
+                .iter()
+                .all(Option::is_some)
+        );
+        refreshed.save().expect("save recomputation");
+        assert_eq!(
+            std::fs::read(&anchor_path).expect("anchor bytes"),
+            anchor_bytes,
+            "desk product operations must never write anchor cache"
+        );
+    }
+
+    #[test]
+    fn jj_drift_cache_refuses_moved_pin_and_unreadable_backing() {
+        use crate::{
+            CodeDriftEvidenceCache, CodeDriftEvidenceMode, CodeDriftEvidenceRequest, HandleId,
+        };
+        let Some(desk) = desk() else {
+            return;
+        };
+        let root = desk.root.join(".design");
+        let request = CodeDriftEvidenceRequest {
+            ref_handle: HandleId::new("external:code:.design/carried.md").expect("handle"),
+            target_path: ".design/carried.md".to_owned(),
+            edge_file: String::new(),
+            assertion_date: None,
+            assertion_revision: None,
+        };
+        let context = RepositoryContext::discover(&root);
+        let mut cache =
+            CodeDriftEvidenceCache::open(&root, CodeDriftEvidenceMode::Refresh, &context);
+        assert!(cache.evidence_for(&request).is_some());
+        run(&desk.root, "jj", &["new"]);
+        cache.save().expect("refuse moved pin");
+        let path = desk.root.join(".anneal/drift-evidence.json");
+        assert!(
+            !path.exists(),
+            "even a direct save call must not persist a moved generation"
+        );
+
+        let context = RepositoryContext::discover(&root);
+        let mut cache =
+            CodeDriftEvidenceCache::open(&root, CodeDriftEvidenceMode::Refresh, &context);
+        assert!(cache.evidence_for(&request).is_some());
+        cache.save().expect("save matching generation");
+        let saved = std::fs::read(&path).expect("saved cache");
+        let marker = desk.anchor.join(".jj/repo/store/git_target");
+        std::fs::write(&marker, "nonexistent-backing\n").expect("fault backing pointer");
+        let unavailable = RepositoryContext::discover(&root);
+        assert!(!unavailable.operation_available(RepositoryOperation::TargetHistory));
+        assert_eq!(
+            unavailable.operation_reason(RepositoryOperation::TargetHistory),
+            "jj-backing-unavailable"
+        );
+        let mut cache =
+            CodeDriftEvidenceCache::open(&root, CodeDriftEvidenceMode::ReadCache, &unavailable);
+        assert_eq!(
+            cache.evidence_for(&request),
+            None,
+            "valid-looking cache cannot bypass missing backing"
+        );
+        cache.save().expect("no write");
+        assert_eq!(std::fs::read(&path).expect("unchanged cache"), saved);
+    }
+
+    #[test]
     fn pin_movement_invalidates_clones_without_snapshotting_pending_edits() {
         let Some(desk) = desk() else {
             return;
